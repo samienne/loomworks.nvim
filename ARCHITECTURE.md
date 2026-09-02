@@ -998,9 +998,20 @@ authentic older release, never unofficial code.
 ### Install security
 
 The host cannot verify itself (the verifier is inside it), so its own integrity
-is established out-of-band (spec §16.15): the release publishes a `SHA256SUMS`,
-and the documented install is a transparent one-liner — download the binary,
-verify its hash, then run the verified binary's `lw install`, which copies
+is established out-of-band (spec §16.15) — and only for the first install; every
+later hop verifies against a key or pinned hash already on the machine. Two
+independent anchors cover that first hop. **Build provenance** is the stronger:
+each host binary is attested by `actions/attest-build-provenance` and recorded
+in Sigstore's public transparency log, so `gh attestation verify` confirms it
+came from this repo's release workflow with a trust root *independent of the
+release host* — the one check that survives tampered release assets. The keyless
+**signed `SHA256SUMS`** route is the fallback where `gh` is absent: the release
+signs the hash list with the release key, and the documented install verifies
+the `.sig` against the public key from the README, then checks the binary's
+hash. That route is trust-on-first-use on the README-hosted key — it stops a
+swapped binary (the private key never leaves CI) but is not an independent
+anchor the way provenance is. Either way the documented install is a transparent
+one-liner — verify, then run the verified binary's `lw install`, which copies
 itself to a per-user location (`~/.local/bin/lw`, or `%LOCALAPPDATA%\Microsoft\
 WindowsApps\lw.exe` on Windows — already on PATH), ensures PATH (prompting;
 `-y`/`--no-modify-path`), and fetches the first bundle. No `curl | sh`.
@@ -1036,8 +1047,8 @@ The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
 one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix
 builds a host per platform (each fetching the matching luvi), a job builds the
-signed bundle, and a publish job attaches everything (plus a `SHA256SUMS`) to a
-GitHub Release. The maintainer supplies the signing key (see `keys/README.md`).
+signed bundle, and a publish job generates and signs `SHA256SUMS`, attests build
+provenance for the host binaries, and attaches everything to a GitHub Release. The maintainer supplies the signing key (see `keys/README.md`).
 `make dist` is a local dry-run. Installation is the transparent
 download-verify-`lw install` one-liner (spec §16.15), so no hosted installer
 script is needed.
