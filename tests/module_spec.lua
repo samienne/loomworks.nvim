@@ -157,3 +157,22 @@ describe("Module", function()
         end)
     end)
 end)
+
+-- Regression: file-mtime staleness was removed from the build-system modules.
+-- Their generators (Ninja/Make) re-run configure on input-file changes, so an
+-- `inspect` that stats a top-level file is redundant and less accurate. Guard
+-- against it silently coming back. Option-level staleness lives on
+-- ConfigUnit:is_stale(), not `inspect`.
+describe("build-system modules expose no file-mtime inspect", function()
+    it("cmake has no inspect", function()
+        assert.is_nil(require("loomworks.modules.cmake").inspect)
+    end)
+
+    it("meson has no inspect", function()
+        assert.is_nil(require("loomworks.modules.meson").inspect)
+    end)
+
+    it("typescript has no inspect", function()
+        assert.is_nil(require("loomworks.modules.typescript").inspect)
+    end)
+end)

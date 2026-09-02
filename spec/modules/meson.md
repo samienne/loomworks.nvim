@@ -112,3 +112,13 @@ otherwise fall back to PATH.
 ## 10. Debug integration
 
 Module language is `"c++"`. Default adapter is `codelldb`.
+
+## 11. Staleness (`inspect`)
+
+Not implemented as file-mtime staleness. meson under Ninja installs a
+regeneration rule: Ninja re-runs `meson` automatically at build time when
+`meson.build` / `meson.options` / `meson_options.txt` (and the files they
+`subdir()` into) change. loomworks does not stat those files or emit a
+"modified since last configure" refresh. The sole loomworks-driven
+reconfigure triggers are `unconfigured` / `configure_failed` and option-level
+staleness via `ConfigUnit:is_stale()`.

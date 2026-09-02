@@ -389,41 +389,6 @@ function M.progress_parser()
     return nil
 end
 
---- Check if project files have changed since last build.
---- @param path string absolute project path
---- @param config table type_config from loomworks.json
---- @param cached table<string, table> cached configurations
---- @return { needs_refresh: boolean, reasons: string[], notes: string[] }
-function M.inspect(path, config, cached)
-    local reasons = {}
-
-    local pkg_stat = uv.fs_stat(path .. "/package.json")
-    local tsconfig_stat = uv.fs_stat(path .. "/tsconfig.json")
-
-    for config_key, cached_config in pairs(cached) do
-        if cached_config.last_configured then
-            local configured_time = cached_config.last_configured
-            -- Simple string comparison works for ISO 8601 timestamps
-            if pkg_stat then
-                local pkg_time = os.date("!%Y-%m-%dT%H:%M:%SZ", pkg_stat.mtime.sec)
-                if pkg_time > configured_time then
-                    reasons[#reasons + 1] = "package.json modified since last configure"
-                    break
-                end
-            end
-            if tsconfig_stat then
-                local ts_time = os.date("!%Y-%m-%dT%H:%M:%SZ", tsconfig_stat.mtime.sec)
-                if ts_time > configured_time then
-                    reasons[#reasons + 1] = "tsconfig.json modified since last configure"
-                    break
-                end
-            end
-        end
-    end
-
-    return { needs_refresh = #reasons > 0, reasons = reasons, notes = {} }
-end
-
 -- Scripts excluded from target detection (used by module or well-known lifecycle)
 local EXCLUDED_SCRIPTS = {
     build = true, clean = true, test = true, lint = true,
