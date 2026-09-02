@@ -252,6 +252,15 @@ host tool plus every kit each SDK exposes, and you add / remove
 entries with `+ Add tool` / `D`. Multi-language profiles (e.g. cmake
 + rust) carry one tool per language family.
 
+The **compiler is chosen solely by the profile's tool**. A project
+configuration cannot override it through cmake cache variables
+(`CMAKE_<LANG>_COMPILER`) or environment (`CC` / `CXX` / …): those keys are
+reserved — rejected when you edit a configuration, and ignored (with a
+`⚠ ignored compiler override` marker) if present in a hand-edited config.
+To build with a different compiler, pick a different tool. Compiler *flags*
+(`CFLAGS` / `CXXFLAGS`), launchers, toolchain files, and CMake presets are
+unaffected.
+
 #### Custom C/C++ compilers
 
 For compilers not on `PATH` — cross-compilers, snapshot builds,
