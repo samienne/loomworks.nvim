@@ -3181,18 +3181,27 @@ M._status_section = status_section
 --- is filled from `config:<proj>:<name>` keys so a configuration's diagnostic
 --- attaches to its project's row; the leading project segment can't contain a
 --- `:` (config names can, so match only up to the FIRST one after the key).
+--- A `profile_proj:<profile>:<project>` key (a per-project tool-compatibility
+--- error) is routed into the SAME `profile:<profile>` bucket the Profiles row
+--- reads, so it renders inline under its profile alongside that profile's own
+--- diagnostics — the profile key can't contain a `:`, so match up to the first.
 local function group_diagnostics(diags)
   local by_key, by_project = {}, {}
+  local function bucket(key, d)
+    local g = by_key[key]; if not g then g = {}; by_key[key] = g end
+    g[#g + 1] = d
+  end
   for _, d in ipairs(diags) do
     local k = d.target_fold_key
     if k then
-      local g = by_key[k]; if not g then g = {}; by_key[k] = g end
-      g[#g + 1] = d
+      bucket(k, d)
       local proj = k:match("^config:([^:]+):")
       if proj then
         local p = by_project[proj]; if not p then p = {}; by_project[proj] = p end
         p[#p + 1] = d
       end
+      local prof = k:match("^profile_proj:([^:]+):")
+      if prof then bucket("profile:" .. prof, d) end
     end
   end
   return { by_key = by_key, by_project = by_project }

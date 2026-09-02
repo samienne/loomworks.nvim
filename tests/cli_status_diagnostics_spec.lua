@@ -111,6 +111,27 @@ describe("group_diagnostics", function()
     })
     assert.equals(1, #g.by_project["acme"])
   end)
+
+  it("routes profile_proj:<profile>:<project> into the profile's inline bucket", function()
+    local diags = {
+      diag("error", "Profile/p1", "profile 'p1' is invalid", "profile:p1"),
+      diag("error", "Profile/p1/proj1/Debug", "tool incompatible", "profile_proj:p1:proj1"),
+    }
+    local g = cli._group_diagnostics(diags)
+    -- Both the profile's own diagnostic AND the tool-compat one land in the
+    -- single bucket the Profiles row_fn reads for inline markers.
+    assert.equals(2, #g.by_key["profile:p1"])
+    local msgs = {}
+    for _, d in ipairs(g.by_key["profile:p1"]) do msgs[d.message] = true end
+    assert.is_true(msgs["profile 'p1' is invalid"])
+    assert.is_true(msgs["tool incompatible"])
+    -- The top section still lists the full input set unchanged (duplication is
+    -- intended — editor parity).
+    assert.equals(2, #diags)
+    -- The project segment of a profile_proj key must NOT leak into by_project.
+    assert.is_nil(g.by_project["proj1"])
+    assert.is_nil(g.by_project["p1"])
+  end)
 end)
 
 describe("inline_markers", function()
