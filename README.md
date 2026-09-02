@@ -490,14 +490,39 @@ release layout and update flow.
 `lw` installs itself: download the binary for your platform, **verify it**,
 then let the verified binary place itself on PATH and fetch the first bundle.
 The commands show exactly what they do — nothing is piped from an unread
-script.
+script. A host binary cannot verify itself (the checker is inside it), so its
+integrity is established before first execution.
 
-A host binary cannot verify itself (the checker is inside it), so its
-integrity is established before first execution: each release publishes a
-`SHA256SUMS` list, **signed** with the loomworks release key. Verify that
-signature with the public key below, then check the binary against the list.
-Because the anchor is the key and not a digest, **these commands never change**
-— copy them as-is, for any release.
+There are two independent ways to verify, in order of strength:
+
+- **Build provenance (recommended).** Every release binary is attested by
+  GitHub Actions and recorded in Sigstore's public transparency log.
+  `gh attestation verify` confirms the binary came out of this repo's release
+  workflow using **no key and no hashes from us**, anchored in a public log
+  that is *independent of the release host* — the one check that still holds if
+  the release assets themselves are tampered with.
+- **Release-key signature (fallback, no `gh` needed).** Each release publishes a
+  `SHA256SUMS` list **signed** with the loomworks release key; verify the
+  signature with the public key below, then check the binary against the list.
+  Because the anchor is the key and not a digest, **these commands never
+  change** — copy them as-is, for any release. This is trust-on-first-use: you
+  take the public key from this README, so it rests on the same GitHub account
+  and TLS that serve the binary. It still fully stops a *swapped* binary — the
+  private key never leaves release CI, so a valid signature can't be forged —
+  but it is not an independent anchor the way provenance is. The caveat is
+  first-install only: afterwards `lw self-update` verifies against the key baked
+  into your installed binary, a channel the release host cannot reach.
+
+**Recommended — build provenance** (needs an authenticated `gh`; preinstalled
+on GitHub Actions):
+
+```sh
+gh release download --repo samienne/loomworks.nvim -p lw-linux-x86_64
+gh attestation verify lw-linux-x86_64 --repo samienne/loomworks.nvim
+chmod +x lw-linux-x86_64 && ./lw-linux-x86_64 install -y
+```
+
+**Fallback — release-key signature** (no `gh` required).
 
 Linux / macOS:
 
@@ -553,25 +578,14 @@ if ($got -ine $want) { throw "hash mismatch for $bin" }
 ```
 
 `ImportFromPem` needs PowerShell 7 / .NET 5+; Windows PowerShell 5.1 does not
-have it. Run the block in `pwsh`, or use the `gh` route below — which is the
+have it. Run the block in `pwsh`, or use the provenance route above — the
 simpler choice on Windows generally.
-
-**On GitHub Actions** (or anywhere `gh` is authenticated) the release is also
-covered by build provenance recorded in Sigstore's public transparency log —
-verification needs no key and no hashes, and the anchor is independent of this
-repository:
-
-```sh
-gh release download --repo samienne/loomworks.nvim -p lw-linux-x86_64
-gh attestation verify lw-linux-x86_64 --repo samienne/loomworks.nvim
-chmod +x lw-linux-x86_64 && ./lw-linux-x86_64 install -y
-```
 
 Pin a release in CI by passing an explicit tag (`gh release download v0.1.0`,
 or a versioned URL instead of `latest`) and not running `lw self-update`.
-Signature and provenance both establish *who built this*; where the signing key
-lives on the same platform that serves the artifacts, they are not a defense
-against that platform itself.
+Neither path defends against a compromise of the CI signing identity itself,
+or a malicious commit that CI faithfully builds — those need repository and
+account security, not artifact verification.
 
 `lw install` copies the binary to a per-user location — `~/.local/bin/lw`
 (Unix) or `%LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe` (Windows, already on
