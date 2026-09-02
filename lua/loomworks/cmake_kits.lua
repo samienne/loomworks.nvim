@@ -1,13 +1,13 @@
 local M = {}
 
 --- @class loomworks.CmakeKit
---- @field id string unique identifier (e.g. "msvc-17-2022-enterprise", "ninja-gcc-14.2.0")
---- @field display string human-readable name (e.g. "MSVC 17 2022 (Enterprise)")
+--- @field id string unique identifier (e.g. "msvc-17-2022-enterprise", "ninja-gcc-14.2.0", "ninja-clang-cl-17-community")
+--- @field display string human-readable name (e.g. "MSVC 17 2022 (Enterprise)", "Ninja - clang-cl (MSVC 17 2022 (Community))")
 --- @field generator string cmake -G value
 --- @field compiler_id string|nil compiler identifier
---- @field compiler_path string|nil path to compiler binary
+--- @field compiler_path string|nil path to compiler binary (clang-cl kits: the clang-cl driver, used for both C and C++)
 --- @field env table<string, string> environment variables needed
---- @field vcvarsall string|nil path to vcvarsall.bat (MSVC kits)
+--- @field vcvarsall string|nil path to vcvarsall.bat (MSVC / clang-cl kits)
 --- @field arch string|nil target architecture for vcvarsall
 --- @field clangd_path string|nil path to clangd binary bundled with this toolchain
 
@@ -16,85 +16,58 @@ M._cached = nil
 
 local uv = vim.uv or vim.loop
 
---- Run a command synchronously via vim.fn.system and return trimmed stdout.
---- @param cmd string[]
---- @return string|nil output
-local function run(cmd)
-    local result = vim.fn.system(cmd)
-    if vim.v.shell_error ~= 0 then return nil end
-    return vim.trim(result)
+--- Build the MSVC "Visual Studio <NN> <YYYY>" generator kit for one install.
+--- MSVC + clang-cl discovery is owned by the shared `loomworks.msvc` module;
+--- this only shapes an install descriptor into cmake's kit table.
+--- @param inst table one entry from `loomworks.msvc` detect()/detect_async()
+--- @return loomworks.CmakeKit
+local function vs_generator_kit(inst)
+    return {
+        id = inst.id,
+        display = inst.display,
+        generator = "Visual Studio " .. inst.vs_major .. " " .. inst.version_line,
+        compiler_id = "msvc-" .. inst.vs_major,
+        env = {},
+        vcvarsall = inst.vcvarsall,
+        arch = inst.arch,
+    }
 end
 
---- Extract version from compiler --version output.
---- @param output string|nil
---- @return string|nil version
-local function parse_version(output)
-    if not output then return nil end
-    return output:match("(%d+%.%d+%.%d+)") or output:match("(%d+%.%d+)")
+--- Build the Ninja + MSVC (cl.exe) kit for one install. Needs the vcvarsall
+--- environment at build time.
+--- @param inst table
+--- @return loomworks.CmakeKit
+local function ninja_msvc_kit(inst)
+    local compiler_id = "msvc-" .. inst.vs_major
+    return {
+        id = "ninja-" .. compiler_id .. "-" .. inst.product:lower(),
+        display = "Ninja - " .. inst.display,
+        generator = "Ninja",
+        compiler_id = compiler_id,
+        env = {},
+        vcvarsall = inst.vcvarsall,
+        arch = inst.arch,
+    }
 end
 
---- Try to find and get version of a compiler binary.
---- @param name string binary name (e.g. "gcc", "clang++-19")
---- @return string|nil path, string|nil version
-local function probe_compiler(name)
-    if vim.fn.executable(name) ~= 1 then return nil, nil end
-    local path = vim.fn.exepath(name)
-    if path == "" then return nil, nil end
-    local ver_output = run({ path, "--version" })
-    local version = parse_version(ver_output)
-    return path, version
-end
-
---- Detect Visual Studio installations via vswhere.exe.
---- @return loomworks.CmakeKit[]
-local function detect_msvc_kits()
-    local kits = {}
-
-    local vswhere = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
-    if not uv.fs_stat(vswhere) then return kits end
-
-    local output = run({ vswhere, "-all", "-format", "json", "-products", "*" })
-    if not output then return kits end
-
-    local ok, installs = pcall(vim.json.decode, output)
-    if not ok or type(installs) ~= "table" then return kits end
-
-    for _, install in ipairs(installs) do
-        if not install.installationPath or not install.catalog then goto continue end
-
-        local version_line = install.catalog.productLineVersion -- "2022", "2019", etc.
-        local product_id = install.productId or ""
-
-        local vs_major = ({
-            ["2022"] = "17",
-            ["2019"] = "16",
-            ["2017"] = "15",
-        })[version_line]
-
-        if not vs_major then goto continue end
-
-        local product_type = product_id:match("%.(%w+)$") or "Unknown"
-        local generator = "Visual Studio " .. vs_major .. " " .. version_line
-        local install_path = install.installationPath:gsub("\\", "/")
-
-        local vcvarsall = install_path .. "/VC/Auxiliary/Build/vcvarsall.bat"
-        local has_vcvarsall = uv.fs_stat(vcvarsall) ~= nil
-
-        kits[#kits + 1] = {
-            id = "msvc-" .. vs_major .. "-" .. version_line .. "-" .. product_type:lower(),
-            display = "MSVC " .. vs_major .. " " .. version_line .. " (" .. product_type .. ")",
-            generator = generator,
-            compiler_id = "msvc-" .. vs_major,
-            env = {},
-            vcvarsall = has_vcvarsall and vcvarsall or nil,
-            arch = "x64",
-        }
-
-        ::continue::
-    end
-
-    table.sort(kits, function(a, b) return a.id > b.id end)
-    return kits
+--- Build the Ninja + clang-cl kit for one install. clang-cl is both the C and
+--- C++ driver and reuses the paired install's STL / Windows SDK / linker via
+--- vcvarsall, so there is exactly one clang-cl kit per install.
+--- @param inst table
+--- @param cc { path: string, version: string, clangd_path: string|nil }
+--- @return loomworks.CmakeKit
+local function clang_cl_kit(inst, cc)
+    return {
+        id = "ninja-clang-cl-" .. inst.vs_major .. "-" .. inst.product:lower(),
+        display = "Ninja - clang-cl (" .. inst.display .. ")",
+        generator = "Ninja",
+        compiler_id = "clang-cl-" .. cc.version,
+        compiler_path = cc.path,
+        clangd_path = cc.clangd_path,
+        vcvarsall = inst.vcvarsall,
+        arch = inst.arch,
+        env = {},
+    }
 end
 
 --- Try to find a clangd binary alongside a compiler path.
@@ -136,17 +109,18 @@ end
 function M.detect()
     if M._cached then return M._cached end
 
+    local msvc = require("loomworks.msvc")
+    local installs = msvc.detect()
     local kits = {}
 
-    local msvc = detect_msvc_kits()
-    for _, kit in ipairs(msvc) do
-        kits[#kits + 1] = kit
+    -- VS-generator MSVC kits (one per install).
+    for _, inst in ipairs(installs) do
+        kits[#kits + 1] = vs_generator_kit(inst)
     end
 
     local ninja_available = vim.fn.executable("ninja") == 1
     if ninja_available then
-        local compilers = detect_compilers()
-        for _, comp in ipairs(compilers) do
+        for _, comp in ipairs(detect_compilers()) do
             kits[#kits + 1] = {
                 id = "ninja-" .. comp.id,
                 display = "Ninja - " .. comp.display,
@@ -158,19 +132,16 @@ function M.detect()
             }
         end
 
-        -- Ninja + MSVC kits need the vcvarsall environment.
-        for _, msvc_kit in ipairs(msvc) do
-            if msvc_kit.vcvarsall then
-                kits[#kits + 1] = {
-                    id = "ninja-" .. msvc_kit.compiler_id .. "-" .. msvc_kit.id:match("[^-]+$"),
-                    display = "Ninja - " .. msvc_kit.display,
-                    generator = "Ninja",
-                    compiler_id = msvc_kit.compiler_id,
-                    env = {},
-                    vcvarsall = msvc_kit.vcvarsall,
-                    arch = msvc_kit.arch,
-                }
-            end
+        -- Ninja + MSVC (cl.exe) kits need the vcvarsall environment.
+        for _, inst in ipairs(installs) do
+            kits[#kits + 1] = ninja_msvc_kit(inst)
+        end
+
+        -- Ninja + clang-cl kits — one per install (VS-bundled clang-cl
+        -- preferred, standalone/PATH as fallback).
+        for _, inst in ipairs(installs) do
+            local cc = msvc.clang_cl_for(inst)
+            if cc then kits[#kits + 1] = clang_cl_kit(inst, cc) end
         end
     end
 
@@ -178,73 +149,12 @@ function M.detect()
     return kits
 end
 
---- Clear the detection cache (also clears the shared compiler cache).
+--- Clear the detection cache (also clears the shared compiler + MSVC caches
+--- this module sources its kits from).
 function M.clear_cache()
     M._cached = nil
     require("loomworks.cpp_compilers").clear_cache()
-end
-
---- Detect MSVC installations asynchronously via vswhere.exe.
---- @param callback fun(kits: loomworks.CmakeKit[])
-local function detect_msvc_kits_async(callback)
-    local vswhere = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
-    if not uv.fs_stat(vswhere) then
-        callback({})
-        return
-    end
-
-    vim.system({ vswhere, "-all", "-format", "json", "-products", "*" }, { text = true }, function(result)
-        vim.schedule(function()
-            if result.code ~= 0 or not result.stdout then
-                callback({})
-                return
-            end
-
-            local ok, installs = pcall(vim.json.decode, result.stdout)
-            if not ok or type(installs) ~= "table" then
-                callback({})
-                return
-            end
-
-            local kits = {}
-            for _, install in ipairs(installs) do
-                if not install.installationPath or not install.catalog then goto continue end
-
-                local version_line = install.catalog.productLineVersion
-                local product_id = install.productId or ""
-
-                local vs_major = ({
-                    ["2022"] = "17",
-                    ["2019"] = "16",
-                    ["2017"] = "15",
-                })[version_line]
-
-                if not vs_major then goto continue end
-
-                local product_type = product_id:match("%.(%w+)$") or "Unknown"
-                local generator = "Visual Studio " .. vs_major .. " " .. version_line
-                local install_path = install.installationPath:gsub("\\", "/")
-
-                local vcvarsall = install_path .. "/VC/Auxiliary/Build/vcvarsall.bat"
-                local has_vcvarsall = uv.fs_stat(vcvarsall) ~= nil
-
-                kits[#kits + 1] = {
-                    id = "msvc-" .. vs_major .. "-" .. version_line .. "-" .. product_type:lower(),
-                    display = "MSVC " .. vs_major .. " " .. version_line .. " (" .. product_type .. ")",
-                    generator = generator,
-                    compiler_id = "msvc-" .. vs_major,
-                    env = {},
-                    vcvarsall = has_vcvarsall and vcvarsall or nil,
-                    arch = "x64",
-                }
-
-                ::continue::
-            end
-
-            table.sort(kits, function(a, b) return a.id > b.id end)
-            callback(kits)
-        end)
-    end)
+    require("loomworks.msvc").clear_cache()
 end
 
 --- Detect compilers asynchronously.
@@ -366,12 +276,13 @@ function M.detect_async(callback)
         return
     end
 
-    detect_msvc_kits_async(function(msvc)
+    local msvc = require("loomworks.msvc")
+    msvc.detect_async(function(installs)
         detect_compilers_async(function(compilers)
             local kits = {}
 
-            for _, kit in ipairs(msvc) do
-                kits[#kits + 1] = kit
+            for _, inst in ipairs(installs) do
+                kits[#kits + 1] = vs_generator_kit(inst)
             end
 
             local ninja_available = vim.fn.executable("ninja") == 1
@@ -388,18 +299,13 @@ function M.detect_async(callback)
                     }
                 end
 
-                for _, msvc_kit in ipairs(msvc) do
-                    if msvc_kit.vcvarsall then
-                        kits[#kits + 1] = {
-                            id = "ninja-" .. msvc_kit.compiler_id .. "-" .. msvc_kit.id:match("[^-]+$"),
-                            display = "Ninja - " .. msvc_kit.display,
-                            generator = "Ninja",
-                            compiler_id = msvc_kit.compiler_id,
-                            env = {},
-                            vcvarsall = msvc_kit.vcvarsall,
-                            arch = msvc_kit.arch,
-                        }
-                    end
+                for _, inst in ipairs(installs) do
+                    kits[#kits + 1] = ninja_msvc_kit(inst)
+                end
+
+                for _, inst in ipairs(installs) do
+                    local cc = msvc.clang_cl_for(inst)
+                    if cc then kits[#kits + 1] = clang_cl_kit(inst, cc) end
                 end
             end
 

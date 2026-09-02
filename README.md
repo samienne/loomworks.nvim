@@ -22,8 +22,9 @@ current version.
   typescript projects from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
   `CMakeUserPresets.json` with full inheritance
-- **Automatic tool detection** — finds MSVC (via vswhere), GCC, and Clang
-  compilers; generates profile combinations with Ninja/Visual Studio generators
+- **Automatic tool detection** — finds MSVC (via vswhere), GCC, Clang, and
+  clang-cl (Clang's MSVC driver, one per MSVC install) compilers; generates
+  profile combinations with Ninja/Visual Studio generators
 - **Configuration sets** — group build variants across projects (e.g. "Debug"
   maps ProjectA to Debug and ProjectB to development)
 - **Profiles** — fully resolved buildable units combining a configuration set
@@ -227,7 +228,8 @@ Map configuration names across projects:
 ```
 
 When combined with detected cmake tools, profiles are auto-generated:
-`Debug:ninja-gcc-14.2.0`, `Debug:msvc-17-2022-enterprise`, etc.
+`Debug:ninja-gcc-14.2.0`, `Debug:msvc-17-2022-enterprise`,
+`Debug:ninja-clang-cl-17-enterprise`, etc.
 
 Profiles store their toolchain as a **flat array of tool keys** in
 user.json / loomworks.json:

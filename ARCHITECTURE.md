@@ -284,7 +284,8 @@ may import from its own layer or any layer below it, never above.
 | `nice.lua` | Linux nice/ionice cmd wrapper. `wrap_cmd(cmd)` prepends `ionice -c 3 nice -n 10` on Linux when both binaries exist, returns cmd unchanged otherwise. Probe is cached (`_reset_cache()` for tests). Used by `overseer.lua` for build/configure/clean tasks and `loomtest/runner.lua` for test runs | Know about specific commands or modules |
 | `operation.lua` | Operation class: tracks a user-initiated profile action. Watches ConfigUnit state changes to determine completion. Multiple Operations can coexist. Created by `Workspace:create_operation()`, cleaned up on completion via callback | Own state beyond what workspace provides; persist anything |
 | `workspace_view.lua` | View-model layer: orchestration logic for UI. Computes add/remove project context, tool detection caching, upgrade/downgrade previews, config set candidates. Config set create/edit/rename/delete context and execution. Orphan cleanup: stray build dir detection (top-down prune of `.nvim/build/`), orphaned config collection, bulk cleanup execution. Calls Workspace atomic mutations in sequence. No UI rendering — pure compute + execute | Render UI; own state; bypass Workspace methods |
-| `cmake_kits.lua` | CMake tool detection (MSVC via vswhere, Ninja+MSVC combos). GCC/Clang detection delegates to `cpp_compilers.lua`. Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection |
+| `cmake_kits.lua` | CMake tool detection: maps toolchains to CMake kits. GCC/Clang detection delegates to `cpp_compilers.lua`; MSVC + clang-cl discovery delegates to `msvc.lua`. Emits VS-generator MSVC kits, Ninja+MSVC kits, and one Ninja+clang-cl kit per MSVC install (paired vcvars + sibling clangd). Both sync (`detect()`) and async (`detect_async()`) variants. In-memory caching of results | Do I/O beyond process spawning for detection; re-implement MSVC/vswhere discovery (delegate to `msvc.lua`) |
+| `msvc.lua` | Shared MSVC/Visual Studio discovery for all modules (cmake + meson). `detect()` / `detect_async()` enumerate VS installs via vswhere and locate each `vcvarsall.bat`; `vcvars_env(vcvarsall, arch)` snapshots the INCLUDE/LIB/PATH environment vcvarsall establishes; `clang_cl_for(install)` resolves that install's clang-cl (VS-bundled preferred, standalone/PATH fallback) plus a sibling clangd; `normalize_exe` fixes exe-extension casing. Process-lifetime caches; `clear_cache()` forces rescan | Know about any specific module; build kits/tools (that is the consumer's job) |
 | `cpp_compilers.lua` | Single source of truth for C/C++ compiler identification. `detect()` / `detect_async()` probe PATH for gcc/clang/versioned variants; `probe_path(path)` identifies an arbitrary user-supplied executable. Returns `{id, display, family, version, path, c_path, bin_dir, clangd_path}` per compiler so modules can pin `CC`/`CXX` and prepend runtime-DLL directories to `PATH`. Used by `cmake_kits.lua`, `modules/meson.lua`, and `sdks/cpp_compiler.lua`. All compiler-family knowledge (regex patterns, sibling-driver naming, clangd discovery gated on Clang) lives here. Process-lifetime cache; `clear_cache()` forces rescan | Know about any specific module |
 | `sdks/init.lua` | SDK provider registry, lazy loading via rtp discovery. Same strict-equality `api_version` check + one-shot-notify rejection as `modules/init.lua` | Implement provider logic |
 | `sdks/cpp_compiler.lua` | User-declared C/C++ compiler SDK provider. No auto-detection (`detect_all` returns empty); user adds via the SDK section's `▸ Add SDK` action. Calls `cpp_compilers.probe_path` for identification; emits single-compiler cmake caps consumed by `cmake.kits_from_sdk`'s single-compiler branch. Provider-specific key derivation includes a path-derived token so two custom builds of the same family / version at different paths don't collide. See `spec/sdks/cpp_compiler.md` | Contain compiler family knowledge (lives in `cpp_compilers.lua`) |
@@ -369,7 +370,7 @@ plugin/loomworks.lua
           → ws:_start_tracking(paths)                  ← file watcher owned by Workspace
           → ws:_scan_tools_async()
             → tool_state = "scanning", emit "tools_scanning"
-            → detect_tools_async(config, cache)        ← vim.system for vswhere/compilers
+            → detect_tools_async(config, cache)        ← vim.system for MSVC (msvc.lua) / compilers
               → vim.schedule → store results → ws:remerge()
               → tool_state = "scanned", emit "tools_detected"
               → flush _tool_waiters
@@ -1086,6 +1087,7 @@ loomworks.nvim/
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection (MSVC/VS; delegates gcc/clang)
 │   │   ├── cpp_compilers.lua          Shared C/C++ compiler detection + arbitrary-path probe
+│   │   ├── msvc.lua                    Shared MSVC/VS discovery: vswhere installs, vcvars env, clang-cl
 │   │   ├── device_log.lua              Client-side device-log view (parser, filter, ring buffer, bottom-split)
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching

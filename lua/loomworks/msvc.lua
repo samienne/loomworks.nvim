@@ -21,6 +21,11 @@ M._installs = nil
 M._env = {}
 --- @type table|nil|false
 M._clang_cl = nil
+--- @type table<string, table|false>
+M._clang_cl_for = {}
+
+local VSWHERE = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+local VSWHERE_ARGS = { "-all", "-format", "json", "-products", "*" }
 
 --- Run a command synchronously, returning trimmed stdout or nil on failure.
 --- @param cmd string[]
@@ -39,49 +44,94 @@ local function parse_version(output)
     return output:match("(%d+%.%d+%.%d+)") or output:match("(%d+%.%d+)")
 end
 
---- Detect Visual Studio installations via vswhere. Cached for the process.
---- @return { id: string, display: string, vs_major: string, version_line: string, product: string, vcvarsall: string, arch: string, install_path: string }[]
-function M.detect()
-    if M._installs then return M._installs end
+--- Build an install descriptor from one vswhere JSON entry, or nil when it is
+--- not a usable VS install (unknown product line, or no vcvarsall on disk).
+--- @param install table one entry from vswhere's JSON output
+--- @return table|nil
+local function build_install(install)
+    local path = install.installationPath
+    local line = install.catalog and install.catalog.productLineVersion
+    local vs_major = ({ ["2022"] = "17", ["2019"] = "16", ["2017"] = "15" })[line]
+    if not (path and vs_major) then return nil end
+    local product = (install.productId or ""):match("%.(%w+)$") or "Unknown"
+    path = path:gsub("\\", "/")
+    local vcvarsall = path .. "/VC/Auxiliary/Build/vcvarsall.bat"
+    if not uv.fs_stat(vcvarsall) then return nil end
+    return {
+        id = "msvc-" .. vs_major .. "-" .. line .. "-" .. product:lower(),
+        display = "MSVC " .. vs_major .. " " .. line .. " (" .. product .. ")",
+        vs_major = vs_major,
+        version_line = line,
+        product = product,
+        vcvarsall = vcvarsall,
+        arch = "x64",
+        install_path = path,
+    }
+end
+
+--- Parse vswhere JSON stdout into the sorted install list. Shared by the sync
+--- and async detection paths so both return the identical shape/ordering.
+--- @param output string|nil
+--- @return table[]
+local function parse_installs(output)
     local installs = {}
-
-    local vswhere = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
-    if not uv.fs_stat(vswhere) then
-        M._installs = installs
-        return installs
-    end
-
-    local output = run({ vswhere, "-all", "-format", "json", "-products", "*" })
     local ok, data = pcall(vim.json.decode, output or "")
     if ok and type(data) == "table" then
         for _, install in ipairs(data) do
-            local path = install.installationPath
-            local line = install.catalog and install.catalog.productLineVersion
-            local vs_major = ({ ["2022"] = "17", ["2019"] = "16", ["2017"] = "15" })[line]
-            if path and vs_major then
-                local product = (install.productId or ""):match("%.(%w+)$") or "Unknown"
-                path = path:gsub("\\", "/")
-                local vcvarsall = path .. "/VC/Auxiliary/Build/vcvarsall.bat"
-                if uv.fs_stat(vcvarsall) then
-                    installs[#installs + 1] = {
-                        id = "msvc-" .. vs_major .. "-" .. line .. "-" .. product:lower(),
-                        display = "MSVC " .. vs_major .. " " .. line .. " (" .. product .. ")",
-                        vs_major = vs_major,
-                        version_line = line,
-                        product = product,
-                        vcvarsall = vcvarsall,
-                        arch = "x64",
-                        install_path = path,
-                    }
-                end
-            end
+            local built = build_install(install)
+            if built then installs[#installs + 1] = built end
         end
     end
     -- Newest / richest edition first (Enterprise > Professional > BuildTools by
     -- string order is coincidental; the id sort keeps a stable deterministic order).
     table.sort(installs, function(a, b) return a.id > b.id end)
-    M._installs = installs
     return installs
+end
+
+--- Detect Visual Studio installations via vswhere. Cached for the process.
+--- @return { id: string, display: string, vs_major: string, version_line: string, product: string, vcvarsall: string, arch: string, install_path: string }[]
+function M.detect()
+    if M._installs then return M._installs end
+
+    if not uv.fs_stat(VSWHERE) then
+        M._installs = {}
+        return M._installs
+    end
+
+    local cmd = { VSWHERE }
+    vim.list_extend(cmd, VSWHERE_ARGS)
+    M._installs = parse_installs(run(cmd))
+    return M._installs
+end
+
+--- Detect Visual Studio installations without blocking (async vswhere).
+--- Returns the SAME install shape as `M.detect()` and populates the same cache,
+--- so callers can share results. Calls back immediately when already cached.
+--- @param callback fun(installs: table[])
+function M.detect_async(callback)
+    if M._installs then
+        callback(M._installs)
+        return
+    end
+
+    if not uv.fs_stat(VSWHERE) then
+        M._installs = {}
+        callback(M._installs)
+        return
+    end
+
+    local cmd = { VSWHERE }
+    vim.list_extend(cmd, VSWHERE_ARGS)
+    vim.system(cmd, { text = true }, function(res)
+        vim.schedule(function()
+            if res.code ~= 0 then
+                M._installs = {}
+            else
+                M._installs = parse_installs(res.stdout)
+            end
+            callback(M._installs)
+        end)
+    end)
 end
 
 --- Snapshot the environment vcvarsall establishes. Cached per (vcvarsall, arch).
@@ -145,6 +195,17 @@ function M.normalize_exe(path)
     return (path:gsub("\\", "/"):gsub("%.[eE][xX][eE]$", ".exe"))
 end
 
+--- Find a sibling clangd next to a clang-cl driver, if present.
+--- @param path string clang-cl executable path
+--- @return string|nil normalized clangd.exe path, or nil
+local function sibling_clangd(path)
+    local dir = path:match("^(.+)[/\\][^/\\]+$")
+    if not dir then return nil end
+    local candidate = dir .. "/clangd.exe"
+    if uv.fs_stat(candidate) then return M.normalize_exe(candidate) end
+    return nil
+end
+
 --- Locate clang-cl (clang's MSVC driver), if installed. Cached.
 --- @return { path: string, version: string }|nil
 function M.clang_cl()
@@ -162,11 +223,55 @@ function M.clang_cl()
     return M._clang_cl
 end
 
+--- Locate the clang-cl paired to a specific MSVC install. clang-cl is Clang's
+--- MSVC-compatible driver: it has no STL / Windows SDK / linker of its own and
+--- reuses the paired install's via vcvarsall, so there is exactly one clang-cl
+--- per install. Prefers the VS-bundled clang-cl (the "C++ Clang tools for
+--- Windows" component), falling back to a standalone / PATH clang-cl.
+--- Cached per install_path.
+--- @param install table one entry returned by `M.detect()`
+--- @return { path: string, version: string, clangd_path: string|nil }|nil
+function M.clang_cl_for(install)
+    if not (install and install.install_path) then return nil end
+    local key = install.install_path
+    if M._clang_cl_for[key] ~= nil then
+        return M._clang_cl_for[key] or nil
+    end
+
+    local path, clangd_path
+
+    -- 1. VS-bundled clang-cl, already paired to this install's STL + SDK.
+    local bundled = install.install_path .. "/VC/Tools/Llvm/x64/bin/clang-cl.exe"
+    if uv.fs_stat(bundled) then
+        path = M.normalize_exe(bundled)
+        clangd_path = sibling_clangd(bundled)
+    else
+        -- 2. Standalone / PATH clang-cl. It still borrows this install's SDK +
+        --    libs through vcvarsall when the tool is used.
+        local standalone = M.clang_cl()
+        if standalone then
+            path = standalone.path
+            clangd_path = sibling_clangd(standalone.path)
+        end
+    end
+
+    if not path then
+        M._clang_cl_for[key] = false
+        return nil
+    end
+
+    local version = parse_version(run({ path, "--version" })) or "0"
+    local result = { path = path, version = version, clangd_path = clangd_path }
+    M._clang_cl_for[key] = result
+    return result
+end
+
 --- Clear cached detection + env snapshots (called from the module rescan flow).
 function M.clear_cache()
     M._installs = nil
     M._env = {}
     M._clang_cl = nil
+    M._clang_cl_for = {}
 end
 
 return M

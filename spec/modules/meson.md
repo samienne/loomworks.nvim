@@ -41,6 +41,21 @@ Tools are keyed per compiler. Each tool pins CC/CXX and prepends the
 compiler's `bin` directory to `PATH` so subprocess invocations resolve
 the right toolchain.
 
+On Windows, MSVC (`cl.exe`) and clang-cl tools are discovered from the
+shared **`loomworks.msvc` module** — the single source of truth for VS
+installs + clang-cl across all modules. One `cl.exe` tool and one
+clang-cl tool are emitted **per detected MSVC install** (previously a
+single clang-cl tool pinned to the newest install). clang-cl reuses the
+paired install's STL / Windows SDK / linker via `vcvarsall`, so each
+clang-cl tool carries that install's `vcvarsall`/`arch`; its driver is
+the VS-bundled clang-cl when present, otherwise a standalone / PATH
+clang-cl. The tool's `compiler_id` is per-install
+(`clang-cl-<version>-<major>-<product>`) so installs that fall back to
+the *same* standalone driver remain distinct tools — `tools_match`
+disambiguates on `vcvarsall` for the same reason. Any sibling
+`clangd.exe` next to the clang-cl driver is carried as `clangd_path` and
+forwarded to clangd (§ LSP integration).
+
 ## 6. Target discovery (`parse_targets`)
 
 Uses `meson introspect --targets` + `meson introspect --target-sources`
