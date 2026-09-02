@@ -504,26 +504,6 @@ describe("meson module", function()
             assert.is_false(spawned)
         end)
     end)
-
-    describe("inspect", function()
-        it("flags meson.build modified since last configure", function()
-            local tmp = make_tmp_dir()
-            write_file(tmp .. "/meson.build", "project('x', 'cpp')")
-            -- Backdate last_configured to 2020
-            local cached = { Debug = { last_configured = "2020-01-01T00:00:00Z" } }
-            local r = meson.inspect(tmp, {}, cached)
-            assert.is_true(r.needs_refresh)
-            assert.is_true(#r.reasons > 0)
-        end)
-
-        it("does not flag when cache is ahead of files", function()
-            local tmp = make_tmp_dir()
-            write_file(tmp .. "/meson.build", "project('x', 'cpp')")
-            local cached = { Debug = { last_configured = "2099-01-01T00:00:00Z" } }
-            local r = meson.inspect(tmp, {}, cached)
-            assert.is_false(r.needs_refresh)
-        end)
-    end)
 end)
 
 describe("meson clang-cl (per MSVC install)", function()

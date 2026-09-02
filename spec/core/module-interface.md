@@ -105,6 +105,19 @@ cached config data for this project.
 - `notes[]` for informational observations
 - Return `{ needs_refresh = false }` when no meaningful change detected
 
+**Do not duplicate the build system's own change detection.** A module whose
+generator re-runs configure automatically when its input files change — cmake
+and meson under Ninja/Make regenerate on `CMakeLists.txt` / `meson.build`
+edits — MUST NOT report file-mtime staleness from `inspect`. The generator
+already handles it at build time, and stat-ing a top-level file is both
+redundant and less accurate than the generator's own dependency tracking (it
+misses subdirectory and `include()`d files, so it false-negatives on those
+while false-positiving on the top-level one). Reserve `needs_refresh` for
+meaningful changes the build system cannot detect on its own — e.g. a resolved
+SDK/toolchain path that changed out from under a cached configure. Option-level
+staleness (a configuration's `options`/`module_config` changed) is detected
+separately by `ConfigUnit:is_stale()` and is not `inspect`'s responsibility.
+
 **`detect_tools(callback)`**
 
 Detect available tools for this module type asynchronously. Calls

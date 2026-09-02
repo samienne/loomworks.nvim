@@ -1027,40 +1027,4 @@ function M.lsp_configs(project)
     }
 end
 
--- ---------------------------------------------------------------------------
--- Staleness detection
--- ---------------------------------------------------------------------------
-
---- Check if project files have changed since last configure.
---- @param path string absolute project path
---- @param config table type_config
---- @param cached table<string, table> cached configurations
---- @return { needs_refresh: boolean, reasons: string[], notes: string[] }
-function M.inspect(path, config, cached)
-    local reasons = {}
-    local check_files = {
-        { file = "meson.build", label = "meson.build" },
-        { file = "meson.options", label = "meson.options" },
-        { file = "meson_options.txt", label = "meson_options.txt" },
-    }
-
-    for _, cached_config in pairs(cached) do
-        if cached_config.last_configured then
-            local configured_time = cached_config.last_configured
-            for _, cf in ipairs(check_files) do
-                local stat = uv.fs_stat(path .. "/" .. cf.file)
-                if stat then
-                    local t = os.date("!%Y-%m-%dT%H:%M:%SZ", stat.mtime.sec)
-                    if t > configured_time then
-                        reasons[#reasons + 1] = cf.label .. " modified since last configure"
-                    end
-                end
-            end
-            if #reasons > 0 then break end
-        end
-    end
-
-    return { needs_refresh = #reasons > 0, reasons = reasons, notes = {} }
-end
-
 return M

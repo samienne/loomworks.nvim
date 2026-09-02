@@ -357,3 +357,21 @@ directory.
 Module language is `"c++"`. Default adapter is `codelldb`. See
 [`spec/integrations/debug/codelldb.md`](../integrations/debug/codelldb.md)
 for the adapter specifics.
+
+## 11. Staleness (`inspect`)
+
+Not implemented as file-mtime staleness. cmake under any generator (Ninja,
+Make, Visual Studio) installs a regeneration rule: the generator re-runs
+`cmake` automatically at build time whenever any file it read changes — the
+top-level `CMakeLists.txt`, subdirectory `CMakeLists.txt`, `include()`d
+`.cmake` files, and `CMakePresets.json`. loomworks therefore does not stat
+those files or emit a "modified since last configure" refresh: it would be
+redundant with the generator and, because it can only cheaply stat the
+top-level file, strictly less accurate.
+
+The sole loomworks-driven reconfigure triggers are the `unconfigured` /
+`configure_failed` states and option-level staleness via
+`ConfigUnit:is_stale()` (the configuration's `options` / `module_config`
+changed since the cached configure). A plain build does not re-pass changed
+`-D` cache variables, so that reconfigure is genuinely needed and is not
+something the generator detects on its own.
