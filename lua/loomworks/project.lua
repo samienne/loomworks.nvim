@@ -384,6 +384,30 @@ function Project:save_configuration(config_name, config_data)
         return false, "invalid configuration name: " .. verr
     end
 
+    -- The profile's tool owns the compiler — a configuration may not select
+    -- one through its own options/env (spec §15). Reject reserved keys here
+    -- so they never reach the working copy; the strip-at-build path is only a
+    -- defence for hand-edited files. The CMAKE_<LANG>_COMPILER option rule is
+    -- cmake-only in practice (other modules carry no cmake cache vars) but the
+    -- check is generic; the env driver-var rule is shared across modules.
+    local reserved = require("loomworks.reserved_compiler")
+    if type(config_data.options) == "table" then
+        for k in pairs(config_data.options) do
+            if reserved.is_reserved_option(k) then
+                return false, k .. " cannot be set here — the compiler is "
+                    .. "chosen by the profile's tool. Select a tool instead."
+            end
+        end
+    end
+    if type(config_data.env) == "table" then
+        for k in pairs(config_data.env) do
+            if reserved.is_reserved_env(k) then
+                return false, k .. " cannot be set here — the compiler is "
+                    .. "chosen by the profile's tool. Select a tool instead."
+            end
+        end
+    end
+
     -- Build the data table for Configuration._update (user override format).
     -- Generic fields get their empty-aware handling; every other key is a
     -- module-specific field (cmake: variant/toolchain/generator; other

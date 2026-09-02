@@ -1,6 +1,27 @@
 local M = {}
 
 local io_mod = require("loomworks.io")
+local reserved_compiler = require("loomworks.reserved_compiler")
+
+--- Filter reserved compiler-driver vars out of a task env. The profile's
+--- tool owns the compiler (spec §15 / cmake.md §5b); a hand-edited config/env
+--- carrying CC/CXX/… is dropped so the tool's compiler always wins. Returns a
+--- fresh env table plus the sorted list of stripped names (for a diagnostic).
+--- @param env table<string, string>|nil
+--- @return table<string, string> filtered, string[] stripped
+local function strip_reserved_env(env)
+    local filtered = {}
+    local stripped = {}
+    for k, v in pairs(env or {}) do
+        if reserved_compiler.is_reserved_env(k) then
+            stripped[#stripped + 1] = k
+        else
+            filtered[k] = v
+        end
+    end
+    table.sort(stripped)
+    return filtered, stripped
+end
 
 M.id = "cmake"
 M.api_version = 1
@@ -644,7 +665,7 @@ function M.tasks(project, active_config)
     local config_info = project.configurations and project.configurations[active_config] or nil
     local from_preset = config_info and config_info.from_preset or false
     local kit = project.tool_data
-    local env = project.env or {}
+    local env, stripped_env = strip_reserved_env(project.env)
 
     -- Resolve generator from kit or config override
     local generator = (config_info and config_info.generator)
@@ -765,6 +786,10 @@ function M.tasks(project, active_config)
     -- built-in variables (workspace_root, project_path) + environment variables.
     -- Always resolve — options may come from inherited base configs even if
     -- the active config and project-wide level have no direct options.
+    -- Reserved CMAKE_<LANG>_COMPILER options are skipped so the tool's
+    -- compiler (managed -DCMAKE_C/CXX_COMPILER above, never touched here)
+    -- always wins; skipped keys feed the config's inline diagnostic.
+    local stripped_opts = {}
     local type_config = project.type_config or {}
     do
         local resolved_opts = M.resolve_options(
@@ -776,11 +801,16 @@ function M.tasks(project, active_config)
             }
             local expand = require("loomworks.expand")
             for k, v in pairs(resolved_opts) do
-                local expanded = expand.expand_string(v, opt_ctx)
-                configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. expanded
+                if reserved_compiler.is_reserved_option(k) then
+                    stripped_opts[#stripped_opts + 1] = k
+                else
+                    local expanded = expand.expand_string(v, opt_ctx)
+                    configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. expanded
+                end
             end
         end
     end
+    table.sort(stripped_opts)
 
     -- Closure to wrap commands with vcvarsall for this project's kit+generator.
     -- `tag` labels the generated .bat (configure/build) so the two builders
@@ -820,6 +850,11 @@ function M.tasks(project, active_config)
             configuration_key = configuration_key,
             build_dir = build_dir,
             tool_data = cached_tool_data,
+            -- Reserved compiler keys dropped from this build (hand-edited
+            -- file). Present only when non-empty; surfaces as an inline
+            -- diagnostic. The tool's compiler is used regardless.
+            stripped_compiler_keys = (#stripped_opts > 0 or #stripped_env > 0)
+                and { options = stripped_opts, env = stripped_env } or nil,
             module_info = {
                 multi_config = multi_config,
                 generator = generator,
@@ -897,7 +932,7 @@ function M.clean_tasks(project, active_config)
     local abs_path = project.workspace_root .. "/" .. project.path
     local config_info = project.configurations and project.configurations[active_config] or nil
     local kit = project.tool_data
-    local env = project.env or {}
+    local env = strip_reserved_env(project.env)
 
     local generator = (config_info and config_info.generator)
             or (kit and kit.generator)
@@ -953,7 +988,7 @@ function M.build_target_task(project, target_id)
     local active_config = project.configuration
     local config_info = project.configurations and project.configurations[active_config] or nil
     local kit = project.tool_data
-    local env = project.env or {}
+    local env = strip_reserved_env(project.env)
 
     local generator = (config_info and config_info.generator)
             or (kit and kit.generator)
