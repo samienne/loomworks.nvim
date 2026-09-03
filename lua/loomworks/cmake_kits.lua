@@ -286,31 +286,45 @@ function M.detect_async(callback)
             end
 
             local ninja_available = vim.fn.executable("ninja") == 1
-            if ninja_available then
-                for _, comp in ipairs(compilers) do
-                    kits[#kits + 1] = {
-                        id = "ninja-" .. comp.id,
-                        display = "Ninja - " .. comp.display,
-                        generator = "Ninja",
-                        compiler_id = comp.id,
-                        compiler_path = comp.path,
-                        clangd_path = comp.clangd_path,
-                        env = {},
-                    }
-                end
-
-                for _, inst in ipairs(installs) do
-                    kits[#kits + 1] = ninja_msvc_kit(inst)
-                end
-
-                for _, inst in ipairs(installs) do
-                    local cc = msvc.clang_cl_for(inst)
-                    if cc then kits[#kits + 1] = clang_cl_kit(inst, cc) end
-                end
+            if not ninja_available then
+                M._cached = kits
+                callback(kits)
+                return
             end
 
-            M._cached = kits
-            callback(kits)
+            for _, comp in ipairs(compilers) do
+                kits[#kits + 1] = {
+                    id = "ninja-" .. comp.id,
+                    display = "Ninja - " .. comp.display,
+                    generator = "Ninja",
+                    compiler_id = comp.id,
+                    compiler_path = comp.path,
+                    clangd_path = comp.clangd_path,
+                    env = {},
+                }
+            end
+
+            for _, inst in ipairs(installs) do
+                kits[#kits + 1] = ninja_msvc_kit(inst)
+            end
+
+            -- clang-cl kits — one per install, probed async (the last sync
+            -- `:wait()` on this path) so the whole scan stays off the main loop.
+            local idx = 0
+            local function next_install()
+                idx = idx + 1
+                if idx > #installs then
+                    M._cached = kits
+                    callback(kits)
+                    return
+                end
+                local inst = installs[idx]
+                msvc.clang_cl_for_async(inst, function(cc)
+                    if cc then kits[#kits + 1] = clang_cl_kit(inst, cc) end
+                    next_install()
+                end)
+            end
+            next_install()
         end)
     end)
 end

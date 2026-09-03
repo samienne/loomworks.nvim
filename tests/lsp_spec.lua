@@ -422,4 +422,88 @@ describe("lsp", function()
             assert.is_false(ok)
         end)
     end)
+
+    describe("lsp_configs memoization", function()
+        local events = require("loomworks.events")
+
+        local function build_core()
+            return setup_core({
+                root = "/memows",
+                projects = { MyLib = {} },
+                config_sets = { debug = { MyLib = "Debug" } },
+                user = { active_profile = "debug" },
+                cache = {
+                    profiles = {
+                        debug = {
+                            configuration_set = "debug",
+                            projects = { MyLib = { config_key = "Debug" } },
+                        },
+                    },
+                    projects = {
+                        MyLib = {
+                            type = "cmake",
+                            configurations = {
+                                Debug = {
+                                    state = "built",
+                                    build_dir = "/memows/.nvim/build/MyLib/Debug",
+                                },
+                            },
+                        },
+                    },
+                },
+            })
+        end
+
+        it("hits the cache for an unchanged project and recomputes on change", function()
+            local core = build_core()
+            local lw = require("loomworks")
+            local orig_gw, orig_gp = lw.get_workspace, lw.get_projects
+            lw.get_workspace = function() return core:get_workspace() end
+            lw.get_projects = function() return core:get_projects() end
+
+            local project
+            for _, p in pairs(core:get_projects()) do
+                if p.key == "MyLib" then project = p end
+            end
+            assert.is_not_nil(project)
+
+            -- Spy on the module's lsp_configs so we can count real recomputes.
+            local impl = project._module.impl
+            local calls = 0
+            local orig = impl.lsp_configs
+            impl.lsp_configs = function(p)
+                calls = calls + 1
+                return orig(p)
+            end
+
+            -- First resolve computes; the second (as the second integration on
+            -- a tick would) is a pure cache hit — NO recompute.
+            lsp.entry_for_project(project, "clangd")
+            lsp.entry_for_project(project, "clangd")
+            assert.equals(1, calls)
+
+            -- An lsp-options (type_config) change flips the content key.
+            project.type_config = { clangd = "/opt/clangd" }
+            lsp.entry_for_project(project, "clangd")
+            assert.equals(2, calls)
+            lsp.entry_for_project(project, "clangd")
+            assert.equals(2, calls)  -- stable again
+
+            -- A build_dir change (the resolved compile_commands dir moving)
+            -- must recompute for this project.
+            project.cached = project.cached or {}
+            project.cached.build_dir = "/memows/.nvim/build/MyLib/Other"
+            lsp.entry_for_project(project, "clangd")
+            assert.equals(3, calls)
+
+            -- workspace_changed blows the whole memo → next resolve recomputes.
+            events.emit("workspace_changed")
+            lsp.entry_for_project(project, "clangd")
+            assert.equals(4, calls)
+
+            impl.lsp_configs = orig
+            lw.get_workspace = orig_gw
+            lw.get_projects = orig_gp
+        end)
+    end)
 end)

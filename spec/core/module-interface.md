@@ -129,8 +129,11 @@ Non-keyed modules may call the callback immediately with a single
 entry containing empty `tool_data`.
 
 Modules that spawn subprocesses (e.g., compiler detection) must use
-non-blocking APIs (libuv spawn or jobstart) and chain results
-sequentially to avoid flooding the OS with processes.
+non-blocking APIs (libuv spawn or jobstart) and must bound the number
+of concurrent subprocesses to avoid flooding the OS. Gating spawns on a
+cheap synchronous existence check (e.g. `exepath`) before probing,
+and/or chaining results sequentially, both satisfy this; a concurrent
+fan-out over an already-filtered candidate set is permitted.
 
 ### 8.2 Tool identity methods
 
