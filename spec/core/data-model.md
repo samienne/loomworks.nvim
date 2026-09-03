@@ -148,7 +148,8 @@ the workspace config extend defaults (add options) rather than replace them.
 
 Projects can declare user-defined variables with typed defaults. These
 variables are expanded alongside built-in variables in launch configs
-(command, args, env, working_dir) and deploy destinations.
+(command, args, env, working_dir), deploy destinations, and module
+configure options (e.g. cmake `-D` cache-variable values).
 
 **Declaration** in the workspace config (project level):
 
@@ -183,10 +184,43 @@ configuration inheritance chain.
 }
 ```
 
-**Resolution order** (first match wins, most specific first):
-1. This configuration's override
-2. Parent configuration overrides (inheritance order, depth-first left-to-right)
-3. Project default
+**Compiler-specific overrides**: A configuration may additionally carry an
+`overrides` block, keyed by compiler family (`clang`, `gcc`, `msvc`), whose
+entries override variable values only when the active tool's compiler belongs
+to that family. `overrides` participates in the configuration inheritance
+chain exactly like `variables`, and every name it sets MUST be declared in the
+project `variables` — a declaration may carry an empty `default`, so a variable
+can exist purely to receive compiler-specific values.
+
+```json
+"cmake": {
+    "configurations": {
+        "Debug": {
+            "variables": { "warn_flags": "-Werror" },
+            "overrides": {
+                "clang": { "warn_flags": "-Werror -Wno-unused-command-line-argument" }
+            }
+        }
+    }
+}
+```
+
+The compiler family is that of the resolved tool at configure time; a family
+with no matching `overrides` entry at a given level falls through to that
+level's compiler-agnostic `variables` value.
+
+**Resolution order**: walk the configuration inheritance chain most-specific →
+least; the first level that provides a value wins, and the project `default`
+is the final fallback. *Within* a single level the value for a name is:
+1. `overrides[active_family][name]`, when the active compiler matches a family
+   that sets `name` at this level (compiler-match is the intra-level
+   tiebreaker); otherwise
+2. `variables[name]` (compiler-agnostic) at this level.
+
+Chain position dominates compiler-specificity: a nearer configuration's plain
+`variables` value shadows a farther configuration's `overrides` entry, so a
+configuration that must keep a compiler-specific value re-declares it in its
+own `overrides`.
 
 **Value expansion**: Variable values can reference built-in variables
 (`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
@@ -197,6 +231,14 @@ are deferred to a future version (with loop detection).
 **Reserved names**: User variables cannot use built-in variable names
 (`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`).
 The system rejects declarations with reserved names at parse time.
+
+**Override validation**: An `overrides` block is rejected at edit time if a
+name is not declared in the project `variables` (mirroring the configuration
+`variables` override rule), and its keys must be known compiler families
+(`clang`, `gcc`, `msvc`) — an unknown family key surfaces as a workspace
+diagnostic rather than being silently ignored. An option or launch value that
+references an undeclared variable is likewise a diagnostic, never a silent
+empty expansion.
 
 **Provenance tracking**: Each resolved variable value tracks its source —
 which specific configuration provided the value, or whether it comes from

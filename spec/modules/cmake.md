@@ -212,6 +212,26 @@ Toolchain files (`CMAKE_TOOLCHAIN_FILE`, whether kit- or user-supplied)
 are out of scope — they select a whole toolchain, not a bare compiler
 driver, and are handled by the toolchain path (§1a / §6), not §5b.
 
+## 5c. Variable expansion in options
+
+Option values are expanded before they reach the configure command:
+built-in variables, environment variables, and user-declared project
+variables (core §1.3.1) — including the configuration's compiler-specific
+`overrides`, resolved against the active tool's compiler family. This is how
+a compiler-conditional flag reaches the build without editing project files,
+e.g. `"CMAKE_CXX_FLAGS": "${warn_flags}"` with `warn_flags` overridden for
+`clang`. loomworks never parses the flag string — the variable value is an
+opaque passthrough. A reference to an undeclared variable is a diagnostic,
+not a silent empty string (core §1.3.1). Flag options remain allowed under
+§5b; only compiler *selection* is reserved, and variable expansion never
+introduces a reserved key.
+
+Because the expanded value is what lands on the `-D` line, a change to a
+variable `default` or a compiler `override` alters the resolved configure
+command and so participates in `ConfigUnit:is_stale()` (§11) — the staleness
+fingerprint is taken over the *resolved* option values, not the raw `${…}`
+templates.
+
 ## 6. Inheritance model
 
 Custom configurations inherit from one or more bases. Variant
@@ -385,3 +405,9 @@ The sole loomworks-driven reconfigure triggers are the `unconfigured` /
 changed since the cached configure). A plain build does not re-pass changed
 `-D` cache variables, so that reconfigure is genuinely needed and is not
 something the generator detects on its own.
+
+Option values that reference project variables are fingerprinted **after**
+expansion (§5c, core §1.3.1), so a change to a variable or a compiler-specific
+override is caught here even though the raw `${…}` option template is
+unchanged. A change of active compiler family is already covered by the build
+directory being keyed on the tool, so it configures separately.
