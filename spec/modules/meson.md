@@ -75,6 +75,20 @@ to enumerate project-owned targets and their source files.
 
 Uses `meson introspect --buildoptions` to surface user-facing options.
 
+### 7c. Variable expansion in options
+
+`-D` option values are expanded before they reach the `meson setup`
+command: built-in variables, environment variables, and user-declared
+project variables (core §1.3.1) — including the configuration's
+compiler-specific `overrides`, resolved against the active tool's compiler
+family. This mirrors the cmake module (see [`cmake.md` §5c](cmake.md)); the
+variable value is an opaque passthrough (meson never parses the flag string).
+A reference to an undeclared variable is a diagnostic, not a silent empty
+string. Because the expanded value is what lands on the `-D` line, a change to
+a variable `default` or a compiler `override` alters the resolved setup
+command and so participates in `ConfigUnit:is_stale()` (§11), whose fingerprint
+is taken over the *resolved* option values.
+
 ## 7a. Launch runtime path (`runtime_path`)
 
 Returns the pinned compiler's `bin` directory (from the kit's

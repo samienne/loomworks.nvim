@@ -430,10 +430,41 @@ Declare typed variables with defaults, override per configuration:
 }
 ```
 
-Types: `string`, `path`. Variables are usable in launch configs and deploy
-destinations as `${output_dir}`. Configuration overrides follow the
-inheritance chain. Editable from the status page (Projects and Configuration
-editors).
+Types: `string`, `path`. Variables are usable in launch configs, deploy
+destinations, and module configure options (cmake/meson `-D` values) as
+`${output_dir}`. Configuration overrides follow the inheritance chain.
+Editable from the status page (Projects and Configuration editors).
+
+**Compiler-specific overrides.** A configuration may add an `overrides` block
+keyed by compiler family (`clang`, `gcc`, `msvc`) that overrides variable
+values only when the active tool's compiler belongs to that family — clang-cl
+counts as `clang`. Every overridden name must be declared in the project
+`variables` (an empty `default` is allowed, so a variable can exist purely to
+receive compiler-specific values). This lets a compiler-conditional flag reach
+the build without editing project files:
+
+```json
+"cmake": {
+  "configurations": {
+    "Debug": {
+      "options": { "CMAKE_CXX_FLAGS": "${warn_flags}" },
+      "variables": { "warn_flags": "-Werror" },
+      "overrides": {
+        "clang": { "warn_flags": "-Werror -Wno-unused-command-line-argument" }
+      }
+    }
+  }
+},
+"variables": { "warn_flags": { "type": "string", "default": "" } }
+```
+
+Resolution walks the inheritance chain most-specific first; within a level a
+matching `overrides[family]` wins over the plain `variables` value, but a
+nearer plain value shadows a farther override. Because the *resolved* option
+value is fingerprinted, editing a variable default or a compiler override
+that changes a `-D` value makes the configuration stale (auto-reconfigure on
+next build). The resolved values are also available headlessly via
+`lw profile query <profile> <project> variables` (or `variables.<name>`).
 
 ## Concepts
 

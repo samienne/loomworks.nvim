@@ -124,6 +124,14 @@
 --- @field is_user? boolean whether this was a user-defined configuration
 --- @field inherits? string|string[] base configuration names
 
+--- Compiler-family variable overrides as they appear in a serialized
+--- configuration entry (loomworks.json / user.json `configurations.<name>.overrides`):
+--- compiler family (`clang` | `gcc` | `msvc`) → { variable name → value }.
+--- Applied during variable resolution only when the active tool's compiler
+--- family matches (core §1.3.1). The domain-object field is
+--- `Configuration._overrides` (see configuration.lua).
+--- @alias loomworks.CompilerOverrides table<string, table<string, string>>
+
 --- Cmake's per-configuration cached module_info shape (documented as example; core treats as opaque).
 --- @class loomworks.CmakeCachedModuleInfo
 --- @field generator? string cmake -G value used

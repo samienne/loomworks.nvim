@@ -49,6 +49,9 @@ end
 --- @field is_user boolean from loomworks.json user override
 --- @field from_preset boolean from CMakePresets.json
 --- @field variables table<string, string>|nil variable overrides (name → value)
+--- @field _overrides table<string, table<string, string>>|nil compiler-family
+---        variable overrides (family → { name → value }); applied only when the
+---        active tool's compiler family matches (core §1.3.1)
 --- @field _derived table|nil module fields inherited from a base rather than
 ---        declared here; kept at runtime but skipped by serialization
 --- @field languages string[]|nil explicit list of languages this
@@ -197,6 +200,15 @@ function Configuration:_update(data)
     -- Variable overrides (generic, not module-specific)
     self.variables = data.variables or nil
 
+    -- Compiler-family variable overrides (family → { name → value }). Applied
+    -- during variable resolution only when the active tool's compiler family
+    -- matches (core §1.3.1). Kept as an opaque nested table.
+    if type(data.overrides) == "table" and next(data.overrides) then
+        self._overrides = data.overrides
+    else
+        self._overrides = nil
+    end
+
     -- Languages this configuration requires. Explicit nil keeps the
     -- "no override" state — resolution falls through to module default.
     -- Sanitize defensively: only accept arrays of strings.
@@ -225,7 +237,7 @@ function Configuration:_update(data)
     local generic = {
         is_default = true, is_user = true, from_preset = true,
         role = true, inherits = true, options = true, variables = true,
-        languages = true,
+        overrides = true, languages = true,
         prefix = true, base_name = true, _derived = true,
     }
     for k, v in pairs(data) do
@@ -491,6 +503,7 @@ function Configuration:serialize_user_override()
     end
     if self.options and next(self.options) then entry.options = self.options end
     if self.variables and next(self.variables) then entry.variables = self.variables end
+    if self._overrides and next(self._overrides) then entry.overrides = self._overrides end
     if self.languages and #self.languages > 0 then entry.languages = self.languages end
     if self.role then entry.role = self.role end
     -- Only emit if there's something beyond the bare default

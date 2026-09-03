@@ -614,6 +614,18 @@ local function build_option_args(project, active_config)
         project_path = project.path or project.name,
     }
 
+    -- Fold user-declared project variables into the expansion context
+    -- (core §1.3.1). Values are resolved upstream with the active compiler
+    -- family's overrides already applied (overseer's resolve_project_variables),
+    -- so a compiler-conditional flag such as `${warn_flags}` reaches the
+    -- `-D…` args without editing project files. Two-pass: a variable value may
+    -- reference a built-in variable, expanded against the built-ins above.
+    if project.resolved_variables then
+        for name, entry in pairs(project.resolved_variables) do
+            opt_ctx[name] = expand_str(tostring(entry.value), opt_ctx)
+        end
+    end
+
     -- Project-wide first, then the inheritance chain bases-first
     -- left-to-right, then the config's own — later values win. Without the
     -- chain a mixin that exists purely to carry options contributes nothing,

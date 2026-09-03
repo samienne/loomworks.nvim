@@ -800,6 +800,18 @@ function M.tasks(project, active_config)
                 project_path = project.path or project.name,
             }
             local expand = require("loomworks.expand")
+            -- Fold user-declared project variables into the expansion context
+            -- (spec §5c / core §1.3.1). Values are resolved upstream with the
+            -- active compiler family already applied (overseer's
+            -- resolve_project_variables), so a compiler-conditional flag such
+            -- as `${warn_flags}` lands on the `-D` line without editing
+            -- project files. Two-pass: a variable value may itself reference a
+            -- built-in variable, expanded against the built-ins above.
+            if project.resolved_variables then
+                for name, entry in pairs(project.resolved_variables) do
+                    opt_ctx[name] = expand.expand_string(entry.value, opt_ctx)
+                end
+            end
             for k, v in pairs(resolved_opts) do
                 if reserved_compiler.is_reserved_option(k) then
                     stripped_opts[#stripped_opts + 1] = k

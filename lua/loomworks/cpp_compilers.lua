@@ -409,6 +409,58 @@ function M.probe_path(path)
     }
 end
 
+--- The compiler families user-declared `overrides` blocks may key on.
+--- clang-cl is Clang's MSVC-compatible driver and resolves to `clang`.
+M.KNOWN_FAMILIES = { clang = true, gcc = true, msvc = true }
+
+--- Normalize a raw compiler-family label to one of the known families
+--- (`clang`, `gcc`, `msvc`). `clang-cl` folds to `clang` — it is a Clang
+--- driver, so a configuration's `overrides.clang` must apply under it.
+--- Returns nil for anything unrecognized.
+--- @param family string|nil
+--- @return "clang"|"gcc"|"msvc"|nil
+function M.normalize_family(family)
+    if type(family) ~= "string" then return nil end
+    local f = family:lower()
+    if f == "clang-cl" then return "clang" end
+    if M.KNOWN_FAMILIES[f] then return f end
+    return nil
+end
+
+--- Derive the compiler family of a resolved tool from its opaque `tool_data`.
+--- Prefers an explicit `compiler_family` field (meson sets one; normalized so
+--- `clang-cl` → `clang`), then falls back to `compiler_id` / `compiler_path`
+--- pattern matching (cmake kits carry no family field). Returns nil when the
+--- family cannot be determined — a nil family means no compiler-specific
+--- `overrides` apply, so resolution falls through to the plain `variables`.
+--- @param tool_data table|nil
+--- @return "clang"|"gcc"|"msvc"|nil
+function M.family_from_tool_data(tool_data)
+    if type(tool_data) ~= "table" then return nil end
+
+    local explicit = M.normalize_family(tool_data.compiler_family)
+    if explicit then return explicit end
+
+    local id = tool_data.compiler_id
+    if type(id) == "string" then
+        local low = id:lower()
+        if low:match("^clang") then return "clang" end -- clang- and clang-cl-
+        if low:match("^gcc") or low:match("^g%+%+") then return "gcc" end
+        if low:match("^msvc") or low:match("^cl%-") then return "msvc" end
+    end
+
+    local path = tool_data.compiler_path
+    if type(path) == "string" then
+        local low = path:lower()
+        if low:match("clang%-cl") or low:match("clang") then return "clang" end
+        if low:match("g%+%+") or low:match("gcc") then return "gcc" end
+        if low:match("cl%.exe$") or low:match("vcvarsall") then return "msvc" end
+    end
+
+    if tool_data.vcvarsall then return "msvc" end
+    return nil
+end
+
 --- Clear the detection cache. Called by modules' `invalidate_tools`.
 function M.clear_cache()
     M._cached = nil

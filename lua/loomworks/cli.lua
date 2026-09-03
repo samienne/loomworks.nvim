@@ -2987,7 +2987,7 @@ function M.cmd_profile_query(root, args)
   local profile_name, project_key, field = args[3], args[4], args[5]
   if not (profile_name and project_key and field) then
     die("usage: lw profile query <profile> <project> <field>\n" ..
-      "  fields: build-dir | config | state | tool")
+      "  fields: build-dir | config | state | tool | variables | variables.<name>")
   end
   local ws = load_workspace(root, false)
   local profile = resolve_profile(ws, profile_name)
@@ -3001,6 +3001,20 @@ function M.cmd_profile_query(root, args)
     table.sort(projects)
     die("project '" .. project_key .. "' is not mapped in profile '" .. profile.key ..
       "'. Projects: " .. (next(projects) and table.concat(projects, ", ") or "(none)"))
+  end
+
+  -- Resolve the project's user-declared variables for this profile, with the
+  -- active tool's compiler-family overrides applied (core §1.3.1). Shared by
+  -- the `variables` (all) and `variables.<name>` (single) fields.
+  local function resolved_variables()
+    local project = pp._project
+    if not project or not project.variables or not next(project.variables) then
+      return {}
+    end
+    local tool = pp:tool_object()
+    local family = require("loomworks.cpp_compilers")
+      .family_from_tool_data(tool and tool.data or nil)
+    return require("loomworks.variables").resolve(project, pp:configuration(), family)
   end
 
   local value
@@ -3018,8 +3032,31 @@ function M.cmd_profile_query(root, args)
   elseif field == "tool" then
     local t = pp:tool_object()
     value = t and t.key or ""
+  elseif field == "variables" then
+    -- Deterministic, machine-parseable: sorted `name=value` lines.
+    local resolved = resolved_variables()
+    local names = {}
+    for name in pairs(resolved) do names[#names + 1] = name end
+    table.sort(names)
+    local lines = {}
+    for _, name in ipairs(names) do
+      lines[#lines + 1] = name .. "=" .. (resolved[name].value or "")
+    end
+    out(table.concat(lines, "\n"))
+    return 0
   else
-    die("unknown field '" .. field .. "' — use build-dir | config | state | tool")
+    local var_name = field:match("^variables%.(.+)$")
+    if var_name then
+      local resolved = resolved_variables()
+      local entry = resolved[var_name]
+      if not entry then
+        die("project '" .. project_key .. "' declares no variable '" .. var_name .. "'")
+      end
+      value = entry.value or ""
+    else
+      die("unknown field '" .. field
+        .. "' — use build-dir | config | state | tool | variables | variables.<name>")
+    end
   end
   out(value or "")
   return 0
@@ -5113,7 +5150,7 @@ Read-only — safe any time (no writes to user.json / loomworks.json):
   lw workspace                    print the workspace name
   lw project list | show <name>   lw profiles       lw tools [--cached]
   lw configuration list|show|get  lw configuration-set list|show
-  lw profile query <profile> <project> <field>   (build-dir | config | state | tool)
+  lw profile query <profile> <project> <field>   (build-dir | config | state | tool | variables[.<name>])
   lw build <profile> [-- args]    builds; read-only toward config (writes only
                                   the build dir + cache)
   lw version

@@ -425,6 +425,32 @@ function M.open(opts)
                     })
                 end
             end
+
+            -- Compiler-specific overrides — READ-ONLY in this cut (core
+            -- §1.3.1). Show each family's entries and mark the one active
+            -- under the current profile's compiler.
+            local compiler_overrides = opts.config_compiler_overrides or {}
+            local active_family = opts.active_compiler_family
+            if next(compiler_overrides) then
+                t:blank()
+                t:leaf("Compiler overrides (read-only):", "Comment")
+                local families = {}
+                for fam in pairs(compiler_overrides) do families[#families + 1] = fam end
+                table.sort(families)
+                for _, fam in ipairs(families) do
+                    local active_tag = (fam == active_family) and "  ← active" or ""
+                    local fam_hl = (fam == active_family)
+                        and "LoomworksActionable" or "Comment"
+                    t:leaf("  [" .. fam .. "]" .. active_tag, fam_hl)
+                    local entries = compiler_overrides[fam]
+                    local names = {}
+                    for n in pairs(entries) do names[#names + 1] = n end
+                    table.sort(names)
+                    for _, n in ipairs(names) do
+                        t:leaf("    " .. n .. " = " .. tostring(entries[n]), "Comment")
+                    end
+                end
+            end
         end
 
         t:blank()

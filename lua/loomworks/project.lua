@@ -408,6 +408,20 @@ function Project:save_configuration(config_name, config_data)
         end
     end
 
+    -- Compiler-family variable `overrides` (core §1.3.1): every overridden
+    -- name must be declared in the project `variables`. Reject an undeclared
+    -- name at edit time (mirrors the reserved-key rule) so the bad block never
+    -- reaches the working copy. Unknown family keys are permitted here and
+    -- surface as a workspace diagnostic instead.
+    if type(config_data.overrides) == "table" and next(config_data.overrides) then
+        local vars_mod = require("loomworks.variables")
+        local ok_ov, ov_err = vars_mod.validate_compiler_overrides(
+            config_data.overrides, self.variables or {})
+        if not ok_ov then
+            return false, ov_err
+        end
+    end
+
     -- Build the data table for Configuration._update (user override format).
     -- Generic fields get their empty-aware handling; every other key is a
     -- module-specific field (cmake: variant/toolchain/generator; other
@@ -421,14 +435,17 @@ function Project:save_configuration(config_name, config_data)
     if config_data.variables and next(config_data.variables) then
         clean.variables = config_data.variables
     end
+    if config_data.overrides and next(config_data.overrides) then
+        clean.overrides = config_data.overrides
+    end
     -- Languages: non-nil array = explicit override, nil = inherit
     -- from module. We pass through whatever the caller produced.
     if config_data.languages ~= nil then clean.languages = config_data.languages end
     if config_data.role ~= nil then clean.role = config_data.role end
     local generic_keys = {
         is_user = true, is_default = true, from_preset = true, role = true,
-        inherits = true, options = true, variables = true, languages = true,
-        prefix = true, base_name = true,
+        inherits = true, options = true, variables = true, overrides = true,
+        languages = true, prefix = true, base_name = true,
     }
     for k, v in pairs(config_data) do
         if not generic_keys[k] then clean[k] = v end
@@ -446,6 +463,7 @@ function Project:save_configuration(config_name, config_data)
             role = existing.role,
             options = existing.options,
             variables = existing.variables,
+            overrides = existing._overrides,
             inherits_names = existing.inherits_names,
             module_config = vim.deepcopy(existing.module_config),
         }
