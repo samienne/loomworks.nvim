@@ -173,14 +173,124 @@ end
 -- Shared helpers for integrations (server-agnostic)
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- lsp_configs() memoization (profile-switch hot path)
+-- ---------------------------------------------------------------------------
+--
+-- On `active_set_changed`, every registered integration's
+-- `on_active_set_changed` iterates every project and calls `entry_for_project`
+-- → `entries_for` → `module.lsp_configs`. With N projects and K integrations
+-- that recomputes `lsp_configs` N×K times per switch — and `lsp_configs` walks
+-- the active profile, config units and tools each time. A no-op switch pays
+-- the full cost for nothing; clangd and qmlls each pay it for the same project
+-- on the same tick.
+--
+-- We memoize `entries_for` on a CONTENT key that captures everything that
+-- determines the output: workspace + project identity, the active profile's
+-- resolved config unit (build_dir, config_key, build state), the active tool
+-- identity, the project's lsp-affecting `type_config`, and a generation counter
+-- bumped when workspace-level lsp options change. A cache HIT returns the prior
+-- entries WITHOUT calling `module.lsp_configs` again — so the second
+-- integration on a tick is free, and a no-op switch is free. The key changes
+-- the moment any determinant does, so a REAL switch recomputes exactly the
+-- projects that actually moved.
+--
+-- Correctness note: the early return-on-hit is structured so that, were
+-- `lsp_configs` to later carry an idempotent, mtime-guarded side effect (e.g.
+-- generating compile_commands.json — as it does on another branch), a hit skips
+-- the whole function, side effect included. Build state is part of the key, so
+-- a configure/build that would change what the side effect emits also changes
+-- the key and forces a recompute.
+
+--- @type table<string, { key: string, entries: table[] }> project.key → memo
+local _configs_memo = {}
+--- Bumped on `lsp_options_changed` so every content key changes.
+local _configs_generation = 0
+
+--- Compute the content key for a project's `lsp_configs` output. Returns nil
+--- when the project has no workspace (uncacheable — recompute every time).
+--- Every component is an identity/value read; none touch the filesystem.
+--- @param project loomworks.Project
+--- @return string|nil
+local function configs_memo_key(project)
+    local ws = project._workspace
+    if not ws then return nil end
+
+    local parts = {
+        "g", tostring(_configs_generation),
+        "w", ws.root or "",
+        "p", project.key or "",
+    }
+
+    local active = ws.get_active_profile and ws:get_active_profile() or nil
+    parts[#parts + 1] = "prof"
+    parts[#parts + 1] = active and active.key or ""
+    if active and active.project then
+        local pp = active:project(project.key)
+        if pp then
+            parts[#parts + 1] = "bd"
+            parts[#parts + 1] = pp:build_dir() or ""
+            parts[#parts + 1] = "ck"
+            parts[#parts + 1] = pp:config_key() or ""
+            parts[#parts + 1] = "st"
+            parts[#parts + 1] = pp:status() or ""
+            local tool = pp.tool_object and pp:tool_object() or nil
+            parts[#parts + 1] = "tk"
+            parts[#parts + 1] = tool and (tool.key or tostring(tool)) or ""
+        end
+    end
+
+    -- Fallback determinants used by module.lsp_configs when there is no active
+    -- profile (legacy active-config summary + the project's own tool_data
+    -- clangd path). Cheap value reads; keep them in the key so the no-active
+    -- path invalidates correctly too.
+    parts[#parts + 1] = "cbd"
+    parts[#parts + 1] = (project.cached and project.cached.build_dir) or ""
+    parts[#parts + 1] = "tdc"
+    parts[#parts + 1] = (project.tool_data and project.tool_data.clangd_path) or ""
+
+    -- Per-project lsp overrides (clangd/qmlls binaries, qml_import_paths,
+    -- compile_commands_from, *_required). vim.inspect sorts keys, so the
+    -- serialization is stable across calls.
+    parts[#parts + 1] = "tc"
+    parts[#parts + 1] = project.type_config and vim.inspect(project.type_config) or ""
+
+    return table.concat(parts, "\30")
+end
+
+--- Drop the whole memo (workspace swap — old projects are gone).
+local function clear_configs_memo()
+    _configs_memo = {}
+end
+
+--- Invalidate every key by advancing the generation. Cheaper than clearing and
+--- lets each project recompute lazily on its next `entries_for`.
+local function bump_configs_generation()
+    _configs_generation = _configs_generation + 1
+end
+
 --- Return all lsp_configs() entries emitted by a project's module.
+--- Content-memoized: a cache hit skips `module.lsp_configs` entirely.
 --- @param project loomworks.Project
 --- @return table[]
 local function entries_for(project)
     local mod = project._module and project._module.impl or nil
     if not mod or not mod.lsp_configs then return {} end
+
+    local key = configs_memo_key(project)
+    if key then
+        local cached = _configs_memo[project.key]
+        if cached and cached.key == key then
+            return cached.entries
+        end
+    end
+
     local ok, entries = pcall(mod.lsp_configs, project)
     if not ok or type(entries) ~= "table" then return {} end
+
+    if key then
+        _configs_memo[project.key] = { key = key, entries = entries }
+    end
     return entries
 end
 
@@ -701,6 +811,10 @@ local function wire_listeners()
         end
     end)
     lw.on("workspace_changed", function()
+        -- Blow the lsp_configs memo first — the old workspace's projects (and
+        -- any project.key reuse) must not survive into the new one. Runs before
+        -- the integration callbacks below, which are deferred via vim.schedule.
+        clear_configs_memo()
         for _, int in pairs(_integrations) do
             if int.on_workspace_changed then
                 vim.schedule(int.on_workspace_changed)
@@ -708,6 +822,8 @@ local function wire_listeners()
         end
     end)
     lw.on("lsp_options_changed", function(payload)
+        -- lsp options can feed lsp_configs output; invalidate every memo key.
+        bump_configs_generation()
         for _, int in pairs(_integrations) do
             if int.on_lsp_options_changed then
                 vim.schedule(function() int.on_lsp_options_changed(payload) end)

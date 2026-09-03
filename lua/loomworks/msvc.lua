@@ -223,6 +223,34 @@ function M.clang_cl()
     return M._clang_cl
 end
 
+--- Async sibling of `M.clang_cl`. The `exepath` gate is a fast sync lookup;
+--- only the `clang-cl --version` probe is run off the main loop via
+--- `vim.system`. Shares and populates the same `M._clang_cl` cache, so a later
+--- sync `clang_cl()` is a cache hit (and vice-versa). Calls back immediately
+--- when already cached.
+--- @param callback fun(info: { path: string, version: string }|nil)
+function M.clang_cl_async(callback)
+    if M._clang_cl ~= nil then
+        callback(M._clang_cl or nil)
+        return
+    end
+    local path = vim.fn.exepath("clang-cl")
+    if not path or path == "" then
+        M._clang_cl = false
+        callback(nil)
+        return
+    end
+    path = M.normalize_exe(path)
+    vim.system({ path, "--version" }, { text = true }, function(res)
+        vim.schedule(function()
+            local out = res.code == 0 and res.stdout or nil
+            local version = parse_version(out) or "0"
+            M._clang_cl = { path = path, version = version }
+            callback(M._clang_cl)
+        end)
+    end)
+end
+
 --- Locate the clang-cl paired to a specific MSVC install. clang-cl is Clang's
 --- MSVC-compatible driver: it has no STL / Windows SDK / linker of its own and
 --- reuses the paired install's via vcvarsall, so there is exactly one clang-cl
@@ -264,6 +292,56 @@ function M.clang_cl_for(install)
     local result = { path = path, version = version, clangd_path = clangd_path }
     M._clang_cl_for[key] = result
     return result
+end
+
+--- Async sibling of `M.clang_cl_for`. Same resolution (VS-bundled clang-cl
+--- preferred, standalone/PATH fallback) and the same per-install cache, with
+--- the `--version` probe run off the main loop via `vim.system`. The bundled
+--- probe uses a fast sync `fs_stat`; the standalone branch defers to
+--- `clang_cl_async`. Calls back immediately when already cached.
+--- @param install table one entry returned by `M.detect()`
+--- @param callback fun(info: { path: string, version: string, clangd_path: string|nil }|nil)
+function M.clang_cl_for_async(install, callback)
+    if not (install and install.install_path) then
+        callback(nil)
+        return
+    end
+    local key = install.install_path
+    if M._clang_cl_for[key] ~= nil then
+        callback(M._clang_cl_for[key] or nil)
+        return
+    end
+
+    -- Complete the descriptor with an async `--version` probe of `path`.
+    local function finish(path, clangd_path)
+        vim.system({ path, "--version" }, { text = true }, function(res)
+            vim.schedule(function()
+                local out = res.code == 0 and res.stdout or nil
+                local version = parse_version(out) or "0"
+                local result = { path = path, version = version, clangd_path = clangd_path }
+                M._clang_cl_for[key] = result
+                callback(result)
+            end)
+        end)
+    end
+
+    -- 1. VS-bundled clang-cl, already paired to this install's STL + SDK.
+    local bundled = install.install_path .. "/VC/Tools/Llvm/x64/bin/clang-cl.exe"
+    if uv.fs_stat(bundled) then
+        finish(M.normalize_exe(bundled), sibling_clangd(bundled))
+        return
+    end
+
+    -- 2. Standalone / PATH clang-cl (borrows this install's SDK + libs via
+    --    vcvarsall when the tool is used).
+    M.clang_cl_async(function(standalone)
+        if not standalone then
+            M._clang_cl_for[key] = false
+            callback(nil)
+            return
+        end
+        finish(standalone.path, sibling_clangd(standalone.path))
+    end)
 end
 
 --- Clear cached detection + env snapshots (called from the module rescan flow).

@@ -261,6 +261,108 @@ local function find_meson()
     return nil
 end
 
+--- Async sibling of `find_meson`. The `exepath` gate is a fast sync lookup;
+--- only the Python `-c` probe (the fallback channel) is run off the main loop
+--- via `vim.system`, tried against each interpreter in order. Yields the same
+--- `{ meson_path }` shape as `find_meson`, or nil.
+--- @param callback fun(meson: string[]|nil)
+local function find_meson_async(callback)
+    local p = vim.fn.exepath("meson")
+    if p ~= "" then
+        callback({ p })
+        return
+    end
+
+    local pys = { "python", "python3", "py" }
+    local idx = 0
+    local function try_next()
+        idx = idx + 1
+        if idx > #pys then
+            callback(nil)
+            return
+        end
+        local pp = vim.fn.exepath(pys[idx])
+        if pp == "" then
+            try_next()
+            return
+        end
+        vim.system({ pp, "-c", PY_FIND_MESON }, { text = true }, function(res)
+            local out = (res.code == 0 and res.stdout) and vim.trim(res.stdout) or ""
+            if out ~= "" and uv.fs_stat(out) then
+                callback({ out })
+            else
+                -- Next interpreter — hop back onto the main loop for vim.fn.
+                vim.schedule(try_next)
+            end
+        end)
+    end
+
+    try_next()
+end
+
+--- Build the tool_data entry for a GNU-driver (gcc/clang) compiler.
+--- @param meson string[]
+--- @param c loomworks.CompilerToolchain
+--- @return { tool_data: table }
+local function gnu_tool(meson, c)
+    return {
+        tool_data = {
+            meson = meson,
+            compiler_id = c.id,
+            compiler_display = c.display,
+            compiler_path = c.path,
+            compiler_c_path = c.c_path,
+            compiler_bin_dir = c.bin_dir,
+            compiler_family = c.family,
+            compiler_version = c.version,
+            clangd_path = c.clangd_path,
+        },
+    }
+end
+
+--- Build the tool_data entry for an MSVC (cl.exe) install.
+--- @param meson string[]
+--- @param inst table one entry from `loomworks.msvc` detect()
+--- @return { tool_data: table }
+local function cl_tool(meson, inst)
+    return {
+        tool_data = {
+            meson = meson,
+            compiler_id = inst.id,
+            compiler_display = inst.display,
+            compiler_path = inst.vcvarsall, -- identity for tools_match
+            compiler_family = "msvc",
+            vcvarsall = inst.vcvarsall,
+            arch = inst.arch,
+            -- cc/cxx default to "cl" (resolved on the vcvars PATH)
+        },
+    }
+end
+
+--- Build the tool_data entry for a clang-cl paired to an MSVC install.
+--- @param meson string[]
+--- @param inst table
+--- @param clang_cl { path: string, version: string, clangd_path: string|nil }
+--- @return { tool_data: table }
+local function clang_cl_tool(meson, inst, clang_cl)
+    return {
+        tool_data = {
+            meson = meson,
+            compiler_id = "clang-cl-" .. clang_cl.version
+                .. "-" .. inst.vs_major .. "-" .. inst.product:lower(),
+            compiler_display = "clang-cl " .. clang_cl.version
+                .. " (" .. inst.display .. ")",
+            compiler_path = clang_cl.path,
+            compiler_family = "clang-cl",
+            cc = clang_cl.path,
+            cxx = clang_cl.path,
+            clangd_path = clang_cl.clangd_path,
+            vcvarsall = inst.vcvarsall,
+            arch = inst.arch,
+        },
+    }
+end
+
 --- Detect available tools (sync). Meson itself is a script — the
 --- variable that actually matters for reproducible builds is the
 --- compiler. Returns one entry per detected C/C++ compiler so the
@@ -279,19 +381,7 @@ function M.detect_tools()
 
     -- GNU-driver compilers (gcc / clang) from PATH.
     for _, c in ipairs(require("loomworks.cpp_compilers").detect()) do
-        tools[#tools + 1] = {
-            tool_data = {
-                meson = meson,
-                compiler_id = c.id,
-                compiler_display = c.display,
-                compiler_path = c.path,
-                compiler_c_path = c.c_path,
-                compiler_bin_dir = c.bin_dir,
-                compiler_family = c.family,
-                compiler_version = c.version,
-                clangd_path = c.clangd_path,
-            },
-        }
+        tools[#tools + 1] = gnu_tool(meson, c)
     end
 
     -- MSVC (cl.exe) and clang-cl on Windows. These take MSVC-style flags
@@ -304,18 +394,7 @@ function M.detect_tools()
         if ok then
             local installs = msvc.detect()
             for _, inst in ipairs(installs) do
-                tools[#tools + 1] = {
-                    tool_data = {
-                        meson = meson,
-                        compiler_id = inst.id,
-                        compiler_display = inst.display,
-                        compiler_path = inst.vcvarsall, -- identity for tools_match
-                        compiler_family = "msvc",
-                        vcvarsall = inst.vcvarsall,
-                        arch = inst.arch,
-                        -- cc/cxx default to "cl" (resolved on the vcvars PATH)
-                    },
-                }
+                tools[#tools + 1] = cl_tool(meson, inst)
             end
             -- clang-cl needs an MSVC install for the SDK/libs, so there's one
             -- clang-cl tool per install (VS-bundled clang-cl preferred,
@@ -326,22 +405,7 @@ function M.detect_tools()
             for _, inst in ipairs(installs) do
                 local clang_cl = msvc.clang_cl_for(inst)
                 if clang_cl then
-                    tools[#tools + 1] = {
-                        tool_data = {
-                            meson = meson,
-                            compiler_id = "clang-cl-" .. clang_cl.version
-                                .. "-" .. inst.vs_major .. "-" .. inst.product:lower(),
-                            compiler_display = "clang-cl " .. clang_cl.version
-                                .. " (" .. inst.display .. ")",
-                            compiler_path = clang_cl.path,
-                            compiler_family = "clang-cl",
-                            cc = clang_cl.path,
-                            cxx = clang_cl.path,
-                            clangd_path = clang_cl.clangd_path,
-                            vcvarsall = inst.vcvarsall,
-                            arch = inst.arch,
-                        },
-                    }
+                    tools[#tools + 1] = clang_cl_tool(meson, inst, clang_cl)
                 end
             end
         end
@@ -350,10 +414,65 @@ function M.detect_tools()
     return tools
 end
 
---- Detect available tools (async variant for consistency with interface).
+--- Detect available tools without blocking the UI. Composes the async
+--- detection variants — `find_meson_async`, `cpp_compilers.detect_async`,
+--- `msvc.detect_async`, `msvc.clang_cl_for_async` — in the SAME order as the
+--- sync `detect_tools`, so the resulting array is identical in shape and
+--- ordering (GNU compilers, then per-install cl.exe, then per-install
+--- clang-cl). This is the offender that made init's tool scan block; every
+--- shell-out now happens off the main loop.
 --- @param callback fun(tools: { tool_data: table }[])
 function M.detect_tools_async(callback)
-    callback(M.detect_tools())
+    find_meson_async(function(meson)
+        if not meson then
+            callback({})
+            return
+        end
+
+        local tools = {}
+
+        require("loomworks.cpp_compilers").detect_async(function(compilers)
+            for _, c in ipairs(compilers) do
+                tools[#tools + 1] = gnu_tool(meson, c)
+            end
+
+            if vim.fn.has("win32") ~= 1 then
+                callback(tools)
+                return
+            end
+
+            local ok, msvc = pcall(require, "loomworks.msvc")
+            if not ok then
+                callback(tools)
+                return
+            end
+
+            msvc.detect_async(function(installs)
+                for _, inst in ipairs(installs) do
+                    tools[#tools + 1] = cl_tool(meson, inst)
+                end
+
+                -- One clang-cl tool per install, probed sequentially so the
+                -- append order matches the sync path.
+                local idx = 0
+                local function next_install()
+                    idx = idx + 1
+                    if idx > #installs then
+                        callback(tools)
+                        return
+                    end
+                    local inst = installs[idx]
+                    msvc.clang_cl_for_async(inst, function(clang_cl)
+                        if clang_cl then
+                            tools[#tools + 1] = clang_cl_tool(meson, inst, clang_cl)
+                        end
+                        next_install()
+                    end)
+                end
+                next_install()
+            end)
+        end)
+    end)
 end
 
 --- Clear the shared compiler detection cache so the next

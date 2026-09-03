@@ -96,6 +96,21 @@ local function probe(name)
     return path, parse_version(out), out
 end
 
+--- Path-only PATH lookup for a candidate name — the sync `exepath` gate
+--- without the `--version` shell-out. Used for the C/C++ counterpart probes,
+--- where only the resolved path is consumed (the version output is discarded).
+--- Returns the same path `probe` would for the same name, so routing the
+--- counterpart lookups through this instead of `probe` is behaviour-preserving
+--- while sparing an extra blocking shell call.
+--- @param name string
+--- @return string|nil
+local function lookup_path(name)
+    if vim.fn.executable(name) ~= 1 then return nil end
+    local path = vim.fn.exepath(name)
+    if path == "" then return nil end
+    return path
+end
+
 --- Find a clangd binary alongside a compiler driver.
 --- @param driver_path string
 --- @return string|nil
@@ -122,14 +137,15 @@ end
 --- Derive the sibling C driver path for a C++ driver (e.g. g++ → gcc).
 --- @param name string candidate name that matched (e.g. "g++-13")
 --- @param path string path that matched
+--- @param lookup fun(name: string): string|nil path resolver (sync or async-safe)
 --- @return string path to the C driver (falls back to the C++ path)
-local function c_counterpart(name, path)
+local function c_counterpart(name, path, lookup)
     if not name:match("%+%+") then return path end
     -- Order matters: substitute `clang%+%+` BEFORE `g%+%+`. "clang++" contains
     -- the substring "g++", so a g++→gcc pass first corrupts it to "clangcc"
-    -- (probe fails → wrong fallback to the C++ driver, i.e. CC=clang++).
+    -- (lookup fails → wrong fallback to the C++ driver, i.e. CC=clang++).
     local c_name = name:gsub("clang%+%+", "clang"):gsub("g%+%+", "gcc")
-    local p = probe(c_name)
+    local p = lookup(c_name)
     return p or path
 end
 
@@ -152,18 +168,26 @@ local function candidate_names()
     return names
 end
 
---- Detect all compilers available via PATH (sync). Caches the result
---- for this nvim process.
+--- Assemble the final compiler list from primary `--version` probe results.
+---
+--- This is the single source of truth for dedup/family/counterpart/sort logic;
+--- both `M.detect()` (sync) and `M.detect_async()` (async) feed it their probe
+--- results, so the two paths return byte-for-byte identical arrays. Iterates
+--- `names` in order so first-seen dedup on `id`/`path` is deterministic.
+--- @param names string[] candidate names in scan order
+--- @param primary table<string, { path: string, version: string|nil, ver_output: string|nil }>
+---        probe result per name that resolved on PATH (absent name = not found)
+--- @param lookup fun(name: string): string|nil path resolver for C/C++ counterparts
 --- @return loomworks.CompilerToolchain[]
-function M.detect()
-    if M._cached then return M._cached end
-
+local function assemble(names, primary, lookup)
     local compilers = {}
     local seen_id = {}
     local seen_path = {}
 
-    for _, name in ipairs(candidate_names()) do
-        local path, version, ver_output = probe(name)
+    for _, name in ipairs(names) do
+        local pr = primary[name]
+        if not pr then goto continue end
+        local path, version, ver_output = pr.path, pr.version, pr.ver_output
         if not path or not version then goto continue end
         if seen_path[path] then goto continue end
 
@@ -190,10 +214,10 @@ function M.detect()
             else
                 cpp_name = name:gsub("^clang", "clang++")
             end
-            local cp = probe(cpp_name)
+            local cp = lookup(cpp_name)
             if cp then cpp_path = cp end
         end
-        local c_path = c_counterpart(name, cpp_path)
+        local c_path = c_counterpart(name, cpp_path, lookup)
 
         compilers[#compilers + 1] = {
             id = id,
@@ -214,15 +238,89 @@ function M.detect()
         return a.version > b.version
     end)
 
+    return compilers
+end
+
+--- Detect all compilers available via PATH (sync). Caches the result
+--- for this nvim process.
+--- @return loomworks.CompilerToolchain[]
+function M.detect()
+    if M._cached then return M._cached end
+
+    local names = candidate_names()
+    local primary = {}
+    for _, name in ipairs(names) do
+        local path, version, ver_output = probe(name)
+        if path then
+            primary[name] = { path = path, version = version, ver_output = ver_output }
+        end
+    end
+
+    local compilers = assemble(names, primary, lookup_path)
     M._cached = compilers
     return compilers
 end
 
---- Async variant. Uses the sync path since `vim.fn.system` for
---- `--version` is fast and the scan runs at most once per nvim process.
+--- Detect all compilers available via PATH without blocking the UI.
+---
+--- The `exepath` gate (which names exist on PATH) is a cheap synchronous
+--- filesystem lookup, so it stays inline; only the slow part — each candidate's
+--- `--version` shell-out — is fanned out concurrently via `vim.system`. Results
+--- are aggregated with a completion counter and fed to the SAME `assemble`
+--- routine the sync path uses, so the async result is byte-for-byte identical
+--- (same fields, dedup, and sort order). Populates the shared `M._cached`, and
+--- short-circuits to it when already populated (by either path).
 --- @param callback fun(compilers: loomworks.CompilerToolchain[])
 function M.detect_async(callback)
-    vim.schedule(function() callback(M.detect()) end)
+    if M._cached then
+        callback(M._cached)
+        return
+    end
+
+    local names = candidate_names()
+
+    -- Sync exepath gate (fast, no shell): keep candidate_names() order so the
+    -- async dedup resolves identically to the sync scan.
+    local primary = {}
+    local to_probe = {}
+    for _, name in ipairs(names) do
+        local path = lookup_path(name)
+        if path then
+            primary[name] = { path = path }
+            to_probe[#to_probe + 1] = name
+        end
+    end
+
+    local function finish()
+        local compilers = assemble(names, primary, lookup_path)
+        M._cached = compilers
+        callback(compilers)
+    end
+
+    if #to_probe == 0 then
+        vim.schedule(finish)
+        return
+    end
+
+    -- Fan out every `--version` probe concurrently; aggregate with a counter.
+    local remaining = #to_probe
+    for _, name in ipairs(to_probe) do
+        local path = primary[name].path
+        vim.system({ path, "--version" }, { text = true }, function(res)
+            -- Mirror the sync `run` helper: nil on non-zero exit, else trimmed
+            -- stdout (empty string stays empty, matching vim.fn.system + trim).
+            local out = (res.code == 0 and res.stdout)
+                and vim.trim(res.stdout) or nil
+            primary[name].version = parse_version(out)
+            primary[name].ver_output = out
+            remaining = remaining - 1
+            if remaining == 0 then
+                -- assemble() calls vim.fn (counterpart lookups, sibling clangd),
+                -- so defer onto the main loop out of the libuv callback context.
+                vim.schedule(finish)
+            end
+        end)
+    end
 end
 
 --- Look up a compiler by id.
