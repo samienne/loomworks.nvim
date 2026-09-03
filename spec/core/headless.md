@@ -114,6 +114,19 @@ writes follow the same working-copy model as the editor (§2.4): they land in
 the working copy (§2.2), and the published snapshot (§2.1) changes only on an
 explicit publish. A read-only / CI invocation runs no management operation.
 
+Configuration editing addresses a configuration's fields by a **dotted param
+grammar** (`get`/`set`/`unset`): a bare field (`inherits`, `languages`, a
+module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`), and —
+for a compiler-family variable override (§1.3.1) — the three-segment
+`overrides.<family>.<name>` where `family ∈ {clang, gcc, msvc}` (clang-cl
+counts as clang). `set` writes the value; an empty value or `unset` clears it,
+pruning an emptied family and an emptied override block. A malformed shape
+(`overrides` alone, or `overrides.<family>` without a name) and an unknown
+family are rejected at parse time; naming a variable not declared in the
+project's `variables` is rejected by the same validation the editor applies
+(§1.3.1). `get` returns the resolved string for the full path, or the
+sub-dict for `overrides` / `overrides.<family>`.
+
 ### 16.10 Toolchains outside the search paths
 
 *(Reserved. Section numbers §16.11+ are referenced throughout, so this number

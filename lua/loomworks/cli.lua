@@ -1735,7 +1735,16 @@ local function print_dict(indent, d)
   for k in pairs(d or {}) do keys[#keys + 1] = k end
   if #keys == 0 then out(indent .. "(none)"); return end
   table.sort(keys)
-  for _, k in ipairs(keys) do out(string.format("%s%s = %s", indent, k, tostring(d[k]))) end
+  for _, k in ipairs(keys) do
+    local v = d[k]
+    if type(v) == "table" then
+      -- Nested dict (e.g. overrides: family → { name → value }).
+      out(string.format("%s%s:", indent, k))
+      print_dict(indent .. "  ", v)
+    else
+      out(string.format("%s%s = %s", indent, k, tostring(v)))
+    end
+  end
 end
 
 --- Split a comma-separated list, trimming whitespace; drops empty entries.
@@ -2002,17 +2011,50 @@ local function config_to_data(cfg)
   end
   if cfg.options and next(cfg.options) then data.options = vim.deepcopy(cfg.options) end
   if cfg.variables and next(cfg.variables) then data.variables = vim.deepcopy(cfg.variables) end
+  -- Compiler-family variable overrides (family → { name → value }). Live field
+  -- is `_overrides` (see configuration.lua); save_configuration validates it.
+  if cfg._overrides and next(cfg._overrides) then data.overrides = vim.deepcopy(cfg._overrides) end
   if cfg.languages and #cfg.languages > 0 then data.languages = vim.deepcopy(cfg.languages) end
   if cfg.role then data.role = cfg.role end
   return data
 end
 
 --- Apply one `param`/`value` to a config data table (value nil clears). Param
---- namespaces: options.<KEY>, variables.<NAME>, inherits, languages (CSV), and
---- any other bare name → module field.
+--- namespaces: options.<KEY>, variables.<NAME>,
+--- overrides.<family>.<name> (compiler-family variable override, family ∈
+--- clang|gcc|msvc), inherits, languages (CSV), and any other bare name →
+--- module field.
 local function apply_param(data, param, value)
   if param == "options" or param == "variables" then
     die("specify a key: " .. param .. ".<KEY>")
+  end
+  -- Compiler-family variable override: overrides.<family>.<name> (three
+  -- segments, mirroring the nested shape). A nil/empty value CLEARS it and
+  -- empty family tables / an empty `overrides` are pruned. Malformed shapes
+  -- (bare `overrides`, or `overrides.<family>` with no name) are rejected here
+  -- so the error names the expected form; declared-name validation is left to
+  -- save_configuration.
+  if param == "overrides" then
+    die("specify a family and name: overrides.<family>.<name> "
+      .. "(family ∈ clang|gcc|msvc)")
+  end
+  local ov_family, ov_name = param:match("^overrides%.([^.]+)%.(.+)$")
+  if not ov_family and param:match("^overrides%.") then
+    die("malformed override param '" .. param .. "' — expected "
+      .. "overrides.<family>.<name> (family ∈ clang|gcc|msvc)")
+  end
+  if ov_family then
+    if ov_family ~= "clang" and ov_family ~= "gcc" and ov_family ~= "msvc" then
+      die("unknown compiler family '" .. ov_family
+        .. "' — expected clang, gcc, or msvc")
+    end
+    data.overrides = data.overrides or {}
+    data.overrides[ov_family] = data.overrides[ov_family] or {}
+    -- A nil (unset) or empty value clears the entry.
+    data.overrides[ov_family][ov_name] = (value ~= nil and value ~= "") and value or nil
+    if not next(data.overrides[ov_family]) then data.overrides[ov_family] = nil end
+    if not next(data.overrides) then data.overrides = nil end
+    return
   end
   local dictname, key = param:match("^(options)%.(.+)$")
   if not dictname then dictname, key = param:match("^(variables)%.(.+)$") end
@@ -2044,13 +2086,29 @@ local function get_param(cfg, param)
     return (cfg.languages and #cfg.languages > 0) and table.concat(cfg.languages, ",") or nil
   elseif param == "options" or param == "variables" then
     return cfg[param]
+  elseif param == "overrides" then
+    return cfg._overrides
   end
   local key = param:match("^options%.(.+)$")
   if key then return cfg.options and cfg.options[key] end
   key = param:match("^variables%.(.+)$")
   if key then return cfg.variables and cfg.variables[key] end
+  -- overrides.<family>.<name> → the string; overrides.<family> → that dict.
+  local ov_family, ov_name = param:match("^overrides%.([^.]+)%.(.+)$")
+  if ov_family then
+    return cfg._overrides and cfg._overrides[ov_family]
+        and cfg._overrides[ov_family][ov_name]
+  end
+  ov_family = param:match("^overrides%.([^.]+)$")
+  if ov_family then return cfg._overrides and cfg._overrides[ov_family] end
   return cfg.module_config and cfg.module_config[param]
 end
+
+-- Exported for tests: the pure param-grammar seams behind
+-- `lw configuration get/set/unset`.
+M._config_to_data = config_to_data
+M._apply_param = apply_param
+M._get_param = get_param
 
 --- `lw configuration list [project]` — configs for one project, or all.
 function M.cmd_configuration_list(root, proj_name)
@@ -2206,6 +2264,9 @@ function M.cmd_configuration_show(root, proj_name, cfg_name)
   if next(extra) then out("  module fields:"); print_dict("    ", extra) end
   if cfg.options and next(cfg.options) then out("  options:"); print_dict("    ", cfg.options) end
   if cfg.variables and next(cfg.variables) then out("  variables:"); print_dict("    ", cfg.variables) end
+  if cfg._overrides and next(cfg._overrides) then
+    out("  overrides (compiler-family):"); print_dict("    ", cfg._overrides)
+  end
   local ok, reasons = cfg:is_valid()
   if not ok then out("  invalid: " .. table.concat(reasons, "; ")) end
   local rows = config_set_rows(ws, proj)
@@ -2218,7 +2279,9 @@ end
 --- `lw configuration get <project> <name> <param>`
 function M.cmd_configuration_get(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
-    die("usage: lw configuration get <project> <name> <param>")
+    die("usage: lw configuration get <project> <name> <param>\n" ..
+      "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
+      "         | overrides[.<family>[.<NAME>]] | <module field>")
   end
   local ws = load_workspace(root, false)
   local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
@@ -2256,6 +2319,8 @@ end
 function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
   if not (proj_name and cfg_name and param) or value == nil then
     die("usage: lw configuration set <project> <name> <param> <value>\n" ..
+      "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
+      "         | overrides.<family>.<NAME> (family ∈ clang|gcc|msvc) | <module field>\n" ..
       "  (use `lw configuration unset` to clear a value)")
   end
   return edit_configuration(root, proj_name, cfg_name, param, value, "set")
@@ -2264,7 +2329,9 @@ end
 --- `lw configuration unset <project> <name> <param>`
 function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
-    die("usage: lw configuration unset <project> <name> <param>")
+    die("usage: lw configuration unset <project> <name> <param>\n" ..
+      "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
+      "         | overrides.<family>.<NAME> (family ∈ clang|gcc|msvc) | <module field>")
   end
   return edit_configuration(root, proj_name, cfg_name, param, nil, "unset")
 end
@@ -4476,7 +4543,7 @@ function M.cmd_complete(cword, words)
     end
     if n == 4 and has({ "get", "set", "unset" }, sub) then
       emit({ "variant", "inherits", "languages", "toolchain", "generator",
-        "options.", "variables." })                                     -- <param>
+        "options.", "variables.", "overrides." })                       -- <param>
     end
     return 0
   elseif cmd == "configuration-set" or cmd == "cs" then
@@ -4958,11 +5025,24 @@ variant is not settable directly, so the build type has one declared source
 mixin — usable as a base, never built.
 
 Params for get/set/unset:
-  inherits           comma-separated base configs (a mixin chain)
-  languages          comma-separated; empty inherits from the module
-  options.<KEY>      a generic build option
-  variables.<NAME>   a project variable override
-  <other>            any module-specific field (e.g. toolchain, generator)]],
+  inherits                    comma-separated base configs (a mixin chain)
+  languages                   comma-separated; empty inherits from the module
+  options.<KEY>               a generic build option
+  variables.<NAME>            a project variable override
+  overrides.<family>.<NAME>   a compiler-family variable override
+  <other>                     any module-specific field (e.g. toolchain, generator)
+
+Compiler-family overrides (family ∈ clang|gcc|msvc, clang-cl counts as clang)
+override a project variable's value only when the active tool's compiler
+belongs to that family. The overridden name must already be declared in the
+project's `variables` (an empty default is allowed). See core §1.3.1.
+
+Examples:
+  lw configuration set   App Debug options.CMAKE_CXX_FLAGS '${warn_flags}'
+  lw configuration set   App Debug variables.warn_flags '-Werror'
+  lw configuration set   App Debug overrides.clang.warn_flags '-Werror -Wno-unused-command-line-argument'
+  lw configuration get   App Debug overrides.clang.warn_flags
+  lw configuration unset App Debug overrides.clang.warn_flags]],
   ["configuration-set"] = [[lw configuration-set <list|show|create|map|unmap|remove>   (alias: cs)
 
 A configuration set maps each project to one of its configurations — the
