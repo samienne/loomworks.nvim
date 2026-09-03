@@ -642,4 +642,72 @@ describe(":is_valid()", function()
         assert.is_false(ok2)
         assert.equals("profile is incomplete", r2[1])
     end)
+
+    -- Compiler-family overrides + undeclared-variable references (core §1.3.1).
+    describe("compiler-override diagnostics", function()
+        it("flags an overrides block with an unknown compiler family", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        typescript = {
+                            configurations = {
+                                Custom = {
+                                    inherits = "variant:default",
+                                    overrides = { klang = { output_dir = "/o/klang" } },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/o" },
+                        },
+                    },
+                },
+            })
+            local diags = ws:diagnostics()
+            local found
+            for _, d in ipairs(diags) do
+                if d.message:find("unknown compiler family", 1, true)
+                    and d.message:find("klang", 1, true) then
+                    found = d
+                end
+            end
+            assert.is_not_nil(found, "expected an unknown-family diagnostic")
+            assert.equals("warn", found.severity)
+            assert.is_truthy(found.source:find("App/Custom", 1, true))
+        end)
+
+        it("flags an option that references an undeclared variable", function()
+            local ws = make_ws({
+                projects = {
+                    App = {
+                        typescript = {
+                            configurations = {
+                                Custom = {
+                                    inherits = "variant:default",
+                                    options = {
+                                        GOOD = "${output_dir}",
+                                        BAD = "${nonexistent_var_xyz}",
+                                    },
+                                },
+                            },
+                        },
+                        variables = {
+                            output_dir = { type = "path", default = "/o" },
+                        },
+                    },
+                },
+            })
+            local diags = ws:diagnostics()
+            local bad, good_leaked
+            for _, d in ipairs(diags) do
+                if d.message:find("undeclared variable", 1, true) then
+                    if d.message:find("nonexistent_var_xyz", 1, true) then bad = d end
+                    if d.message:find("output_dir", 1, true) then good_leaked = d end
+                end
+            end
+            assert.is_not_nil(bad, "expected an undeclared-variable diagnostic for BAD")
+            assert.is_nil(good_leaked, "declared variable must NOT be flagged")
+            assert.is_truthy(bad.message:find("BAD", 1, true))
+        end)
+    end)
 end)

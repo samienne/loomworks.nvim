@@ -180,6 +180,17 @@ function M.validate(raw, root)
                                 .. cfg_name .. "': " .. cerr
                         end
                     end
+                    -- Compiler-family overrides block: every overridden name
+                    -- must be declared. Unknown family keys are tolerated here
+                    -- (surfaced as a workspace diagnostic).
+                    if type(cfg_def) == "table" and cfg_def.overrides then
+                        local ook, oerr = vars_mod.validate_compiler_overrides(
+                            cfg_def.overrides, project_variables)
+                        if not ook then
+                            return nil, "project '" .. key .. "' configuration '"
+                                .. cfg_name .. "': " .. oerr
+                        end
+                    end
                 end
             end
         end

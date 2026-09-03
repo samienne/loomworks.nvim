@@ -373,15 +373,85 @@ function ConfigUnit:configuration()
     return self._configuration
 end
 
---- Check if this unit is stale: the Configuration's options or module_config
---- have changed since the last configure. Returns false when the unit has
---- never been configured (no cached snapshot to compare against).
+--- The active compiler family for this unit's resolved tool (`clang`, `gcc`,
+--- `msvc`), or nil when undetermined. Selects compiler-specific variable
+--- `overrides` (core §1.3.1) during option resolution.
+--- @return "clang"|"gcc"|"msvc"|nil
+function ConfigUnit:active_compiler_family()
+    if self._tool and self._tool.compiler_family then
+        local f = self._tool:compiler_family()
+        if f then return f end
+    end
+    local td = (self._tool and self._tool.data) or self._tool_data
+    return require("loomworks.cpp_compilers").family_from_tool_data(td)
+end
+
+--- Compute the RESOLVED option values that would land on this unit's configure
+--- command: options merged across the inheritance chain (project-wide → bases
+--- → own) with every value expanded through the built-in + project-variable
+--- context (spec §5c / core §1.3.1). Compiler-specific `overrides` are applied
+--- via the active tool's family. This is the fingerprint `is_stale` compares,
+--- so a change to a variable `default` or a compiler `override` that alters a
+--- `-D` value is caught even though the raw `${…}` template is unchanged
+--- (cmake §11). Returns a name → expanded-string dict.
+--- @return table<string, string>
+function ConfigUnit:resolved_option_fingerprint()
+    local cfg = self._configuration
+    if not cfg then return {} end
+    local project = self._project
+
+    -- 1. Merge options: project-wide, then bases (depth-first left-to-right),
+    --    then own — later values override.
+    local merged = {}
+    local pw = project and project.type_config and project.type_config.options
+    if type(pw) == "table" then
+        for k, v in pairs(pw) do merged[k] = v end
+    end
+    local visited = {}
+    local function apply(c)
+        if not c or visited[c] then return end
+        visited[c] = true
+        for _, base in ipairs(c._inherits or {}) do apply(base) end
+        if type(c.options) == "table" then
+            for k, v in pairs(c.options) do merged[k] = v end
+        end
+    end
+    apply(cfg)
+
+    -- 2. Expansion context: built-ins + resolved project variables (family-aware).
+    local expand = require("loomworks.expand")
+    local ctx = {
+        workspace_root = self._workspace and self._workspace.root or nil,
+        project_path = project and (project.path or project.key) or nil,
+    }
+    if project and project.variables and next(project.variables) then
+        local variables = require("loomworks.variables")
+        local resolved = variables.resolve(project, cfg, self:active_compiler_family())
+        for name, entry in pairs(resolved) do
+            ctx[name] = expand.expand_string(entry.value, ctx)
+        end
+    end
+
+    -- 3. Expand each merged option value.
+    local out = {}
+    for k, v in pairs(merged) do
+        out[k] = type(v) == "string" and expand.expand_string(v, ctx) or v
+    end
+    return out
+end
+
+--- Check if this unit is stale: the RESOLVED option values (post-expansion) or
+--- the Configuration's module_config have changed since the last configure.
+--- The fingerprint is taken over resolved values (§5c / cmake §11), so editing
+--- a variable `default` or a compiler `override` that changes a `-D` value
+--- makes the unit stale, while a change with no resolved effect does not.
+--- Returns false when the unit has never been configured (no cached snapshot).
 --- @return boolean
 function ConfigUnit:is_stale()
     if not self._configuration or self._configuration._removed then return false end
     -- No cached snapshot means never configured — not stale
     if not self._cached_options and not self._cached_module_config then return false end
-    if not vim.deep_equal(self._cached_options or {}, self._configuration.options or {}) then
+    if not vim.deep_equal(self._cached_options or {}, self:resolved_option_fingerprint()) then
         return true
     end
     if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then

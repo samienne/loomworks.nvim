@@ -83,6 +83,16 @@ function Tool:provides_language(lang)
     return false
 end
 
+--- The compiler family of this tool (`clang`, `gcc`, `msvc`), or nil when it
+--- carries no C/C++ compiler or the family can't be determined. Derived from
+--- the opaque `data` (module-specific) via the shared cpp_compilers logic;
+--- clang-cl folds to `clang`. Used to select compiler-specific variable
+--- `overrides` (core §1.3.1).
+--- @return "clang"|"gcc"|"msvc"|nil
+function Tool:compiler_family()
+    return require("loomworks.cpp_compilers").family_from_tool_data(self.data)
+end
+
 --- Check if this is a keyed tool (participates in name generation).
 --- Default tools for non-keyed modules return false.
 --- @return boolean

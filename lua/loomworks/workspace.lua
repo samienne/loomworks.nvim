@@ -1912,6 +1912,61 @@ function Workspace:diagnostics()
             end
         end
     end
+    -- Compiler-family overrides + undeclared-variable references
+    -- (core §1.3.1). Unknown family keys in an `overrides` block and option
+    -- values referencing a variable that is neither built-in nor declared are
+    -- surfaced as diagnostics (never silently ignored / empty-expanded).
+    local vars_mod = require("loomworks.variables")
+    local expand_mod = require("loomworks.expand")
+    for _, project in pairs(self._projects) do
+        if not project.orphaned and project._configurations then
+            -- Allowed variable names for reference checking: built-ins +
+            -- declared project variables. Values are placeholders; only key
+            -- presence matters to `expand.unresolved_vars`.
+            local allowed = {}
+            for name in pairs(vars_mod.RESERVED_NAMES) do allowed[name] = "" end
+            if type(project.variables) == "table" then
+                for name in pairs(project.variables) do allowed[name] = "" end
+            end
+            for _, cfg in ipairs(project._configurations) do
+                if not cfg._removed then
+                    -- (a) Unknown compiler-family keys.
+                    for _, family in ipairs(vars_mod.unknown_families(cfg._overrides)) do
+                        add({
+                            severity = "warn",
+                            source = "Project/" .. project.key .. "/" .. cfg.name,
+                            message = "configuration '" .. cfg.name .. "' has an "
+                                .. "overrides block for unknown compiler family '"
+                                .. family .. "' (known: clang, gcc, msvc)",
+                            target_fold_key = "config:" .. project.key .. ":" .. cfg.name,
+                        })
+                    end
+                    -- (b) Option values referencing an undeclared variable.
+                    if type(cfg.options) == "table" then
+                        local reported = {}
+                        for opt_key, opt_val in pairs(cfg.options) do
+                            for _, ref in ipairs(expand_mod.unresolved_vars(opt_val, allowed)) do
+                                local dedup = opt_key .. "=" .. ref
+                                if not reported[dedup] then
+                                    reported[dedup] = true
+                                    add({
+                                        severity = "warn",
+                                        source = "Project/" .. project.key .. "/" .. cfg.name,
+                                        message = "option '" .. opt_key
+                                            .. "' references undeclared variable '"
+                                            .. ref .. "'",
+                                        target_fold_key = "config:" .. project.key
+                                            .. ":" .. cfg.name,
+                                    })
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     for _, cs in pairs(self._config_sets) do
         if not cs._removed and cs.diagnostic then
             add(cs:diagnostic())
@@ -2462,9 +2517,12 @@ function Workspace:record_task_result(result)
         config_key = config_unit._config_key,
         mod_type = config_unit._project and config_unit._project.type or nil,
     })
-    -- Snapshot current configuration options for stale detection
+    -- Snapshot RESOLVED configuration options for stale detection (§5c /
+    -- cmake §11): the fingerprint is the post-expansion `-D` values, so a
+    -- later change to a variable default or compiler override that alters a
+    -- resolved value is caught even when the raw `${…}` template is unchanged.
     if config_unit._configuration and not config_unit._configuration._removed then
-        bd.options_snapshot = config_unit._configuration.options
+        bd.options_snapshot = config_unit:resolved_option_fingerprint()
         bd.module_config_snapshot = config_unit._configuration.module_config
         config_unit._cached_options = bd.options_snapshot
         config_unit._cached_module_config = bd.module_config_snapshot
