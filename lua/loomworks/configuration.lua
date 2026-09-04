@@ -44,7 +44,8 @@ end
 --- @field _inherits loomworks.Configuration[] resolved base configuration references
 --- @field inherits_names string[] raw base config names (from module data)
 --- @field options table<string, string>|nil generic options (from loomworks.json)
---- @field module_config table opaque module-specific data (cmake: toolchain, generator, etc.)
+--- @field module_config table opaque module-specific data (cmake: toolchain,
+---        generator, compile_commands_generated, etc.)
 --- @field is_default boolean from module detection (not user-defined)
 --- @field is_user boolean from loomworks.json user override
 --- @field from_preset boolean from CMakePresets.json
@@ -493,7 +494,11 @@ function Configuration:serialize_user_override()
     for k, v in pairs(self.module_config) do
         -- Skip values propagated from a base (see `_derived` in `_apply`) —
         -- they are the base's, and persisting them would freeze a copy.
-        if not (self._derived and self._derived[k]) then
+        -- Skip `compile_commands_generated` (cmake §12): it is a computed
+        -- default derived from the generator, not user-authored data —
+        -- persisting it would freeze a stale copy and bloat user.json.
+        if not (self._derived and self._derived[k])
+                and k ~= "compile_commands_generated" then
             entry[k] = v
         end
     end

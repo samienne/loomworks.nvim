@@ -1,0 +1,16 @@
+{
+  "kind": "codemodel",
+  "version": { "major": 2, "minor": 0 },
+  "paths": { "source": "C:/proj/src" },
+  "configurations": [
+    {
+      "name": "Debug",
+      "targets": [
+        { "name": "app", "id": "app::@1", "jsonFile": "target-app-Debug.json" }
+      ],
+      "projects": [
+        { "name": "P", "targetIndexes": [0] }
+      ]
+    }
+  ]
+}

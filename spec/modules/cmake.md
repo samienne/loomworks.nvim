@@ -411,3 +411,51 @@ expansion (§5c, core §1.3.1), so a change to a variable or a compiler-specific
 override is caught here even though the raw `${…}` option template is
 unchanged. A change of active compiler family is already covered by the build
 directory being keyed on the tool, so it configures separately.
+
+## 12. Generated `compile_commands.json` (non-emitting generators)
+
+CMake emits `compile_commands.json` only for the Ninja and Makefile
+generators; the Visual Studio and Xcode generators never do. An MSVC
+(VS-generator) configuration therefore has no compilation database and
+clangd gets nothing. loomworks fills the gap by generating its own
+`compile_commands.json` from the CMake file-api for such configurations.
+
+- Each cmake configuration carries a module-config field
+  **`compile_commands_generated`** (boolean). Its default is computed from
+  the generator: `true` for non-emitting generators (Visual Studio, Xcode),
+  `false` for emitting ones (Ninja, Makefiles). A future per-profile /
+  per-config user option may override this default; the field is the
+  effective flag either way. When the generator is not yet known (a plain
+  `variant:*` configuration whose generator comes from the profile's kit at
+  build time, not from the configuration itself), the info-time default is
+  `false` and the effective decision is taken at LSP-wiring time from the
+  active profile's kit generator.
+
+- When the flag is `true`: after configure, loomworks reads the file-api
+  codemodel (per-target `compileGroups`: `language`, `includes`, `defines`,
+  `compileCommandFragments`, `sourceIndexes`, plus the target `sources`) and
+  the resolved compiler (the file-api `toolchains` object, falling back to
+  the kit's compiler), then writes a `compile_commands.json` into a
+  loomworks-owned directory under `.nvim/cache/`, one entry per source.
+  Include and define flags are synthesized in the compiler's native syntax:
+  MSVC `/I`, `/D`, and `/external:I` for system includes; GNU `-I`,
+  `-isystem`, `-D`. For an MSVC compiler `cl.exe` is emitted as `argv[0]` so
+  clangd's cl-compatible driver parses the flags. The project build
+  directory is never written to.
+
+- When the flag is `false`: unchanged — clangd points at the build
+  directory's CMake-emitted `compile_commands.json`.
+
+- `lsp_configs` points the clangd entry's `compile_commands_dir` at the
+  loomworks-owned generated directory when the active configuration is
+  generated, else at the build directory. Regeneration runs when the
+  file-api reply is newer than the generated file (a cheap mtime guard);
+  clangd auto-reloads `compile_commands.json` changes.
+
+- Scope (v1): non-emitting generators only. The generator is structured to
+  later own the database for all generators — a prerequisite for
+  header-entry augmentation and a user toggle.
+
+This applies to the cmake module only. meson always uses the Ninja backend,
+which emits `compile_commands.json` for every compiler (including MSVC), so
+it needs no generation; the field is not present on meson configurations.

@@ -1,0 +1,26 @@
+{
+  "name": "app",
+  "id": "app::@1",
+  "type": "EXECUTABLE",
+  "sources": [
+    { "path": "main.cpp" },
+    { "path": "util/helper.cpp" }
+  ],
+  "compileGroups": [
+    {
+      "language": "CXX",
+      "sourceIndexes": [0, 1],
+      "includes": [
+        { "path": "C:/proj/src/include" },
+        { "path": "C:/vendor/boost", "isSystem": true }
+      ],
+      "defines": [
+        { "define": "FOO=1" },
+        { "define": "BAR" }
+      ],
+      "compileCommandFragments": [
+        { "fragment": "/std:c++17 /EHsc" }
+      ]
+    }
+  ]
+}

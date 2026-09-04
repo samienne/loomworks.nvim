@@ -1,0 +1,14 @@
+{
+  "kind": "toolchains",
+  "version": { "major": 1, "minor": 0 },
+  "toolchains": [
+    {
+      "language": "CXX",
+      "compiler": { "path": "C:/VS/VC/Tools/MSVC/14.39/bin/Hostx64/x64/cl.exe" }
+    },
+    {
+      "language": "C",
+      "compiler": { "path": "C:/VS/VC/Tools/MSVC/14.39/bin/Hostx64/x64/cl.exe" }
+    }
+  ]
+}
