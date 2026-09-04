@@ -3529,6 +3529,82 @@ local function stdout_supports_color()
 end
 M._stdout_supports_color = stdout_supports_color
 
+--- Best-effort width of the output terminal, in columns. A real stdout tty is
+--- measured via libuv (`new_tty` + `get_winsize`); a redirected / piped /
+--- captured run (every test) falls back to `$COLUMNS`, then a sensible default
+--- of 100. Never errors; always returns a positive integer. `opts.guess` /
+--- `opts.new_tty` are injectable seams so tests can exercise the tty path (and
+--- the non-tty fallback) without a real terminal.
+local function term_width(opts)
+  opts = opts or {}
+  local guess = opts.guess or uv.guess_handle
+  local new_tty = opts.new_tty or uv.new_tty
+  local ok, kind = pcall(guess, 1)
+  if ok and kind == "tty" then
+    local w
+    pcall(function()
+      local tty = new_tty(1, false)
+      if tty then
+        w = tty:get_winsize() -- returns width, height
+        pcall(function() tty:close() end)
+      end
+    end)
+    if type(w) == "number" and w > 0 then return math.floor(w) end
+  end
+  local env = tonumber(os.getenv("COLUMNS"))
+  if env and env > 0 then return math.floor(env) end
+  return 100
+end
+M._term_width = term_width
+
+--- Fit a content-sized column to the terminal: the field is never wider than its
+--- longest entry (`longest`), never wider than what the terminal leaves after the
+--- row's fixed parts (`tw - reserved`), and never narrower than `min`. Returns the
+--- width to use in a paired `%-<w>s` field / `trunc(value, w)`. Pure; exported for
+--- tests. When `longest <= (tw - reserved)` the entry fits and is shown in full
+--- (no over-padding to a hardcoded width); otherwise the column is capped so the
+--- row stays on one line and `trunc` adds the ellipsis.
+local function fit_column(longest, tw, reserved, min)
+  local budget = math.max(min, tw - reserved)
+  return math.max(min, math.min(longest, budget))
+end
+M._fit_column = fit_column
+
+-- Fixed, non-name characters on a Profiles row: "* " (mark + space) + " set="
+-- (the space before the tail plus the literal "set=") + the set value, which is
+-- `trunc(..., PROFILE_SET_W)`, plus a few columns of slack for the inline
+-- diagnostic markers (those actually render on their own lines, so the slack is
+-- just breathing room). The name column gets whatever the terminal leaves.
+local PROFILE_SET_W = 22
+local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
+
+--- Build the formatted rows for the Profiles section, sizing the profile-name
+--- column to its content and capping it to `tw` columns. Raw text is formatted
+--- first, then painted (ANSI escapes never enter a width measurement). Exported
+--- for tests; `cmd_status` renders exactly these rows. Returns the row-string
+--- array and the name column width it chose.
+--- @param pal table status_palette()
+--- @param plist table Profile-like objects ({ key, _configuration_set_name })
+--- @param active_key string|nil
+--- @param grouped table group_diagnostics() result
+--- @param tw integer terminal width in columns
+local function status_profile_rows(pal, plist, active_key, grouped, tw)
+  local longest = 0
+  for _, p in ipairs(plist) do longest = math.max(longest, #tostring(p.key)) end
+  local name_w = fit_column(longest, tw, PROFILE_RESERVED, 8)
+  local fmt = "%s %-" .. name_w .. "s set=%s"
+  local rows = {}
+  for _, p in ipairs(plist) do
+    local is_active = (p.key == active_key)
+    local row = string.format(fmt, is_active and "*" or " ",
+      trunc(p.key, name_w), trunc(p._configuration_set_name or "?", PROFILE_SET_W))
+    rows[#rows + 1] = (is_active and pal.active(row) or row)
+      .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
+  end
+  return rows, name_w
+end
+M._status_profile_rows = status_profile_rows
+
 --- Return a token painter: wraps a command in cyan when `color`, else identity.
 local function painter(color)
   if not color then return function(s) return s end end
@@ -3610,6 +3686,9 @@ function M.cmd_status(root, opts)
   local grouped = group_diagnostics(diags)
 
   local MAX = 6
+  -- Size every name column to the terminal so wide terminals show full names
+  -- instead of truncating at a hardcoded width. Measured once per render.
+  local tw = term_width()
   local profiles = ws._profiles or {}
   local active_key = ws._active_profile_key
   local ap
@@ -3617,8 +3696,13 @@ function M.cmd_status(root, opts)
 
   out("")
   if ap then
-    out(pal.title("Active profile") .. "   " .. pal.active(trunc(ap.key, 44)) ..
-      "   " .. pal.dim("(set " .. (ap._configuration_set_name or "?") .. ")"))
+    -- Fixed parts of this line: the "Active profile" title + 3 spaces (prefix),
+    -- then 3 spaces + "(set <name>)" (suffix). The name gets the rest.
+    local set_name = ap._configuration_set_name or "?"
+    local overhead = #"Active profile" + 3 + 3 + #("(set " .. set_name .. ")")
+    local aw = math.max(20, tw - overhead)
+    out(pal.title("Active profile") .. "   " .. pal.active(trunc(ap.key, aw)) ..
+      "   " .. pal.dim("(set " .. set_name .. ")"))
   elseif #profiles > 0 then
     out(pal.title("Active profile") .. "   " .. pal.dim("(none) — ") .. pal.inline("lw profile select"))
   else
@@ -3676,24 +3760,31 @@ function M.cmd_status(root, opts)
   if #profiles > 1 then
     table.insert(profile_help, 1, "switch the profile · lw profile select")
   end
-  status_section(pal, "Profiles", plist, MAX, function(p)
-    local is_active = (p.key == active_key)
-    local row = string.format("%s %-38s set=%s", is_active and "*" or " ",
-      trunc(p.key, 38), trunc(p._configuration_set_name or "?", 22))
-    return (is_active and pal.active(row) or row)
-      .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
+  -- Content-sized, terminal-capped name column (row formatting lives in the
+  -- exposed status_profile_rows seam so it can be tested without a real tty).
+  local prof_rows = status_profile_rows(pal, plist, active_key, grouped, tw)
+  local prof_i = 0
+  status_section(pal, "Profiles", plist, MAX, function()
+    prof_i = prof_i + 1
+    return prof_rows[prof_i]
   end, "lw profiles", profile_help)
 
   -- Configuration sets: name + compact mappings.
   local sets = {}
   for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
   table.sort(sets, function(a, b) return a.name < b.name end)
+  -- Name column sized to content and capped to the terminal; the mapping list
+  -- keeps truncating but its cap widens to fill whatever width remains (≥ 56).
+  local cs_longest = 0
+  for _, cs in ipairs(sets) do cs_longest = math.max(cs_longest, #tostring(cs.name)) end
+  local cs_name_w = fit_column(cs_longest, tw, 2 + 1 + 56 + 4, 8)
+  local cs_map_w = math.max(56, tw - 2 - cs_name_w - 1 - 4)
   status_section(pal, "Configuration sets", sets, MAX, function(cs)
     local rows = {}
     for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
     table.sort(rows)
-    return string.format("  %-14s %s", trunc(cs.name, 14),
-      trunc(next(rows) and table.concat(rows, ", ") or "(empty)", 56))
+    return string.format("  %-" .. cs_name_w .. "s %s", trunc(cs.name, cs_name_w),
+      trunc(next(rows) and table.concat(rows, ", ") or "(empty)", cs_map_w))
       .. inline_markers(pal, grouped.by_key["set:" .. cs.name])
   end, "lw cs list", "create a set · lw cs create <name> [project=config …]")
 
@@ -3701,6 +3792,13 @@ function M.cmd_status(root, opts)
   local projs = {}
   for _, p in ipairs(ws._projects or {}) do projs[#projs + 1] = p end
   table.sort(projs, function(a, b) return a.key < b.key end)
+  -- Name column sized to content and capped to the terminal; the config list
+  -- keeps truncating but its cap widens to fill whatever width remains (≥ 50).
+  -- Row layout: "  " + name + " " + type(%-6s) + " " + cfgstr.
+  local pj_longest = 0
+  for _, p in ipairs(projs) do pj_longest = math.max(pj_longest, #tostring(p.key)) end
+  local pj_name_w = fit_column(pj_longest, tw, 2 + 1 + 6 + 1 + 50 + 4, 8)
+  local pj_cfg_w = math.max(50, tw - 2 - pj_name_w - 1 - 6 - 1 - 4)
   status_section(pal, "Projects", projs, MAX, function(p)
     local t = p.type or (p._module and p._module.id) or "?"
     local names = {}
@@ -3710,7 +3808,8 @@ function M.cmd_status(root, opts)
     for i = 1, math.min(#names, 3) do head[#head + 1] = names[i] end
     local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
     if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
-    return string.format("  %-14s %-6s %s", trunc(p.key, 14), t, trunc(cfgstr, 50))
+    return string.format("  %-" .. pj_name_w .. "s %-6s %s",
+      trunc(p.key, pj_name_w), t, trunc(cfgstr, pj_cfg_w))
       .. inline_markers(pal, grouped.by_project[p.key])
   end, "lw project list", "add a project · lw project add <path> [type]")
 
