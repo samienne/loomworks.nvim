@@ -55,3 +55,35 @@ describe("lw profiles active highlight", function()
     assert.same({ "(no profiles defined)" }, lines)
   end)
 end)
+
+describe("lw profiles help footer", function()
+  local function join(lines) return table.concat(lines, "\n") end
+  local function ws_one(active)
+    return {
+      _active_profile_key = active,
+      _profiles = { { key = "alpha", _tool_keys = { "ninja-gcc" }, _configuration_set_name = "Debug" } },
+    }
+  end
+
+  it("includes the show and create hints", function()
+    local text = join(cli._profile_list_rows(ws_with("alpha"), false))
+    assert.is_truthy(text:find("show a profile · lw profile show <profile>", 1, true))
+    assert.is_truthy(text:find("create a profile · lw profile create <set> <tool>", 1, true))
+  end)
+
+  it("shows the switch hint only with more than one profile", function()
+    local many = join(cli._profile_list_rows(ws_with("alpha"), false))
+    assert.is_truthy(many:find("switch the profile · lw profile select", 1, true))
+    local one = join(cli._profile_list_rows(ws_one("alpha"), false))
+    assert.is_nil(one:find("switch the profile", 1, true))
+    -- The single-profile case still carries the show + create hints.
+    assert.is_truthy(one:find("lw profile show <profile>", 1, true))
+    assert.is_truthy(one:find("lw profile create <set> <tool>", 1, true))
+  end)
+
+  it("emits the footer plain (no ANSI) when color is off", function()
+    for _, l in ipairs(cli._profile_list_rows(ws_with("alpha"), false)) do
+      assert.is_nil(l:find("\27[", 1, true))
+    end
+  end)
+end)

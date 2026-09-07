@@ -332,6 +332,21 @@ missing targets (§16.3). The listing marks the profile's **default target**
 resolve the **active profile** as its default even in a non-interactive host,
 unlike the operations that build or manage state (§16.3, §16.9).
 
+Introspection MAY also present a **single-profile detailed view** — the human
+overview (below) narrowed to one resolved profile and only the items it
+references: its **configuration set** and that set's project→configuration
+mappings, and for each project the set maps its configuration, resolved
+toolchain and last known build state; the profile's **toolchains**; and its
+**launchable targets** with the default marked, incomplete when a project is not
+yet configured, exactly as the target listing above. Its **diagnostics** are
+scoped to the profile — those concerning the profile itself, its configuration
+set, and the configurations and projects that set maps — rather than the whole
+workspace's set. The profile defaults to the **active profile** when none is
+named, like the operations that resolve a default profile; naming a profile that
+does not exist, or omitting one with no active profile, is an error that names
+the problem. Being read-only, this view MAY resolve the active profile even in a
+non-interactive host (§16.9).
+
 The human status overview is likewise read-only, and when no workspace resolves
 here (§1.1) it points the user at how to start one, with each suggested command
 on its own line. When a workspace does resolve, the overview MAY present the
