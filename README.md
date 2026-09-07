@@ -447,14 +447,14 @@ lw project set   <project> <variable> [<default>] [--type string|path]
 lw project unset <project> <variable>
 # e.g. declare a blank path, reference it, then fill it per machine:
 lw project set App sdk_root --type path            # blank (no default)
-lw configuration set App Debug options.CMAKE_PREFIX_PATH '${sdk_root}'
+lw config set App Debug options.CMAKE_PREFIX_PATH '${sdk_root}'
 lw profile set App sdk_root /opt/sdk/3.2           # fill the blank
 ```
 
 `--type` defaults to `string`; omitting `<default>` declares the variable
 *blank*. `lw project show <project>` lists a project's declarations. Declaring
 is the bootstrap for both the per-configuration override
-(`lw configuration set variables.<name>`) and the per-profile fill
+(`lw config set variables.<name>`) and the per-profile fill
 (`lw profile set`), which require the variable to already be declared.
 
 **Compiler-specific overrides.** A configuration may add an `overrides` block
@@ -552,11 +552,11 @@ a small fused bootstrap); it needs no Neovim and no Lua install.
   once:
 
   ```
-  lw config set dev-lua C:/src/nvim-plugins/loomworks.nvim/lua
+  lw settings set dev-lua C:/src/nvim-plugins/loomworks.nvim/lua
   ```
 
   Then `lw --dev <command>` runs from that tree (verification skipped — it's
-  your local checkout). `lw config set default-source dev` makes `--dev` the
+  your local checkout). `lw settings set default-source dev` makes `--dev` the
   default, or use `LOOMWORKS_LUA=<dir>` for a one-off override.
 
 Releases are cut from `master`; CI builds the host binary for Linux, macOS,
@@ -755,8 +755,8 @@ command has detail under `lw help <command>`.
 | `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
 | `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
 | `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset`. `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
-| `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
-| `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
+| `lw config <sub>` | `add` \| `set` \| `get` \| `show` project configurations (aliases `configuration`, `cfg`) |
+| `lw configset <sub>` | `create` \| `map` \| `show` configuration sets (aliases `configuration-set`, `cs`) |
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
@@ -771,19 +771,19 @@ command has detail under `lw help <command>`.
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw config <...>` | Get/set `lw`'s own configuration |
+| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
 | `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
 
-`lw profiles` and `lw status` number each profile (a stable position, alphabetical
+`lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command
 (`lw build 2`, `lw profile show 1`) — an interactive convenience only, so scripts,
 CI, and `lw profile query` should still use keys. A profile argument resolves the
 same way everywhere (build/run/clean/test/select/show/remove/target): a number
-from `lw profiles`, then an exact key, then a unique boundary-anchored substring
+from `lw profile list`, then an exact key, then a unique boundary-anchored substring
 (`lw build clang-18`). Item-creating verbs accept `create` and `add`
-interchangeably; `configuration-set create` also takes positional
-`<project> <config>` pairs (`lw cs create dev app Debug`) alongside the
+interchangeably; `configset create` also takes positional
+`<project> <config>` pairs (`lw configset create dev app Debug`) alongside the
 `project=config` form.
 
 A first run, from an empty directory:
@@ -791,7 +791,7 @@ A first run, from an empty directory:
 ```sh
 lw init
 lw project add ./app              # type auto-detected (cmake, meson, …)
-lw cs create dev app=Debug        # map a configuration set
+lw configset create dev app=Debug # map a configuration set
 lw profile create dev ninja-gcc   # set + toolchain; `lw tools` lists them
 lw build dev
 lw publish                        # write the shared loomworks.json
@@ -868,7 +868,7 @@ download against it before installing, and refuses a module built for a
 different plugin-interface version (telling you whether to update `lw` or wait
 for a module release). Modules install under `lw`'s data dir, so `lw
 self-update` never disturbs them. The index is fetched from the loomworks repo
-over HTTPS — point it at a fork or an offline mirror with `lw config set
+over HTTPS — point it at a fork or an offline mirror with `lw settings set
 module-index <url-or-path>`. `lw help module` has the details. (Editor users
 don't use this — install the module plugin the usual way.)
 

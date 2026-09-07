@@ -161,41 +161,41 @@ run_case() {
     # Layered configurations: an abstract mixin (no fields at all) must
     # persist, and a child must be able to inherit it. Both halves used to be
     # dropped silently, which made inheritance chains unusable from the CLI.
-    run_lw configuration add app mixin-base > "$out" 2>&1 \
-        || { note_fail "$label configuration add (mixin)" $?; return; }
-    run_lw configuration set app mixin-base options.LW_E2E_LAYER ON > "$out" 2>&1 \
-        || { note_fail "$label configuration set on mixin" $?; return; }
-    run_lw configuration list app > "$out" 2>&1
+    run_lw config add app mixin-base > "$out" 2>&1 \
+        || { note_fail "$label config add (mixin)" $?; return; }
+    run_lw config set app mixin-base options.LW_E2E_LAYER ON > "$out" 2>&1 \
+        || { note_fail "$label config set on mixin" $?; return; }
+    run_lw config list app > "$out" 2>&1
     grep -q "mixin-base" "$out" \
         || { note_fail "$label mixin-base did not persist" 0; return; }
 
     # The variant is not settable: a config becomes concrete by inheriting a
     # base that provides one, so the build type has a single declared source.
-    if run_lw configuration set app mixin-base variant Debug > "$out" 2>&1; then
+    if run_lw config set app mixin-base variant Debug > "$out" 2>&1; then
         note_fail "$label accepted a directly-set variant" 0; return
     fi
 
     # Inheriting a base is the supported route, and the derived variant must
     # NOT be written back as if declared here — persisting it would freeze a
     # copy of the base's value.
-    run_lw configuration add app inherited variant:Debug > "$out" 2>&1 \
-        || { note_fail "$label configuration add with a base" $?; return; }
+    run_lw config add app inherited variant:Debug > "$out" 2>&1 \
+        || { note_fail "$label config add with a base" $?; return; }
     if grep -q '"variant"' .nvim/loomworks.user.json; then
         note_fail "$label persisted a derived variant as if declared" 0; return
     fi
 
     # Several bases form a mixin chain, merged left to right. Accepted as
     # separate arguments or as one comma-separated list.
-    run_lw configuration add app chained variant:Debug mixin-base > "$out" 2>&1 \
-        || { note_fail "$label configuration add with two bases" $?; return; }
-    run_lw configuration get app chained inherits > "$out" 2>&1
+    run_lw config add app chained variant:Debug mixin-base > "$out" 2>&1 \
+        || { note_fail "$label config add with two bases" $?; return; }
+    run_lw config get app chained inherits > "$out" 2>&1
     grep -q "mixin-base" "$out" \
         || { note_fail "$label second base was dropped" 0; return; }
-    run_lw configuration add app chained2 "variant:Debug,mixin-base" > "$out" 2>&1 \
-        || { note_fail "$label configuration add with CSV bases" $?; return; }
+    run_lw config add app chained2 "variant:Debug,mixin-base" > "$out" 2>&1 \
+        || { note_fail "$label config add with CSV bases" $?; return; }
 
-    run_lw configuration-set create Debug app=variant:Debug > "$out" 2>&1 \
-        || { note_fail "$label configuration-set create" $?; return; }
+    run_lw configset create Debug app=variant:Debug > "$out" 2>&1 \
+        || { note_fail "$label configset create" $?; return; }
     run_lw profile create Debug "$tool" > "$out" 2>&1 \
         || { note_fail "$label profile create" $?; return; }
     local prof="Debug:$tool"

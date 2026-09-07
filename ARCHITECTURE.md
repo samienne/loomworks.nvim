@@ -766,8 +766,8 @@ replaces it, which would drop `PATH`).
   fixed `meson-logs/testlog.junit.xml` as `junit_out` and the CLI copies it to
   the requested path — so the core stays module-agnostic. One file per unit
   (label-suffixed when a profile runs several).
-- `lw profiles` — list profiles (name, configuration set, tools) and flag
-  which are buildable in this host vs editor-only.
+- `lw profile list` — list profiles (name, configuration set, tools) and flag
+  which are buildable in this host vs editor-only (`lw profiles` is an alias).
 - `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →
   execute). The target is the profile's default (§8.6) when unnamed, else a
   named build target or command launch config; `project:name`, `--project`,
@@ -808,8 +808,8 @@ replaces it, which would drop `PATH`).
 - Management/authoring commands (spec §16.9, write the working copy; reach
   `loomworks.json` on `lw publish`): `lw init [--name <name>]`,
   `lw workspace rename <name>`, `lw project <add|remove|rename>`,
-  `lw configuration <add|set|unset|remove>`,
-  `lw configuration-set <create|map|unmap|remove>`, `lw profile create`,
+  `lw config <add|set|unset|remove>`,
+  `lw configset <create|map|unmap|remove>`, `lw profile create`,
   `lw launch <add|set|remove>`, and per-item `lw <kind> publish`. Each delegates
   to the same atomic `Workspace` mutation the editor uses (e.g. project rename →
   `Workspace:rename_project`, workspace name → `Workspace:rename_workspace`).
