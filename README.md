@@ -715,7 +715,7 @@ command has detail under `lw help <command>`.
 | `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` |
 | `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
 | `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
-| `lw profile <sub>` | `list` \| `select` \| `create` \| `remove` \| `publish` \| `query` |
+| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |

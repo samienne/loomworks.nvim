@@ -8,7 +8,7 @@
 ---           project <add|remove|rename|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|select|create|remove|publish|query> |
+---           profile <list|show|select|create|remove|publish|query> |
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
@@ -412,23 +412,55 @@ end
 -- Commands
 -- ---------------------------------------------------------------------------
 
-function M.cmd_profiles(ws)
+--- Build the `lw profiles` / `lw profile list` output lines. Pure and
+--- color-aware so it is testable without a tty: the active profile's two lines
+--- are painted with the status palette's `active` (green on a terminal, plain
+--- on a pipe/redirect), matching the `lw status` active-profile highlight.
+--- After the list a dim command-hint footer (same "<prose> · <command>" style
+--- the status sections use) points at the neighbouring profile commands; the
+--- `switch` hint appears only when more than one profile exists.
+--- `color` defaults to the stdout-tty probe. Reads the palette/color helpers
+--- off `M` (assigned later in the file) at call time.
+--- @param ws table workspace
+--- @param color boolean|nil force color on/off (nil = auto-detect stdout)
+--- @return string[] lines
+local function profile_list_rows(ws, color)
   local profiles = ws._profiles or {}
-  if #profiles == 0 then
-    out("(no profiles defined)")
-    return 0
-  end
+  if #profiles == 0 then return { "(no profiles defined)" } end
+  if color == nil then color = M._stdout_supports_color() end
+  local pal = M._status_palette(color)
   local active = ws._active_profile_key
+  local lines = {}
   for _, p in ipairs(profiles) do
     local tools = table.concat(p._tool_keys or {}, ", ")
     local set = p._configuration_set_name or "?"
-    local mark = (p.key == active) and "* " or "  "
+    local is_active = (p.key == active)
+    local mark = is_active and "* " or "  "
     local valid, reasons = true, nil
     if p.is_valid then valid, reasons = p:is_valid() end
     local status = valid and "" or ("  [unbuildable: " .. table.concat(reasons or {}, "; ") .. "]")
-    out(string.format("%s%s", mark, p.key))
-    out(string.format("      set=%s  tools=[%s]%s", set, tools, status))
+    local l1 = string.format("%s%s", mark, p.key)
+    local l2 = string.format("      set=%s  tools=[%s]%s", set, tools, status)
+    if is_active then l1, l2 = pal.active(l1), pal.active(l2) end
+    lines[#lines + 1] = l1
+    lines[#lines + 1] = l2
   end
+  -- Help footer — dim command hints, styled exactly like the `lw status`
+  -- sections (a blank separator, then indented `paint_help` lines; plain on a
+  -- pipe/redirect). `switch` only makes sense with more than one profile.
+  local help = { "show a profile · lw profile show <profile>" }
+  if #profiles > 1 then
+    help[#help + 1] = "switch the profile · lw profile select"
+  end
+  help[#help + 1] = "create a profile · lw profile create <set> <tool>"
+  lines[#lines + 1] = ""
+  for _, h in ipairs(help) do lines[#lines + 1] = "  " .. M._paint_help(pal, h) end
+  return lines
+end
+M._profile_list_rows = profile_list_rows
+
+function M.cmd_profiles(ws)
+  for _, line in ipairs(profile_list_rows(ws)) do out(line) end
   return 0
 end
 
@@ -3145,11 +3177,14 @@ function M.cmd_profile(sub, root, args)
   if sub == "publish" then
     return M.cmd_profile_publish(root, args[3])
   end
+  if sub == "show" then
+    return M.cmd_profile_show(root, args[3])
+  end
   if sub == nil or sub == "list" then
     return M.cmd_profiles(load_workspace(root))
   end
   die("unknown profile subcommand '" .. tostring(sub) ..
-    "' — use list|select|create|remove|publish|query (target moved to `lw target`)")
+    "' — use list|show|select|create|remove|publish|query (target moved to `lw target`)")
 end
 
 --- The value a config key falls back to when unset, so `lw config get` can
@@ -3820,6 +3855,241 @@ function M.cmd_status(root, opts)
   -- `--check` (CI): exit non-zero when ANY diagnostic is present. The rendering
   -- above is unchanged; only the exit code differs. Without it, status is 0.
   return check_exit_code(opts.check, diags)
+end
+
+-- ---------------------------------------------------------------------------
+-- profile show — a `lw status` page narrowed to a single profile (§16.18)
+-- ---------------------------------------------------------------------------
+
+--- Keep only the diagnostics that concern one profile: its own bucket (the
+--- `profile:<key>` diagnostic plus any `profile_proj:<key>:<project>` folded
+--- into it by group_diagnostics), its configuration set (`set:<name>`), and the
+--- configurations of the projects that set maps (`config:<proj>:…` for a mapped
+--- project). Workspace-level entries (nil fold key) and everything about other
+--- profiles/sets/projects are dropped, so the page never dumps the whole
+--- workspace's diagnostics.
+--- @param diags table[] Workspace:diagnostics() output
+--- @param profile table the profile in view
+--- @param ref_projects table<string, boolean> mapped project keys
+--- @return table[] scoped diagnostics (same shape, a filtered subset)
+local function scope_profile_diagnostics(diags, profile, ref_projects)
+  local set_name = profile._configuration_set_name
+  local scoped = {}
+  for _, d in ipairs(diags) do
+    local k = d.target_fold_key
+    local keep = false
+    if k then
+      if k == "profile:" .. profile.key then
+        keep = true
+      elseif k:match("^profile_proj:([^:]+):") == profile.key then
+        keep = true
+      elseif set_name and k == "set:" .. set_name then
+        keep = true
+      else
+        local proj = k:match("^config:([^:]+):")
+        if proj and ref_projects[proj] then keep = true end
+      end
+    end
+    if keep then scoped[#scoped + 1] = d end
+  end
+  return scoped
+end
+M._scope_profile_diagnostics = scope_profile_diagnostics
+
+--- Build the `lw profile show` page body for one resolved profile — a `lw
+--- status` page narrowed to this profile and only what it references. Pure and
+--- color-injectable (same split as `profile_list_rows` / `status_profile_rows`)
+--- so it is testable without a tty: it reuses the status-page machinery
+--- (`status_palette`, `status_section`, `render_diagnostics`, `collect_targets`,
+--- terminal-width-aware columns) by capturing their `out()` writes into a line
+--- buffer, then returns the lines for the caller to print.
+--- @param ws table workspace
+--- @param profile table resolved profile
+--- @param color boolean|nil force color on/off (nil = auto-detect stdout)
+--- @return string[] lines
+local function profile_show_rows(ws, profile, color)
+  if color == nil then color = stdout_supports_color() end
+  local pal = status_palette(color)
+  local tw = term_width()
+  local MAX = 6
+
+  -- Diagnostics for the whole workspace, then narrowed to this profile. A
+  -- broken diagnostics pass collapses to "none" and never breaks the page.
+  local ok_d, diags = pcall(function() return ws:diagnostics() end)
+  if not ok_d or type(diags) ~= "table" then diags = {} end
+  local pps = profile:projects()
+  local ref_projects = {}
+  for _, pp in ipairs(pps) do ref_projects[pp:project_key()] = true end
+  local scoped = scope_profile_diagnostics(diags, profile, ref_projects)
+  local grouped = group_diagnostics(scoped)
+
+  local set_name = profile._configuration_set_name
+  local ok_cs, cs = pcall(function() return profile:config_set() end)
+  if not ok_cs then cs = nil end
+  local active = (profile.key == ws._active_profile_key)
+
+  -- Reuse the status renderers, which write via out(); capture those writes and
+  -- split them back into lines. Nesting-safe (restores the previous io.write,
+  -- which under test is the spec's own capture).
+  local buf = {}
+  local real_write = io.write
+  io.write = function(s) buf[#buf + 1] = s end
+  local ok, err = pcall(function()
+    -- 1. Header — Profile <name> (+ `*`/green when active) + (set <name>) + a
+    --    buildable/unbuildable note. Name column takes the width left over.
+    local valid, reasons = true, nil
+    if profile.is_valid then valid, reasons = profile:is_valid() end
+    local note = valid and pal.dim("· buildable")
+      or pal.warn("· unbuildable" .. (reasons and #reasons > 0
+        and (" — " .. reasons[1] .. (#reasons > 1 and " (+" .. (#reasons - 1) .. " more)" or "")) or ""))
+    local suffix = "   " .. pal.dim("(set " .. (set_name or "none") .. ")") .. "   " .. note
+    local overhead = #"Profile" + 3 + 2 + 3 + #("(set " .. (set_name or "none") .. ")") + 3 + 14
+    local nw = math.max(12, tw - overhead)
+    local name = trunc(profile.key, nw)
+    local painted_name = active and pal.active("* " .. name) or ("  " .. name)
+    out(pal.title("Profile") .. "  " .. painted_name .. suffix)
+
+    -- 2. Diagnostics — scoped to this profile (top section; nothing when empty).
+    render_diagnostics(pal, scoped)
+
+    -- 3. Configuration set — the set name and its project→configuration mappings.
+    out("")
+    out(pal.title("Configuration set") .. " " .. pal.dim("(" .. (set_name or "none") .. ")")
+      .. inline_markers(pal, set_name and grouped.by_key["set:" .. set_name] or nil))
+    if cs and cs.mappings and next(cs.mappings) then
+      local map_rows = {}
+      for project, cfg in pairs(cs.mappings) do
+        map_rows[#map_rows + 1] = "  " .. project.key .. " → " .. (cfg.name or "?")
+      end
+      table.sort(map_rows)
+      for _, r in ipairs(map_rows) do out(r) end
+    elseif cs then
+      out("  " .. pal.dim("(no mappings)"))
+    else
+      out("  " .. pal.dim("(profile pins no configuration set)"))
+    end
+
+    -- 4. Projects — only the projects this set maps: key, type, the specific
+    --    configuration, the resolved tool, and build state / build dir. The name
+    --    column is content-sized and capped to the terminal.
+    local pj_longest = 0
+    for _, pp in ipairs(pps) do pj_longest = math.max(pj_longest, #tostring(pp:project_key())) end
+    local pj_name_w = fit_column(pj_longest, tw, 2 + 1 + 8 + 1 + 44 + 4, 8)
+    status_section(pal, "Projects", pps, MAX, function(pp)
+      local proj = pp._project
+      local t = (proj and (proj.type or (proj._module and proj._module.id))) or "?"
+      local cfg = pp:variant_name() or "?"
+      local tool = pp.tool_object and pp:tool_object() or nil
+      local tool_s = (tool and tool.key) or "(none)"
+      local state = pp.status and pp:status() or "?"
+      local head = string.format("  %-" .. pj_name_w .. "s %-8s cfg=%s  tool=%s  ",
+        trunc(pp:project_key(), pj_name_w), trunc(t, 8), cfg, tool_s)
+        .. pal.dim("[" .. state .. "]")
+      local bd = pp.build_dir and pp:build_dir() or nil
+      if bd then
+        head = head .. "\n      " .. pal.dim(trunc(bd:gsub("\\", "/"), math.max(20, tw - 6)))
+      end
+      return head .. inline_markers(pal, grouped.by_project[pp:project_key()])
+    end, "lw project list", "project details · lw project show <project>")
+
+    -- 5. Tools — the profile's resolved toolchain per module type it spans.
+    local seen, tool_items = {}, {}
+    for _, pp in ipairs(pps) do
+      local proj = pp._project
+      local mid = proj and ((proj._module and proj._module.id) or proj.type)
+      if mid and not seen[mid] then
+        seen[mid] = true
+        tool_items[#tool_items + 1] = { mod = mid, tool = profile.tool_for and profile:tool_for(mid) or nil }
+      end
+    end
+    table.sort(tool_items, function(a, b) return a.mod < b.mod end)
+    status_section(pal, "Tools", tool_items, MAX, function(it)
+      local t = it.tool
+      local key = (t and t.key) or "(none)"
+      local label = t and t.label
+      return string.format("  %-8s %s", it.mod, key) .. (label and ("   " .. pal.dim(label)) or "")
+    end, "lw tools", "detected toolchains · lw tools")
+
+    -- 6. Targets — the profile's launchable targets, default marked `*`+green,
+    --    exactly as the status Targets section renders them.
+    local ok_t, tinfo = pcall(collect_targets, ws, profile)
+    if not ok_t or not tinfo then tinfo = { rows = {}, unconfigured = {}, incomplete = false } end
+    local default_cwd
+    local ok_lt, lt = pcall(function() return profile:default_target() end)
+    if ok_lt and lt and lt:is_module_target() then default_cwd = lt:working_directory() end
+    local target_help = {
+      "run a target · lw run <target>",
+      "set this profile's default · lw target set <target>",
+    }
+    if tinfo.incomplete then
+      table.insert(target_help, 1, "configure to list build targets · lw build")
+    end
+    status_section(pal, "Targets", tinfo.rows, MAX, function(r)
+      local base = string.format("%s %-30s (%s)", r.is_default and "*" or " ",
+        trunc(r.label, 30), r.kind_label)
+      if r.is_default then
+        local line = pal.active(base)
+        if default_cwd then line = line .. "   " .. pal.dim("cwd: " .. trunc(default_cwd, 30)) end
+        if r.suffix then line = line .. pal.dim(r.suffix) end
+        return line
+      end
+      return base .. (r.suffix and pal.dim(r.suffix) or "")
+    end, "lw target", target_help)
+
+    -- 7. Footer help — profile-level actions not already surfaced by the
+    --    Targets section (which carries the run / set-default hints).
+    out("")
+    local footer = {
+      "build · lw build",
+      "switch the profile · lw profile select",
+    }
+    for _, h in ipairs(footer) do out("  " .. paint_help(pal, h)) end
+  end)
+  io.write = real_write
+  if not ok then error(err) end
+
+  local text = table.concat(buf)
+  local lines = {}
+  for line in text:gmatch("(.-)\n") do lines[#lines + 1] = line end
+  return lines
+end
+M._profile_show_rows = profile_show_rows
+
+--- Resolve which profile `lw profile show` displays. A named profile resolves by
+--- exact key; an unknown name is an error that names it and points at `lw
+--- profiles`. With no name it defaults to the ACTIVE profile (like `lw build` /
+--- `lw run`); omitting it with no active profile is an error. Read-only, so —
+--- unlike the build/manage resolver — it may use the active profile even in a
+--- non-interactive host (§16.18).
+--- @param ws table
+--- @param name string|nil
+--- @return table profile
+local function resolve_profile_for_show(ws, name)
+  local profiles = ws._profiles or {}
+  if name then
+    for _, p in ipairs(profiles) do if p.key == name then return p end end
+    die("no profile named '" .. name .. "' — run `lw profiles` to list.")
+  end
+  local active = ws._active_profile_key
+  if active then
+    for _, p in ipairs(profiles) do if p.key == active then return p end end
+  end
+  die("no profile specified and no active profile — name one (`lw profile show <profile>`) " ..
+    "or set one with `lw profile select`.")
+end
+M._resolve_profile_for_show = resolve_profile_for_show
+
+--- `lw profile show [<profile>]` — a `lw status` page narrowed to one profile.
+--- Loads the workspace (waits for tool detection, for accurate tool resolution
+--- and buildability), resolves the profile (default = active), and prints it.
+--- @param root string workspace root
+--- @param profile_name string|nil
+--- @return integer exit code
+function M.cmd_profile_show(root, profile_name)
+  local ws = load_workspace(root)
+  local profile = resolve_profile_for_show(ws, profile_name)
+  for _, line in ipairs(profile_show_rows(ws, profile)) do out(line) end
+  return 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -4605,13 +4875,13 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "profile" then
-    if n == 1 then emit({ "list", "select", "create", "publish", "query", "remove" }); return 0 end
+    if n == 1 then emit({ "list", "show", "select", "create", "publish", "query", "remove" }); return 0 end
     if sub == "create" then
       if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
       elseif n >= 3 then                                       -- [tool ...] / --activate
         local list = comp_tool_keys(); list[#list + 1] = "--activate"; emit(list)
       end
-    elseif sub == "publish" and n == 2 then
+    elseif (sub == "publish" or sub == "show") and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- <key>
     end
     return 0
@@ -5157,9 +5427,15 @@ cross-project selection a profile builds. Managed in the working copy;
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
-  profile = [[lw profile <list|select|create|remove|publish|query>
+  profile = [[lw profile <list|show|select|create|remove|publish|query>
 
   list      same as `lw profiles`
+  show [<profile>]
+            One-screen status view for a single profile: its configuration
+            set and mappings, the projects the set maps (with each one's
+            configuration, resolved toolchain and build state), the profile's
+            toolchains, and its launchable targets. Diagnostics are scoped to
+            the profile. <profile> defaults to the active profile. Read-only.
   select    interactive picker; sets the active profile (writes user.json)
   create <config-set> [tool ...] [--activate]
             Create a profile (a config set + toolchains) in the working copy.
@@ -5459,7 +5735,7 @@ Usage: lw [command] [args]
   configuration     add | set | get | show | ... project configurations
   configuration-set create | map | show | ... sets  (cs)
   profiles          list profiles and their buildability
-  profile <sub>     list | select | create | remove | publish | query
+  profile <sub>     list | show | select | create | remove | publish | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
