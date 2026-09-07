@@ -42,6 +42,7 @@ metadata lives here. All UI mutations land here.
   "intent": { ... },
   "default_target": { ... },
   "device": { ... },
+  "profile_variables": { ... },
   "lsp": { ... }
 }
 ```
@@ -52,6 +53,20 @@ The `device` field maps profile keys to device serial strings:
     "Debug:<sdk>-<platform>-<arch>": "FMR0225108000951"
 }
 ```
+
+The `profile_variables` field holds each profile's machine-local fill values
+for **blank** project variables (§1.3.1), keyed profile → project → variable:
+```json
+"profile_variables": {
+    "Debug:ninja-gcc-12": {
+        "App": { "sdk_root": "/opt/sdk/3.2" }
+    }
+}
+```
+These are per-machine values (an SDK path, a device address) and — like the
+`active_profile`, `name`, and `device` fields — are personal to this checkout:
+they live in `user.json` only and are never published to `loomworks.json`
+(§2.4), regardless of the profile's intent.
 
 The optional `name` field overrides the workspace display name (§1.1). It is
 present only when the user has set one explicitly (`lw init --name`,
@@ -251,6 +266,11 @@ shared.
   longer includes `shared` are removed from loomworks.json.
 - After write, the published baseline is updated to match the new
   loomworks.json. `+` and removed-upstream indicators clear.
+
+A profile's **fill values** for blank project variables (§1.3.1) are
+per-machine working-copy state, not a publishable item: they are excluded
+from `:w` and never reach loomworks.json even when the profile that owns them
+is published.
 
 If the working copy has no items with effective intent including `shared`,
 `:w` is a no-op — empty published snapshots are not written, and any

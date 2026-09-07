@@ -127,6 +127,17 @@ project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). `get` returns the resolved string for the full path, or the
 sub-dict for `overrides` / `overrides.<family>`.
 
+A management host MAY also **set or clear a profile's fill value** for a blank
+project variable (§1.3.1), addressed by `(profile, project, variable)` and
+defaulting to the active profile when no profile is named. `set` writes the
+value into the working copy (§2.2) under that profile; the mirror operation
+clears it. Naming a variable not declared in the project's `variables`, or a
+profile that does not exist, is rejected. These fill values are per-machine
+working-copy state and are never published (§2.4). Filling a profile's blank
+variables this way is the non-interactive path through the build gate (§5):
+under `--no-interaction` a build refuses while any blank remains, naming the
+variable and profile to fill.
+
 ### 16.10 Toolchains outside the search paths
 
 *(Reserved. Section numbers §16.11+ are referenced throughout, so this number
@@ -341,7 +352,9 @@ toolchain and last known build state; the profile's **toolchains**; and its
 yet configured, exactly as the target listing above. Its **diagnostics** are
 scoped to the profile — those concerning the profile itself, its configuration
 set, and the configurations and projects that set maps — rather than the whole
-workspace's set. The profile defaults to the **active profile** when none is
+workspace's set. A profile that leaves a **blank** declared variable unfilled
+(§1.3.1) surfaces here (and in the overview below) as a profile-scoped
+build-blocking diagnostic naming the variable, and fails `--check`. The profile defaults to the **active profile** when none is
 named, like the operations that resolve a default profile; naming a profile that
 does not exist, or omitting one with no active profile, is an error that names
 the problem. Being read-only, this view MAY resolve the active profile even in a

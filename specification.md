@@ -181,5 +181,14 @@ belongs in the matching `spec/` file.
     (`CMAKE_<LANG>_COMPILER_LAUNCHER`), toolchain files, and CMake presets
     (a preset owns its own toolchain — see the cmake module spec).
 
+14. **Blank variables gate the build**: A declared project variable that is
+    blank after configuration resolution (§1.3.1) — no default, no
+    configuration or compiler override — MUST be filled by the active profile.
+    A profile with an unfilled blank variable, for a project in its
+    configuration set, is not buildable: configure and build refuse to run
+    (§5) and the condition surfaces as a profile-scoped diagnostic (§16.18).
+    Profile fill values are per-machine working-copy state and are never
+    published (§2.4).
+
 ---
 

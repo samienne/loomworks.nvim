@@ -167,6 +167,15 @@ configure options (e.g. cmake `-D` cache-variable values).
 path-aware UI such as the segment editor). Types are declared at the
 project level and cannot be changed by configurations.
 
+**Optional default**: `default` is optional in a declaration (only `type` is
+required). A variable that resolves to no value — no `default`, no
+configuration/compiler override, and no active-profile fill (below) — is
+**blank**: it has a type but no value. A blank variable does NOT make its
+configuration abstract: the configuration still carries its variant and is a
+normal buildable configuration. It simply needs a value supplied before a
+build that references the variable can run; the missing value is what the
+active profile fills (see **Profile fill** below).
+
 **Configuration overrides**: Configurations can override variable values
 but cannot add new variables or change types. Overrides follow the
 configuration inheritance chain.
@@ -189,7 +198,7 @@ configuration inheritance chain.
 entries override variable values only when the active tool's compiler belongs
 to that family. `overrides` participates in the configuration inheritance
 chain exactly like `variables`, and every name it sets MUST be declared in the
-project `variables` — a declaration may carry an empty `default`, so a variable
+project `variables` — a declaration may omit its `default`, so a variable
 can exist purely to receive compiler-specific values.
 
 ```json
@@ -210,8 +219,12 @@ with no matching `overrides` entry at a given level falls through to that
 level's compiler-agnostic `variables` value.
 
 **Resolution order**: walk the configuration inheritance chain most-specific →
-least; the first level that provides a value wins, and the project `default`
-is the final fallback. *Within* a single level the value for a name is:
+least; the first level that provides a value wins, then the project `default`,
+and finally — only when the variable is still **blank** after that chain (no
+default, no override) — the active profile's stored fill value (see **Profile
+fill** below). The profile value is consulted ONLY for a blank; it never
+shadows a value the configuration chain or default supplies. *Within* a single
+level the value for a name is:
 1. `overrides[active_family][name]`, when the active compiler matches a family
    that sets `name` at this level (compiler-match is the intra-level
    tiebreaker); otherwise
@@ -221,6 +234,28 @@ Chain position dominates compiler-specificity: a nearer configuration's plain
 `variables` value shadows a farther configuration's `overrides` entry, so a
 configuration that must keep a compiler-specific value re-declares it in its
 own `overrides`.
+
+**Profile fill (blank variables)**: When a variable is still blank after the
+configuration chain and default, the **active profile** supplies its value.
+This is the machine-local layer: a value that differs per computer (an SDK
+path, a device address) is declared blank at the project level and filled by
+each profile on each machine. Key properties:
+
+- **Blanks only.** The profile value is a final fallback consulted ONLY for a
+  blank variable. It never overrides a value the configuration chain, a
+  compiler `override`, or the project `default` already provides — a set
+  variable is never shadowed by a profile value.
+- **Implicit requiredness.** A variable that is blank after configuration
+  resolution MUST be supplied by the active profile. There is no separate
+  `required` flag — *blank is the requirement*. A profile that leaves such a
+  variable unfilled is **incomplete** and is not buildable (§15; the build
+  gate is §5).
+- **Locality.** Profile fill values are per-machine state stored in `user.json`
+  only, keyed per `(profile, project, variable)`. They are NEVER written to
+  `loomworks.json`, regardless of the profile's publish intent (§2.4).
+
+Precedence, end to end: `default → configuration inheritance → compiler
+override → (if still blank) active-profile fill value`.
 
 **Value expansion**: Variable values can reference built-in variables
 (`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
@@ -241,14 +276,18 @@ references an undeclared variable is likewise a diagnostic, never a silent
 empty expansion.
 
 **Provenance tracking**: Each resolved variable value tracks its source —
-which specific configuration provided the value, or whether it comes from
-the project default. The editor displays this provenance so the user can
-see where each value originates (e.g., "from Debug", "from project
-default", "overridden here").
+which specific configuration provided the value, whether it comes from the
+project default, or whether it was filled by the active profile. The editor
+displays this provenance so the user can see where each value originates
+(e.g., "from Debug", "from project default", "overridden here", "from
+profile").
 
 **user.json**: Variable declarations and overrides live in user.json as
-part of the working copy (see §2.4). Published variables are written to
-loomworks.json on `:w`.
+part of the working copy (see §2.4). Published variable declarations and
+overrides are written to loomworks.json on `:w`. Active-profile **fill
+values** for blank variables (above) are a separate, per-machine concern:
+they live in user.json only and are never published, regardless of the
+profile's intent.
 
 **Design for extension** (not in v1):
 - `${parent:var_name}` — reference the value from the parent scope
