@@ -564,6 +564,16 @@ function Project:rename_configuration(old_name, new_name, config_data)
             existing_names[#existing_names + 1] = cfg.name
         end
     end
+    -- Reject an exact collision with another user configuration. validate_path_name
+    -- only guards sanitization collisions (and skips exact matches via `existing ~=
+    -- name`), so without this an exact-name rename would silently merge the two
+    -- configurations into one entry — data loss (matches the config-set rename guard).
+    for _, existing in ipairs(existing_names) do
+        if existing == new_name then
+            return false, "configuration '" .. new_name .. "' already exists"
+        end
+    end
+
     local valid, verr = validate_path_name(new_name, existing_names)
     if not valid then
         return false, "invalid configuration name: " .. verr

@@ -1528,6 +1528,40 @@ describe("configuration rename propagation", function()
         assert.equals("DebugASAN", h.cs_mapping(debug_cs_rename, "App"))
     end)
 
+    it("refuses to rename onto an existing sibling config (no data loss)", function()
+        local ws = make_ws({
+            projects = {
+                App = {
+                    cmake = {
+                        configurations = {
+                            ["Debug-asan"] = { inherits = "Debug", options = { ASAN = "ON" } },
+                            ["Release-lto"] = { inherits = "Release", options = { LTO = "ON" } },
+                        },
+                    },
+                },
+            },
+        })
+
+        local project = h.find_project_in(ws:get_projects(), "App")
+        local ok, err = project:rename_configuration("Debug-asan", "Release-lto", {
+            inherits = "Debug", options = { ASAN = "ON" },
+        })
+
+        -- Must be rejected, not silently merged.
+        assert.is_falsy(ok)
+        assert.is_truthy(err and err:find("already exists", 1, true))
+
+        -- Both configurations survive intact with their own options.
+        local app = h.find_project_in(ws:get_projects(), "App")
+        local asan = app:get_configuration("Debug-asan")
+        local lto = app:get_configuration("Release-lto")
+        assert.is_not_nil(asan)
+        assert.is_not_nil(lto)
+        assert.equals("ON", asan.options and asan.options.ASAN)
+        assert.equals("ON", lto.options and lto.options.LTO)
+        assert.is_nil(lto.options and lto.options.ASAN)
+    end)
+
     pending("old build_dir becomes orphaned after rename", function()
         local ws = make_ws({
             projects = {
