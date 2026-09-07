@@ -6,8 +6,8 @@
 ---
 --- Commands: (status) | init | workspace <rename> |
 ---           project <add|remove|rename|list|show> |
----           config <list|add|show|get|set|unset|remove> |
----           configset <list|show|create|map|unmap|remove> |
+---           config <list|add|show|get|set|unset|rename|remove> |
+---           configset <list|show|create|map|unmap|rename|remove> |
 ---           profile <list|show|select|create|remove|publish|query|set|unset> |
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
@@ -2636,7 +2636,46 @@ function M.cmd_configuration_remove(root, proj_name, cfg_name)
   return 0
 end
 
---- `lw config<list|add|show|get|set|unset|remove>`
+--- `lw config rename <project> <old> <new>` (alias `mv`) — rename a
+--- user-declared configuration in place. Delegates to the same atomic mutation
+--- the editor uses (Project:rename_configuration), which updates the config-set
+--- mappings, ConfigUnits, and profiles that reference it and orphans the old
+--- build dir. For a pure rename we hand it the EXISTING config's user-override
+--- data (via config_to_data) so nothing but the name changes. Only works on a
+--- user configuration; module-generated/preset configs (e.g. variant:Debug)
+--- surface rename_configuration's "not found" error via die.
+function M.cmd_configuration_rename(root, proj_name, old_name, new_name)
+  if not (proj_name and old_name and new_name) then
+    die("usage: lw config rename <project> <old> <new>")
+  end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local cfg = resolve_config(proj, old_name, false)
+  -- rename_configuration mutates cfg.name in place, so snapshot it for the
+  -- confirmation line before the call.
+  local from = cfg.name
+  -- Guard an exact-name collision here: rename_configuration only validates the
+  -- name shape (validate_path_name), whose collision check skips exact matches,
+  -- so renaming onto an existing user config would silently merge the two. The
+  -- configset path rejects this in its own mutation; mirror that at the CLI.
+  if new_name ~= from then
+    for _, other in ipairs(proj:get_configurations()) do
+      if other ~= cfg and other.is_user and other.name == new_name then
+        die("could not rename configuration: configuration '" .. new_name ..
+          "' already exists in project '" .. proj.key .. "'")
+      end
+    end
+  end
+  local config_data = config_to_data(cfg)
+  local ok, err = proj:rename_configuration(from, new_name, config_data)
+  if not ok then die("could not rename configuration: " .. tostring(err)) end
+  out(string.format("renamed configuration '%s/%s' -> '%s/%s'",
+    proj.key, from, proj.key, new_name))
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw config<list|add|show|get|set|unset|rename|remove>`
 --- `lw config publish <project> <name>` — mark a configuration (and its
 --- project) shared and write loomworks.json.
 function M.cmd_configuration_publish(root, proj_name, cfg_name)
@@ -2663,10 +2702,11 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == "get" then return M.cmd_configuration_get(root, a3, a4, a5) end
   if sub == "set" then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
   if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end
+  if sub == "rename" or sub == "mv" then return M.cmd_configuration_rename(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
   if sub == "publish" then return M.cmd_configuration_publish(root, a3, a4) end
   die("unknown config subcommand '" .. tostring(sub) ..
-    "' — use list|add|show|get|set|unset|remove|publish")
+    "' — use list|add|show|get|set|unset|rename|remove|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -2841,7 +2881,25 @@ function M.cmd_cset_remove(root, name)
   return 0
 end
 
---- `lw configset <list|show|create|map|unmap|remove>` (alias: cs)
+--- `lw configset rename <old> <new>` (alias `mv`) — rename a configuration set
+--- in place. Delegates to the same atomic mutation the editor uses
+--- (Workspace:rename_configuration_set): validates the name, rejects a
+--- collision, and re-derives the keys of profiles that reference the set. Its
+--- error (invalid/colliding name) surfaces via die.
+function M.cmd_cset_rename(root, old_name, new_name)
+  if not (old_name and new_name) then
+    die("usage: lw configset rename <old> <new>")
+  end
+  local ws = load_workspace(root, false)
+  local cs = resolve_config_set(ws, old_name)
+  local ok, err = ws:rename_configuration_set(cs, new_name)
+  if not ok then die("could not rename configuration set: " .. tostring(err)) end
+  out(string.format("renamed configuration set '%s' -> '%s'", old_name, new_name))
+  out("`lw publish` to update the shared loomworks.json.")
+  return 0
+end
+
+--- `lw configset <list|show|create|map|unmap|rename|remove>` (alias: cs)
 --- `lw configset publish <name>` — mark a set shared and write
 --- loomworks.json (pulls its mapped projects + configs via the closure).
 function M.cmd_cset_publish(root, name)
@@ -2857,10 +2915,11 @@ function M.cmd_cset(sub, root, args)
   if sub == "create" or sub == "add" then return M.cmd_cset_create(root, args) end
   if sub == "map" then return M.cmd_cset_map(root, args[3], args[4], args[5]) end
   if sub == "unmap" then return M.cmd_cset_unmap(root, args[3], args[4]) end
+  if sub == "rename" or sub == "mv" then return M.cmd_cset_rename(root, args[3], args[4]) end
   if sub == "remove" or sub == "rm" then return M.cmd_cset_remove(root, args[3]) end
   if sub == "publish" then return M.cmd_cset_publish(root, args[3]) end
   die("unknown configset subcommand '" .. tostring(sub) ..
-    "' — use list|show|create|map|unmap|remove|publish")
+    "' — use list|show|create|map|unmap|rename|remove|publish")
 end
 
 --- `lw profile select` — interactive picker that sets the active profile.
@@ -5306,9 +5365,9 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "config" or cmd == "configuration" or cmd == "cfg" then
-    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "remove", "publish" }); return 0 end
+    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "rename", "remove", "publish" }); return 0 end
     if n == 2 then emit(comp_project_names(comp_ws(root))); return 0 end -- <project>
-    if n == 3 and has({ "show", "get", "set", "unset", "remove", "publish" }, sub) then
+    if n == 3 and has({ "show", "get", "set", "unset", "rename", "mv", "remove", "publish" }, sub) then
       emit(comp_config_names(comp_ws(root), a[3])); return 0            -- <config>
     end
     if n == 4 and has({ "get", "set", "unset" }, sub) then
@@ -5317,8 +5376,8 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "configset" or cmd == "configuration-set" or cmd == "cs" then
-    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "remove", "publish" }); return 0 end
-    if n == 2 and has({ "show", "map", "unmap", "remove", "publish" }, sub) then
+    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "rename", "remove", "publish" }); return 0 end
+    if n == 2 and has({ "show", "map", "unmap", "rename", "mv", "remove", "publish" }, sub) then
       emit(comp_set_names(comp_ws(root))); return 0                      -- <name>
     end
     if n == 3 and (sub == "map" or sub == "unmap") then
@@ -5787,7 +5846,7 @@ Examples:
   lw project set  App sdk_root --type path      # blank; fill with `lw profile set`
   lw project set  App port 8080                 # string (the default type)
   lw project unset App out_dir]],
-  config = [[lw config <list|add|show|get|set|unset|remove>   (aliases: configuration, cfg)
+  config = [[lw config <list|add|show|get|set|unset|rename|remove>   (aliases: configuration, cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
 shares the result. Configs are addressed by name (an unambiguous base name
@@ -5807,6 +5866,9 @@ custom variants.
   get <project> <name> <param>       print one value
   set <project> <name> <param> <value>
   unset <project> <name> <param>     clear one value
+  rename <project> <old> <new>       (alias: mv) rename a user configuration in
+                                     place; updates every set mapping and profile
+                                     that references it (user configs only)
   remove <project> <name>            delete a user configuration
 
 A config becomes concrete by INHERITING a base that provides a variant; the
@@ -5832,8 +5894,9 @@ Examples:
   lw config set   App Debug variables.warn_flags '-Werror'
   lw config set   App Debug overrides.clang.warn_flags '-Werror -Wno-unused-command-line-argument'
   lw config get   App Debug overrides.clang.warn_flags
-  lw config unset App Debug overrides.clang.warn_flags]],
-  configset = [[lw configset <list|show|create|map|unmap|remove>   (aliases: configuration-set, cs)
+  lw config unset App Debug overrides.clang.warn_flags
+  lw config rename App Debug Debug-asan]],
+  configset = [[lw configset <list|show|create|map|unmap|rename|remove>   (aliases: configuration-set, cs)
 
 A configuration set maps each project to one of its configurations — the
 cross-project selection a profile builds. Managed in the working copy;
@@ -5844,10 +5907,15 @@ cross-project selection a profile builds. Managed in the working copy;
   create <name> [project=config ...]  create a set (optionally with mappings)
   map <name> <project> <config>       set/replace one project's mapping
   unmap <name> <project>              drop a project's mapping
+  rename <old> <new>                  (alias: mv) rename the set; re-derives the
+                                      keys of profiles that reference it
   remove <name>                       delete the set
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
-resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
+resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.
+
+Examples:
+  lw configset rename Dev Development]],
   profile = [[lw profile <list|show|select|create|remove|publish|query|set|unset>
   (`lw profiles` is an alias for `lw profile list`)
 
@@ -6044,8 +6112,8 @@ Read-only — safe any time (no writes to user.json / loomworks.json):
 
 Mutating — only when the task asks (these write the working copy / shared file):
   init · workspace rename · project add|remove|rename ·
-  config add|set|unset|remove ·
-  configset create|map|unmap|remove · profile create|remove ·
+  config add|set|unset|rename|remove ·
+  configset create|map|unmap|rename|remove · profile create|remove ·
   sdk add|remove ·
   <kind> publish · publish · settings set
 

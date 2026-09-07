@@ -155,6 +155,15 @@ project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). `get` returns the resolved string for the full path, or the
 sub-dict for `overrides` / `overrides.<family>`.
 
+A management host MAY also **rename** an item in place — a project (by key), a
+user configuration (by `(project, configuration)`), or a configuration set (by
+name). A rename is atomic and propagates to every item that references the old
+name (configuration-set mappings, profile mappings, and derived profile keys),
+so the model stays consistent without a rebuild; an invalid or colliding new
+name is rejected by the same validation the editor applies. Renaming a
+configuration is confined to **user** configurations — a module-generated or
+preset variant has no user-owned name to change.
+
 A management host MAY also **declare or remove a project variable** (§1.3.1),
 addressed by `(project, variable)`. Declaring accepts a `type` (`string` or
 `path`, defaulting to `string`) and an OPTIONAL `default`; when the default is
