@@ -2050,6 +2050,18 @@ function M.cmd_project_show(root, name)
     end
   end
 
+  local vars = require("loomworks.workspace_view").get_variables(proj)
+  out("")
+  out("  Variables:")
+  if #vars == 0 then
+    out("    (none)")
+  else
+    for _, v in ipairs(vars) do
+      out(string.format("    %-22s %-7s%s", v.name, v.type,
+        v.default ~= nil and ("  default=" .. v.default) or "  (blank)"))
+    end
+  end
+
   local rows = config_set_rows(ws, proj)
   out("")
   out("  Configuration sets:")
@@ -2070,14 +2082,98 @@ function M.cmd_project_publish(root, name)
   return publish_item(ws, proj, "project '" .. proj.key .. "'")
 end
 
-function M.cmd_project(sub, root, a3, a4, a5)
+--- Parse `lw project set`'s args: the operands after `set` are the positionals
+--- `<project> <variable> [<default>]` with an optional `--type <string|path>`
+--- flag that may appear before or after the optional `<default>` (or as
+--- `--type=<value>`). `argv` is the full command array
+--- (`{ "project", "set", ... }`); operands start at index 3.
+--- @param argv string[]
+--- @return string[] positionals, string|nil var_type
+local function parse_project_set_args(argv)
+  local pos, var_type = {}, nil
+  local i = 3
+  while i <= #argv do
+    local w = argv[i]
+    local inline = w:match("^%-%-type=(.*)$")
+    if w == "--type" then
+      var_type = argv[i + 1]
+      if not var_type then die("--type needs a value — use 'string' or 'path'") end
+      i = i + 2
+    elseif inline then
+      var_type = inline
+      i = i + 1
+    else
+      pos[#pos + 1] = w
+      i = i + 1
+    end
+  end
+  return pos, var_type
+end
+M._parse_project_set_args = parse_project_set_args
+
+local PROJECT_SET_USAGE =
+  "usage: lw project set <project> <variable> [<default>] [--type string|path]\n" ..
+  "  declares (create-or-update) a project variable; omit <default> to declare\n" ..
+  "  it BLANK — the active profile must fill it before a build that uses it\n" ..
+  "  (see `lw configuration set variables.<name>` and `lw profile set`)"
+
+--- `lw project set <project> <variable> [<default>] [--type string|path]` —
+--- declare (create or update) a project variable. `--type` defaults to
+--- `string`. Omitting `<default>` declares a BLANK variable (§1.3.1). Upserts
+--- via Project:save_variable; persisted to user.json only.
+function M.cmd_project_set(root, argv)
+  local pos, var_type = parse_project_set_args(argv)
+  local proj_name, var_name, default_val = pos[1], pos[2], pos[3]
+  if not proj_name or not var_name then die(PROJECT_SET_USAGE) end
+  if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE) end
+  var_type = var_type or "string"
+  if var_type ~= "string" and var_type ~= "path" then
+    die("invalid --type '" .. tostring(var_type) .. "' — use 'string' or 'path'")
+  end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local decl = { type = var_type }
+  if default_val ~= nil then decl.default = default_val end
+  local ok, err = proj:save_variable(var_name, decl)
+  if not ok then die(err or "failed to declare variable '" .. var_name .. "'") end
+  out(string.format("%s: declared %s (type=%s, %s)", proj.key, var_name, var_type,
+    default_val ~= nil and ("default=" .. default_val) or "blank"))
+  return 0
+end
+
+--- `lw project unset <project> <variable>` — remove a project variable
+--- declaration via Project:delete_variable. Persisted to user.json only.
+function M.cmd_project_unset(root, proj_name, var_name)
+  if not proj_name or not var_name then
+    die("usage: lw project unset <project> <variable>\n" ..
+      "  removes a project variable declaration")
+  end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  if not (proj.variables and proj.variables[var_name]) then
+    local declared = {}
+    for n in pairs(proj.variables or {}) do declared[#declared + 1] = n end
+    table.sort(declared)
+    die("project '" .. proj.key .. "' declares no variable '" .. var_name ..
+      "'. Declared: " .. (next(declared) and table.concat(declared, ", ") or "(none)"))
+  end
+  local ok, err = proj:delete_variable(var_name)
+  if not ok then die(err or "failed to remove variable '" .. var_name .. "'") end
+  out(string.format("%s: removed variable %s", proj.key, var_name))
+  return 0
+end
+
+function M.cmd_project(sub, root, a3, a4, a5, argv)
   if sub == "add" then return M.cmd_project_add(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_project_remove(root, a3) end
   if sub == "rename" or sub == "mv" then return M.cmd_project_rename(root, a3, a4) end
   if sub == "show" then return M.cmd_project_show(root, a3) end
+  if sub == "set" then return M.cmd_project_set(root, argv) end
+  if sub == "unset" then return M.cmd_project_unset(root, a3, a4) end
   if sub == "publish" then return M.cmd_project_publish(root, a3) end
   if sub == nil or sub == "list" then return M.cmd_project_list(root) end
-  die("unknown project subcommand '" .. tostring(sub) .. "' — use add|remove|rename|list|show|publish")
+  die("unknown project subcommand '" .. tostring(sub) ..
+    "' — use add|remove|rename|list|show|set|unset|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -5028,12 +5124,20 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "project" then
-    if n == 1 then emit({ "add", "remove", "rm", "list", "show", "publish" }); return 0 end
+    if n == 1 then emit({ "add", "remove", "rm", "list", "show", "set", "unset", "publish" }); return 0 end
     if sub == "add" then
       if n == 2 then out("__dirs__") -- <path>
       elseif n == 3 then emit(require("loomworks.modules").list()) end -- [type]
-    elseif (sub == "remove" or sub == "rm" or sub == "show" or sub == "publish") and n == 2 then
-      emit(comp_project_names(comp_ws(root)))
+    elseif (sub == "remove" or sub == "rm" or sub == "show" or sub == "publish"
+        or sub == "set" or sub == "unset") and n == 2 then
+      emit(comp_project_names(comp_ws(root)))                    -- <project>
+    elseif sub == "set" then
+      -- <project> <variable> [<default>] [--type string|path]; offer --type
+      -- once past the variable name (position 3+), plus its values after it.
+      if n >= 4 then
+        if a[n - 1] == "--type" then emit({ "string", "path" })
+        else emit({ "--type" }) end
+      end
     end
     return 0
   elseif cmd == "profile" then
@@ -5513,7 +5617,7 @@ Inspect or create the git worktrees of the current repository (spec §16.26/§16
 Requires git: unlike the status hint, `lw worktree` errors (non-zero) when git
 is unavailable or the current directory is not a git repository, rather than
 degrading silently. An unknown subcommand is an error.]],
-  project = [[lw project <add|remove|rename|list|show|publish>
+  project = [[lw project <add|remove|rename|list|show|set|unset|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
 `lw publish` writes the shared ones to loomworks.json.
@@ -5534,10 +5638,28 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         set that references it; `lw publish` then rewrites loomworks.json.
   list  Show all projects: key, type, path.
   show <name>
-        Detail one project: type, path, its configurations, the sets that map
-        it, and its intent.
+        Detail one project: type, path, its configurations, its variable
+        declarations, the sets that map it, and its intent.
+  set <project> <variable> [<default>] [--type string|path]
+        Declare (create-or-update) a project variable. --type defaults to
+        `string`. Omit <default> to declare it BLANK — a variable with a type
+        but no value that the active profile must fill before a build using it.
+        --type may come before or after the optional <default>.
+  unset <project> <variable>
+        Remove a variable declaration (and any configuration overrides of it).
   publish <name>
-        Mark the project shared (local+shared) and regenerate loomworks.json.]],
+        Mark the project shared (local+shared) and regenerate loomworks.json.
+
+A declared variable feeds three surfaces (see core §1.3.1):
+  lw project set <p> <var> [<default>] [--type …]   declare it here
+  lw configuration set <p> <cfg> variables.<var> …  override per configuration
+  lw profile set [<profile>] <p> <var> <value>       fill a blank per profile
+
+Examples:
+  lw project set  App out_dir '${project_path}/dist' --type path
+  lw project set  App sdk_root --type path      # blank; fill with `lw profile set`
+  lw project set  App port 8080                 # string (the default type)
+  lw project unset App out_dir]],
   configuration = [[lw configuration <list|add|show|get|set|unset|remove>   (alias: cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
@@ -6084,7 +6206,7 @@ local function main()
   end
   -- `project` / `configuration` manage their own workspace load (no tools).
   if command == "project" then
-    finish(M.cmd_project(a[2], root, a[3], a[4], a[5]))
+    finish(M.cmd_project(a[2], root, a[3], a[4], a[5], a))
   end
   if command == "configuration" or command == "cfg" then
     finish(M.cmd_configuration(a[2], root, a[3], a[4], a[5], a[6], a))
