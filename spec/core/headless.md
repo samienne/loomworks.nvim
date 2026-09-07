@@ -140,6 +140,18 @@ project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). `get` returns the resolved string for the full path, or the
 sub-dict for `overrides` / `overrides.<family>`.
 
+A management host MAY also **declare or remove a project variable** (§1.3.1),
+addressed by `(project, variable)`. Declaring accepts a `type` (`string` or
+`path`, defaulting to `string`) and an OPTIONAL `default`; when the default is
+omitted the variable is declared **blank** — it has a type but no value, the
+profile-fill case (below). Declaring is create-or-update (it upserts the
+type/default of an existing declaration); an invalid type, or a name that
+collides with a built-in (§1.3.1), is rejected by the same validation the
+editor applies. Removing drops the declaration together with any configuration
+overrides of it. This is the non-interactive path that bootstraps a variable so
+the override (`variables.<name>` above) and profile-fill (below) operations —
+both of which require the variable to already be declared — become usable.
+
 A management host MAY also **set or clear a profile's fill value** for a blank
 project variable (§1.3.1), addressed by `(profile, project, variable)` and
 defaulting to the active profile when no profile is named. `set` writes the

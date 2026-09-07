@@ -439,7 +439,23 @@ Declare typed variables with defaults, override per configuration:
 Types: `string`, `path`. Variables are usable in launch configs, deploy
 destinations, and module configure options (cmake/meson `-D` values) as
 `${output_dir}`. Configuration overrides follow the inheritance chain.
-Editable from the status page (Projects and Configuration editors).
+Editable from the status page (Projects and Configuration editors), or
+headlessly:
+
+```sh
+lw project set   <project> <variable> [<default>] [--type string|path]
+lw project unset <project> <variable>
+# e.g. declare a blank path, reference it, then fill it per machine:
+lw project set App sdk_root --type path            # blank (no default)
+lw configuration set App Debug options.CMAKE_PREFIX_PATH '${sdk_root}'
+lw profile set App sdk_root /opt/sdk/3.2           # fill the blank
+```
+
+`--type` defaults to `string`; omitting `<default>` declares the variable
+*blank*. `lw project show <project>` lists a project's declarations. Declaring
+is the bootstrap for both the per-configuration override
+(`lw configuration set variables.<name>`) and the per-profile fill
+(`lw profile set`), which require the variable to already be declared.
 
 **Compiler-specific overrides.** A configuration may add an `overrides` block
 keyed by compiler family (`clang`, `gcc`, `msvc`) that overrides variable
@@ -738,7 +754,7 @@ command has detail under `lw help <command>`.
 |---|---|
 | `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
 | `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
-| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` |
+| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset`. `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
 | `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
 | `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
