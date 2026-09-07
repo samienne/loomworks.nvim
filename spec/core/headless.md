@@ -56,6 +56,19 @@ editions of the same toolchain) the choice MUST still be deterministic and
 independent of enumeration order. When a selector matches more than one
 **profile** the invocation is an ambiguity error, never an arbitrary pick.
 
+A profile MAY also be selected by a **stable positional number**. Every
+profile listing assigns each profile a number from a fixed ordering — the
+profiles sorted ascending by key, numbered 1..N — so a profile's number is the
+same in every listing and does not depend on the active profile or on display
+order. Wherever a command takes a profile, a bare integer operand is accepted
+in place of the key and resolves to the profile at that position; an
+out-of-range number is an error naming the valid range. Profile keys are never
+bare integers, so name and number selection never collide. Numbers are an
+**interactive convenience only** — the ordering is recomputed each run and a
+number may shift when profiles are added or removed. Scripts and CI MUST use
+keys, and read-only machine introspection (§16.18) resolves keys exclusively
+and never accepts a number.
+
 ### 16.4 Cache-cold vs cache-warm
 
 Build-unit readiness derives from the cache (§3.1). For a build unit with

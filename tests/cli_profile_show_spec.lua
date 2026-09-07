@@ -186,6 +186,31 @@ describe("_profile_show_rows", function()
       assert.is_nil(l:find("\27[", 1, true))
     end
   end)
+
+  it("shows the profile's stable number in the header", function()
+    -- Single profile in the workspace → its number is 1.
+    local lines = build(false)
+    local header
+    for _, l in ipairs(lines) do
+      if l:find("Profile", 1, true) and l:find("dev:ninja-gcc-12", 1, true) then header = l end
+    end
+    assert.is_truthy(header)
+    assert.is_truthy(header:find("Profile 1", 1, true))
+  end)
+
+  it("uses the stable-by-key number (not position 1) with several profiles", function()
+    -- Two profiles: alpha:… = 1, zeta:… = 2. Showing zeta must read "Profile 2".
+    local shown = fake_profile({ key = "zeta:ninja-gcc-12", set = "dev", pps = {} })
+    local other = fake_profile({ key = "alpha:ninja-gcc-12", set = "dev", pps = {} })
+    local ws = fake_ws({ active = "zeta:ninja-gcc-12", profiles = { shown, other } })
+    local lines = cli._profile_show_rows(ws, shown, false)
+    local header
+    for _, l in ipairs(lines) do
+      if l:find("Profile", 1, true) and l:find("zeta:ninja-gcc-12", 1, true) then header = l end
+    end
+    assert.is_truthy(header)
+    assert.is_truthy(header:find("Profile 2", 1, true))
+  end)
 end)
 
 describe("_resolve_profile_for_show", function()
@@ -224,5 +249,47 @@ describe("_resolve_profile_for_show", function()
     assert.equals(1, capture(function()
       cli._resolve_profile_for_show(ws({ { key = "a" }, { key = "b" } }, nil))
     end))
+  end)
+
+  it("resolves a bare integer to the stable-sorted profile", function()
+    local a, b, c = { key = "a" }, { key = "b" }, { key = "c" }
+    -- Passed out of key order; numbering re-sorts: a=1, b=2, c=3.
+    local w = ws({ c, a, b }, "a")
+    assert.equals("a", cli._resolve_profile_for_show(w, "1").key)
+    assert.equals("b", cli._resolve_profile_for_show(w, "2").key)
+    assert.equals("c", cli._resolve_profile_for_show(w, "3").key)
+  end)
+
+  it("dies on an out-of-range number, name still resolves", function()
+    local w = ws({ { key = "a" }, { key = "b" } }, "a")
+    assert.equals(1, capture(function() cli._resolve_profile_for_show(w, "9") end))
+    assert.equals("b", cli._resolve_profile_for_show(w, "b").key)
+  end)
+end)
+
+describe("_resolve_profile_for_set (numeric)", function()
+  local function capture(fn)
+    local real_exit, real_stderr = os.exit, io.stderr
+    local code
+    io.stderr = { write = function() end }
+    os.exit = function(c) code = c or 0; error({ __exit = true }, 0) end
+    pcall(fn)
+    os.exit, io.stderr = real_exit, real_stderr
+    return code
+  end
+  local function ws(profiles, active)
+    return { _profiles = profiles, _active_profile_key = active }
+  end
+
+  it("resolves a bare integer to the stable-sorted profile", function()
+    local w = ws({ { key = "b" }, { key = "a" } }, "a")
+    assert.equals("a", cli._resolve_profile_for_set(w, "1").key)
+    assert.equals("b", cli._resolve_profile_for_set(w, "2").key)
+  end)
+
+  it("dies on an out-of-range number, name still resolves", function()
+    local w = ws({ { key = "a" }, { key = "b" } }, "a")
+    assert.equals(1, capture(function() cli._resolve_profile_for_set(w, "9") end))
+    assert.equals("a", cli._resolve_profile_for_set(w, "a").key)
   end)
 end)

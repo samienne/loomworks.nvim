@@ -759,6 +759,11 @@ command has detail under `lw help <command>`.
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
 | `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
 
+`lw profiles` and `lw status` number each profile (a stable position, alphabetical
+by key); that number can be typed in place of the profile name for any command
+(`lw build 2`, `lw profile show 1`) — an interactive convenience only, so scripts,
+CI, and `lw profile query` should still use keys.
+
 A first run, from an empty directory:
 
 ```sh
