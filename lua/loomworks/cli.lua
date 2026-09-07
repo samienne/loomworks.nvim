@@ -513,6 +513,43 @@ function M.cmd_profiles(ws)
   return 0
 end
 
+--- The single NAMED-profile matcher shared by every verb that takes a profile
+--- argument (`build`/`clean`/`run` via resolve_build_target, `select`/`remove`/
+--- `set`/`unset`/`target` via resolve_profile, `show` via
+--- resolve_profile_for_show). One consistent order:
+---   1. bare integer → the stable positional index from `lw profiles`
+---      (`profile_by_number`; out-of-range dies). Disabled by `opts.no_number`
+---      for `lw profile query`, the deterministic machine path — a number there
+---      falls through to name matching.
+---   2. exact key.
+---   3. unique boundary-anchored substring (`merge.match_profile`), so
+---      `Debug:ninja-clang-18` resolves the highest matching patch and `clang-1`
+---      never crosses into `clang-18`.
+--- Returns the profile, `nil` when nothing matched (the caller decides what a
+--- miss means — a hard error, or an onboarding branch), and dies with a clear
+--- message on an ambiguous substring. Each verb keeps its own distinct
+--- NO-argument fallback (§16.9/§16.18); only this named logic converges.
+--- @param ws table
+--- @param name string
+--- @param opts { no_number: boolean }|nil
+--- @return table|nil profile
+local function match_profile_arg(ws, name, opts)
+  local profiles = ws._profiles or {}
+  if not (opts and opts.no_number) then
+    local by_num = profile_by_number(ws, name)
+    if by_num then return by_num end
+  end
+  local keys, by_key = {}, {}
+  for _, p in ipairs(profiles) do keys[#keys + 1] = p.key; by_key[p.key] = p end
+  local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
+  if hit then return by_key[hit] end
+  if ambiguous then
+    die("'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", "))
+  end
+  return nil
+end
+M._match_profile_arg = match_profile_arg
+
 --- Resolve which profile to operate on: explicit number/name (a bare integer
 --- is the stable positional index; otherwise exact, then unambiguous substring)
 --- → user.json active → single → error.
@@ -525,20 +562,8 @@ end
 local function resolve_profile(ws, name, opts)
   local profiles = ws._profiles or {}
   if name then
-    if not (opts and opts.no_number) then
-      local by_num = profile_by_number(ws, name)
-      if by_num then return by_num end
-    end
-    -- Boundary-anchored selector: exact key, else a segment-aligned
-    -- match, so `Debug:ninja-clang-18` deterministically resolves the highest
-    -- matching patch and `clang-1` never crosses into `clang-18`.
-    local keys, by_key = {}, {}
-    for _, p in ipairs(profiles) do keys[#keys + 1] = p.key; by_key[p.key] = p end
-    local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
-    if hit then return by_key[hit] end
-    if ambiguous then
-      die("'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", "))
-    end
+    local hit = match_profile_arg(ws, name, opts)
+    if hit then return hit end
     die("no profile matching '" .. name .. "'. Run `lw profiles` to list.")
   end
   -- No profile given. Non-interactive mode deliberately does NOT fall back to
@@ -626,17 +651,12 @@ end
 local function resolve_build_target(ws, name)
   local profiles = ws._profiles or {}
 
-  -- A concrete profile match (exact key or unambiguous substring) always wins.
+  -- A concrete profile match (number index, exact key, or unambiguous
+  -- boundary-anchored substring — the shared matcher) always wins. A miss
+  -- (nil) falls through to the config-set onboarding / CI-refuse branches.
   if name then
-    for _, p in ipairs(profiles) do if p.key == name then return p, ws end end
-    local matches = {}
-    for _, p in ipairs(profiles) do if p.key:find(name, 1, true) then matches[#matches + 1] = p end end
-    if #matches == 1 then return matches[1], ws end
-    if #matches > 1 then
-      local keys = {}
-      for _, p in ipairs(matches) do keys[#keys + 1] = p.key end
-      die("'" .. name .. "' matches multiple profiles: " .. table.concat(keys, ", "))
-    end
+    local hit = match_profile_arg(ws, name)
+    if hit then return hit, ws end
   else
     if not interactive() then return resolve_profile(ws, nil), ws end
     local active = ws._active_profile_key
@@ -690,6 +710,7 @@ local function resolve_build_target(ws, name)
   end
   die("profile creation did not yield an active profile")
 end
+M._resolve_build_target = resolve_build_target
 
 --- Resolve a project by exact key, or die listing the existing ones.
 local function resolve_project(ws, name)
@@ -1336,7 +1357,59 @@ function M.cmd_launch_add(root, args)
   return 0
 end
 
---- `lw launch set <project> <name> [flags]` — modify an existing launch config
+--- Parse the `(project, name)` address for `launch show/remove/set`, accepting
+--- BOTH the legacy two-positional `<project> <name>` form and the `run`/`target`
+--- addressing style — a single `[<project>:]<name>` operand and/or
+--- `--project <p>` / `--launch <n>` flags. Scans `tokens` from `start`, pulling
+--- out the `--project`/`--launch` flags and the leading bare positionals that
+--- make up the address; it stops at the first OTHER `--flag` (an edit flag for
+--- `launch set`) or once the address is satisfied, so trailing edit flags/args
+--- are left for the caller. A single `project:name` operand splits on the first
+--- `:` only when the prefix is a known project (launch names may contain ':').
+--- @param ws table
+--- @param tokens string[]
+--- @param start integer index of the first address token (3 for `launch <sub>`)
+--- @return string|nil project_name, string|nil launch_name, integer next_index
+local function consume_launch_address(ws, tokens, start)
+  local proj_flag, launch_flag, pos = nil, nil, {}
+  local i = start
+  while tokens[i] do
+    local t = tokens[i]
+    if t == "--project" then proj_flag = tokens[i + 1]; i = i + 2
+    elseif t == "--launch" then launch_flag = tokens[i + 1]; i = i + 2
+    elseif t:sub(1, 2) == "--" then break -- an edit flag: the address ends here
+    else
+      local need = (proj_flag and 0 or 1) + (launch_flag and 0 or 1)
+      if #pos >= need then break end -- address already satisfied by flags/positionals
+      pos[#pos + 1] = t; i = i + 1
+    end
+  end
+  local proj, name = proj_flag, launch_flag
+  if not proj and not name then
+    if #pos >= 2 then
+      proj, name = pos[1], pos[2]
+    elseif #pos == 1 then
+      local pfx, rest = pos[1]:match("^([^:]+):(.+)$")
+      local known = false
+      if pfx then
+        for _, p in pairs(ws._projects or {}) do if p.key == pfx then known = true break end end
+      end
+      if known then proj, name = pfx, rest else name = pos[1] end
+    end
+  elseif not name then
+    name = pos[1]
+  elseif not proj then
+    proj = pos[1]
+  end
+  return proj, name, i
+end
+M._consume_launch_address = consume_launch_address
+
+-- Forward declaration: defined just after cmd_launch_set, used by it.
+local launch_show_resolved
+
+--- `lw launch set <project> <name> [flags]` (also `[<project>:]<name>` /
+--- `--project`/`--launch`) — modify an existing launch config
 --- in place. Reads the config, applies only the given changes, saves it
 --- back to the project's working copy.
 ---   --working-dir D | --clear-working-dir
@@ -1344,12 +1417,13 @@ end
 ---   --command C | --from-target T   (switch kind)
 ---   trailing positionals replace args | --clear-args
 function M.cmd_launch_set(root, args)
-  local proj_name, name = args[3], args[4]
+  local ws = load_workspace(root, false)
+  local proj_name, name, next_i = consume_launch_address(ws, args, 3)
   if not (proj_name and name) then
-    die("usage: lw launch set <project> <name> [--working-dir D|--clear-working-dir] " ..
+    die("usage: lw launch set [<project>] <name> [--project P] [--launch N] " ..
+      "[--working-dir D|--clear-working-dir] " ..
       "[--env K=V] [--unset-env K] [--command C|--from-target T] [args…|--clear-args]")
   end
-  local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
   local cur = project.launch and project.launch[name]
   if type(cur) ~= "table" then
@@ -1369,7 +1443,7 @@ function M.cmd_launch_set(root, args)
   end
 
   local new_args, touched = nil, false
-  local i = 5
+  local i = next_i
   while args[i] do
     local v = args[i]
     if v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
@@ -1399,14 +1473,12 @@ function M.cmd_launch_set(root, args)
   local ok, err = project:save_launch_config(name, new)
   if not ok then die("could not save launch config: " .. tostring(err)) end
   out(string.format("updated launch config '%s' on project '%s'", name, project.key))
-  return M.cmd_launch_show(root, project.key, name)
+  return launch_show_resolved(project, name)
 end
 
---- `lw launch show <project> <name>`
-function M.cmd_launch_show(root, proj_name, name)
-  if not (proj_name and name) then die("usage: lw launch show <project> <name>") end
-  local ws = load_workspace(root, false)
-  local project = resolve_project(ws, proj_name)
+--- Print one launch config, given a resolved project + name. Shared by
+--- `launch show` and the confirmation `launch set` prints after a save.
+function launch_show_resolved(project, name)
   local cfg = project.launch and project.launch[name]
   if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   out("launch config '" .. name .. "'  (project " .. project.key .. ")")
@@ -1423,10 +1495,26 @@ function M.cmd_launch_show(root, proj_name, name)
   return 0
 end
 
---- `lw launch remove <project> <name>`
-function M.cmd_launch_remove(root, proj_name, name)
-  if not (proj_name and name) then die("usage: lw launch remove <project> <name>") end
+--- `lw launch show <project> <name>` (also `[<project>:]<name>` /
+--- `--project`/`--launch`).
+function M.cmd_launch_show(root, args)
   local ws = load_workspace(root, false)
+  local proj_name, name = consume_launch_address(ws, args, 3)
+  if not (proj_name and name) then
+    die("usage: lw launch show [<project>] <name>  (also <project>:<name> / --project P --launch N)")
+  end
+  local project = resolve_project(ws, proj_name)
+  return launch_show_resolved(project, name)
+end
+
+--- `lw launch remove <project> <name>` (also `[<project>:]<name>` /
+--- `--project`/`--launch`).
+function M.cmd_launch_remove(root, args)
+  local ws = load_workspace(root, false)
+  local proj_name, name = consume_launch_address(ws, args, 3)
+  if not (proj_name and name) then
+    die("usage: lw launch remove [<project>] <name>  (also <project>:<name> / --project P --launch N)")
+  end
   local project = resolve_project(ws, proj_name)
   local ok, err = project:delete_launch_config(name)
   if not ok then die(tostring(err)) end
@@ -1436,10 +1524,10 @@ end
 
 function M.cmd_launch(sub, root, args)
   if sub == nil or sub == "list" then return M.cmd_launch_list(load_workspace(root, false), args[3]) end
-  if sub == "add" then return M.cmd_launch_add(root, args) end
+  if sub == "add" or sub == "create" then return M.cmd_launch_add(root, args) end
   if sub == "set" or sub == "edit" then return M.cmd_launch_set(root, args) end
-  if sub == "show" then return M.cmd_launch_show(root, args[3], args[4]) end
-  if sub == "remove" or sub == "rm" then return M.cmd_launch_remove(root, args[3], args[4]) end
+  if sub == "show" then return M.cmd_launch_show(root, args) end
+  if sub == "remove" or sub == "rm" then return M.cmd_launch_remove(root, args) end
   die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove")
 end
 
@@ -2164,7 +2252,7 @@ function M.cmd_project_unset(root, proj_name, var_name)
 end
 
 function M.cmd_project(sub, root, a3, a4, a5, argv)
-  if sub == "add" then return M.cmd_project_add(root, a3, a4, a5) end
+  if sub == "add" or sub == "create" then return M.cmd_project_add(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_project_remove(root, a3) end
   if sub == "rename" or sub == "mv" then return M.cmd_project_rename(root, a3, a4) end
   if sub == "show" then return M.cmd_project_show(root, a3) end
@@ -2552,7 +2640,7 @@ end
 
 function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == nil or sub == "list" then return M.cmd_configuration_list(root, a3) end
-  if sub == "add" then
+  if sub == "add" or sub == "create" then
     -- Bases are variadic: everything after <project> <name>. argv is
     -- { "configuration", sub, project, name, base... }.
     local bases = {}
@@ -2650,14 +2738,35 @@ local function parse_mapping(ws, spec)
 end
 
 --- `lw configuration-set create <name> [project=config ...]`
+--- Also accepts positional `<project> <config>` pairs (the same grammar as
+--- `configuration-set map`), e.g. `lw cs create dev app Debug renderer Release`.
+--- The form is chosen by whether the first mapping token contains `=`.
 function M.cmd_cset_create(root, args)
   local name = args[3]
-  if not name then die("usage: lw configuration-set create <name> [project=config ...]") end
+  if not name then
+    die("usage: lw configuration-set create <name> [project=config ...]\n" ..
+      "   or: lw configuration-set create <name> [<project> <config> ...]")
+  end
   local ws = load_workspace(root, false)
   local raw = {}
-  for i = 4, #args do
-    local pk, cfgname = parse_mapping(ws, args[i])
-    raw[pk] = cfgname
+  local rest = {}
+  for i = 4, #args do rest[#rest + 1] = args[i] end
+  if rest[1] and not rest[1]:find("=", 1, true) then
+    -- Positional `<project> <config>` pairs (matching `configuration-set map`).
+    if #rest % 2 ~= 0 then
+      die("positional mappings must come in <project> <config> pairs: " ..
+        table.concat(rest, " "))
+    end
+    for i = 1, #rest, 2 do
+      local project = resolve_project(ws, rest[i])
+      local cfg = resolve_config(project, rest[i + 1], false)
+      raw[project.key] = cfg.name
+    end
+  else
+    for _, spec in ipairs(rest) do
+      local pk, cfgname = parse_mapping(ws, spec)
+      raw[pk] = cfgname
+    end
   end
   local cs, err = ws:add_configuration_set(name, raw)
   if not cs then die("could not create configuration set: " .. tostring(err)) end
@@ -2734,7 +2843,7 @@ end
 function M.cmd_cset(sub, root, args)
   if sub == nil or sub == "list" then return M.cmd_cset_list(root) end
   if sub == "show" then return M.cmd_cset_show(root, args[3]) end
-  if sub == "create" then return M.cmd_cset_create(root, args) end
+  if sub == "create" or sub == "add" then return M.cmd_cset_create(root, args) end
   if sub == "map" then return M.cmd_cset_map(root, args[3], args[4], args[5]) end
   if sub == "unmap" then return M.cmd_cset_unmap(root, args[3], args[4]) end
   if sub == "remove" or sub == "rm" then return M.cmd_cset_remove(root, args[3]) end
@@ -3099,11 +3208,12 @@ end
 --- `lw target clear [profile]` — list a profile's launchable targets (default
 --- marked `*`), or set/clear its default target. Bare `lw target` lists the
 --- active profile's targets. `set`/`clear` are reserved sub-keywords; list a
---- profile literally named `set`/`clear` with `lw target list <name>`.
+--- profile literally named `set`/`clear`/`unset` with `lw target list <name>`.
+--- `unset` is an alias of `clear`.
 function M.cmd_target(root, args)
   local sub = args[2]
   if sub == "set" then return target_set(root, args) end
-  if sub == "clear" then return target_clear(root, args) end
+  if sub == "clear" or sub == "unset" then return target_clear(root, args) end
   local name = (sub == "list") and args[3] or sub
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_listing(ws, name)
@@ -3168,7 +3278,7 @@ function M.cmd_sdk(sub, root, args)
     return 0
   end
 
-  if sub == "add" then
+  if sub == "add" or sub == "create" then
     -- args: { "sdk", "add", <type>, <path>, flags… }
     local pos, force, family, version = {}, false, nil, nil
     local i = 3
@@ -3410,7 +3520,7 @@ function M.cmd_profile(sub, root, args)
   if sub == "unset" then
     return M.cmd_profile_unset(root, args)
   end
-  if sub == "create" then
+  if sub == "create" or sub == "add" then
     return M.cmd_profile_create(root, args)
   end
   if sub == "query" then
@@ -4311,8 +4421,9 @@ local function profile_show_rows(ws, profile, color)
 end
 M._profile_show_rows = profile_show_rows
 
---- Resolve which profile `lw profile show` displays. A named profile resolves by
---- exact key; an unknown name is an error that names it and points at `lw
+--- Resolve which profile `lw profile show` displays. A named profile resolves
+--- through the shared matcher (number index → exact key → unique boundary
+--- substring); an unknown name is an error that names it and points at `lw
 --- profiles`. With no name it defaults to the ACTIVE profile (like `lw build` /
 --- `lw run`); omitting it with no active profile is an error. Read-only, so —
 --- unlike the build/manage resolver — it may use the active profile even in a
@@ -4323,9 +4434,10 @@ M._profile_show_rows = profile_show_rows
 local function resolve_profile_for_show(ws, name)
   local profiles = ws._profiles or {}
   if name then
-    local by_num = profile_by_number(ws, name)
-    if by_num then return by_num end
-    for _, p in ipairs(profiles) do if p.key == name then return p end end
+    -- Same named matcher as build/run: number index → exact key → unique
+    -- boundary substring (so `profile show clang-18` resolves a full key).
+    local hit = match_profile_arg(ws, name)
+    if hit then return hit end
     die("no profile named '" .. name .. "' — run `lw profiles` to list.")
   end
   local active = ws._active_profile_key
@@ -5116,16 +5228,16 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "launch" then
     if n == 1 then emit({ "list", "add", "set", "show", "remove" }); return 0 end
-    if n == 2 and has({ "add", "set", "show", "remove", "rm", "list" }, sub) then
+    if n == 2 and has({ "add", "create", "set", "edit", "show", "remove", "rm", "list" }, sub) then
       emit(comp_project_names(comp_ws(root))); return 0                     -- <project>
     end
-    if n == 3 and has({ "set", "show", "remove", "rm" }, sub) then
+    if n == 3 and has({ "set", "edit", "show", "remove", "rm" }, sub) then
       emit(comp_launch_names(comp_ws(root), a[3]))                         -- <name>
     end
     return 0
   elseif cmd == "project" then
     if n == 1 then emit({ "add", "remove", "rm", "list", "show", "set", "unset", "publish" }); return 0 end
-    if sub == "add" then
+    if sub == "add" or sub == "create" then
       if n == 2 then out("__dirs__") -- <path>
       elseif n == 3 then emit(require("loomworks.modules").list()) end -- [type]
     elseif (sub == "remove" or sub == "rm" or sub == "show" or sub == "publish"
@@ -5176,7 +5288,7 @@ function M.cmd_complete(cword, words)
       emit(sorted_unique(vim.list_extend(comp_launch_names(ws_c), comp_profile_names(ws_c))))
     elseif sub == "set" and n == 3 then
       emit(sorted_unique(comp_launch_names(comp_ws(root))))    -- <target> on named profile
-    elseif (sub == "list" or sub == "clear") and n == 2 then
+    elseif (sub == "list" or sub == "clear" or sub == "unset") and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- [profile]
     end
     return 0
@@ -5201,6 +5313,12 @@ function M.cmd_complete(cword, words)
     end
     if n == 4 and sub == "map" then
       emit(comp_config_names(comp_ws(root), a[4]))                       -- <config>
+    end
+    if sub == "create" or sub == "add" then
+      -- create <name> [<project> <config> …] — after the name, positions
+      -- alternate project / config (the `project=config` form is free text).
+      if n >= 3 and (n % 2 == 1) then emit(comp_project_names(comp_ws(root)))
+      elseif n >= 4 and (n % 2 == 0) then emit(comp_config_names(comp_ws(root), a[n])) end
     end
     return 0
   elseif cmd == "module" or cmd == "mod" then

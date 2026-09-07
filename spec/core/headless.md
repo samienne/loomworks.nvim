@@ -69,6 +69,21 @@ number may shift when profiles are added or removed. Scripts and CI MUST use
 keys, and read-only machine introspection (§16.18) resolves keys exclusively
 and never accepts a number.
 
+This named-selection procedure — number, then exact key, then unique
+boundary substring, with an ambiguity always an error — applies **uniformly**
+to every verb that takes a profile operand (build, clean, test, run, and the
+management verbs select / show / remove / target). What differs per verb is
+only the **no-argument** fallback (§16.9/§16.18): a build-shaped invocation
+refuses without an explicit profile, while read-only listing and show default
+to the active profile. As surface conveniences that widen accepted input
+without changing behavior, item-creating verbs accept `create` and `add`
+interchangeably (and removal accepts `rm`, with `target unset` an alias of
+`target clear`); launch management (show / remove / set) accepts the §16.17
+target addressing — a single `[<project>:]<name>` operand and/or
+`--project` / `--launch` flags — in addition to the two-positional
+`<project> <name>` form; and a configuration set may be created with positional
+`<project> <config>` pairs as well as `project=config` tokens.
+
 ### 16.4 Cache-cold vs cache-warm
 
 Build-unit readiness derives from the cache (§3.1). For a build unit with
