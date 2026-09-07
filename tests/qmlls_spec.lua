@@ -76,8 +76,11 @@ describe("cmake lsp_configs qmlls entry", function()
         local q = cfgs[2]
         assert.equals("/work/.nvim/build/myapp/Debug", q.build_dir)
         assert.equals("/work/myapp", q.root_dir)
-        -- Same dir clangd routes compile_commands through.
-        assert.equals(cfgs[1].compile_commands_dir, q.build_dir)
+        -- clangd now routes through the loomworks-owned generated DB dir for
+        -- every cmake generator (cmake.md §12), so it no longer equals the
+        -- qmlls build dir; qmlls still resolves against the real build dir.
+        assert.are_not.equal(q.build_dir, cfgs[1].compile_commands_dir)
+        assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
     end)
 
     it("type_config.qmlls flows into entry.binary; absent ⇒ nil", function()

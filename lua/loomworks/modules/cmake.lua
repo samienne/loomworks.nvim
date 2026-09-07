@@ -517,15 +517,16 @@ function M.generator_emits_compile_commands(generator)
 end
 
 --- Default value of a configuration's `compile_commands_generated` flag
---- for a given (possibly nil) generator. `true` means loomworks must
---- reconstruct compile_commands.json itself. An unknown generator yields
---- `false` — we never generate blindly when we can't confirm the
---- generator doesn't emit the database on its own.
+--- (§12). loomworks now OWNS the clangd compilation database for EVERY
+--- cmake generator, so the default is `true` regardless of generator.
+--- `false` is the per-configuration escape hatch a user sets to fall back
+--- to the build dir's native database — only meaningful for an emitting
+--- generator (see `generator_emits_compile_commands`). The `generator`
+--- argument is retained for call-site symmetry and future policy.
 --- @param generator string|nil
 --- @return boolean
 local function compile_commands_generated_default(generator)
-    if type(generator) ~= "string" or generator == "" then return false end
-    return not M.generator_emits_compile_commands(generator)
+    return true
 end
 
 --- Return what the module knows about the project from its own files.
@@ -570,19 +571,22 @@ function M.info(path, config)
     local configurations = M.resolve_configurations(defaults, config)
 
     -- Stamp each configuration with the default `compile_commands_generated`
-    -- flag (§12), computed from whatever generator the configuration itself
-    -- knows about (a user/preset override). Plain `variant:*` configs get
-    -- their generator from the profile's kit at build time, so their
-    -- info-time default is false; lsp_configs recomputes the effective flag
-    -- from the active kit's generator. The flag is module-specific data —
-    -- it lands in the Configuration's `module_config`.
+    -- flag (§12) unless the user/preset already set it explicitly. loomworks
+    -- owns the database for every generator, so the default is `true`; only
+    -- an explicit `false` (the escape hatch) survives here to fall back to a
+    -- native database. The flag is module-specific data — it lands in the
+    -- Configuration's `module_config`.
     for _, cfg in pairs(configurations) do
-        cfg.compile_commands_generated =
-            compile_commands_generated_default(cfg.generator)
+        if cfg.compile_commands_generated == nil then
+            cfg.compile_commands_generated =
+                compile_commands_generated_default(cfg.generator)
+        end
     end
     for _, cfg in pairs(preset_configurations) do
-        cfg.compile_commands_generated =
-            compile_commands_generated_default(cfg.generator)
+        if cfg.compile_commands_generated == nil then
+            cfg.compile_commands_generated =
+                compile_commands_generated_default(cfg.generator)
+        end
     end
 
     local module_info = nil
@@ -1904,6 +1908,145 @@ local function abs_source_path(path, source_root)
     return p
 end
 
+--- Normalize a path for comparison: forward slashes, no trailing slash.
+--- @param p string
+--- @return string
+local function norm_path(p)
+    return (p:gsub("\\", "/"):gsub("/+$", ""))
+end
+
+--- Directory portion of a (already source-resolved) path.
+--- @param p string
+--- @return string
+local function dir_of(p)
+    return (norm_path(p):gsub("/[^/]*$", ""))
+end
+
+--- Header file extensions used by the Tier-1 attribution scan (§12.3).
+local HEADER_EXTS = {
+    h = true, hh = true, hpp = true, hxx = true, ["h++"] = true,
+    inl = true, ipp = true, tcc = true, cuh = true,
+}
+
+--- Whether a path names a C/C++ header by extension.
+--- @param path string
+--- @return boolean
+local function is_header(path)
+    local ext = path:match("%.([%w+]+)$")
+    return ext ~= nil and HEADER_EXTS[ext:lower()] == true
+end
+
+--- Map cmake language token ("C"/"CXX"/…) → compiler path from a parsed
+--- toolchains-v1 reply. The token matches the one compileGroups carry.
+--- @param toolchains table|nil
+--- @return table<string, string>
+local function compiler_map(toolchains)
+    local m = {}
+    if toolchains and toolchains.toolchains then
+        for _, tc in ipairs(toolchains.toolchains) do
+            local lang = tc.language
+            local cpath = tc.compiler and tc.compiler.path
+            if type(lang) == "string" and type(cpath) == "string" and cpath ~= "" then
+                m[lang] = cpath
+            end
+        end
+    end
+    return m
+end
+
+--- Build the argv prefix (compiler + flags, no source file) for a
+--- compileGroup, in the compiler's native syntax. Shared by compiled-source
+--- and header entries (§12) so both render identical flags. Returns a fresh
+--- table each call (the caller appends the file and keeps it).
+--- @param cg table compileGroup
+--- @param compiler string compiler path / bare name (argv[0])
+--- @return string[]
+local function cg_argv_prefix(cg, compiler)
+    local msvc = compiler_is_msvc(compiler)
+    local args = { compiler }
+    for _, f in ipairs(cg.compileCommandFragments or {}) do
+        if type(f.fragment) == "string" then
+            for _, tok in ipairs(tokenize_fragment(f.fragment)) do
+                for _, ex in ipairs(expand_token(tok)) do
+                    args[#args + 1] = ex
+                end
+            end
+        end
+    end
+    for _, inc in ipairs(cg.includes or {}) do
+        local p = inc.path
+        if type(p) == "string" then
+            if msvc then
+                args[#args + 1] = inc.isSystem and "/external:I" or "/I"
+                args[#args + 1] = p
+            elseif inc.isSystem then
+                args[#args + 1] = "-isystem"
+                args[#args + 1] = p
+            else
+                args[#args + 1] = "-I" .. p
+            end
+        end
+    end
+    for _, d in ipairs(cg.defines or {}) do
+        local def = d.define
+        if type(def) == "string" then
+            args[#args + 1] = (msvc and "/D" or "-D") .. def
+        end
+    end
+    return args
+end
+
+--- Stream-write a `compile_commands.json` array entry-by-entry (§12.2).
+--- Never encodes the whole database in one `vim.json.encode` call: writes
+--- `[`, then each entry encoded on its own, comma-separated, then `]`.
+--- Atomic (temp file + rename, with Windows lock retry). Keeps memory/time
+--- flat in the number of entries for very large projects.
+--- @param out_file string absolute target path
+--- @param entries table[]
+--- @return boolean ok, string|nil err
+local function write_cc_stream(out_file, entries)
+    local tmp = out_file .. ".tmp"
+    local fd, err = uv.fs_open(tmp, "w", 438)
+    if not fd then return false, "open tmp: " .. (err or "unknown") end
+
+    local offset = 0
+    local ok = true
+    local function w(s)
+        if not ok then return end
+        local n, werr = uv.fs_write(fd, s, offset)
+        if werr or not n then ok = false; return end
+        offset = offset + #s
+    end
+
+    if #entries == 0 then
+        w("[]\n")
+    else
+        w("[")
+        for i, e in ipairs(entries) do
+            w(i == 1 and "\n  " or ",\n  ")
+            local eok, enc = pcall(vim.json.encode, e)
+            if not eok then ok = false; break end
+            w(enc)
+        end
+        w("\n]\n")
+    end
+
+    uv.fs_fsync(fd)
+    uv.fs_close(fd)
+    if not ok then pcall(uv.fs_unlink, tmp); return false, "write failed" end
+
+    if uv.fs_stat(out_file) then uv.fs_rename(out_file, out_file .. ".bak") end
+    for i = 1, 5 do
+        local rok, rerr, code = uv.fs_rename(tmp, out_file)
+        if rok then return true end
+        if code ~= "EACCES" and code ~= "EPERM" then
+            return false, "rename: " .. (rerr or "unknown")
+        end
+        if i < 5 then uv.sleep(50) end
+    end
+    return false, "rename failed after retries (file locked?)"
+end
+
 --- Select the codemodel configuration matching `variant` (multi-config
 --- generators name one per build type), else the first. Mirrors
 --- `parse_targets` / `detect_languages`.
@@ -1941,16 +2084,7 @@ function M._build_cc_entries(codemodel, target_details, toolchains, source_root,
     -- Per-language compiler paths keyed by cmake's own language token
     -- ("C", "CXX", …) — the same token compileGroups carry, so no
     -- canonicalization is needed to match them up.
-    local compiler_by_lang = {}
-    if toolchains and toolchains.toolchains then
-        for _, tc in ipairs(toolchains.toolchains) do
-            local lang = tc.language
-            local cpath = tc.compiler and tc.compiler.path
-            if type(lang) == "string" and type(cpath) == "string" and cpath ~= "" then
-                compiler_by_lang[lang] = cpath
-            end
-        end
-    end
+    local compiler_by_lang = compiler_map(toolchains)
 
     local cfg = select_codemodel_config(codemodel, variant)
     if not cfg or not cfg.targets then return entries end
@@ -1961,57 +2095,17 @@ function M._build_cc_entries(codemodel, target_details, toolchains, source_root,
             local sources = detail.sources or {}
             for _, cg in ipairs(detail.compileGroups) do
                 local lang = cg.language
-                -- Fallback chain: file-api toolchain → kit compiler → cl.exe
-                -- (this gap-fill feature targets MSVC/VS generators).
+                -- Fallback chain: file-api toolchain → kit compiler → cl.exe.
                 local compiler = compiler_by_lang[lang] or opts.compiler or "cl.exe"
-                local msvc = compiler_is_msvc(compiler)
-
-                -- Fragment tokens (compile flags), in file-api order.
-                local frag_tokens = {}
-                for _, f in ipairs(cg.compileCommandFragments or {}) do
-                    if type(f.fragment) == "string" then
-                        for _, tok in ipairs(tokenize_fragment(f.fragment)) do
-                            for _, ex in ipairs(expand_token(tok)) do
-                                frag_tokens[#frag_tokens + 1] = ex
-                            end
-                        end
-                    end
-                end
-
-                -- Include flags in the compiler's native syntax.
-                local inc_tokens = {}
-                for _, inc in ipairs(cg.includes or {}) do
-                    local p = inc.path
-                    if type(p) == "string" then
-                        if msvc then
-                            inc_tokens[#inc_tokens + 1] = inc.isSystem and "/external:I" or "/I"
-                            inc_tokens[#inc_tokens + 1] = p
-                        elseif inc.isSystem then
-                            inc_tokens[#inc_tokens + 1] = "-isystem"
-                            inc_tokens[#inc_tokens + 1] = p
-                        else
-                            inc_tokens[#inc_tokens + 1] = "-I" .. p
-                        end
-                    end
-                end
-
-                -- Define flags in the compiler's native syntax.
-                local def_tokens = {}
-                for _, d in ipairs(cg.defines or {}) do
-                    local def = d.define
-                    if type(def) == "string" then
-                        def_tokens[#def_tokens + 1] = (msvc and "/D" or "-D") .. def
-                    end
-                end
+                -- Flags are identical across every source in the group; build
+                -- the argv prefix once and clone per source.
+                local prefix = cg_argv_prefix(cg, compiler)
 
                 for _, si in ipairs(cg.sourceIndexes or {}) do
                     local src = sources[si + 1] -- file-api indexes are 0-based
                     if src and type(src.path) == "string" then
                         local abs = abs_source_path(src.path, source_root)
-                        local args = { compiler }
-                        vim.list_extend(args, frag_tokens)
-                        vim.list_extend(args, inc_tokens)
-                        vim.list_extend(args, def_tokens)
+                        local args = vim.list_extend({}, prefix)
                         args[#args + 1] = abs
                         entries[#entries + 1] = {
                             directory = build_dir,
@@ -2024,6 +2118,231 @@ function M._build_cc_entries(codemodel, target_details, toolchains, source_root,
         end
     end
 
+    return entries
+end
+
+--- Build the Tier-1 header-attribution index (§12.3) from parsed file-api
+--- data. Pure — no disk access. For the selected configuration it records,
+--- per project-owned target with compileGroups: its compileGroup keyed by
+--- language, its primary language, its source-directory set, and its total
+--- source count (tie-break weight). It also records a dir → owning-targets
+--- map (for nearest-ancestor tie-breaks) and a listed-header → target map
+--- (headers named directly in a target's `sources`). `source_dirs` is the
+--- de-duplicated list of every target source directory, sorted longest-first
+--- so the first ancestor match is the nearest one.
+--- @param codemodel table
+--- @param target_details table<string, table>
+--- @param source_root string|nil
+--- @param variant string|nil
+--- @return { targets: table, dir_owners: table, source_dirs: string[], listed: table }
+function M._target_attribution_index(codemodel, target_details, source_root, variant)
+    local index = { targets = {}, dir_owners = {}, source_dirs = {}, listed = {} }
+    local cfg = select_codemodel_config(codemodel, variant)
+    if not cfg or not cfg.targets then return index end
+
+    local dir_seen = {}
+    for _, tref in ipairs(cfg.targets) do
+        local detail = tref.jsonFile and target_details[tref.jsonFile]
+        if detail and detail.compileGroups then
+            local id = detail.id or detail.name or tostring(tref.jsonFile)
+            local sources = detail.sources or {}
+
+            local groups_by_lang, primary_lang = {}, nil
+            for _, cg in ipairs(detail.compileGroups) do
+                if cg.language and not groups_by_lang[cg.language] then
+                    groups_by_lang[cg.language] = cg
+                    primary_lang = primary_lang or cg.language
+                end
+            end
+
+            local source_dirs = {} -- normlower → display dir
+            for _, src in ipairs(sources) do
+                if type(src.path) == "string" then
+                    local abs = abs_source_path(src.path, source_root)
+                    if is_header(abs) then
+                        local key = norm_path(abs):lower()
+                        if not index.listed[key] then
+                            index.listed[key] = { id = id, path = norm_path(abs) }
+                        end
+                    else
+                        local d = dir_of(abs)
+                        source_dirs[d:lower()] = d
+                    end
+                end
+            end
+
+            index.targets[id] = {
+                id = id,
+                groups_by_lang = groups_by_lang,
+                primary_lang = primary_lang,
+                source_count = #sources,
+                source_dirs = source_dirs,
+            }
+            for dl, d in pairs(source_dirs) do
+                local rec = index.dir_owners[dl]
+                if not rec then
+                    rec = { disp = d, owners = {} }
+                    index.dir_owners[dl] = rec
+                end
+                rec.owners[#rec.owners + 1] = id
+                if not dir_seen[dl] then
+                    dir_seen[dl] = true
+                    index.source_dirs[#index.source_dirs + 1] = dl
+                end
+            end
+        end
+    end
+
+    -- Longest directory first → first ancestor hit is the nearest ancestor.
+    table.sort(index.source_dirs, function(a, b)
+        if #a ~= #b then return #a > #b end
+        return a < b
+    end)
+    return index
+end
+
+--- Attribute a single header path to a target id (§12.3): a listed header
+--- uses its listing target; otherwise the target whose source directory is
+--- the nearest ancestor (longest prefix on path boundaries), breaking ties
+--- by most sources then lexically-first id. nil when unattributable.
+--- @param index table from `_target_attribution_index`
+--- @param path string header path
+--- @return string|nil target id
+local function attribute_header(index, path)
+    local pl = norm_path(path):lower()
+    local listed = index.listed[pl]
+    if listed then return listed.id end
+    for _, dl in ipairs(index.source_dirs) do -- longest first
+        if pl == dl or pl:sub(1, #dl + 1) == dl .. "/" then
+            local rec = index.dir_owners[dl]
+            local best
+            for _, oid in ipairs(rec.owners) do
+                local t = index.targets[oid]
+                if not best then
+                    best = t
+                elseif t.source_count > best.source_count then
+                    best = t
+                elseif t.source_count == best.source_count and t.id < best.id then
+                    best = t
+                end
+            end
+            return best and best.id or nil
+        end
+    end
+    return nil
+end
+
+--- Enumerate candidate header files by a bounded directory listing of the
+--- targets' source directories (§12.3). This is a filesystem dir listing,
+--- NOT an include-scan or compiler run — Tier-1. Skips build/vendor/hidden
+--- dirs and bounds recursion depth. Listed headers (which may live outside a
+--- scanned subtree) are always included. `opts.scandir(dir) → {{name,type},…}`
+--- is injectable for tests. Returns absolute (display) header paths.
+--- @param index table
+--- @param opts? { scandir?: fun(dir: string): table[] }
+--- @return string[]
+local function collect_header_candidates(index, opts)
+    opts = opts or {}
+    local scandir = opts.scandir
+    local SKIP = { build = true, _deps = true, cmakefiles = true, node_modules = true }
+    local MAX_DEPTH = 16
+    local out, seen = {}, {}
+
+    local function list(dir)
+        if scandir then return scandir(dir) or {} end
+        local handle = uv.fs_scandir(dir)
+        if not handle then return {} end
+        local res = {}
+        while true do
+            local name, ftype = uv.fs_scandir_next(handle)
+            if not name then break end
+            res[#res + 1] = { name = name, type = ftype }
+        end
+        return res
+    end
+
+    local function walk(dir, depth)
+        if depth > MAX_DEPTH then return end
+        local dl = norm_path(dir):lower()
+        if seen[dl] then return end
+        seen[dl] = true
+        for _, e in ipairs(list(dir)) do
+            local full = norm_path(dir) .. "/" .. e.name
+            if e.type == "directory" then
+                local base = e.name:lower()
+                if base:sub(1, 1) ~= "." and not SKIP[base] then
+                    walk(full, depth + 1)
+                end
+            elseif e.type == "file" or e.type == nil then
+                if is_header(e.name) then
+                    local k = full:lower()
+                    if not out[k] then out[k] = full end
+                end
+            end
+        end
+    end
+
+    for _, dl in ipairs(index.source_dirs) do
+        local rec = index.dir_owners[dl]
+        if rec then walk(rec.disp, 0) end
+    end
+    for _, listed in pairs(index.listed) do
+        local k = norm_path(listed.path):lower()
+        if not out[k] then out[k] = listed.path end
+    end
+
+    local arr = {}
+    for _, p in pairs(out) do arr[#arr + 1] = p end
+    return arr
+end
+
+--- Build `compile_commands.json` entries for headers (§12.3). Pure. Each
+--- header is attributed to a target (`attribute_header`); the entry uses that
+--- target's compileGroup chosen by the header's apparent language (C++ header
+--- extension → the target's C++ group when present, else C, else its primary
+--- language) rendered with `cg_argv_prefix`. Headers are emitted in a
+--- deterministic order, each at most once; unattributable headers are omitted.
+--- @param index table from `_target_attribution_index`
+--- @param compiler_by_lang table<string, string> language token → compiler
+--- @param header_paths string[] candidate header paths
+--- @param build_dir string each entry's `directory`
+--- @param opts? { compiler?: string } fallback compiler
+--- @return table[] entries
+function M._build_header_entries(index, compiler_by_lang, header_paths, build_dir, opts)
+    opts = opts or {}
+    compiler_by_lang = compiler_by_lang or {}
+    local sorted = {}
+    for _, p in ipairs(header_paths) do sorted[#sorted + 1] = p end
+    table.sort(sorted, function(a, b)
+        return norm_path(a):lower() < norm_path(b):lower()
+    end)
+
+    local entries, emitted = {}, {}
+    for _, path in ipairs(sorted) do
+        local disp = norm_path(path)
+        local key = disp:lower()
+        if not emitted[key] then
+            local id = attribute_header(index, path)
+            local t = id and index.targets[id]
+            if t then
+                local g = t.groups_by_lang
+                local cg = g.CXX or g.C
+                    or (t.primary_lang and g[t.primary_lang]) or nil
+                if cg then
+                    local compiler = compiler_by_lang[cg.language]
+                        or opts.compiler or "cl.exe"
+                    local args = cg_argv_prefix(cg, compiler)
+                    args[#args + 1] = disp
+                    entries[#entries + 1] = {
+                        directory = build_dir,
+                        file = disp,
+                        arguments = args,
+                    }
+                    emitted[key] = true
+                end
+            end
+        end
+    end
     return entries
 end
 
@@ -2059,18 +2378,29 @@ function M.generate_compile_commands(build_dir, out_dir, opts)
     local toolchains = find_file_api_reply(build_dir, "toolchains", 1)
     local source_root = codemodel.paths and codemodel.paths.source or nil
 
+    -- Compiled-source entries (one per source across every compileGroup).
     local entries = M._build_cc_entries(
         codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
 
+    -- Header entries (§12.3): attribute every header with no compiled entry
+    -- to a target and emit it with that target's flags. Enumerate candidates
+    -- by a bounded dir listing of the source dirs (Tier-1, no include-scan),
+    -- excluding any header that already appears as a compiled source.
+    local compiler_by_lang = compiler_map(toolchains)
+    local index = M._target_attribution_index(codemodel, target_details, source_root, variant)
+    local compiled = {}
+    for _, e in ipairs(entries) do compiled[norm_path(e.file):lower()] = true end
+    local headers = {}
+    for _, p in ipairs(collect_header_candidates(index, opts)) do
+        if not compiled[norm_path(p):lower()] then headers[#headers + 1] = p end
+    end
+    vim.list_extend(entries,
+        M._build_header_entries(index, compiler_by_lang, headers, build_dir, opts))
+
     io_mod.ensure_dir(out_dir)
     local out_file = out_dir .. "/compile_commands.json"
-    if #entries == 0 then
-        -- Preserve a valid (empty) JSON array — the JSON encoder can't tell
-        -- an empty Lua table from an object, and clangd needs an array.
-        local ok = io_mod.write_file_atomic(out_file, "[]\n")
-        return ok and 0 or nil
-    end
-    local ok = io_mod.write_json(out_file, entries)
+    -- Stream-write: never encode the whole database in a single call (§12.2).
+    local ok = write_cc_stream(out_file, entries)
     return ok and #entries or nil
 end
 
@@ -2120,6 +2450,54 @@ local function generated_cc_dir(workspace_root, build_dir)
     -- Keep '/' (directory separators); scrub only path-illegal characters.
     tail = tail:gsub('[:<>"|?*]', "_")
     return root .. "/.nvim/cache/cc/" .. tail
+end
+
+--- Mtime-gated regeneration of the owned database (§12.4). Regenerates only
+--- when the file-api reply index is newer than the generated file (or the
+--- generated file is absent). Idempotent + thrash-proof, so it is safe to
+--- call from every trigger: `lsp_configs`, configure/build task completion,
+--- and the reply-dir watch. Returns true iff it (re)generated.
+--- @param build_dir string
+--- @param out_dir string
+--- @param opts? { variant?: string, config_name?: string, compiler?: string }
+--- @return boolean regenerated
+function M.refresh_generated_cc(build_dir, out_dir, opts)
+    local reply_mtime = file_api_index_mtime(build_dir)
+    if not reply_mtime then return false end
+    local out_stat = uv.fs_stat(out_dir .. "/compile_commands.json")
+    local out_mtime = out_stat and out_stat.mtime and out_stat.mtime.sec or nil
+    if out_mtime and reply_mtime <= out_mtime then return false end
+    local ok, n = pcall(M.generate_compile_commands, build_dir, out_dir, opts)
+    return ok and n ~= nil
+end
+
+--- §12.4 trigger entry point (core §8.4 optional module hook). Regenerate
+--- the owned clangd database for a build dir if stale. Core calls this after
+--- a successful configure/build and on a reply-dir watch signal. Idempotent
+--- (mtime-gated). `ctx`: `build_dir`, `workspace_root`, and optionally
+--- `variant` / `compiler`.
+--- @param ctx { build_dir: string, workspace_root: string, variant?: string, compiler?: string }
+function M.refresh_lsp_database(ctx)
+    if type(ctx) ~= "table" then return end
+    local build_dir, ws_root = ctx.build_dir, ctx.workspace_root
+    if type(build_dir) ~= "string" or type(ws_root) ~= "string" then return end
+    local out_dir = generated_cc_dir(ws_root, build_dir)
+    M.refresh_generated_cc(build_dir, out_dir, {
+        variant = ctx.variant,
+        compiler = ctx.compiler,
+    })
+end
+
+--- §12.4 (core §8.4 optional module hook). The file-api reply directory
+--- whose changes should re-trigger `refresh_lsp_database`, or nil when the
+--- build dir has no reply directory yet. `ctx`: `build_dir`.
+--- @param ctx { build_dir: string }
+--- @return string|nil
+function M.lsp_database_watch_path(ctx)
+    if type(ctx) ~= "table" or type(ctx.build_dir) ~= "string" then return nil end
+    local reply = ctx.build_dir .. "/.cmake/api/v1/reply"
+    if not uv.fs_stat(reply) then return nil end
+    return reply
 end
 
 -- ========================== Test integration ==========================
@@ -2226,64 +2604,40 @@ function M.lsp_configs(project)
         import_paths = tc.qml_import_paths
     end
 
-    -- §12: for a configuration whose generator does not emit
-    -- compile_commands.json (Visual Studio / Xcode), point clangd at a
-    -- loomworks-generated database instead of the (empty) build dir.
-    -- The effective decision uses the active config's own generator when it
-    -- has one, else the active kit's generator; an explicit config-level
-    -- `compile_commands_generated = true` (future user override / preset)
-    -- also forces generation.
+    -- §12: loomworks owns the clangd database for EVERY cmake generator.
+    -- Point clangd at our generated directory unless the active configuration
+    -- opts out with `compile_commands_generated = false` (the escape hatch),
+    -- or a `compile_commands_from` redirect (from_redirect) already resolved
+    -- build_dir to another configuration's database (which owns its own).
     local clangd_cc_dir = build_dir
     if build_dir and not from_redirect then
         local active_cfg = active_pp and active_pp.configuration and active_pp:configuration()
         local cfg_mc = active_cfg and active_cfg.module_config or nil
 
-        -- Active kit's generator (the usual source for an MSVC profile).
-        local tool_gen = nil
-        do
-            local td = project.tool_data
-            if (not td or not td.generator) and active_profile and active_profile.tool_for then
-                local tref = active_profile:tool_for(project.type)
-                td = tref and tref.data or td
-            end
-            tool_gen = td and td.generator or nil
-        end
-
-        local generated
-        if cfg_mc and cfg_mc.compile_commands_generated == true then
-            generated = true
-        else
-            local gen = (cfg_mc and cfg_mc.generator) or tool_gen
-            generated = compile_commands_generated_default(gen)
-        end
+        -- Generated unless the config explicitly turned it off.
+        local generated = not (cfg_mc and cfg_mc.compile_commands_generated == false)
 
         if generated then
             local out_dir = generated_cc_dir(ws.root, build_dir)
-            -- Regenerate only when the file-api reply is newer than the
-            -- generated file (or it doesn't exist yet) — this is our own
-            -- artifact's freshness vs the reply, not source-file staleness.
-            local reply_mtime = file_api_index_mtime(build_dir)
-            if reply_mtime then
-                local out_stat = uv.fs_stat(out_dir .. "/compile_commands.json")
-                local out_mtime = out_stat and out_stat.mtime and out_stat.mtime.sec or nil
-                if not out_mtime or reply_mtime > out_mtime then
-                    local variant = active_cfg
-                        and (cfg_mc and cfg_mc.variant or active_cfg.base_name) or nil
-                    local compiler = nil
-                    do
-                        local td = project.tool_data
-                        if (not td or not td.compiler_path) and active_profile and active_profile.tool_for then
-                            local tref = active_profile:tool_for(project.type)
-                            td = tref and tref.data or td
-                        end
-                        compiler = td and td.compiler_path or nil
-                    end
-                    pcall(M.generate_compile_commands, build_dir, out_dir, {
-                        variant = variant,
-                        compiler = compiler,
-                    })
+            local variant = active_cfg
+                and (cfg_mc and cfg_mc.variant or active_cfg.base_name) or nil
+            -- Resolve the compiler from tool_data, falling back to the active
+            -- profile's tool (SDK-only profiles resolve tools lazily).
+            local compiler = nil
+            do
+                local td = project.tool_data
+                if (not td or not td.compiler_path) and active_profile and active_profile.tool_for then
+                    local tref = active_profile:tool_for(project.type)
+                    td = tref and tref.data or td
                 end
+                compiler = td and td.compiler_path or nil
             end
+            -- Mtime-gated (thrash-proof) regeneration through the shared seam
+            -- also used by the task-completion and reply-dir-watch triggers.
+            M.refresh_generated_cc(build_dir, out_dir, {
+                variant = variant,
+                compiler = compiler,
+            })
             clangd_cc_dir = out_dir
         end
     end

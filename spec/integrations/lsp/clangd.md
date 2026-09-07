@@ -27,11 +27,16 @@ a `compile_commands_from` setting) — by the time the entry reaches
 this integration, all paths are fully resolved.
 
 The `compile_commands_dir` a module supplies may be a loomworks-generated
-directory rather than the build directory — e.g. the cmake module generates
-its own `compile_commands.json` for Visual Studio / MSVC configurations
-(which CMake doesn't emit one for). clangd consumes it identically; for MSVC
-the entries use `cl.exe` as the driver so clangd's cl-compatible mode
-applies.
+directory rather than the build directory. The cmake module **always**
+points clangd at its own generated `compile_commands.json` directory (under
+`.nvim/cache/cc/`), for every generator — Ninja and Makefiles included, not
+only Visual Studio / Xcode — unless the configuration sets
+`compile_commands_generated = false` (or redirects via
+`compile_commands_from`), in which case clangd points at the build
+directory's native database (see [`spec/modules/cmake.md`](../../modules/cmake.md)
+§12). clangd consumes the generated directory identically; for an MSVC
+compiler the entries use `cl.exe` as the driver so clangd's cl-compatible
+mode applies.
 
 ## 3. Per-buffer cmd resolution
 
