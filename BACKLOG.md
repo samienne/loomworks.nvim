@@ -178,7 +178,7 @@ route, and the meson/cmake modules propagate from a base only when the
 config doesn't declare its own.
 
 **DONE for authoring** (2026-07-20). The CLI no longer offers `variant` as a
-settable field: `lw configuration add <project> <name> [base]` takes a base to
+settable field: `lw config add <project> <name> [base]` takes a base to
 inherit, and `set … variant` refuses with a pointer to the base providing it.
 Derived values are no longer persisted either — a module still propagates a
 base's variant onto the config for the build path, but marks it (`_derived`),
@@ -642,7 +642,7 @@ frozen in memory between a configure and a later config edit. In the headless
 CLI each invocation is a fresh process that must reconstruct staleness from the
 cache, and wiring `record_task_result` into the headless build path produced
 incorrect state (recorded `failed_build` on success) and did NOT detect a
-`lw configuration set` option change — so skipping configure would silently miss
+`lw config set` option change — so skipping configure would silently miss
 config changes. Reverted to always-configure for correctness. A proper fix needs
 the load path to reliably populate `_cached_options` / `_cached_module_config`
 from the cache and freeze them across processes. The re-configure is a fast

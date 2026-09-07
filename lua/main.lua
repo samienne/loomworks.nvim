@@ -7,7 +7,7 @@
 -- source.
 --
 -- System-Lua source precedence:
---   LOOMWORKS_LUA env > `--dev[=PATH]` > config `default-source=dev`
+--   LOOMWORKS_LUA env > `--dev[=PATH]` > settings `default-source=dev`
 --     > newest verified release bundle (<data>/loomworks/lua-<ver>/)
 --     > fused luvi bundle (a full-fused dev exe / `luvi . --` source run).
 -- A resolved on-disk root is authoritative — no silent bundle fallback.
@@ -83,7 +83,7 @@ if dev_opt_in then
   if not luaroot then
     io.stderr:write(
       "lw: development source requested but no directory is configured.\n" ..
-      "    Set one with `lw config set dev-lua <path>`, pass `--dev=<path>`,\n" ..
+      "    Set one with `lw settings set dev-lua <path>`, pass `--dev=<path>`,\n" ..
       "    or export LOOMWORKS_LUA=<path>.\n")
     os.exit(1)
   end
@@ -162,7 +162,7 @@ elseif command == "self-update" then
     if tostring(err):find("404", 1, true) then
       io.stderr:write("    Releases are fetched from: " ..
         require("boot.update").DEFAULT_RELEASE_URL .. "\n" ..
-        "    Point it elsewhere with `lw config set release-url <url>` or\n" ..
+        "    Point it elsewhere with `lw settings set release-url <url>` or\n" ..
         "    LOOMWORKS_RELEASE_URL (a local directory works as an offline mirror).\n")
     end
     exit(1)

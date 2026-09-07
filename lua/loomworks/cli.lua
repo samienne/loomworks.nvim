@@ -6,13 +6,13 @@
 ---
 --- Commands: (status) | init | workspace <rename> |
 ---           project <add|remove|rename|list|show> |
----           configuration <list|add|show|get|set|unset|remove> |
----           configuration-set <list|show|create|map|unmap|remove> | profiles |
+---           config <list|add|show|get|set|unset|remove> |
+---           configset <list|show|create|map|unmap|remove> |
 ---           profile <list|show|select|create|remove|publish|query|set|unset> |
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
----           unlock <profile>|--all | config <...> | completion <shell> | help
+---           unlock <profile>|--all | settings <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -265,6 +265,17 @@ local tool_cache_mode = "auto"
 -- dying on a broken/absent workspace, so shell completion never errors out.
 local completion_mode = false
 
+--- Test seam: reset the process-global mode flags that some commands latch for
+--- the lifetime of a single CLI process (`lw __complete` sets completion_mode +
+--- force_noninteractive; `--no-input` sets force_noninteractive; `lw tools`
+--- sets tool_cache_mode). Real invocations exit right after, so the latch never
+--- matters; in-process tests call this to keep one case from leaking into the next.
+function M._reset_modes()
+  force_noninteractive = false
+  completion_mode = false
+  tool_cache_mode = "auto"
+end
+
 local function tool_cache_dir()
   if is_windows() then
     local lad = os.getenv("LOCALAPPDATA")
@@ -459,7 +470,7 @@ local function profile_by_number(ws, arg)
   local total = #order.list
   local n = tonumber(arg)
   if n < 1 or n > total then
-    die("profile number " .. n .. " out of range (1.." .. total .. "); see `lw profiles`")
+    die("profile number " .. n .. " out of range (1.." .. total .. "); see `lw profile list`")
   end
   return order.list[n]
 end
@@ -564,7 +575,7 @@ local function resolve_profile(ws, name, opts)
   if name then
     local hit = match_profile_arg(ws, name, opts)
     if hit then return hit end
-    die("no profile matching '" .. name .. "'. Run `lw profiles` to list.")
+    die("no profile matching '" .. name .. "'. Run `lw profile list` to list.")
   end
   -- No profile given. Non-interactive mode deliberately does NOT fall back to
   -- the active/selected profile (or the single-profile shortcut): the active
@@ -685,14 +696,14 @@ local function resolve_build_target(ws, name)
   local sets = ws._config_sets or {}
   if not next(sets) then
     die("no profiles or configuration sets yet.\n" ..
-      "  create a set:  lw configuration-set create <name> <project>=<config>")
+      "  create a set:  lw configset create <name> <project>=<config>")
   end
   local cs
   if name then
     for _, s in ipairs(sets) do if s.name == name then cs = s; break end end
     if not cs then
       die("no profile or configuration set matching '" .. name .. "'.\n" ..
-        "  `lw profiles` / `lw configuration-set list`")
+        "  `lw profile list` / `lw configset list`")
     end
   else
     cs = pick_config_set(ws)
@@ -1854,7 +1865,7 @@ function M.cmd_publish(root)
   if empty then
     out("")
     io.stderr:write("lw: note: loomworks.json is empty — nothing is marked shared.\n")
-    io.stderr:write("    Share items with `lw <project|profile|configuration-set> publish <name>`,\n")
+    io.stderr:write("    Share items with `lw <project|profile|configset> publish <name>`,\n")
     io.stderr:write("    or create them with --shared (the CLI default). See `lw help publish`.\n")
   end
   return 0
@@ -1900,9 +1911,9 @@ local function resolve_config(proj, name, require_user)
     local kind = cfg:is_auto_gen() and "module-generated" or "from a preset"
     die("'" .. cfg.name .. "' is " .. kind ..
       " and can't be edited — create a user configuration that inherits it:\n" ..
-      "  lw configuration add " .. proj.key .. " <name> " ..
+      "  lw config add " .. proj.key .. " <name> " ..
       (cfg.module_config and cfg.module_config.variant or "") .. "\n" ..
-      "  lw configuration set " .. proj.key .. " <name> inherits " .. cfg.name)
+      "  lw config set " .. proj.key .. " <name> inherits " .. cfg.name)
   end
   return cfg
 end
@@ -2203,7 +2214,7 @@ local PROJECT_SET_USAGE =
   "usage: lw project set <project> <variable> [<default>] [--type string|path]\n" ..
   "  declares (create-or-update) a project variable; omit <default> to declare\n" ..
   "  it BLANK — the active profile must fill it before a build that uses it\n" ..
-  "  (see `lw configuration set variables.<name>` and `lw profile set`)"
+  "  (see `lw config set variables.<name>` and `lw profile set`)"
 
 --- `lw project set <project> <variable> [<default>] [--type string|path]` —
 --- declare (create or update) a project variable. `--type` defaults to
@@ -2379,12 +2390,12 @@ local function get_param(cfg, param)
 end
 
 -- Exported for tests: the pure param-grammar seams behind
--- `lw configuration get/set/unset`.
+-- `lw config get/set/unset`.
 M._config_to_data = config_to_data
 M._apply_param = apply_param
 M._get_param = get_param
 
---- `lw configuration list [project]` — configs for one project, or all.
+--- `lw config list [project]` — configs for one project, or all.
 function M.cmd_configuration_list(root, proj_name)
   local ws = load_workspace(root, false)
   local projs = {}
@@ -2438,13 +2449,13 @@ local function reject_variant_param(proj, value)
     "`variant` is not settable - inherit it instead.",
     "  A configuration becomes concrete by inheriting a base that provides a",
     "  variant, so the build type has a single declared source:",
-    "    lw configuration set " .. proj.key .. " <name> inherits "
+    "    lw config set " .. proj.key .. " <name> inherits "
       .. (base or "variant:<Name>"),
-    "  `lw configuration list " .. proj.key .. "` shows the available bases.",
+    "  `lw config list " .. proj.key .. "` shows the available bases.",
   }, "\n"))
 end
 
---- `lw configuration add <project> <name> [base...]`
+--- `lw config add <project> <name> [base...]`
 --- Trailing arguments are BASES to inherit (e.g. `variant:Release asan`),
 --- which is how a configuration becomes concrete — see `reject_variant_param`.
 --- Several bases form a mixin chain, merged left to right (later wins), the
@@ -2453,7 +2464,7 @@ end
 --- @param bases string[]|string|nil
 function M.cmd_configuration_add(root, proj_name, name, bases)
   if not proj_name or not name then
-    die("usage: lw configuration add <project> <name> [base...]")
+    die("usage: lw config add <project> <name> [base...]")
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -2485,7 +2496,7 @@ function M.cmd_configuration_add(root, proj_name, name, bases)
       end
       die("no configuration '" .. base .. "' in project '" .. proj.key .. "'"
         .. (suggestion and (" — did you mean '" .. suggestion .. "'?") or ".")
-        .. "\n  `lw configuration list " .. proj.key .. "` shows the bases "
+        .. "\n  `lw config list " .. proj.key .. "` shows the bases "
         .. "available to inherit.")
     end
     resolved[#resolved + 1] = target.name
@@ -2502,15 +2513,15 @@ function M.cmd_configuration_add(root, proj_name, name, bases)
   if not data.inherits then
     out("  no base — it is abstract (a mixin) and cannot be built until it")
     out("  inherits one that provides a variant:")
-    out("    lw configuration set " .. proj.key .. " " .. name .. " inherits <base>")
+    out("    lw config set " .. proj.key .. " " .. name .. " inherits <base>")
   end
   out("  map it into a configuration set to build it; `lw publish` to share.")
   return 0
 end
 
---- `lw configuration show <project> <name>`
+--- `lw config show <project> <name>`
 function M.cmd_configuration_show(root, proj_name, cfg_name)
-  if not proj_name or not cfg_name then die("usage: lw configuration show <project> <name>") end
+  if not proj_name or not cfg_name then die("usage: lw config show <project> <name>") end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, false)
@@ -2550,10 +2561,10 @@ function M.cmd_configuration_show(root, proj_name, cfg_name)
   return 0
 end
 
---- `lw configuration get <project> <name> <param>`
+--- `lw config get <project> <name> <param>`
 function M.cmd_configuration_get(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
-    die("usage: lw configuration get <project> <name> <param>\n" ..
+    die("usage: lw config get <project> <name> <param>\n" ..
       "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
       "         | overrides[.<family>[.<NAME>]] | <module field>")
   end
@@ -2589,31 +2600,31 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   return 0
 end
 
---- `lw configuration set <project> <name> <param> <value>`
+--- `lw config set <project> <name> <param> <value>`
 function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
   if not (proj_name and cfg_name and param) or value == nil then
-    die("usage: lw configuration set <project> <name> <param> <value>\n" ..
+    die("usage: lw config set <project> <name> <param> <value>\n" ..
       "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
       "         | overrides.<family>.<NAME> (family ∈ clang|gcc|msvc) | <module field>\n" ..
-      "  (use `lw configuration unset` to clear a value)")
+      "  (use `lw config unset` to clear a value)")
   end
   return edit_configuration(root, proj_name, cfg_name, param, value, "set")
 end
 
---- `lw configuration unset <project> <name> <param>`
+--- `lw config unset <project> <name> <param>`
 function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
-    die("usage: lw configuration unset <project> <name> <param>\n" ..
+    die("usage: lw config unset <project> <name> <param>\n" ..
       "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
       "         | overrides.<family>.<NAME> (family ∈ clang|gcc|msvc) | <module field>")
   end
   return edit_configuration(root, proj_name, cfg_name, param, nil, "unset")
 end
 
---- `lw configuration remove <project> <name>`
+--- `lw config remove <project> <name>`
 function M.cmd_configuration_remove(root, proj_name, cfg_name)
   if not proj_name or not cfg_name then
-    die("usage: lw configuration remove <project> <name>")
+    die("usage: lw config remove <project> <name>")
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -2625,11 +2636,11 @@ function M.cmd_configuration_remove(root, proj_name, cfg_name)
   return 0
 end
 
---- `lw configuration <list|add|show|get|set|unset|remove>`
---- `lw configuration publish <project> <name>` — mark a configuration (and its
+--- `lw config<list|add|show|get|set|unset|remove>`
+--- `lw config publish <project> <name>` — mark a configuration (and its
 --- project) shared and write loomworks.json.
 function M.cmd_configuration_publish(root, proj_name, cfg_name)
-  if not (proj_name and cfg_name) then die("usage: lw configuration publish <project> <name>") end
+  if not (proj_name and cfg_name) then die("usage: lw config publish <project> <name>") end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, false)
@@ -2654,7 +2665,7 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
   if sub == "publish" then return M.cmd_configuration_publish(root, a3, a4) end
-  die("unknown configuration subcommand '" .. tostring(sub) ..
+  die("unknown config subcommand '" .. tostring(sub) ..
     "' — use list|add|show|get|set|unset|remove|publish")
 end
 
@@ -2684,7 +2695,7 @@ local function profiles_using_set(ws, cs)
   return using
 end
 
---- `lw configuration-set list` — all sets with their mappings.
+--- `lw configset list` — all sets with their mappings.
 function M.cmd_cset_list(root)
   local ws = load_workspace(root, false)
   local sets = {}
@@ -2700,9 +2711,9 @@ function M.cmd_cset_list(root)
   return 0
 end
 
---- `lw configuration-set show <name>`
+--- `lw configset show <name>`
 function M.cmd_cset_show(root, name)
-  if not name then die("usage: lw configuration-set show <name>") end
+  if not name then die("usage: lw configset show <name>") end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   out(cs.name)
@@ -2714,7 +2725,7 @@ function M.cmd_cset_show(root, name)
   end
   table.sort(rows, function(a, b) return a.p < b.p end)
   if #rows == 0 then
-    out("    (empty — add with `lw configuration-set map " .. cs.name .. " <project> <config>`)")
+    out("    (empty — add with `lw configset map " .. cs.name .. " <project> <config>`)")
   else
     for _, r in ipairs(rows) do
       out(string.format("    %-20s -> %s%s", r.p, r.c, r.stale and "   (stale)" or ""))
@@ -2737,22 +2748,22 @@ local function parse_mapping(ws, spec)
   return project.key, cfg.name
 end
 
---- `lw configuration-set create <name> [project=config ...]`
+--- `lw configset create <name> [project=config ...]`
 --- Also accepts positional `<project> <config>` pairs (the same grammar as
---- `configuration-set map`), e.g. `lw cs create dev app Debug renderer Release`.
+--- `configset map`), e.g. `lw configset create dev app Debug renderer Release`.
 --- The form is chosen by whether the first mapping token contains `=`.
 function M.cmd_cset_create(root, args)
   local name = args[3]
   if not name then
-    die("usage: lw configuration-set create <name> [project=config ...]\n" ..
-      "   or: lw configuration-set create <name> [<project> <config> ...]")
+    die("usage: lw configset create <name> [project=config ...]\n" ..
+      "   or: lw configset create <name> [<project> <config> ...]")
   end
   local ws = load_workspace(root, false)
   local raw = {}
   local rest = {}
   for i = 4, #args do rest[#rest + 1] = args[i] end
   if rest[1] and not rest[1]:find("=", 1, true) then
-    -- Positional `<project> <config>` pairs (matching `configuration-set map`).
+    -- Positional `<project> <config>` pairs (matching `configset map`).
     if #rest % 2 ~= 0 then
       die("positional mappings must come in <project> <config> pairs: " ..
         table.concat(rest, " "))
@@ -2775,19 +2786,19 @@ function M.cmd_cset_create(root, args)
   out("created configuration set '" .. cs.name .. "'  [" .. cs._intent .. "]" ..
     (next(raw) and "" or " (empty)"))
   if not next(raw) then
-    out("  add mappings: lw configuration-set map " .. cs.name .. " <project> <config>")
+    out("  add mappings: lw configset map " .. cs.name .. " <project> <config>")
   end
   if cs._intent == "local" then
-    out("`lw configuration-set publish " .. cs.name .. "` shares it. ")
+    out("`lw configset publish " .. cs.name .. "` shares it. ")
   end
   out("`lw profile create " .. cs.name .. " <tool>` to build it.")
   return 0
 end
 
---- `lw configuration-set map <name> <project> <config>`
+--- `lw configset map <name> <project> <config>`
 function M.cmd_cset_map(root, name, pk, cfgname)
   if not (name and pk and cfgname) then
-    die("usage: lw configuration-set map <name> <project> <config>")
+    die("usage: lw configset map <name> <project> <config>")
   end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
@@ -2800,9 +2811,9 @@ function M.cmd_cset_map(root, name, pk, cfgname)
   return 0
 end
 
---- `lw configuration-set unmap <name> <project>`
+--- `lw configset unmap <name> <project>`
 function M.cmd_cset_unmap(root, name, pk)
-  if not (name and pk) then die("usage: lw configuration-set unmap <name> <project>") end
+  if not (name and pk) then die("usage: lw configset unmap <name> <project>") end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   local project = resolve_project(ws, pk)
@@ -2814,9 +2825,9 @@ function M.cmd_cset_unmap(root, name, pk)
   return 0
 end
 
---- `lw configuration-set remove <name>`
+--- `lw configset remove <name>`
 function M.cmd_cset_remove(root, name)
-  if not name then die("usage: lw configuration-set remove <name>") end
+  if not name then die("usage: lw configset remove <name>") end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   local using = profiles_using_set(ws, cs)
@@ -2830,11 +2841,11 @@ function M.cmd_cset_remove(root, name)
   return 0
 end
 
---- `lw configuration-set <list|show|create|map|unmap|remove>` (alias: cs)
---- `lw configuration-set publish <name>` — mark a set shared and write
+--- `lw configset <list|show|create|map|unmap|remove>` (alias: cs)
+--- `lw configset publish <name>` — mark a set shared and write
 --- loomworks.json (pulls its mapped projects + configs via the closure).
 function M.cmd_cset_publish(root, name)
-  if not name then die("usage: lw configuration-set publish <name>") end
+  if not name then die("usage: lw configset publish <name>") end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   return publish_item(ws, cs, "configuration set '" .. cs.name .. "'")
@@ -2848,7 +2859,7 @@ function M.cmd_cset(sub, root, args)
   if sub == "unmap" then return M.cmd_cset_unmap(root, args[3], args[4]) end
   if sub == "remove" or sub == "rm" then return M.cmd_cset_remove(root, args[3]) end
   if sub == "publish" then return M.cmd_cset_publish(root, args[3]) end
-  die("unknown configuration-set subcommand '" .. tostring(sub) ..
+  die("unknown configset subcommand '" .. tostring(sub) ..
     "' — use list|show|create|map|unmap|remove|publish")
 end
 
@@ -2856,7 +2867,7 @@ end
 --- Writes user.json (explicit management).
 function M.select_profile(ws)
   local profiles = ws._profiles or {}
-  if #profiles == 0 then die("no profiles to select — run `lw profiles`") end
+  if #profiles == 0 then die("no profiles to select — run `lw profile list`") end
   if not interactive() then
     local keys = {}
     for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
@@ -3389,7 +3400,7 @@ function M.cmd_profile_query(root, args)
     value = pp:build_dir()
     if not value or value == "" then
       die("build dir not resolved for '" .. project_key .. "' in '" .. profile.key ..
-        "' — the profile is incomplete or unbuildable (`lw profiles`).")
+        "' — the profile is incomplete or unbuildable (`lw profile list`).")
     end
     value = value:gsub("\\", "/")
   elseif field == "config" then
@@ -3542,7 +3553,7 @@ function M.cmd_profile(sub, root, args)
     "' — use list|show|select|create|remove|publish|query|set|unset (target moved to `lw target`)")
 end
 
---- The value a config key falls back to when unset, so `lw config get` can
+--- The value a settings key falls back to when unset, so `lw settings get` can
 --- report it. Only keys with a discoverable built-in default are listed.
 --- @param key string
 --- @return string|nil
@@ -3557,11 +3568,11 @@ local function effective_config_default(key)
   return nil
 end
 
---- `lw config <list|get|set|unset> [key] [value]`
-function M.cmd_config(sub, key, value)
+--- `lw settings <list|get|set|unset> [key] [value]` — lw's OWN user settings.
+function M.cmd_settings(sub, key, value)
   local cfg = read_config()
   if sub == nil or sub == "list" then
-    out("config file: " .. config_path())
+    out("settings file: " .. config_path())
     local keys = {}
     for k in pairs(cfg) do keys[#keys + 1] = k end
     table.sort(keys)
@@ -3572,7 +3583,7 @@ function M.cmd_config(sub, key, value)
     end
     return 0
   elseif sub == "get" then
-    if not key then die("usage: lw config get <key>") end
+    if not key then die("usage: lw settings get <key>") end
     if cfg[key] ~= nil then out(tostring(cfg[key])); return 0 end
     -- Unset keys still have an effective value; print it so a setting like the
     -- release URL is discoverable from the CLI instead of reading the source.
@@ -3580,7 +3591,7 @@ function M.cmd_config(sub, key, value)
     out(eff and ("(unset — using default: " .. eff .. ")") or "(unset)")
     return 0
   elseif sub == "set" then
-    if not key or value == nil then die("usage: lw config set <key> <value>") end
+    if not key or value == nil then die("usage: lw settings set <key> <value>") end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
     local ok, err = write_config(cfg)
@@ -3588,14 +3599,14 @@ function M.cmd_config(sub, key, value)
     out(string.format("set %s = %s", key, tostring(cfg[key])))
     return 0
   elseif sub == "unset" then
-    if not key then die("usage: lw config unset <key>") end
+    if not key then die("usage: lw settings unset <key>") end
     cfg[key] = nil
     local ok, err = write_config(cfg)
     if not ok then die("failed to write config: " .. tostring(err)) end
     out("unset " .. key)
     return 0
   end
-  die("unknown config subcommand '" .. tostring(sub) .. "' — use list|get|set|unset")
+  die("unknown settings subcommand '" .. tostring(sub) .. "' — use list|get|set|unset")
 end
 
 -- Command tokens are cyan on a real terminal; the rest of the status palette is
@@ -4166,7 +4177,7 @@ function M.cmd_status(root, opts)
   status_section(pal, "Profiles", plist, MAX, function()
     prof_i = prof_i + 1
     return prof_rows[prof_i]
-  end, "lw profiles", profile_help)
+  end, "lw profile list", profile_help)
 
   -- Configuration sets: name + compact mappings.
   local sets = {}
@@ -4185,7 +4196,7 @@ function M.cmd_status(root, opts)
     return string.format("  %-" .. cs_name_w .. "s %s", trunc(cs.name, cs_name_w),
       trunc(next(rows) and table.concat(rows, ", ") or "(empty)", cs_map_w))
       .. inline_markers(pal, grouped.by_key["set:" .. cs.name])
-  end, "lw cs list", "create a set · lw cs create <name> [project=config …]")
+  end, "lw configset list", "create a set · lw configset create <name> [project=config …]")
 
   -- Projects with their configurations (first few names, then +K).
   local projs = {}
@@ -4438,7 +4449,7 @@ local function resolve_profile_for_show(ws, name)
     -- boundary substring (so `profile show clang-18` resolves a full key).
     local hit = match_profile_arg(ws, name)
     if hit then return hit end
-    die("no profile named '" .. name .. "' — run `lw profiles` to list.")
+    die("no profile named '" .. name .. "' — run `lw profile list` to list.")
   end
   local active = ws._active_profile_key
   if active then
@@ -4777,7 +4788,7 @@ function M.cmd_pull(args, opts)
   out("")
   out("wrote " .. plan.target_user_path)
   out("Active profile is unchanged (not pulled). " ..
-    "`lw profiles` to list, `lw build <profile>` to build.")
+    "`lw profile list` to list, `lw build <profile>` to build.")
   return 0
 end
 
@@ -5141,10 +5152,12 @@ local function comp_tool_keys()
   return sorted_unique(t)
 end
 
+-- Canonical command names only — aliases (configuration, configuration-set, cs,
+-- cfg, profiles, rm) dispatch but are deliberately kept out of completion.
 local COMP_COMMANDS = {
-  "status", "init", "project", "configuration", "configuration-set", "cfg", "cs",
-  "profiles", "profile", "tools", "build", "clean", "test", "run", "target", "launch", "publish",
-  "pull", "worktree", "unlock", "config", "completion", "version", "install", "self-update", "help",
+  "status", "init", "project", "config", "configset",
+  "profile", "tools", "build", "clean", "test", "run", "target", "launch", "publish",
+  "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
 }
 
@@ -5186,7 +5199,7 @@ function M.cmd_complete(cword, words)
   elseif cmd == "bootstrap" or cmd == "update" then
     if n == 1 then emit({ "--version" }) end
     return 0
-  elseif cmd == "config" then
+  elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
       emit({ "dev-lua", "default-source", "release-url", "module-index" })
@@ -5236,7 +5249,7 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "project" then
-    if n == 1 then emit({ "add", "remove", "rm", "list", "show", "set", "unset", "publish" }); return 0 end
+    if n == 1 then emit({ "add", "remove", "list", "show", "set", "unset", "publish" }); return 0 end
     if sub == "add" or sub == "create" then
       if n == 2 then out("__dirs__") -- <path>
       elseif n == 3 then emit(require("loomworks.modules").list()) end -- [type]
@@ -5292,7 +5305,7 @@ function M.cmd_complete(cword, words)
       emit(comp_profile_names(comp_ws(root)))                  -- [profile]
     end
     return 0
-  elseif cmd == "configuration" or cmd == "cfg" then
+  elseif cmd == "config" or cmd == "configuration" or cmd == "cfg" then
     if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "remove", "publish" }); return 0 end
     if n == 2 then emit(comp_project_names(comp_ws(root))); return 0 end -- <project>
     if n == 3 and has({ "show", "get", "set", "unset", "remove", "publish" }, sub) then
@@ -5303,7 +5316,7 @@ function M.cmd_complete(cword, words)
         "options.", "variables.", "overrides." })                       -- <param>
     end
     return 0
-  elseif cmd == "configuration-set" or cmd == "cs" then
+  elseif cmd == "configset" or cmd == "configuration-set" or cmd == "cs" then
     if n == 1 then emit({ "list", "show", "create", "map", "unmap", "remove", "publish" }); return 0 end
     if n == 2 and has({ "show", "map", "unmap", "remove", "publish" }, sub) then
       emit(comp_set_names(comp_ws(root))); return 0                      -- <name>
@@ -5377,7 +5390,7 @@ One-screen workspace overview: the active profile and its launchable targets
 (default marked `*`), a Diagnostics section (shown only when non-empty), then
 capped lists of profiles (active marked `*`), configuration sets, and projects
 with their configurations. Each section is limited to fit a page — use
-`lw target`, `lw profiles`, `lw cs list`, or `lw project list` for the full
+`lw target`, `lw profile list`, `lw configset list`, or `lw project list` for the full
 lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
 
@@ -5387,10 +5400,6 @@ configuration set, or project.
 
   --check   exit non-zero if any diagnostic is present (for CI); without it,
             `lw status` always exits 0.]],
-  profiles = [[lw profiles
-
-List the workspace's profiles, marking the active one with `*` and flagging
-any that aren't buildable (an unavailable module or an unresolved tool).]],
   tools = [[lw tools [--cached]
 
 List the toolchains detected on this machine, grouped by module (cmake,
@@ -5636,7 +5645,7 @@ Trust: the index lists, for each module, where to fetch it and the SHA-256 of
 that artifact. The download is verified against that hash before anything is
 installed; a mismatch installs nothing. The index is trusted because it comes
 from the loomworks repository over HTTPS — override it (offline mirror / a fork)
-with `lw config set module-index <url-or-path>` or LOOMWORKS_MODULE_INDEX.
+with `lw settings set module-index <url-or-path>` or LOOMWORKS_MODULE_INDEX.
 
 Modules install under the lw data dir, separate from the release bundle, so
 `lw self-update` never disturbs them and removing one never touches the core.
@@ -5661,8 +5670,8 @@ Use --local at creation to keep something private, or --shared to be explicit.
 
 To share an item created --local (or made in the editor), publish it by name:
   lw project publish <name>
-  lw configuration-set publish <name> (also writes its mapped projects/configs)
-  lw configuration publish <project> <name>
+  lw configset publish <name>         (also writes its mapped projects/configs)
+  lw config publish <project> <name>
   lw profile publish <key>            (also writes its set + projects)
 Each marks the item local+shared and regenerates loomworks.json.
 
@@ -5748,7 +5757,7 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         it errors). Missing-and-required args are prompted only on a terminal.
         New projects default to local+shared (--local keeps them private).
         A cmake/meson project comes with auto configurations (Debug, Release, …)
-        ready to map — see `lw configuration list <name>`.
+        ready to map — see `lw config list <name>`.
   remove <name>
         Drop a project. <name> is the unique project key (`lw project list`).
   rename <old-name> <new-name>       (alias: mv)
@@ -5770,7 +5779,7 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
 
 A declared variable feeds three surfaces (see core §1.3.1):
   lw project set <p> <var> [<default>] [--type …]   declare it here
-  lw configuration set <p> <cfg> variables.<var> …  override per configuration
+  lw config set <p> <cfg> variables.<var> …         override per configuration
   lw profile set [<profile>] <p> <var> <value>       fill a blank per profile
 
 Examples:
@@ -5778,7 +5787,7 @@ Examples:
   lw project set  App sdk_root --type path      # blank; fill with `lw profile set`
   lw project set  App port 8080                 # string (the default type)
   lw project unset App out_dir]],
-  configuration = [[lw configuration <list|add|show|get|set|unset|remove>   (alias: cfg)
+  config = [[lw config <list|add|show|get|set|unset|remove>   (aliases: configuration, cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
 shares the result. Configs are addressed by name (an unambiguous base name
@@ -5819,12 +5828,12 @@ belongs to that family. The overridden name must already be declared in the
 project's `variables` (an empty default is allowed). See core §1.3.1.
 
 Examples:
-  lw configuration set   App Debug options.CMAKE_CXX_FLAGS '${warn_flags}'
-  lw configuration set   App Debug variables.warn_flags '-Werror'
-  lw configuration set   App Debug overrides.clang.warn_flags '-Werror -Wno-unused-command-line-argument'
-  lw configuration get   App Debug overrides.clang.warn_flags
-  lw configuration unset App Debug overrides.clang.warn_flags]],
-  ["configuration-set"] = [[lw configuration-set <list|show|create|map|unmap|remove>   (alias: cs)
+  lw config set   App Debug options.CMAKE_CXX_FLAGS '${warn_flags}'
+  lw config set   App Debug variables.warn_flags '-Werror'
+  lw config set   App Debug overrides.clang.warn_flags '-Werror -Wno-unused-command-line-argument'
+  lw config get   App Debug overrides.clang.warn_flags
+  lw config unset App Debug overrides.clang.warn_flags]],
+  configset = [[lw configset <list|show|create|map|unmap|remove>   (aliases: configuration-set, cs)
 
 A configuration set maps each project to one of its configurations — the
 cross-project selection a profile builds. Managed in the working copy;
@@ -5840,8 +5849,9 @@ cross-project selection a profile builds. Managed in the working copy;
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
   profile = [[lw profile <list|show|select|create|remove|publish|query|set|unset>
+  (`lw profiles` is an alias for `lw profile list`)
 
-  list      same as `lw profiles`
+  list      list the workspace's profiles and their buildability
   show [<profile>]
             One-screen status view for a single profile: its configuration
             set and mappings, the projects the set maps (with each one's
@@ -5863,7 +5873,7 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
             Created `local` — a profile pins toolchains resolved here, so it
             stays out of loomworks.json unless you pass --shared or run
             `lw profile publish`.
-  remove <profile>                   (alias: rm)
+  remove <profile>
             Drop a profile from the working copy. Removes the profile only —
             its build directories are left in place (`lw clean` removes
             artifacts). Clears the active selection if it pointed here.
@@ -5892,9 +5902,11 @@ resolve by a TRUNCATED selector, matched at segment boundaries: `ninja-clang-18`
 picks the highest `18.x`, and `msvc-17` picks an installed VS 17 without naming
 the edition. A truncated selector never crosses a boundary (`…-1` never matches
 `…-18`), and a substring like `lw build clang-19` works when unambiguous.]],
-  config = [[lw config <list|get|set|unset> [key] [value]
+  settings = [[lw settings <list|get|set|unset> [key] [value]
 
-Read or write lw's user configuration (]] .. config_path() .. [[).
+Read or write lw's OWN user settings (]] .. config_path() .. [[). This is lw's
+tool configuration — distinct from `lw config`, which edits a project's build
+configurations.
 
   list                 show all settings and the file path
   get <key>            print one setting
@@ -5919,7 +5931,7 @@ config — you choose how to enable it, so nothing is installed behind your back
   eval "$(lw completion bash)"      # this session only
   echo 'eval "$(lw completion bash)"' >> ~/.bashrc   # persist it yourself
 
-Completes commands, subcommands, project / configuration-set / profile names,
+Completes commands, subcommands, project / config-set / profile names,
 toolchains (from the cache — no scan), configuration names, module types, and
 paths. `lw` must be on PATH so the completion can call it back. Completion is
 non-interactive and never blocks; names come from a fast (~250ms) load.]],
@@ -5965,7 +5977,7 @@ set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
   --force   reinstall even if that version is already present
 
-Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` config key,
+Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` settings key,
 else the built-in default. A local directory works as an offline mirror.
 Not applicable to a development source. A host command (handled by lw itself).]],
   bootstrap = [[lw bootstrap [--version <x.y.z>]
@@ -6023,8 +6035,8 @@ substrings for determinism.
 Read-only — safe any time (no writes to user.json / loomworks.json):
   lw                              status + active profile
   lw workspace                    print the workspace name
-  lw project list | show <name>   lw profiles       lw tools [--cached]
-  lw configuration list|show|get  lw configuration-set list|show
+  lw project list | show <name>   lw profile list   lw tools [--cached]
+  lw config list|show|get         lw configset list|show
   lw profile query <profile> <project> <field>   (build-dir | config | state | tool | variables[.<name>])
   lw build <profile> [-- args]    builds; read-only toward config (writes only
                                   the build dir + cache)
@@ -6032,10 +6044,10 @@ Read-only — safe any time (no writes to user.json / loomworks.json):
 
 Mutating — only when the task asks (these write the working copy / shared file):
   init · workspace rename · project add|remove|rename ·
-  configuration add|set|unset|remove ·
-  configuration-set create|map|unmap|remove · profile create|remove ·
+  config add|set|unset|remove ·
+  configset create|map|unmap|remove · profile create|remove ·
   sdk add|remove ·
-  <kind> publish · publish · config set
+  <kind> publish · publish · settings set
 
 Do NOT change the user's active profile:
   - Build by explicit key:  lw --no-input build Debug:ninja-clang-19
@@ -6093,7 +6105,7 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
        && chmod +x /tmp/lw && /tmp/lw install -y
    Pin the version by using a specific release URL + sha256 and NOT running
    `lw self-update`. Air-gapped runner: point LOOMWORKS_RELEASE_URL (or the
-   `release-url` config key) at a local mirror directory.
+   `release-url` settings key) at a local mirror directory.
 
 2. Pick a toolchain deterministically (per matrix cell)
    Pin a toolchain COARSELY — by major version, or without an edition — and it
@@ -6137,7 +6149,13 @@ both fetched sources and compiled objects.]],
 
 function M.cmd_help(cmd)
   -- Normalize command aliases to their canonical help topic.
-  local alias = { cs = "configuration-set", cfg = "configuration" }
+  local alias = {
+    configuration = "config",
+    ["configuration-set"] = "configset",
+    cs = "configset",
+    cfg = "config",
+    profiles = "profile",
+  }
   cmd = cmd and (alias[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
     out(HELP[cmd])
@@ -6152,9 +6170,8 @@ Usage: lw [command] [args]
   init              initialize the workspace working copy
   workspace <sub>   show / rename the workspace  (ws)
   project <sub>     add | remove | rename | list | show projects
-  configuration     add | set | get | show | ... project configurations
-  configuration-set create | map | show | ... sets  (cs)
-  profiles          list profiles and their buildability
+  config <sub>      add | set | get | show | ... project configurations
+  configset <sub>   create | map | show | ... configuration sets
   profile <sub>     list | show | select | create | remove | publish | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
@@ -6170,7 +6187,7 @@ Usage: lw [command] [args]
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
   module <sub>      install | update | remove | list acquirable modules (mod)
-  config <...>      get/set lw configuration
+  settings <...>    get/set lw's own settings (dev-lua, release-url, …)
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
   install           install the lw binary on PATH + fetch the first bundle
@@ -6182,7 +6199,7 @@ Usage: lw [command] [args]
 Quickstart (empty dir -> first build -> shared config):
   lw init                                  initialize the workspace
   lw project add <path>                    register a project (type auto-detected)
-  lw cs create <name> <project>=<config>   map a config set (e.g. app=Debug)
+  lw configset create <name> <project>=<config>   map a config set (e.g. app=Debug)
   lw profile create <name> <tool>          make a buildable profile (`lw tools`)
   lw build <profile>                       build it
   lw publish                               write the shared loomworks.json
@@ -6190,11 +6207,11 @@ Quickstart (empty dir -> first build -> shared config):
 Items you add/create default to local+shared, so `lw publish` writes them to the
 committed loomworks.json — profiles excepted, as they pin toolchains found on
 this machine. Use --local to keep something private, --shared to share a
-profile; or share later with `lw <project|profile|configuration-set> publish
+profile; or share later with `lw <project|profile|configset> publish
 <name>`. See `lw help publish` for the intent model.
 
 New cmake/meson projects already expose configurations (Debug, Release, …) to
-map — `lw configuration list <project>` shows them; you only add configurations
+map — `lw config list <project>` shows them; you only add configurations
 for custom variants.
 
 Global: --no-input (alias --non-interactive) never prompts — a missing
@@ -6259,8 +6276,11 @@ local function main()
   if command == "help" or command == "-h" or command == "--help" then
     finish(M.cmd_help(a[2]))
   end
-  if command == "config" then
-    finish(M.cmd_config(a[2], a[3], a[4]))
+  -- `settings` edits lw's OWN user configuration (dev-lua, release-url, …). It
+  -- is a global command (no workspace needed). NOTE: `config` no longer routes
+  -- here — it is now the project-configuration command (see below).
+  if command == "settings" then
+    finish(M.cmd_settings(a[2], a[3], a[4]))
   end
   if command == "init" then
     finish(M.cmd_init(a))
@@ -6326,10 +6346,13 @@ local function main()
   if command == "project" then
     finish(M.cmd_project(a[2], root, a[3], a[4], a[5], a))
   end
-  if command == "configuration" or command == "cfg" then
+  -- `config` is the project-configuration command (canonical); `configuration`
+  -- and `cfg` are unpromoted aliases.
+  if command == "config" or command == "configuration" or command == "cfg" then
     finish(M.cmd_configuration(a[2], root, a[3], a[4], a[5], a[6], a))
   end
-  if command == "configuration-set" or command == "cs" then
+  -- `configset` is canonical; `configuration-set` and `cs` are unpromoted aliases.
+  if command == "configset" or command == "configuration-set" or command == "cs" then
     finish(M.cmd_cset(a[2], root, a))
   end
   -- `workspace` manages workspace-level settings (name) in the working copy.

@@ -28,4 +28,4 @@ esac
 
 echo
 echo "Point --dev at this checkout (once):"
-echo "  lw config set dev-lua $repo/lua"
+echo "  lw settings set dev-lua $repo/lua"
