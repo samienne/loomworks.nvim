@@ -755,8 +755,8 @@ command has detail under `lw help <command>`.
 | `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
 | `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
 | `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset`. `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
-| `lw config <sub>` | `add` \| `set` \| `get` \| `show` project configurations (aliases `configuration`, `cfg`) |
-| `lw configset <sub>` | `create` \| `map` \| `show` configuration sets (aliases `configuration-set`, `cs`) |
+| `lw config <sub>` | `add` \| `set` \| `get` \| `show` \| `rename` project configurations (aliases `configuration`, `cfg`). `rename <project> <old> <new>` (alias `mv`) renames a user configuration in place, updating every set mapping and profile that references it |
+| `lw configset <sub>` | `create` \| `map` \| `show` \| `rename` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
