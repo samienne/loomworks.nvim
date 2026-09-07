@@ -82,11 +82,11 @@ describe("cmake compile_commands_generated field (from M.info)", function()
         return cfg
     end
 
-    it("defaults false for plain variant configs (generator unknown at info time)", function()
+    it("defaults true for plain variant configs (owned for all generators)", function()
         local info = cmake.info("/nonexistent/proj", {})
         local dbg = config_mc(info, "variant:Debug")
         assert.is_not_nil(dbg)
-        assert.is_false(dbg.compile_commands_generated)
+        assert.is_true(dbg.compile_commands_generated)
     end)
 
     it("is true for a user config pinning a Visual Studio generator", function()
@@ -100,7 +100,7 @@ describe("cmake compile_commands_generated field (from M.info)", function()
         assert.is_true(msvc.compile_commands_generated)
     end)
 
-    it("is false for a user config pinning a Ninja generator", function()
+    it("is true for a user config pinning a Ninja generator (owned for all)", function()
         local info = cmake.info("/nonexistent/proj", {
             configurations = {
                 nj = { inherits = "variant:Debug", generator = "Ninja" },
@@ -108,7 +108,22 @@ describe("cmake compile_commands_generated field (from M.info)", function()
         })
         local nj = config_mc(info, "nj")
         assert.is_not_nil(nj)
-        assert.is_false(nj.compile_commands_generated)
+        assert.is_true(nj.compile_commands_generated)
+    end)
+
+    it("preserves an explicit compile_commands_generated=false escape hatch", function()
+        local info = cmake.info("/nonexistent/proj", {
+            configurations = {
+                native = {
+                    inherits = "variant:Debug",
+                    generator = "Ninja",
+                    compile_commands_generated = false,
+                },
+            },
+        })
+        local native = config_mc(info, "native")
+        assert.is_not_nil(native)
+        assert.is_false(native.compile_commands_generated)
     end)
 end)
 
@@ -288,15 +303,31 @@ describe("cmake lsp_configs compile_commands_dir (generated vs build dir)", func
         }
     end
 
-    it("points clangd at the build dir for a Ninja config", function()
+    it("points clangd at a loomworks-owned dir for a Ninja config (owned for all)", function()
+        local build_dir = "/work/.nvim/build/myapp/ninja/Debug"
         local cfgs = cmake.lsp_configs(fake_project({
             ws_root = "/work",
-            build_dir = "/work/.nvim/build/myapp/ninja/Debug",
+            build_dir = build_dir,
             config = { base_name = "Debug", module_config = { variant = "Debug" } },
             tool_data = { generator = "Ninja" },
         }))
         assert.equals("clangd", cfgs[1].server)
-        assert.equals("/work/.nvim/build/myapp/ninja/Debug", cfgs[1].compile_commands_dir)
+        assert.are_not.equal(build_dir, cfgs[1].compile_commands_dir)
+        assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
+        assert.is_truthy(cfgs[1].compile_commands_dir:find("myapp/ninja/Debug", 1, true))
+    end)
+
+    it("falls back to the build dir when compile_commands_generated = false", function()
+        local build_dir = "/work/.nvim/build/myapp/ninja/Debug"
+        local cfgs = cmake.lsp_configs(fake_project({
+            ws_root = "/work",
+            build_dir = build_dir,
+            config = { base_name = "Debug", module_config = {
+                variant = "Debug", compile_commands_generated = false } },
+            tool_data = { generator = "Ninja" },
+        }))
+        assert.equals("clangd", cfgs[1].server)
+        assert.equals(build_dir, cfgs[1].compile_commands_dir)
     end)
 
     it("points clangd at a loomworks-owned dir for a Visual Studio config", function()
@@ -327,6 +358,271 @@ describe("cmake lsp_configs compile_commands_dir (generated vs build dir)", func
             tool_data = { generator = "Ninja" }, -- would otherwise be build_dir
         }))
         assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Header attribution — Tier-1 nearest-ancestor directory rule (§12.3)
+-- ---------------------------------------------------------------------------
+
+describe("cmake header attribution (_build_header_entries)", function()
+    -- Two targets whose source directories are siblings under a common root.
+    -- `beta` owns component.cpp; `alpha` owns main.cpp and nothing named
+    -- "component". A header sits in a NESTED dir under alpha's source dir
+    -- (alpha/detail/component.h) that has no sources of its own. A naive
+    -- filename/token match ("component.h" ~ "component.cpp") would wrongly
+    -- attribute the header to beta; the nearest-ancestor rule must pick alpha.
+    local SOURCE_ROOT = "C:/proj/src"
+    local codemodel = {
+        paths = { source = SOURCE_ROOT },
+        configurations = {
+            {
+                name = "Debug",
+                targets = {
+                    { name = "alpha", id = "alpha::@1", jsonFile = "alpha.json" },
+                    { name = "beta", id = "beta::@2", jsonFile = "beta.json" },
+                },
+            },
+        },
+    }
+    local alpha = {
+        name = "alpha", id = "alpha::@1", type = "EXECUTABLE",
+        -- api.h is LISTED here but physically lives under beta's directory —
+        -- proves a listed header uses its listing target regardless of path.
+        sources = {
+            { path = "alpha/main.cpp" },
+            { path = "beta/api.h" },
+        },
+        compileGroups = {
+            {
+                language = "CXX",
+                sourceIndexes = { 0 },
+                includes = { { path = "C:/proj/src/alpha/include" } },
+                defines = { { define = "ALPHA" } },
+            },
+        },
+    }
+    local beta = {
+        name = "beta", id = "beta::@2", type = "EXECUTABLE",
+        sources = { { path = "beta/component.cpp" } },
+        compileGroups = {
+            {
+                language = "CXX",
+                sourceIndexes = { 0 },
+                defines = { { define = "BETA" } },
+            },
+        },
+    }
+    local details = { ["alpha.json"] = alpha, ["beta.json"] = beta }
+
+    local function entries_for(header_paths)
+        local index = cmake._target_attribution_index(
+            codemodel, details, SOURCE_ROOT, "Debug")
+        return cmake._build_header_entries(
+            index, { CXX = "/usr/bin/g++" }, header_paths, "C:/proj/build")
+    end
+
+    it("attributes a nested header to the nearest-ancestor target, not by name", function()
+        local idx = by_basename(entries_for({
+            "C:/proj/src/alpha/detail/component.h",
+        }))
+        local e = idx["component.h"]
+        assert.is_not_nil(e, "component.h should get an entry")
+        assert.equals("/usr/bin/g++", e.arguments[1])
+        -- alpha's flags, NOT beta's (the naive filename match would fail here).
+        assert.is_true(has_tok(e.arguments, "-DALPHA"))
+        assert.is_false(has_tok(e.arguments, "-DBETA"))
+        -- alpha's include is present too.
+        assert.is_true(has_tok(e.arguments, "-IC:/proj/src/alpha/include"))
+    end)
+
+    it("attributes a listed header to its listing target (path notwithstanding)", function()
+        -- api.h is under beta's dir but listed in alpha.sources → alpha.
+        local idx = by_basename(entries_for({ "C:/proj/src/beta/api.h" }))
+        local e = idx["api.h"]
+        assert.is_not_nil(e)
+        assert.is_true(has_tok(e.arguments, "-DALPHA"))
+        assert.is_false(has_tok(e.arguments, "-DBETA"))
+    end)
+
+    it("attributes a header under beta's dir to beta", function()
+        local idx = by_basename(entries_for({ "C:/proj/src/beta/widget.h" }))
+        local e = idx["widget.h"]
+        assert.is_not_nil(e)
+        assert.is_true(has_tok(e.arguments, "-DBETA"))
+        assert.is_false(has_tok(e.arguments, "-DALPHA"))
+    end)
+
+    it("omits a header no target's source directory contains", function()
+        local entries = entries_for({ "C:/other/foo.h" })
+        assert.equals(0, #entries)
+    end)
+
+    it("emits each header at most once", function()
+        local entries = entries_for({
+            "C:/proj/src/alpha/detail/component.h",
+            "C:/proj/src/alpha/detail/component.h",
+        })
+        assert.equals(1, #entries)
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Streaming writer + no-native-decode (§12.2)
+-- ---------------------------------------------------------------------------
+
+describe("cmake streaming writer", function()
+    local tmp
+    before_each(function()
+        tmp = vim.fn.tempname()
+        vim.fn.mkdir(tmp .. "/build/.cmake/api/v1/reply", "p")
+        local reply = tmp .. "/build/.cmake/api/v1/reply"
+        local function cp(src, dst)
+            local f = assert(io.open(FIXTURES .. "/" .. src, "r"))
+            local body = f:read("*a"); f:close()
+            local o = assert(io.open(reply .. "/" .. dst, "w"))
+            o:write(body); o:close()
+        end
+        cp("codemodel-v2.json", "codemodel-v2-x.json")
+        cp("target-app-Debug.json", "target-app-Debug.json")
+        cp("toolchains-v1.json", "toolchains-v1-x.json")
+        local index = {
+            objects = {
+                { kind = "codemodel", version = { major = 2, minor = 0 }, jsonFile = "codemodel-v2-x.json" },
+                { kind = "toolchains", version = { major = 1, minor = 0 }, jsonFile = "toolchains-v1-x.json" },
+            },
+        }
+        local i = assert(io.open(reply .. "/index-2025.json", "w"))
+        i:write(vim.json.encode(index)); i:close()
+    end)
+    after_each(function()
+        if tmp then vim.fn.delete(tmp, "rf") end
+    end)
+
+    it("produces valid multi-entry JSON without decoding the native database", function()
+        -- A deliberately un-decodable native compile_commands.json in the
+        -- build dir: if generation ever `vim.json.decode`d it, this would
+        -- throw. It must be ignored entirely.
+        local bogus = assert(io.open(tmp .. "/build/compile_commands.json", "w"))
+        bogus:write("this is not valid json { [ "); bogus:close()
+
+        local out_dir = tmp .. "/cache/cc"
+        local n = cmake.generate_compile_commands(tmp .. "/build", out_dir, { variant = "Debug" })
+        assert.is_truthy(n and n >= 2, "expected >= 2 entries (multi-entry DB)")
+
+        local f = assert(io.open(out_dir .. "/compile_commands.json", "r"))
+        local raw = f:read("*a"); f:close()
+        -- Valid JSON array that decodes back to the right entry count.
+        local decoded = vim.json.decode(raw)
+        assert.equals("table", type(decoded))
+        assert.equals(n, #decoded)
+        -- Each entry is a compile command with the expected shape.
+        for _, e in ipairs(decoded) do
+            assert.is_string(e.file)
+            assert.is_string(e.directory)
+            assert.equals("table", type(e.arguments))
+        end
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Freshness — mtime gate + task-completion trigger (§12.4)
+-- ---------------------------------------------------------------------------
+
+describe("cmake generated-cc freshness", function()
+    local uvx = vim.uv or vim.loop
+    local tmp, build_dir, out_dir
+    before_each(function()
+        tmp = vim.fn.tempname()
+        build_dir = tmp .. "/build"
+        out_dir = tmp .. "/cache/cc"
+        vim.fn.mkdir(build_dir .. "/.cmake/api/v1/reply", "p")
+        local reply = build_dir .. "/.cmake/api/v1/reply"
+        local function cp(src, dst)
+            local f = assert(io.open(FIXTURES .. "/" .. src, "r"))
+            local body = f:read("*a"); f:close()
+            local o = assert(io.open(reply .. "/" .. dst, "w"))
+            o:write(body); o:close()
+        end
+        cp("codemodel-v2.json", "codemodel-v2-x.json")
+        cp("target-app-Debug.json", "target-app-Debug.json")
+        cp("toolchains-v1.json", "toolchains-v1-x.json")
+        local index = {
+            objects = {
+                { kind = "codemodel", version = { major = 2, minor = 0 }, jsonFile = "codemodel-v2-x.json" },
+                { kind = "toolchains", version = { major = 1, minor = 0 }, jsonFile = "toolchains-v1-x.json" },
+            },
+        }
+        local i = assert(io.open(reply .. "/index-2025.json", "w"))
+        i:write(vim.json.encode(index)); i:close()
+    end)
+    after_each(function()
+        if tmp then vim.fn.delete(tmp, "rf") end
+    end)
+
+    --- Force the reply index mtime to `sec` so the gate sees a reconfigure.
+    local function set_reply_mtime(sec)
+        local reply = build_dir .. "/.cmake/api/v1/reply"
+        uvx.fs_utime(reply .. "/index-2025.json", sec, sec)
+    end
+
+    it("generates on first call, no-ops when the reply hasn't advanced", function()
+        local first = cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" })
+        assert.is_true(first)
+        assert.is_truthy(uvx.fs_stat(out_dir .. "/compile_commands.json"))
+
+        -- Pin the reply mtime to the past so it is not newer than our output.
+        set_reply_mtime(os.time() - 100)
+        local second = cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" })
+        assert.is_false(second)
+    end)
+
+    it("regenerates after a simulated reconfigure bumps the reply mtime", function()
+        assert.is_true(cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" }))
+        -- Make output look older than a fresh reconfigure.
+        local out_file = out_dir .. "/compile_commands.json"
+        uvx.fs_utime(out_file, os.time() - 100, os.time() - 100)
+        -- A reconfigure rewrites the reply index with a newer mtime.
+        set_reply_mtime(os.time() + 100)
+        -- This is exactly what the task-completion / reply-dir-watch triggers
+        -- invoke; it must regenerate.
+        assert.is_true(cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" }))
+    end)
+
+    it("refresh_lsp_database regenerates via the workspace-root out dir", function()
+        -- build_dir under <root>/.nvim/build maps to <root>/.nvim/cache/cc.
+        local root = tmp
+        local bd = root .. "/.nvim/build/app/Debug"
+        vim.fn.mkdir(bd .. "/.cmake/api/v1/reply", "p")
+        local reply = bd .. "/.cmake/api/v1/reply"
+        local function cp(src, dst)
+            local f = assert(io.open(FIXTURES .. "/" .. src, "r"))
+            local body = f:read("*a"); f:close()
+            local o = assert(io.open(reply .. "/" .. dst, "w"))
+            o:write(body); o:close()
+        end
+        cp("codemodel-v2.json", "codemodel-v2-x.json")
+        cp("target-app-Debug.json", "target-app-Debug.json")
+        cp("toolchains-v1.json", "toolchains-v1-x.json")
+        local index = { objects = {
+            { kind = "codemodel", version = { major = 2, minor = 0 }, jsonFile = "codemodel-v2-x.json" },
+            { kind = "toolchains", version = { major = 1, minor = 0 }, jsonFile = "toolchains-v1-x.json" },
+        } }
+        local i = assert(io.open(reply .. "/index-2025.json", "w"))
+        i:write(vim.json.encode(index)); i:close()
+
+        cmake.refresh_lsp_database({
+            build_dir = bd,
+            workspace_root = root,
+            variant = "Debug",
+        })
+        assert.is_truthy(uvx.fs_stat(root .. "/.nvim/cache/cc/app/Debug/compile_commands.json"))
+    end)
+
+    it("lsp_database_watch_path returns the reply dir, nil when absent", function()
+        assert.equals(build_dir .. "/.cmake/api/v1/reply",
+            cmake.lsp_database_watch_path({ build_dir = build_dir }))
+        assert.is_nil(cmake.lsp_database_watch_path({ build_dir = tmp .. "/nope" }))
     end)
 end)
 
