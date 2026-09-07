@@ -29,25 +29,33 @@ end
 --- family (core §1.3.1). Returns nil when the project has no variable
 --- declarations so module contexts stay lean. The Configuration object is the
 --- inheritance root — pass nil to get project-default values only.
+--- The active `profile` supplies fill values for variables left blank by the
+--- config chain (core §1.3.1); a blank a build reaches here would already have
+--- been refused by the build gate (`Profile:assert_buildable`), so entries
+--- with no value are dropped rather than passed to the module as `nil`.
 --- @param project loomworks.Project|nil
 --- @param configuration loomworks.Configuration|nil
 --- @param tool_data table|nil active tool_data — its compiler family selects overrides
+--- @param profile loomworks.Profile|nil active profile supplying blank-fill values
 --- @return table<string, { value: string, type: string }>|nil
-local function resolve_project_variables(project, configuration, tool_data)
+local function resolve_project_variables(project, configuration, tool_data, profile)
     if not project or not project.variables or not next(project.variables) then
         return nil
     end
     local family = require("loomworks.cpp_compilers").family_from_tool_data(tool_data)
     local variables = require("loomworks.variables")
-    local resolved = variables.resolve(project, configuration, family)
+    local resolved = variables.resolve(project, configuration, family, profile)
     if not next(resolved) then return nil end
     -- Drop the source_config reference: modules shouldn't depend on
     -- Configuration object identity, and the value is what's load-bearing
-    -- for command expansion.
+    -- for command expansion. A blank (nil value) entry is omitted.
     local out = {}
     for name, entry in pairs(resolved) do
-        out[name] = { value = entry.value, type = entry.type }
+        if entry.value ~= nil then
+            out[name] = { value = entry.value, type = entry.type }
+        end
     end
+    if not next(out) then return nil end
     return out
 end
 
@@ -112,7 +120,7 @@ local function collect_configuration_tasks(unit)
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
-        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data),
+        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     local pt = mod.progress_parser
@@ -192,7 +200,7 @@ function M.build_spec_for(unit, target_id)
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
-        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data),
+        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     --- Validate spec types and coerce missing cwd to the workspace root.
@@ -301,7 +309,7 @@ local function collect_profile_tasks(profile)
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
             cached_build_dir = pp:build_dir(),
-            resolved_variables = resolve_project_variables(project, pp._configuration, tool_data),
+            resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
         }
 
         local pt = mod.progress_parser
@@ -368,7 +376,7 @@ local function collect_configuration_clean_tasks(unit)
         workspace_root = ws.root,
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
-        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data),
+        resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     return mod.clean_tasks(project_ctx, variant)
@@ -413,7 +421,7 @@ local function collect_profile_clean_tasks(profile)
             workspace_root = ws.root,
             env = tool_data and tool_data.env or {},
             cached_build_dir = pp:build_dir(),
-            resolved_variables = resolve_project_variables(project, pp._configuration, tool_data),
+            resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
         }
 
         local clean = mod.clean_tasks(project_ctx, active_config)

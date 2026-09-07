@@ -446,6 +446,9 @@ end
 --- @field _active_profile loomworks.Profile|nil resolved active profile object
 --- @field _default_target_data table|nil raw default_target map from user.json
 --- @field _device_data table|nil raw device map from user.json (profile_key -> serial)
+--- @field _profile_variables_data table|nil raw profile_variables map from user.json
+---     (profile_key -> project_key -> variable -> value); machine-local fill
+---     values for blank project variables (§1.3.1), never published.
 --- @field _debug_settings table|nil debug settings from user.json (e.g. adapters)
 --- @field _lsp_options table<string, table>|nil per-server LSP option
 ---     overrides from user.json (server name -> options table). Empty
@@ -503,6 +506,7 @@ function Workspace.new(core, data)
     self._active_profile_key = nil
     self._default_target_data = nil
     self._device_data = nil
+    self._profile_variables_data = nil
     self._debug_settings = nil
     self._lsp_options = nil
     self._config_units = {}
@@ -834,13 +838,14 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
 
     -- Extract user state: if raw user data is provided, use it (even if fields are nil);
     -- otherwise use current domain state
-    local active_profile_key, default_target_data, device_data
+    local active_profile_key, default_target_data, device_data, profile_variables_data
     local user_overlay
     local user_data  -- for merge.merge (includes profiles)
     if raw_user then
         active_profile_key = raw_user.active_profile
         default_target_data = raw_user.default_target
         device_data = raw_user.device
+        profile_variables_data = raw_user.profile_variables
         self._debug_settings = raw_user.debug
         self._lsp_options = self:_validate_lsp_options(raw_user.lsp)
         -- Store user overlay (projects/configuration_sets/profiles from user.json)
@@ -861,6 +866,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
             or self._active_profile_key
         default_target_data = self._default_target_data
         device_data = self._device_data
+        profile_variables_data = self._profile_variables_data
         -- Reconstruct user overlay from domain objects (items with local or local+shared intent)
         user_overlay = self:_user_config_from_objects()
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
@@ -902,6 +908,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
         device_data = device_data,
+        profile_variables_data = profile_variables_data,
         user_project_keys = user_project_keys,
         user_cs_names = user_cs_names,
         user_provenance = user_provenance,
@@ -925,6 +932,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     self._active_profile_key = active_profile_key
     self._default_target_data = default_target_data
     self._device_data = device_data
+    self._profile_variables_data = profile_variables_data
     -- Deploy records: read from cache (no domain object resolution needed)
     if raw_cache and raw_cache.deploy_state then
         self._deploy_records = raw_cache.deploy_state
@@ -1964,6 +1972,27 @@ function Workspace:diagnostics()
                     end
                 end
             end
+        end
+    end
+
+    -- Blank-variable build gate (§1.3.1 / §15). The active profile must fill
+    -- every declared variable left blank by config resolution for a project in
+    -- its set. Reported for the ACTIVE profile as a build-blocking (error)
+    -- diagnostic keyed under the profile, so it shows on the status page and
+    -- `lw profile show`, and fails `lw status --check`. Errors, not warnings:
+    -- like tool/config incompatibility it blocks build/configure.
+    local active = self._active_profile
+    if active and not active._removed and active.blank_variables then
+        for _, blank in ipairs(active:blank_variables()) do
+            add({
+                severity = "error",
+                source = "Profile/" .. active.key .. "/" .. blank.project_key,
+                message = "variable '" .. blank.name
+                    .. "' is blank — set it for this profile "
+                    .. "(`lw profile set " .. active.key .. " "
+                    .. blank.project_key .. " " .. blank.name .. " <value>`)",
+                target_fold_key = "profile:" .. active.key,
+            })
         end
     end
 
@@ -4335,6 +4364,17 @@ function Workspace:_serialize_user()
     end
     if next(devices) then data.device = devices end
 
+    -- Profile variable fill values (machine-local; user.json only, §1.3.1).
+    -- Read from the live Profile objects; never emitted to loomworks.json.
+    local profile_variables = {}
+    for _, profile in pairs(self._profiles) do
+        local vals = profile.variables_data and profile:variables_data() or nil
+        if vals then
+            profile_variables[profile.key] = vals
+        end
+    end
+    if next(profile_variables) then data.profile_variables = profile_variables end
+
     -- Debug settings (pass-through)
     if self._debug_settings then data.debug = self._debug_settings end
 
@@ -4887,6 +4927,25 @@ function Workspace:remove_sdk(key)
         end
     end
     return false
+end
+
+--- Refresh the workspace's raw profile-variable map for one profile. Kept in
+--- sync with the live Profile so a value set via `Profile:set_variable_value`
+--- survives a later mutation-driven remerge (which repopulates profiles from
+--- this raw map — see `data_model.sync_profiles`), exactly as default-target
+--- and device selections persist. A nil/empty dict drops the profile's entry.
+--- @param profile_key string
+--- @param dict table<string, table<string, string>>|nil live per-project values
+function Workspace:_set_profile_variables_raw(profile_key, dict)
+    if dict and next(dict) then
+        self._profile_variables_data = self._profile_variables_data or {}
+        self._profile_variables_data[profile_key] = vim.deepcopy(dict)
+    elseif self._profile_variables_data then
+        self._profile_variables_data[profile_key] = nil
+        if not next(self._profile_variables_data) then
+            self._profile_variables_data = nil
+        end
+    end
 end
 
 function Workspace:_save_user()

@@ -426,9 +426,16 @@ function ConfigUnit:resolved_option_fingerprint()
     }
     if project and project.variables and next(project.variables) then
         local variables = require("loomworks.variables")
-        local resolved = variables.resolve(project, cfg, self:active_compiler_family())
+        -- Include the active profile so a blank variable's fill value (§1.3.1)
+        -- participates in the resolved-option fingerprint — changing it makes
+        -- the unit stale and forces a reconfigure. Skip a still-blank value.
+        local active_profile = self._workspace and self._workspace._active_profile
+        local resolved = variables.resolve(
+            project, cfg, self:active_compiler_family(), active_profile)
         for name, entry in pairs(resolved) do
-            ctx[name] = expand.expand_string(entry.value, ctx)
+            if entry.value ~= nil then
+                ctx[name] = expand.expand_string(entry.value, ctx)
+            end
         end
     end
 

@@ -163,6 +163,9 @@ end
 --- @field _sdk_key string|nil cached SDK key for runtime queries
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- @field _device_serial string|nil selected device serial for this profile
+--- @field _profile_variables table<string, table<string, string>>|nil per-machine
+---        fill values for blank project variables (§1.3.1), keyed
+---        project_key → (variable name → value). user.json only; never published.
 --- Resolved references (set during _apply):
 --- @field _tool_objects table<loomworks.Module, loomworks.Tool>|nil
 --- @field _config_set_ref loomworks.ConfigurationSet|nil
@@ -751,6 +754,90 @@ function Profile:device()
     return self._workspace:find_device(self._device_serial)
 end
 
+-- ---------------------------------------------------------------------------
+-- Profile variable fill values (blank-variable machine-local fill, §1.3.1)
+-- ---------------------------------------------------------------------------
+
+--- Get this profile's stored fill value for a blank project variable.
+--- Per-machine state read by `variables.resolve` when a variable is blank
+--- after the configuration chain (never shadows a set value).
+--- @param project_key string
+--- @param name string variable name
+--- @return string|nil
+function Profile:variable_value(project_key, name)
+    local by_project = self._profile_variables and self._profile_variables[project_key]
+    return by_project and by_project[name] or nil
+end
+
+--- Set (or, with a nil/empty value, clear) this profile's fill value for a
+--- project variable. Writes to user.json ONLY (never loomworks.json). Also
+--- refreshes the workspace's raw profile-variable map so the value survives a
+--- subsequent mutation-driven remerge. Marks the profile user-owned so its
+--- data lands in the working copy.
+--- @param project_key string
+--- @param name string variable name
+--- @param value string|nil value; nil or "" clears the entry
+function Profile:set_variable_value(project_key, name, value)
+    if value == nil or value == "" then
+        self:clear_variable_value(project_key, name)
+        return
+    end
+    self._profile_variables = self._profile_variables or {}
+    self._profile_variables[project_key] = self._profile_variables[project_key] or {}
+    self._profile_variables[project_key][name] = value
+    self:_mark_user_owned()
+    self._workspace:_set_profile_variables_raw(self.key, self._profile_variables)
+    self._workspace:_save_user()
+end
+
+--- Clear this profile's fill value for a project variable. Prunes an emptied
+--- project sub-table. Persists to user.json.
+--- @param project_key string
+--- @param name string variable name
+function Profile:clear_variable_value(project_key, name)
+    local by_project = self._profile_variables and self._profile_variables[project_key]
+    if not by_project or by_project[name] == nil then return end
+    by_project[name] = nil
+    if not next(by_project) then self._profile_variables[project_key] = nil end
+    if not next(self._profile_variables) then self._profile_variables = nil end
+    self._workspace:_set_profile_variables_raw(self.key, self._profile_variables)
+    self._workspace:_save_user()
+end
+
+--- Serialization view of this profile's fill values, or nil when there are
+--- none. A deep copy so callers can't mutate internal state.
+--- @return table<string, table<string, string>>|nil
+function Profile:variables_data()
+    if not self._profile_variables or not next(self._profile_variables) then
+        return nil
+    end
+    return vim.deepcopy(self._profile_variables)
+end
+
+--- Enumerate this profile's **blank** declared variables (§1.3.1) across the
+--- projects its configuration set maps — declared variables left with no
+--- value by the config chain, compiler overrides, or this profile's own fill
+--- values. Drives the build gate and the profile-scoped diagnostic.
+--- @return { project_key: string, name: string }[]
+function Profile:blank_variables()
+    local vars_mod = require("loomworks.variables")
+    local compilers = require("loomworks.cpp_compilers")
+    local out = {}
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if project and project.variables and next(project.variables) then
+            local tool = pp.tool_object and pp:tool_object() or nil
+            local family = compilers.family_from_tool_data(tool and tool.data or nil)
+            local blanks = vars_mod.blank_variables(
+                project, pp:configuration(), family, self)
+            for _, name in ipairs(blanks) do
+                out[#out + 1] = { project_key = project.key, name = name }
+            end
+        end
+    end
+    return out
+end
+
 --- Does this profile contain a project from a device-capable module?
 --- Used to gate the Device line in the UI per-profile (rather than
 --- per-workspace), so a multi-module workspace doesn't surface
@@ -1163,6 +1250,18 @@ end
 --- @return boolean ok, string|nil err human-readable reason
 function Profile:assert_buildable()
     local ok, reasons = self:is_valid()
+    -- Blank-variable gate (§1.3.1 / §15): a declared variable left blank after
+    -- config resolution must be filled by this profile before configure/build.
+    -- Folded in here (rather than into is_valid) so the profile's structural
+    -- :diagnostic() stays about tool/config validity, while blanks get their
+    -- own build-blocking, actionable message and a dedicated workspace
+    -- diagnostic (see Workspace:diagnostics).
+    for _, blank in ipairs(self:blank_variables()) do
+        ok = false
+        reasons[#reasons + 1] = "variable '" .. blank.name
+            .. "' is blank — set it for profile '" .. self.key
+            .. "' (project " .. blank.project_key .. ")"
+    end
     if ok then return true end
     return false, "profile '" .. self.key
         .. "' is not buildable: " .. table.concat(reasons, "; ")

@@ -426,8 +426,12 @@ function M.lsp_configs(project)
         local pp = active_profile and active_profile:project(project.key)
         local conf = pp and pp._config_unit and pp._config_unit._configuration or nil
         local variables = require("loomworks.variables")
-        for name, entry in pairs(variables.resolve(project, conf)) do
-            ctx[name] = expand.expand_string(entry.value, ctx)
+        -- Thread the active profile so blank variables (§1.3.1) pick up their
+        -- fill value; a still-blank value is skipped.
+        for name, entry in pairs(variables.resolve(project, conf, nil, active_profile)) do
+            if entry.value ~= nil then
+                ctx[name] = expand.expand_string(entry.value, ctx)
+            end
         end
     end
 
