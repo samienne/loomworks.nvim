@@ -424,14 +424,59 @@ end
 --- @param ws table workspace
 --- @param color boolean|nil force color on/off (nil = auto-detect stdout)
 --- @return string[] lines
+--- Stable positional numbering of profiles: the profiles sorted by `.key`
+--- ascending, assigned 1..N. Recomputed each run (never persisted), so a
+--- profile's number is identical in every listing and as a CLI argument, and
+--- only shifts when profiles are added/removed. Single source of truth — every
+--- listing and the numeric-argument resolver go through this. Returns:
+---   list   — array of profile objects in sorted-by-key order (index = number)
+---   number — map profile.key → its 1-based number
+--- @param ws table
+--- @return { list: table[], number: table<string, integer> }
+local function profile_numbering(ws)
+  local list = {}
+  for _, p in ipairs(ws._profiles or {}) do list[#list + 1] = p end
+  table.sort(list, function(a, b) return a.key < b.key end)
+  local number = {}
+  for i, p in ipairs(list) do number[p.key] = i end
+  return { list = list, number = number }
+end
+M._profile_numbering = profile_numbering
+
+--- If `arg` is a pure integer (`^%d+$`), resolve it as the 1-based index into
+--- the stable profile numbering (`profile_numbering`); out of range dies with
+--- the valid range. Returns the profile, or `nil` when `arg` is not a bare
+--- number, so the caller falls through to its own name/key matching (profile
+--- keys are never bare integers, so there is no ambiguity). Shared by every
+--- profile resolver that accepts a number; `lw profile query` deliberately does
+--- not take this path (keys only).
+--- @param ws table
+--- @param arg string|nil
+--- @return table|nil profile
+local function profile_by_number(ws, arg)
+  if type(arg) ~= "string" or not arg:match("^%d+$") then return nil end
+  local order = profile_numbering(ws)
+  local total = #order.list
+  local n = tonumber(arg)
+  if n < 1 or n > total then
+    die("profile number " .. n .. " out of range (1.." .. total .. "); see `lw profiles`")
+  end
+  return order.list[n]
+end
+
 local function profile_list_rows(ws, color)
   local profiles = ws._profiles or {}
   if #profiles == 0 then return { "(no profiles defined)" } end
   if color == nil then color = M._stdout_supports_color() end
   local pal = M._status_palette(color)
   local active = ws._active_profile_key
+  -- List in the stable sorted-by-key order so the numbers read 1,2,3 down the
+  -- page; the number is the same one every other listing and CLI argument uses.
+  local order = profile_numbering(ws)
+  local num_w = #tostring(#order.list)
   local lines = {}
-  for _, p in ipairs(profiles) do
+  for _, p in ipairs(order.list) do
+    local n = order.number[p.key]
     local tools = table.concat(p._tool_keys or {}, ", ")
     local set = p._configuration_set_name or "?"
     local is_active = (p.key == active)
@@ -439,8 +484,11 @@ local function profile_list_rows(ws, color)
     local valid, reasons = true, nil
     if p.is_valid then valid, reasons = p:is_valid() end
     local status = valid and "" or ("  [unbuildable: " .. table.concat(reasons or {}, "; ") .. "]")
-    local l1 = string.format("%s%s", mark, p.key)
-    local l2 = string.format("      set=%s  tools=[%s]%s", set, tools, status)
+    -- "<mark> <n>  <key>" → `* 2  Release:ninja-clang-18` / `  1  Debug:...`.
+    -- The detail line indents past the mark + number column so keys align.
+    local indent = 2 + num_w + 2
+    local l1 = string.format("%s%" .. num_w .. "d  %s", mark, n, p.key)
+    local l2 = string.rep(" ", indent) .. string.format("set=%s  tools=[%s]%s", set, tools, status)
     if is_active then l1, l2 = pal.active(l1), pal.active(l2) end
     lines[#lines + 1] = l1
     lines[#lines + 1] = l2
@@ -453,6 +501,7 @@ local function profile_list_rows(ws, color)
     help[#help + 1] = "switch the profile · lw profile select"
   end
   help[#help + 1] = "create a profile · lw profile create <set> <tool>"
+  help[#help + 1] = "use a number from this list in place of a name"
   lines[#lines + 1] = ""
   for _, h in ipairs(help) do lines[#lines + 1] = "  " .. M._paint_help(pal, h) end
   return lines
@@ -464,14 +513,22 @@ function M.cmd_profiles(ws)
   return 0
 end
 
---- Resolve which profile to operate on: explicit name (exact, then
---- unambiguous substring) → user.json active → single → error.
+--- Resolve which profile to operate on: explicit number/name (a bare integer
+--- is the stable positional index; otherwise exact, then unambiguous substring)
+--- → user.json active → single → error.
+--- `opts.no_number` disables the numeric-index path (keys only) — used by
+--- `lw profile query`, the deterministic machine path.
 --- @param ws table
 --- @param name string|nil
+--- @param opts { no_number: boolean }|nil
 --- @return table profile
-local function resolve_profile(ws, name)
+local function resolve_profile(ws, name, opts)
   local profiles = ws._profiles or {}
   if name then
+    if not (opts and opts.no_number) then
+      local by_num = profile_by_number(ws, name)
+      if by_num then return by_num end
+    end
     -- Boundary-anchored selector: exact key, else a segment-aligned
     -- match, so `Debug:ninja-clang-18` deterministically resolves the highest
     -- matching patch and `clang-1` never crosses into `clang-18`.
@@ -506,6 +563,7 @@ local function resolve_profile(ws, name)
   if #profiles == 1 then return profiles[1] end
   die("no profile specified and no unambiguous default — run `lw profile select`")
 end
+M._resolve_profile = resolve_profile
 
 --- Spawn `step` and wait for it, returning its exit code. Output handling
 --- depends on the host: the standalone shim streams (the child inherits this
@@ -3089,7 +3147,9 @@ function M.cmd_profile_query(root, args)
       "  fields: build-dir | config | state | tool | variables | variables.<name>")
   end
   local ws = load_workspace(root, false)
-  local profile = resolve_profile(ws, profile_name)
+  -- Deterministic machine path: resolve by key only, never a positional number
+  -- (numbers are an interactive convenience that shifts on profile add/remove).
+  local profile = resolve_profile(ws, profile_name, { no_number = true })
 
   local pp, projects = nil, {}
   for _, p in ipairs(profile:projects()) do
@@ -3182,6 +3242,7 @@ local function resolve_profile_for_set(ws, name)
     "(`lw profile set <profile> <project> <variable> <value>`) " ..
     "or select one with `lw profile select`.")
 end
+M._resolve_profile_for_set = resolve_profile_for_set
 
 --- `lw profile set [<profile>] <project> <variable> <value>` — set this
 --- profile's machine-local fill value for a blank project variable (§1.3.1).
@@ -3711,15 +3772,23 @@ local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
 --- @param active_key string|nil
 --- @param grouped table group_diagnostics() result
 --- @param tw integer terminal width in columns
-local function status_profile_rows(pal, plist, active_key, grouped, tw)
-  local longest = 0
-  for _, p in ipairs(plist) do longest = math.max(longest, #tostring(p.key)) end
-  local name_w = fit_column(longest, tw, PROFILE_RESERVED, 8)
-  local fmt = "%s %-" .. name_w .. "s set=%s"
+--- @param numbers table<string, integer> profile.key → stable number (profile_numbering)
+local function status_profile_rows(pal, plist, active_key, grouped, tw, numbers)
+  numbers = numbers or {}
+  local longest, num_w = 0, 1
+  for _, p in ipairs(plist) do
+    longest = math.max(longest, #tostring(p.key))
+    num_w = math.max(num_w, #tostring(numbers[p.key] or ""))
+  end
+  -- The number column widens the fixed overhead; take it off the name budget.
+  local name_w = fit_column(longest, tw, PROFILE_RESERVED + num_w, 8)
+  -- "<mark><n> <name> set=<set>" — the stable number is a label here, so it
+  -- keeps its value even though the section lists the active profile first.
+  local fmt = "%s%" .. num_w .. "s %-" .. name_w .. "s set=%s"
   local rows = {}
   for _, p in ipairs(plist) do
     local is_active = (p.key == active_key)
-    local row = string.format(fmt, is_active and "*" or " ",
+    local row = string.format(fmt, is_active and "*" or " ", tostring(numbers[p.key] or ""),
       trunc(p.key, name_w), trunc(p._configuration_set_name or "?", PROFILE_SET_W))
     rows[#rows + 1] = (is_active and pal.active(row) or row)
       .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
@@ -3885,7 +3954,8 @@ function M.cmd_status(root, opts)
   end
   -- Content-sized, terminal-capped name column (row formatting lives in the
   -- exposed status_profile_rows seam so it can be tested without a real tty).
-  local prof_rows = status_profile_rows(pal, plist, active_key, grouped, tw)
+  local prof_rows = status_profile_rows(pal, plist, active_key, grouped, tw,
+    profile_numbering(ws).number)
   local prof_i = 0
   status_section(pal, "Profiles", plist, MAX, function()
     prof_i = prof_i + 1
@@ -4031,11 +4101,13 @@ local function profile_show_rows(ws, profile, color)
       or pal.warn("· unbuildable" .. (reasons and #reasons > 0
         and (" — " .. reasons[1] .. (#reasons > 1 and " (+" .. (#reasons - 1) .. " more)" or "")) or ""))
     local suffix = "   " .. pal.dim("(set " .. (set_name or "none") .. ")") .. "   " .. note
-    local overhead = #"Profile" + 3 + 2 + 3 + #("(set " .. (set_name or "none") .. ")") + 3 + 14
+    -- Stable positional number (same one `lw profiles` / `lw status` show).
+    local num = tostring(profile_numbering(ws).number[profile.key] or "?")
+    local overhead = #"Profile" + 1 + #num + 2 + 2 + 3 + #("(set " .. (set_name or "none") .. ")") + 3 + 14
     local nw = math.max(12, tw - overhead)
     local name = trunc(profile.key, nw)
     local painted_name = active and pal.active("* " .. name) or ("  " .. name)
-    out(pal.title("Profile") .. "  " .. painted_name .. suffix)
+    out(pal.title("Profile") .. " " .. num .. "  " .. painted_name .. suffix)
 
     -- 2. Diagnostics — scoped to this profile (top section; nothing when empty).
     render_diagnostics(pal, scoped)
@@ -4155,6 +4227,8 @@ M._profile_show_rows = profile_show_rows
 local function resolve_profile_for_show(ws, name)
   local profiles = ws._profiles or {}
   if name then
+    local by_num = profile_by_number(ws, name)
+    if by_num then return by_num end
     for _, p in ipairs(profiles) do if p.key == name then return p end end
     die("no profile named '" .. name .. "' — run `lw profiles` to list.")
   end
