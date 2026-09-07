@@ -472,6 +472,32 @@ that changes a `-D` value makes the configuration stale (auto-reconfigure on
 next build). The resolved values are also available headlessly via
 `lw profile query <profile> <project> variables` (or `variables.<name>`).
 
+**Profile variables (machine-specific values).** `default` is optional. A
+variable declared with no default — and no configuration/compiler override — is
+*blank*: it has a type but no value, and each profile fills it per machine. Use
+this for a value that differs per computer (an SDK path, a device address):
+
+```json
+"variables": { "sdk_root": { "type": "path" } }
+```
+
+Fill a blank for the active profile (or a named one) with:
+
+```sh
+lw profile set [<profile>] <project> <variable> <value>
+# e.g.
+lw profile set Debug:ninja-gcc-12 App sdk_root /opt/sdk/3.2
+lw profile unset App sdk_root           # clear (profile defaults to the active one)
+```
+
+Fill values live in `.nvim/loomworks.user.json` only — they are machine-local
+and are **never** published to `loomworks.json`, so a shared workspace declares
+the blank once and every teammate/machine supplies its own path. The blank is
+also the requirement: **a build refuses while any blank variable is unfilled**,
+and `lw status` (and `lw profile show`) flags it as a diagnostic that fails
+`lw status --check`. Editing a profile's fill value reconfigures on the next
+build, exactly like a variable default.
+
 ## Concepts
 
 **Configuration set** — a cross-project mapping declared in `loomworks.json`.
@@ -715,7 +741,7 @@ command has detail under `lw help <command>`.
 | `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` |
 | `lw configuration <sub>` | `add` \| `set` \| `get` \| `show` project configurations |
 | `lw configuration-set <sub>` | `create` \| `map` \| `show` (alias `cs`) |
-| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active) |
+| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |

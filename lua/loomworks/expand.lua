@@ -83,10 +83,15 @@ function M.launch_context(ws, profile, project)
         local tool_data = unit and (unit._tool and unit._tool.data or unit._tool_data) or nil
         local family = require("loomworks.cpp_compilers").family_from_tool_data(tool_data)
         local variables = require("loomworks.variables")
-        local resolved = variables.resolve(project, configuration, family)
+        -- The launch context resolves within the active profile, so its
+        -- blank-variable fill values (§1.3.1) apply. A still-blank value is
+        -- skipped (left out of the context).
+        local resolved = variables.resolve(project, configuration, family, profile)
         for name, entry in pairs(resolved) do
             -- Two-pass: variable values can reference built-in variables
-            ctx[name] = M.expand_string(entry.value, ctx)
+            if entry.value ~= nil then
+                ctx[name] = M.expand_string(entry.value, ctx)
+            end
         end
     end
 

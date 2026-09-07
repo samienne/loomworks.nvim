@@ -406,6 +406,18 @@ finishes:
 - If configure succeeded → launch the build task
 - If configure failed → report failure, do not build
 
+**Profile fill gate**: Before any configure or build runs, a profile's
+operations refuse to start when the active profile leaves a **blank** declared
+variable unfilled for a project in its configuration set (§1.3.1) — the
+profile is *incomplete* until every blank is filled. This is a build-blocking
+condition (invariant §15), surfaced as a diagnostic scoped to the profile
+(§16.18). An interactive host prompts for the missing value(s) at the gate; a
+non-interactive host refuses with a message naming the variable and profile to
+fill. Filling every blank (a profile fill value, §1.3.1) clears the gate.
+Because a profile fill value feeds a configuration's resolved options, changing
+one can make an already-configured unit stale (§5), triggering a reconfigure on
+the next build; the build directory identity is NOT keyed on fill values.
+
 ### 5.2 Auto-configure before build
 
 When building a profile and some projects are unconfigured or in

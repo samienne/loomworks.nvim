@@ -403,19 +403,27 @@ function M.open(opts)
                         end,
                     })
                 else
-                    local value = resolved and resolved.value or decl.default
+                    local value = (resolved and resolved.value) or decl.default
                     local source
-                    if resolved and resolved.source_config then
+                    if resolved and resolved.from_profile then
+                        source = "profile"
+                    elseif resolved and resolved.source_config then
                         source = resolved.source_config.name
+                    elseif value == nil then
+                        source = "blank — set per profile"
                     else
                         source = "project default"
                     end
-                    t:item("  " .. vk .. " = " .. value .. "  ("
+                    -- A blank variable (no default, no override, no profile
+                    -- fill) has no value yet (core §1.3.1); show a placeholder
+                    -- and seed the editor prompt empty.
+                    local shown = value == nil and "(blank)" or value
+                    t:item("  " .. vk .. " = " .. shown .. "  ("
                             .. source .. ", " .. decl.type .. ")", {
                         hl = "Comment",
                         direct = true,
                         on_enter = function()
-                            edit_string(evk .. " = ", value, function(v)
+                            edit_string(evk .. " = ", value or "", function(v)
                                 if v and v ~= "" then
                                     variables[evk] = v
                                     if view then view:refresh() end

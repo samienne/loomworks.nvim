@@ -1304,13 +1304,11 @@ function M.compute_edit_configuration_context(project, config_name)
     -- the read-only overrides display (core §1.3.1). nil when no active profile
     -- resolves a tool for this project.
     local active_family = nil
-    do
-        local active = ws.get_active_profile and ws:get_active_profile() or nil
-        if active and active.tool_for then
-            local tref = active:tool_for(project.type)
-            active_family = require("loomworks.cpp_compilers")
-                .family_from_tool_data(tref and tref.data or nil)
-        end
+    local active_profile = ws.get_active_profile and ws:get_active_profile() or nil
+    if active_profile and active_profile.tool_for then
+        local tref = active_profile:tool_for(project.type)
+        active_family = require("loomworks.cpp_compilers")
+            .family_from_tool_data(tref and tref.data or nil)
     end
 
     -- Resolve project variables with provenance for this configuration,
@@ -1323,7 +1321,9 @@ function M.compute_edit_configuration_context(project, config_name)
         local cfg_obj = project:get_configuration(config_name)
         if cfg_obj then
             local vars_mod = require("loomworks.variables")
-            resolved_variables = vars_mod.resolve(project, cfg_obj, active_family)
+            -- Thread the active profile so a blank variable's fill value
+            -- (§1.3.1) shows in the editor; a still-blank one has value nil.
+            resolved_variables = vars_mod.resolve(project, cfg_obj, active_family, active_profile)
             -- Extract this config's own overrides (not inherited)
             if cfg_obj.variables then
                 config_variable_overrides = vim.deepcopy(cfg_obj.variables)

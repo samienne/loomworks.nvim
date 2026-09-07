@@ -8,7 +8,7 @@
 ---           project <add|remove|rename|list|show> |
 ---           configuration <list|add|show|get|set|unset|remove> |
 ---           configuration-set <list|show|create|map|unmap|remove> | profiles |
----           profile <list|show|select|create|remove|publish|query> |
+---           profile <list|show|select|create|remove|publish|query|set|unset> |
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
@@ -3113,7 +3113,9 @@ function M.cmd_profile_query(root, args)
     local tool = pp:tool_object()
     local family = require("loomworks.cpp_compilers")
       .family_from_tool_data(tool and tool.data or nil)
-    return require("loomworks.variables").resolve(project, pp:configuration(), family)
+    -- Thread the queried profile so blank variables (§1.3.1) resolve to their
+    -- fill value; still-blank ones report as empty via `entry.value or ""`.
+    return require("loomworks.variables").resolve(project, pp:configuration(), family, profile)
   end
 
   local value
@@ -3161,9 +3163,95 @@ function M.cmd_profile_query(root, args)
   return 0
 end
 
+--- Resolve the profile for a `lw profile set/unset`: a named profile is matched
+--- with the same boundary-anchored selector as builds; an omitted name falls
+--- back to the active profile (a management write, so the active-profile
+--- default is allowed even in a non-interactive host, §16.9/§16.18).
+--- @param ws table
+--- @param name string|nil
+--- @return table profile
+local function resolve_profile_for_set(ws, name)
+  if name then return resolve_profile(ws, name) end
+  local active = ws._active_profile_key
+  if active then
+    for _, p in ipairs(ws._profiles or {}) do
+      if p.key == active then return p end
+    end
+  end
+  die("no profile specified and no active profile — name one " ..
+    "(`lw profile set <profile> <project> <variable> <value>`) " ..
+    "or select one with `lw profile select`.")
+end
+
+--- `lw profile set [<profile>] <project> <variable> <value>` — set this
+--- profile's machine-local fill value for a blank project variable (§1.3.1).
+--- Profile defaults to the active one. Written to user.json only; never
+--- published to loomworks.json.
+function M.cmd_profile_set(root, args)
+  -- args: { "profile", "set", [profile], project, variable, value }
+  local rest = {}
+  for i = 3, #args do rest[#rest + 1] = args[i] end
+  local profile_name, project_key, var_name, value
+  if #rest == 4 then
+    profile_name, project_key, var_name, value = rest[1], rest[2], rest[3], rest[4]
+  elseif #rest == 3 then
+    project_key, var_name, value = rest[1], rest[2], rest[3]
+  else
+    die("usage: lw profile set [<profile>] <project> <variable> <value>\n" ..
+      "  sets this profile's machine-local value for a blank project variable\n" ..
+      "  (profile defaults to the active one; written to user.json only)")
+  end
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile_for_set(ws, profile_name)
+  local proj = resolve_project(ws, project_key)
+  if not (proj.variables and proj.variables[var_name]) then
+    local declared = {}
+    for n in pairs(proj.variables or {}) do declared[#declared + 1] = n end
+    table.sort(declared)
+    die("project '" .. proj.key .. "' declares no variable '" .. var_name ..
+      "'. Declared: " .. (next(declared) and table.concat(declared, ", ") or "(none)"))
+  end
+  profile:set_variable_value(proj.key, var_name, value)
+  out(string.format("%s: set %s/%s = %s", profile.key, proj.key, var_name, value))
+  return 0
+end
+
+--- `lw profile unset [<profile>] <project> <variable>` — clear a profile's
+--- fill value for a project variable. Mirrors `lw profile set`.
+function M.cmd_profile_unset(root, args)
+  -- args: { "profile", "unset", [profile], project, variable }
+  local rest = {}
+  for i = 3, #args do rest[#rest + 1] = args[i] end
+  local profile_name, project_key, var_name
+  if #rest == 3 then
+    profile_name, project_key, var_name = rest[1], rest[2], rest[3]
+  elseif #rest == 2 then
+    project_key, var_name = rest[1], rest[2]
+  else
+    die("usage: lw profile unset [<profile>] <project> <variable>\n" ..
+      "  clears this profile's machine-local value for a project variable\n" ..
+      "  (profile defaults to the active one)")
+  end
+  local ws = load_workspace(root, false)
+  local profile = resolve_profile_for_set(ws, profile_name)
+  local proj = resolve_project(ws, project_key)
+  if not (proj.variables and proj.variables[var_name]) then
+    die("project '" .. proj.key .. "' declares no variable '" .. var_name .. "'")
+  end
+  profile:clear_variable_value(proj.key, var_name)
+  out(string.format("%s: unset %s/%s", profile.key, proj.key, var_name))
+  return 0
+end
+
 function M.cmd_profile(sub, root, args)
   if sub == "select" then
     return M.select_profile(load_workspace(root, false))
+  end
+  if sub == "set" then
+    return M.cmd_profile_set(root, args)
+  end
+  if sub == "unset" then
+    return M.cmd_profile_unset(root, args)
   end
   if sub == "create" then
     return M.cmd_profile_create(root, args)
@@ -3184,7 +3272,7 @@ function M.cmd_profile(sub, root, args)
     return M.cmd_profiles(load_workspace(root))
   end
   die("unknown profile subcommand '" .. tostring(sub) ..
-    "' — use list|show|select|create|remove|publish|query (target moved to `lw target`)")
+    "' — use list|show|select|create|remove|publish|query|set|unset (target moved to `lw target`)")
 end
 
 --- The value a config key falls back to when unset, so `lw config get` can
@@ -4875,7 +4963,7 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "profile" then
-    if n == 1 then emit({ "list", "show", "select", "create", "publish", "query", "remove" }); return 0 end
+    if n == 1 then emit({ "list", "show", "select", "create", "publish", "query", "remove", "set", "unset" }); return 0 end
     if sub == "create" then
       if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
       elseif n >= 3 then                                       -- [tool ...] / --activate
@@ -4883,6 +4971,16 @@ function M.cmd_complete(cword, words)
       end
     elseif (sub == "publish" or sub == "show") and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- <key>
+    elseif (sub == "set" or sub == "unset") then
+      -- Grammar: [<profile>] <project> <variable> [<value>]. Position 2 may be
+      -- either the optional profile or the project; offer both. Position 3
+      -- offers project names (when a profile led) plus profile names.
+      if n == 2 or n == 3 then
+        local ws = comp_ws(root)
+        local list = comp_profile_names(ws)
+        for _, p in ipairs(comp_project_names(ws)) do list[#list + 1] = p end
+        emit(list)
+      end
     end
     return 0
   elseif cmd == "target" then
@@ -5427,7 +5525,7 @@ cross-project selection a profile builds. Managed in the working copy;
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]],
-  profile = [[lw profile <list|show|select|create|remove|publish|query>
+  profile = [[lw profile <list|show|select|create|remove|publish|query|set|unset>
 
   list      same as `lw profiles`
   show [<profile>]
@@ -5466,6 +5564,14 @@ resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.]]
               state      last known build state (unconfigured/configured/built…)
               tool       the resolved toolchain key
             e.g. BD=$(lw profile query Debug:ninja-clang-18 app build-dir)
+  set [<profile>] <project> <variable> <value>
+            Set this profile's machine-local fill value for a BLANK project
+            variable (one declared with no default — an SDK path, a device
+            address that differs per machine). Written to user.json only and
+            never published. <profile> defaults to the active profile. A build
+            refuses while a blank is unfilled (`lw status` flags it).
+  unset [<profile>] <project> <variable>
+            Clear a profile's fill value for a project variable.
 
 The active profile is the default for `lw build`. Profiles and toolchains
 resolve by a TRUNCATED selector, matched at segment boundaries: `ninja-clang-18`

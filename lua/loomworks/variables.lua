@@ -22,7 +22,11 @@ local VALID_TYPES = {
 }
 
 --- Validate project-level variable declarations.
---- @param variables table<string, { type: string, default: string }>
+--- Only `type` is required; `default` is OPTIONAL (core §1.3.1). A declaration
+--- with no `default` — and no configuration/compiler override, and no
+--- active-profile fill — is *blank*: it has a type but no value, and must be
+--- filled by the active profile before a build that references it can run.
+--- @param variables table<string, { type: string, default?: string }>
 --- @return boolean ok, string|nil err
 function M.validate_declarations(variables)
     if type(variables) ~= "table" then
@@ -42,7 +46,8 @@ function M.validate_declarations(variables)
             return false, "variable '" .. name .. "' has invalid type '"
                 .. tostring(decl.type) .. "' (expected 'string' or 'path')"
         end
-        if type(decl.default) ~= "string" then
+        -- default is optional; when present it must be a string.
+        if decl.default ~= nil and type(decl.default) ~= "string" then
             return false, "variable '" .. name
                 .. "' default must be a string"
         end
@@ -138,19 +143,27 @@ end
 --- Within a single chain level a matching `overrides[active_family][name]`
 --- wins over the compiler-agnostic `variables[name]`; chain position
 --- dominates compiler-specificity (core §1.3.1).
+--- The final fallback (core §1.3.1) is the **active profile's fill value**:
+--- when a variable is still blank after the config chain and the project
+--- `default`, the profile (if given) supplies its per-machine value. This is
+--- consulted ONLY for a blank — a profile value never shadows a value the
+--- config chain or default provides. When no source at all supplies a value,
+--- the entry's `value` is `nil` (the variable is *blank*).
 --- @param project loomworks.Project must have .variables declarations
 --- @param configuration loomworks.Configuration|nil nil = project defaults only
 --- @param active_family? "clang"|"gcc"|"msvc"|nil active compiler family; nil = no overrides
---- @return table<string, { value: string, source_config: loomworks.Configuration|nil, type: string, from_override: boolean }>
-function M.resolve(project, configuration, active_family)
+--- @param profile? loomworks.Profile active profile supplying blank-fill values; nil = no fill
+--- @return table<string, { value: string|nil, source_config: loomworks.Configuration|nil, type: string, from_override: boolean, from_profile: boolean }>
+function M.resolve(project, configuration, active_family, profile)
     local declarations = project.variables
     if not declarations or not next(declarations) then return {} end
 
     local result = {}
     for name, decl in pairs(declarations) do
-        local value = decl.default
+        local value = decl.default -- may be nil (optional default)
         local source_config = nil
         local from_override = false
+        local from_profile = false
 
         if configuration then
             -- Search: this config → inherited configs (depth-first left-to-right)
@@ -163,15 +176,48 @@ function M.resolve(project, configuration, active_family)
             end
         end
 
+        -- Profile fill (blanks only): only when the config chain + default
+        -- left the variable with no value. Never shadows a set value.
+        if value == nil and profile and profile.variable_value then
+            local pv = profile:variable_value(project.key, name)
+            if pv ~= nil then
+                value = pv
+                from_profile = true
+            end
+        end
+
         result[name] = {
             value = value,
             source_config = source_config,
             type = decl.type,
             from_override = from_override,
+            from_profile = from_profile,
         }
     end
 
     return result
+end
+
+--- Report the declared variables of a (project, configuration) pair that are
+--- **blank** (core §1.3.1) — no default, no configuration/compiler override,
+--- and (if a profile is given) no active-profile fill value. Drives the build
+--- gate (`Profile:assert_buildable`) and the profile-scoped diagnostic.
+--- @param project loomworks.Project
+--- @param configuration loomworks.Configuration|nil
+--- @param active_family? "clang"|"gcc"|"msvc"|nil
+--- @param profile? loomworks.Profile
+--- @return string[] sorted blank variable names
+function M.blank_variables(project, configuration, active_family, profile)
+    local out = {}
+    if not project or not project.variables or not next(project.variables) then
+        return out
+    end
+    local resolved = M.resolve(project, configuration, active_family, profile)
+    for name, entry in pairs(resolved) do
+        if entry.value == nil then out[#out + 1] = name end
+    end
+    table.sort(out)
+    return out
 end
 
 --- Search for a variable value in a configuration and its inheritance chain.
