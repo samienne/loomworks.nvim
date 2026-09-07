@@ -412,23 +412,42 @@ end
 -- Commands
 -- ---------------------------------------------------------------------------
 
-function M.cmd_profiles(ws)
+--- Build the `lw profiles` / `lw profile list` output lines. Pure and
+--- color-aware so it is testable without a tty: the active profile's two lines
+--- are painted with the status palette's `active` (green on a terminal, plain
+--- on a pipe/redirect), matching the `lw status` active-profile highlight.
+--- `color` defaults to the stdout-tty probe. Reads the palette/color helpers
+--- off `M` (assigned later in the file) at call time.
+--- @param ws table workspace
+--- @param color boolean|nil force color on/off (nil = auto-detect stdout)
+--- @return string[] lines
+local function profile_list_rows(ws, color)
   local profiles = ws._profiles or {}
-  if #profiles == 0 then
-    out("(no profiles defined)")
-    return 0
-  end
+  if #profiles == 0 then return { "(no profiles defined)" } end
+  if color == nil then color = M._stdout_supports_color() end
+  local pal = M._status_palette(color)
   local active = ws._active_profile_key
+  local lines = {}
   for _, p in ipairs(profiles) do
     local tools = table.concat(p._tool_keys or {}, ", ")
     local set = p._configuration_set_name or "?"
-    local mark = (p.key == active) and "* " or "  "
+    local is_active = (p.key == active)
+    local mark = is_active and "* " or "  "
     local valid, reasons = true, nil
     if p.is_valid then valid, reasons = p:is_valid() end
     local status = valid and "" or ("  [unbuildable: " .. table.concat(reasons or {}, "; ") .. "]")
-    out(string.format("%s%s", mark, p.key))
-    out(string.format("      set=%s  tools=[%s]%s", set, tools, status))
+    local l1 = string.format("%s%s", mark, p.key)
+    local l2 = string.format("      set=%s  tools=[%s]%s", set, tools, status)
+    if is_active then l1, l2 = pal.active(l1), pal.active(l2) end
+    lines[#lines + 1] = l1
+    lines[#lines + 1] = l2
   end
+  return lines
+end
+M._profile_list_rows = profile_list_rows
+
+function M.cmd_profiles(ws)
+  for _, line in ipairs(profile_list_rows(ws)) do out(line) end
   return 0
 end
 
