@@ -764,7 +764,7 @@ command has detail under `lw help <command>`.
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
-| `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations |
+| `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
@@ -778,7 +778,13 @@ command has detail under `lw help <command>`.
 `lw profiles` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command
 (`lw build 2`, `lw profile show 1`) — an interactive convenience only, so scripts,
-CI, and `lw profile query` should still use keys.
+CI, and `lw profile query` should still use keys. A profile argument resolves the
+same way everywhere (build/run/clean/test/select/show/remove/target): a number
+from `lw profiles`, then an exact key, then a unique boundary-anchored substring
+(`lw build clang-18`). Item-creating verbs accept `create` and `add`
+interchangeably; `configuration-set create` also takes positional
+`<project> <config>` pairs (`lw cs create dev app Debug`) alongside the
+`project=config` form.
 
 A first run, from an empty directory:
 
