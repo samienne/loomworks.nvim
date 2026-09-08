@@ -318,6 +318,26 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
+**`refresh_lsp_database(ctx)`** *(optional)*
+
+Regenerate any loomworks-owned LSP compilation database for a build
+directory, if stale. Best-effort and **idempotent** — the module must gate
+the work on its own freshness check (e.g. an mtime guard) so repeated calls
+are cheap no-ops. Core calls this after a successful configure or build task
+for the affected ConfigUnit, and again whenever a watched path (see below)
+changes. `ctx` carries `build_dir`, `workspace_root`, `variant`, and
+`compiler` (the module uses only what it needs). Modules with no owned
+database (the common case) omit this method. See
+[`spec/modules/cmake.md`](spec/modules/cmake.md) §12 for cmake's use.
+
+**`lsp_database_watch_path(ctx) → string?`** *(optional)*
+
+Return an absolute directory (or file) whose changes should re-trigger
+`refresh_lsp_database`, or `nil`. Core registers a `fs_poll` watch on the
+returned path; when it changes, core re-invokes `refresh_lsp_database` for
+the same ConfigUnit. `ctx` carries `build_dir`. Used to catch database
+inputs regenerated outside loomworks (e.g. a manual `cmake` reconfigure).
+
 **`runtime_path(ctx) → string[]?`** *(optional)*
 
 Directories that must be on `PATH` to run the module's built executables

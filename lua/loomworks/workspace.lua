@@ -2593,7 +2593,57 @@ function Workspace:record_task_result(result)
             end
         end
     end
+
+    -- Refresh any module-owned LSP compilation database now that a configure
+    -- or build has completed (cmake.md §12.4 trigger 2). Idempotent + cheap:
+    -- the module gates on its own reply-mtime, so a build that didn't
+    -- reconfigure is a no-op. clangd auto-reloads the file on change.
+    if config_unit and success and (action == "configure" or action == "build") then
+        self:_refresh_lsp_database_for(config_unit)
+    end
+
     self._core._deps.events.emit("task_result", result)
+end
+
+--- Regenerate a module's owned LSP compilation database for a ConfigUnit and
+--- register a watch on its inputs (cmake.md §12.4, via the generic module
+--- hooks in core §8.4: `refresh_lsp_database` / `lsp_database_watch_path`).
+--- Generic — no module-type checks: modules with no owned database simply
+--- don't implement the hooks. Best-effort and idempotent (the module gates
+--- the work on its own freshness check; the watch registration dedupes per
+--- path). Called after configure/build completion and during the startup
+--- target scan.
+--- @param unit loomworks.ConfigUnit
+function Workspace:_refresh_lsp_database_for(unit)
+    if not unit then return end
+    local project = unit._project
+    local mod = project and project._module and project._module.impl or nil
+    if not mod or not mod.refresh_lsp_database then return end
+
+    local build_dir = unit:build_dir()
+    if not build_dir then return end
+
+    local td = unit._tool_data
+    local ctx = {
+        build_dir = build_dir,
+        workspace_root = self.root,
+        variant = unit:variant(),
+        compiler = td and td.compiler_path or nil,
+    }
+    pcall(mod.refresh_lsp_database, ctx)
+
+    -- Watch the module's declared input path (cmake: the file-api reply dir)
+    -- so a reconfigure loomworks didn't drive re-triggers the mtime-gated
+    -- refresh (trigger 3). The callback captures the resolved ctx (not the
+    -- unit) so it stays valid across refresh array swaps.
+    if self._tracker and mod.lsp_database_watch_path then
+        local ok, watch_path = pcall(mod.lsp_database_watch_path, { build_dir = build_dir })
+        if ok and type(watch_path) == "string" then
+            self._tracker:watch_signal(watch_path, function()
+                pcall(mod.refresh_lsp_database, ctx)
+            end)
+        end
+    end
 end
 
 -- ===========================================================================
@@ -3102,6 +3152,13 @@ function Workspace:_scan_targets_async()
                 if targets then
                     entry.unit:set_targets(targets)
                     any_found = true
+                end
+                -- Regenerate the module-owned LSP database and register its
+                -- reply-dir watch on load (cmake.md §12.4). Mtime-gated, so a
+                -- fresh database is a no-op; catches a manual reconfigure made
+                -- while loomworks wasn't running. Only for build-dir units.
+                if entry.build_dir then
+                    ws:_refresh_lsp_database_for(entry.unit)
                 end
                 next_unit()
             end)

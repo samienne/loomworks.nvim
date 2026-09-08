@@ -412,50 +412,141 @@ override is caught here even though the raw `${…}` option template is
 unchanged. A change of active compiler family is already covered by the build
 directory being keyed on the tool, so it configures separately.
 
-## 12. Generated `compile_commands.json` (non-emitting generators)
+## 12. Owned `compile_commands.json` (all generators)
 
-CMake emits `compile_commands.json` only for the Ninja and Makefile
-generators; the Visual Studio and Xcode generators never do. An MSVC
-(VS-generator) configuration therefore has no compilation database and
-clangd gets nothing. loomworks fills the gap by generating its own
-`compile_commands.json` from the CMake file-api for such configurations.
+loomworks **owns** the clangd compilation database for every cmake
+configuration, regardless of generator. It reconstructs
+`compile_commands.json` from the CMake file-api and writes it into a
+loomworks-owned directory under `.nvim/cache/cc/`; `lsp_configs` points
+clangd at that directory. The project build directory's native
+`compile_commands.json` (which the Ninja and Makefile generators emit, and
+Visual Studio / Xcode do not) is **not** used for clangd by default.
 
-- Each cmake configuration carries a module-config field
-  **`compile_commands_generated`** (boolean). Its default is computed from
-  the generator: `true` for non-emitting generators (Visual Studio, Xcode),
-  `false` for emitting ones (Ninja, Makefiles). A future per-profile /
-  per-config user option may override this default; the field is the
-  effective flag either way. When the generator is not yet known (a plain
-  `variant:*` configuration whose generator comes from the profile's kit at
-  build time, not from the configuration itself), the info-time default is
-  `false` and the effective decision is taken at LSP-wiring time from the
-  active profile's kit generator.
+Rationale:
 
-- When the flag is `true`: after configure, loomworks reads the file-api
-  codemodel (per-target `compileGroups`: `language`, `includes`, `defines`,
-  `compileCommandFragments`, `sourceIndexes`, plus the target `sources`) and
-  the resolved compiler (the file-api `toolchains` object, falling back to
-  the kit's compiler), then writes a `compile_commands.json` into a
-  loomworks-owned directory under `.nvim/cache/`, one entry per source.
-  Include and define flags are synthesized in the compiler's native syntax:
-  MSVC `/I`, `/D`, and `/external:I` for system includes; GNU `-I`,
-  `-isystem`, `-D`. For an MSVC compiler `cl.exe` is emitted as `argv[0]` so
-  clangd's cl-compatible driver parses the flags. The project build
-  directory is never written to.
+1. **Uniform header support across generators.** Owning the database is a
+   prerequisite for header-entry augmentation (§12.3), so headers get
+   correct flags whether the project builds with Ninja, Make, Visual
+   Studio, or Xcode.
+2. **We never decode the native database.** A large project's monolithic
+   `compile_commands.json` can exceed Neovim's `vim.json` decode limits.
+   loomworks therefore never `vim.json.decode`s the native database — it
+   decodes only the chunked, per-target file-api reply files (each small)
+   and **stream-encodes** its own output (§12.2). Memory and time stay flat
+   in the number of translation units.
 
-- When the flag is `false`: unchanged — clangd points at the build
-  directory's CMake-emitted `compile_commands.json`.
+### 12.1 The `compile_commands_generated` flag (escape hatch)
 
-- `lsp_configs` points the clangd entry's `compile_commands_dir` at the
-  loomworks-owned generated directory when the active configuration is
-  generated, else at the build directory. Regeneration runs when the
-  file-api reply is newer than the generated file (a cheap mtime guard);
-  clangd auto-reloads `compile_commands.json` changes.
+Each cmake configuration carries a module-config field
+**`compile_commands_generated`** (boolean). The effective default is now
+**`true` for every generator** — loomworks owns the database. The field is
+the escape hatch:
 
-- Scope (v1): non-emitting generators only. The generator is structured to
-  later own the database for all generators — a prerequisite for
-  header-entry augmentation and a user toggle.
+- Setting it **`false`** per configuration falls back to the build
+  directory's native `compile_commands.json`. This is only meaningful for
+  an emitting generator (Ninja, Makefiles); on a non-emitting generator
+  (Visual Studio, Xcode) there is no native database to fall back to, so
+  `false` leaves clangd with nothing.
+- The `compile_commands_from` redirect (§9, README) is preserved and takes
+  precedence: a configuration that redirects to another configuration's
+  database is never generated for — the redirect target owns its own.
 
-This applies to the cmake module only. meson always uses the Ninja backend,
-which emits `compile_commands.json` for every compiler (including MSVC), so
-it needs no generation; the field is not present on meson configurations.
+When the generator is not yet known (a plain `variant:*` configuration
+whose generator comes from the profile's kit at build time, not from the
+configuration itself), the info-time default of the field is unresolved and
+the effective decision is taken at LSP-wiring time — where it resolves to
+`true` (generate) unless the configuration explicitly set the field to
+`false`.
+
+### 12.2 Reconstruction and the streaming writer
+
+When generation is in effect, loomworks reads the file-api codemodel
+(per-target `compileGroups`: `language`, `includes`, `defines`,
+`compileCommandFragments`, `sourceIndexes`, plus the target `sources`) and
+the resolved compiler (the file-api `toolchains` object, falling back to
+the kit's compiler), then writes a `compile_commands.json`, one entry per
+compiled source plus header entries (§12.3). Include and define flags are
+synthesized in the compiler's native syntax: MSVC `/I`, `/D`, and
+`/external:I` for system includes; GNU `-I`, `-isystem`, `-D`. For an MSVC
+compiler `cl.exe` is emitted as `argv[0]` so clangd's cl-compatible driver
+parses the flags. The project build directory is never written to.
+
+The database is written **entry-by-entry** (a streaming writer): the file
+is opened, `[` is written, then each entry is encoded on its own with
+`vim.json.encode(entry)` and appended (comma-separated), then `]`. loomworks
+never builds one giant Lua table and encodes it in a single call, and never
+decodes the native database. This keeps memory and time flat for very large
+projects.
+
+### 12.3 Header entries — Tier-1 directory attribution
+
+For each **header** that has no compiled entry of its own, loomworks
+attributes it to a target and emits a `compile_commands.json` entry using
+that target's flags, so clangd stops interpolating a header's flags from an
+unrelated translation unit by filename proximity.
+
+**Attribution rule (Tier-1 — no compiler, no include-scan):**
+
+1. From the file-api, build the set of each target's **source directories**
+   (the directories of the paths in its `sources`).
+2. A header explicitly listed in a target's `sources` is attributed to that
+   target directly.
+3. Any other header is attributed to the target whose source directory is
+   the **nearest ancestor** of the header's path — the longest directory
+   prefix wins (compared on path boundaries, so `/a/src` is not an ancestor
+   of `/a/srcfoo/x.h`). Ties (the same directory owned by more than one
+   target) break deterministically: the target owning the most sources
+   first, then the lexically-first target id.
+4. A header no target's source directory contains is left unattributed and
+   gets no entry (clangd falls back to interpolation for those only).
+
+The entry uses the chosen target's **primary compileGroup** flags (compiler
+`argv[0]`, includes, system includes, defines, compileCommandFragments) in
+the same MSVC/GNU syntax as compiled sources (§12.2). The compileGroup is
+chosen by the header's apparent language: a C++ header extension
+(`.h/.hpp/.hh/.hxx/.inl`, …) selects the target's C++ group when it has one,
+else its C group, else the target's primary language group.
+
+**Which headers are enumerated:** listed headers (from each target's
+`sources`) are emitted directly. Headers that are merely `#include`d and not
+listed — the common case — are discovered by a bounded **filesystem
+directory listing** of the targets' source directories for header
+extensions (this is a directory listing, **not** an include-scan and
+**not** a compiler run — Tier-1), then attributed by the nearest-ancestor
+rule. Enumeration is deterministic and bounded; each header is emitted once,
+attributed to exactly one target.
+
+### 12.4 Freshness
+
+Regeneration is gated on a cheap mtime guard: the owned database is rebuilt
+only when the file-api reply index is newer than the generated file (or the
+generated file is absent). CMake rewrites the reply on every reconfigure —
+exactly when flags can change — so this gate is both necessary and
+sufficient, and makes every trigger below a no-op when nothing has advanced
+(thrash-proof). clangd auto-reloads `compile_commands.json` on change, so no
+server restart is needed.
+
+Regeneration is triggered from three idempotent paths, so the owned database
+refreshes whenever the native one would:
+
+1. **LSP wiring** — `lsp_configs` runs the mtime-gated regeneration when it
+   resolves the clangd entry.
+2. **Configure / build task completion** — after a task that (re)configured
+   the build directory completes, loomworks re-runs the mtime-gated
+   regeneration for that build directory. This covers the case where the
+   LSP-wiring result is memoized and `lsp_configs` is not re-invoked.
+3. **File-api reply watch** — loomworks watches the file-api reply directory
+   (via the workspace file tracker's `fs_poll`) and regenerates on change,
+   catching reconfigures loomworks did not drive (e.g. a manual `cmake`).
+
+All three funnel through the same mtime-gated, side-effect-idempotent
+regeneration; the workspace drives them through the generic module hooks in
+core §8.4 (`refresh_lsp_database` / `lsp_database_watch_path`).
+
+### 12.5 Scope
+
+This applies to the cmake module only. **meson gets the same owned-database
+treatment in a follow-up** — for now meson still uses its native database:
+meson always drives the Ninja backend, which emits `compile_commands.json`
+for every compiler (including MSVC), so the field is not present on meson
+configurations.

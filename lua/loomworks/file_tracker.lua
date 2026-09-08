@@ -65,6 +65,30 @@ function FileTracker:watch(path)
     end)
 end
 
+--- Watch a path (typically a directory) for stat changes and fire a
+--- per-path signal callback — no content read or comparison. `fs_poll`
+--- invokes the handler only when the path's stat actually changes (mtime,
+--- size, …), so this is suitable for a directory whose entries change (e.g.
+--- the cmake file-api reply dir). Idempotent: a second call for the same
+--- path is a no-op. Cleaned up by `unwatch`/`stop` like any other watch.
+--- @param path string absolute path
+--- @param on_signal fun(path: string) called on each detected change
+function FileTracker:watch_signal(path, on_signal)
+    if self._watches[path] then return end
+
+    local poll = uv.new_fs_poll()
+    if not poll then return end
+
+    self._watches[path] = poll
+
+    poll:start(path, self._interval, function(err)
+        if err then return end
+        self._schedule(function()
+            pcall(on_signal, path)
+        end)
+    end)
+end
+
 --- Stop watching a file.
 --- @param path string
 function FileTracker:unwatch(path)
