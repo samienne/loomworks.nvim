@@ -174,8 +174,25 @@ vim.api.nvim_create_user_command("LoomworksCompileCommand", function(cmd)
   end
 
   -- Success: show the working directory, then the argv one argument per line.
+  -- When the command was BORROWED (the file has no compile entry of its own —
+  -- e.g. a header), prepend a provenance note above it. An "own" command shows
+  -- no note (unchanged behavior).
   local entry = res.entry
-  local lines = { "file:      " .. entry.file, "directory: " .. entry.directory, "" }
+  local lines = {}
+  local origin = entry.origin
+  if origin and origin.kind == "attributed" then
+    local how = origin.via == "listed" and "listed as a target source"
+      or "nearest source directory"
+    lines[#lines + 1] = "note: this file has no compile command of its own; command borrowed from"
+    lines[#lines + 1] = "      target '" .. tostring(origin.target) .. "' (" .. how .. ")"
+    if origin.source then
+      lines[#lines + 1] = "representative source: " .. origin.source
+    end
+    lines[#lines + 1] = ""
+  end
+  lines[#lines + 1] = "file:      " .. entry.file
+  lines[#lines + 1] = "directory: " .. entry.directory
+  lines[#lines + 1] = ""
   for _, a in ipairs(entry.arguments) do
     lines[#lines + 1] = a
   end
