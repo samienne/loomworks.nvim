@@ -1011,9 +1011,12 @@ For CMake projects, loomworks also auto-configures the QML language
 server (`qmlls`) for `.qml` buffers — default-enabled and profile-aware:
 it passes the active profile's CMake build directory via `-b` so qmlls
 resolves QML imports against the built tree, and restarts when a profile
-switch moves that directory. Because qmlls only ever attaches to the
-`qml` filetype, auto-enabling is harmless on non-Qt projects (no `.qml`
-buffers, no client).
+switch moves that directory. It also passes `--no-cmake-calls` so qmlls
+never launches a CMake rebuild of its own behind loomworks' back —
+loomworks stays the sole builder and keeps the tree fresh via the
+profile restart. Because qmlls only ever attaches to the `qml` filetype,
+auto-enabling is harmless on non-Qt projects (no `.qml` buffers, no
+client).
 
 Set `type_config.qmlls` on a project to override the binary
 (`${ENV_VAR}` expansion supported); otherwise stock `qmlls` on PATH is

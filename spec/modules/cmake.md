@@ -377,7 +377,10 @@ as `binary` + `binary_required = true`. Otherwise `binary` is
 unspecified and clangd falls back to stock PATH.
 
 `compile_commands_dir` (clangd) and `build_dir` (qmlls) both resolve to
-the active ConfigUnit's build directory. The qmlls `binary` comes from
+the active ConfigUnit's build directory. The qmlls integration pairs
+that `build_dir` with `--no-cmake-calls` so qmlls never fires an
+unsupervised CMake rebuild against the loomworks-managed tree (see
+[`spec/integrations/lsp/qmlls.md`](../integrations/lsp/qmlls.md) §3). The qmlls `binary` comes from
 `type_config.qmlls` (else stock PATH `qmlls`), `binary_required` from
 `type_config.qmlls_required`, and optional extra QML import paths from
 the `type_config.qml_import_paths` list.
