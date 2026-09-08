@@ -76,6 +76,69 @@ local function die(msg, code)
   os.exit(code or 1)
 end
 
+-- Interrupt handling. In a terminal, Ctrl-C sends SIGINT to the WHOLE
+-- foreground process group — the build tool AND this `lw` process. lw's default
+-- SIGINT action terminates it before run_exit_hooks() runs, so every held
+-- build-dir lock leaks until the ~STALE_SECONDS mtime reclaim. Installing a
+-- handler routes an interrupt through the SAME run_exit_hooks() cleanup path
+-- (so the release_all registered by with_build_locks fires) and then exits 130,
+-- the conventional code for a SIGINT-terminated process.
+--
+-- Handles are kept in this module-level table so they are not garbage-collected
+-- while started; each is :unref()'d so it never keeps the event loop alive on
+-- its own.
+local _signal_handles = {}
+
+--- Build the guarded interrupt-cleanup callback (the body a SIGINT/SIGTERM
+--- handler runs): release held build locks via run_exit_hooks, flush the output
+--- streams, then exit with `code`. The returned closure fires the cleanup at
+--- most once — a repeated Ctrl-C or a second signal is ignored. `exit_fn`
+--- defaults to os.exit and is injectable so tests can drive the callback without
+--- terminating the process.
+--- @param code integer
+--- @param exit_fn? fun(code: integer)
+--- @return fun() callback
+local function make_interrupt_cleanup(code, exit_fn)
+  local fired = false
+  return function()
+    if fired then return end
+    fired = true
+    run_exit_hooks()
+    pcall(function() io.stdout:flush() end)
+    pcall(function() io.stderr:flush() end)
+    ;(exit_fn or os.exit)(code)
+  end
+end
+
+--- Install a best-effort SIGINT + SIGTERM handler that releases held build locks
+--- and exits 130. libuv supports SIGINT on Windows consoles and accepts SIGTERM
+--- in its API; a host/platform that cannot install one simply leaves the CLI
+--- running normally (each install is pcall-guarded — a handler-install failure
+--- must never break `lw`). `exit_fn` is injectable for tests.
+--- @param exit_fn? fun(code: integer)
+--- @return fun() cleanup the shared guarded callback the handlers invoke
+local function install_interrupt_handler(exit_fn)
+  local cleanup = make_interrupt_cleanup(130, exit_fn)
+  for _, sig in ipairs({ "sigint", "sigterm" }) do
+    pcall(function()
+      local h = uv.new_signal()
+      if not h then return end
+      h:start(sig, cleanup)
+      h:unref()
+      _signal_handles[#_signal_handles + 1] = h
+    end)
+  end
+  return cleanup
+end
+
+-- Test seams: `_on_exit` registers a cleanup hook the way with_build_locks does
+-- (so a test can exercise the real run_exit_hooks release chain);
+-- `_make_interrupt_cleanup` / `_install_interrupt_handler` expose the guarded
+-- interrupt callback with an injectable exit.
+M._on_exit = on_exit
+M._make_interrupt_cleanup = make_interrupt_cleanup
+M._install_interrupt_handler = install_interrupt_handler
+
 --- Walk up from `start` for the nearest directory containing loomworks.json.
 --- @param start? string
 --- @return string|nil root
@@ -6305,6 +6368,11 @@ local function env_truthy(name)
 end
 
 local function main()
+  -- Before any dispatch: release held build-dir locks if we're interrupted
+  -- (Ctrl-C's SIGINT reaches the whole foreground group and would otherwise
+  -- kill lw before its exit hooks run — see install_interrupt_handler).
+  install_interrupt_handler()
+
   local raw = _G.arg or {}
   -- Shell completion runs before flag-stripping so the passed COMP_WORDS reach
   -- the completer verbatim (a word being completed may itself be `--no-input`).
