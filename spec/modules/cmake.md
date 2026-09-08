@@ -509,6 +509,17 @@ group. Preferring C++ is deliberate — headers are routinely included by C++
 translation units, `.h` headers in C++ projects are common, and C++ flags are a
 safe superset for clangd's purposes.
 
+Each header entry additionally carries an explicit **language-forcing flag**
+matching the chosen group's language and the compiler's flag style — MSVC
+`/TP` (C++) / `/TC` (C), GNU `-x c++` / `-x c` — placed right after the
+compiler (`argv[1]`), before the include/define flags and the input file.
+clangd infers a `.h` (or other ambiguous extension) as C and then silently
+drops C++-only flags such as `/std:c++17`; the forced flag stops it guessing
+so the chosen group's flags actually apply. This applies to **header entries
+only** — compiled translation units keep their own extension and are never
+forced. The per-file query (§12.6) inherits the flag through the shared
+renderer.
+
 **Which headers are enumerated:** listed headers (from each target's
 `sources`) are emitted directly. Headers that are merely `#include`d and not
 listed — the common case — are discovered by a bounded **filesystem
