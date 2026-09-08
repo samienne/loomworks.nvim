@@ -509,6 +509,17 @@ group. Preferring C++ is deliberate — headers are routinely included by C++
 translation units, `.h` headers in C++ projects are common, and C++ flags are a
 safe superset for clangd's purposes.
 
+Each header entry additionally carries an explicit **language-forcing flag**
+matching the chosen group's language and the compiler's flag style — MSVC
+`/TP` (C++) / `/TC` (C), GNU `-x c++` / `-x c` — placed right after the
+compiler (`argv[1]`), before the include/define flags and the input file.
+clangd infers a `.h` (or other ambiguous extension) as C and then silently
+drops C++-only flags such as `/std:c++17`; the forced flag stops it guessing
+so the chosen group's flags actually apply. This applies to **header entries
+only** — compiled translation units keep their own extension and are never
+forced. The per-file query (§12.6) inherits the flag through the shared
+renderer.
+
 **Which headers are enumerated:** listed headers (from each target's
 `sources`) are emitted directly. Headers that are merely `#include`d and not
 listed — the common case — are discovered by a bounded **filesystem
@@ -563,18 +574,27 @@ cmake implements the core §8.4 `compile_command_for(ctx, file)` hook by
 and §12.3 build the database from — never by decoding the generated
 `compile_commands.json` (which we only ever stream out, and which may exceed
 `vim.json`'s decode ceiling). The result is byte-for-byte the entry the owned
-database contains for that file:
+database contains for that file. The own-vs-borrowed decision is made strictly
+on **whether the file has its own compiled entry**, never on file type:
 
-- **A compiled translation unit** (a path listed as a target source that is not
-  a header) uses that target's own `compileGroup` selected by its source index
-  — its exact per-file flags.
-- **A header** is attributed with `attribute_header` (§12.3): a listed header
-  uses its listing target, otherwise the nearest-ancestor source directory's
-  owning target, and the entry renders that target's `compileGroup` chosen at
-  the target level (C++ group when present, else C, else its primary language —
-  independent of the header's extension, as in §12.3).
+- **The file has its own compiled entry** — it is a path in some target's
+  `compileGroup`. The command is that group's, selected by the file's source
+  index — its exact per-file flags. `origin = { kind = "own" }`.
+- **The file has no compiled entry** — the command is borrowed via
+  `attribute_header` (§12.3): a listed file uses its listing target, otherwise
+  the nearest-ancestor source directory's owning target, and the entry renders
+  that target's `compileGroup` chosen at the target level (C++ group when
+  present, else C, else its primary language — independent of extension, as in
+  §12.3). `origin = { kind = "attributed", target, via, source }` where `via`
+  is `"listed"` or `"directory"` and `source` is a representative compiled
+  source of the borrowed group (or `nil`).
 
-Files that no target claims — outside every target's source tree and not a
-listed header — yield `nil` (unattributable). The query reuses
-`_target_attribution_index` and the `cg_argv_prefix` rendering unchanged, so
-its output cannot drift from generated entries.
+A header listed in `CMakeLists.txt` appears in the target's file-api `sources`
+but **not** in any `compileGroup` (headers are not compiled), so it has no
+compiled entry and is reported as `attributed` with `via = "listed"` — the
+entry-presence gate, not a header test, is what classifies it. Files no target
+claims — outside every target's source tree and not listed — yield `nil`
+(unattributable). The query reuses `_target_attribution_index` and the
+`cg_argv_prefix` rendering unchanged, so its command output cannot drift from
+generated entries; the representative `source` is resolved from the borrowed
+group's first source index in the same index.

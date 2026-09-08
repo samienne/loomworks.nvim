@@ -2646,9 +2646,20 @@ function Workspace:_refresh_lsp_database_for(unit)
     end
 end
 
+--- Provenance of a resolved compile command (module §8.4 `compile_command_for`).
+--- Distinguishes a file's own command from one borrowed from another target
+--- (headers, and any other file with no compiled entry of its own). Opaque to
+--- core — forwarded through unchanged and presented by callers (the
+--- `:LoomworksCompileCommand` float).
+--- @class loomworks.CompileCommandOrigin
+--- @field kind "own"|"attributed" whether the command is the file's own or borrowed
+--- @field target string|nil borrowed-from target's display name ("attributed" only)
+--- @field via "listed"|"directory"|nil how the file was attributed ("attributed" only)
+--- @field source string|nil representative compiled source of the borrowed group, or nil
+
 --- @class loomworks.CompileCommandResult
 --- @field status "ok"|"no_profile"|"no_project"|"unowned"|"unattributed"
---- @field entry { directory: string, file: string, arguments: string[] }|nil resolved command on "ok"
+--- @field entry { directory: string, file: string, arguments: string[], origin: loomworks.CompileCommandOrigin }|nil resolved command on "ok"
 --- @field project loomworks.Project|nil owning project (set once one is resolved)
 
 --- Resolve the compile command loomworks' owned LSP database uses (or would

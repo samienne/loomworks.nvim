@@ -2013,9 +2013,10 @@ local function render_cc_entry_with_prefix(prefix, abs, build_dir)
 end
 
 --- Render one entry for a single file from a compileGroup + compiler, building
---- the argv prefix on the spot. Used by the header generator and the per-file
---- query; the compiled-source generator instead builds each group's prefix
---- once and calls `render_cc_entry_with_prefix` directly.
+--- the argv prefix on the spot. Used by the per-file query for compiled TUs;
+--- the compiled-source generator instead builds each group's prefix once and
+--- calls `render_cc_entry_with_prefix` directly. Header entries use
+--- `render_header_entry` (which adds a language-forcing flag) — NOT this.
 --- @param cg table compileGroup
 --- @param compiler string compiler path / bare name (argv[0])
 --- @param abs string resolved absolute file path
@@ -2023,6 +2024,49 @@ end
 --- @return { directory: string, file: string, arguments: string[] }
 local function render_cc_entry(cg, compiler, abs, build_dir)
     return render_cc_entry_with_prefix(cg_argv_prefix(cg, compiler), abs, build_dir)
+end
+
+--- The language-forcing argv token(s) for a header entry (§12.3), in the
+--- compiler's flag style. clangd infers a `.h` (and other ambiguous
+--- extensions) as C and then silently drops C++-only flags (e.g. MSVC
+--- `/std:c++17`), so a header attributed to a C++ compileGroup must carry an
+--- explicit language override. MSVC drivers use the single `/TP` (C++) / `/TC`
+--- (C) token; GNU-style drivers use the two-token `-x c++` / `-x c` form.
+--- @param msvc boolean whether the compiler drives with MSVC (`/`) syntax
+--- @param language string compileGroup language token ("CXX" / "C")
+--- @return string[] one or two argv tokens to force the language
+local function header_language_argv(msvc, language)
+    local cxx = language == "CXX"
+    if msvc then
+        return { cxx and "/TP" or "/TC" }
+    end
+    return { "-x", cxx and "c++" or "c" }
+end
+
+--- Exposed for unit tests (pure flag-token helper, §12.3).
+M._header_language_argv = header_language_argv
+
+--- Render one `compile_commands.json` entry for a HEADER file (§12.3). Like
+--- `render_cc_entry` but inserts the language-forcing flag(s)
+--- (`header_language_argv`) right after the compiler (argv[1] position), before
+--- the include/define flags and the input file, so clangd parses the header in
+--- the chosen compileGroup's language rather than guessing from the extension.
+--- The one place a header entry is shaped, so the full-DB header generator
+--- (§12.3) and the per-file query (§12.6) cannot drift. Compiled TUs keep their
+--- real extension and never pass through here.
+--- @param cg table compileGroup (its `language` selects C vs C++)
+--- @param compiler string compiler path / bare name (argv[0])
+--- @param abs string resolved absolute header path
+--- @param build_dir string the entry's `directory`
+--- @return { directory: string, file: string, arguments: string[] }
+local function render_header_entry(cg, compiler, abs, build_dir)
+    local prefix = cg_argv_prefix(cg, compiler)
+    local lang = header_language_argv(compiler_is_msvc(compiler), cg.language)
+    -- Insert after the compiler (argv[1]), preserving lang-token order.
+    for i, tok in ipairs(lang) do
+        table.insert(prefix, i + 1, tok)
+    end
+    return render_cc_entry_with_prefix(prefix, abs, build_dir)
 end
 
 --- Stream-write a `compile_commands.json` array entry-by-entry (§12.2).
@@ -2167,13 +2211,15 @@ end
 
 --- Build the Tier-1 header-attribution index (§12.3) from parsed file-api
 --- data. Pure — no disk access. For the selected configuration it records,
---- per project-owned target with compileGroups: its compileGroup keyed by
---- language, its primary language, its source-directory set, and its total
---- source count (tie-break weight). It also records a dir → owning-targets
---- map (for nearest-ancestor tie-breaks) and a listed-header → target map
---- (headers named directly in a target's `sources`). `source_dirs` is the
---- de-duplicated list of every target source directory, sorted longest-first
---- so the first ancestor match is the nearest one.
+--- per project-owned target with compileGroups: its display `name`, its
+--- compileGroup keyed by language, its primary language, its source-directory
+--- set, its total source count (tie-break weight), and `sample_by_lang` (one
+--- representative *compiled* source per language, for provenance reporting in
+--- §12.6). It also records a dir → owning-targets map (for nearest-ancestor
+--- tie-breaks) and a listed-header → target map (headers named directly in a
+--- target's `sources`). `source_dirs` is the de-duplicated list of every target
+--- source directory, sorted longest-first so the first ancestor match is the
+--- nearest one.
 --- @param codemodel table
 --- @param target_details table<string, table>
 --- @param source_root string|nil
@@ -2192,10 +2238,25 @@ function M._target_attribution_index(codemodel, target_details, source_root, var
             local sources = detail.sources or {}
 
             local groups_by_lang, primary_lang = {}, nil
+            -- One representative compiled (non-header) source per language, for
+            -- the §12.6 provenance `source` field. Cheap: first non-header
+            -- source index of the first group in that language wins.
+            local sample_by_lang = {}
             for _, cg in ipairs(detail.compileGroups) do
                 if cg.language and not groups_by_lang[cg.language] then
                     groups_by_lang[cg.language] = cg
                     primary_lang = primary_lang or cg.language
+                end
+                if cg.language and not sample_by_lang[cg.language] then
+                    for _, si in ipairs(cg.sourceIndexes or {}) do
+                        local src = sources[si + 1] -- file-api indexes are 0-based
+                        if src and type(src.path) == "string"
+                            and not is_header(src.path) then
+                            sample_by_lang[cg.language] =
+                                abs_source_path(src.path, source_root)
+                            break
+                        end
+                    end
                 end
             end
 
@@ -2217,10 +2278,12 @@ function M._target_attribution_index(codemodel, target_details, source_root, var
 
             index.targets[id] = {
                 id = id,
+                name = detail.name or id,
                 groups_by_lang = groups_by_lang,
                 primary_lang = primary_lang,
                 source_count = #sources,
                 source_dirs = source_dirs,
+                sample_by_lang = sample_by_lang,
             }
             for dl, d in pairs(source_dirs) do
                 local rec = index.dir_owners[dl]
@@ -2245,17 +2308,19 @@ function M._target_attribution_index(codemodel, target_details, source_root, var
     return index
 end
 
---- Attribute a single header path to a target id (§12.3): a listed header
---- uses its listing target; otherwise the target whose source directory is
---- the nearest ancestor (longest prefix on path boundaries), breaking ties
---- by most sources then lexically-first id. nil when unattributable.
+--- Attribute a single file path to a target id (§12.3): a listed path uses its
+--- listing target; otherwise the target whose source directory is the nearest
+--- ancestor (longest prefix on path boundaries), breaking ties by most sources
+--- then lexically-first id. Also returns how the match was made — `"listed"` or
+--- `"directory"` — for provenance reporting (§12.6). nil when unattributable.
 --- @param index table from `_target_attribution_index`
---- @param path string header path
+--- @param path string file path (header or otherwise)
 --- @return string|nil target id
+--- @return "listed"|"directory"|nil via how the match was made (nil when unattributed)
 local function attribute_header(index, path)
     local pl = norm_path(path):lower()
     local listed = index.listed[pl]
-    if listed then return listed.id end
+    if listed then return listed.id, "listed" end
     for _, dl in ipairs(index.source_dirs) do -- longest first
         if pl == dl or pl:sub(1, #dl + 1) == dl .. "/" then
             local rec = index.dir_owners[dl]
@@ -2270,7 +2335,8 @@ local function attribute_header(index, path)
                     best = t
                 end
             end
-            return best and best.id or nil
+            if best then return best.id, "directory" end
+            return nil
         end
     end
     return nil
@@ -2359,8 +2425,10 @@ end
 --- header is attributed to a target (`attribute_header`); the entry uses that
 --- target's compileGroup chosen at the target level by `header_group`
 --- (C++ group when present, else C, else primary — independent of the header's
---- extension) rendered with `cg_argv_prefix`. Headers are emitted in a
---- deterministic order, each at most once; unattributable headers are omitted.
+--- extension) rendered with `render_header_entry`, which carries a
+--- language-forcing flag so clangd does not misinfer the language from the
+--- extension. Headers are emitted in a deterministic order, each at most once;
+--- unattributable headers are omitted.
 --- @param index table from `_target_attribution_index`
 --- @param compiler_by_lang table<string, string> language token → compiler
 --- @param header_paths string[] candidate header paths
@@ -2388,7 +2456,7 @@ function M._build_header_entries(index, compiler_by_lang, header_paths, build_di
                 if cg then
                     local compiler = compiler_by_lang[cg.language]
                         or opts.compiler or "cl.exe"
-                    entries[#entries + 1] = render_cc_entry(cg, compiler, disp, build_dir)
+                    entries[#entries + 1] = render_header_entry(cg, compiler, disp, build_dir)
                     emitted[key] = true
                 end
             end
@@ -2555,17 +2623,24 @@ end
 --- clangd database uses (or would use) for `file` under `ctx.build_dir`,
 --- WITHOUT decoding the generated `compile_commands.json` — it reads the same
 --- file-api replies §12.2/§12.3 build the database from and renders the entry
---- through the shared `render_cc_entry`, so the result is byte-for-byte the DB
---- entry for that file:
----   * a compiled translation unit (a listed source in a compileGroup) → that
+--- through the shared `render_cc_entry`, so the command bytes are byte-for-byte
+--- the DB entry for that file. The own-vs-borrowed decision is made strictly on
+--- whether the file has its own compiled entry, never on file type:
+---   * the file has its own compiled entry (a source in a compileGroup) → that
 ---     target's own compileGroup, selected by source index (its exact flags);
----   * a header → `attribute_header` (§12.3) then that target's compileGroup
----     chosen at the target level by `header_group`;
----   * anything no target claims (outside every source tree and not a listed
----     header, or a non-header, non-compiled file) → nil (unattributable).
+---     `origin = { kind = "own" }`;
+---   * the file has NO compiled entry (a header, or any other file) → borrowed
+---     via `attribute_header` (§12.3), rendered with that target's compileGroup
+---     chosen at the target level by `header_group`; `origin = { kind =
+---     "attributed", target, via, source }`;
+---   * anything no target claims (outside every source tree and not listed)
+---     → nil (unattributable).
+--- The additive `origin` is attached AFTER `render_cc_entry`, so that shared
+--- renderer and the full-DB generator (§12.2/§12.3) stay origin-free — a
+--- generated DB entry never carries `origin`.
 --- @param ctx { build_dir: string, workspace_root?: string, variant?: string, compiler?: string }
 --- @param file string absolute source or header path
---- @return { directory: string, file: string, arguments: string[] }|nil
+--- @return { directory: string, file: string, arguments: string[], origin: loomworks.CompileCommandOrigin }|nil
 function M.compile_command_for(ctx, file)
     if type(ctx) ~= "table" or type(ctx.build_dir) ~= "string" then return nil end
     if type(file) ~= "string" or file == "" then return nil end
@@ -2602,20 +2677,34 @@ function M.compile_command_for(ctx, file)
                 match = render_cc_entry(cg, compiler, abs, build_dir)
             end
         end)
-    if match then return match end
+    if match then
+        -- Own entry: exact per-file command. Provenance is attached here, not
+        -- in render_cc_entry, so the generator stays origin-free.
+        match.origin = { kind = "own" }
+        return match
+    end
 
-    -- Header: attribute to a target (§12.3) and render that target's group for
-    -- the header's apparent language. A non-header, non-compiled file gets no
-    -- DB entry at all, so it is unattributable.
-    if not is_header(file) then return nil end
+    -- No compiled entry (a header, or any other non-compiled file): borrow the
+    -- command via attribution (§12.3). The gate is entry-presence, not a header
+    -- test — a header listed in CMakeLists appears in the target's `sources` but
+    -- in no compileGroup, so it lands here too. A file no target claims → nil.
     local index = M._target_attribution_index(codemodel, target_details, source_root, variant)
-    local id = attribute_header(index, file)
+    local id, via = attribute_header(index, file)
     local t = id and index.targets[id]
     if not t then return nil end
     local cg = header_group(t)
     if not cg then return nil end
     local compiler = compiler_map(toolchains)[cg.language] or ctx.compiler or "cl.exe"
-    return render_cc_entry(cg, compiler, norm_path(file), build_dir)
+    local entry = render_header_entry(cg, compiler, norm_path(file), build_dir)
+    -- Provenance attached after render_cc_entry so the shared renderer / the
+    -- full-DB generator never emit `origin`.
+    entry.origin = {
+        kind = "attributed",
+        target = t.name or id,
+        via = via,
+        source = t.sample_by_lang and t.sample_by_lang[cg.language] or nil,
+    }
+    return entry
 end
 
 -- ========================== Test integration ==========================

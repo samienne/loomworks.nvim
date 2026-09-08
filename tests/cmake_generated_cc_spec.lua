@@ -52,6 +52,16 @@ local function has_tok(hay, tok)
     return false
 end
 
+--- Copy a compile_command entry stripped of its `origin` field, for comparing
+--- a per-file query result (which carries additive provenance, §12.6) against a
+--- generated database entry (which must NOT carry `origin`). This preserves the
+--- command-byte-identity guarantee — `{ directory, file, arguments }` must match
+--- exactly — while allowing the extra `origin` key.
+local function without_origin(e)
+    if not e then return e end
+    return { directory = e.directory, file = e.file, arguments = e.arguments }
+end
+
 -- ---------------------------------------------------------------------------
 -- generator_emits_compile_commands / compile_commands_generated default
 -- ---------------------------------------------------------------------------
@@ -468,6 +478,142 @@ describe("cmake header attribution (_build_header_entries)", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Header language forcing — clangd must not infer .h as C (§12.3)
+-- ---------------------------------------------------------------------------
+
+--- Index of the first occurrence of `tok` in argv `hay`, or nil.
+local function index_of(hay, tok)
+    for i, v in ipairs(hay) do
+        if v == tok then return i end
+    end
+    return nil
+end
+
+describe("cmake header language-force flag (M._header_language_argv)", function()
+    it("returns single /TP / /TC tokens for MSVC-style drivers", function()
+        assert.same({ "/TP" }, cmake._header_language_argv(true, "CXX"))
+        assert.same({ "/TC" }, cmake._header_language_argv(true, "C"))
+    end)
+
+    it("returns two-token -x c++ / -x c for GNU-style drivers", function()
+        assert.same({ "-x", "c++" }, cmake._header_language_argv(false, "CXX"))
+        assert.same({ "-x", "c" }, cmake._header_language_argv(false, "C"))
+    end)
+end)
+
+describe("cmake header entries force the language (§12.3)", function()
+    -- Two targets: a C++ one and a C one, each with a header under its dir.
+    local SOURCE_ROOT = "C:/proj/src"
+    local codemodel = {
+        paths = { source = SOURCE_ROOT },
+        configurations = {
+            {
+                name = "Debug",
+                targets = {
+                    { name = "cpptgt", id = "cpptgt::@1", jsonFile = "cpptgt.json" },
+                    { name = "ctgt", id = "ctgt::@2", jsonFile = "ctgt.json" },
+                },
+            },
+        },
+    }
+    local cpptgt = {
+        name = "cpptgt", id = "cpptgt::@1", type = "EXECUTABLE",
+        sources = { { path = "cpp/main.cpp" } },
+        compileGroups = {
+            {
+                language = "CXX",
+                sourceIndexes = { 0 },
+                compileCommandFragments = { { fragment = "/std:c++17" } },
+                includes = { { path = "C:/proj/src/cpp/include" } },
+                defines = { { define = "CPP" } },
+            },
+        },
+    }
+    local ctgt = {
+        name = "ctgt", id = "ctgt::@2", type = "EXECUTABLE",
+        sources = { { path = "c/main.c" } },
+        compileGroups = {
+            {
+                language = "C",
+                sourceIndexes = { 0 },
+                includes = { { path = "C:/proj/src/c/include" } },
+                defines = { { define = "CONLY" } },
+            },
+        },
+    }
+    local details = { ["cpptgt.json"] = cpptgt, ["ctgt.json"] = ctgt }
+
+    local function entries_for(compiler_by_lang, header_paths, fallback)
+        local index = cmake._target_attribution_index(
+            codemodel, details, SOURCE_ROOT, "Debug")
+        return cmake._build_header_entries(
+            index, compiler_by_lang, header_paths, "C:/proj/build",
+            fallback and { compiler = fallback } or nil)
+    end
+
+    it("forces /TP on a C++-group header under an MSVC compiler (cl.exe)", function()
+        local idx = by_basename(entries_for(
+            { CXX = "cl.exe" }, { "C:/proj/src/cpp/foo.h" }))
+        local a = idx["foo.h"].arguments
+        assert.equals("cl.exe", a[1]:match("[^/]+$"))
+        -- Forced right after the compiler (argv[1] position).
+        assert.equals("/TP", a[2])
+        -- Before the input file (last arg) and before the /I and /D flags.
+        local tp = index_of(a, "/TP")
+        assert.equals(idx["foo.h"].file, a[#a]) -- header file is the last arg
+        assert.is_true(tp < #a, "/TP must precede the file")
+        assert.is_true(tp < assert(index_of(a, "/I")), "/TP must precede /I")
+        assert.is_true(tp < assert(index_of(a, "/DCPP")), "/TP must precede /D")
+        -- The old /std:c++17 flag is still present but no longer relied upon.
+        assert.is_true(has_tok(a, "/std:c++17"))
+    end)
+
+    it("forces -x c++ on a C++-group header under a GNU compiler (g++)", function()
+        local idx = by_basename(entries_for(
+            { CXX = "/usr/bin/g++" }, { "C:/proj/src/cpp/foo.h" }))
+        local a = idx["foo.h"].arguments
+        assert.equals("/usr/bin/g++", a[1])
+        -- -x immediately followed by c++, right after the compiler.
+        assert.equals("-x", a[2])
+        assert.equals("c++", a[3])
+        assert.is_true(contains_seq(a, { "-x", "c++" }))
+    end)
+
+    it("forces /TC on a C-group header under an MSVC compiler", function()
+        local idx = by_basename(entries_for(
+            { C = "cl.exe" }, { "C:/proj/src/c/bar.h" }))
+        local a = idx["bar.h"].arguments
+        assert.equals("/TC", a[2])
+        assert.is_false(has_tok(a, "/TP"))
+    end)
+
+    it("forces -x c on a C-group header under a GNU compiler", function()
+        local idx = by_basename(entries_for(
+            { C = "/usr/bin/gcc" }, { "C:/proj/src/c/bar.h" }))
+        local a = idx["bar.h"].arguments
+        assert.is_true(contains_seq(a, { "-x", "c" }))
+        assert.is_false(contains_seq(a, { "-x", "c++" }))
+    end)
+
+    it("does NOT force a language on a compiled translation unit", function()
+        -- The compiled-source generator uses the fixture DB; real .cpp/.c TUs
+        -- keep their extension and get no /TP//TC//-x.
+        local codemodel_fx = load_fixture("codemodel-v2.json")
+        local detail_fx = load_fixture("target-app-Debug.json")
+        local toolchains_fx = load_fixture("toolchains-v1.json")
+        local entries = cmake._build_cc_entries(
+            codemodel_fx, { ["target-app-Debug.json"] = detail_fx },
+            toolchains_fx, codemodel_fx.paths.source, "Debug", "C:/proj/build")
+        for _, e in ipairs(entries) do
+            assert.is_false(has_tok(e.arguments, "/TP"),
+                "compiled TU must not be forced: " .. e.file)
+            assert.is_false(has_tok(e.arguments, "/TC"), e.file)
+            assert.is_false(has_tok(e.arguments, "-x"), e.file)
+        end
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Streaming writer + no-native-decode (§12.2)
 -- ---------------------------------------------------------------------------
 
@@ -689,13 +835,26 @@ describe("cmake compile_command_for — compiled TU (§12.6)", function()
         for _, file in ipairs({ "C:/proj/src/main.cpp", "C:/proj/src/util/helper.cpp" }) do
             local q = cmake.compile_command_for({ build_dir = build_dir, variant = "Debug" }, file)
             assert.is_not_nil(q, "query returned nil for " .. file)
-            assert.same(gen[file:match("[^/]+$")], q)
+            -- Command bytes identical; the query additionally carries `origin`,
+            -- which the generated entry must NOT — strip it before comparing.
+            assert.same(gen[file:match("[^/]+$")], without_origin(q))
         end
     end)
 
-    it("returns nil for a non-header, non-compiled path under the source tree", function()
+    it("marks a compiled TU as origin.kind == 'own' (no borrow note)", function()
+        local e = cmake.compile_command_for(
+            { build_dir = build_dir, variant = "Debug" }, "C:/proj/src/main.cpp")
+        assert.is_not_nil(e)
+        assert.is_not_nil(e.origin)
+        assert.equals("own", e.origin.kind)
+    end)
+
+    it("returns nil for a file no target's source directory contains", function()
+        -- Outside every target's source tree and not listed → unattributable.
+        -- (A non-header under a target's source dir is now attributed, since the
+        -- gate is entry-presence, not a header test — see the header block.)
         assert.is_nil(cmake.compile_command_for(
-            { build_dir = build_dir, variant = "Debug" }, "C:/proj/src/notes.txt"))
+            { build_dir = build_dir, variant = "Debug" }, "C:/elsewhere/notes.txt"))
     end)
 
     it("returns nil when no codemodel reply exists", function()
@@ -788,7 +947,38 @@ describe("cmake compile_command_for — headers (§12.6)", function()
         assert.is_truthy(cmake.generate_compile_commands(build_dir, out_dir, { variant = "Debug" }))
         local f = assert(io.open(out_dir .. "/compile_commands.json", "r"))
         local gen = by_basename(vim.json.decode(f:read("*a"))); f:close()
-        assert.same(gen["api.h"], query("C:/proj/src/beta/api.h"))
+        -- Command bytes identical; the query additionally carries `origin`.
+        assert.same(gen["api.h"], without_origin(query("C:/proj/src/beta/api.h")))
+    end)
+
+    it("marks a listed header as attributed via 'listed'", function()
+        local e = query("C:/proj/src/beta/api.h") -- listed in alpha
+        assert.is_not_nil(e)
+        assert.is_not_nil(e.origin)
+        assert.equals("attributed", e.origin.kind)
+        assert.equals("listed", e.origin.via)
+        assert.equals("alpha", e.origin.target)
+    end)
+
+    it("marks an unlisted (directory-attributed) header via 'directory' with a representative source", function()
+        local e = query("C:/proj/src/alpha/detail/component.h")
+        assert.is_not_nil(e)
+        assert.equals("attributed", e.origin.kind)
+        assert.equals("directory", e.origin.via)
+        assert.equals("alpha", e.origin.target)
+        -- `source` is a real compiled source of alpha's chosen (CXX) group.
+        assert.equals("C:/proj/src/alpha/main.cpp", e.origin.source)
+    end)
+
+    it("gates on entry-presence, not is_header: a non-header with no compiled entry is attributed via 'directory'", function()
+        -- extra.cpp sits under alpha's source dir but is in no compileGroup, so
+        -- it has no compiled entry of its own → borrowed, exactly like a header.
+        local e = query("C:/proj/src/alpha/extra.cpp")
+        assert.is_not_nil(e)
+        assert.equals("attributed", e.origin.kind)
+        assert.equals("directory", e.origin.via)
+        assert.equals("alpha", e.origin.target)
+        assert.equals("C:/proj/src/alpha/main.cpp", e.origin.source)
     end)
 end)
 
@@ -881,11 +1071,14 @@ describe("Workspace:compile_command_for_file (core dispatch, §14)", function()
             ["target-app-Debug.json"] = load_fixture("target-app-Debug.json"),
             ["toolchains-v1-x.json"] = load_fixture("toolchains-v1.json"),
         }, "codemodel-v2-x.json", "toolchains-v1-x.json")
+        -- Project root is broader than the target's source tree (C:/proj/src),
+        -- so notes.txt is under the project but under no target dir → the module
+        -- attributes nothing and the resolver reports `unattributed`.
         local self_ = fake_self({ project = {
-            abs_path = "C:/proj/src", module_impl = cmake,
+            abs_path = "C:/proj", module_impl = cmake,
             build_dir = build_dir, variant = "Debug",
         } })
-        local res = Workspace.compile_command_for_file(self_, "C:/proj/src/notes.txt")
+        local res = Workspace.compile_command_for_file(self_, "C:/proj/notes.txt")
         assert.equals("unattributed", res.status)
         vim.fn.delete(tmp, "rf")
     end)
