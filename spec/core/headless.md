@@ -112,7 +112,9 @@ mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither builds a directory the other is
 building; acquisition is **fail-fast** (the loser reports the holder and
 declines rather than waiting). A stale lock is reclaimed automatically after
-the heartbeat window; `lw unlock` clears one immediately.
+the heartbeat window; `lw unlock` clears one immediately. The CLI also releases
+its build locks on interrupt (SIGINT/SIGTERM) as well as on normal exit, so an
+interrupted (Ctrl-C'd) build does not leave a lock for the stale-reclaim window.
 
 ### 16.7 Reporting
 
