@@ -616,6 +616,16 @@ when the user explicitly publishes (`:w`).
 |---------|------|-------------|
 | `:LoomworksInit [path]` | Optional directory | Initialize workspace (default: cwd) |
 | `:LoomworksInfo` | None | Open/focus status page |
+| `:LoomworksCompileCommand [file]` | Optional file (default: current buffer) | Show the compile command loomworks' owned LSP database uses for the file, under the active profile |
+
+`:LoomworksCompileCommand` resolves the active profile, finds the module
+ConfigUnit whose project source tree is the nearest ancestor of the file, and
+calls the module's `compile_command_for` hook (core §8.4). It displays the
+resolved `directory` and the argv one argument per line in a float. It never
+guesses: with no active profile, no owning project, a module that owns no
+database (e.g. meson — its database is build-system generated), or a file the
+module cannot attribute to a target, it states that plainly instead of showing
+a command.
 
 ---
 
