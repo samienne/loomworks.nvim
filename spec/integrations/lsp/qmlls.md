@@ -43,7 +43,8 @@ per buffer:
 2. If the project matches a loomworks qmlls entry:
    a. Override `args[1]` with `entry.binary` when it is set and exists on
       disk (after `${ENV_VAR}` expansion).
-   b. Append `-b <build_dir>` when the referenced build directory exists.
+   b. Append `-b <build_dir>` and `--no-cmake-calls` when the referenced
+      build directory exists.
    c. Append `-I <path>` for each entry in `import_paths`.
 3. If `entry.binary_required` is `true` and the binary is missing: refuse
    to start and surface an error notification. **Do not fall back** to the
@@ -53,8 +54,21 @@ per buffer:
    `{ "qmlls" }`).
 
 `-b` is emitted as two argv elements (`-b`, `<dir>`); each import path is
-emitted as two argv elements (`-I`, `<path>`). These are the stable qmlls
-flags on Qt 6.4+.
+emitted as two argv elements (`-I`, `<path>`). `--no-cmake-calls` is a
+single argv element emitted immediately after `-b <dir>` (it is
+meaningful only when a build dir is set — that is what qmlls would
+otherwise rebuild). These are the stable qmlls flags on Qt 6.4+.
+
+**Why `--no-cmake-calls`:** with a build dir, qmlls otherwise triggers a
+CMake rebuild on its own whenever it detects that the source of a
+C++-defined QML type changed. loomworks is the single build authority —
+it drives every configure/build through overseer under per-build-dir
+locks and cross-process lockfiles. A rebuild fired by qmlls participates
+in none of that protocol, so it can race or corrupt a shared build dir
+and violates loomworks' non-invasive, no-side-effect-builds stance. The
+flag suppresses it; loomworks keeps the tree qmlls reads fresh via the
+profile-restart hook (§7). Escape hatch: replace the whole `cmd` through
+`{ lsp = { qmlls = { cmd = … } } }`.
 
 ## 4. Per-buffer root_dir resolution
 
@@ -122,6 +136,10 @@ dispatcher tolerates their absence.
 ## 9. User options
 
 qmlls has no user-tunable flag block in this cut (unlike clangd's
-`lsp.clangd` options). Opt-out is via `loomworks.setup` (see README): a
-whole-server `{ lsp = { qmlls = false } }`, or replacing the `cmd` /
-`filetypes` through `{ lsp = { qmlls = { … } } }`.
+`lsp.clangd` options). In particular `--no-cmake-calls` is emitted
+unconditionally (whenever `-b` is) and is not individually toggleable —
+re-enabling qmlls-driven CMake rebuilds would defeat loomworks' role as
+the single build authority (§3). Opt-out is via `loomworks.setup` (see
+README): a whole-server `{ lsp = { qmlls = false } }`, or replacing the
+`cmd` / `filetypes` through `{ lsp = { qmlls = { … } } }` (a custom
+`cmd` can drop the flag if a user genuinely wants qmlls to call CMake).

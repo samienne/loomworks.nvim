@@ -106,6 +106,11 @@ local function build_args(base_cmd, entry)
     if dir then
         args[#args + 1] = "-b"
         args[#args + 1] = dir
+        -- loomworks is the single build authority: suppress qmlls's own
+        -- CMake rebuilds (fired when a C++-defined QML type's source
+        -- changes) so they can't race the overseer/lock-managed tree.
+        -- Meaningful only alongside -b, which is what qmlls would rebuild.
+        args[#args + 1] = "--no-cmake-calls"
     end
 
     if entry and type(entry.import_paths) == "table" then

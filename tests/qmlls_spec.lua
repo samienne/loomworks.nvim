@@ -122,11 +122,11 @@ end)
 -- ---------------------------------------------------------------------------
 
 describe("qmlls _build_args_for_tests", function()
-    it("injects -b <build_dir> as two argv elements when the dir exists", function()
+    it("injects -b <build_dir> + --no-cmake-calls when the dir exists", function()
         local dir = make_tmp_dir()
         local args = qmlls._build_args_for_tests({ build_dir = dir })
-        -- base + "-b" + dir
-        assert.same({ "qmlls", "-b", dir }, args)
+        -- base + "-b" + dir + suppress qmlls's own CMake rebuilds
+        assert.same({ "qmlls", "-b", dir, "--no-cmake-calls" }, args)
     end)
 
     it("omits -b when the build dir does not exist on disk", function()
@@ -136,14 +136,14 @@ describe("qmlls _build_args_for_tests", function()
         assert.same({ "qmlls" }, args)
     end)
 
-    it("appends -I <path> per import path, after -b", function()
+    it("appends -I <path> per import path, after -b/--no-cmake-calls", function()
         local dir = make_tmp_dir()
         local args = qmlls._build_args_for_tests({
             build_dir = dir,
             import_paths = { "/imp/one", "/imp/two" },
         })
         assert.same(
-            { "qmlls", "-b", dir, "-I", "/imp/one", "-I", "/imp/two" },
+            { "qmlls", "-b", dir, "--no-cmake-calls", "-I", "/imp/one", "-I", "/imp/two" },
             args)
     end)
 
