@@ -52,6 +52,16 @@ local function has_tok(hay, tok)
     return false
 end
 
+--- Copy a compile_command entry stripped of its `origin` field, for comparing
+--- a per-file query result (which carries additive provenance, §12.6) against a
+--- generated database entry (which must NOT carry `origin`). This preserves the
+--- command-byte-identity guarantee — `{ directory, file, arguments }` must match
+--- exactly — while allowing the extra `origin` key.
+local function without_origin(e)
+    if not e then return e end
+    return { directory = e.directory, file = e.file, arguments = e.arguments }
+end
+
 -- ---------------------------------------------------------------------------
 -- generator_emits_compile_commands / compile_commands_generated default
 -- ---------------------------------------------------------------------------
@@ -689,13 +699,26 @@ describe("cmake compile_command_for — compiled TU (§12.6)", function()
         for _, file in ipairs({ "C:/proj/src/main.cpp", "C:/proj/src/util/helper.cpp" }) do
             local q = cmake.compile_command_for({ build_dir = build_dir, variant = "Debug" }, file)
             assert.is_not_nil(q, "query returned nil for " .. file)
-            assert.same(gen[file:match("[^/]+$")], q)
+            -- Command bytes identical; the query additionally carries `origin`,
+            -- which the generated entry must NOT — strip it before comparing.
+            assert.same(gen[file:match("[^/]+$")], without_origin(q))
         end
     end)
 
-    it("returns nil for a non-header, non-compiled path under the source tree", function()
+    it("marks a compiled TU as origin.kind == 'own' (no borrow note)", function()
+        local e = cmake.compile_command_for(
+            { build_dir = build_dir, variant = "Debug" }, "C:/proj/src/main.cpp")
+        assert.is_not_nil(e)
+        assert.is_not_nil(e.origin)
+        assert.equals("own", e.origin.kind)
+    end)
+
+    it("returns nil for a file no target's source directory contains", function()
+        -- Outside every target's source tree and not listed → unattributable.
+        -- (A non-header under a target's source dir is now attributed, since the
+        -- gate is entry-presence, not a header test — see the header block.)
         assert.is_nil(cmake.compile_command_for(
-            { build_dir = build_dir, variant = "Debug" }, "C:/proj/src/notes.txt"))
+            { build_dir = build_dir, variant = "Debug" }, "C:/elsewhere/notes.txt"))
     end)
 
     it("returns nil when no codemodel reply exists", function()
@@ -788,7 +811,38 @@ describe("cmake compile_command_for — headers (§12.6)", function()
         assert.is_truthy(cmake.generate_compile_commands(build_dir, out_dir, { variant = "Debug" }))
         local f = assert(io.open(out_dir .. "/compile_commands.json", "r"))
         local gen = by_basename(vim.json.decode(f:read("*a"))); f:close()
-        assert.same(gen["api.h"], query("C:/proj/src/beta/api.h"))
+        -- Command bytes identical; the query additionally carries `origin`.
+        assert.same(gen["api.h"], without_origin(query("C:/proj/src/beta/api.h")))
+    end)
+
+    it("marks a listed header as attributed via 'listed'", function()
+        local e = query("C:/proj/src/beta/api.h") -- listed in alpha
+        assert.is_not_nil(e)
+        assert.is_not_nil(e.origin)
+        assert.equals("attributed", e.origin.kind)
+        assert.equals("listed", e.origin.via)
+        assert.equals("alpha", e.origin.target)
+    end)
+
+    it("marks an unlisted (directory-attributed) header via 'directory' with a representative source", function()
+        local e = query("C:/proj/src/alpha/detail/component.h")
+        assert.is_not_nil(e)
+        assert.equals("attributed", e.origin.kind)
+        assert.equals("directory", e.origin.via)
+        assert.equals("alpha", e.origin.target)
+        -- `source` is a real compiled source of alpha's chosen (CXX) group.
+        assert.equals("C:/proj/src/alpha/main.cpp", e.origin.source)
+    end)
+
+    it("gates on entry-presence, not is_header: a non-header with no compiled entry is attributed via 'directory'", function()
+        -- extra.cpp sits under alpha's source dir but is in no compileGroup, so
+        -- it has no compiled entry of its own → borrowed, exactly like a header.
+        local e = query("C:/proj/src/alpha/extra.cpp")
+        assert.is_not_nil(e)
+        assert.equals("attributed", e.origin.kind)
+        assert.equals("directory", e.origin.via)
+        assert.equals("alpha", e.origin.target)
+        assert.equals("C:/proj/src/alpha/main.cpp", e.origin.source)
     end)
 end)
 
@@ -881,11 +935,14 @@ describe("Workspace:compile_command_for_file (core dispatch, §14)", function()
             ["target-app-Debug.json"] = load_fixture("target-app-Debug.json"),
             ["toolchains-v1-x.json"] = load_fixture("toolchains-v1.json"),
         }, "codemodel-v2-x.json", "toolchains-v1-x.json")
+        -- Project root is broader than the target's source tree (C:/proj/src),
+        -- so notes.txt is under the project but under no target dir → the module
+        -- attributes nothing and the resolver reports `unattributed`.
         local self_ = fake_self({ project = {
-            abs_path = "C:/proj/src", module_impl = cmake,
+            abs_path = "C:/proj", module_impl = cmake,
             build_dir = build_dir, variant = "Debug",
         } })
-        local res = Workspace.compile_command_for_file(self_, "C:/proj/src/notes.txt")
+        local res = Workspace.compile_command_for_file(self_, "C:/proj/notes.txt")
         assert.equals("unattributed", res.status)
         vim.fn.delete(tmp, "rf")
     end)

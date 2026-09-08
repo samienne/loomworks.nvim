@@ -621,11 +621,15 @@ when the user explicitly publishes (`:w`).
 `:LoomworksCompileCommand` resolves the active profile, finds the module
 ConfigUnit whose project source tree is the nearest ancestor of the file, and
 calls the module's `compile_command_for` hook (core §8.4). It displays the
-resolved `directory` and the argv one argument per line in a float. It never
-guesses: with no active profile, no owning project, a module that owns no
-database (e.g. meson — its database is build-system generated), or a file the
-module cannot attribute to a target, it states that plainly instead of showing
-a command.
+resolved `directory` and the argv one argument per line in a float. When the
+returned `origin` is `attributed` (the file has no entry of its own — e.g. a
+header), it first shows a note that the command was **borrowed**: the target it
+was attributed to, how (`listed` as a target source, or nearest source
+`directory`), and the representative source file when one is available. An
+`own` command shows no such note. It never guesses: with no active profile, no
+owning project, a module that owns no database (e.g. meson — its database is
+build-system generated), or a file the module cannot attribute to a target, it
+states that plainly instead of showing a command.
 
 ---
 
