@@ -2013,9 +2013,10 @@ local function render_cc_entry_with_prefix(prefix, abs, build_dir)
 end
 
 --- Render one entry for a single file from a compileGroup + compiler, building
---- the argv prefix on the spot. Used by the header generator and the per-file
---- query; the compiled-source generator instead builds each group's prefix
---- once and calls `render_cc_entry_with_prefix` directly.
+--- the argv prefix on the spot. Used by the per-file query for compiled TUs;
+--- the compiled-source generator instead builds each group's prefix once and
+--- calls `render_cc_entry_with_prefix` directly. Header entries use
+--- `render_header_entry` (which adds a language-forcing flag) — NOT this.
 --- @param cg table compileGroup
 --- @param compiler string compiler path / bare name (argv[0])
 --- @param abs string resolved absolute file path
@@ -2023,6 +2024,49 @@ end
 --- @return { directory: string, file: string, arguments: string[] }
 local function render_cc_entry(cg, compiler, abs, build_dir)
     return render_cc_entry_with_prefix(cg_argv_prefix(cg, compiler), abs, build_dir)
+end
+
+--- The language-forcing argv token(s) for a header entry (§12.3), in the
+--- compiler's flag style. clangd infers a `.h` (and other ambiguous
+--- extensions) as C and then silently drops C++-only flags (e.g. MSVC
+--- `/std:c++17`), so a header attributed to a C++ compileGroup must carry an
+--- explicit language override. MSVC drivers use the single `/TP` (C++) / `/TC`
+--- (C) token; GNU-style drivers use the two-token `-x c++` / `-x c` form.
+--- @param msvc boolean whether the compiler drives with MSVC (`/`) syntax
+--- @param language string compileGroup language token ("CXX" / "C")
+--- @return string[] one or two argv tokens to force the language
+local function header_language_argv(msvc, language)
+    local cxx = language == "CXX"
+    if msvc then
+        return { cxx and "/TP" or "/TC" }
+    end
+    return { "-x", cxx and "c++" or "c" }
+end
+
+--- Exposed for unit tests (pure flag-token helper, §12.3).
+M._header_language_argv = header_language_argv
+
+--- Render one `compile_commands.json` entry for a HEADER file (§12.3). Like
+--- `render_cc_entry` but inserts the language-forcing flag(s)
+--- (`header_language_argv`) right after the compiler (argv[1] position), before
+--- the include/define flags and the input file, so clangd parses the header in
+--- the chosen compileGroup's language rather than guessing from the extension.
+--- The one place a header entry is shaped, so the full-DB header generator
+--- (§12.3) and the per-file query (§12.6) cannot drift. Compiled TUs keep their
+--- real extension and never pass through here.
+--- @param cg table compileGroup (its `language` selects C vs C++)
+--- @param compiler string compiler path / bare name (argv[0])
+--- @param abs string resolved absolute header path
+--- @param build_dir string the entry's `directory`
+--- @return { directory: string, file: string, arguments: string[] }
+local function render_header_entry(cg, compiler, abs, build_dir)
+    local prefix = cg_argv_prefix(cg, compiler)
+    local lang = header_language_argv(compiler_is_msvc(compiler), cg.language)
+    -- Insert after the compiler (argv[1]), preserving lang-token order.
+    for i, tok in ipairs(lang) do
+        table.insert(prefix, i + 1, tok)
+    end
+    return render_cc_entry_with_prefix(prefix, abs, build_dir)
 end
 
 --- Stream-write a `compile_commands.json` array entry-by-entry (§12.2).
@@ -2381,8 +2425,10 @@ end
 --- header is attributed to a target (`attribute_header`); the entry uses that
 --- target's compileGroup chosen at the target level by `header_group`
 --- (C++ group when present, else C, else primary — independent of the header's
---- extension) rendered with `cg_argv_prefix`. Headers are emitted in a
---- deterministic order, each at most once; unattributable headers are omitted.
+--- extension) rendered with `render_header_entry`, which carries a
+--- language-forcing flag so clangd does not misinfer the language from the
+--- extension. Headers are emitted in a deterministic order, each at most once;
+--- unattributable headers are omitted.
 --- @param index table from `_target_attribution_index`
 --- @param compiler_by_lang table<string, string> language token → compiler
 --- @param header_paths string[] candidate header paths
@@ -2410,7 +2456,7 @@ function M._build_header_entries(index, compiler_by_lang, header_paths, build_di
                 if cg then
                     local compiler = compiler_by_lang[cg.language]
                         or opts.compiler or "cl.exe"
-                    entries[#entries + 1] = render_cc_entry(cg, compiler, disp, build_dir)
+                    entries[#entries + 1] = render_header_entry(cg, compiler, disp, build_dir)
                     emitted[key] = true
                 end
             end
@@ -2649,7 +2695,7 @@ function M.compile_command_for(ctx, file)
     local cg = header_group(t)
     if not cg then return nil end
     local compiler = compiler_map(toolchains)[cg.language] or ctx.compiler or "cl.exe"
-    local entry = render_cc_entry(cg, compiler, norm_path(file), build_dir)
+    local entry = render_header_entry(cg, compiler, norm_path(file), build_dir)
     -- Provenance attached after render_cc_entry so the shared renderer / the
     -- full-DB generator never emit `origin`.
     entry.origin = {
