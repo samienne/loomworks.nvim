@@ -1996,6 +1996,35 @@ local function cg_argv_prefix(cg, compiler)
     return args
 end
 
+--- Assemble a single `compile_commands.json` entry from a prebuilt argv prefix
+--- (compiler + flags, from `cg_argv_prefix`) and a resolved file path. Clones
+--- the prefix so a per-group prefix can be reused across its sources. This is
+--- the one place an entry's shape is produced, so the full-DB generator
+--- (compiled sources §12.2, headers §12.3) and the per-file query
+--- (`compile_command_for` §12.6) cannot drift.
+--- @param prefix string[] argv prefix (not mutated)
+--- @param abs string resolved absolute file path (the entry's `file`)
+--- @param build_dir string the entry's `directory`
+--- @return { directory: string, file: string, arguments: string[] }
+local function render_cc_entry_with_prefix(prefix, abs, build_dir)
+    local args = vim.list_extend({}, prefix)
+    args[#args + 1] = abs
+    return { directory = build_dir, file = abs, arguments = args }
+end
+
+--- Render one entry for a single file from a compileGroup + compiler, building
+--- the argv prefix on the spot. Used by the header generator and the per-file
+--- query; the compiled-source generator instead builds each group's prefix
+--- once and calls `render_cc_entry_with_prefix` directly.
+--- @param cg table compileGroup
+--- @param compiler string compiler path / bare name (argv[0])
+--- @param abs string resolved absolute file path
+--- @param build_dir string the entry's `directory`
+--- @return { directory: string, file: string, arguments: string[] }
+local function render_cc_entry(cg, compiler, abs, build_dir)
+    return render_cc_entry_with_prefix(cg_argv_prefix(cg, compiler), abs, build_dir)
+end
+
 --- Stream-write a `compile_commands.json` array entry-by-entry (§12.2).
 --- Never encodes the whole database in one `vim.json.encode` call: writes
 --- `[`, then each entry encoded on its own, comma-separated, then `]`.
@@ -2064,6 +2093,46 @@ local function select_codemodel_config(codemodel, variant)
     return configs[1]
 end
 
+--- Iterate every compiled source of the selected configuration's targets,
+--- invoking `fn(cg, compiler, abs)` once per source (each compileGroup ×
+--- its sourceIndexes), resolving the per-language compiler with the same
+--- file-api → kit → cl.exe fallback the generator uses. `compiler_by_lang`
+--- keys off cmake's own language token ("C", "CXX", …) — the same token
+--- compileGroups carry, so no canonicalization is needed. Shared by
+--- `_build_cc_entries` (full DB) and `compile_command_for` (per-file query)
+--- so both select the identical compileGroup, compiler, and resolved path
+--- for any given source — the entries cannot drift (§12.6).
+--- @param codemodel table parsed codemodel-v2 reply
+--- @param target_details table<string, table> jsonFile → parsed target detail
+--- @param toolchains table|nil parsed toolchains-v1 reply
+--- @param source_root string|nil codemodel.paths.source
+--- @param variant string|nil active configuration name to select
+--- @param opts { compiler?: string } fallback compiler when a language
+---        has no toolchain entry
+--- @param fn fun(cg: table, compiler: string, abs: string)
+local function for_each_compiled_source(codemodel, target_details, toolchains, source_root, variant, opts, fn)
+    local compiler_by_lang = compiler_map(toolchains)
+    local cfg = select_codemodel_config(codemodel, variant)
+    if not cfg or not cfg.targets then return end
+
+    for _, tref in ipairs(cfg.targets) do
+        local detail = tref.jsonFile and target_details[tref.jsonFile]
+        if detail and detail.compileGroups then
+            local sources = detail.sources or {}
+            for _, cg in ipairs(detail.compileGroups) do
+                -- Fallback chain: file-api toolchain → kit compiler → cl.exe.
+                local compiler = compiler_by_lang[cg.language] or opts.compiler or "cl.exe"
+                for _, si in ipairs(cg.sourceIndexes or {}) do
+                    local src = sources[si + 1] -- file-api indexes are 0-based
+                    if src and type(src.path) == "string" then
+                        fn(cg, compiler, abs_source_path(src.path, source_root))
+                    end
+                end
+            end
+        end
+    end
+end
+
 --- Build the `compile_commands.json` entry list from already-parsed
 --- file-api data. Pure (no cmake invocation) so it can be unit-tested
 --- against fixture JSON. One entry per source across every target's
@@ -2080,44 +2149,19 @@ end
 function M._build_cc_entries(codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
     opts = opts or {}
     local entries = {}
-
-    -- Per-language compiler paths keyed by cmake's own language token
-    -- ("C", "CXX", …) — the same token compileGroups carry, so no
-    -- canonicalization is needed to match them up.
-    local compiler_by_lang = compiler_map(toolchains)
-
-    local cfg = select_codemodel_config(codemodel, variant)
-    if not cfg or not cfg.targets then return entries end
-
-    for _, tref in ipairs(cfg.targets) do
-        local detail = tref.jsonFile and target_details[tref.jsonFile]
-        if detail and detail.compileGroups then
-            local sources = detail.sources or {}
-            for _, cg in ipairs(detail.compileGroups) do
-                local lang = cg.language
-                -- Fallback chain: file-api toolchain → kit compiler → cl.exe.
-                local compiler = compiler_by_lang[lang] or opts.compiler or "cl.exe"
-                -- Flags are identical across every source in the group; build
-                -- the argv prefix once and clone per source.
-                local prefix = cg_argv_prefix(cg, compiler)
-
-                for _, si in ipairs(cg.sourceIndexes or {}) do
-                    local src = sources[si + 1] -- file-api indexes are 0-based
-                    if src and type(src.path) == "string" then
-                        local abs = abs_source_path(src.path, source_root)
-                        local args = vim.list_extend({}, prefix)
-                        args[#args + 1] = abs
-                        entries[#entries + 1] = {
-                            directory = build_dir,
-                            file = abs,
-                            arguments = args,
-                        }
-                    end
-                end
+    -- Flags are identical across every source in a compileGroup; build the
+    -- argv prefix once per group (keyed on the group table's identity) and
+    -- clone it per source via render_cc_entry_with_prefix.
+    local prefix_cache = {}
+    for_each_compiled_source(codemodel, target_details, toolchains, source_root, variant, opts,
+        function(cg, compiler, abs)
+            local prefix = prefix_cache[cg]
+            if not prefix then
+                prefix = cg_argv_prefix(cg, compiler)
+                prefix_cache[cg] = prefix
             end
-        end
-    end
-
+            entries[#entries + 1] = render_cc_entry_with_prefix(prefix, abs, build_dir)
+        end)
     return entries
 end
 
@@ -2296,11 +2340,26 @@ local function collect_header_candidates(index, opts)
     return arr
 end
 
+--- Select the compileGroup used to render a header attributed to target `t`
+--- (§12.3): the target's C++ group when present, else its C group, else its
+--- primary language group. nil when the target has no usable group. Shared by
+--- the header generator and the per-file query so both render identical flags.
+--- @param t table target record from `_target_attribution_index`
+--- @return table|nil compileGroup
+--- Pick the compileGroup used for a header attributed to target `t` (§12.3).
+--- Target-level choice, independent of the header's extension: prefer the
+--- target's C++ group (safe superset for clangd; `.h` in C++ is common), else
+--- C, else the target's primary language group. nil when the target has none.
+local function header_group(t)
+    local g = t.groups_by_lang
+    return g.CXX or g.C or (t.primary_lang and g[t.primary_lang]) or nil
+end
+
 --- Build `compile_commands.json` entries for headers (§12.3). Pure. Each
 --- header is attributed to a target (`attribute_header`); the entry uses that
---- target's compileGroup chosen by the header's apparent language (C++ header
---- extension → the target's C++ group when present, else C, else its primary
---- language) rendered with `cg_argv_prefix`. Headers are emitted in a
+--- target's compileGroup chosen at the target level by `header_group`
+--- (C++ group when present, else C, else primary — independent of the header's
+--- extension) rendered with `cg_argv_prefix`. Headers are emitted in a
 --- deterministic order, each at most once; unattributable headers are omitted.
 --- @param index table from `_target_attribution_index`
 --- @param compiler_by_lang table<string, string> language token → compiler
@@ -2325,19 +2384,11 @@ function M._build_header_entries(index, compiler_by_lang, header_paths, build_di
             local id = attribute_header(index, path)
             local t = id and index.targets[id]
             if t then
-                local g = t.groups_by_lang
-                local cg = g.CXX or g.C
-                    or (t.primary_lang and g[t.primary_lang]) or nil
+                local cg = header_group(t)
                 if cg then
                     local compiler = compiler_by_lang[cg.language]
                         or opts.compiler or "cl.exe"
-                    local args = cg_argv_prefix(cg, compiler)
-                    args[#args + 1] = disp
-                    entries[#entries + 1] = {
-                        directory = build_dir,
-                        file = disp,
-                        arguments = args,
-                    }
+                    entries[#entries + 1] = render_cc_entry(cg, compiler, disp, build_dir)
                     emitted[key] = true
                 end
             end
@@ -2498,6 +2549,73 @@ function M.lsp_database_watch_path(ctx)
     local reply = ctx.build_dir .. "/.cmake/api/v1/reply"
     if not uv.fs_stat(reply) then return nil end
     return reply
+end
+
+--- §12.6 (core §8.4 optional hook). Redetermine the compile command the owned
+--- clangd database uses (or would use) for `file` under `ctx.build_dir`,
+--- WITHOUT decoding the generated `compile_commands.json` — it reads the same
+--- file-api replies §12.2/§12.3 build the database from and renders the entry
+--- through the shared `render_cc_entry`, so the result is byte-for-byte the DB
+--- entry for that file:
+---   * a compiled translation unit (a listed source in a compileGroup) → that
+---     target's own compileGroup, selected by source index (its exact flags);
+---   * a header → `attribute_header` (§12.3) then that target's compileGroup
+---     chosen at the target level by `header_group`;
+---   * anything no target claims (outside every source tree and not a listed
+---     header, or a non-header, non-compiled file) → nil (unattributable).
+--- @param ctx { build_dir: string, workspace_root?: string, variant?: string, compiler?: string }
+--- @param file string absolute source or header path
+--- @return { directory: string, file: string, arguments: string[] }|nil
+function M.compile_command_for(ctx, file)
+    if type(ctx) ~= "table" or type(ctx.build_dir) ~= "string" then return nil end
+    if type(file) ~= "string" or file == "" then return nil end
+
+    local build_dir = ctx.build_dir
+    local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
+    if not codemodel or not codemodel.configurations then return nil end
+
+    local variant = ctx.variant
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+    local cfg = select_codemodel_config(codemodel, variant)
+    local target_details = {}
+    if cfg and cfg.targets then
+        for _, tref in ipairs(cfg.targets) do
+            if tref.jsonFile and not target_details[tref.jsonFile] then
+                local d = read_json_file(reply_dir .. "/" .. tref.jsonFile)
+                if d then target_details[tref.jsonFile] = d end
+            end
+        end
+    end
+    local toolchains = find_file_api_reply(build_dir, "toolchains", 1)
+    local source_root = codemodel.paths and codemodel.paths.source or nil
+    local opts = { compiler = ctx.compiler }
+    local target_norm = norm_path(file):lower()
+
+    -- Compiled TU: the same scan _build_cc_entries walks. The first source
+    -- whose resolved path matches wins, rendered from its own compileGroup;
+    -- the entry uses the file-api's own resolved path (not the caller's) so it
+    -- is byte-identical to the generated entry.
+    local match
+    for_each_compiled_source(codemodel, target_details, toolchains, source_root, variant, opts,
+        function(cg, compiler, abs)
+            if not match and norm_path(abs):lower() == target_norm then
+                match = render_cc_entry(cg, compiler, abs, build_dir)
+            end
+        end)
+    if match then return match end
+
+    -- Header: attribute to a target (§12.3) and render that target's group for
+    -- the header's apparent language. A non-header, non-compiled file gets no
+    -- DB entry at all, so it is unattributable.
+    if not is_header(file) then return nil end
+    local index = M._target_attribution_index(codemodel, target_details, source_root, variant)
+    local id = attribute_header(index, file)
+    local t = id and index.targets[id]
+    if not t then return nil end
+    local cg = header_group(t)
+    if not cg then return nil end
+    local compiler = compiler_map(toolchains)[cg.language] or ctx.compiler or "cl.exe"
+    return render_cc_entry(cg, compiler, norm_path(file), build_dir)
 end
 
 -- ========================== Test integration ==========================

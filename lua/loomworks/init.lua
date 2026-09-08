@@ -384,6 +384,18 @@ function M.project_for_buf(bufnr)
     return core:project_for_buf(bufnr)
 end
 
+--- Resolve the compile command loomworks' owned LSP database uses (or would
+--- use) for an absolute file, under the active profile (spec §14). Delegates
+--- to the active workspace's generic resolver; when no workspace is loaded the
+--- result reads as "no active profile" (there is no profile without one).
+--- @param file string absolute source or header path
+--- @return loomworks.CompileCommandResult
+function M.compile_command_for_file(file)
+    local ws = core:get_workspace()
+    if not ws then return { status = "no_profile" } end
+    return ws:compile_command_for_file(file)
+end
+
 --- Get status info for the buffer's project, suitable for statusline/winbar.
 --- @param bufnr? number defaults to current buffer
 --- @return loomworks.BufStatus|nil

@@ -627,6 +627,271 @@ describe("cmake generated-cc freshness", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Per-file command query — compile_command_for (§12.6)
+-- ---------------------------------------------------------------------------
+
+--- Write a set of file-api reply objects to a build dir's reply directory and
+--- an index referencing the codemodel + toolchains, returning the build dir.
+--- @param root string tmp root
+--- @param objects table<string, table> reply basename → decoded table
+--- @param codemodel_file string basename of the codemodel object
+--- @param toolchains_file string|nil basename of the toolchains object
+--- @return string build_dir
+local function write_reply(root, objects, codemodel_file, toolchains_file)
+    local build_dir = root .. "/build"
+    local reply = build_dir .. "/.cmake/api/v1/reply"
+    vim.fn.mkdir(reply, "p")
+    for name, tbl in pairs(objects) do
+        local o = assert(io.open(reply .. "/" .. name, "w"))
+        o:write(vim.json.encode(tbl)); o:close()
+    end
+    local index_objects = {
+        { kind = "codemodel", version = { major = 2, minor = 0 }, jsonFile = codemodel_file },
+    }
+    if toolchains_file then
+        index_objects[#index_objects + 1] =
+            { kind = "toolchains", version = { major = 1, minor = 0 }, jsonFile = toolchains_file }
+    end
+    local i = assert(io.open(reply .. "/index-2025.json", "w"))
+    i:write(vim.json.encode({ objects = index_objects })); i:close()
+    return build_dir
+end
+
+describe("cmake compile_command_for — compiled TU (§12.6)", function()
+    local tmp, build_dir
+    before_each(function()
+        tmp = vim.fn.tempname()
+        build_dir = write_reply(tmp, {
+            ["codemodel-v2-x.json"] = load_fixture("codemodel-v2.json"),
+            ["target-app-Debug.json"] = load_fixture("target-app-Debug.json"),
+            ["toolchains-v1-x.json"] = load_fixture("toolchains-v1.json"),
+        }, "codemodel-v2-x.json", "toolchains-v1-x.json")
+    end)
+    after_each(function() if tmp then vim.fn.delete(tmp, "rf") end end)
+
+    it("returns the source's own compileGroup flags", function()
+        local e = cmake.compile_command_for(
+            { build_dir = build_dir, variant = "Debug" }, "C:/proj/src/main.cpp")
+        assert.is_not_nil(e)
+        assert.equals("C:/proj/src/main.cpp", e.file)
+        assert.equals(build_dir, e.directory)
+        assert.equals("cl.exe", e.arguments[1]:match("[^/]+$"))
+        assert.equals(e.file, e.arguments[#e.arguments])
+        assert.is_true(has_tok(e.arguments, "/DFOO=1"))
+        assert.is_true(contains_seq(e.arguments, { "/I", "C:/proj/src/include" }))
+    end)
+
+    it("equals the generated database entry for the same file (drift guard)", function()
+        local out_dir = tmp .. "/cache/cc"
+        assert.equals(2, cmake.generate_compile_commands(build_dir, out_dir, { variant = "Debug" }))
+        local f = assert(io.open(out_dir .. "/compile_commands.json", "r"))
+        local gen = by_basename(vim.json.decode(f:read("*a"))); f:close()
+        for _, file in ipairs({ "C:/proj/src/main.cpp", "C:/proj/src/util/helper.cpp" }) do
+            local q = cmake.compile_command_for({ build_dir = build_dir, variant = "Debug" }, file)
+            assert.is_not_nil(q, "query returned nil for " .. file)
+            assert.same(gen[file:match("[^/]+$")], q)
+        end
+    end)
+
+    it("returns nil for a non-header, non-compiled path under the source tree", function()
+        assert.is_nil(cmake.compile_command_for(
+            { build_dir = build_dir, variant = "Debug" }, "C:/proj/src/notes.txt"))
+    end)
+
+    it("returns nil when no codemodel reply exists", function()
+        assert.is_nil(cmake.compile_command_for(
+            { build_dir = tmp .. "/no-build", variant = "Debug" }, "C:/proj/src/main.cpp"))
+    end)
+end)
+
+describe("cmake compile_command_for — headers (§12.6)", function()
+    local SOURCE_ROOT = "C:/proj/src"
+    local codemodel = {
+        kind = "codemodel", version = { major = 2, minor = 0 },
+        paths = { source = SOURCE_ROOT },
+        configurations = {
+            {
+                name = "Debug",
+                targets = {
+                    { name = "alpha", id = "alpha::@1", jsonFile = "alpha.json" },
+                    { name = "beta", id = "beta::@2", jsonFile = "beta.json" },
+                },
+            },
+        },
+    }
+    -- alpha lists api.h (which physically lives under beta's dir) and owns
+    -- main.cpp; beta owns component.cpp. Mirrors the _build_header_entries test.
+    local alpha = {
+        name = "alpha", id = "alpha::@1", type = "EXECUTABLE",
+        sources = { { path = "alpha/main.cpp" }, { path = "beta/api.h" } },
+        compileGroups = {
+            {
+                language = "CXX", sourceIndexes = { 0 },
+                includes = { { path = "C:/proj/src/alpha/include" } },
+                defines = { { define = "ALPHA" } },
+            },
+        },
+    }
+    local beta = {
+        name = "beta", id = "beta::@2", type = "EXECUTABLE",
+        sources = { { path = "beta/component.cpp" } },
+        compileGroups = {
+            { language = "CXX", sourceIndexes = { 0 }, defines = { { define = "BETA" } } },
+        },
+    }
+    local toolchains = { toolchains = { { language = "CXX", compiler = { path = "/usr/bin/g++" } } } }
+
+    local tmp, build_dir
+    before_each(function()
+        tmp = vim.fn.tempname()
+        build_dir = write_reply(tmp, {
+            ["codemodel.json"] = codemodel,
+            ["alpha.json"] = alpha,
+            ["beta.json"] = beta,
+            ["toolchains.json"] = toolchains,
+        }, "codemodel.json", "toolchains.json")
+    end)
+    after_each(function() if tmp then vim.fn.delete(tmp, "rf") end end)
+
+    local function query(path)
+        return cmake.compile_command_for({ build_dir = build_dir, variant = "Debug" }, path)
+    end
+
+    it("attributes a listed header to its listing target", function()
+        local e = query("C:/proj/src/beta/api.h") -- listed in alpha
+        assert.is_not_nil(e)
+        assert.equals("/usr/bin/g++", e.arguments[1])
+        assert.equals("C:/proj/src/beta/api.h", e.file)
+        assert.is_true(has_tok(e.arguments, "-DALPHA"))
+        assert.is_false(has_tok(e.arguments, "-DBETA"))
+    end)
+
+    it("attributes an unlisted header to the nearest-ancestor target", function()
+        local e = query("C:/proj/src/alpha/detail/component.h")
+        assert.is_not_nil(e)
+        assert.is_true(has_tok(e.arguments, "-DALPHA"))
+        assert.is_false(has_tok(e.arguments, "-DBETA"))
+        assert.is_true(has_tok(e.arguments, "-IC:/proj/src/alpha/include"))
+
+        local b = query("C:/proj/src/beta/widget.h")
+        assert.is_not_nil(b)
+        assert.is_true(has_tok(b.arguments, "-DBETA"))
+        assert.is_false(has_tok(b.arguments, "-DALPHA"))
+    end)
+
+    it("returns nil for a header no target's source directory contains", function()
+        assert.is_nil(query("C:/other/foo.h"))
+    end)
+
+    it("listed-header query equals the generated entry (drift guard)", function()
+        local out_dir = tmp .. "/cache/cc"
+        assert.is_truthy(cmake.generate_compile_commands(build_dir, out_dir, { variant = "Debug" }))
+        local f = assert(io.open(out_dir .. "/compile_commands.json", "r"))
+        local gen = by_basename(vim.json.decode(f:read("*a"))); f:close()
+        assert.same(gen["api.h"], query("C:/proj/src/beta/api.h"))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Core generic resolver — Workspace:compile_command_for_file (§14)
+-- ---------------------------------------------------------------------------
+
+describe("Workspace:compile_command_for_file (core dispatch, §14)", function()
+    local Workspace = require("loomworks.workspace").Workspace
+
+    --- Build a fake `self` for the resolver: an active profile with one
+    --- project-in-profile (module impl, source tree, build dir, variant).
+    --- `module_impl == nil` means the profile has no project at all.
+    local function fake_self(opts)
+        local profile
+        if opts.project then
+            local pp = {
+                _project = {
+                    _module = { impl = opts.project.module_impl },
+                    abs_path = function() return opts.project.abs_path end,
+                },
+                _config_unit = {
+                    _tool_data = opts.project.tool_data,
+                    build_dir = function() return opts.project.build_dir end,
+                    variant = function() return opts.project.variant end,
+                },
+            }
+            profile = { projects = function() return { pp } end }
+        end
+        return {
+            _active_profile = opts.no_profile and nil or profile,
+            root = opts.root or "/work",
+            _core = { _deps = { normalize = function(p) return vim.fs.normalize(p) end } },
+        }
+    end
+
+    it("no active profile → no_profile", function()
+        local res = Workspace.compile_command_for_file(
+            fake_self({ no_profile = true }), "/work/app/main.cpp")
+        assert.equals("no_profile", res.status)
+    end)
+
+    it("file under no project of the profile → no_project", function()
+        local self_ = fake_self({ project = {
+            abs_path = "/work/app", module_impl = cmake,
+            build_dir = "/bd", variant = "Debug",
+        } })
+        local res = Workspace.compile_command_for_file(self_, "/work/other/x.cpp")
+        assert.equals("no_project", res.status)
+    end)
+
+    it("owning module implements no compile_command_for → unowned (meson-style)", function()
+        -- A module table with no compile_command_for hook (as meson omits it).
+        local self_ = fake_self({ project = {
+            abs_path = "/work/app", module_impl = { tasks = function() end },
+            build_dir = "/bd", variant = "Debug",
+        } })
+        local res = Workspace.compile_command_for_file(self_, "/work/app/main.cpp")
+        assert.equals("unowned", res.status)
+    end)
+
+    it("cmake project, attributable file → ok with the resolved entry", function()
+        local tmp = vim.fn.tempname()
+        local build_dir = write_reply(tmp, {
+            ["codemodel-v2-x.json"] = load_fixture("codemodel-v2.json"),
+            ["target-app-Debug.json"] = load_fixture("target-app-Debug.json"),
+            ["toolchains-v1-x.json"] = load_fixture("toolchains-v1.json"),
+        }, "codemodel-v2-x.json", "toolchains-v1-x.json")
+
+        -- Project source tree is the file-api source root so the query file
+        -- ("C:/proj/src/main.cpp") is under it and selects this project.
+        local self_ = fake_self({ project = {
+            abs_path = "C:/proj/src", module_impl = cmake,
+            build_dir = build_dir, variant = "Debug",
+        } })
+        local res = Workspace.compile_command_for_file(self_, "C:/proj/src/main.cpp")
+        assert.equals("ok", res.status)
+        -- Matches a direct module-hook call with the same ctx (end-to-end drift).
+        assert.same(
+            cmake.compile_command_for({ build_dir = build_dir, variant = "Debug" },
+                "C:/proj/src/main.cpp"),
+            res.entry)
+        vim.fn.delete(tmp, "rf")
+    end)
+
+    it("cmake project, unattributable file under the tree → unattributed", function()
+        local tmp = vim.fn.tempname()
+        local build_dir = write_reply(tmp, {
+            ["codemodel-v2-x.json"] = load_fixture("codemodel-v2.json"),
+            ["target-app-Debug.json"] = load_fixture("target-app-Debug.json"),
+            ["toolchains-v1-x.json"] = load_fixture("toolchains-v1.json"),
+        }, "codemodel-v2-x.json", "toolchains-v1-x.json")
+        local self_ = fake_self({ project = {
+            abs_path = "C:/proj/src", module_impl = cmake,
+            build_dir = build_dir, variant = "Debug",
+        } })
+        local res = Workspace.compile_command_for_file(self_, "C:/proj/src/notes.txt")
+        assert.equals("unattributed", res.status)
+        vim.fn.delete(tmp, "rf")
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Optional real Visual Studio configure + reconstruction (Windows only).
 -- Mirrors cmake_clang_cl_e2e_spec's guard: skip (never fail) without a real
 -- VS-generator toolchain. This is the true validation that we can rebuild a
