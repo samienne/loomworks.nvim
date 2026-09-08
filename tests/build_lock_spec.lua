@@ -5,6 +5,11 @@
 local bl = require("loomworks.build_lock")
 local uv = vim.uv or vim.loop
 
+-- cli.lua is required for its interrupt-cleanup seam; the flag stops its
+-- bottom-of-file autorun from executing main() on require.
+_G.LOOMWORKS_CLI_NO_AUTORUN = true
+local cli = require("loomworks.cli")
+
 local function fresh_build_dir()
     local d = vim.fn.tempname()
     vim.fn.mkdir(d, "p")
@@ -62,5 +67,43 @@ describe("build_lock", function()
         assert.is_true(bl.force(dir))
         assert.is_nil(bl.read(dir))
         assert.is_false(bl.force(dir)) -- nothing to remove
+    end)
+end)
+
+-- Regression: a Ctrl-C'd `lw build` must release its build locks immediately
+-- (not leak them until the stale-mtime reclaim). The CLI's SIGINT/SIGTERM
+-- handler routes through the same run_exit_hooks() path that with_build_locks
+-- registers its release_all on. This exercises that real chain: hold a lock,
+-- register its release as an exit hook (as with_build_locks does), then invoke
+-- the interrupt-cleanup callback body with an injected exit stub. Before the fix
+-- there was no handler, so an interrupt left the lockfile behind.
+describe("build_lock release on interrupt (cli)", function()
+    it("interrupt cleanup releases held locks and exits 130 (once)", function()
+        local build_dir = fresh_build_dir()
+        local h = assert(bl.acquire(build_dir, "build")) -- real lockfile on disk
+        cli._on_exit(function() bl.release(h) end)
+        assert.is_not_nil(bl.read(build_dir))            -- lock is held
+
+        local exit_code
+        local cleanup = cli._make_interrupt_cleanup(130, function(c) exit_code = c end)
+        cleanup()
+
+        assert.is_nil(bl.read(build_dir))                -- released by interrupt path
+        assert.equals(130, exit_code)
+
+        -- Re-entrancy guard: a repeated Ctrl-C / second signal must not re-run.
+        exit_code = nil
+        cleanup()
+        assert.is_nil(exit_code)
+    end)
+
+    it("install_interrupt_handler is best-effort and returns the callback", function()
+        -- Must never throw even where a handle can't be installed; returns the
+        -- shared guarded cleanup so both signals fire the same one.
+        local exit_code
+        local cleanup = cli._install_interrupt_handler(function(c) exit_code = c end)
+        assert.is_function(cleanup)
+        cleanup()
+        assert.equals(130, exit_code)
     end)
 end)
