@@ -325,6 +325,11 @@ function View:_open_hover(content)
     end
     local h = math.min(wrapped, math.max(3, math.floor(vim.o.lines * 0.4)))
 
+    -- Float above the parent window. Snacks defaults floats to zindex 50, so a
+    -- hover with no zindex ties the parent and renders behind it; sit one above
+    -- the parent's own zindex (which may itself be raised, e.g. the options view).
+    local parent_z = (self._win_opts and self._win_opts.zindex) or 50
+
     local hover_win = Snacks.win({
         position = "float",
         relative = "cursor",
@@ -332,6 +337,7 @@ function View:_open_hover(content)
         col = 0,
         width = max_w,
         height = h,
+        zindex = parent_z + 1,
         border = "rounded",
         wo = {
             wrap = true,

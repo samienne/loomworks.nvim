@@ -500,12 +500,14 @@ unrelated translation unit by filename proximity.
 4. A header no target's source directory contains is left unattributed and
    gets no entry (clangd falls back to interpolation for those only).
 
-The entry uses the chosen target's **primary compileGroup** flags (compiler
-`argv[0]`, includes, system includes, defines, compileCommandFragments) in
-the same MSVC/GNU syntax as compiled sources (§12.2). The compileGroup is
-chosen by the header's apparent language: a C++ header extension
-(`.h/.hpp/.hh/.hxx/.inl`, …) selects the target's C++ group when it has one,
-else its C group, else the target's primary language group.
+The entry uses the chosen target's compileGroup flags (compiler `argv[0]`,
+includes, system includes, defines, compileCommandFragments) in the same
+MSVC/GNU syntax as compiled sources (§12.2). The compileGroup is chosen at the
+**target** level, independent of the individual header's extension: the
+target's C++ group when it has one, else its C group, else its primary language
+group. Preferring C++ is deliberate — headers are routinely included by C++
+translation units, `.h` headers in C++ projects are common, and C++ flags are a
+safe superset for clangd's purposes.
 
 **Which headers are enumerated:** listed headers (from each target's
 `sources`) are emitted directly. Headers that are merely `#include`d and not
@@ -549,4 +551,30 @@ This applies to the cmake module only. **meson gets the same owned-database
 treatment in a follow-up** — for now meson still uses its native database:
 meson always drives the Ninja backend, which emits `compile_commands.json`
 for every compiler (including MSVC), so the field is not present on meson
-configurations.
+configurations. Because meson does not build an owned database, it does **not**
+implement `compile_command_for` (core §8.4); a per-file command query against a
+meson project reports that loomworks does not own the command rather than
+parsing meson's native database.
+
+### 12.6 Per-file command query (`compile_command_for`)
+
+cmake implements the core §8.4 `compile_command_for(ctx, file)` hook by
+**redetermining** the entry from the file-api replies — the same inputs §12.2
+and §12.3 build the database from — never by decoding the generated
+`compile_commands.json` (which we only ever stream out, and which may exceed
+`vim.json`'s decode ceiling). The result is byte-for-byte the entry the owned
+database contains for that file:
+
+- **A compiled translation unit** (a path listed as a target source that is not
+  a header) uses that target's own `compileGroup` selected by its source index
+  — its exact per-file flags.
+- **A header** is attributed with `attribute_header` (§12.3): a listed header
+  uses its listing target, otherwise the nearest-ancestor source directory's
+  owning target, and the entry renders that target's `compileGroup` chosen at
+  the target level (C++ group when present, else C, else its primary language —
+  independent of the header's extension, as in §12.3).
+
+Files that no target claims — outside every target's source tree and not a
+listed header — yield `nil` (unattributable). The query reuses
+`_target_attribution_index` and the `cg_argv_prefix` rendering unchanged, so
+its output cannot drift from generated entries.
