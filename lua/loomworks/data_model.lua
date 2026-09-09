@@ -658,6 +658,39 @@ function M.sync_build_dir_refs(config_units, normalize)
     return refs
 end
 
+--- Rebuild the output-artifact reverse index from ConfigUnit objects (§5.9).
+--- Maps normalized_absolute_artifact_path -> array of ConfigUnits that
+--- produce it. Built from the resolved artifact sets of configured units
+--- only — a unit with no artifact set contributes nothing. Paths are
+--- normalized (lowercased on Windows) exactly like the build-dir index, so
+--- comparison is case-insensitive; display casing lives on the units.
+--- @param config_units table[] array of ConfigUnit objects
+--- @param normalize function path normalization function
+--- @return table<string, table[]> artifact_refs
+function M.sync_artifact_refs(config_units, normalize)
+    local refs = {}
+    for _, unit in pairs(config_units) do
+        local arts = unit:artifacts()
+        if arts then
+            for _, path in ipairs(arts) do
+                local key = normalize(path)
+                local list = refs[key]
+                if not list then
+                    list = {}
+                    refs[key] = list
+                end
+                -- A unit listing the same path twice must appear once.
+                local present = false
+                for _, u in ipairs(list) do
+                    if u == unit then present = true break end
+                end
+                if not present then list[#list + 1] = unit end
+            end
+        end
+    end
+    return refs
+end
+
 --- Compute the per-(profile, configuration) tool compatibility error
 --- by invoking the module's `validate_config_tool` hook. Modules that
 --- don't implement the hook are permissive (returns nil). Used by
@@ -710,6 +743,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
     local config_units, profile_projects = sync_profile_projects_and_config_units(
         ctx, workspace, cache, deps)
     local build_dir_refs = M.sync_build_dir_refs(config_units, deps.normalize)
+    local artifact_refs = M.sync_artifact_refs(config_units, deps.normalize)
 
     -- Set _source and _intent on projects, config_sets, and profiles
     local user_project_keys = deps.user_project_keys or {}
@@ -799,6 +833,7 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
         config_units = config_units,
         profile_projects = profile_projects,
         build_dir_refs = build_dir_refs,
+        artifact_refs = artifact_refs,
         active_profile = active_profile,
     }
 end

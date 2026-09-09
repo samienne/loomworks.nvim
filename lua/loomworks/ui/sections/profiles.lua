@@ -305,6 +305,13 @@ local function render_profile_details(tree, profile, lw)
                     row_chunks[#row_chunks + 1] = { missing_suffix, "DiagnosticWarn" }
                 end
                 row_chunks[#row_chunks + 1] = { status_suffix .. progress_str, "Comment" }
+                -- Overwritten marker (spec/ui.md §1.5): another unit's build has
+                -- clobbered this unit's shared output artifact. The built marker
+                -- (✔) is retained; the tag signals the on-disk artifact is no
+                -- longer this unit's, so it needs a rebuild to reclaim it.
+                if unit and unit.is_overwritten and unit:is_overwritten() then
+                    row_chunks[#row_chunks + 1] = { " [overwritten]", "LoomworksConflict" }
+                end
                 tree:node(row_chunks, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
                     marker = pp_marker,
@@ -432,26 +439,37 @@ return function(tree, ctx)
         end
 
         local prof_modified = ws and ws:is_profile_modified(profile) and "+" or ""
-        local display = prof_modified .. profile.key
+        -- Head = key + text tags ([stale]/[incomplete]); tail = (status) + any
+        -- progress/message. A `[conflict]` tag (spec/ui.md §1.5) sits between
+        -- them and needs its own `LoomworksConflict` highlight, so the row
+        -- becomes a chunk list when a conflict is present (otherwise a plain
+        -- string, matching every other profile row).
+        local head = prof_modified .. profile.key
         if profile.orphaned_set then
-            display = display .. " [stale]"
+            head = head .. " [stale]"
         end
         if not profile:is_complete() then
-            display = display .. " [incomplete]"
+            head = head .. " [incomplete]"
         end
 
-        display = display .. " (" .. status_label .. ")"
+        -- Static cross-profile output-artifact overlap (spec/ui.md §1.5):
+        -- two profiles that would write the same output binary. Absent while
+        -- the profile is unconfigured (artifacts unknown until configure).
+        local has_conflict = ws and ws.profile_has_artifact_conflict
+            and ws:profile_has_artifact_conflict(profile) or false
+
+        local tail = " (" .. status_label .. ")"
         if has_operation then
             local pps = profile:projects()
             local pct = helpers.aggregate_progress(pps)
             if pct then
-                display = display .. " " .. pct .. "%"
+                tail = tail .. " " .. pct .. "%"
             end
-            display = display .. helpers.format_elapsed(profile:operation_elapsed())
+            tail = tail .. helpers.format_elapsed(profile:operation_elapsed())
         else
             local op = profile:operation()
             if op and op.message then
-                display = display .. " — " .. op.message
+                tail = tail .. " — " .. op.message
             end
         end
 
@@ -468,6 +486,21 @@ return function(tree, ctx)
             hl = "LoomworksProfile"
         else
             hl = "LoomworksProfileInactive"
+        end
+
+        -- Assemble the header. With a conflict, the row is a chunk list so the
+        -- `[conflict]` tag carries `LoomworksConflict` between the tags and the
+        -- status suffix; without one it stays a plain string like every other
+        -- profile row.
+        local display
+        if has_conflict then
+            display = {
+                { head, hl },
+                { " [conflict]", "LoomworksConflict" },
+                { tail, hl },
+            }
+        else
+            display = head .. tail
         end
 
         t:node(display, {

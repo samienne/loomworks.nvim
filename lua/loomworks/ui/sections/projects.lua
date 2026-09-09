@@ -717,11 +717,14 @@ return function(tree, ctx)
                         local has_tool_entries = #tool_entries > 0
 
                         local config_has_running = false
+                        local config_overwritten = false
                         if cname_cfg then
                             for _, cu in ipairs(proj:config_units_for_configuration(cname_cfg) or {}) do
                                 if cu:is_running() then
                                     config_has_running = true
-                                    break
+                                end
+                                if cu.is_overwritten and cu:is_overwritten() then
+                                    config_overwritten = true
                                 end
                             end
                         end
@@ -831,6 +834,14 @@ return function(tree, ctx)
                         config_chunks[#config_chunks + 1] = { cname, variant_hl }
                         if brief_str ~= "" then
                             config_chunks[#config_chunks + 1] = { brief_str, "Comment" }
+                        end
+                        -- Overwritten marker (spec/ui.md §1.8): a config unit
+                        -- under this configuration was built but another unit's
+                        -- build has since overwritten its shared output artifact.
+                        -- Matches the profile-side rendering (§1.5).
+                        if config_overwritten then
+                            config_chunks[#config_chunks + 1] =
+                                { " [overwritten]", "LoomworksConflict" }
                         end
 
                         ct:node(config_chunks, {

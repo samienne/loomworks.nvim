@@ -27,6 +27,9 @@
 --- Cached configuration snapshot (for stale detection):
 --- @field _cached_options table|nil options snapshot from last configure
 --- @field _cached_module_config table|nil module_config snapshot from last configure
+--- Output-artifact conflict detection (spec §1.7, §5.9):
+--- @field _artifacts string[]|nil resolved artifact set (absolute, display casing) from last configure
+--- @field _overwritten_by string|nil id of the ConfigUnit that most recently built over a shared artifact
 --- Runtime state (never touched by _apply):
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
@@ -91,6 +94,8 @@ function ConfigUnit.new(workspace, id, project_key)
     self._tool_data = nil
     self._cached_options = nil
     self._cached_module_config = nil
+    self._artifacts = nil
+    self._overwritten_by = nil
     return self
 end
 
@@ -140,6 +145,8 @@ function ConfigUnit:_apply(data)
         self._tool_data = nil
         self._cached_options = nil
         self._cached_module_config = nil
+        self._artifacts = nil
+        self._overwritten_by = nil
         return
     end
     self._project = data.project
@@ -160,6 +167,12 @@ function ConfigUnit:_apply(data)
         self._tool_data = c.tool_data
         self._cached_options = c.options
         self._cached_module_config = c.module_config
+        -- Resolved artifact set + overwritten marker (spec §1.7, §2.3).
+        -- Both are optional/additive: absence reads back as prior behavior.
+        -- A dangling `overwritten_by` (points at a missing entry) is treated
+        -- as clear by the accessor, not scrubbed here.
+        self._artifacts = c.artifacts
+        self._overwritten_by = c.overwritten_by
     else
         -- Profile-resolved but no cache entry: unconfigured with known build_dir
         self.state_value = nil
@@ -182,6 +195,10 @@ function ConfigUnit:_apply(data)
         end
         self._cached_options = nil
         self._cached_module_config = nil
+        -- No cache entry ⇒ nothing was configured for this identity, so no
+        -- resolved artifact set (unknown-until-configure, spec §1.7).
+        self._artifacts = nil
+        self._overwritten_by = nil
     end
 end
 
@@ -204,6 +221,12 @@ function ConfigUnit:serialize()
         last_built = self.last_built,
     }
     if self.module_info then entry.module_info = self.module_info end
+    -- Resolved artifact set + overwritten marker (spec §1.7, §2.3). Both are
+    -- success-path, additive-optional fields: present only when known.
+    if self._artifacts and #self._artifacts > 0 then
+        entry.artifacts = self._artifacts
+    end
+    if self._overwritten_by then entry.overwritten_by = self._overwritten_by end
     -- Configuration snapshot: inline definition data for self-describing entries
     if self._configuration and not self._configuration._removed then
         local cfg = self._configuration
@@ -300,6 +323,53 @@ end
 --- @return string|nil
 function ConfigUnit:build_dir()
     return self.build_dir_value
+end
+
+--- Get this unit's resolved artifact set (spec §1.7): the absolute on-disk
+--- output paths its last successful configure resolved, in display casing.
+--- Nil/empty until the first successful configure, or when the module does
+--- not implement `resolve_artifacts` — such units take no part in conflict
+--- detection (spec §5.9). The compare-normalized form is derived at runtime
+--- by the Workspace artifact index, never stored here.
+--- @return string[]|nil
+function ConfigUnit:artifacts()
+    if self._artifacts and #self._artifacts > 0 then return self._artifacts end
+    return nil
+end
+
+--- Record this unit's resolved artifact set after a successful configure.
+--- Pass nil to clear (module reported none / not resolvable).
+--- @param artifacts string[]|nil absolute paths in display casing
+function ConfigUnit:set_artifacts(artifacts)
+    if artifacts and #artifacts > 0 then
+        self._artifacts = artifacts
+    else
+        self._artifacts = nil
+    end
+end
+
+--- Resolve the ConfigUnit that most recently built over one of this unit's
+--- shared artifacts (spec §1.7, §5.9). The overwriting unit is referenced by
+--- its stable `id`; a dangling reference (the referenced entry no longer
+--- exists) resolves to nil — i.e. is treated as clear, per the cache's
+--- orphan-tolerant stance (spec §2.3).
+--- @return loomworks.ConfigUnit|nil
+function ConfigUnit:overwritten_by()
+    local ref = self._overwritten_by
+    if not ref then return nil end
+    local ws = self._workspace
+    if not ws or not ws._config_units then return nil end
+    for _, u in pairs(ws._config_units) do
+        if u.id == ref and not u._removed then return u end
+    end
+    return nil
+end
+
+--- Whether this unit's built output has been overwritten by another unit
+--- (spec §1.7). A dangling overwritten-by reference reports false.
+--- @return boolean
+function ConfigUnit:is_overwritten()
+    return self:overwritten_by() ~= nil
 end
 
 --- Compose the run environment for this unit's built executables:

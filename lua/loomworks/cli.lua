@@ -811,11 +811,25 @@ local function record_step(ws, step, ok)
   end)
 end
 
+--- Format the output-artifact conflict refusal (spec §5.9 / §16.28). `die`
+--- prepends "lw: " and exits 1. Names the conflicting profile and the shared
+--- artifact path, and points at `--force`.
+--- @param block { profile: string, path: string|nil }
+--- @return string
+local function conflict_message(block)
+  return string.format(
+    "build would overwrite an artifact owned by built profile '%s':\n"
+      .. "      %s\n"
+      .. "    pass --force to overwrite it (%s will be marked stale)",
+    block.profile, block.path or "?", block.profile)
+end
+
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[] } for_test
----   skips building units whose native test runner rebuilds itself;
----   extra_args are forwarded to the build tool.
+--- @param opts? table { for_test?: boolean, extra_args?: string[], force?: boolean }
+---   for_test skips building units whose native test runner rebuilds itself;
+---   extra_args are forwarded to the build tool; force overrides the
+---   output-artifact conflict gate (§5.9).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
@@ -831,6 +845,16 @@ local function run_build_steps(profile, ws, opts)
   if not steps or #steps == 0 then return 0 end
   out("building profile: " .. profile.key)
   for _, step in ipairs(steps) do
+    -- Output-artifact conflict gate (spec §5.9 / §16.28). Directional: refuse
+    -- a build that would clobber a still-`built` unit's shared artifact unless
+    -- forced. Evaluated at compile-start — for a configure→build chain the
+    -- configure step (below) already populated this unit's artifact set, so
+    -- the set is known here. `--force` and `--no-interaction` alike just
+    -- refuse with exit 1; force is the only bypass, never a prompt.
+    if step.kind == "build" and step.unit and ws.artifact_conflict_block then
+      local block = ws:artifact_conflict_block(step.unit, opts.force or false)
+      if block then die(conflict_message(block), 1) end
+    end
     -- Caller args (`lw build -- -j 4`) go to the BUILD tool only — a configure
     -- step would choke on them. Appended so they layer on top.
     if opts.extra_args and step.kind == "build" then
@@ -841,6 +865,15 @@ local function run_build_steps(profile, ws, opts)
     record_step(ws, step, code == 0)
     if code ~= 0 then
       die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
+    end
+    -- After a successful configure, populate this unit's resolved artifact set
+    -- so a following build step in THIS invocation sees it (the CLI opts out
+    -- of the record_task_result post-configure scan by not passing build_dir).
+    if step.kind == "configure" and code == 0 and step.unit and step.build_dir
+        and ws._populate_resolved_artifacts then
+      pcall(function()
+        ws:_populate_resolved_artifacts(step.unit, step.build_dir, step.unit._variant)
+      end)
     end
   end
   return #steps
@@ -891,20 +924,25 @@ end
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
+  local force = false
   for i = 2, #args do
     if not seen_sep and args[i] == "--" then seen_sep = true
     elseif seen_sep then extra[#extra + 1] = args[i]
+    elseif args[i] == "--force" then force = true
     else pre[#pre + 1] = args[i] end
   end
   if pre[2] then
     die("unexpected argument '" .. tostring(pre[2]) ..
-      "' — usage: lw build [profile] [-- build-tool-args…]")
+      "' — usage: lw build [profile] [--force] [-- build-tool-args…]")
   end
   local profile
   profile, ws = resolve_build_target(ws, pre[1])
   local built = 0
   with_build_locks(profile, "build", function()
-    built = run_build_steps(profile, ws, { extra_args = (#extra > 0) and extra or nil })
+    built = run_build_steps(profile, ws, {
+      extra_args = (#extra > 0) and extra or nil,
+      force = force,
+    })
   end)
   if built == 0 then
     die("nothing to build for profile '" .. profile.key ..
