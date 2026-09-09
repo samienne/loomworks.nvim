@@ -959,6 +959,54 @@ end
 --- @param on_complete? function legacy callback (deprecated)
 --- @param opts? table { parallel_jobs?: integer }
 --- @return loomworks.Future
+--- Editor-side output-artifact conflict gate (spec §5.9). Given the build
+--- tasks about to run and a `force` flag, returns a Future that resolves when
+--- the build may proceed, or rejects when the user declines. When a conflict is
+--- found and not forced, surfaces a Yes/No confirmation naming the conflicting
+--- profile and the shared artifact path — the interactive counterpart of the
+--- CLI `--force` refusal (§16.28). Confirming proceeds (the other profile is
+--- marked stale on completion, §5.9); declining rejects. Centralized here so
+--- every editor build entry (`Profile:build`, `run_configuration_action`,
+--- session_tracker, `ui.actions`) inherits it. Evaluated by the caller only
+--- after any configure step, so a configure→build chain sees U's artifacts.
+--- @param ws loomworks.Workspace|nil
+--- @param build_tasks table[] build task_defs (carry `.loomworks.unit`)
+--- @param force boolean
+--- @return loomworks.Future
+local function guard_build_conflicts(ws, build_tasks, force)
+    local future_mod = require("loomworks.future")
+    if force or not ws or not ws.artifact_conflict_block then
+        return future_mod.resolved(true)
+    end
+    local block
+    for _, td in ipairs(build_tasks or {}) do
+        local unit = td.loomworks and td.loomworks.unit
+        if unit then
+            block = ws:artifact_conflict_block(unit, false)
+            if block then break end
+        end
+    end
+    if not block then return future_mod.resolved(true) end
+    return future_mod.create(function(resolve, reject)
+        vim.schedule(function()
+            vim.ui.select({ "Yes", "No" }, {
+                prompt = string.format(
+                    "loomworks: build would overwrite an artifact owned by built "
+                        .. "profile '%s':\n  %s\nOverwrite it (that profile will be "
+                        .. "marked stale)?",
+                    block.profile or "?", block.path or "?"),
+            }, function(choice)
+                if choice == "Yes" then
+                    resolve(true)
+                else
+                    reject("build cancelled — would overwrite profile '"
+                        .. (block.profile or "?") .. "'")
+                end
+            end)
+        end)
+    end)
+end
+
 function M.run_configuration_action(unit, action, on_complete, opts)
     local future_mod = require("loomworks.future")
 
@@ -1037,19 +1085,22 @@ function M.run_configuration_action(unit, action, on_complete, opts)
                 end
             end
 
+            local force = opts and opts.force or false
             local needs_configure = filter_unconfigured_tasks(all_tasks)
             if #needs_configure > 0 then
                 launch_tasks(overseer, needs_configure):next(function()
+                    -- Configure done → U's artifact set is known; gate before compile.
+                    return guard_build_conflicts(ws, all_tasks.build, force)
+                end):next(function()
                     return launch_tasks(overseer, all_tasks.build)
                 end):next(
                     function() f:_resolve(true) end,
-                    function(err)
-                        vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
-                        f:_reject(err)
-                    end
+                    function(err) f:_reject(err) end
                 )
             else
-                launch_tasks(overseer, all_tasks.build):next(
+                guard_build_conflicts(ws, all_tasks.build, force):next(function()
+                    return launch_tasks(overseer, all_tasks.build)
+                end):next(
                     function() f:_resolve(true) end,
                     function(err) f:_reject(err) end
                 )
@@ -1482,6 +1533,7 @@ function M.run_profile_action(profile, action, opts)
         end
 
         if action == "build" then
+            local force = opts and opts.force or false
             local needs_configure = filter_unconfigured_tasks(all_tasks)
             local launchable_builds = filter_launchable_tasks(all_tasks.build)
             local units, target_states = collect_units_from_tasks(launchable_builds, "built")
@@ -1501,22 +1553,27 @@ function M.run_profile_action(profile, action, opts)
                 end
 
                 launch_tasks(overseer, needs_configure):next(function()
+                    -- Configure done → build units' artifact sets are known;
+                    -- gate before compile (spec §5.9).
+                    return guard_build_conflicts(ws, all_tasks.build, force)
+                end):next(function()
                     return launch_tasks(overseer, all_tasks.build)
                 end):next(
                     function() f:_resolve(true) end,
                     function(err)
-                        vim.notify("loomworks: configure failed, skipping build", vim.log.levels.ERROR)
                         if op and not op.completed then
-                            op:cancel("configure failed")
+                            op:cancel(tostring(err))
                         end
                         f:_reject(err)
                     end
                 )
             else
-                if #units > 0 then
-                    loomworks.create_operation(profile, "build", units, target_states)
-                end
-                launch_tasks(overseer, all_tasks.build):next(
+                guard_build_conflicts(ws, all_tasks.build, force):next(function()
+                    if #units > 0 then
+                        loomworks.create_operation(profile, "build", units, target_states)
+                    end
+                    return launch_tasks(overseer, all_tasks.build)
+                end):next(
                     function() f:_resolve(true) end,
                     function(err) f:_reject(err) end
                 )

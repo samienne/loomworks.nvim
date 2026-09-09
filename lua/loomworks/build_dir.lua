@@ -19,6 +19,9 @@
 --- @field variant string|nil variant name when last configured
 --- @field config_key string|nil opaque cache key for display
 --- @field mod_type string|nil module type (e.g., "cmake")
+--- Output-artifact conflict detection (spec §1.7, §5.9):
+--- @field artifacts string[]|nil resolved artifact set (absolute, display casing) from last configure
+--- @field overwritten_by string|nil id of the ConfigUnit that most recently built over a shared artifact
 --- Lifecycle:
 --- @field _removed boolean
 local BuildDir = {}
@@ -46,6 +49,8 @@ function BuildDir.new(rel_path, abs_path, cached)
         self.variant = cached.variant
         self.config_key = cached.config_key
         self.mod_type = cached.type
+        self.artifacts = cached.artifacts
+        self.overwritten_by = cached.overwritten_by
     else
         self.state = nil
         self.last_configured = nil
@@ -58,6 +63,8 @@ function BuildDir.new(rel_path, abs_path, cached)
         self.variant = nil
         self.config_key = nil
         self.mod_type = nil
+        self.artifacts = nil
+        self.overwritten_by = nil
     end
     return self
 end
@@ -82,6 +89,10 @@ function BuildDir:serialize()
     if self.module_info then entry.module_info = self.module_info end
     if self.options_snapshot then entry.options = self.options_snapshot end
     if self.module_config_snapshot then entry.module_config = self.module_config_snapshot end
+    -- Resolved artifact set + overwritten marker (spec §1.7, §2.3): additive,
+    -- optional, success-path fields written only when known.
+    if self.artifacts and #self.artifacts > 0 then entry.artifacts = self.artifacts end
+    if self.overwritten_by then entry.overwritten_by = self.overwritten_by end
     return entry
 end
 
@@ -116,6 +127,8 @@ function BuildDir:clear_state()
     self.module_info = nil
     self.options_snapshot = nil
     self.module_config_snapshot = nil
+    self.artifacts = nil
+    self.overwritten_by = nil
 end
 
 function BuildDir:__tostring()

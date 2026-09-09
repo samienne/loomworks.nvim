@@ -466,6 +466,7 @@ end
 --- @field _tool_waiters function[]
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
+--- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 --- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
 --- @field _deploy_records table<string, table> normalized dest path -> deploy freshness record
@@ -529,6 +530,7 @@ function Workspace.new(core, data)
     self._delete_waiters = {}
     self._build_dirs = {}  -- BuildDir domain objects (all, including orphaned)
     self._build_dir_refs = {}
+    self._artifact_refs = {}  -- normalized artifact path → ConfigUnits (§5.9)
     self._build_dir_locks = {}
     self._deploy_records = {}  -- normalized dest path → { source_build_dir, source_rel_path, source_mtime }
     self._sdks = {}  -- SDK domain objects
@@ -928,6 +930,11 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     self._profile_projects = result.profile_projects
     self._build_dirs = result.build_dirs
     self._build_dir_refs = result.build_dir_refs
+    self._artifact_refs = result.artifact_refs or {}
+    -- Clear-on-resync (§5.9): a reconfigure that changed an output path may
+    -- leave a stale overwritten marker on a unit that no longer shares an
+    -- artifact with its overwriter. The index was just rebuilt from cache.
+    self:_clear_stale_overwritten_markers()
     self._active_profile = result.active_profile
     self._active_profile_key = active_profile_key
     self._default_target_data = default_target_data
@@ -1116,6 +1123,252 @@ end
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
     return self._build_dir_refs[build_dir] or {}
+end
+
+--- Rebuild the output-artifact reverse index from ConfigUnit objects (§5.9).
+--- Delegates to data_model.sync_artifact_refs. Called alongside
+--- `_sync_build_dir_refs` on every remerge and after a configure populates a
+--- unit's resolved artifact set. Also runs the clear-on-resync pass so an
+--- overwritten marker drops when the two units no longer share an artifact.
+function Workspace:_sync_artifact_refs()
+    self._artifact_refs = data_model.sync_artifact_refs(
+        self._config_units, self._core._deps.normalize)
+    self:_clear_stale_overwritten_markers()
+end
+
+--- Populate a ConfigUnit's resolved artifact set (spec §1.7) from its module's
+--- optional `resolve_artifacts` capability (§8.4) after a successful configure,
+--- then persist and refresh the artifact reverse index. A module without the
+--- capability (or that reports none) clears the set — such units take no part
+--- in conflict detection. No-op when the build dir is unknown.
+--- @param unit loomworks.ConfigUnit|nil
+--- @param build_dir string|nil absolute build directory
+--- @param config_name string|nil variant (for multi-config reply selection)
+function Workspace:_populate_resolved_artifacts(unit, build_dir, config_name)
+    if not unit or not build_dir then return end
+    local proj = unit._project
+    local mod_type = proj and proj.type or nil
+    local mod = mod_type and mod_type ~= "unknown"
+        and self._core._deps.modules.get(mod_type) or nil
+    if not (mod and mod.resolve_artifacts) then return end
+    local artifacts = mod.resolve_artifacts({
+        build_dir = build_dir,
+        config_name = config_name or unit._variant,
+    })
+    unit:set_artifacts(artifacts)
+    if unit._build_dir then unit._build_dir.artifacts = unit._artifacts end
+    self:_save_cache()
+    self:_sync_artifact_refs()
+end
+
+--- Resolve the display-cased artifact path that units `u` and `v` share
+--- (spec §5.9): the first of `u`'s artifacts whose normalized form is also in
+--- `v`'s set. Returns nil when they do not overlap.
+--- @param u loomworks.ConfigUnit
+--- @param v loomworks.ConfigUnit
+--- @return string|nil
+function Workspace:_shared_artifact_path(u, v)
+    local normalize = self._core._deps.normalize
+    local vset = {}
+    for _, p in ipairs(v:artifacts() or {}) do vset[normalize(p)] = true end
+    for _, p in ipairs(u:artifacts() or {}) do
+        if vset[normalize(p)] then return p end
+    end
+    return nil
+end
+
+--- Resolve a ConfigUnit to a human-facing profile name for conflict messages
+--- (spec §5.9 / §16.28). A unit may be referenced by several profiles; prefer
+--- the active profile, else name the first referencing profile. An orphaned
+--- unit (no referencing profile) falls back to its project/variant identity so
+--- the message is never empty.
+--- @param unit loomworks.ConfigUnit
+--- @return string
+function Workspace:_profile_name_for_unit(unit)
+    local active = self._active_profile
+    local fallback
+    for _, pp in pairs(self._profile_projects) do
+        if pp._config_unit == unit and pp._profile then
+            if active and pp._profile == active then return pp._profile.key end
+            fallback = fallback or pp._profile.key
+        end
+    end
+    if fallback then return fallback end
+    local pk = (unit._project and unit._project.key)
+        or unit._init_project_key or "?"
+    return pk .. "/" .. (unit:variant() or "?")
+end
+
+--- Output-artifact conflict gate (spec §5.9, §16.28). Returns nil when a build
+--- of `unit` may proceed, or a block descriptor for the first still-`built`
+--- unit whose artifact set overlaps `unit`'s. `force` (or an unknown/empty
+--- artifact set) always yields nil — conflicts are never guessed. Read-only.
+--- @param unit loomworks.ConfigUnit
+--- @param force boolean when true, always returns nil (explicit override)
+--- @return { unit: loomworks.ConfigUnit, profile: string, path: string|nil }|nil
+function Workspace:artifact_conflict_block(unit, force)
+    if force then return nil end
+    local conflicts = self:artifact_conflicts_for(unit)
+    if #conflicts == 0 then return nil end
+    local v = conflicts[1]
+    return {
+        unit = v,
+        profile = self:_profile_name_for_unit(v),
+        path = self:_shared_artifact_path(unit, v),
+    }
+end
+
+--- Static output-artifact overlap check for a whole profile (spec/ui.md §1.5).
+--- Returns true iff any config unit belonging to `profile` shares a normalized
+--- artifact path with a DISTINCT config unit that belongs to a DIFFERENT
+--- profile — i.e. two profiles that would write the same output binary. Unlike
+--- the build gate (§5.9), this is NOT built-state-gated: it is a standing
+--- warning about overlapping outputs, shown as the `[conflict]` profile tag.
+--- Returns false when the profile is unconfigured (its units have no known
+--- artifact set) — overlap is never guessed. Read-only.
+--- @param profile loomworks.Profile
+--- @return boolean
+function Workspace:profile_has_artifact_conflict(profile)
+    if not profile or not profile.projects then return false end
+    local normalize = self._core._deps.normalize
+    -- This profile's config units (identity set for membership tests).
+    local mine = {}
+    for _, pp in ipairs(profile:projects()) do
+        if pp._config_unit then mine[pp._config_unit] = true end
+    end
+    -- A unit shared across profiles (same unit in two profiles) is NOT a
+    -- conflict — both build the same output. Only a DISTINCT unit owned by a
+    -- different profile producing the same path counts.
+    local function owned_by_other_profile(unit)
+        for _, pp in pairs(self._profile_projects) do
+            if pp._config_unit == unit and pp._profile ~= profile then
+                return true
+            end
+        end
+        return false
+    end
+    local refs = self._artifact_refs or {}
+    for unit in pairs(mine) do
+        local arts = unit:artifacts()
+        if arts then
+            for _, path in ipairs(arts) do
+                local units = refs[normalize(path)]
+                if units then
+                    for _, other in ipairs(units) do
+                        if other ~= unit and not mine[other]
+                                and owned_by_other_profile(other) then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+--- Invalidate-on-completion (spec §5.9): after `builder` builds successfully,
+--- mark every OTHER still-`built` unit sharing one of its resolved artifacts as
+--- overwritten-by `builder`, and clear `builder`'s own overwritten marker (it
+--- just reclaimed its output). State-only — never touches the build directory
+--- or the artifact file. Persists and refreshes the artifact index.
+--- @param builder loomworks.ConfigUnit
+function Workspace:_invalidate_overwritten_by(builder)
+    -- Builder reclaimed its output on this successful build.
+    if builder._overwritten_by then
+        builder._overwritten_by = nil
+        if builder._build_dir then builder._build_dir.overwritten_by = nil end
+    end
+    local arts = builder:artifacts()
+    if arts then
+        local normalize = self._core._deps.normalize
+        local bset = {}
+        for _, p in ipairs(arts) do bset[normalize(p)] = true end
+        for _, other in pairs(self._config_units) do
+            if other ~= builder and not other._removed
+                    and other:state() == "built" then
+                local oarts = other:artifacts()
+                if oarts then
+                    for _, p in ipairs(oarts) do
+                        if bset[normalize(p)] then
+                            other._overwritten_by = builder.id
+                            if other._build_dir then
+                                other._build_dir.overwritten_by = builder.id
+                            end
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    self:_save_cache()
+    self:_sync_artifact_refs()
+end
+
+--- Clear-on-resync pass (spec §5.9): drop a unit's overwritten marker when it
+--- no longer shares any artifact with its overwriter (e.g. one's output path
+--- changed on reconfigure) or the overwriter is gone. Runs after every artifact
+--- index rebuild. Idempotent.
+function Workspace:_clear_stale_overwritten_markers()
+    local normalize = self._core._deps.normalize
+    for _, unit in pairs(self._config_units) do
+        if unit._overwritten_by and not unit._removed then
+            local overwriter = unit:overwritten_by()
+            local clear = true
+            if overwriter then
+                local oset = {}
+                for _, p in ipairs(overwriter:artifacts() or {}) do
+                    oset[normalize(p)] = true
+                end
+                for _, p in ipairs(unit:artifacts() or {}) do
+                    if oset[normalize(p)] then clear = false break end
+                end
+            end
+            if clear then
+                unit._overwritten_by = nil
+                if unit._build_dir then unit._build_dir.overwritten_by = nil end
+            end
+        end
+    end
+end
+
+--- Find the other ConfigUnits that would be clobbered by building `unit`
+--- (spec §5.9): units currently in the `built` state whose resolved artifact
+--- set overlaps `unit`'s on at least one normalized path. Read-only; `unit`
+--- itself is excluded, and duplicates are collapsed. Returns an empty array
+--- when `unit` has no known artifact set (never configured, or the module
+--- reports none) — conflicts are never guessed.
+---
+--- A unit that is itself already **overwritten** (spec §1.7) is NOT a conflict
+--- source: its `built` state is no longer trustworthy (its output already
+--- belongs to someone else), so building over it again destroys nothing fresh.
+--- This is what makes the block self-limiting — once a forced build marks V
+--- overwritten, V stops triggering the gate.
+--- @param unit loomworks.ConfigUnit
+--- @return loomworks.ConfigUnit[]
+function Workspace:artifact_conflicts_for(unit)
+    local out = {}
+    local arts = unit and unit:artifacts()
+    if not arts then return out end
+    local normalize = self._core._deps.normalize
+    local refs = self._artifact_refs or {}
+    local seen = {}
+    for _, path in ipairs(arts) do
+        local units = refs[normalize(path)]
+        if units then
+            for _, other in ipairs(units) do
+                if other ~= unit and not seen[other]
+                        and not other._removed
+                        and other:state() == "built"
+                        and not other:is_overwritten() then
+                    seen[other] = true
+                    out[#out + 1] = other
+                end
+            end
+        end
+    end
+    return out
 end
 
 -- ===========================================================================
@@ -2592,6 +2845,21 @@ function Workspace:record_task_result(result)
                 end
             end
         end
+        -- Populate the resolved artifact set (spec §1.7, §5.9) from the
+        -- module's optional `resolve_artifacts` capability (§8.4). Persisted,
+        -- so it refreshes the cache and the artifact reverse index. This is
+        -- the seam the compile-start conflict gate reads for a configure→build
+        -- chain: U's artifacts are known before its build starts.
+        self:_populate_resolved_artifacts(config_unit, result.build_dir, result.variant)
+    end
+
+    -- Invalidate-on-completion (spec §5.9): a successful build makes U the
+    -- owner of its output artifacts, so every OTHER still-`built` unit sharing
+    -- one of those paths is marked overwritten-by U (its cached `built` state
+    -- is no longer trustworthy), and U's own overwritten marker clears — U
+    -- just reclaimed its output. State-only; never touches files.
+    if config_unit and action == "build" and success then
+        self:_invalidate_overwritten_by(config_unit)
     end
 
     -- Refresh any module-owned LSP compilation database now that a configure
