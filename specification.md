@@ -95,8 +95,12 @@ belongs in the matching `spec/` file.
    and progress state are never stored elsewhere. All queries go through
    ConfigUnit.
 
-6. **Profile existence implies cache entry**: Every profile shown in the
-   Profiles section has a corresponding entry in `cache.profiles`.
+6. **Cache is keyed by build directory, not profile**: Build state lives in
+   `cache.build_dirs`, keyed by each ConfigUnit's build-directory path; there
+   is no `cache.profiles` dict. A materialized profile's cache footprint is the
+   skeleton `build_dirs` entries of its configured ConfigUnits (§7); the
+   profile's own definition (configuration set + tool) is persisted to
+   user.json, not the cache.
 
 7. **Materialization before action**: No build/configure task runs without
    the profile being materialized to cache first.
@@ -189,6 +193,19 @@ belongs in the matching `spec/` file.
     (§5) and the condition surfaces as a profile-scoped diagnostic (§16.18).
     Profile fill values are per-machine working-copy state and are never
     published (§2.4).
+
+15. **Output-artifact conflicts need force, not guesswork**: A ConfigUnit's
+    resolved artifact set (§1.7) is known only after a successful configure
+    and is never inferred otherwise — a unit reporting no artifacts takes no
+    part in conflict detection. Two units **conflict** when their artifact
+    sets overlap; the relation is symmetric, but the build **block** is
+    directional (§5.9): starting a build that would overwrite a
+    *still-`built`* unit's shared artifact is refused unless the build is
+    explicitly forced. Force is the only bypass — no setting disables the
+    check. A forced (or otherwise superseding) build marks every other
+    `built` unit sharing that artifact **overwritten** (§1.7), so the cache
+    never claims two units simultaneously own the same on-disk artifact as
+    fresh (invariant 1).
 
 ---
 

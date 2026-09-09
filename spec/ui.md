@@ -149,7 +149,11 @@ here when they exist in the cache or are declared in the config.
 
 Where:
 - `{tag}` = `[stale]` for orphaned profiles, `[explicit]` for declared
-  profiles, omitted otherwise
+  profiles, omitted otherwise. A profile that shares an output artifact with
+  another profile (its resolved artifact set overlaps — see `specification.md`
+  §5.9) additionally carries a `[conflict]` tag, highlighted
+  `LoomworksConflict`. The tag is absent while a profile is unconfigured, since
+  artifacts are unknown until configure (`specification.md` §5.9).
 - `{status_label}` = aggregate status from `Profile:status()` (e.g., "built",
   "1 configuring, 1 failed build", "3 configured, 2 unconfigured")
 - `{elapsed}` = shown only when running (e.g., "1m23s")
@@ -209,10 +213,15 @@ scope (profile-level) benefits from the explicit pick.
 - (The last-operation message is shown in the profile header line via
   the `— <message>` suffix, not repeated here.)
 - Projects sub-group:
-  - Each project: `project_key [module_type] → variant (status) {progress}`
+  - Each project: `project_key [module_type] → variant (status) {progress} {overwritten_tag}`
     with status highlight. The `(status)` suffix mirrors the profile
     header's `(status)` so the expansion doesn't need a separate
-    `Status:` leaf.
+    `Status:` leaf. `{overwritten_tag}` = `[overwritten]` (highlight
+    `LoomworksConflict`) when this config unit was built but another unit's
+    build has since overwritten its shared output artifact (`specification.md`
+    §5.9) — the built marker (✔) is retained, the tag signals the on-disk
+    artifact is no longer this unit's. Same category as the `!` refresh tag
+    (§1.8): the unit needs a rebuild to reclaim its output.
   - When unfolded: build dir and targets only. Tool / generator /
     compiler leaves are dropped — the toolchain is shown once per
     profile in the profile-level Toolchain row, not repeated per
@@ -412,6 +421,10 @@ Where:
   (see `specification.md` §2.4), empty otherwise
 - `{orphan_tag}` = "(orphaned)" if in cache but not in config
 - `{refresh_tag}` = "!" if `needs_refresh` is true
+- Under a project's configuration/tool rows, a config unit whose built output
+  was overwritten by a conflicting unit (`specification.md` §5.9) carries an
+  `[overwritten]` tag (highlight `LoomworksConflict`), matching the profile-side
+  rendering (§1.5).
 
 **Shared-only items** (exist only in loomworks.json, not in user.json) are
 displayed with `Comment` highlight (dimmed). Module-generated default
@@ -842,6 +855,7 @@ automatically when no spinners are active.
 | `LoomworksDeleting`      | `DiagnosticError` | Deletion in progress |
 | `LoomworksUnknown`       | `DiagnosticWarn`  | Unknown state (partial deletion) |
 | `LoomworksActionable`    | `Normal`          | Actionable items (sets, configs) |
+| `LoomworksConflict`      | `DiagnosticWarn`  | Output-artifact conflict / overwritten unit (§1.5, §1.8) |
 
 Users can override these by defining the highlight groups before plugin load.
 

@@ -94,6 +94,10 @@ resolves from live detection when available, otherwise from cached tool
 data (§1.5, §2.3); resolution MUST succeed from cache alone when detection
 has not run.
 
+A build is additionally gated by the output-artifact conflict rule (§16.28):
+a unit whose build would overwrite an artifact currently owned by another
+built unit is refused unless the caller forces it.
+
 ### 16.5 Toolchain provisioning boundary
 
 A headless host detects toolchains present on the system; it does not
@@ -754,3 +758,46 @@ then fails, the worktree is **kept** — undoing it would be a deletion — and 
 operation reports the partial success (worktree created, pull to be re-run by
 hand via §16.25) with a non-zero status so the incomplete state is visible. A
 mode that **skips the pull** and creates the worktree alone MAY be offered.
+
+### 16.28 Output-artifact conflicts
+
+Two config units **conflict** when their **resolved artifact sets** (§5.9 — the
+absolute on-disk artifacts a configured unit produces, reported by the module's
+`resolve_artifacts` capability, §8.4) overlap on at least one path. This is
+distinct from the shared-build-directory lock (§16.6): that serializes
+*concurrent* operations on *one* build directory, whereas a conflict is
+*sequential* clobbering of a *shared output path* by units in *different* build
+directories — the case where two profiles differ only by toolchain yet a
+hardcoded output location makes them emit the same binary.
+
+A headless **build** of unit U is **refused** when building U would overwrite an
+artifact currently owned by another **built** (fresh) unit V — i.e. U and V
+conflict and V is in the `built` state. The refusal is a precondition failure
+(§16.7): non-zero exit, and a message naming the conflicting **profile** and the
+shared artifact **path**, and stating that `--force` overwrites it (marking V
+**overwritten**/stale, §5.9). Consistent with every other build-precondition
+refusal (§16.9 blank-variable gate, §16.6 lock loser), the exit status is **1**.
+
+The refusal is **self-limiting**: forcing the build transitions V to
+overwritten/stale, so V no longer counts as a fresh `built` owner (§5.9) and a
+subsequent build of U no longer conflicts — a user is blocked at most once per
+switch back to a still-fresh conflicting profile.
+
+`--force` overrides the refusal for that invocation only — it is **transient**,
+never recorded as an acknowledgement that the two units may share output. It
+does not weaken any other gate.
+
+Conflict detection is **unknown-until-configured**: a unit's artifact set is
+known only once it is configured (§16.18 mirrors this for target listing). A
+unit that is not yet configured has no known artifacts and so is never the V
+that blocks a build, and never the U that is blocked — the system reports what
+it knows and never guesses an artifact path (§16.3). A module that reports no
+artifacts (`resolve_artifacts` absent or empty — e.g. the shell module, which
+has no targets) contributes nothing to the index, so its units are never in a
+conflict; this is graceful degradation, not a special case (§8.4).
+
+Under `--no-interaction` the refusal is **never a prompt**: the build simply
+declines with exit 1, exactly as the blank-variable gate does (§16.9). Forcing
+in a non-interactive run is possible only by passing `--force` explicitly. In an
+interactive editor host the same conflict is surfaced through a confirmation
+dialog rather than this flag (see [`spec/ui.md`](../ui.md) §1.5, §1.8).

@@ -154,7 +154,47 @@ the file-api reply on startup (async) and after each successful
 configure (sync). The entire targets dict is replaced on every parse
 (not merged). Each `Target` object holds the target id, type,
 dependencies, artifact path, and a back-reference to its owning
-`ConfigUnit`.
+`ConfigUnit`. This per-`Target` `artifact` is the primary output kept
+build-dir-relative for test source mapping — distinct from the absolute
+**resolved artifact set** used for output-conflict detection (§4.6).
+
+### 4.6 Output artifact resolution (`resolve_artifacts`)
+
+The cmake module implements the optional core capability
+`resolve_artifacts(ctx)` (core §8) — the **resolved artifact set**: the
+absolute on-disk output paths a build of this config unit produces. Core
+uses it to detect and block output-artifact conflicts and to invalidate
+overwritten builds; conflict granularity is **config unit** level (core
+owns the caching and cross-unit indexing — see `specification.md` §8; this
+section specifies only what the cmake side supplies).
+
+`resolve_artifacts(ctx) → string[]|nil` reads the codemodel-v2 reply for
+`ctx.build_dir`, sharing the same file-api reading machinery as
+`parse_targets` (§4.2) but as its own documented entry point. It selects
+the configuration for the context's variant via `select_codemodel_config`,
+then walks the project-owned targets (the §4.3 filter) and:
+
+1. Collects **every** entry of each target's `artifacts[]` — not just the
+   primary `artifacts[1]`. A single target can emit several files (a shared
+   library plus its import lib, an executable plus its `.pdb`); each is a
+   distinct on-disk path that a colliding build would overwrite.
+2. Resolves each artifact to an **absolute** path. file-api artifact paths
+   are relative to the build directory when the artifact lands inside the
+   tree, but a project that **hardcodes an output directory** outside the
+   tree yields an out-of-tree path (a `..`-relative or absolute path that
+   §4.2's extraction already preserves rather than discards). A relative
+   path (including `..` segments) is resolved against `ctx.build_dir`;
+   slashes are normalized.
+3. Returns the absolute paths in **display** (original) casing. The
+   compare-normalized form (lowercased on Windows via `deps.normalize`) is
+   derived by core when it builds the artifact index.
+
+When no codemodel reply exists (never configured), `resolve_artifacts`
+returns `nil` — the resolved artifact set is **unknown until configure**
+and is never guessed. Object/interface libraries and any target file-api
+lists no `artifacts` for contribute nothing. This full absolute set is
+distinct from a `Target`'s `artifact` field (§4.5), which is the single
+primary path kept build-dir-relative for test source mapping.
 
 ## 5. Build options (`get_options`)
 
@@ -414,6 +454,11 @@ expansion (§5c, core §1.3.1), so a change to a variable or a compiler-specific
 override is caught here even though the raw `${…}` option template is
 unchanged. A change of active compiler family is already covered by the build
 directory being keyed on the tool, so it configures separately.
+
+Output-artifact overwrite is a separate, **core-driven** staleness axis
+(`specification.md` §5.9): it can mark a *built* unit stale when another
+unit builds over a shared output, independent of this module's
+option-level `is_stale()` check.
 
 ## 12. Owned `compile_commands.json` (all generators)
 
