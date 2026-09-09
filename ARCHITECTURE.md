@@ -564,6 +564,8 @@ through files.
 6. ProfileProjects — resolves Profile + Project + ConfigUnit references
 7. BuildDirs — domain objects for physical build directories with state
 8. BuildDirRefs — reverse index from BuildDir paths
+9. ArtifactRefs — reverse index from resolved output-artifact paths to the
+   ConfigUnits that produce them (output-artifact conflict detection, §5.9)
 
 **Module** (`module.lua`) wraps a stateless module function table (cmake.lua,
 meson.lua, typescript.lua) as a per-workspace domain object. Owns the Tool
@@ -622,7 +624,8 @@ reference the same ConfigUnit for a given (project, configuration, tool) triple.
 State changes on a ConfigUnit are immediately visible to all consumers.
 ConfigUnit stores first-class fields (`state_value`, `build_dir_value`,
 `last_configured`, `last_built`, `cmake_info`, `_variant`, `_tool_key`,
-`_tool_data`) and carries direct references: `_project`, `_tool`,
+`_tool_data`, plus the resolved-artifact-set fields `_artifacts` and
+`_overwritten_by`, §5.9) and carries direct references: `_project`, `_tool`,
 `_configuration`, `_build_dir` (BuildDir object).
 
 **BuildDir** (`build_dir.lua`) represents a physical build directory with cached
@@ -632,6 +635,21 @@ but no ConfigUnit pointing to them. Created during `sync_build_dirs()` from cach
 entries; task completion handler creates new BuildDirs when needed. Workspace owns
 `_build_dirs` array (all BuildDirs including orphaned). No raw cache data is
 retained after deserialization — BuildDir objects are the source of truth.
+BuildDir also carries the config unit's persisted `artifacts` (resolved
+output-artifact set) and `overwritten_by` marker, so those survive a reload
+alongside build state.
+
+**Output-artifact conflicts** (§5.9) are a Workspace-level layer over the
+`_artifact_refs` index (rebuilt each remerge alongside `_build_dir_refs`).
+`artifact_conflicts_for(unit)` / `artifact_conflict_block(unit, force)` gate a
+build that would clobber a still-`built` unit's shared output (the CLI refuses
+with exit 1; the editor confirms via a dialog — both thread one `force`).
+`_invalidate_overwritten_by(builder)` marks other built sharers `overwritten` on
+a successful build (and clears the builder's own marker);
+`_clear_stale_overwritten_markers()` (run after every index rebuild) drops a
+marker once the two units no longer share an artifact. `resolve_artifacts` is an
+optional module capability (cmake implements it); a module without it takes no
+part in conflict detection.
 
 **Target** wraps raw module detection data (type, dependencies, artifact)
 into an object with query methods (`is_executable()`, `display_name()`) and

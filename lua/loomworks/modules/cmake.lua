@@ -2137,6 +2137,124 @@ local function select_codemodel_config(codemodel, variant)
     return configs[1]
 end
 
+--- Collapse `.`/`..` segments in a forward-slashed path, preserving a
+--- leading drive (`C:/`) or POSIX root (`/`). A leading `..` that would
+--- escape the root is clamped (dropped). Used to resolve out-of-tree
+--- artifact paths — a project that hardcodes its output directory yields
+--- a `../../bin/app`-style path relative to the build dir (§4.6).
+--- @param p string forward-slashed path
+--- @return string
+local function collapse_path(p)
+    local root = ""
+    local drive = p:match("^(%a:/)")
+    if drive then
+        root = drive
+        p = p:sub(#drive + 1)
+    elseif p:sub(1, 1) == "/" then
+        root = "/"
+        p = p:sub(2)
+    end
+    local out = {}
+    for seg in p:gmatch("[^/]+") do
+        if seg == "." then
+            -- current dir: skip
+        elseif seg == ".." then
+            if #out > 0 and out[#out] ~= ".." then
+                out[#out] = nil
+            elseif root == "" then
+                -- relative path with no rooted prefix: keep the ..
+                out[#out + 1] = ".."
+            end
+            -- rooted path: a leading .. is clamped (dropped)
+        else
+            out[#out + 1] = seg
+        end
+    end
+    return root .. table.concat(out, "/")
+end
+
+--- Resolve a file-api artifact path to an absolute, display-cased path.
+--- Absolute inputs (drive or POSIX root) are returned as-is with slashes
+--- normalized; relative inputs (including `..` for hardcoded out-of-tree
+--- outputs) resolve against `build_dir` and collapse (§4.6).
+--- @param raw string artifact path from the file-api target detail
+--- @param build_dir string absolute build directory
+--- @return string absolute path (display casing preserved)
+local function resolve_artifact_path(raw, build_dir)
+    local p = raw:gsub("\\", "/")
+    if p:match("^%a:/") or p:sub(1, 1) == "/" then
+        return collapse_path(p)
+    end
+    local prefix = build_dir:gsub("\\", "/"):gsub("/+$", "")
+    return collapse_path(prefix .. "/" .. p)
+end
+
+--- Resolve the absolute on-disk output artifacts a build of this config
+--- unit produces (cmake.md §4.6) — the module's optional `resolve_artifacts`
+--- core capability (module-interface §8.4). Reads the codemodel-v2 reply for
+--- `ctx.build_dir`, selects the variant's configuration, walks the
+--- project-owned targets (the §4.3 filter shared with `parse_targets`), and
+--- collects EVERY entry of each target's `artifacts[]` — a single target can
+--- emit several files (an executable plus its `.pdb`, a shared library plus
+--- its import lib). Each artifact is resolved to an absolute path in display
+--- (original) casing; the compare-normalized form is derived by core.
+--- Returns `nil` when no codemodel reply exists (never configured) — the
+--- resolved artifact set is unknown until configure and is never guessed.
+--- @param ctx { build_dir: string, config_name?: string }
+--- @return string[]|nil absolute artifact paths, or nil when unknown/none
+function M.resolve_artifacts(ctx)
+    local build_dir = ctx and ctx.build_dir
+    if not build_dir then return nil end
+    local codemodel = find_file_api_reply(build_dir, "codemodel", 2)
+    if not codemodel or not codemodel.configurations then return nil end
+
+    local config_data = select_codemodel_config(codemodel, ctx.config_name)
+    if not config_data or not config_data.targets then return nil end
+
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+
+    -- Project-owned target filter (§4.3), identical to parse_targets.
+    local project_names = {}
+    if config_data.projects then
+        for _, proj in ipairs(config_data.projects) do
+            if proj.targetIndexes then
+                for _, idx in ipairs(proj.targetIndexes) do
+                    local tgt = config_data.targets[idx + 1] -- 0-based → 1-based
+                    if tgt then project_names[tgt.name] = true end
+                end
+            end
+        end
+    else
+        for _, tgt in ipairs(config_data.targets) do
+            project_names[tgt.name] = true
+        end
+    end
+
+    local artifacts = {}
+    local seen = {}
+    for _, tgt_ref in ipairs(config_data.targets) do
+        if project_names[tgt_ref.name] and tgt_ref.jsonFile then
+            local detail = read_json_file(reply_dir .. "/" .. tgt_ref.jsonFile)
+            -- Only project-owned buildable targets (skip UTILITY/ALIAS, and
+            -- object/interface libraries which list no artifacts).
+            if detail and TARGET_TYPE_MAP[detail.type] and detail.artifacts then
+                for _, art in ipairs(detail.artifacts) do
+                    if art.path then
+                        local abs = resolve_artifact_path(art.path, build_dir)
+                        local key = abs:lower()
+                        if not seen[key] then
+                            seen[key] = true
+                            artifacts[#artifacts + 1] = abs
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return next(artifacts) and artifacts or nil
+end
+
 --- Iterate every compiled source of the selected configuration's targets,
 --- invoking `fn(cg, compiler, abs)` once per source (each compileGroup ×
 --- its sourceIndexes), resolving the per-language compiler with the same

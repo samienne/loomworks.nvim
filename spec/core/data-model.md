@@ -471,9 +471,11 @@ On materialization:
 1. Structured data (set_name, tool_entry) is passed directly — no profile
    key parsing needed
 2. Mappings are derived from the configuration set
-3. For each project in the mappings, a skeleton cache entry is created
-4. Profile entry is written to `cache.profiles`
-5. Cache is saved; merge is triggered
+3. For each project in the mappings, a skeleton `cache.build_dirs` entry is
+   created (keyed by the ConfigUnit's build-directory path)
+4. The profile's definition (configuration set + tool) is written to user.json
+   — there is no `cache.profiles` dict
+5. Cache and user.json are saved; merge is triggered
 
 ### 1.7 ConfigUnit
 
@@ -483,6 +485,38 @@ profiles may reference the same ConfigUnit; state changes are visible to all.
 
 ConfigUnits are created lazily (flyweight pattern) and shared across the
 entire system. They are never destroyed during a session.
+
+**Resolved artifact set.** After a successful configure, a ConfigUnit
+records its **resolved artifact set** — the absolute on-disk output paths
+its targets produce, as reported by the module's `resolve_artifacts`
+(§8.4). The set is persisted in cache and is **unknown until the first
+successful configure**: a unit that has never configured has no artifact
+set, and core never guesses one from the build-dir formula or target
+names. Each path is kept in **display** casing (its original spelling) for
+the UI; the **normalized** form used for cross-unit comparison (lowercased
+on Windows via `deps.normalize`) is derived at runtime in the artifact
+reverse index (§5.9) and is not itself persisted — the same
+display-in-cache / normalize-at-runtime split the build-dir reverse index
+(state-lifecycle §4.6) uses. A module that does not implement
+`resolve_artifacts` (or returns `nil`) leaves the set empty; such units
+simply take no part in conflict detection (§5.9), consistent with the
+no-fallback-guessing policy.
+
+Resolution granularity is the **ConfigUnit**, never the build directory.
+This subsumes two shapes at once: two profiles that differ only by
+compiler already resolve to *distinct* build directories (§1.5.2, §1.6),
+yet a project that hard-codes an output path emits to the *same* artifact
+from both; and multi-config generators, where Debug and Release share one
+build directory but resolve to *distinct* per-config artifacts.
+
+**Overwritten marker.** A ConfigUnit may carry an **overwritten-by**
+reference to another ConfigUnit that most recently built over one of its
+shared artifacts (§5.9); `unit:is_overwritten()` reports the condition.
+Being overwritten means the file at this unit's resolved artifact path no
+longer belongs to it, so its `built` state is no longer trustworthy — the
+unit presents as needing a rebuild until it is built again (§5.9). The
+marker clears when the unit itself rebuilds, or when a resync finds the
+two units no longer share any artifact.
 
 ### 1.8 Device
 

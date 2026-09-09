@@ -318,6 +318,30 @@ Only project-owned build targets are included (executables and libraries).
 Imported, alias, and utility targets are excluded. Dependencies list only
 project-owned targets that this target links against.
 
+**`resolve_artifacts(ctx) → string[]|nil`** *(optional)*
+
+Return the absolute on-disk output artifacts the build described by `ctx`
+produces — the executables and libraries the build writes, each as an
+absolute path. `ctx` carries `build_dir` (absolute) and `config_name` (the
+variant, so multi-config generators select the correct reply). Return
+`nil` or an empty list when the module cannot determine the set — e.g. the
+unit is not yet configured, or the module has no notion of discrete output
+artifacts.
+
+Core uses the result to populate a ConfigUnit's **resolved artifact set**
+(§1.7) after a successful configure, and from it to detect output-artifact
+conflicts across units (§5.9). A module reports paths as the build system
+itself resolves them, so a project that redirects output outside the build
+tree — a hard-coded output directory — is reported at its real location,
+not a computed one. Casing is unconstrained: core normalizes for
+comparison and keeps the module's spelling for display (§1.7).
+
+Modules that cannot enumerate output artifacts omit this method entirely;
+their projects then take no part in conflict detection and are never
+blocked on that basis. This graceful absence — not a guessed default — is
+the intended behavior for build systems whose artifact layout loomworks
+does not model. See the per-module specs for which modules implement it.
+
 **`refresh_lsp_database(ctx)`** *(optional)*
 
 Regenerate any loomworks-owned LSP compilation database for a build

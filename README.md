@@ -768,7 +768,7 @@ command has detail under `lw help <command>`.
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
-| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
@@ -891,7 +891,10 @@ don't use this — install the module plugin the usual way.)
   every cell runs the same reproducible `lw` with no separate install step.
 - Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
   instead of blocking on a prompt. In non-interactive mode `lw build` also
-  ignores the active profile — name the profile explicitly.
+  ignores the active profile — name the profile explicitly. A build that would
+  overwrite another built profile's output is refused (exit 1) rather than
+  prompting; pass `--force` to override in an automated run (see
+  [Output conflicts between profiles](#output-conflicts-between-profiles)).
 - Commit `loomworks.json` — the projects and configuration sets are the
   portable unit. Keep `.nvim/` (working copy and cache) out of version control.
   Profiles are per-machine: each matrix cell creates its own with
@@ -1244,6 +1247,37 @@ Orthogonal flags: `needs_refresh` (project files changed since last configure),
 Failed states are never auto-cleaned — only explicit user action (`C` or `D`)
 removes them. Configs in `unknown` state block build/configure until cleaned
 or deleted.
+
+### Output conflicts between profiles
+
+Two profiles can resolve to the same output binary — most commonly when they
+differ only by compiler but the project hardcodes its output path (a fixed
+`RUNTIME_OUTPUT_DIRECTORY` rather than one derived from the build dir). loomworks
+reads each configured profile's **output artifacts** from the build system and
+notices when two profiles would write the same file.
+
+When you build profile B and its output would overwrite a binary that profile A
+**built and still owns**, loomworks refuses the build rather than silently
+clobbering A:
+
+```
+$ lw build release-clang
+lw: build would overwrite an artifact owned by built profile 'release-gcc':
+      /path/to/bin/app
+    pass --force to overwrite it (release-gcc will be marked stale)
+```
+
+Pass `--force` to go ahead; the overwritten profile is then marked stale (shown
+`[overwritten]` on the status page) so `lw status` and `lw run` never treat its
+build as fresh. `--force` applies to that one build only. The block is
+self-limiting — once you force past it, the other profile is stale, so you're
+only ever prompted when switching back to a profile whose output is still good.
+
+A profile that has never been configured has no known artifacts, so it can
+neither block nor be blocked until you configure it. Modules without build
+targets (e.g. `shell`) report no artifacts and never participate in a conflict.
+In the editor the same situation appears as a confirmation dialog instead of the
+`--force` flag.
 
 ## Architecture
 
