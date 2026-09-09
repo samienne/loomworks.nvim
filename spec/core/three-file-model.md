@@ -385,30 +385,25 @@ Sparse record of what has actually been configured and built.
 
 ```json
 {
-  "_meta": { "version": 6, "cached_at": "..." },
-  "configurations": {
-    "App/Debug:ninja-gcc-12": {
+  "_meta": { "version": 8, "cached_at": "..." },
+  "build_dirs": {
+    "build/App/ninja-gcc-12/Debug": {
       "project_key": "App",
       "config_key": "Debug:ninja-gcc-12",
       "type": "cmake",
       "state": "built",
       "variant": "Debug",
-      "build_dir": "/workspace/.nvim/build/App/Debug",
+      "build_dir": "/workspace/.nvim/build/App/ninja-gcc-12/Debug",
       "last_configured": "2026-03-10T12:00:00Z",
       "last_built": "2026-03-10T12:05:00Z",
       "tool_key": "ninja-gcc-12",
       "tool_data": { ... },
-      "cmake": { "generator": "Ninja", "compiler": "GCC 12.3" }
-    }
-  },
-  "profiles": {
-    "Debug:ninja-gcc-12": {
-      "configuration_set": "Debug",
-      "tool_key": "ninja-gcc-12",
-      "tool_data": { ... },
-      "tool_label": "Ninja + GCC 12.3",
-      "tool_mod_type": "cmake",
-      "configurations": ["App/Debug:ninja-gcc-12"]
+      "cmake": { "generator": "Ninja", "compiler": "GCC 12.3" },
+      "artifacts": [
+        "/workspace/App/bin/app.exe",
+        "/workspace/App/bin/app.pdb"
+      ],
+      "overwritten_by": "build/App/ninja-clang-17/Debug"
     }
   },
   "deploy_state": {
@@ -424,12 +419,43 @@ Sparse record of what has actually been configured and built.
 - Always gitignored.
 - Never auto-removes entries — survives git branch switches intact.
 - Grows as builds happen; shrinks only on explicit delete/clean.
-- Flat `configurations` dict keyed by opaque `"project_key/config_key"`.
-  Each entry is self-describing (includes project_key, config_key, type,
-  tool properties). Profiles reference configurations by cache key.
+- Flat `build_dirs` dict keyed by the config unit's **relative build-dir
+  path** (`unit.id` / `bd.rel_path`, e.g. `build/App/ninja-gcc-12/Debug`; an
+  external build system's key is its absolute path). Each entry is
+  self-describing (includes `project_key`, `config_key`, `type`, `variant`,
+  and tool properties), so it stands alone without a separate profiles table
+  — a profile's cache linkage is the set of build-dir keys its config units
+  resolve to.
 - `deploy_state` dict keyed by normalized absolute destination path. Tracks
   which source config unit's artifact was last deployed to each destination.
   Cleaned when source config units are deleted/cleaned.
+- `artifacts` — the config unit's **resolved artifact set**: the absolute
+  on-disk output paths its last successful configure resolved, via the
+  module's `resolve_artifacts` (§8.4). Stored in **display** casing, exactly
+  as `build_dir` is; the normalized forms used for cross-unit comparison are
+  derived at runtime (the `_artifact_refs` index, §5.9) and never persisted.
+  These fields are additive and optional at the current cache version — no
+  version bump — because absence reads back as prior behavior. Present
+  **only after a successful configure**: a never-configured unit has no
+  `artifacts` field at all (unknown-until-configure — never an empty-array
+  guess), and a module that does not implement `resolve_artifacts` likewise
+  writes no field. Such units take no part in conflict detection (§5.9).
+- `overwritten_by` — present when another config unit has built over one of
+  this unit's shared artifacts (§5.9), marking this unit's `built` state no
+  longer trustworthy. Its value is the **cache key of the overwriting unit** —
+  the same relative build-dir path (`unit.id`) that keys the `build_dirs` dict
+  (e.g. `build/App/ninja-clang-17/Debug`). Present only while the condition holds: the
+  field is absent when the unit is not overwritten, and is dropped on the next
+  save when the unit rebuilds or a resync finds the two units no longer share
+  an artifact. An `overwritten_by` pointing at an entry no longer in the cache
+  is ignored on load (treated as clear), consistent with the cache's
+  orphan-tolerant, descriptive-not-prescriptive stance (§2.5).
+- Both fields are **success-path** state — `artifacts` is written after a
+  successful configure, `overwritten_by` after another unit's successful
+  build — so neither participates in the "cache reflects unknown state before
+  async work begins" rule that guards destructive operations (deletion/clean):
+  there is no pre-async placeholder to write. Deleting or cleaning a unit
+  removes its whole entry, taking both fields with it.
 - **Purely a serialization format.** At runtime, domain objects (ConfigUnit,
   Profile) own all mutable state as first-class fields. The cache file is
   generated from domain objects on save via `serialize()` methods. After

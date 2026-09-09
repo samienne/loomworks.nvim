@@ -143,9 +143,9 @@ UI.
 2. Look up set_name in `configuration_sets` → mappings
 3. For each project in the mappings:
    - Compute config_key (variant + tool_key for keyed modules)
-   - Create skeleton cache entry if absent
-4. Write profile entry (with `configuration_set` and tool fields) to
-   `cache.profiles`
+   - Create skeleton `cache.build_dirs` entry if absent (keyed by build-dir path)
+4. Write the profile entry (with `configuration_set` and tool fields) to
+   user.json — there is no `cache.profiles` dict
 5. Save user.json, trigger remerge
 
 ### 4.2 Activation
@@ -578,6 +578,62 @@ Platforms without a clean CLI mechanism (Windows, macOS) skip the
 wrap and rely on the OS scheduler's defaults. Whether to wrap is a
 boolean decision per-task — there is no per-platform priority knob in
 the spec.
+
+### 5.9 Output-artifact conflicts
+
+Two ConfigUnits **conflict** when their resolved artifact sets (§1.7)
+overlap on at least one normalized path — building one overwrites an
+output the other also claims. This is a different concern from the build
+directory operation queue (§5.3): that guards *concurrent* operations on a
+*shared build directory*; this guards *sequential* builds that produce a
+*shared output artifact* from *distinct* units. The two are independent
+layers and neither subsumes the other.
+
+**Artifact reverse index.** `_artifact_refs` maps each normalized absolute
+artifact path to the set of ConfigUnits that produce it. It is rebuilt by
+`_sync_artifact_refs()` on every remerge, alongside `_sync_build_dir_refs()`
+(§4.6), from the resolved artifact sets of **configured** units only —
+units with no artifact set contribute nothing.
+`Workspace:artifact_conflicts_for(unit)` returns the *other* units
+currently in the `built` state whose artifact set overlaps `unit`'s. The
+predicate is read-only and may be called at any time.
+
+**Block on build (directional).** Before starting the **compile** step for
+a unit `U`, the system evaluates `artifact_conflicts_for(U)`. If any
+conflicting unit `V ≠ U` is currently `built`, the build is refused
+**unless forced**. The check is directional: it fires only when starting
+`U` would clobber an artifact a *still-fresh* `V` owns, not in the reverse
+direction once `V`'s artifact has already been superseded. It is evaluated
+as soon as `U`'s artifact set is known — from cache when `U` was configured
+before, otherwise immediately after the configure step of the same build
+invocation. When the set is still unknown (never configured, or the module
+reports none), the build proceeds; conflicts are never guessed.
+
+The block is **self-limiting**: forcing a build over `V` marks `V`
+overwritten (below), so `V` no longer counts as a *fresh* `built` owner
+(its state is retained but no longer trustworthy, §1.7) and no longer
+triggers the block. In steady state the user is stopped at most once per
+switch to a conflicting unit — exactly at the moment the other unit's
+still-valid output would be destroyed.
+
+**Force.** Force is a transient, per-build decision, not a stored
+acknowledgement. A non-interactive host takes it as an explicit flag
+(`lw build --force`, §16); an interactive host surfaces the conflict as a
+confirmation naming the conflicting profile and the shared path, and
+proceeds only on confirmation. Force is the *only* way past a real
+conflict — no setting disables the check.
+
+**Invalidate on build completion.** When a unit `U` finishes building,
+then for every artifact `U` produced the system marks every *other*
+`built` unit sharing that normalized path **overwritten-by `U`** (§1.7).
+An overwritten unit's `built` state is no longer trustworthy — the on-disk
+artifact is now `U`'s — so it presents as stale / needs-rebuild in the
+status page (`spec/ui.md`) and gates a run of that unit's artifact. The
+marker clears when the overwritten unit is itself rebuilt, or when a later
+`_sync_artifact_refs()` finds the two units no longer share any artifact
+(e.g. one's output path changed on reconfigure). Marking is state-only: it
+never touches the build directory or the artifact file (cf. §15 — cache is
+truth).
 
 ---
 
