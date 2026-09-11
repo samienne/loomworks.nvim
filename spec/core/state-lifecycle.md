@@ -111,6 +111,8 @@ in-memory tool cache.
 During `scanning`, profile materialization (which requires detected
 tools) waits for detection to complete before proceeding.
 
+Likewise, starts of loomworks-installed language servers for buffers under the workspace root are held until detection completes (`tools_detected`), so a server starts once with the resolved binary and compilation-database directory rather than against a default config (§9.7).
+
 ### 3.4 Cache state names vs ConfigUnit state names
 
 | Cache state        | ConfigUnit state    |

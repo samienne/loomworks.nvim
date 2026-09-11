@@ -402,6 +402,8 @@ Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 `materialize_pinned`) that arrive during `scanning` are queued in
 `_tool_waiters` and replayed when detection completes.
 
+**Deferred LSP start.** loomworks installs its language servers (`vim.lsp.config` + `vim.lsp.enable`) during `setup()`, but their `root_dir` functions hold the start of any buffer under the workspace root until `tools_detected` fires (queued via the async `on_dir` callback), then release them so each server starts once with the resolved binary and `compile_commands_dir`. Buffers outside the workspace root, init failure, and a safety timeout release immediately with fallback resolution. See spec §9.7.
+
 ### File Change (hot-reload)
 
 ```
@@ -428,7 +430,7 @@ User action (b/c key or API call)
     → task_tracker.on_start → ConfigUnit:set_running()
     → task_tracker.on_output → progress parser → ConfigUnit:set_progress()
     → task_tracker.on_complete → ws:record_task_result() → cache.save()
-                               → ws:_refresh_lsp_database_for() (cmake owned-DB regen, mtime-gated)
+                               → ws:_refresh_lsp_database_for() (schedules async cmake owned-DB regen, mtime-gated; does not block the completion chain)
                                → ConfigUnit:clear_running()
                                → events.emit("task_result")
                                → release build dir lock → dequeue next

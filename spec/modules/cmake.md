@@ -526,6 +526,8 @@ never builds one giant Lua table and encodes it in a single call, and never
 decodes the native database. This keeps memory and time flat for very large
 projects.
 
+The writer runs **asynchronously off the main loop**: reconstruction — reading the per-target file-api replies, the header directory listing (§12.3), and the entry-by-entry stream — is sliced across scheduled turns so a large project never freezes the UI mid-generation. Generation is **single-flight per build directory**: overlapping triggers for the same directory coalesce onto the in-flight run, and a trigger arriving mid-generation (e.g. a reconfigure landing while a run is active) marks the run *dirty* so it re-checks freshness on settle and regenerates exactly once more if still stale. The stream is written to a temporary file and atomically renamed into place only on completion, so clangd never observes a half-written database — the previous database stays readable until the new one is complete.
+
 ### 12.3 Header entries — Tier-1 directory attribution
 
 For each **header** that has no compiled entry of its own, loomworks
@@ -579,30 +581,17 @@ attributed to exactly one target.
 
 ### 12.4 Freshness
 
-Regeneration is gated on a cheap mtime guard: the owned database is rebuilt
-only when the file-api reply index is newer than the generated file (or the
-generated file is absent). CMake rewrites the reply on every reconfigure —
-exactly when flags can change — so this gate is both necessary and
-sufficient, and makes every trigger below a no-op when nothing has advanced
-(thrash-proof). clangd auto-reloads `compile_commands.json` on change, so no
-server restart is needed.
+Regeneration is gated on a cheap, **synchronous** mtime guard: the owned database is rebuilt only when the file-api reply index is newer than the generated file (or the generated file is absent). CMake rewrites the reply on every reconfigure — exactly when flags can change — so this gate is both necessary and sufficient, and makes every trigger below a no-op when nothing has advanced (thrash-proof). The guard is a couple of `stat`s and one small directory scan; it stays on the calling path so a fresh database costs almost nothing. Only when the guard decides to rebuild is the reconstruction dispatched, and that work runs **asynchronously and single-flight** (§12.2), never blocking the UI. clangd auto-reloads `compile_commands.json` on change, so an in-place content update needs no server restart.
 
-Regeneration is triggered from three idempotent paths, so the owned database
-refreshes whenever the native one would:
+Regeneration is triggered from three idempotent paths, so the owned database refreshes whenever the native one would:
 
-1. **LSP wiring** — `lsp_configs` runs the mtime-gated regeneration when it
-   resolves the clangd entry.
-2. **Configure / build task completion** — after a task that (re)configured
-   the build directory completes, loomworks re-runs the mtime-gated
-   regeneration for that build directory. This covers the case where the
-   LSP-wiring result is memoized and `lsp_configs` is not re-invoked.
-3. **File-api reply watch** — loomworks watches the file-api reply directory
-   (via the workspace file tracker's `fs_poll`) and regenerates on change,
-   catching reconfigures loomworks did not drive (e.g. a manual `cmake`).
+1. **LSP wiring** — when `lsp_configs` resolves the clangd entry it **schedules** the mtime-gated regeneration (it does not generate inline) and returns the generated directory immediately.
+2. **Configure / build task completion** — after a task that (re)configured the build directory completes, loomworks schedules the mtime-gated regeneration for that build directory. This covers the case where the LSP-wiring result is memoized and `lsp_configs` is not re-invoked.
+3. **File-api reply watch** — loomworks watches the file-api reply directory (via the workspace file tracker's `fs_poll`) and regenerates on change, catching reconfigures loomworks did not drive (e.g. a manual `cmake`).
 
-All three funnel through the same mtime-gated, side-effect-idempotent
-regeneration; the workspace drives them through the generic module hooks in
-core §8.4 (`refresh_lsp_database` / `lsp_database_watch_path`).
+All three funnel through the same mtime-gated, single-flight, side-effect-idempotent regeneration; the workspace drives them through the generic module hooks in core §8.4 (`refresh_lsp_database` / `lsp_database_watch_path`).
+
+**Completion signal.** Because generation is asynchronous, the owned `compile_commands.json` may first appear *after* a clangd client is already wired for a build directory. When a regeneration actually writes the database, the module reports completion to core (§8.4 `refresh_lsp_database`'s `done` callback) and core forwards a targeted LSP re-resolution for the affected ConfigUnit's projects. In the common case the database already existed on disk (atomic-rename replacement, §12.2), so the client already started with `--compile-commands-dir` and clangd merely auto-reloads the new content — no re-resolution needed. The signal matters only when the database went from **absent to present** (e.g. a project's first-ever configure), letting clangd pick up the directory it previously had no file for without the user reopening the buffer.
 
 ### 12.5 Scope
 

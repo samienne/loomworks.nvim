@@ -163,6 +163,18 @@ remains the user's escape hatch.
 Adaptive state (e.g. clangd's `-j` step-down) lives entirely inside
 the integration. Core sees only the opaque `LspRestartDecision`.
 
+### 9.7 Deferred start until workspace-ready
+
+A language server loomworks installs (the default path — §9.4) is **held from starting until the workspace has resolved**, so it starts exactly once with the correct binary and `compile_commands_dir` instead of starting against a default config and being restarted moments later.
+
+The hold lives in the shared dispatch layer and works through the server's `root_dir` function, which loomworks owns. Neovim starts a client for a buffer only once `root_dir`'s asynchronous `on_dir` callback is invoked; loomworks withholds that callback for a buffer **under the workspace root** while the workspace is still initializing, queueing the buffer instead of resolving it. Buffers **outside** any workspace root resolve immediately via the fallback (`vim.fs.root`) — a C/C++ file unrelated to the workspace gets the user's stock server with no delay.
+
+The queue is released when the workspace reaches a resolved state — **tool detection complete** (`tools_detected`, §3.3), the point at which the active profile, the SDK-resolved binary, and the owned `compile_commands_dir` are all determinable. On release, each queued buffer is resolved normally (routed config for a project buffer, fallback otherwise) and its `on_dir` is invoked. Two terminal conditions drain the queue with fallback resolution so a buffer never hangs without a server: workspace **initialization failure** (`workspace_changed` with no workspace), and a bounded **safety timeout** if no readiness signal arrives.
+
+This does not wait for the owned `compile_commands.json` to be *generated* — only for it to be *resolvable*; §9.4 cmd resolution then appends `--compile-commands-dir` when the file is present. The hold therefore adds at most the workspace's initialization latency, not a build-system generation. Combined with the atomic-rename database replacement (cmake §12.2), a previously-configured project starts clangd once, correctly, with no restart.
+
+**Scope.** The hold applies only to servers loomworks installs. In the `lsp = false` opt-out path (§9.4) the user's own config starts the server; loomworks does not own `root_dir` there and cannot hold the start, so a client that attaches before the workspace is ready is repaired by the integration's attach-time reconciliation instead (per-integration; see the clangd spec). Excluded buffers (§9.4) are never held — they take the fall-through path regardless of workspace state.
+
 ---
 
 ## 10. SDK Provider Contract
