@@ -11,6 +11,7 @@
 --- @field _workspace loomworks.Workspace|nil
 --- @field _setup_error { root: string, message: string }|nil set when setup fails
 --- @field _state "uninitialized"|"initializing"|"initialized"
+--- @field _pending_root string|nil root passed to setup(), known before async init resolves
 local Core = {}
 Core.__index = Core
 
@@ -75,6 +76,7 @@ function Core.new(deps)
     self._workspace = nil
     self._setup_error = nil
     self._state = "uninitialized"
+    self._pending_root = nil
     return self
 end
 
@@ -102,6 +104,23 @@ function Core:tool_state()
     return self._workspace._tool_state
 end
 
+--- Whether the workspace has fully resolved — a live workspace with tool
+--- detection complete (spec §3.3 `tools_detected`). The deferred-LSP gate
+--- (§9.7) releases held server starts once this is true.
+--- @return boolean
+function Core:is_ready()
+    return self._workspace ~= nil and self._workspace._tool_state == "scanned"
+end
+
+--- The configured workspace root, known synchronously even during async init
+--- (spec §9.7). Falls back to the last root passed to `setup()` before a
+--- workspace object exists. nil when setup was never called.
+--- @return string|nil
+function Core:workspace_root()
+    if self._workspace then return self._workspace.root end
+    return self._pending_root
+end
+
 --- Initialize the workspace asynchronously.
 --- Reads files in parallel, then processes synchronously via vim.schedule.
 --- @param opts? { root?: string }
@@ -114,6 +133,10 @@ function Core:setup(opts)
 
     local ws_mod = self._deps.workspace
     local root = ws_mod.resolve_root(opts and opts.root or nil)
+    -- Remember the configured root synchronously, before async init resolves,
+    -- so the deferred-LSP gate (spec §9.7) can decide whether a buffer is under
+    -- the workspace root while the workspace is still initializing.
+    self._pending_root = root
     local paths = ws_mod.paths(root)
 
     self._deps.read_files_async(

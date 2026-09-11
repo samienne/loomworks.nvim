@@ -18,6 +18,7 @@
 ---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
 ---   @field on_workspace_changed? fun()                          -- wired by lsp.lua
 ---   @field reconcile_on_attach? fun(client: vim.lsp.Client)     -- wired by lsp.lua (LspAttach); fix stale cmd from a startup race
+---   @field on_owned_database_changed? fun(root_dir: string)     -- wired by lsp.lua (§9.7 nudge); reconcile-if-needed when an owned DB appears
 ---   @field on_lsp_options_changed? fun(payload: { server: string, key: string, value: any })
 ---                                                               -- wired by lsp.lua; fires after Workspace:set_lsp_option
 ---   @field on_unexpected_exit? fun(info: loomworks.LspExitInfo): loomworks.LspRestartDecision
@@ -47,6 +48,17 @@ local M = {}
 package.loaded["loomworks.lsp"] = M
 
 local normalize = vim.fs.normalize
+
+--- Case-folding path normalizer for prefix/equality comparisons that must hold
+--- on a case-insensitive filesystem (Windows). Lowercases only on win32; the
+--- filesystem-visible casing is preserved for display elsewhere.
+local _is_win = vim.fn.has("win32") == 1
+--- @param p string
+--- @return string
+local function norm_cmp(p)
+    local n = normalize(p)
+    return _is_win and n:lower() or n
+end
 
 --- @type table<string, loomworks.LspIntegration>
 local _integrations = {}
@@ -577,6 +589,165 @@ function M.root_dir(server, fallback)
     return i.root_dir_factory(fallback)
 end
 
+-- ---------------------------------------------------------------------------
+-- Deferred server start until workspace-ready (spec §9.7 / invariant 16)
+-- ---------------------------------------------------------------------------
+--
+-- Neovim starts a client for a buffer only once the server's `root_dir`
+-- function invokes its async `on_dir` callback. loomworks owns that function
+-- for the servers it installs, so it can WITHHOLD the callback for a buffer
+-- under the workspace root while the workspace is still initializing, then
+-- release it once tool detection completes — so the server starts exactly once
+-- with the resolved binary + compile_commands_dir instead of starting against a
+-- default config and being restarted moments later.
+
+--- Held root_dir requests, queued while the workspace is initializing.
+--- @type { bufnr: integer, on_dir: fun(root: string), resolve: fun(bufnr: integer, on_dir: fun(root: string)) }[]
+local _gate_queue = {}
+--- Safety-timeout handle, armed when the first buffer is queued.
+--- @type uv.uv_timer_t|nil
+local _gate_timer = nil
+--- Bounded safety timeout (ms). Overridable in tests via `M._gate_timeout_ms`.
+local GATE_TIMEOUT_MS = 5000
+
+--- Whether the workspace has resolved (tool detection complete). Queried
+--- synchronously so the gate decides correctly even if `tools_detected` fired
+--- before this module subscribed. A missing loomworks (or one that never had
+--- setup called) is treated as "not held" by the root check below.
+--- @return boolean
+local function workspace_ready()
+    local ok, lw = pcall(require, "loomworks")
+    if not ok or type(lw.is_ready) ~= "function" then return true end
+    return lw.is_ready()
+end
+
+--- The configured workspace root (known even during init), or nil.
+--- @return string|nil
+local function workspace_root()
+    local ok, lw = pcall(require, "loomworks")
+    if not ok or type(lw.workspace_root) ~= "function" then return nil end
+    return lw.workspace_root()
+end
+
+--- Whether a buffer's file lives under `root` (boundary-aware prefix check).
+--- @param bufnr integer
+--- @param root string
+--- @return boolean
+local function buf_under_root(bufnr, root)
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if not name or name == "" then return false end
+    local p, r = norm_cmp(name), norm_cmp(root):gsub("/+$", "")
+    return p == r or p:sub(1, #r + 1) == r .. "/"
+end
+
+--- Disarm and close the safety timer (idempotent).
+local function gate_disarm_timer()
+    if _gate_timer then
+        _gate_timer:stop()
+        if not _gate_timer:is_closing() then _gate_timer:close() end
+        _gate_timer = nil
+    end
+end
+
+--- Release every queued buffer by running its resolver (routed config for a
+--- project buffer, fallback otherwise). Drops entries whose buffer is gone.
+--- Used both on the ready signal and on the terminal drains.
+local function gate_release()
+    gate_disarm_timer()
+    local pending = _gate_queue
+    _gate_queue = {}
+    for _, e in ipairs(pending) do
+        if vim.api.nvim_buf_is_valid(e.bufnr) then
+            pcall(e.resolve, e.bufnr, e.on_dir)
+        end
+    end
+end
+
+--- Arm the safety timeout (once). If no readiness/failure signal arrives, the
+--- queue drains with fallback resolution so a buffer never hangs (§9.7).
+local function gate_arm_timer()
+    if _gate_timer then return end
+    _gate_timer = vim.uv.new_timer()
+    local ms = M._gate_timeout_ms or GATE_TIMEOUT_MS
+    _gate_timer:start(ms, 0, function()
+        vim.schedule(gate_release)
+    end)
+end
+
+--- Reset gate state on a workspace swap/reload: drain any held buffers (so
+--- none hang across the reload) and clear the timer.
+local function gate_reset()
+    gate_release()
+end
+
+--- Route an integration's `root_dir` resolution through the readiness gate
+--- (§9.7). `resolve(bufnr, on_dir)` is the integration's existing resolution
+--- logic (routed → project entry, else fallback). Behavior:
+---   * workspace ready, OR no known workspace root → resolve now;
+---   * buffer NOT under the workspace root → resolve now (never held);
+---   * under-root AND not-ready → queue; do not call on_dir yet.
+--- Excluded buffers are handled by the integration BEFORE calling this, so they
+--- always take the immediate fall-through.
+--- @param bufnr integer
+--- @param on_dir fun(root: string)
+--- @param resolve fun(bufnr: integer, on_dir: fun(root: string))
+function M.gated_root_dir(bufnr, on_dir, resolve)
+    if workspace_ready() then return resolve(bufnr, on_dir) end
+    local root = workspace_root()
+    if not root then return resolve(bufnr, on_dir) end
+    if not buf_under_root(bufnr, root) then return resolve(bufnr, on_dir) end
+    _gate_queue[#_gate_queue + 1] = { bufnr = bufnr, on_dir = on_dir, resolve = resolve }
+    gate_arm_timer()
+end
+
+--- Test seam: current number of held buffers.
+--- @return integer
+function M._gate_queue_len() return #_gate_queue end
+
+--- Test seam: reset gate state (drain + clear timer).
+function M._reset_gate() gate_reset() end
+
+-- ---------------------------------------------------------------------------
+-- Completion nudge — targeted re-resolution when an owned DB appears (§9.7)
+-- ---------------------------------------------------------------------------
+
+--- A module reported that its owned LSP compilation database for `build_dir`
+--- was newly (re)written (module §8.4 `refresh_lsp_database`'s `done`). Find the
+--- live clients whose active project maps to that build dir and ask each server
+--- integration to reconcile if needed — so a client that started before the
+--- database existed (absent→present) picks up the now-resolvable directory
+--- without the user reopening the buffer. Generic: no module-type checks. The
+--- integration hook (`on_owned_database_changed(root_dir)`) is idempotent — a
+--- client already carrying the correct directory is never restarted.
+--- @param build_dir string absolute build directory whose owned DB changed
+function M.on_owned_database_changed(build_dir)
+    if type(build_dir) ~= "string" or build_dir == "" then return end
+    local ok, lw = pcall(require, "loomworks")
+    if not ok then return end
+    local ws = lw.get_workspace and lw.get_workspace()
+    if not ws then return end
+    local profile = ws.get_active_profile and ws:get_active_profile()
+    if not profile then return end
+
+    local target = norm_cmp(build_dir)
+    for _, project in pairs(lw.get_projects()) do
+        -- Active build dir for this project, via the generic Profile API
+        -- (ProfileProject:build_dir) — the same dir clangd was pointed at.
+        local pp = profile.project and profile:project(project.key)
+        local bd = pp and pp.build_dir and pp:build_dir()
+        if bd and norm_cmp(bd) == target then
+            for server, integration in pairs(_integrations) do
+                if integration.on_owned_database_changed then
+                    local entry = M.entry_for_project(project, server)
+                    if entry and entry.root_dir then
+                        pcall(integration.on_owned_database_changed, entry.root_dir)
+                    end
+                end
+            end
+        end
+    end
+end
+
 --- Get resolved cmd args for a root_dir from the relevant integration.
 --- @param server string
 --- @param root_dir string normalized root directory
@@ -803,6 +974,16 @@ local function wire_listeners()
     _listeners_wired = true
     local ok, lw = pcall(require, "loomworks")
     if not ok then return end
+    -- Deferred-start gate (§9.7): a new init cycle resets held buffers.
+    lw.on("workspace_initializing", function()
+        gate_reset()
+    end)
+    -- Deferred-start gate (§9.7): tool detection complete is the RELEASE
+    -- signal — the active profile, resolved binary, and owned
+    -- compile_commands_dir are all determinable, so held buffers resolve now.
+    lw.on("tools_detected", function()
+        gate_release()
+    end)
     lw.on("active_set_changed", function()
         for _, int in pairs(_integrations) do
             if int.on_active_set_changed then
@@ -810,7 +991,11 @@ local function wire_listeners()
             end
         end
     end)
-    lw.on("workspace_changed", function()
+    lw.on("workspace_changed", function(ws)
+        -- Deferred-start gate (§9.7): a nil payload means init FAILED — drain
+        -- held buffers with fallback resolution so none hang. A successful
+        -- load does NOT release here; the gate waits for tools_detected.
+        if ws == nil then gate_release() end
         -- Blow the lsp_configs memo first — the old workspace's projects (and
         -- any project.key reuse) must not survive into the new one. Runs before
         -- the integration callbacks below, which are deferred via vim.schedule.

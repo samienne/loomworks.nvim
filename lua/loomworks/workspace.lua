@@ -2879,8 +2879,11 @@ end
 --- Generic — no module-type checks: modules with no owned database simply
 --- don't implement the hooks. Best-effort and idempotent (the module gates
 --- the work on its own freshness check; the watch registration dedupes per
---- path). Called after configure/build completion and during the startup
---- target scan.
+--- path). The refresh is ASYNCHRONOUS and non-blocking (§8.4): it does not
+--- stall the task-completion chain. A `done(changed)` callback drives the
+--- completion nudge (§9.7) — a targeted LSP re-resolution when the database
+--- was newly written. Called after configure/build completion and during the
+--- startup target scan.
 --- @param unit loomworks.ConfigUnit
 function Workspace:_refresh_lsp_database_for(unit)
     if not unit then return end
@@ -2898,17 +2901,33 @@ function Workspace:_refresh_lsp_database_for(unit)
         variant = unit:variant(),
         compiler = td and td.compiler_path or nil,
     }
-    pcall(mod.refresh_lsp_database, ctx)
+
+    -- Completion nudge (spec §9.7 / cmake §12.4): generation is now async, so
+    -- the owned database may first appear AFTER a clangd client already
+    -- started for this build dir. When the module reports it actually
+    -- (re)wrote the database, ask the LSP layer for a targeted re-resolution of
+    -- the clients pointed at this build dir. Idempotent: a client already
+    -- carrying the resolved `--compile-commands-dir` is never restarted. Uses
+    -- the generic LSP entry point — no module-type branching here.
+    local function on_db_changed(changed)
+        if not changed then return end
+        local ok, lsp = pcall(require, "loomworks.lsp")
+        if ok and lsp.on_owned_database_changed then
+            lsp.on_owned_database_changed(build_dir)
+        end
+    end
+    pcall(mod.refresh_lsp_database, ctx, on_db_changed)
 
     -- Watch the module's declared input path (cmake: the file-api reply dir)
     -- so a reconfigure loomworks didn't drive re-triggers the mtime-gated
     -- refresh (trigger 3). The callback captures the resolved ctx (not the
-    -- unit) so it stays valid across refresh array swaps.
+    -- unit) so it stays valid across refresh array swaps, and reuses the same
+    -- completion nudge so an absent→present database reaches clangd.
     if self._tracker and mod.lsp_database_watch_path then
         local ok, watch_path = pcall(mod.lsp_database_watch_path, { build_dir = build_dir })
         if ok and type(watch_path) == "string" then
             self._tracker:watch_signal(watch_path, function()
-                pcall(mod.refresh_lsp_database, ctx)
+                pcall(mod.refresh_lsp_database, ctx, on_db_changed)
             end)
         end
     end

@@ -177,11 +177,15 @@ end
 --- uses the loomworks project's qmlls entry root_dir when the buffer's
 --- project has one. Falls through to the provided fallback otherwise. Skips
 --- excluded buffers (see `loomworks.lsp.excluded`) before any resolution.
+--- Routed through the readiness gate (core §9.7): a buffer under the workspace
+--- root is held until the workspace resolves, so qmlls starts once with the
+--- resolved build dir. Resolution behavior is unchanged — only WHEN it runs is
+--- deferred. Excluded buffers take the immediate fall-through, never held.
 --- @param fallback? fun(bufnr: number, on_dir: fun(root: string))
 --- @return fun(bufnr: number, on_dir: fun(root: string))
 function M.root_dir_factory(fallback)
-    return function(bufnr, on_dir)
-        if require("loomworks.lsp").excluded(bufnr) then return end
+    --- The existing per-buffer resolution: routed project entry, else fallback.
+    local function resolve(bufnr, on_dir)
         local ok, lw = pcall(require, "loomworks")
         if ok then
             local project = lw.project_for_buf(bufnr)
@@ -194,6 +198,11 @@ function M.root_dir_factory(fallback)
             end
         end
         if fallback then fallback(bufnr, on_dir) end
+    end
+    return function(bufnr, on_dir)
+        local lsp = require("loomworks.lsp")
+        if lsp.excluded(bufnr) then return end -- never queued
+        lsp.gated_root_dir(bufnr, on_dir, resolve)
     end
 end
 

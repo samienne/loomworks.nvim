@@ -156,6 +156,21 @@ function M.get_setup_error()
     return core:get_setup_error()
 end
 
+--- Whether the workspace has fully resolved (tool detection complete). The
+--- deferred-LSP gate (spec §9.7) uses this to decide whether to hold a
+--- server start for a buffer under the workspace root.
+--- @return boolean
+function M.is_ready()
+    return core:is_ready()
+end
+
+--- The configured workspace root, known synchronously even during async init
+--- (spec §9.7). nil when setup was never called for a root.
+--- @return string|nil
+function M.workspace_root()
+    return core:workspace_root()
+end
+
 --- Get the task output window config (Snacks.win overrides).
 --- @return table
 function M.get_task_output_win()
