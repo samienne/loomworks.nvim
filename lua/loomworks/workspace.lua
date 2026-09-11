@@ -464,6 +464,7 @@ end
 --- @field _tools_by_type table<string, loomworks.DetectedTool[]> detected tools per module type
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
 --- @field _tool_waiters function[]
+--- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)
@@ -527,6 +528,7 @@ function Workspace.new(core, data)
     self._event_handlers = {}
     self._tool_state = "not_scanned"
     self._tool_waiters = {}
+    self._lsp_ready = false
     self._delete_waiters = {}
     self._build_dirs = {}  -- BuildDir domain objects (all, including orphaned)
     self._build_dir_refs = {}
@@ -2884,8 +2886,17 @@ end
 --- completion nudge (§9.7) — a targeted LSP re-resolution when the database
 --- was newly written. Called after configure/build completion and during the
 --- startup target scan.
+---
+--- `on_settled` (optional) fires exactly once when this unit's database refresh
+--- has settled — the DB was (re)written, or it was a no-op. It drives the
+--- active-profile readiness gate (§9.7): the startup scan passes it only for
+--- the active profile's configured units so `lsp_ready` waits for their
+--- databases. It is NOT called when there is nothing to refresh (no
+--- `refresh_lsp_database` hook, or no build dir) — the caller treats those
+--- units as already-settled and never gates on them.
 --- @param unit loomworks.ConfigUnit
-function Workspace:_refresh_lsp_database_for(unit)
+--- @param on_settled? fun() called once when the primary DB refresh settles
+function Workspace:_refresh_lsp_database_for(unit, on_settled)
     if not unit then return end
     local project = unit._project
     local mod = project and project._module and project._module.impl or nil
@@ -2916,7 +2927,24 @@ function Workspace:_refresh_lsp_database_for(unit)
             lsp.on_owned_database_changed(build_dir)
         end
     end
-    pcall(mod.refresh_lsp_database, ctx, on_db_changed)
+    -- The primary refresh drives both the nudge and (when the caller asked) the
+    -- readiness gate. `on_settled` fires once regardless of `changed`, since a
+    -- no-op refresh still means the database is in place / up to date.
+    local settled = false
+    local function primary_done(changed)
+        on_db_changed(changed)
+        if on_settled and not settled then
+            settled = true
+            on_settled()
+        end
+    end
+    local ok_refresh = pcall(mod.refresh_lsp_database, ctx, primary_done)
+    if not ok_refresh and on_settled and not settled then
+        -- A synchronous throw before the module scheduled its `done`: settle the
+        -- gate anyway so it never hangs on this unit.
+        settled = true
+        on_settled()
+    end
 
     -- Watch the module's declared input path (cmake: the file-api reply dir)
     -- so a reconfigure loomworks didn't drive re-triggers the mtime-gated
@@ -3422,6 +3450,10 @@ end
 --- Scan tools asynchronously and remerge when complete.
 function Workspace:_scan_tools_async()
     self._tool_state = "scanning"
+    -- A fresh scan cycle: the active profile's owned LSP databases must be
+    -- re-evaluated, so the deferred-LSP gate (§9.7) holds again until the
+    -- target scan settles them and re-emits `lsp_ready`.
+    self._lsp_ready = false
     self._core._deps.events.emit("tools_scanning")
 
     local config = self:_config_from_objects()
@@ -3461,12 +3493,43 @@ end
 --- spawn a per-build-dir subprocess (meson introspect + python), which is pure
 --- waste for a build/status/completion command. Defaults to enabled.
 function Workspace:_scan_targets_async()
-    if self._core._deps.scan_targets == false then return end
+    local ws = self
+
+    -- Deferred-LSP gate (§9.7): mark the active profile's owned LSP databases
+    -- ready and emit `lsp_ready` exactly once, releasing any held server
+    -- starts. Idempotent within a scan cycle.
+    local ready_emitted = false
+    local function mark_lsp_ready()
+        if ready_emitted then return end
+        ready_emitted = true
+        ws._lsp_ready = true
+        ws._core._deps.events.emit("lsp_ready")
+    end
+
+    if self._core._deps.scan_targets == false then
+        -- The standalone CLI never surfaces targets and never installs LSP
+        -- servers; nothing to generate or gate on.
+        mark_lsp_ready()
+        return
+    end
+
+    -- The set of ConfigUnits belonging to the active profile — its configured
+    -- units gate the `lsp_ready` release (§9.7 / FIX B). Non-active units are
+    -- generated in the background and never gate the start.
+    local active_units = {}
+    local profile = self._active_profile
+    if profile then
+        for _, pp in ipairs(profile:projects()) do
+            if pp._config_unit then active_units[pp._config_unit] = true end
+        end
+    end
+
     -- Collect scannable units. Modules that read from build_dir (cmake) get
     -- scanned per-unit. Modules that read from project files (typescript)
     -- get scanned once per project. The module reads whichever context it
-    -- needs from the ctx dict passed to parse_targets_async.
-    local units = {}
+    -- needs from the ctx dict passed to parse_targets_async. Active-profile
+    -- units are collected first so their databases are generated first.
+    local active_entries, other_entries = {}, {}
     local seen_projects = {} -- avoid duplicate project-level scans
     for _, unit in pairs(self._config_units) do
         local project = unit._project
@@ -3475,31 +3538,61 @@ function Workspace:_scan_targets_async()
         local mod = project._module and project._module.impl or nil
         if not mod or not mod.parse_targets_async then goto continue end
 
+        local is_active = active_units[unit] == true
         local abs_path = self.root .. "/" .. (project.path or project.key)
         local build_dir = unit:build_dir()
         if build_dir then
-            units[#units + 1] = {
+            local entry = {
                 unit = unit, mod = mod,
                 build_dir = build_dir,
                 project_path = abs_path,
+                is_active = is_active,
+                -- Gating units: active + configured + own an LSP database.
+                gating = is_active and mod.refresh_lsp_database ~= nil,
             }
+            if is_active then active_entries[#active_entries + 1] = entry
+            else other_entries[#other_entries + 1] = entry end
         elseif not seen_projects[project.key] then
-            -- No build_dir: scan once per project (project-level only).
+            -- No build_dir: scan once per project (project-level only). Never
+            -- gates the release (no owned database without a build dir).
             seen_projects[project.key] = true
-            units[#units + 1] = {
+            local entry = {
                 unit = unit, mod = mod,
                 project_path = abs_path,
+                is_active = is_active,
+                gating = false,
             }
+            if is_active then active_entries[#active_entries + 1] = entry
+            else other_entries[#other_entries + 1] = entry end
         end
 
         ::continue::
+    end
+
+    -- Active-first processing order.
+    local units = {}
+    for _, e in ipairs(active_entries) do units[#units + 1] = e end
+    for _, e in ipairs(other_entries) do units[#units + 1] = e end
+
+    -- Count gating units up front. When every gating unit's database refresh
+    -- has settled, the active profile's owned databases are ready.
+    local gate_pending = 0
+    for _, e in ipairs(units) do
+        if e.gating then gate_pending = gate_pending + 1 end
+    end
+    -- No active profile / nothing to generate → release immediately (§9.7);
+    -- clangd starts best-effort against whatever is on disk.
+    if gate_pending == 0 then mark_lsp_ready() end
+
+    local function on_gate_settled()
+        gate_pending = gate_pending - 1
+        if gate_pending <= 0 then mark_lsp_ready() end
     end
 
     if #units == 0 then return end
 
     local idx = 0
     local any_found = false
-    local ws = self
     local function next_unit()
         idx = idx + 1
         if idx > #units then
@@ -3522,8 +3615,11 @@ function Workspace:_scan_targets_async()
                 -- reply-dir watch on load (cmake.md §12.4). Mtime-gated, so a
                 -- fresh database is a no-op; catches a manual reconfigure made
                 -- while loomworks wasn't running. Only for build-dir units.
+                -- Active + configured units settle the readiness gate (§9.7);
+                -- others regenerate in the background without gating.
                 if entry.build_dir then
-                    ws:_refresh_lsp_database_for(entry.unit)
+                    ws:_refresh_lsp_database_for(
+                        entry.unit, entry.gating and on_gate_settled or nil)
                 end
                 next_unit()
             end)

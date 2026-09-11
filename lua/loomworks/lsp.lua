@@ -596,10 +596,11 @@ end
 -- Neovim starts a client for a buffer only once the server's `root_dir`
 -- function invokes its async `on_dir` callback. loomworks owns that function
 -- for the servers it installs, so it can WITHHOLD the callback for a buffer
--- under the workspace root while the workspace is still initializing, then
--- release it once tool detection completes — so the server starts exactly once
--- with the resolved binary + compile_commands_dir instead of starting against a
--- default config and being restarted moments later.
+-- under the workspace root while the workspace is still initializing AND the
+-- active profile's owned compilation database is being generated, then release
+-- it once that database is ready (spec §9.7) — so the server starts exactly
+-- once with the resolved binary + a populated compile_commands_dir instead of
+-- starting against a default config and being restarted moments later.
 
 --- Held root_dir requests, queued while the workspace is initializing.
 --- @type { bufnr: integer, on_dir: fun(root: string), resolve: fun(bufnr: integer, on_dir: fun(root: string)) }[]
@@ -610,15 +611,15 @@ local _gate_timer = nil
 --- Bounded safety timeout (ms). Overridable in tests via `M._gate_timeout_ms`.
 local GATE_TIMEOUT_MS = 5000
 
---- Whether the workspace has resolved (tool detection complete). Queried
---- synchronously so the gate decides correctly even if `tools_detected` fired
---- before this module subscribed. A missing loomworks (or one that never had
---- setup called) is treated as "not held" by the root check below.
+--- Whether the active profile's owned LSP databases are ready (§9.7). Queried
+--- synchronously so the gate decides correctly even if `lsp_ready` fired before
+--- this module subscribed. A missing loomworks (or one that never had setup
+--- called) is treated as "not held" by the root check below.
 --- @return boolean
 local function workspace_ready()
     local ok, lw = pcall(require, "loomworks")
-    if not ok or type(lw.is_ready) ~= "function" then return true end
-    return lw.is_ready()
+    if not ok or type(lw.lsp_ready) ~= "function" then return true end
+    return lw.lsp_ready()
 end
 
 --- The configured workspace root (known even during init), or nil.
@@ -978,10 +979,12 @@ local function wire_listeners()
     lw.on("workspace_initializing", function()
         gate_reset()
     end)
-    -- Deferred-start gate (§9.7): tool detection complete is the RELEASE
-    -- signal — the active profile, resolved binary, and owned
-    -- compile_commands_dir are all determinable, so held buffers resolve now.
-    lw.on("tools_detected", function()
+    -- Deferred-start gate (§9.7): the active profile's owned LSP databases
+    -- being ready is the RELEASE signal — the resolved binary and the
+    -- compile_commands_dir (with compile_commands.json already on disk for
+    -- configured units) are in place, so held buffers resolve now and each
+    -- server starts once, correct, with no follow-up restart.
+    lw.on("lsp_ready", function()
         gate_release()
     end)
     lw.on("active_set_changed", function()
@@ -994,7 +997,7 @@ local function wire_listeners()
     lw.on("workspace_changed", function(ws)
         -- Deferred-start gate (§9.7): a nil payload means init FAILED — drain
         -- held buffers with fallback resolution so none hang. A successful
-        -- load does NOT release here; the gate waits for tools_detected.
+        -- load does NOT release here; the gate waits for lsp_ready.
         if ws == nil then gate_release() end
         -- Blow the lsp_configs memo first — the old workspace's projects (and
         -- any project.key reuse) must not survive into the new one. Runs before

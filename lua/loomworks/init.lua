@@ -118,6 +118,16 @@ function M.setup(opts)
     end
     require("loomworks.fidget").setup(fidget_opts)
 
+    -- Record the workspace root synchronously BEFORE installing servers (spec
+    -- §9.7 / FIX A). `setup_servers` calls `vim.lsp.enable`, which resolves
+    -- `root_dir` synchronously for already-open buffers; the deferred-start
+    -- gate must already know the root then, or it resolves immediately and the
+    -- server starts ungated (to be restarted once the workspace loads). The
+    -- later `core:setup(opts)` sets the same pending root again (idempotent).
+    if opts and opts.root then
+        core:set_pending_root(opts.root)
+    end
+
     -- LSP: unless explicitly disabled (`opts.lsp == false`), install server
     -- configs via vim.lsp.config. Defaults in; user may override per-server
     -- via `opts.lsp = { clangd = {...} }` or disable with `lsp = false`.
@@ -156,12 +166,13 @@ function M.get_setup_error()
     return core:get_setup_error()
 end
 
---- Whether the workspace has fully resolved (tool detection complete). The
---- deferred-LSP gate (spec §9.7) uses this to decide whether to hold a
---- server start for a buffer under the workspace root.
+--- Whether the active profile's owned LSP databases are ready (generated on
+--- disk, or nothing to generate). The deferred-LSP gate (spec §9.7) uses this
+--- to decide whether to hold a server start for a buffer under the workspace
+--- root, so the server starts once against a populated compile-commands dir.
 --- @return boolean
-function M.is_ready()
-    return core:is_ready()
+function M.lsp_ready()
+    return core:lsp_ready()
 end
 
 --- The configured workspace root, known synchronously even during async init

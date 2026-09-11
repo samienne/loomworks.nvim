@@ -1386,10 +1386,16 @@ local TARGET_TYPE_MAP = {
     INTERFACE_LIBRARY = "interface_library",
 }
 
---- Parse the cmake file-api reply to extract project-owned targets.
+--- Build the shared parse plan from the file-api codemodel (§8.4): resolve the
+--- reply dir, source root, the selected configuration, the project-owned target
+--- name set, an id→name map (so dependency resolution is O(1) per edge, not a
+--- scan of every target), and the ordered list of project-owned target refs to
+--- read. Returns nil when there is no usable codemodel reply (never configured).
+--- Pure over already-parsed JSON — the per-target detail reads happen in the
+--- caller so the async path can slice them.
 --- @param ctx { build_dir: string, project_path?: string, config_name?: string }
---- @return table<string, loomworks.CachedTarget>|nil targets
-function M.parse_targets(ctx)
+--- @return { reply_dir: string, source_root: string|nil, config_data: table, project_names: table<string, boolean>, id_to_name: table<string, string>, refs: table[] }|nil
+local function parse_targets_plan(ctx)
     local build_dir = ctx.build_dir
     local config_name = ctx.config_name
     if not build_dir then return nil end
@@ -1397,7 +1403,6 @@ function M.parse_targets(ctx)
     if not codemodel or not codemodel.configurations then return nil end
 
     local reply_dir = build_dir .. "/.cmake/api/v1/reply"
-
     -- Source root from codemodel (absolute path to project source dir)
     local source_root = codemodel.paths and codemodel.paths.source or nil
 
@@ -1416,8 +1421,7 @@ function M.parse_targets(ctx)
     end
     if not config_data or not config_data.targets then return nil end
 
-    -- Collect project-owned target names (for filtering dependencies)
-    -- Also read each target's detail file for type and dependencies
+    -- Collect project-owned target names (for filtering dependencies).
     local project_names = {}
     if config_data.projects then
         for _, proj in ipairs(config_data.projects) do
@@ -1437,100 +1441,173 @@ function M.parse_targets(ctx)
         end
     end
 
-    -- Parse each target's detail file
+    -- id → project-owned target name, built once (first occurrence wins) so
+    -- dependency resolution is a single map lookup per edge instead of an
+    -- inner scan over every target (was O(targets^2)).
+    local id_to_name = {}
+    local refs = {}
+    for _, tref in ipairs(config_data.targets) do
+        if tref.id and project_names[tref.name] and id_to_name[tref.id] == nil then
+            id_to_name[tref.id] = tref.name
+        end
+        if project_names[tref.name] and tref.jsonFile then
+            refs[#refs + 1] = tref
+        end
+    end
+
+    return {
+        build_dir = build_dir,
+        reply_dir = reply_dir,
+        source_root = source_root,
+        config_data = config_data,
+        project_names = project_names,
+        id_to_name = id_to_name,
+        refs = refs,
+    }
+end
+
+--- Read and process one project-owned target ref against the plan, producing
+--- its `(name, record)`. nil when the target detail is missing or has an
+--- unmapped type (UTILITY, ALIAS, …). Dependency names resolve through the
+--- plan's `id_to_name` map (O(1) per edge). Shared by the sync and async paths
+--- so both emit byte-identical records.
+--- @param plan table from `parse_targets_plan`
+--- @param tgt_ref table a project-owned target ref (has `jsonFile`)
+--- @return string|nil name
+--- @return loomworks.CachedTarget|nil record
+local function parse_targets_ref(plan, tgt_ref)
+    local source_root = plan.source_root
+    local id_to_name = plan.id_to_name
+
+    local tgt_detail = read_json_file(plan.reply_dir .. "/" .. tgt_ref.jsonFile)
+    if not tgt_detail then return nil end
+
+    local target_type = TARGET_TYPE_MAP[tgt_detail.type]
+    if not target_type then return nil end -- skip UTILITY, ALIAS, etc.
+
+    -- Extract link dependencies (only project-owned ones), resolved via the map.
+    local deps
+    if tgt_detail.dependencies then
+        for _, dep in ipairs(tgt_detail.dependencies) do
+            if dep.id then
+                local name = id_to_name[dep.id]
+                if name then
+                    deps = deps or {}
+                    deps[#deps + 1] = name
+                end
+            end
+        end
+        if deps then table.sort(deps) end
+    end
+
+    -- Extract primary output artifact path, normalized relative to build_dir.
+    local build_dir = plan.build_dir
+    local artifact
+    if tgt_detail.artifacts and tgt_detail.artifacts[1] then
+        local raw = tgt_detail.artifacts[1].path
+        if raw then
+            local normalized = raw:gsub("\\", "/")
+            local build_prefix = build_dir:gsub("\\", "/"):gsub("/?$", "/")
+            local norm_lower = normalized:lower()
+            local prefix_lower = build_prefix:lower()
+            if norm_lower:sub(1, #prefix_lower) == prefix_lower then
+                artifact = normalized:sub(#build_prefix + 1)
+            else
+                artifact = normalized
+            end
+        end
+    end
+
+    -- Extract source file paths (for test source location mapping)
+    local sources
+    if tgt_detail.sources and source_root then
+        for _, src in ipairs(tgt_detail.sources) do
+            if src.path then
+                local ext = src.path:match("%.([^%.]+)$")
+                if ext then
+                    ext = ext:lower()
+                    if ext == "cpp" or ext == "cc" or ext == "cxx" or ext == "c" then
+                        sources = sources or {}
+                        local abs
+                        if src.path:match("^[A-Za-z]:") or src.path:match("^/") then
+                            abs = src.path
+                        else
+                            abs = source_root .. "/" .. src.path
+                        end
+                        sources[#sources + 1] = abs:gsub("\\", "/")
+                    end
+                end
+            end
+        end
+    end
+
+    return tgt_ref.name, {
+        type = target_type,
+        dependencies = deps,
+        artifact = artifact,
+        sources = sources,
+    }
+end
+
+--- Parse the cmake file-api reply to extract project-owned targets
+--- (synchronous). Kept for the CLI and tests; byte-identical to the async path
+--- (shared plan + per-ref helpers).
+--- @param ctx { build_dir: string, project_path?: string, config_name?: string }
+--- @return table<string, loomworks.CachedTarget>|nil targets
+function M.parse_targets(ctx)
+    local plan = parse_targets_plan(ctx)
+    if not plan then return nil end
+
     local targets = {}
-    for _, tgt_ref in ipairs(config_data.targets) do
-        if not project_names[tgt_ref.name] then goto continue end
-        if not tgt_ref.jsonFile then goto continue end
-
-        local tgt_detail = read_json_file(reply_dir .. "/" .. tgt_ref.jsonFile)
-        if not tgt_detail then goto continue end
-
-        local target_type = TARGET_TYPE_MAP[tgt_detail.type]
-        if not target_type then goto continue end -- skip UTILITY, ALIAS, etc.
-
-        -- Extract link dependencies (only project-owned ones)
-        local deps
-        if tgt_detail.dependencies then
-            for _, dep in ipairs(tgt_detail.dependencies) do
-                if dep.id then
-                    -- Resolve dependency name from the target list
-                    for _, other in ipairs(config_data.targets) do
-                        if other.id == dep.id and project_names[other.name] then
-                            deps = deps or {}
-                            deps[#deps + 1] = other.name
-                            break
-                        end
-                    end
-                end
-            end
-            if deps then table.sort(deps) end
-        end
-
-        -- Extract primary output artifact path, normalized to be relative to build_dir
-        local artifact
-        if tgt_detail.artifacts and tgt_detail.artifacts[1] then
-            local raw = tgt_detail.artifacts[1].path
-            if raw then
-                -- cmake may emit absolute or relative paths; normalize to relative
-                local normalized = raw:gsub("\\", "/")
-                local build_prefix = build_dir:gsub("\\", "/"):gsub("/?$", "/")
-                -- Case-insensitive comparison on Windows (cmake may emit
-                -- different casing than the build_dir we computed)
-                local norm_lower = normalized:lower()
-                local prefix_lower = build_prefix:lower()
-                if norm_lower:sub(1, #prefix_lower) == prefix_lower then
-                    artifact = normalized:sub(#build_prefix + 1)
-                else
-                    artifact = normalized
-                end
-            end
-        end
-
-        -- Extract source file paths (for test source location mapping)
-        local sources
-        if tgt_detail.sources and source_root then
-            for _, src in ipairs(tgt_detail.sources) do
-                if src.path then
-                    local ext = src.path:match("%.([^%.]+)$")
-                    if ext then
-                        ext = ext:lower()
-                        if ext == "cpp" or ext == "cc" or ext == "cxx" or ext == "c" then
-                            sources = sources or {}
-                            local abs
-                            if src.path:match("^[A-Za-z]:") or src.path:match("^/") then
-                                abs = src.path
-                            else
-                                -- Relative to codemodel source root
-                                abs = source_root .. "/" .. src.path
-                            end
-                            sources[#sources + 1] = abs:gsub("\\", "/")
-                        end
-                    end
-                end
-            end
-        end
-
-        targets[tgt_ref.name] = {
-            type = target_type,
-            dependencies = deps,
-            artifact = artifact,
-            sources = sources,
-        }
-
-        ::continue::
+    for _, tref in ipairs(plan.refs) do
+        local name, record = parse_targets_ref(plan, tref)
+        if name then targets[name] = record end
     end
 
     return next(targets) and targets or nil
 end
 
---- Async wrapper for parse_targets. Yields to the event loop before
---- parsing to avoid blocking during batch scanning on init.
+--- Per-slice time budget (nanoseconds) for the incremental target parse.
+local PT_SLICE_BUDGET_NS = 5 * 1e6 -- ~5ms
+--- Minimum target refs read per scheduled turn (progress guarantee even if the
+--- budget is already spent when the turn begins).
+local PT_REFS_PER_STEP = 8
+
+--- Async, genuinely-incremental parse of the file-api reply. Builds the plan on
+--- the next tick, then reads/decodes the per-target detail JSONs in bounded,
+--- time-boxed batches across `vim.schedule` turns (each target detail is a disk
+--- read + JSON decode), so a project with many targets never parses in one
+--- synchronous burst. Output is identical to `parse_targets`.
 --- @param ctx { build_dir: string, project_path?: string, config_name?: string }
 --- @param callback fun(targets: table<string, loomworks.CachedTarget>|nil)
 function M.parse_targets_async(ctx, callback)
     vim.schedule(function()
-        callback(M.parse_targets(ctx))
+        local plan = parse_targets_plan(ctx)
+        if not plan then callback(nil); return end
+
+        local targets = {}
+        local i = 0
+        local function step()
+            local start = uv.hrtime()
+            local n = 0
+            while i < #plan.refs do
+                i = i + 1
+                local name, record = parse_targets_ref(plan, plan.refs[i])
+                if name then targets[name] = record end
+                n = n + 1
+                -- Yield once we've made at least minimal progress and spent the
+                -- slice budget, so a large target set is decoded across turns.
+                if n >= PT_REFS_PER_STEP and (uv.hrtime() - start) >= PT_SLICE_BUDGET_NS then
+                    break
+                end
+            end
+            if i >= #plan.refs then
+                callback(next(targets) and targets or nil)
+            else
+                vim.schedule(step)
+            end
+        end
+        step()
     end)
 end
 
@@ -2341,10 +2418,72 @@ local function for_each_compiled_source(codemodel, target_details, toolchains, s
     end
 end
 
+--- Create incremental compiled-source-entry state (§12.2). Mirrors
+--- `for_each_compiled_source`'s iteration exactly (targets → compileGroups →
+--- sourceIndexes, same compiler fallback and prefix caching) so the async
+--- generator can build entries a bounded number of targets per turn without
+--- drifting from the synchronous result.
+--- @return table state ({ entries } is the accumulated result)
+local function cc_entries_new(codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
+    opts = opts or {}
+    local st = {
+        entries = {},
+        prefix_cache = {},
+        compiler_by_lang = compiler_map(toolchains),
+        cfg = select_codemodel_config(codemodel, variant),
+        target_details = target_details,
+        source_root = source_root,
+        build_dir = build_dir,
+        opts = opts,
+        ti = 0,
+        done = false,
+    }
+    if not st.cfg or not st.cfg.targets then st.done = true end
+    return st
+end
+
+--- Advance the compiled-source-entry build by up to `max_targets` targets
+--- (nil = all remaining). Returns true when the whole target list is consumed.
+--- @param st table from `cc_entries_new`
+--- @param max_targets integer|nil
+--- @return boolean done
+local function cc_entries_step(st, max_targets)
+    if st.done then return true end
+    local cfg = st.cfg
+    local processed = 0
+    while st.ti < #cfg.targets and (not max_targets or processed < max_targets) do
+        st.ti = st.ti + 1
+        local tref = cfg.targets[st.ti]
+        local detail = tref.jsonFile and st.target_details[tref.jsonFile]
+        if detail and detail.compileGroups then
+            local sources = detail.sources or {}
+            for _, cg in ipairs(detail.compileGroups) do
+                -- Fallback chain: file-api toolchain → kit compiler → cl.exe.
+                local compiler = st.compiler_by_lang[cg.language] or st.opts.compiler or "cl.exe"
+                local prefix = st.prefix_cache[cg]
+                if not prefix then
+                    prefix = cg_argv_prefix(cg, compiler)
+                    st.prefix_cache[cg] = prefix
+                end
+                for _, si in ipairs(cg.sourceIndexes or {}) do
+                    local src = sources[si + 1] -- file-api indexes are 0-based
+                    if src and type(src.path) == "string" then
+                        st.entries[#st.entries + 1] = render_cc_entry_with_prefix(
+                            prefix, abs_source_path(src.path, st.source_root), st.build_dir)
+                    end
+                end
+            end
+        end
+        processed = processed + 1
+    end
+    if st.ti >= #cfg.targets then st.done = true end
+    return st.done
+end
+
 --- Build the `compile_commands.json` entry list from already-parsed
 --- file-api data. Pure (no cmake invocation) so it can be unit-tested
 --- against fixture JSON. One entry per source across every target's
---- compileGroups.
+--- compileGroups. Byte-identical to the async generator (shared stepper).
 --- @param codemodel table parsed codemodel-v2 reply
 --- @param target_details table<string, table> jsonFile → parsed target detail
 --- @param toolchains table|nil parsed toolchains-v1 reply
@@ -2355,22 +2494,9 @@ end
 ---        has no toolchain entry
 --- @return table[] entries
 function M._build_cc_entries(codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
-    opts = opts or {}
-    local entries = {}
-    -- Flags are identical across every source in a compileGroup; build the
-    -- argv prefix once per group (keyed on the group table's identity) and
-    -- clone it per source via render_cc_entry_with_prefix.
-    local prefix_cache = {}
-    for_each_compiled_source(codemodel, target_details, toolchains, source_root, variant, opts,
-        function(cg, compiler, abs)
-            local prefix = prefix_cache[cg]
-            if not prefix then
-                prefix = cg_argv_prefix(cg, compiler)
-                prefix_cache[cg] = prefix
-            end
-            entries[#entries + 1] = render_cc_entry_with_prefix(prefix, abs, build_dir)
-        end)
-    return entries
+    local st = cc_entries_new(codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
+    while not cc_entries_step(st, nil) do end
+    return st.entries
 end
 
 --- Build the Tier-1 header-attribution index (§12.3) from parsed file-api
@@ -2389,14 +2515,40 @@ end
 --- @param source_root string|nil
 --- @param variant string|nil
 --- @return { targets: table, dir_owners: table, source_dirs: string[], listed: table }
-function M._target_attribution_index(codemodel, target_details, source_root, variant)
-    local index = { targets = {}, dir_owners = {}, source_dirs = {}, listed = {} }
-    local cfg = select_codemodel_config(codemodel, variant)
-    if not cfg or not cfg.targets then return index end
+--- Create incremental header-attribution-index state (§12.3). The per-target
+--- body matches the synchronous build exactly; the final longest-first sort of
+--- `source_dirs` runs once when the last target is consumed. Lets the async
+--- generator build the index a bounded number of targets per turn.
+--- @return table state ({ index } is the accumulated result)
+local function attr_index_new(codemodel, target_details, source_root, variant)
+    local st = {
+        index = { targets = {}, dir_owners = {}, source_dirs = {}, listed = {} },
+        cfg = select_codemodel_config(codemodel, variant),
+        target_details = target_details,
+        source_root = source_root,
+        dir_seen = {},
+        ti = 0,
+        done = false,
+    }
+    if not st.cfg or not st.cfg.targets then st.done = true end
+    return st
+end
 
-    local dir_seen = {}
-    for _, tref in ipairs(cfg.targets) do
-        local detail = tref.jsonFile and target_details[tref.jsonFile]
+--- Advance the header-attribution index by up to `max_targets` targets
+--- (nil = all remaining). Sorts `source_dirs` and returns true when done.
+--- @param st table from `attr_index_new`
+--- @param max_targets integer|nil
+--- @return boolean done
+local function attr_index_step(st, max_targets)
+    if st.done then return true end
+    local index = st.index
+    local cfg = st.cfg
+    local source_root = st.source_root
+    local processed = 0
+    while st.ti < #cfg.targets and (not max_targets or processed < max_targets) do
+        st.ti = st.ti + 1
+        local tref = cfg.targets[st.ti]
+        local detail = tref.jsonFile and st.target_details[tref.jsonFile]
         if detail and detail.compileGroups then
             local id = detail.id or detail.name or tostring(tref.jsonFile)
             local sources = detail.sources or {}
@@ -2456,20 +2608,30 @@ function M._target_attribution_index(codemodel, target_details, source_root, var
                     index.dir_owners[dl] = rec
                 end
                 rec.owners[#rec.owners + 1] = id
-                if not dir_seen[dl] then
-                    dir_seen[dl] = true
+                if not st.dir_seen[dl] then
+                    st.dir_seen[dl] = true
                     index.source_dirs[#index.source_dirs + 1] = dl
                 end
             end
         end
+        processed = processed + 1
     end
 
-    -- Longest directory first → first ancestor hit is the nearest ancestor.
-    table.sort(index.source_dirs, function(a, b)
-        if #a ~= #b then return #a > #b end
-        return a < b
-    end)
-    return index
+    if st.ti >= #cfg.targets then
+        -- Longest directory first → first ancestor hit is the nearest ancestor.
+        table.sort(index.source_dirs, function(a, b)
+            if #a ~= #b then return #a > #b end
+            return a < b
+        end)
+        st.done = true
+    end
+    return st.done
+end
+
+function M._target_attribution_index(codemodel, target_details, source_root, variant)
+    local st = attr_index_new(codemodel, target_details, source_root, variant)
+    while not attr_index_step(st, nil) do end
+    return st.index
 end
 
 --- Attribute a single file path to a target id (§12.3): a listed path uses its
@@ -2624,21 +2786,11 @@ local function header_group(t)
     return g.CXX or g.C or (t.primary_lang and g[t.primary_lang]) or nil
 end
 
---- Build `compile_commands.json` entries for headers (§12.3). Pure. Each
---- header is attributed to a target (`attribute_header`); the entry uses that
---- target's compileGroup chosen at the target level by `header_group`
---- (C++ group when present, else C, else primary — independent of the header's
---- extension) rendered with `render_header_entry`, which carries a
---- language-forcing flag so clangd does not misinfer the language from the
---- extension. Headers are emitted in a deterministic order, each at most once;
---- unattributable headers are omitted.
---- @param index table from `_target_attribution_index`
---- @param compiler_by_lang table<string, string> language token → compiler
---- @param header_paths string[] candidate header paths
---- @param build_dir string each entry's `directory`
---- @param opts? { compiler?: string } fallback compiler
---- @return table[] entries
-function M._build_header_entries(index, compiler_by_lang, header_paths, build_dir, opts)
+--- Create incremental header-entry state (§12.3). Sorts the header candidates
+--- once up front (deterministic order), then attributes/renders them in
+--- batches. Byte-identical to the one-shot build (shared stepper).
+--- @return table state ({ entries } is the accumulated result)
+local function header_entries_new(index, compiler_by_lang, header_paths, build_dir, opts)
     opts = opts or {}
     compiler_by_lang = compiler_by_lang or {}
     local sorted = {}
@@ -2646,26 +2798,69 @@ function M._build_header_entries(index, compiler_by_lang, header_paths, build_di
     table.sort(sorted, function(a, b)
         return norm_path(a):lower() < norm_path(b):lower()
     end)
+    return {
+        index = index,
+        compiler_by_lang = compiler_by_lang,
+        build_dir = build_dir,
+        opts = opts,
+        sorted = sorted,
+        entries = {},
+        emitted = {},
+        hi = 0,
+        done = (#sorted == 0),
+    }
+end
 
-    local entries, emitted = {}, {}
-    for _, path in ipairs(sorted) do
+--- Advance header-entry rendering by up to `max_headers` headers (nil = all
+--- remaining). The per-header attribution (`attribute_header`) is the hot loop
+--- on a large tree, so the generator slices it. Returns true when done.
+--- @param st table from `header_entries_new`
+--- @param max_headers integer|nil
+--- @return boolean done
+local function header_entries_step(st, max_headers)
+    if st.done then return true end
+    local index = st.index
+    local processed = 0
+    while st.hi < #st.sorted and (not max_headers or processed < max_headers) do
+        st.hi = st.hi + 1
+        local path = st.sorted[st.hi]
         local disp = norm_path(path)
         local key = disp:lower()
-        if not emitted[key] then
+        if not st.emitted[key] then
             local id = attribute_header(index, path)
             local t = id and index.targets[id]
             if t then
                 local cg = header_group(t)
                 if cg then
-                    local compiler = compiler_by_lang[cg.language]
-                        or opts.compiler or "cl.exe"
-                    entries[#entries + 1] = render_header_entry(cg, compiler, disp, build_dir)
-                    emitted[key] = true
+                    local compiler = st.compiler_by_lang[cg.language]
+                        or st.opts.compiler or "cl.exe"
+                    st.entries[#st.entries + 1] =
+                        render_header_entry(cg, compiler, disp, st.build_dir)
+                    st.emitted[key] = true
                 end
             end
         end
+        processed = processed + 1
     end
-    return entries
+    if st.hi >= #st.sorted then st.done = true end
+    return st.done
+end
+
+--- Build `compile_commands.json` entries for headers (§12.3). Pure. Each header
+--- is attributed to a target (`attribute_header`) and rendered with that
+--- target's `header_group` compileGroup. Deterministic order, each header at
+--- most once; unattributable headers omitted. Byte-identical to the async
+--- generator (shared stepper).
+--- @param index table from `_target_attribution_index`
+--- @param compiler_by_lang table<string, string> language token → compiler
+--- @param header_paths string[] candidate header paths
+--- @param build_dir string each entry's `directory`
+--- @param opts? { compiler?: string } fallback compiler
+--- @return table[] entries
+function M._build_header_entries(index, compiler_by_lang, header_paths, build_dir, opts)
+    local st = header_entries_new(index, compiler_by_lang, header_paths, build_dir, opts)
+    while not header_entries_step(st, nil) do end
+    return st.entries
 end
 
 --- Per-slice time budget (nanoseconds) for the async generator. Each scheduled
@@ -2675,6 +2870,10 @@ local CC_SLICE_BUDGET_NS = 5 * 1e6 -- ~5ms
 local CC_WALK_DIRS_PER_STEP = 24
 --- Entries encoded+written per inner loop iteration of the write phase.
 local CC_WRITE_BATCH = 64
+--- Targets processed per inner loop iteration of the entries/index build.
+local CC_ENTRIES_TARGETS_PER_STEP = 16
+--- Headers attributed+rendered per inner loop iteration of the headers phase.
+local CC_HEADERS_PER_STEP = 128
 
 --- Reconstruct a `compile_commands.json` from the cmake file-api and write it
 --- into `out_dir` (§12), ASYNCHRONOUSLY and YIELDING (spec §12.2). The heavy
@@ -2713,9 +2912,17 @@ function M.generate_compile_commands_async(build_dir, out_dir, opts, done)
         end
     end
 
+    -- Per-phase batch sizes, overridable by tests via `M._cc_slice_params`
+    -- (e.g. force batch=1 to exercise cross-turn accumulation) — nil = default.
+    local sp = M._cc_slice_params or {}
+    local ENT_STEP = sp.entries or CC_ENTRIES_TARGETS_PER_STEP
+    local HDR_STEP = sp.headers or CC_HEADERS_PER_STEP
+
     -- Mutable state carried across slices.
     local target_details = {}
     local toolchains, source_root, entries, index, walk_st, writer
+    local ent_st, attr_st          -- incremental entries + attribution-index builders
+    local hdr_st, hdr_prepped      -- incremental header-entry builder + its one-time prep
     local ti, wi = 0, 0
     local phase = "read" -- read → entries → walk → headers → write → (finish)
 
@@ -2747,14 +2954,25 @@ function M.generate_compile_commands_async(build_dir, out_dir, opts, done)
                     end
                 end
             elseif phase == "entries" then
-                -- Compiled-source entries + the header-attribution index. Pure
-                -- CPU over already-parsed data (bounded by target/source count).
-                entries = M._build_cc_entries(
-                    codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
-                index = M._target_attribution_index(
-                    codemodel, target_details, source_root, variant)
-                walk_st = header_walk_new(index, opts)
-                phase = "walk"
+                -- Compiled-source entries + the header-attribution index, built
+                -- a bounded batch of targets per turn (§12.2) — both were
+                -- previously one synchronous burst over every target/source.
+                if not ent_st then
+                    ent_st = cc_entries_new(
+                        codemodel, target_details, toolchains, source_root, variant, build_dir, opts)
+                    attr_st = attr_index_new(
+                        codemodel, target_details, source_root, variant)
+                end
+                if not cc_entries_step(ent_st, ENT_STEP) then
+                    -- entries not finished; keep going next iteration
+                elseif not attr_index_step(attr_st, ENT_STEP) then
+                    -- entries done, index still building
+                else
+                    entries = ent_st.entries
+                    index = attr_st.index
+                    walk_st = header_walk_new(index, opts)
+                    phase = "walk"
+                end
             elseif phase == "walk" then
                 -- (a) The Tier-1 header directory walk — bounded dirs per turn.
                 if header_walk_step(walk_st, CC_WALK_DIRS_PER_STEP) then
@@ -2762,27 +2980,34 @@ function M.generate_compile_commands_async(build_dir, out_dir, opts, done)
                 end
             elseif phase == "headers" then
                 -- Attribute discovered headers (excluding compiled sources) and
-                -- append their entries, then open the stream.
-                local compiler_by_lang = compiler_map(toolchains)
-                local compiled = {}
-                for _, e in ipairs(entries) do compiled[norm_path(e.file):lower()] = true end
-                local headers = {}
-                for _, p in ipairs(header_walk_result(walk_st)) do
-                    if not compiled[norm_path(p):lower()] then headers[#headers + 1] = p end
+                -- append their entries — the per-header attribution is sliced a
+                -- bounded batch per turn (§12.2) — then open the stream.
+                if not hdr_prepped then
+                    local compiler_by_lang = compiler_map(toolchains)
+                    local compiled = {}
+                    for _, e in ipairs(entries) do compiled[norm_path(e.file):lower()] = true end
+                    local headers = {}
+                    for _, p in ipairs(header_walk_result(walk_st)) do
+                        if not compiled[norm_path(p):lower()] then headers[#headers + 1] = p end
+                    end
+                    hdr_st = header_entries_new(index, compiler_by_lang, headers, build_dir, opts)
+                    hdr_prepped = true
+                elseif not header_entries_step(hdr_st, HDR_STEP) then
+                    -- header entries still building
+                else
+                    vim.list_extend(entries, hdr_st.entries)
+                    io_mod.ensure_dir(out_dir)
+                    local w, werr = cc_writer_open(out_dir .. "/compile_commands.json")
+                    if not w then
+                        require("loomworks.log").default():warn(
+                            "cmake: compile_commands write failed: %s", werr or "?")
+                        stop = true
+                        done(false, nil)
+                        return
+                    end
+                    writer = w
+                    phase = "write"
                 end
-                vim.list_extend(entries,
-                    M._build_header_entries(index, compiler_by_lang, headers, build_dir, opts))
-                io_mod.ensure_dir(out_dir)
-                local w, werr = cc_writer_open(out_dir .. "/compile_commands.json")
-                if not w then
-                    require("loomworks.log").default():warn(
-                        "cmake: compile_commands write failed: %s", werr or "?")
-                    stop = true
-                    done(false, nil)
-                    return
-                end
-                writer = w
-                phase = "write"
             elseif phase == "write" then
                 -- (c) The streaming write — encode+write entries in batches.
                 local n = 0

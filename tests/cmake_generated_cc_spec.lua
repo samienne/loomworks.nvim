@@ -986,6 +986,92 @@ local function write_reply(root, objects, codemodel_file, toolchains_file)
     return build_dir
 end
 
+-- ---------------------------------------------------------------------------
+-- Slicing parity (§12.2 / FIX C): the entries and header phases are sliced a
+-- bounded batch per turn. Forcing batch=1 must yield a byte-identical database
+-- to the default (whole-batch) run — proves cross-turn accumulation is correct.
+-- ---------------------------------------------------------------------------
+
+describe("cmake generated-cc slicing parity (§12.2)", function()
+    local uvx = vim.uv or vim.loop
+    local SOURCE_ROOT = "C:/proj/src"
+    local codemodel = {
+        kind = "codemodel", version = { major = 2, minor = 0 },
+        paths = { source = SOURCE_ROOT },
+        configurations = { {
+            name = "Debug",
+            targets = {
+                { name = "alpha", id = "alpha::@1", jsonFile = "alpha.json" },
+                { name = "beta", id = "beta::@2", jsonFile = "beta.json" },
+            },
+        } },
+    }
+    local alpha = {
+        name = "alpha", id = "alpha::@1", type = "EXECUTABLE",
+        sources = { { path = "alpha/a1.cpp" }, { path = "alpha/a2.cpp" } },
+        compileGroups = { {
+            language = "CXX", sourceIndexes = { 0, 1 },
+            includes = { { path = "C:/proj/src/alpha/include" } },
+            defines = { { define = "ALPHA" } },
+        } },
+    }
+    local beta = {
+        name = "beta", id = "beta::@2", type = "EXECUTABLE",
+        sources = { { path = "beta/b1.cpp" } },
+        compileGroups = { { language = "CXX", sourceIndexes = { 0 }, defines = { { define = "BETA" } } } },
+    }
+    local toolchains = { toolchains = { { language = "CXX", compiler = { path = "/usr/bin/g++" } } } }
+
+    -- Inject several headers under each target's source dir so the header phase
+    -- does real, sliceable work; other dirs are empty.
+    local function scandir(dir)
+        local d = dir:gsub("\\", "/"):lower()
+        if d == "c:/proj/src/alpha" then
+            return { { name = "a1.h", type = "file" }, { name = "a2.h", type = "file" },
+                     { name = "a3.h", type = "file" } }
+        elseif d == "c:/proj/src/beta" then
+            return { { name = "b1.h", type = "file" }, { name = "b2.h", type = "file" } }
+        end
+        return {}
+    end
+
+    local tmp, build_dir
+    before_each(function()
+        tmp = vim.fn.tempname()
+        build_dir = write_reply(tmp, {
+            ["codemodel.json"] = codemodel,
+            ["alpha.json"] = alpha,
+            ["beta.json"] = beta,
+            ["toolchains.json"] = toolchains,
+        }, "codemodel.json", "toolchains.json")
+    end)
+    after_each(function()
+        cmake._cc_slice_params = nil
+        if tmp then vim.fn.delete(tmp, "rf") end
+    end)
+
+    local function gen_db(out, params)
+        cmake._cc_slice_params = params
+        local settled = false
+        cmake.generate_compile_commands_async(build_dir, out,
+            { variant = "Debug", scandir = scandir },
+            function() settled = true end)
+        assert.is_true(vim.wait(30000, function() return settled end, 5))
+        local f = assert(io.open(out .. "/compile_commands.json", "r"))
+        local db = vim.json.decode(f:read("*a")); f:close()
+        return db
+    end
+
+    it("batch=1 for entries and headers yields an identical database", function()
+        local full = gen_db(tmp .. "/full", nil)
+        local sliced = gen_db(tmp .. "/sliced", { entries = 1, headers = 1 })
+        assert.same(full, sliced)
+        -- Sanity: 3 compiled sources + 5 attributed headers were emitted, so
+        -- both the entries and header phases genuinely stepped more than once.
+        assert.equals(8, #full)
+    end)
+end)
+
 describe("cmake compile_command_for — compiled TU (§12.6)", function()
     local tmp, build_dir
     before_each(function()

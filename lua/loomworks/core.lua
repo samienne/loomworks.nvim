@@ -104,12 +104,22 @@ function Core:tool_state()
     return self._workspace._tool_state
 end
 
---- Whether the workspace has fully resolved — a live workspace with tool
---- detection complete (spec §3.3 `tools_detected`). The deferred-LSP gate
---- (§9.7) releases held server starts once this is true.
+--- Whether the active profile's owned LSP databases are ready — the active
+--- profile's configured build directories have had their compilation databases
+--- generated (or there was nothing to generate). The deferred-LSP gate (§9.7)
+--- releases held server starts once this is true, so a server starts once with
+--- the resolved binary and a populated compile-commands directory.
+---
+--- Terminal cases: with a live workspace, mirror its `_lsp_ready`. With no
+--- workspace but a pending root (setup in progress), report NOT ready so
+--- under-root buffers are held. With neither (loomworks not managing this cwd),
+--- report ready so non-loomworks buffers resolve immediately.
 --- @return boolean
-function Core:is_ready()
-    return self._workspace ~= nil and self._workspace._tool_state == "scanned"
+function Core:lsp_ready()
+    if not self._workspace then
+        return self._pending_root == nil
+    end
+    return self._workspace._lsp_ready == true
 end
 
 --- The configured workspace root, known synchronously even during async init
@@ -119,6 +129,19 @@ end
 function Core:workspace_root()
     if self._workspace then return self._workspace.root end
     return self._pending_root
+end
+
+--- Record the configured workspace root synchronously, BEFORE the async
+--- `setup()` runs (spec §9.7 / FIX A). LSP server installation resolves
+--- `root_dir` synchronously for already-open buffers the moment
+--- `vim.lsp.enable` runs; if that happens before `setup()` set the pending
+--- root, the gate would see no root and resolve immediately (an ungated
+--- start, later restarted). Callers install servers only after this. Resolves
+--- the root the same way `setup()` does and is idempotent — `setup()` sets the
+--- same value again.
+--- @param root? string
+function Core:set_pending_root(root)
+    self._pending_root = self._deps.workspace.resolve_root(root)
 end
 
 --- Initialize the workspace asynchronously.

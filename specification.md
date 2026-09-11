@@ -217,10 +217,11 @@ belongs in the matching `spec/` file.
     loomworks installs (§9.4) is not started against a
     default/fallback configuration and then restarted once the
     workspace loads. For a buffer under the workspace root, loomworks
-    holds the server's start until the workspace has resolved (tool
-    detection complete) or is determined to have failed/timed out,
-    then starts it once with the resolved binary and
-    compilation-database directory (§9.7). Buffers outside any
+    holds the server's start until the active profile's owned LSP
+    database is ready (generated on disk), or there is nothing to
+    generate, or init failed/timed out, then starts it once with the
+    resolved binary and a populated compilation-database directory
+    (§9.7). Buffers outside any
     workspace root, and the `lsp = false` opt-out path (where
     loomworks does not own the start), are exempt — the latter falls
     back to attach-time reconciliation.

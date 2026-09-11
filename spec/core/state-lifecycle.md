@@ -111,7 +111,7 @@ in-memory tool cache.
 During `scanning`, profile materialization (which requires detected
 tools) waits for detection to complete before proceeding.
 
-Likewise, starts of loomworks-installed language servers for buffers under the workspace root are held until detection completes (`tools_detected`), so a server starts once with the resolved binary and compilation-database directory rather than against a default config (§9.7).
+Likewise, starts of loomworks-installed language servers for buffers under the workspace root are held until the active profile's owned LSP databases are ready (generated on disk), so a server starts once with the resolved binary and a populated compilation-database directory rather than against a default config (§9.7).
 
 ### 3.4 Cache state names vs ConfigUnit state names
 
@@ -666,6 +666,7 @@ Events are the primary mechanism for cross-component communication.
 | `deletion_completed`   | `DeletionItem[]` | Deletion operation ends (success) |
 | `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
 | `tools_detected`       | `tools_by_type` | Tool detection completed |
+| `lsp_ready`            | (none) | Active profile's owned LSP databases generated/settled — releases the deferred-LSP gate (§9.7) |
 | `devices_changed`      | `Device[]` | Device scan completed |
 
 Events pass data directly to listeners — no need to re-query, no race
