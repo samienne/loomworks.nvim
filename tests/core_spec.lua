@@ -2725,6 +2725,123 @@ describe("Core", function()
         end)
     end)
 
+    -- -----------------------------------------------------------------------
+    -- Deferred-LSP readiness gate (§9.7 / FIX A + FIX B)
+    -- -----------------------------------------------------------------------
+    describe("lsp readiness (§9.7)", function()
+        it("records the pending root before setup so the gate can hold (FIX A)", function()
+            local core = make_core()
+            assert.is_nil(core:workspace_root())
+            core:set_pending_root("/root")
+            -- Root is known synchronously, BEFORE any async init / server install.
+            assert.equals("/root", core:workspace_root())
+            -- A root is pending but no workspace exists yet → NOT lsp-ready, so a
+            -- buffer already open at startup is held instead of resolving early.
+            assert.is_false(core:lsp_ready())
+        end)
+
+        it("reports lsp_ready when loomworks is not managing this cwd", function()
+            local core = make_core()
+            -- No setup, no pending root → nothing to wait for, non-loomworks
+            -- buffers must resolve immediately.
+            assert.is_true(core:lsp_ready())
+        end)
+
+        it("emits lsp_ready and becomes ready after setup with nothing to generate (FIX B)", function()
+            local core, deps = make_core()
+            core:setup({ root = "/root" })
+            -- Default test module has no parse_targets_async / owned DB → the
+            -- target scan has no gating unit and releases immediately.
+            assert.is_true(core:lsp_ready())
+            local names = {}
+            for _, e in ipairs(deps._events_log) do names[#names + 1] = e.event end
+            assert.is_true(vim.tbl_contains(names, "lsp_ready"))
+        end)
+    end)
+
+    -- Workspace-level gating: _scan_targets_async must hold `lsp_ready` until the
+    -- active profile's configured units' owned databases settle (FIX B).
+    describe("Workspace:_scan_targets_async lsp_ready gating (§9.7)", function()
+        local Workspace = require("loomworks.workspace").Workspace
+
+        --- Build a Workspace stub carrying just enough state for
+        --- `_scan_targets_async`. The module's `refresh_lsp_database` stores its
+        --- `done` in `captured` instead of calling it, so the test controls when
+        --- the DB "settles".
+        local function fake_ws(opts)
+            local events = {}
+            local captured = {}
+            local mod = { impl = {
+                parse_targets_async = function(_, cb) cb(nil) end,
+                refresh_lsp_database = function(_, done) captured[#captured + 1] = done end,
+            } }
+            local unit = {
+                _project = { key = "App", path = "app", _module = mod },
+                _tool_data = nil,
+                build_dir = function() return opts.build_dir end,
+                variant = function() return "Debug" end,
+                set_targets = function() end,
+            }
+            local pp = { _config_unit = unit }
+            local profile = { projects = function() return { pp } end }
+            local self = setmetatable({
+                root = "/root",
+                _config_units = { unit },
+                _active_profile = opts.has_profile and profile or nil,
+                _lsp_ready = false,
+                _tracker = nil,
+                _core = { _workspace = true, _deps = {
+                    scan_targets = opts.scan_targets,
+                    schedule = function(fn) fn() end,
+                    events = { emit = function(e) events[#events + 1] = e end },
+                } },
+            }, Workspace)
+            return self, events, captured
+        end
+
+        local function has(list, v) return vim.tbl_contains(list, v) end
+
+        it("holds lsp_ready until the active profile's configured DB settles", function()
+            local self, events, captured =
+                fake_ws({ has_profile = true, build_dir = "/root/build/App/Debug" })
+            self:_scan_targets_async()
+
+            -- Parse ran and the DB refresh was kicked off, but its `done` has not
+            -- fired yet → the gate is still closed.
+            assert.is_false(self._lsp_ready)
+            assert.is_false(has(events, "lsp_ready"))
+            assert.equals(1, #captured, "one gating unit's DB refresh should be pending")
+
+            -- Settle the owned database.
+            captured[1](true)
+            assert.is_true(self._lsp_ready)
+            assert.is_true(has(events, "lsp_ready"))
+        end)
+
+        it("emits lsp_ready immediately when there is no active profile", function()
+            local self, events = fake_ws({ has_profile = false, build_dir = "/root/build/App/Debug" })
+            self:_scan_targets_async()
+            assert.is_true(self._lsp_ready)
+            assert.is_true(has(events, "lsp_ready"))
+        end)
+
+        it("emits lsp_ready immediately when the active unit is unconfigured", function()
+            -- No build_dir → nothing to generate for the active profile.
+            local self, events = fake_ws({ has_profile = true, build_dir = nil })
+            self:_scan_targets_async()
+            assert.is_true(self._lsp_ready)
+            assert.is_true(has(events, "lsp_ready"))
+        end)
+
+        it("emits lsp_ready immediately in headless mode (scan_targets = false)", function()
+            local self, events =
+                fake_ws({ has_profile = true, build_dir = "/root/build/App/Debug", scan_targets = false })
+            self:_scan_targets_async()
+            assert.is_true(self._lsp_ready)
+            assert.is_true(has(events, "lsp_ready"))
+        end)
+    end)
+
     describe("get_project_options", function()
         it("delegates to module get_options with cached build_dir", function()
             local options_args = {}

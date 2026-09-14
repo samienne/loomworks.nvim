@@ -59,6 +59,8 @@ This lets a single nvim session transparently use an SDK clangd for
 buffers inside a workspace project and the user's stock clangd for
 buffers outside any workspace.
 
+With deferred start (core §9.7), in the default path this resolution runs only after the workspace is ready, so step 2 normally finds the project and the resolved directory on the first start. When the generated `compile_commands.json` first appears *after* the client started (a project's first-ever configure), core re-resolves the client on the generation-completion signal (core §8.4, cmake §12.4) so the directory is applied without reopening the buffer.
+
 ## 4. Per-buffer root_dir resolution
 
 Same shape as cmd:
@@ -101,6 +103,7 @@ The user's explicit `capabilities` always wins.
   or `compile_commands_dir` changed for the new active set.
 - `on_workspace_changed()` — restart all pre-existing clangd clients
   so they pick up loomworks-aware routing.
+- **Deferred start (core §9.7)** normally holds clangd until the workspace is ready, so in the default path it starts already-correct and no startup restart occurs. `reconcile_on_attach(client)` remains as the repair path for the `lsp = false` opt-out (where loomworks cannot hold the start) and as a safety net: on attach, if a client's recorded cmd lacks the resolved `--compile-commands-dir`, it is restarted once. In the gated default path it finds the directory already applied and does nothing.
 
 ## 8. Status fields
 

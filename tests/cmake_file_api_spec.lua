@@ -349,4 +349,60 @@ describe("cmake parse_targets", function()
         vim.fn.mkdir(tmp_dir .. "/.cmake/api/v1/reply", "p")
         assert.is_nil(cmake.parse_targets({ build_dir = tmp_dir }))
     end)
+
+    it("resolves dependencies via an id→name map (no O(n^2) scan), edges preserved", function()
+        -- A wider graph exercises the map-based resolution: every project-owned
+        -- dependency edge must survive, filtered to project-owned targets only.
+        write_file_api(tmp_dir, {
+            { name = "app", type = "EXECUTABLE", dependencies = { "libcore", "libutil", "external" } },
+            { name = "libcore", type = "STATIC_LIBRARY", dependencies = { "libutil" } },
+            { name = "libutil", type = "SHARED_LIBRARY" },
+            { name = "external", type = "SHARED_LIBRARY" },
+        }, "", { "app", "libcore", "libutil" }) -- external is NOT project-owned
+
+        local targets = cmake.parse_targets({ build_dir = tmp_dir })
+        assert.is_not_nil(targets)
+        assert.are.same({ "libcore", "libutil" }, targets.app.dependencies) -- external filtered out
+        assert.are.same({ "libutil" }, targets.libcore.dependencies)
+        assert.is_nil(targets.libutil.dependencies)
+        assert.is_nil(targets.external) -- not project-owned → excluded entirely
+    end)
+
+    it("parse_targets_async yields and returns output identical to parse_targets", function()
+        write_file_api(tmp_dir, {
+            { name = "app", type = "EXECUTABLE", dependencies = { "libcore", "libutil" }, artifact = "app.exe" },
+            { name = "libcore", type = "STATIC_LIBRARY", dependencies = { "libutil" } },
+            { name = "libutil", type = "SHARED_LIBRARY" },
+        })
+
+        local sync = cmake.parse_targets({ build_dir = tmp_dir })
+        assert.is_not_nil(sync)
+
+        local result, called = nil, false
+        cmake.parse_targets_async({ build_dir = tmp_dir }, function(t)
+            result = t
+            called = true
+        end)
+        -- Genuinely incremental: NOTHING runs synchronously — the first read is
+        -- deferred to a scheduled turn (proves it does not do all work inline).
+        assert.is_false(called, "parse_targets_async must not complete synchronously")
+        assert.is_true(vim.wait(5000, function() return called end, 5),
+            "parse_targets_async never completed")
+
+        assert.are.same(sync, result)
+        -- Dependency edges specifically preserved by the incremental path.
+        assert.are.same({ "libcore", "libutil" }, result.app.dependencies)
+        assert.are.same({ "libutil" }, result.libcore.dependencies)
+    end)
+
+    it("parse_targets_async yields nil when there is no reply directory", function()
+        local called, result = false, "sentinel"
+        cmake.parse_targets_async({ build_dir = tmp_dir }, function(t)
+            result = t
+            called = true
+        end)
+        assert.is_false(called)
+        assert.is_true(vim.wait(5000, function() return called end, 5))
+        assert.is_nil(result)
+    end)
 end)

@@ -167,8 +167,14 @@ belongs in the matching `spec/` file.
 
 12. **Non-blocking initialization**: Workspace setup never blocks the
     Neovim UI thread. File reads use async I/O. Tool detection runs
-    as a background task. Only JSON parsing and merge (both fast,
-    CPU-bound operations) run synchronously within callbacks.
+    as a background task. Generation of a loomworks-owned LSP
+    compilation database (cmake's `compile_commands.json`, §8.4
+    `refresh_lsp_database`) runs asynchronously and yielding, never
+    synchronously on the UI thread however large the project. Only
+    JSON parsing and merge (both fast, CPU-bound operations) run
+    synchronously within callbacks; the owned-database freshness
+    *guard* (a cheap mtime check) may run synchronously, but the
+    reconstruction it gates may not.
 
 13. **The tool owns the compiler**: The compiler for a profile is
     determined solely by the profile's tool (kit). A project
@@ -206,6 +212,19 @@ belongs in the matching `spec/` file.
     `built` unit sharing that artifact **overwritten** (§1.7), so the cache
     never claims two units simultaneously own the same on-disk artifact as
     fresh (invariant 1).
+
+16. **Controlled servers start ready, not twice**: A language server
+    loomworks installs (§9.4) is not started against a
+    default/fallback configuration and then restarted once the
+    workspace loads. For a buffer under the workspace root, loomworks
+    holds the server's start until the active profile's owned LSP
+    database is ready (generated on disk), or there is nothing to
+    generate, or init failed/timed out, then starts it once with the
+    resolved binary and a populated compilation-database directory
+    (§9.7). Buffers outside any
+    workspace root, and the `lsp = false` opt-out path (where
+    loomworks does not own the start), are exempt — the latter falls
+    back to attach-time reconciliation.
 
 ---
 

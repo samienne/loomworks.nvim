@@ -296,11 +296,16 @@ end
 --- buffers (see `loomworks.lsp.excluded`) before any resolution — this
 --- is the primary gate that keeps LSP off non-file buffers (diffview,
 --- fugitive, quickfix, ...).
+--- Routed through the readiness gate (core §9.7): for a buffer under the
+--- workspace root, the start is HELD until the workspace resolves so clangd
+--- starts once with the correct binary + compile_commands_dir. The resolution
+--- itself (what root is chosen) is unchanged — only WHEN it runs is deferred.
+--- Excluded buffers take the immediate fall-through and are never held.
 --- @param fallback? fun(bufnr: number, on_dir: fun(root: string))
 --- @return fun(bufnr: number, on_dir: fun(root: string))
 function M.root_dir_factory(fallback)
-    return function(bufnr, on_dir)
-        if require("loomworks.lsp").excluded(bufnr) then return end
+    --- The existing per-buffer resolution: routed project entry, else fallback.
+    local function resolve(bufnr, on_dir)
         local ok, lw = pcall(require, "loomworks")
         if ok then
             local project = lw.project_for_buf(bufnr)
@@ -313,6 +318,11 @@ function M.root_dir_factory(fallback)
             end
         end
         if fallback then fallback(bufnr, on_dir) end
+    end
+    return function(bufnr, on_dir)
+        local lsp = require("loomworks.lsp")
+        if lsp.excluded(bufnr) then return end -- never queued
+        lsp.gated_root_dir(bufnr, on_dir, resolve)
     end
 end
 
@@ -524,6 +534,28 @@ function M.reconcile_on_attach(client)
     vim.notify("loomworks: restarting clangd for " .. (project and project.key or "?")
         .. " — applying compile-commands-dir (was started before the workspace loaded)")
     restart_clients({ client })
+end
+
+--- Completion nudge (core §9.7 / cmake §12.4): the owned `compile_commands.json`
+--- for this project's build dir was newly (re)written. Reuses the SAME check
+--- `reconcile_on_attach` uses (`_needs_restart_for_dir`): if a running client's
+--- recorded cmd lacks the now-resolvable `--compile-commands-dir`, restart it
+--- once to apply it; otherwise no-op. Idempotent — a client already carrying
+--- the correct dir is never restarted, and in the common case (atomic-rename
+--- replacement, the DB already existed) clangd merely auto-reloads the content.
+--- @param root_dir string the project's clangd root_dir
+function M.on_owned_database_changed(root_dir)
+    if not root_dir then return end
+    local project, entry = find_by_root(root_dir)
+    if not entry then return end
+    local desired = resolve_compile_commands_dir(entry)
+    local resolved = _resolved_cmd[normalize(root_dir)]
+    if not M._needs_restart_for_dir(resolved, desired) then return end
+    local clients = find_clients(root_dir)
+    if #clients == 0 then return end
+    vim.notify("loomworks: restarting clangd for " .. (project and project.key or "?")
+        .. " — owned compile_commands.json now available")
+    restart_clients(clients)
 end
 
 --- Restart every clangd client when a user option that affects the

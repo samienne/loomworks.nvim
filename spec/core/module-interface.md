@@ -342,17 +342,11 @@ blocked on that basis. This graceful absence — not a guessed default — is
 the intended behavior for build systems whose artifact layout loomworks
 does not model. See the per-module specs for which modules implement it.
 
-**`refresh_lsp_database(ctx)`** *(optional)*
+**`refresh_lsp_database(ctx, done?)`** *(optional)*
 
-Regenerate any loomworks-owned LSP compilation database for a build
-directory, if stale. Best-effort and **idempotent** — the module must gate
-the work on its own freshness check (e.g. an mtime guard) so repeated calls
-are cheap no-ops. Core calls this after a successful configure or build task
-for the affected ConfigUnit, and again whenever a watched path (see below)
-changes. `ctx` carries `build_dir`, `workspace_root`, `variant`, and
-`compiler` (the module uses only what it needs). Modules with no owned
-database (the common case) omit this method. See
-[`spec/modules/cmake.md`](spec/modules/cmake.md) §12 for cmake's use.
+Regenerate any loomworks-owned LSP compilation database for a build directory, if stale. Best-effort, **idempotent**, and **non-blocking** — the module must gate the work on its own freshness check (e.g. an mtime guard) so repeated calls are cheap no-ops, and it must run any actual (re)generation asynchronously so a large database never blocks the UI thread. Core calls this after a successful configure or build task for the affected ConfigUnit, and again whenever a watched path (see below) changes. `ctx` carries `build_dir`, `workspace_root`, `variant`, and `compiler` (the module uses only what it needs).
+
+`done` is an optional completion callback the module invokes once when the refresh settles: `done(changed)` with `changed = true` iff it actually (re)wrote the database. Core uses it to re-resolve LSP wiring for the affected ConfigUnit's projects when the database changed, so a client picks up a database that first appeared after it started. A module with nothing to report may omit calling `done`; core treats a never-called `done` as "no observable change". Modules with no owned database (the common case) omit this method entirely. See [`spec/modules/cmake.md`](spec/modules/cmake.md) §12 for cmake's use.
 
 **`lsp_database_watch_path(ctx) → string?`** *(optional)*
 

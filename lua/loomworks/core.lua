@@ -11,6 +11,7 @@
 --- @field _workspace loomworks.Workspace|nil
 --- @field _setup_error { root: string, message: string }|nil set when setup fails
 --- @field _state "uninitialized"|"initializing"|"initialized"
+--- @field _pending_root string|nil root passed to setup(), known before async init resolves
 local Core = {}
 Core.__index = Core
 
@@ -75,6 +76,7 @@ function Core.new(deps)
     self._workspace = nil
     self._setup_error = nil
     self._state = "uninitialized"
+    self._pending_root = nil
     return self
 end
 
@@ -102,6 +104,46 @@ function Core:tool_state()
     return self._workspace._tool_state
 end
 
+--- Whether the active profile's owned LSP databases are ready — the active
+--- profile's configured build directories have had their compilation databases
+--- generated (or there was nothing to generate). The deferred-LSP gate (§9.7)
+--- releases held server starts once this is true, so a server starts once with
+--- the resolved binary and a populated compile-commands directory.
+---
+--- Terminal cases: with a live workspace, mirror its `_lsp_ready`. With no
+--- workspace but a pending root (setup in progress), report NOT ready so
+--- under-root buffers are held. With neither (loomworks not managing this cwd),
+--- report ready so non-loomworks buffers resolve immediately.
+--- @return boolean
+function Core:lsp_ready()
+    if not self._workspace then
+        return self._pending_root == nil
+    end
+    return self._workspace._lsp_ready == true
+end
+
+--- The configured workspace root, known synchronously even during async init
+--- (spec §9.7). Falls back to the last root passed to `setup()` before a
+--- workspace object exists. nil when setup was never called.
+--- @return string|nil
+function Core:workspace_root()
+    if self._workspace then return self._workspace.root end
+    return self._pending_root
+end
+
+--- Record the configured workspace root synchronously, BEFORE the async
+--- `setup()` runs (spec §9.7 / FIX A). LSP server installation resolves
+--- `root_dir` synchronously for already-open buffers the moment
+--- `vim.lsp.enable` runs; if that happens before `setup()` set the pending
+--- root, the gate would see no root and resolve immediately (an ungated
+--- start, later restarted). Callers install servers only after this. Resolves
+--- the root the same way `setup()` does and is idempotent — `setup()` sets the
+--- same value again.
+--- @param root? string
+function Core:set_pending_root(root)
+    self._pending_root = self._deps.workspace.resolve_root(root)
+end
+
 --- Initialize the workspace asynchronously.
 --- Reads files in parallel, then processes synchronously via vim.schedule.
 --- @param opts? { root?: string }
@@ -114,6 +156,10 @@ function Core:setup(opts)
 
     local ws_mod = self._deps.workspace
     local root = ws_mod.resolve_root(opts and opts.root or nil)
+    -- Remember the configured root synchronously, before async init resolves,
+    -- so the deferred-LSP gate (spec §9.7) can decide whether a buffer is under
+    -- the workspace root while the workspace is still initializing.
+    self._pending_root = root
     local paths = ws_mod.paths(root)
 
     self._deps.read_files_async(

@@ -972,6 +972,19 @@ require("loomworks").setup({})
 -- Outside any workspace, the default cmd is used.
 ```
 
+### Deferred start until the workspace is ready
+
+Inside a workspace, loomworks **holds** the server start for a project
+buffer until the workspace has finished loading and the active profile's
+`compile_commands.json` is on disk, then starts clangd once with the
+resolved binary and `--compile-commands-dir` already in place. This avoids
+the flash where clangd would otherwise attach with a default config and get
+restarted a moment later. The database is generated asynchronously, so this
+is a brief wait, not a frozen UI; buffers outside any workspace attach
+immediately. Session-managed buffers restored at startup are held the same
+way — the workspace is detected from the buffer's own path even before
+auto-load runs.
+
 ### Overriding the clangd config
 
 ```lua

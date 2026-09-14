@@ -712,19 +712,32 @@ describe("cmake generated-cc freshness", function()
         uvx.fs_utime(reply .. "/index-2025.json", sec, sec)
     end
 
+    --- Drive the now-async refresh to completion and return `changed`. The
+    --- freshness GUARD is synchronous, but any actual (re)generation is async
+    --- (§12.2/§12.4), so we await the `done` callback.
+    local function await_refresh(bd, od, opts)
+        local changed, settled = nil, false
+        cmake.refresh_generated_cc(bd, od, opts, function(c)
+            changed = c; settled = true
+        end)
+        assert.is_true(vim.wait(30000, function() return settled end, 5),
+            "refresh_generated_cc never settled")
+        return changed
+    end
+
     it("generates on first call, no-ops when the reply hasn't advanced", function()
-        local first = cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" })
+        local first = await_refresh(build_dir, out_dir, { variant = "Debug" })
         assert.is_true(first)
         assert.is_truthy(uvx.fs_stat(out_dir .. "/compile_commands.json"))
 
         -- Pin the reply mtime to the past so it is not newer than our output.
         set_reply_mtime(os.time() - 100)
-        local second = cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" })
+        local second = await_refresh(build_dir, out_dir, { variant = "Debug" })
         assert.is_false(second)
     end)
 
     it("regenerates after a simulated reconfigure bumps the reply mtime", function()
-        assert.is_true(cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" }))
+        assert.is_true(await_refresh(build_dir, out_dir, { variant = "Debug" }))
         -- Make output look older than a fresh reconfigure.
         local out_file = out_dir .. "/compile_commands.json"
         uvx.fs_utime(out_file, os.time() - 100, os.time() - 100)
@@ -732,7 +745,7 @@ describe("cmake generated-cc freshness", function()
         set_reply_mtime(os.time() + 100)
         -- This is exactly what the task-completion / reply-dir-watch triggers
         -- invoke; it must regenerate.
-        assert.is_true(cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" }))
+        assert.is_true(await_refresh(build_dir, out_dir, { variant = "Debug" }))
     end)
 
     it("refresh_lsp_database regenerates via the workspace-root out dir", function()
@@ -757,11 +770,14 @@ describe("cmake generated-cc freshness", function()
         local i = assert(io.open(reply .. "/index-2025.json", "w"))
         i:write(vim.json.encode(index)); i:close()
 
+        local settled = false
         cmake.refresh_lsp_database({
             build_dir = bd,
             workspace_root = root,
             variant = "Debug",
-        })
+        }, function() settled = true end)
+        assert.is_true(vim.wait(30000, function() return settled end, 5),
+            "refresh_lsp_database never settled")
         assert.is_truthy(uvx.fs_stat(root .. "/.nvim/cache/cc/app/Debug/compile_commands.json"))
     end)
 
@@ -769,6 +785,173 @@ describe("cmake generated-cc freshness", function()
         assert.equals(build_dir .. "/.cmake/api/v1/reply",
             cmake.lsp_database_watch_path({ build_dir = build_dir }))
         assert.is_nil(cmake.lsp_database_watch_path({ build_dir = tmp .. "/nope" }))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Async generation — yielding, single-flight, atomic replacement (§12.2)
+-- ---------------------------------------------------------------------------
+
+describe("cmake async generated-cc", function()
+    local uvx = vim.uv or vim.loop
+    local tmp, build_dir, out_dir
+    local out_file
+    before_each(function()
+        tmp = vim.fn.tempname()
+        build_dir = tmp .. "/build"
+        out_dir = tmp .. "/cache/cc"
+        out_file = out_dir .. "/compile_commands.json"
+        vim.fn.mkdir(build_dir .. "/.cmake/api/v1/reply", "p")
+        local reply = build_dir .. "/.cmake/api/v1/reply"
+        local function cp(src, dst)
+            local f = assert(io.open(FIXTURES .. "/" .. src, "r"))
+            local body = f:read("*a"); f:close()
+            local o = assert(io.open(reply .. "/" .. dst, "w"))
+            o:write(body); o:close()
+        end
+        cp("codemodel-v2.json", "codemodel-v2-x.json")
+        cp("target-app-Debug.json", "target-app-Debug.json")
+        cp("toolchains-v1.json", "toolchains-v1-x.json")
+        local index = { objects = {
+            { kind = "codemodel", version = { major = 2, minor = 0 }, jsonFile = "codemodel-v2-x.json" },
+            { kind = "toolchains", version = { major = 1, minor = 0 }, jsonFile = "toolchains-v1-x.json" },
+        } }
+        local i = assert(io.open(reply .. "/index-2025.json", "w"))
+        i:write(vim.json.encode(index)); i:close()
+    end)
+    after_each(function()
+        if tmp then vim.fn.delete(tmp, "rf") end
+    end)
+
+    local function read_db()
+        local f = io.open(out_file, "r")
+        if not f then return nil end
+        local raw = f:read("*a"); f:close()
+        return vim.json.decode(raw)
+    end
+
+    it("does not run synchronously and yields the same DB (content parity)", function()
+        -- The heavy work is dispatched; the DB must NOT exist the instant the
+        -- async call returns (proves nothing ran inline).
+        local settled = false
+        cmake.generate_compile_commands_async(build_dir, out_dir, { variant = "Debug" },
+            function() settled = true end)
+        assert.is_nil(uvx.fs_stat(out_file), "DB must not exist synchronously")
+        assert.is_true(vim.wait(30000, function() return settled end, 5))
+
+        local async_db = read_db()
+        assert.is_truthy(async_db)
+        assert.equals(2, #async_db)
+
+        -- Parity: the sync reference generator (same helpers) yields an
+        -- identically-sized database with the same shape.
+        local ref_dir = tmp .. "/ref"
+        local n = cmake.generate_compile_commands(build_dir, ref_dir, { variant = "Debug" })
+        assert.equals(#async_db, n)
+    end)
+
+    it("single-flight: two overlapping refreshes share ONE run, both settle", function()
+        local orig = cmake.generate_compile_commands_async
+        local runs = 0
+        cmake.generate_compile_commands_async = function(...)
+            runs = runs + 1
+            return orig(...)
+        end
+
+        local a, b = nil, nil
+        -- Both dispatched synchronously; the second coalesces onto the first.
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function(c) a = c end)
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function(c) b = c end)
+
+        assert.is_true(vim.wait(30000, function() return a ~= nil and b ~= nil end, 5))
+        cmake.generate_compile_commands_async = orig
+
+        -- One actual generation (the mid-run dirty re-check finds it fresh).
+        assert.equals(1, runs)
+        assert.is_true(a)
+        assert.is_true(b)
+        assert.is_truthy(uvx.fs_stat(out_file))
+    end)
+
+    it("single-flight: a mid-run dirty request triggers exactly one re-run", function()
+        local orig = cmake.generate_compile_commands_async
+        local runs = 0
+        cmake.generate_compile_commands_async = function(...)
+            runs = runs + 1
+            return orig(...)
+        end
+
+        local a, b = nil, nil
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function(c) a = c end)
+        -- Bump the reply mtime into the future so the on-settle dirty re-check
+        -- still sees a stale DB → forces exactly one re-run (dirty is one-shot).
+        uvx.fs_utime(build_dir .. "/.cmake/api/v1/reply/index-2025.json",
+            os.time() + 100, os.time() + 100)
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function(c) b = c end)
+
+        assert.is_true(vim.wait(30000, function() return a ~= nil and b ~= nil end, 5))
+        cmake.generate_compile_commands_async = orig
+
+        assert.equals(2, runs) -- initial run + exactly one dirty re-run
+        assert.is_true(a)
+        assert.is_true(b)
+    end)
+
+    it("mtime gate short-circuits a fresh DB with done(false), no regen", function()
+        -- Prime the DB.
+        local settled = false
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function() settled = true end)
+        assert.is_true(vim.wait(30000, function() return settled end, 5))
+        -- Pin the reply into the past so the guard sees the DB as fresh.
+        uvx.fs_utime(build_dir .. "/.cmake/api/v1/reply/index-2025.json",
+            os.time() - 100, os.time() - 100)
+
+        local orig = cmake.generate_compile_commands_async
+        local runs = 0
+        cmake.generate_compile_commands_async = function(...) runs = runs + 1; return orig(...) end
+        local changed = nil
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function(c) changed = c end)
+        assert.is_true(vim.wait(30000, function() return changed ~= nil end, 5))
+        cmake.generate_compile_commands_async = orig
+
+        assert.is_false(changed)
+        assert.equals(0, runs)
+    end)
+
+    it("atomic rename keeps the PREVIOUS DB readable during regeneration", function()
+        -- Prime a known-good v1 database with a sentinel entry.
+        vim.fn.mkdir(out_dir, "p")
+        local v1 = assert(io.open(out_file, "w"))
+        v1:write(vim.json.encode({ { file = "SENTINEL", directory = build_dir, arguments = { "cc" } } }))
+        v1:close()
+        -- Make it look stale so a regen is warranted.
+        uvx.fs_utime(out_file, os.time() - 100, os.time() - 100)
+        uvx.fs_utime(build_dir .. "/.cmake/api/v1/reply/index-2025.json",
+            os.time() + 100, os.time() + 100)
+
+        local settled = false
+        cmake.refresh_generated_cc(build_dir, out_dir, { variant = "Debug" },
+            function() settled = true end)
+        -- Immediately after dispatch (before any slice ran) the OLD DB must be
+        -- intact and fully readable — regeneration writes a .tmp and only
+        -- renames atomically at the end.
+        local mid = read_db()
+        assert.is_truthy(mid)
+        assert.equals(1, #mid)
+        assert.equals("SENTINEL", mid[1].file)
+
+        assert.is_true(vim.wait(30000, function() return settled end, 5))
+        -- After completion, the DB is the freshly generated v2 (valid array).
+        local v2 = read_db()
+        assert.is_truthy(v2)
+        assert.equals(2, #v2)
+        assert.is_not.equals("SENTINEL", v2[1].file)
     end)
 end)
 
@@ -802,6 +985,92 @@ local function write_reply(root, objects, codemodel_file, toolchains_file)
     i:write(vim.json.encode({ objects = index_objects })); i:close()
     return build_dir
 end
+
+-- ---------------------------------------------------------------------------
+-- Slicing parity (§12.2 / FIX C): the entries and header phases are sliced a
+-- bounded batch per turn. Forcing batch=1 must yield a byte-identical database
+-- to the default (whole-batch) run — proves cross-turn accumulation is correct.
+-- ---------------------------------------------------------------------------
+
+describe("cmake generated-cc slicing parity (§12.2)", function()
+    local uvx = vim.uv or vim.loop
+    local SOURCE_ROOT = "C:/proj/src"
+    local codemodel = {
+        kind = "codemodel", version = { major = 2, minor = 0 },
+        paths = { source = SOURCE_ROOT },
+        configurations = { {
+            name = "Debug",
+            targets = {
+                { name = "alpha", id = "alpha::@1", jsonFile = "alpha.json" },
+                { name = "beta", id = "beta::@2", jsonFile = "beta.json" },
+            },
+        } },
+    }
+    local alpha = {
+        name = "alpha", id = "alpha::@1", type = "EXECUTABLE",
+        sources = { { path = "alpha/a1.cpp" }, { path = "alpha/a2.cpp" } },
+        compileGroups = { {
+            language = "CXX", sourceIndexes = { 0, 1 },
+            includes = { { path = "C:/proj/src/alpha/include" } },
+            defines = { { define = "ALPHA" } },
+        } },
+    }
+    local beta = {
+        name = "beta", id = "beta::@2", type = "EXECUTABLE",
+        sources = { { path = "beta/b1.cpp" } },
+        compileGroups = { { language = "CXX", sourceIndexes = { 0 }, defines = { { define = "BETA" } } } },
+    }
+    local toolchains = { toolchains = { { language = "CXX", compiler = { path = "/usr/bin/g++" } } } }
+
+    -- Inject several headers under each target's source dir so the header phase
+    -- does real, sliceable work; other dirs are empty.
+    local function scandir(dir)
+        local d = dir:gsub("\\", "/"):lower()
+        if d == "c:/proj/src/alpha" then
+            return { { name = "a1.h", type = "file" }, { name = "a2.h", type = "file" },
+                     { name = "a3.h", type = "file" } }
+        elseif d == "c:/proj/src/beta" then
+            return { { name = "b1.h", type = "file" }, { name = "b2.h", type = "file" } }
+        end
+        return {}
+    end
+
+    local tmp, build_dir
+    before_each(function()
+        tmp = vim.fn.tempname()
+        build_dir = write_reply(tmp, {
+            ["codemodel.json"] = codemodel,
+            ["alpha.json"] = alpha,
+            ["beta.json"] = beta,
+            ["toolchains.json"] = toolchains,
+        }, "codemodel.json", "toolchains.json")
+    end)
+    after_each(function()
+        cmake._cc_slice_params = nil
+        if tmp then vim.fn.delete(tmp, "rf") end
+    end)
+
+    local function gen_db(out, params)
+        cmake._cc_slice_params = params
+        local settled = false
+        cmake.generate_compile_commands_async(build_dir, out,
+            { variant = "Debug", scandir = scandir },
+            function() settled = true end)
+        assert.is_true(vim.wait(30000, function() return settled end, 5))
+        local f = assert(io.open(out .. "/compile_commands.json", "r"))
+        local db = vim.json.decode(f:read("*a")); f:close()
+        return db
+    end
+
+    it("batch=1 for entries and headers yields an identical database", function()
+        local full = gen_db(tmp .. "/full", nil)
+        local sliced = gen_db(tmp .. "/sliced", { entries = 1, headers = 1 })
+        assert.same(full, sliced)
+        -- Sanity: 3 compiled sources + 5 attributed headers were emitted, so
+        -- both the entries and header phases genuinely stepped more than once.
+        assert.equals(8, #full)
+    end)
+end)
 
 describe("cmake compile_command_for — compiled TU (§12.6)", function()
     local tmp, build_dir
