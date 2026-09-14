@@ -177,16 +177,12 @@ describe("cpp_compilers.detect PATH scan", function()
     -- and meson compiled C sources as C++ ("cannot compile programs").
     it("derives the clang C driver as clang, not clang++", function()
         cpp.clear_cache()
+        -- Only LLVM clang++/clang exist (no gcc/g++, no versioned names).
+        cpp._path_index = {
+            ["clang++"] = "C:/LLVM/bin/clang++.exe",
+            ["clang"] = "C:/LLVM/bin/clang.exe",
+        }
         with_stubs({
-            -- Only LLVM clang++/clang exist (no gcc/g++, no versioned names).
-            ["vim.fn.executable"] = function(name)
-                return (name == "clang++" or name == "clang") and 1 or 0
-            end,
-            ["vim.fn.exepath"] = function(name)
-                if name == "clang++" then return "C:/LLVM/bin/clang++.exe" end
-                if name == "clang" then return "C:/LLVM/bin/clang.exe" end
-                return ""
-            end,
             ["vim.fn.system"] = function() return "clang version 18.1.7\n" end,
             ["vim.v"] = { shell_error = 0 },
             ["vim.uv.fs_stat"] = function() return nil end,
@@ -208,13 +204,15 @@ describe("cpp_compilers.detect PATH scan", function()
     -- "gcc-17.0.0 / GCC 17.0.0". A CI matrix pinning gcc-17 expecting GCC
     -- silently got clang. Family must come from `--version`, as probe_path
     -- already does.
+    -- The four plain drivers all resolve into /usr/bin via the PATH index.
+    local function macos_index()
+        return {
+            gcc = "/usr/bin/gcc", ["g++"] = "/usr/bin/g++",
+            clang = "/usr/bin/clang", ["clang++"] = "/usr/bin/clang++",
+        }
+    end
     local function macos_stubs(system)
         return {
-            ["vim.fn.executable"] = function(name)
-                return (name == "gcc" or name == "g++"
-                    or name == "clang" or name == "clang++") and 1 or 0
-            end,
-            ["vim.fn.exepath"] = function(name) return "/usr/bin/" .. name end,
             ["vim.fn.system"] = system,
             ["vim.v"] = { shell_error = 0 },
             ["vim.uv.fs_stat"] = function() return nil end,
@@ -233,6 +231,7 @@ describe("cpp_compilers.detect PATH scan", function()
 
     it("does not report Apple's gcc shim as GCC", function()
         cpp.clear_cache()
+        cpp._path_index = macos_index()
         with_stubs(macos_stubs(apple_version), function()
             for _, c in ipairs(cpp.detect()) do
                 assert.not_equals("gcc", c.family,
@@ -245,6 +244,7 @@ describe("cpp_compilers.detect PATH scan", function()
 
     it("collapses the gcc/clang shims into a single compiler entry", function()
         cpp.clear_cache()
+        cpp._path_index = macos_index()
         with_stubs(macos_stubs(apple_version), function()
             local found = cpp.detect()
             assert.equals(1, #found,
@@ -261,6 +261,7 @@ describe("cpp_compilers.detect PATH scan", function()
     -- on a system where gcc is genuinely GCC.
     it("still detects a real GCC alongside clang", function()
         cpp.clear_cache()
+        cpp._path_index = macos_index()
         with_stubs(macos_stubs(function(cmd)
             local path = type(cmd) == "table" and cmd[1] or tostring(cmd)
             if path:match("clang") then
@@ -277,5 +278,98 @@ describe("cpp_compilers.detect PATH scan", function()
             assert.equals("18.1.7", by_family.clang.version)
         end)
         cpp.clear_cache()
+    end)
+end)
+
+describe("cpp_compilers PATH executable index", function()
+    -- `_build_path_index` is a pure function: it scans a raw $PATH string via an
+    -- injected directory-lister, so it is testable without touching the real FS.
+    -- The lister maps a directory to the entry names it "contains".
+    local function lister(dirs)
+        return function(dir) return dirs[dir] end
+    end
+
+    it("strips exe extensions and matches case-insensitively on Windows", function()
+        local index = cpp._build_path_index(
+            [[C:\tools\bin]], true,
+            lister({ ["C:\\tools\\bin"] = { "GCC.EXE", "Clang.Cmd", "notes.txt" } }))
+        -- Base key is lower-cased and the extension stripped.
+        assert.equals("C:/tools/bin/GCC.EXE", index["gcc"])
+        assert.equals("C:/tools/bin/Clang.Cmd", index["clang"])
+        -- A non-exe file is still indexed (Windows key is lower-cased whole).
+        assert.equals("C:/tools/bin/notes.txt", index["notes.txt"])
+    end)
+
+    it("keeps names verbatim and case-sensitive on Unix", function()
+        local index = cpp._build_path_index(
+            "/usr/bin", false,
+            lister({ ["/usr/bin"] = { "gcc", "GCC", "clang++" } }))
+        assert.equals("/usr/bin/gcc", index["gcc"])
+        assert.equals("/usr/bin/GCC", index["GCC"])  -- distinct from "gcc"
+        assert.equals("/usr/bin/clang++", index["clang++"])
+        assert.is_nil(index["Clang++"])  -- case-sensitive: no match
+    end)
+
+    it("gives the first PATH directory precedence", function()
+        local index = cpp._build_path_index(
+            "/opt/first:/usr/bin", false,
+            lister({
+                ["/opt/first"] = { "gcc" },
+                ["/usr/bin"] = { "gcc", "g++" },
+            }))
+        assert.equals("/opt/first/gcc", index["gcc"])  -- first dir wins
+        assert.equals("/usr/bin/g++", index["g++"])    -- only in second dir
+    end)
+
+    it("ignores unreadable/quoted/trailing-slash PATH entries", function()
+        -- The middle dir is unreadable (lister returns nil); the last carries
+        -- surrounding quotes and a trailing separator. Neither breaks the scan.
+        local index = cpp._build_path_index(
+            [["C:\a\";C:\missing;C:\b\bin\]], true,
+            lister({
+                ["C:\\a"] = { "gcc.exe" },
+                ["C:\\b\\bin"] = { "clang.exe" },
+            }))
+        assert.equals("C:/a/gcc.exe", index["gcc"])
+        assert.equals("C:/b/bin/clang.exe", index["clang"])
+    end)
+
+    it("returns nil for a name not on PATH via lookup_path", function()
+        cpp.clear_cache()
+        cpp._path_index = { gcc = "/usr/bin/gcc" }
+        assert.equals("/usr/bin/gcc", cpp.lookup_path("gcc"))
+        assert.is_nil(cpp.lookup_path("does-not-exist"))
+        cpp.clear_cache()
+    end)
+
+    it("lookup_path resolves against a real populated temp dir", function()
+        cpp.clear_cache()
+        local is_win = vim.fn.has("win32") == 1
+        local dir = vim.fn.tempname()
+        vim.fn.mkdir(dir, "p")
+        local exe = is_win and "mycc.exe" or "mycc"
+        local full = dir .. "/" .. exe
+        local f = assert(io.open(full, "w"))
+        f:write("x")
+        f:close()
+
+        -- Build the index directly off this dir (bypassing $PATH) using the
+        -- real libuv scandir path via `_build_path_index`'s default lister.
+        cpp._path_index = cpp._build_path_index(dir, is_win, function(d)
+            local names = {}
+            local handle = (vim.uv or vim.loop).fs_scandir(d)
+            if not handle then return nil end
+            while true do
+                local name = (vim.uv or vim.loop).fs_scandir_next(handle)
+                if not name then break end
+                names[#names + 1] = name
+            end
+            return names
+        end)
+
+        local expected = dir:gsub("\\", "/") .. "/" .. exe
+        assert.equals(expected, cpp.lookup_path("mycc"))
+        cpp.clear_cache()
+        vim.fn.delete(dir, "rf")
     end)
 end)

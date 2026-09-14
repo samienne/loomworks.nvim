@@ -380,10 +380,15 @@ plugin/loomworks.lua
                 → active-profile DBs settled → _lsp_ready = true, emit "lsp_ready"
 ```
 
-Every `*_async` detector is genuinely non-blocking: the fast filesystem
-gate (`exepath`/`fs_stat` — "which binaries exist") stays synchronous, but
-each slow `--version` / `vswhere` / `vcvarsall`-adjacent shell-out runs off
-the main loop via `vim.system(cmd, opts, cb)`. `cpp_compilers.detect_async`
+Every `*_async` detector is genuinely non-blocking. The "which binaries
+exist" gate resolves each candidate name through a **cached PATH executable
+index** (`cpp_compilers.lookup_path` / `_build_path_index`): the index is
+built once by scanning each `$PATH` directory a single time with `fs_scandir`,
+so a candidate lookup is O(1) instead of a full PATH search. (This replaced a
+per-candidate `vim.fn.executable`/`exepath` gate that did ~76 full PATH
+searches on every workspace load — ~850ms on Windows.) The slow part — each
+`--version` / `vswhere` / `vcvarsall`-adjacent shell-out — runs off the main
+loop via `vim.system(cmd, opts, cb)`. `cpp_compilers.detect_async`
 fans out every compiler `--version` probe concurrently and aggregates them
 with a completion counter before assembling; `msvc` exposes async
 `clang_cl_async`/`clang_cl_for_async` siblings; `meson.detect_tools_async`
