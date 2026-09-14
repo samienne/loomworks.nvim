@@ -611,17 +611,6 @@ local _gate_timer = nil
 --- Bounded safety timeout (ms). Overridable in tests via `M._gate_timeout_ms`.
 local GATE_TIMEOUT_MS = 5000
 
---- Whether the active profile's owned LSP databases are ready (§9.7). Queried
---- synchronously so the gate decides correctly even if `lsp_ready` fired before
---- this module subscribed. A missing loomworks (or one that never had setup
---- called) is treated as "not held" by the root check below.
---- @return boolean
-local function workspace_ready()
-    local ok, lw = pcall(require, "loomworks")
-    if not ok or type(lw.lsp_ready) ~= "function" then return true end
-    return lw.lsp_ready()
-end
-
 --- The configured workspace root (known even during init), or nil.
 --- @return string|nil
 local function workspace_root()
@@ -639,6 +628,39 @@ local function buf_under_root(bufnr, root)
     if not name or name == "" then return false end
     local p, r = norm_cmp(name), norm_cmp(root):gsub("/+$", "")
     return p == r or p:sub(1, #r + 1) == r .. "/"
+end
+
+--- Whether a LOADED workspace exists AND its owned LSP databases are ready.
+--- Distinct from `lsp_ready()` alone: before any workspace is loaded (the first
+--- setup with no root, or before auto-load runs on session restore) `lsp_ready()`
+--- reports ready-to-resolve, but a buffer belonging to a loomworks workspace must
+--- still be HELD — so readiness here requires a live workspace object.
+--- @return boolean
+local function workspace_loaded_and_ready()
+    local ok, lw = pcall(require, "loomworks")
+    if not ok or type(lw.get_workspace) ~= "function" then return true end
+    if not lw.get_workspace() then return false end
+    return type(lw.lsp_ready) == "function" and lw.lsp_ready() == true
+end
+
+--- Detect the loomworks workspace root a buffer belongs to by walking up from
+--- its path for a workspace marker. Lets the gate hold a session-restored buffer
+--- whose clangd resolves BEFORE auto-load has told loomworks the root (§9.7).
+--- Returns nil when the buffer is not inside any loomworks workspace.
+--- @param bufnr integer
+--- @return string|nil
+local function detect_workspace_root(bufnr)
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if not name or name == "" then return nil end
+    local uv = vim.uv
+    for cur in vim.fs.parents(name) do
+        if uv.fs_stat(cur .. "/loomworks.json")
+            or uv.fs_stat(cur .. "/.nvim/loomworks.user.json")
+            or uv.fs_stat(cur .. "/.nvim/loomworks.cache.json") then
+            return cur
+        end
+    end
+    return nil
 end
 
 --- Disarm and close the safety timer (idempotent).
@@ -693,10 +715,17 @@ end
 --- @param on_dir fun(root: string)
 --- @param resolve fun(bufnr: integer, on_dir: fun(root: string))
 function M.gated_root_dir(bufnr, on_dir, resolve)
-    if workspace_ready() then return resolve(bufnr, on_dir) end
-    local root = workspace_root()
-    if not root then return resolve(bufnr, on_dir) end
-    if not buf_under_root(bufnr, root) then return resolve(bufnr, on_dir) end
+    -- Ready: a workspace is loaded and its owned databases are in place.
+    if workspace_loaded_and_ready() then
+        return resolve(bufnr, on_dir)
+    end
+    -- Not ready. Hold only if this buffer belongs to a loomworks workspace — the
+    -- configured (pending/loaded) root, else one detected from the buffer's own
+    -- path (session-restored buffers resolve before auto-load sets the root).
+    local root = workspace_root() or detect_workspace_root(bufnr)
+    if not root or not buf_under_root(bufnr, root) then
+        return resolve(bufnr, on_dir)
+    end
     _gate_queue[#_gate_queue + 1] = { bufnr = bufnr, on_dir = on_dir, resolve = resolve }
     gate_arm_timer()
 end
@@ -975,10 +1004,11 @@ local function wire_listeners()
     _listeners_wired = true
     local ok, lw = pcall(require, "loomworks")
     if not ok then return end
-    -- Deferred-start gate (§9.7): a new init cycle resets held buffers.
-    lw.on("workspace_initializing", function()
-        gate_reset()
-    end)
+    -- Deferred-start gate (§9.7): a new init cycle must NOT drain the queue.
+    -- `workspace_initializing` fires on the normal initial `core:setup`; draining
+    -- here released buffers before the workspace was ready (they start ungated).
+    -- Held buffers wait for this cycle's `lsp_ready` (or the safety timeout);
+    -- readiness is queried dynamically, so no gate-side reset is needed.
     -- Deferred-start gate (§9.7): the active profile's owned LSP databases
     -- being ready is the RELEASE signal — the resolved binary and the
     -- compile_commands_dir (with compile_commands.json already on disk for

@@ -97,7 +97,11 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
         assert.equals(0, lsp._gate_queue_len())
     end)
 
-    it("resolves immediately once the workspace is ready", function()
+    it("resolves immediately once the workspace is loaded and ready", function()
+        -- Readiness requires a LIVE workspace object, not merely lsp_ready() —
+        -- before a workspace loads (first setup with no root / pre auto-load),
+        -- lsp_ready() reports true but a workspace buffer must still be held.
+        lw.get_workspace = function() return {} end
         lw.lsp_ready = function() return true end
         local buf = make_buf(ROOT .. "/src/main.cpp")
         local resolved = false
@@ -105,6 +109,47 @@ describe("loomworks.lsp deferred-start gate (§9.7)", function()
 
         assert.is_true(resolved)
         assert.equals(0, lsp._gate_queue_len())
+    end)
+
+    it("does NOT drain the queue on workspace_initializing (regression)", function()
+        -- `workspace_initializing` fires on the normal initial core:setup. It
+        -- must NOT release held buffers — doing so starts clangd ungated before
+        -- the workspace is ready (then reconciles). Held buffers wait for
+        -- lsp_ready / the safety timeout.
+        local buf = make_buf(ROOT .. "/src/main.cpp")
+        local resolved = false
+        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
+        assert.equals(1, lsp._gate_queue_len())
+
+        events.emit("workspace_initializing")
+        assert.is_false(resolved, "workspace_initializing drained the queue")
+        assert.equals(1, lsp._gate_queue_len())
+
+        events.emit("lsp_ready")
+        assert.is_true(resolved)
+    end)
+
+    it("holds a buffer detected inside a loomworks workspace before setup(root)", function()
+        -- Session-restored buffers can resolve root_dir BEFORE auto-load tells
+        -- loomworks the root: no loaded workspace, workspace_root() nil. The gate
+        -- must still hold a buffer whose path sits under a loomworks marker.
+        lw.get_workspace = function() return nil end
+        lw.workspace_root = function() return nil end
+        local dir = vim.fs.normalize(vim.fn.tempname())
+        vim.fn.mkdir(dir .. "/.nvim", "p")
+        local f = assert(io.open(dir .. "/.nvim/loomworks.user.json", "w"))
+        f:write("{}"); f:close()
+
+        local buf = make_buf(dir .. "/src/main.cpp")
+        local resolved = false
+        lsp.gated_root_dir(buf, function() end, function() resolved = true end)
+
+        assert.is_false(resolved, "buffer inside a detected loomworks workspace must be held")
+        assert.equals(1, lsp._gate_queue_len())
+
+        events.emit("lsp_ready")
+        assert.is_true(resolved)
+        pcall(vim.fn.delete, dir, "rf")
     end)
 
     it("resolves immediately when there is no known workspace root", function()
