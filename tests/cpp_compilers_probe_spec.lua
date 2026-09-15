@@ -372,4 +372,18 @@ describe("cpp_compilers PATH executable index", function()
         cpp.clear_cache()
         vim.fn.delete(dir, "rf")
     end)
+
+    it("builds the index when vim.env is unavailable (CLI vim-shim)", function()
+        -- Regression: the standalone CLI's vim-shim has no `vim.env`, so
+        -- get_path_index must not index a nil `vim.env` — guard + os.getenv.
+        cpp.clear_cache()
+        local real_env = vim.env
+        local ok, err = pcall(function()
+            vim.env = nil
+            return cpp.lookup_path("definitely-not-a-real-compiler-xyz")
+        end)
+        vim.env = real_env
+        cpp.clear_cache()
+        assert.is_true(ok, "get_path_index errored with vim.env nil: " .. tostring(err))
+    end)
 end)

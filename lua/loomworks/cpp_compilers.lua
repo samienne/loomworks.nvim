@@ -167,7 +167,9 @@ end
 --- @return table<string, string>
 local function get_path_index()
     if M._path_index then return M._path_index end
-    local path_string = vim.env.PATH or os.getenv("PATH") or ""
+    -- `vim.env` doesn't exist under the standalone CLI's vim-shim; guard it and
+    -- fall back to os.getenv (the shim-safe idiom used elsewhere).
+    local path_string = (vim.env and vim.env.PATH) or os.getenv("PATH") or ""
     M._path_index = M._build_path_index(path_string, is_windows(), scandir_names)
     return M._path_index
 end
