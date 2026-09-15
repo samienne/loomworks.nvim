@@ -39,6 +39,14 @@ local uv = vim.uv or vim.loop
 --- @type loomworks.CompilerToolchain[]|nil
 M._cached = nil
 
+--- @type table<string, string>|nil
+--- Cached PATH executable index: base name → absolute path. Built once by
+--- scanning each `$PATH` directory a single time (see `M.lookup_path`), so the
+--- 76-candidate compiler scan is 76 O(1) table hits instead of 76 full PATH
+--- searches (`vim.fn.executable`/`vim.fn.exepath`), each of which walks every
+--- PATH directory on Windows and blocks the UI on workspace load.
+M._path_index = nil
+
 --- Run a command synchronously via vim.fn.system.
 --- @param cmd string[]
 --- @return string|nil trimmed stdout, or nil on non-zero exit
@@ -83,32 +91,112 @@ local function family_of(ver_output, name_or_path)
     return nil
 end
 
+--- True on Windows. Governs PATH separator, executable-extension stripping
+--- and case-folding for the PATH index.
+--- @return boolean
+local function is_windows()
+    return vim.fn.has("win32") == 1
+end
+
+--- Strip a single trailing Windows executable extension (case-insensitive).
+--- @param filename string
+--- @return string
+local function strip_exe_ext(filename)
+    return (filename:gsub("%.[eE][xX][eE]$", "")
+        :gsub("%.[cC][mM][dD]$", "")
+        :gsub("%.[bB][aA][tT]$", "")
+        :gsub("%.[cC][oO][mM]$", ""))
+end
+
+--- Build the base-name → absolute-path index from a raw `$PATH` string.
+---
+--- Pure and side-effect-free apart from the injected `scandir_fn`, so it is
+--- unit-testable without a real filesystem. Directories are scanned left to
+--- right and the FIRST occurrence of a base name wins — matching PATH
+--- precedence. On Windows the base key strips a trailing executable extension
+--- (`.exe`/`.cmd`/`.bat`/`.com`) and is lower-cased for case-insensitive
+--- matching; on Unix the filename is the key verbatim (case-sensitive).
+--- @param path_string string|nil raw `$PATH`
+--- @param is_win boolean
+--- @param scandir_fn fun(dir: string): string[]|nil entry names in `dir` (nil = unreadable)
+--- @return table<string, string> index base name → `<dir>/<filename>` (forward slashes)
+function M._build_path_index(path_string, is_win, scandir_fn)
+    local index = {}
+    if not path_string or path_string == "" then return index end
+    local sep = is_win and ";" or ":"
+    -- Append a trailing separator so the final entry is captured too.
+    for raw in (path_string .. sep):gmatch("([^" .. sep .. "]*)" .. sep) do
+        -- Strip surrounding quotes and trailing slashes from the dir entry.
+        local dir = raw:gsub('^"(.*)"$', "%1"):gsub("[/\\]+$", "")
+        if dir ~= "" then
+            local dir_norm = dir:gsub("\\", "/")
+            local names = scandir_fn(dir)
+            if names then
+                for _, filename in ipairs(names) do
+                    local base = filename
+                    if is_win then base = strip_exe_ext(base):lower() end
+                    -- First occurrence wins (PATH precedence).
+                    if index[base] == nil then
+                        index[base] = dir_norm .. "/" .. filename
+                    end
+                end
+            end
+        end
+    end
+    return index
+end
+
+--- List the entry names of a directory via libuv, or nil if it can't be read.
+--- A bad/inaccessible PATH entry must not break the whole scan.
+--- @param dir string
+--- @return string[]|nil
+local function scandir_names(dir)
+    local h = uv.fs_scandir(dir)
+    if not h then return nil end
+    local names = {}
+    while true do
+        local name = uv.fs_scandir_next(h)
+        if not name then break end
+        names[#names + 1] = name
+    end
+    return names
+end
+
+--- Return the cached PATH executable index, building it on first use by
+--- scanning every `$PATH` directory exactly once.
+--- @return table<string, string>
+local function get_path_index()
+    if M._path_index then return M._path_index end
+    -- `vim.env` doesn't exist under the standalone CLI's vim-shim; guard it and
+    -- fall back to os.getenv (the shim-safe idiom used elsewhere).
+    local path_string = (vim.env and vim.env.PATH) or os.getenv("PATH") or ""
+    M._path_index = M._build_path_index(path_string, is_windows(), scandir_names)
+    return M._path_index
+end
+
+--- Resolve a candidate name to its absolute path via the cached PATH index —
+--- an O(1) lookup, not a full PATH search. Public so `cmake_kits` shares the
+--- same index. Returns nil when the name isn't on PATH.
+--- @param name string
+--- @return string|nil
+function M.lookup_path(name)
+    local index = get_path_index()
+    local key = is_windows() and name:lower() or name
+    return index[key]
+end
+
 --- Probe a candidate compiler binary by name. Returns absolute path,
 --- version and the raw `--version` output if it exists and reports a
---- version. Nil otherwise.
+--- version. Nil otherwise. Existence is resolved through the cached PATH
+--- index (no per-candidate PATH search); the `--version` shell-out is
+--- synchronous — this is the sync `M.detect` path's contract.
 --- @param name string
 --- @return string|nil path, string|nil version, string|nil ver_output
 local function probe(name)
-    if vim.fn.executable(name) ~= 1 then return nil, nil, nil end
-    local path = vim.fn.exepath(name)
-    if path == "" then return nil, nil, nil end
+    local path = M.lookup_path(name)
+    if not path then return nil, nil, nil end
     local out = run({ path, "--version" })
     return path, parse_version(out), out
-end
-
---- Path-only PATH lookup for a candidate name — the sync `exepath` gate
---- without the `--version` shell-out. Used for the C/C++ counterpart probes,
---- where only the resolved path is consumed (the version output is discarded).
---- Returns the same path `probe` would for the same name, so routing the
---- counterpart lookups through this instead of `probe` is behaviour-preserving
---- while sparing an extra blocking shell call.
---- @param name string
---- @return string|nil
-local function lookup_path(name)
-    if vim.fn.executable(name) ~= 1 then return nil end
-    local path = vim.fn.exepath(name)
-    if path == "" then return nil end
-    return path
 end
 
 --- Find a clangd binary alongside a compiler driver.
@@ -256,19 +344,20 @@ function M.detect()
         end
     end
 
-    local compilers = assemble(names, primary, lookup_path)
+    local compilers = assemble(names, primary, M.lookup_path)
     M._cached = compilers
     return compilers
 end
 
 --- Detect all compilers available via PATH without blocking the UI.
 ---
---- The `exepath` gate (which names exist on PATH) is a cheap synchronous
---- filesystem lookup, so it stays inline; only the slow part — each candidate's
---- `--version` shell-out — is fanned out concurrently via `vim.system`. Results
---- are aggregated with a completion counter and fed to the SAME `assemble`
---- routine the sync path uses, so the async result is byte-for-byte identical
---- (same fields, dedup, and sort order). Populates the shared `M._cached`, and
+--- The gate (which names exist on PATH) is an O(1) lookup into the cached PATH
+--- executable index — genuinely fast, no shell and no per-candidate PATH walk —
+--- so it stays inline; only the slow part — each candidate's `--version`
+--- shell-out — is fanned out concurrently via `vim.system`. Results are
+--- aggregated with a completion counter and fed to the SAME `assemble` routine
+--- the sync path uses, so the async result is byte-for-byte identical (same
+--- fields, dedup, and sort order). Populates the shared `M._cached`, and
 --- short-circuits to it when already populated (by either path).
 --- @param callback fun(compilers: loomworks.CompilerToolchain[])
 function M.detect_async(callback)
@@ -279,12 +368,12 @@ function M.detect_async(callback)
 
     local names = candidate_names()
 
-    -- Sync exepath gate (fast, no shell): keep candidate_names() order so the
+    -- Index gate (O(1) per name, no shell): keep candidate_names() order so the
     -- async dedup resolves identically to the sync scan.
     local primary = {}
     local to_probe = {}
     for _, name in ipairs(names) do
-        local path = lookup_path(name)
+        local path = M.lookup_path(name)
         if path then
             primary[name] = { path = path }
             to_probe[#to_probe + 1] = name
@@ -292,7 +381,7 @@ function M.detect_async(callback)
     end
 
     local function finish()
-        local compilers = assemble(names, primary, lookup_path)
+        local compilers = assemble(names, primary, M.lookup_path)
         M._cached = compilers
         callback(compilers)
     end
@@ -461,9 +550,11 @@ function M.family_from_tool_data(tool_data)
     return nil
 end
 
---- Clear the detection cache. Called by modules' `invalidate_tools`.
+--- Clear the detection cache. Called by modules' `invalidate_tools`. Also drops
+--- the PATH executable index so a rescan re-reads `$PATH`.
 function M.clear_cache()
     M._cached = nil
+    M._path_index = nil
 end
 
 return M

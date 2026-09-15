@@ -30,8 +30,15 @@ local function with_stubs(stubs, fn)
 end
 
 -- Scenario shared by both suites: gcc + clang both present on PATH under
--- their plain (unversioned) names, each in /usr/bin.
+-- their plain (unversioned) names, each in /usr/bin. Compiler existence is
+-- resolved through `cpp._path_index` (the cached PATH executable index) rather
+-- than `vim.fn.executable`/`exepath` — so the tests seed that index directly.
 local PLAIN = { gcc = true, ["g++"] = true, clang = true, ["clang++"] = true }
+local function plain_index()
+    local index = {}
+    for name in pairs(PLAIN) do index[name] = "/usr/bin/" .. name end
+    return index
+end
 local function exepath(name)
     if PLAIN[name] then return "/usr/bin/" .. name end
     return ""
@@ -60,10 +67,9 @@ describe("cpp_compilers.detect_async", function()
     it("yields the same array as detect()", function()
         -- Sync detect() over the scenario.
         cpp.clear_cache()
+        cpp._path_index = plain_index()
         local sync_result
         with_stubs({
-            ["vim.fn.executable"] = executable,
-            ["vim.fn.exepath"] = exepath,
             ["vim.fn.system"] = function(cmd) return version_for(cmd[1]) end,
             ["vim.v"] = { shell_error = 0 },
             ["vim.uv.fs_stat"] = function() return nil end,
@@ -73,10 +79,9 @@ describe("cpp_compilers.detect_async", function()
 
         -- Async detect_async() from a clean cache over the same scenario.
         cpp.clear_cache()
+        cpp._path_index = plain_index()
         local async_result
         with_stubs({
-            ["vim.fn.executable"] = executable,
-            ["vim.fn.exepath"] = exepath,
             ["vim.system"] = system_cb,
             ["vim.schedule"] = function(fn) fn() end,
             ["vim.uv.fs_stat"] = function() return nil end,
@@ -94,9 +99,8 @@ describe("cpp_compilers.detect_async", function()
 
     it("short-circuits to the shared cache when already populated", function()
         cpp.clear_cache()
+        cpp._path_index = plain_index()
         with_stubs({
-            ["vim.fn.executable"] = executable,
-            ["vim.fn.exepath"] = exepath,
             ["vim.fn.system"] = function(cmd) return version_for(cmd[1]) end,
             ["vim.v"] = { shell_error = 0 },
             ["vim.uv.fs_stat"] = function() return nil end,
@@ -132,6 +136,7 @@ describe("meson.detect_tools_async", function()
         local cpp = require("loomworks.cpp_compilers")
 
         cpp.clear_cache()
+        cpp._path_index = plain_index()
         local sync_tools
         with_stubs({
             ["vim.fn.has"] = has,
@@ -145,6 +150,7 @@ describe("meson.detect_tools_async", function()
         end)
 
         cpp.clear_cache()
+        cpp._path_index = plain_index()
         local async_tools
         with_stubs({
             ["vim.fn.has"] = has,

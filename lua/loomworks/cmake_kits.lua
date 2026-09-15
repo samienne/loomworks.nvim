@@ -158,7 +158,8 @@ function M.clear_cache()
 end
 
 --- Detect compilers asynchronously.
---- Uses sync vim.fn.executable() for fast PATH lookups, then chains
+--- Resolves candidate names through the shared `cpp_compilers` PATH index
+--- (an O(1) lookup per name, no per-candidate PATH search), then chains
 --- async vim.system() calls for --version probes sequentially.
 --- @param callback fun(compilers: table[])
 local function detect_compilers_async(callback)
@@ -170,13 +171,12 @@ local function detect_compilers_async(callback)
         end
     end
 
+    local cpp = require("loomworks.cpp_compilers")
     local executable_names = {}
     for _, name in ipairs(candidates) do
-        if vim.fn.executable(name) == 1 then
-            local path = vim.fn.exepath(name)
-            if path ~= "" then
-                executable_names[#executable_names + 1] = { name = name, path = path }
-            end
+        local path = cpp.lookup_path(name)
+        if path then
+            executable_names[#executable_names + 1] = { name = name, path = path }
         end
     end
 
