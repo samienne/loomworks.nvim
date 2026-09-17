@@ -289,7 +289,11 @@ local function find_meson_async(callback)
         vim.system({ pp, "-c", PY_FIND_MESON }, { text = true }, function(res)
             local out = (res.code == 0 and res.stdout) and vim.trim(res.stdout) or ""
             if out ~= "" and uv.fs_stat(out) then
-                callback({ out })
+                -- Hop back onto the main loop before handing control to the
+                -- callback: it drives compiler detection, which reads
+                -- `vim.env`/`vim.fn` and must not run in this `vim.system`
+                -- completion (a fast-event context). Mirrors the failure path.
+                vim.schedule(function() callback({ out }) end)
             else
                 -- Next interpreter — hop back onto the main loop for vim.fn.
                 vim.schedule(try_next)
