@@ -13,12 +13,26 @@ local paths = require("boot.paths")
 local verify = require("boot.verify")
 local download = require("boot.download")
 local pin = require("boot.pin")
+local json = require("boot.json")
 
 local M = {}
 
 -- Where releases are fetched from. Overridable via LOOMWORKS_RELEASE_URL or
 -- the `release-url` config key; a local directory works as an offline mirror.
+-- `/releases/latest/download` already resolves to the newest NON-prerelease on
+-- GitHub, so this base IS the `stable` channel (§16.29).
 M.DEFAULT_RELEASE_URL = "https://github.com/samienne/loomworks.nvim/releases/latest/download"
+
+-- The releases API for the default origin. Consulted ONLY to resolve the
+-- `unstable` channel (§16.29): the newest release INCLUDING pre-releases. Never
+-- queried for `stable`, nor when a release-source override / mirror is set —
+-- the channel governs only the default origin.
+M.RELEASES_API_URL = "https://api.github.com/repos/samienne/loomworks.nvim/releases"
+
+-- The update channels this host knows (§16.29). `stable` (default) is unchanged
+-- behavior; `unstable` follows pre-releases too. Both verify identically.
+M.CHANNELS = { stable = true, unstable = true }
+M.DEFAULT_CHANNEL = "stable"
 
 local function release_base(opts)
   local base = (opts and opts.url)
@@ -30,6 +44,65 @@ end
 
 --- The `latest`/override release base (holds manifest.json + `latest` assets).
 function M.release_base(opts) return release_base(opts) end
+
+--- The user-supplied release-source override (opts.url > LOOMWORKS_RELEASE_URL >
+--- `release-url` config), or nil when the default origin is in effect. An
+--- override is a mirror used as-is and SUPERSEDES channel resolution (§16.29):
+--- the channel governs only the default origin.
+local function url_override(opts)
+  return (opts and opts.url)
+    or paths.getenv("LOOMWORKS_RELEASE_URL")
+    or paths.read_config()["release-url"]
+end
+
+--- Resolve the active update channel (§16.29) with precedence: explicit
+--- opts.channel > LOOMWORKS_CHANNEL env > `channel` config key > default
+--- (stable). Returns the channel name, or nil + err for an unknown value.
+--- @return string|nil channel, string|nil err
+function M.resolve_channel(opts)
+  local c = (opts and opts.channel)
+    or paths.getenv("LOOMWORKS_CHANNEL")
+    or paths.read_config()["channel"]
+    or M.DEFAULT_CHANNEL
+  if not M.CHANNELS[c] then
+    return nil, "unknown update channel '" .. tostring(c) ..
+      "' (expected 'stable' or 'unstable')"
+  end
+  return c
+end
+
+--- Resolve the newest release version for the `unstable` channel (§16.29) by
+--- querying the releases API. The newest NON-DRAFT entry wins — pre-releases are
+--- INCLUDED (that is what `unstable` means). Returns the version (leading `v`
+--- stripped) or nil, err.
+---
+--- SECURITY: the tag is network-derived, so it is validated with
+--- pin.valid_version BEFORE it can reach any URL or path (defense in depth,
+--- §16.29 / §16.23). Transport is never trusted — the bundle it names is still
+--- signature/hash-verified downstream exactly as on stable.
+--- @return string|nil version, string|nil err
+function M.resolve_unstable_version()
+  local body, e = download.fetch(M.RELEASES_API_URL, {
+    headers = { "Accept: application/vnd.github+json", "User-Agent: loomworks-lw" },
+  })
+  if not body then return nil, "fetch releases: " .. tostring(e) end
+  local releases, derr = json.decode(body)
+  if type(releases) ~= "table" then
+    return nil, "releases API: " .. (derr or "unexpected response")
+  end
+  -- The API returns releases newest-first; take the newest that is not a draft.
+  for _, rel in ipairs(releases) do
+    if type(rel) == "table" and rel.draft ~= true and type(rel.tag_name) == "string" then
+      local ver = (rel.tag_name:gsub("^v", ""))
+      if not pin.valid_version(ver) then
+        return nil, "releases API returned an unsafe version '" ..
+          tostring(rel.tag_name) .. "'"
+      end
+      return ver
+    end
+  end
+  return nil, "no releases found on the unstable channel"
+end
 
 --- Is `base` a local path / offline mirror (flat layout) rather than the
 --- versioned GitHub origin? Mirrors boot.download's scheme test.
@@ -218,11 +291,25 @@ function M.gc(keep, except)
   end
 end
 
---- Acquire/activate the current release. opts: { url?, force? }.
---- Returns { version, updated, dir } or nil, err.
+--- Acquire/activate the current release. opts: { url?, force?, channel? }.
+--- The channel (§16.29) selects WHICH release an un-pinned, un-overridden fetch
+--- targets; it never weakens verification. Returns { version, updated, dir } or
+--- nil, err.
 function M.self_update(opts)
   opts = opts or {}
+  local channel, cerr = M.resolve_channel(opts)
+  if not channel then return nil, cerr end
+
   local base = release_base(opts)
+  -- `unstable` on the default origin resolves the newest release (pre-releases
+  -- included) via the API, then fetches that version's assets from its versioned
+  -- path. A mirror/override supersedes the channel (§16.29): it is used as-is and
+  -- the API is never called. `stable` keeps the /latest/download base unchanged.
+  if channel == "unstable" and not url_override(opts) then
+    local ver, verr = M.resolve_unstable_version()
+    if not ver then return nil, verr end
+    base = M.versioned_base(ver, opts)
+  end
 
   local mbytes, e1 = download.fetch(base .. "/manifest.json")
   if not mbytes then return nil, "fetch manifest: " .. e1 end

@@ -3967,6 +3967,10 @@ local function effective_config_default(key)
     end
     return os.getenv("LOOMWORKS_RELEASE_URL")
   end
+  if key == "channel" then
+    -- Precedence mirrors boot.update.resolve_channel (env > config > default).
+    return os.getenv("LOOMWORKS_CHANNEL") or "stable"
+  end
   return nil
 end
 
@@ -3994,6 +3998,11 @@ function M.cmd_settings(sub, key, value)
     return 0
   elseif sub == "set" then
     if not key or value == nil then die("usage: lw settings set <key> <value>") end
+    -- Validate constrained keys up front so a typo is caught here, not silently
+    -- at the next self-update (the channel is re-validated by the host too).
+    if key == "channel" and value ~= "stable" and value ~= "unstable" then
+      die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'")
+    end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
     local ok, err = write_config(cfg)
@@ -5604,7 +5613,7 @@ function M.cmd_complete(cword, words)
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
-      emit({ "dev-lua", "default-source", "release-url", "module-index" })
+      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel" })
     end
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
@@ -6349,6 +6358,12 @@ Keys:
   default-source  `dev` or `release`. `dev` makes `lw` use dev-lua without
                   needing `--dev` each time; `release` (default) uses the
                   verified release bundle.
+  release-url     override where releases are fetched from (a local directory
+                  works as an offline mirror); LOOMWORKS_RELEASE_URL wins.
+  channel         `stable` (default) or `unstable`. The update channel
+                  `lw self-update` follows (spec §16.29). `unstable` includes
+                  pre-releases; both are equally signature/hash-verified.
+                  LOOMWORKS_CHANNEL, or `lw self-update --channel`, overrides.
 
 Source precedence (resolved by the host before commands run):
   LOOMWORKS_LUA env > `--dev[=PATH]` > default-source=dev > release bundle.
@@ -6395,7 +6410,7 @@ install itself) — from the release page for your platform, e.g.:
     && chmod +x /tmp/lw && /tmp/lw install
 
 A host command (handled by lw itself).]],
-  ["self-update"] = [[lw self-update [--force]
+  ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>]
 
 Download the current release, verify its signature and hashes, and activate
 it (spec §16.12–16.13). Fetches manifest.json + manifest.json.sig, checks the
@@ -6405,10 +6420,18 @@ lua-<version>/ under the data dir — never overwriting a running copy. Integrit
 rests on the signature, not the transport, so it is safe behind a proxy;
 set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
-  --force   reinstall even if that version is already present
+  --force              reinstall even if that version is already present
+  --channel <name>     `stable` (default) or `unstable` for this run only
+
+Update channel (spec §16.29): `stable` follows the newest full release;
+`unstable` includes pre-releases, for testing ahead of a stable cut. Both are
+verified identically — `unstable` never means less checking. Precedence:
+--channel > LOOMWORKS_CHANNEL > the `channel` setting > stable. Persist a
+default with `lw settings set channel unstable`.
 
 Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` settings key,
-else the built-in default. A local directory works as an offline mirror.
+else the built-in default. A local directory works as an offline mirror and is
+used as-is (it supersedes the channel — no release-API query).
 Not applicable to a development source. A host command (handled by lw itself).]],
   bootstrap = [[lw bootstrap [--version <x.y.z>]
 

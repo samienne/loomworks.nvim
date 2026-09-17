@@ -987,6 +987,36 @@ integrity rests on the signature, a MITM'd or cert-relaxed transport cannot
 inject code (spec §16.12). Self-update is a management operation and never
 runs as part of `lw build` (spec §16.9, §16.13).
 
+**Update channels** (spec §16.29). `self_update` first resolves an update
+channel — `update.resolve_channel(opts)` with precedence `opts.channel`
+(from `lw self-update --channel`) > `LOOMWORKS_CHANNEL` env > the `channel`
+config key > `"stable"` (unknown value → error). Only `stable` and `unstable`
+are valid.
+
+- **stable** keeps the existing base, `…/releases/latest/download`, which
+  GitHub already resolves to the newest *non-prerelease* — so stable is a
+  no-op change.
+- **unstable** queries the GitHub **releases API**
+  (`https://api.github.com/repos/samienne/loomworks.nvim/releases`, newest-first)
+  via `download.fetch` (which now takes an `Accept` + `User-Agent` header),
+  parses it with `boot.json`, and takes the newest **non-draft** entry
+  (pre-releases *included*). Its `tag_name` (leading `v` stripped) is validated
+  with `pin.valid_version` **before** it is interpolated into any URL — a
+  network-derived tag is never trusted into a path (defense in depth, same trust
+  boundary as `lw.pin`). The bundle is then fetched from
+  `versioned_base(version)` (`…/releases/download/v<ver>/`) and verified by the
+  identical manifest-signature + artifact-hash chain — the channel changes only
+  *which* release, never *how* it is trusted.
+
+An explicit release-source override (`opts.url` / `LOOMWORKS_RELEASE_URL` /
+`release-url` config) **supersedes** the channel: the mirror is used as-is and
+the API is never called (the channel governs only the default origin). A pin is
+independent and stronger still (`main.lua` redirect + `ensure_version`): a
+pinned invocation acquires exactly its version+hash and consults no channel.
+`paths.version_gt` is semver-aware so a pre-release orders below its release —
+`installed_releases` ordering and `gc` never retain a pre-release over the full
+release it precedes. `lw version` prints the resolved channel.
+
 ### Module acquisition
 
 `lw module install|update|remove|list` extends the host's module set from a

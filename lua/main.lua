@@ -140,9 +140,13 @@ if not command then
   end
 end
 if command == "version" then
-  local info = require("boot.update").version_info(luaroot, source_kind)
-  io.write(string.format("lw — host v%d · source: %s · bundle: %s\n",
-    info.host_version, info.source, info.bundle))
+  local upd = require("boot.update")
+  local info = upd.version_info(luaroot, source_kind)
+  -- The update channel is a self-update preference; show it so `lw version` is
+  -- the one place a user confirms whether they follow stable or unstable.
+  local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
+  io.write(string.format("lw — host v%d · source: %s · bundle: %s · channel: %s\n",
+    info.host_version, info.source, info.bundle, channel))
   exit(0)
 elseif command == "self-update" then
   if source_kind == "dev" then
@@ -150,10 +154,15 @@ elseif command == "self-update" then
       "(--dev / default-source=dev).\n")
     exit(1)
   end
-  local force = false
-  for _, v in ipairs(forwarded) do if v == "--force" then force = true end end
+  local force, channel = false, nil
+  for _, v in ipairs(forwarded) do
+    if v == "--force" then force = true
+    elseif v == "--channel" then channel = "" -- flag seen; value is the next token
+    elseif type(v) == "string" and v:sub(1, 10) == "--channel=" then channel = v:sub(11)
+    elseif channel == "" then channel = v end  -- `--channel <value>` form
+  end
   io.write("lw: checking for updates…\n")
-  local res, err = require("boot.update").self_update({ force = force })
+  local res, err = require("boot.update").self_update({ force = force, channel = channel ~= "" and channel or nil })
   if not res then
     io.stderr:write("lw: self-update failed: " .. tostring(err) .. "\n")
     -- A 404 here usually means this build points at a release feed that has no

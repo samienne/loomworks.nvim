@@ -71,17 +71,66 @@ function M.read_config()
   return decoded
 end
 
---- Compare dotted-numeric versions ("1.10.0" > "1.9.0"); non-numeric parts
---- sort as 0. True when `a` is strictly newer than `b`.
-function M.version_gt(a, b)
-  local ai, bi = {}, {}
-  for n in a:gmatch("%d+") do ai[#ai + 1] = tonumber(n) end
-  for n in b:gmatch("%d+") do bi[#bi + 1] = tonumber(n) end
-  for i = 1, math.max(#ai, #bi) do
-    local x, y = ai[i] or 0, bi[i] or 0
-    if x ~= y then return x > y end
+--- Split a version into its numeric release core and its pre-release identifier
+--- list. Build metadata (`+…`) is ignored for precedence (semver §10). A version
+--- with no `-<pre>` suffix returns nil for the identifier list.
+---   "0.2.0"        -> {0,2,0}, nil
+---   "0.2.0-beta.1" -> {0,2,0}, {"beta","1"}
+local function split_version(v)
+  v = (v:gsub("%+.*$", ""))                  -- drop build metadata
+  local core, pre = v:match("^(.-)%-(.+)$")  -- first '-' splits core / pre
+  core = core or v
+  local nums = {}
+  for n in core:gmatch("%d+") do nums[#nums + 1] = tonumber(n) end
+  local ids
+  if pre and pre ~= "" then
+    ids = {}
+    for id in pre:gmatch("[^%.]+") do ids[#ids + 1] = id end
   end
-  return false
+  return nums, ids
+end
+
+--- Compare two pre-release identifiers per semver §11.4: numeric identifiers
+--- compare numerically, numeric ranks below alphanumeric, alphanumerics compare
+--- lexically. Returns -1 / 0 / 1.
+local function cmp_ident(x, y)
+  local nx, ny = tonumber(x), tonumber(y)
+  if nx and ny then return nx < ny and -1 or (nx > ny and 1 or 0) end
+  if nx and not ny then return -1 end        -- numeric < alphanumeric
+  if ny and not nx then return 1 end
+  if x == y then return 0 end
+  return x < y and -1 or 1
+end
+
+--- Semver-aware comparison of two versions: -1 if a<b, 0 if equal, 1 if a>b.
+--- The numeric release core compares field-by-field; on an equal core a
+--- pre-release orders BELOW the full release (§16.29), and two pre-releases
+--- compare identifier-by-identifier (a shorter identifier list ranks lower).
+local function compare_versions(a, b)
+  local acore, apre = split_version(a)
+  local bcore, bpre = split_version(b)
+  for i = 1, math.max(#acore, #bcore) do
+    local x, y = acore[i] or 0, bcore[i] or 0
+    if x ~= y then return x < y and -1 or 1 end
+  end
+  if not apre and not bpre then return 0 end
+  if not apre then return 1 end              -- a is the full release -> newer
+  if not bpre then return -1 end
+  for i = 1, math.max(#apre, #bpre) do
+    if apre[i] == nil then return -1 end     -- fewer identifiers -> lower
+    if bpre[i] == nil then return 1 end
+    local r = cmp_ident(apre[i], bpre[i])
+    if r ~= 0 then return r end
+  end
+  return 0
+end
+M.compare_versions = compare_versions
+
+--- Compare versions (semver-aware, §16.29). True when `a` is strictly newer than
+--- `b`. A pre-release (`0.2.0-beta.1`) is older than its release (`0.2.0`); the
+--- numeric core still orders "1.10.0" > "1.9.0".
+function M.version_gt(a, b)
+  return compare_versions(a, b) > 0
 end
 
 --- List installed release versions as { {ver=, dir=}, ... }, newest first.

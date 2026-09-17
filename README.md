@@ -615,6 +615,27 @@ and Windows and publishes the signed bundle. See
 [ARCHITECTURE.md](ARCHITECTURE.md#standalone-runner--distribution) for the
 release layout and update flow.
 
+**Update channels** (spec §16.29). `lw self-update` follows an update
+**channel** — which release to track, not how it is trusted:
+
+- **stable** (default) — the newest **full release**. No configuration needed;
+  this is today's behavior.
+- **unstable** — the newest release **including pre-releases**, for dogfooding a
+  build ahead of a stable cut.
+
+```
+lw self-update --channel unstable    # this run only
+lw settings set channel unstable     # make it the default (LOOMWORKS_CHANNEL overrides)
+lw settings set channel stable       # back to stable
+```
+
+`unstable` is **not** less safe: every channel goes through the same integrity
+chain — the signed manifest must verify and every artifact hash must match, on
+unstable exactly as on stable. It denotes release maturity, never reduced
+verification. A pinned repo (`lw.pin`) and an explicit `release-url` mirror both
+ignore the channel: a pin acquires exactly its pinned version, and a mirror is
+used as-is. `lw version` shows the active channel.
+
 ### Installing `lw`
 
 `lw` installs itself: download the binary for your platform, **verify it**,
@@ -822,7 +843,7 @@ command has detail under `lw help <command>`.
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, …) |
+| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
 | `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
 
