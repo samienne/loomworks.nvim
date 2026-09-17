@@ -350,6 +350,49 @@ target set <target>` picks which one a bare `lw run` defaults to. (`lw launch`
 manages the launch-config declarations themselves; `lw target` is the resolved,
 runnable view over both kinds.)
 
+#### Running under a wrapper — `--prefix`
+
+`lw run --prefix <cmd>` interposes a wrapper before the resolved launch
+command: the process becomes `<prefix> <resolved-cmd> <args>`, executed in the
+launch's resolved working directory and environment, attached to your terminal —
+so interactive tools drive the tty:
+
+```sh
+lw run --prefix valgrind                       # valgrind <app> …
+lw run --prefix 'valgrind --leak-check=full'   # a tokenized string, quote-aware
+lw run --prefix gdb --prefix --args app -- x   # gdb --args <app> x   (repeatable)
+```
+
+The prefix is **multiple tokens**, supplied two combinable ways: a single string
+that is shell-word split (respecting quotes), and/or a repeatable `--prefix`
+flag. The wrapper's exit status becomes `lw`'s exit status. This is the
+**faithful** way to run under a wrapper — `valgrind $(lw run --print)` (below)
+wraps the resolved command but **cannot carry** the launch's working directory or
+environment. A `--prefix` on a device target is an error. Build + deploy run
+first by default; add `--no-build` to wrap what is already built.
+
+#### Inspecting the command — `--print` / `--dry-run`
+
+`lw run --print` resolves the launch but does **not** execute it — it reports the
+fully-resolved invocation and exits 0. The default is a single POSIX-sh-quoted
+line (`<cmd> <args…>`), suitable for command substitution on a POSIX shell:
+
+```sh
+lw run --print                 # /path/build/app --config release
+lw run --print=json            # {"cmd":[…argv…],"cwd":"…","env":{…overrides…}}
+valgrind $(lw run --print)     # compose your own wrapper (POSIX shells)
+```
+
+`--print=json` emits `{ "cmd": [argv…], "cwd": …, "env": { …overrides only… } }`
+— reporting only the environment the launch **contributes**, never the inherited
+environment. It is the portable form (use it on Windows). A command
+configuration's declared args and any post-`--` forwarded args are included; a
+build target whose artifact is not yet resolved is reported as unresolved
+(non-zero exit), never guessed. Build is on by default so the artifact resolves;
+`--no-build` inspects without building. Because the working directory and
+environment are reported rather than applied, `--prefix` (above) is the faithful
+way to actually run under a wrapper.
+
 ### Deploy steps
 
 Copy build artifacts between projects before launch:
@@ -770,7 +813,7 @@ command has detail under `lw help <command>`.
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
-| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both |
+| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
 | `lw publish` | Write `loomworks.json` from the working copy |

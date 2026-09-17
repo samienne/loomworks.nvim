@@ -294,6 +294,10 @@ function vim.system(cmd, opts, on_exit)
   local args = {}
   for i = 2, #cmd do args[#args + 1] = cmd[i] end
   local inherit = opts.stdio == "inherit"
+  -- "inherit_err" streams the child live but maps its stdout onto OUR stderr
+  -- (fd 2), so a machine consumer of our stdout (e.g. `lw run --print`) is not
+  -- polluted by a build's tool output. Still a fully inherited (uncaptured) run.
+  local inherit_err = opts.stdio == "inherit_err"
   local hide = opts.hide
   if hide == nil then hide = IS_WINDOWS end
 
@@ -301,10 +305,15 @@ function vim.system(cmd, opts, on_exit)
   local stdio
   if inherit then
     stdio = { 0, 1, 2 } -- inherit parent stdin/stdout/stderr
+  elseif inherit_err then
+    stdio = { 0, 2, 2 } -- child stdout+stderr → our stderr; stdin inherited
   else
     so, se = uv.new_pipe(false), uv.new_pipe(false)
     stdio = { nil, so, se }
   end
+  -- Both inherited modes forgo captured pipes; downstream (`not inherit`) treats
+  -- them identically — the stdio table above is the only difference.
+  inherit = inherit or inherit_err
 
   local out, err = {}, {}
   local result, handle

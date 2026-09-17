@@ -811,6 +811,32 @@ replaces it, which would drop `PATH`).
   and the test runners use it, so a DLL/`.so`-dependent executable resolves its
   siblings identically whether run or tested. `ctest`, unlike `meson test`, does
   not set this up itself, so `lw test` must parse targets before planning.
+  - **Unified dispatch seam.** After the profile + target resolve, both the
+    normal run and its two modifiers share one tail — `cli._run_launch_target`
+    — which validity-gates, deploys, and calls `LaunchTarget:resolve_launch_spec`
+    to get one normalized `{ cmd, args, cwd, env }` for **either** a command
+    launch config **or** an executable build target (the dispatch already lives
+    in `resolve_launch_spec`; the CLI does not branch on target kind). It then
+    reports or executes:
+    - `--prefix <cmd>` (spec §16.17 "Launch prefix") builds the argv
+      `{ prefix…, cmd, args… }` via `cli._build_run_argv` and execs it through
+      the SAME inherited-stdio path (`run_spec`) an unprefixed run uses, in the
+      resolved cwd/env — so an interactive wrapper (gdb/valgrind) drives the tty.
+      Prefix tokens are supplied combinably (a shell-word-split string via
+      `cli._shell_split`, and/or a repeatable flag); a prefix on a device target
+      is refused. The wrapper's exit status is the invocation's.
+    - `--print`/`--dry-run` (spec §16.17 "Command inspection") skips execution
+      and emits the resolved invocation via `cli._emit_run_print`: a
+      POSIX-sh-quoted line (`cli._posix_sh_quote`) by default, or `=json`
+      (`{cmd:[argv],cwd,env}`). The env is **overrides only** —
+      `cli._launch_env_overrides` diffs the resolved run env against the
+      inherited environment, so a full build-target run env collapses to just its
+      contribution. An unresolved build-target artifact is reported (non-zero),
+      never guessed. Under `--print` the (default) build streams to stderr
+      (`run_build_steps` quiet mode → shim `stdio = "inherit_err"`) so stdout
+      carries only the report line for `$(lw run --print)`.
+    - `--no-build` skips the build+deploy pair (run/inspect what is already
+      built).
 - `lw target [list] [profile]` / `lw target set [<profile>] <target>` /
   `lw target clear [profile]` — list a profile's launchable targets (read-only
   introspection, spec §16.18: command launch configs plus configured build

@@ -62,6 +62,143 @@ end
 --- CLI output (the parseable part) must use io.write on both hosts.
 local function out(s) io.write((s or "") .. "\n") end
 
+--- Write an informational line to stderr. Used when stdout must stay clean for a
+--- machine consumer — e.g. `lw run --print` streams its build/status chatter here
+--- so `valgrind $(lw run --print)` captures only the resolved command line.
+local function note(s) io.stderr:write((s or "") .. "\n") end
+
+-- ---------------------------------------------------------------------------
+-- Shell-word splitting and POSIX-sh quoting (for `lw run --prefix` / `--print`)
+-- ---------------------------------------------------------------------------
+
+--- Split a shell-style word string into tokens, honoring single quotes
+--- (literal), double quotes (with backslash escaping of `"` `\` `$` `` ` ``),
+--- and backslash escaping outside quotes. Used for
+--- `--prefix "valgrind --leak-check=full"`. A quoted empty string (`''`) yields
+--- one empty token; unterminated quotes are tolerated (the run to end-of-string
+--- is the token). Pure — no shell is invoked.
+--- @param s string
+--- @return string[]
+local function shell_split(s)
+  local tokens, buf, has = {}, {}, false
+  local i, n = 1, #s
+  local function push()
+    if has then tokens[#tokens + 1] = table.concat(buf); buf, has = {}, false end
+  end
+  while i <= n do
+    local c = s:sub(i, i)
+    if c == "'" then
+      has = true; i = i + 1
+      while i <= n and s:sub(i, i) ~= "'" do buf[#buf + 1] = s:sub(i, i); i = i + 1 end
+      i = i + 1
+    elseif c == '"' then
+      has = true; i = i + 1
+      while i <= n and s:sub(i, i) ~= '"' do
+        local d = s:sub(i, i)
+        if d == "\\" and i < n then
+          local e = s:sub(i + 1, i + 1)
+          if e == '"' or e == "\\" or e == "$" or e == "`" then
+            buf[#buf + 1] = e; i = i + 2
+          else
+            buf[#buf + 1] = d; i = i + 1
+          end
+        else
+          buf[#buf + 1] = d; i = i + 1
+        end
+      end
+      i = i + 1
+    elseif c == "\\" and i < n then
+      has = true; buf[#buf + 1] = s:sub(i + 1, i + 1); i = i + 2
+    elseif c:match("%s") then
+      push(); i = i + 1
+    else
+      has = true; buf[#buf + 1] = c; i = i + 1
+    end
+  end
+  push()
+  return tokens
+end
+M._shell_split = shell_split
+
+--- POSIX-sh single-quote a token so it survives shell word-splitting and
+--- expansion unchanged: an empty string becomes `''`, a token of only shell-safe
+--- characters is left bare, and anything else is single-quote wrapped with each
+--- embedded `'` rendered as `'\''`. NOTE: this targets POSIX shells; the JSON
+--- form (`--print=json`) is the portable representation (e.g. on Windows).
+--- @param s string
+--- @return string
+local function posix_sh_quote(s)
+  s = tostring(s)
+  if s == "" then return "''" end
+  if s:match("^[%w_%-%./:=@,+]+$") then return s end
+  return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+M._posix_sh_quote = posix_sh_quote
+
+--- The launch-contributed environment OVERRIDES: entries of the resolved run
+--- environment whose value differs from the inherited process environment. A
+--- command launch config's env is already just its declared vars; a build-target
+--- / target-backed launch resolves a FULL env (inherited + a PATH prepend), so
+--- diffing against the inherited env reduces it to exactly the launch's
+--- contribution — never the whole inherited environment (spec §16.17 "Command
+--- inspection"). Returns a plain table (possibly empty).
+--- @param env table<string,string>|nil
+--- @return table<string,string>
+local function launch_env_overrides(env)
+  if not env then return {} end
+  local inherited = {}
+  local ok, cur = pcall(function() return vim.fn.environ() end)
+  if ok and type(cur) == "table" then inherited = cur end
+  local ov = {}
+  for k, v in pairs(env) do
+    if inherited[k] ~= v then ov[k] = v end
+  end
+  return ov
+end
+M._launch_env_overrides = launch_env_overrides
+
+--- Render a resolved launch spec as a read-only report (spec §16.17 "Command
+--- inspection") and return exit 0. `mode` is `"sh"` (a single POSIX-sh-quoted
+--- `<cmd> <args…>` line, suitable for `valgrind $(lw run --print)`) or `"json"`
+--- (`{ "cmd": [argv…], "cwd": …, "env": { overrides-only } }`). Never executes.
+--- @param spec { cmd: string, args: string[], cwd: string, env: table|nil }
+--- @param mode "sh"|"json"
+--- @param root string workspace root (cwd fallback)
+--- @return integer
+local function emit_run_print(spec, mode, root)
+  if mode == "json" then
+    local argv = { spec.cmd }
+    for _, a in ipairs(spec.args or {}) do argv[#argv + 1] = a end
+    local ov = launch_env_overrides(spec.env)
+    out(vim.json.encode({
+      cmd = argv,
+      cwd = spec.cwd or root,
+      env = next(ov) and ov or vim.empty_dict(),
+    }))
+  else
+    local parts = { posix_sh_quote(spec.cmd) }
+    for _, a in ipairs(spec.args or {}) do parts[#parts + 1] = posix_sh_quote(a) end
+    out(table.concat(parts, " "))
+  end
+  return 0
+end
+M._emit_run_print = emit_run_print
+
+--- Assemble the launched argv for a run: the prefix tokens, then the resolved
+--- command, then its arguments (`<prefix…> <cmd> <args…>`, spec §16.17 "Launch
+--- prefix"). Pure.
+--- @param prefix_tokens string[]|nil
+--- @param spec { cmd: string, args: string[]|nil }
+--- @return string[]
+local function build_run_argv(prefix_tokens, spec)
+  local full = {}
+  for _, t in ipairs(prefix_tokens or {}) do full[#full + 1] = t end
+  full[#full + 1] = spec.cmd
+  for _, a in ipairs(spec.args or {}) do full[#full + 1] = a end
+  return full
+end
+M._build_run_argv = build_run_argv
+
 --- Truncate `s` to width `w`, appending an ellipsis when it overflows.
 local function trunc(s, w)
   s = tostring(s)
@@ -671,8 +808,10 @@ M._resolve_profile = resolve_profile
 --- the tool output ourselves (buffered, dumped once the step exits).
 --- @param step table { cmd, cwd, env }
 --- @param root string
+--- @param to_stderr? boolean route the child's stdout to OUR stderr (keeps our
+---   stdout clean for a machine consumer — used by `lw run --print`'s build).
 --- @return integer code
-local function run_spec(step, root)
+local function run_spec(step, root, to_stderr)
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
   if vim._loomworks_shim then
@@ -684,7 +823,9 @@ local function run_spec(step, root)
     local res = vim.system(step.cmd, {
       cwd = step.cwd or root,
       env = env,
-      stdio = "inherit",
+      -- "inherit_err" maps the child's stdout onto fd 2 so it streams live but
+      -- never lands on our stdout (see the shim's vim.system).
+      stdio = to_stderr and "inherit_err" or "inherit",
       hide = false,
     }):wait()
     return res.code
@@ -694,7 +835,11 @@ local function run_spec(step, root)
     env = env,
     text = true,
   }):wait()
-  io.write(res.stdout or "")
+  if to_stderr then
+    io.stderr:write(res.stdout or "")
+  else
+    io.write(res.stdout or "")
+  end
   local err = res.stderr or ""
   if err ~= "" then io.stderr:write(err) end
   return res.code
@@ -843,7 +988,11 @@ local function run_build_steps(profile, ws, opts)
   local overseer = require("loomworks.overseer")
   local steps = overseer.plan_profile_build(profile, opts)
   if not steps or #steps == 0 then return 0 end
-  out("building profile: " .. profile.key)
+  -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
+  -- so a machine consumer like `lw run --print` captures only its report.
+  local quiet = opts.quiet or false
+  local log = quiet and note or out
+  log("building profile: " .. profile.key)
   for _, step in ipairs(steps) do
     -- Output-artifact conflict gate (spec §5.9 / §16.28). Directional: refuse
     -- a build that would clobber a still-`built` unit's shared artifact unless
@@ -860,8 +1009,8 @@ local function run_build_steps(profile, ws, opts)
     if opts.extra_args and step.kind == "build" then
       step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
     end
-    out(string.format("==> [%s] %s", step.kind, step.name or "?"))
-    local code = run_spec(step, ws.root)
+    log(string.format("==> [%s] %s", step.kind, step.name or "?"))
+    local code = run_spec(step, ws.root, quiet)
     record_step(ws, step, code == 0)
     if code ~= 0 then
       die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
@@ -1267,6 +1416,18 @@ end
 --- the program. Returns its exit code. Routes through the editor's LaunchTarget
 --- seams (resolve_launch_spec / deploy_sync) so headless
 --- and editor launches stay identical.
+---
+--- Options (spec §16.17):
+---   --prefix <cmd>   interpose a wrapper before the resolved command — the
+---                    process becomes `<prefix> <cmd> <args>` in the launch's
+---                    resolved cwd/env, on the real terminal (so interactive
+---                    gdb/valgrind work). Repeatable and shell-word split, so
+---                    `--prefix 'valgrind --leak-check=full'` and
+---                    `--prefix gdb --prefix --args` both give multiple tokens.
+---   --print[=sh|json] resolve the launch but do NOT execute; report it and exit
+---     / --dry-run     0 (read-only). `sh` (default) is a single POSIX-sh-quoted
+---                     line; `json` is `{cmd:[argv], cwd, env:{overrides}}`.
+---   --no-build        skip the build+deploy (inspect / run what is already built).
 function M.cmd_run(ws, args)
   -- Split on `--`: everything after is forwarded verbatim to the program.
   local pre, extra_args, seen_sep = {}, {}, false
@@ -1275,17 +1436,43 @@ function M.cmd_run(ws, args)
     elseif seen_sep then extra_args[#extra_args + 1] = args[i]
     else pre[#pre + 1] = args[i] end
   end
-  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`) and a
-  -- per-invocation `--cwd <dir>`; remaining pre-`--` tokens are positional and
-  -- follow the §16.17 operand grammar (0/1/2).
+  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`), a
+  -- per-invocation `--cwd <dir>`, the launch `--prefix`, `--print`/`--dry-run`,
+  -- and `--no-build`; remaining pre-`--` tokens are positional and follow the
+  -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
+  -- the forwarded (post-`--`) args.
   local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
+  local prefix_tokens, print_mode, no_build = {}, nil, false
   local i = 1
   while pre[i] do
     if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
     elseif pre[i] == "--target" then kind = "target"; i = i + 1
     elseif pre[i] == "--launch" then kind = "launch"; i = i + 1
     elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then cwd_override = pre[i + 1]; i = i + 2
+    elseif pre[i] == "--prefix" then
+      local val = pre[i + 1]
+      if val == nil then
+        die("--prefix requires a wrapper command (e.g. `--prefix valgrind` or " ..
+          "`--prefix 'valgrind --leak-check=full'`)")
+      end
+      for _, tok in ipairs(shell_split(val)) do prefix_tokens[#prefix_tokens + 1] = tok end
+      i = i + 2
+    elseif pre[i] == "--print" or pre[i] == "--dry-run" then print_mode = "sh"; i = i + 1
+    elseif pre[i]:match("^%-%-print=") or pre[i]:match("^%-%-dry%-run=") then
+      local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
+      if fmt ~= "sh" and fmt ~= "json" then
+        die("--print format must be 'sh' or 'json' (got '" .. fmt .. "')")
+      end
+      print_mode = fmt; i = i + 1
+    elseif pre[i] == "--no-build" then no_build = true; i = i + 1
     else positionals[#positionals + 1] = pre[i]; i = i + 1 end
+  end
+
+  if print_mode and #prefix_tokens > 0 then
+    -- --print reports the bare resolved command; a wrapper is a run-execution
+    -- concern. Combining them is contradictory — reject rather than guess.
+    die("--print and --prefix are mutually exclusive: --print reports the " ..
+      "resolved command (compose your own wrapper), --prefix runs under one.")
   end
 
   -- Determine (profile, target) from the operand count (§16.17). The profile is
@@ -1296,11 +1483,16 @@ function M.cmd_run(ws, args)
 
   -- Build the profile first (configures + builds); dies on failure. Build
   -- targets and the default target's artifact resolve against the built tree.
-  -- The build-dir lock is held only for the build — released before the launch,
-  -- which just executes the artifact and may run indefinitely.
-  with_build_locks(profile, "build", function()
-    run_build_steps(profile, ws)
-  end)
+  -- `--no-build` skips build+deploy (inspect/run what is already built). Under
+  -- `--print` the build streams to stderr (quiet) so our stdout carries only the
+  -- report line. The build-dir lock is held only for the build — released
+  -- before the launch, which just executes the artifact and may run
+  -- indefinitely.
+  if not no_build then
+    with_build_locks(profile, "build", function()
+      run_build_steps(profile, ws, { quiet = print_mode ~= nil })
+    end)
+  end
 
   local lt
   if target_name then
@@ -1340,6 +1532,35 @@ function M.cmd_run(ws, args)
     end
   end
 
+  return M._run_launch_target(lt, ws, {
+    prefix_tokens = prefix_tokens,
+    print_mode = print_mode,
+    no_build = no_build,
+    extra_args = extra_args,
+    cwd_override = cwd_override,
+  })
+end
+
+--- The editor-shared deploy → resolve → (report | prefix-exec) tail of a run,
+--- given an already-resolved launch target `lt`. Extracted so cmd_run and tests
+--- drive the identical dispatch. Returns the launched process's exit code, or 0
+--- for a --print report. `opts`:
+---   prefix_tokens string[]  wrapper tokens prepended to the argv (§16.17)
+---   print_mode    "sh"|"json"|nil  report-and-exit instead of executing
+---   no_build      boolean   skip deploy (paired with the skipped build)
+---   extra_args    string[]  post-`--` args forwarded to the program
+---   cwd_override  string|nil per-invocation working dir
+--- `deps.run_spec` is injectable for tests.
+--- @param lt loomworks.LaunchTarget
+--- @param ws loomworks.Workspace
+--- @param opts table
+--- @param deps? { run_spec?: function }
+--- @return integer
+function M._run_launch_target(lt, ws, opts, deps)
+  deps = deps or {}
+  local run = deps.run_spec or run_spec
+  local prefix_tokens = opts.prefix_tokens or {}
+
   -- Validity gate (stale descriptor / invalid profile or configuration).
   local ok, reasons = lt:is_valid()
   if not ok then
@@ -1347,18 +1568,39 @@ function M.cmd_run(ws, args)
       table.concat(type(reasons) == "table" and reasons or { "invalid" }, "; "))
   end
 
-  -- Deploy (both phases), then execute the resolved spec.
-  local dok, derr = lt:deploy_sync()
-  if not dok then die("deploy failed: " .. tostring(derr)) end
+  -- A prefix wraps LOCAL execution; a device target runs on the device, where a
+  -- host-side wrapper does not apply (device launch is deferred anyway, §16.17).
+  if #prefix_tokens > 0 and lt:requires_device() then
+    die("--prefix cannot wrap a device target ('" .. lt:display_name() ..
+      "') — a local wrapper does not apply to on-device execution.")
+  end
 
-  local spec, serr = lt:resolve_launch_spec({ extra_args = extra_args, working_dir = cwd_override })
+  -- Deploy (both phases). Skipped with --no-build (paired with the build).
+  if not opts.no_build then
+    local dok, derr = lt:deploy_sync()
+    if not dok then die("deploy failed: " .. tostring(derr)) end
+  end
+
+  local spec, serr = lt:resolve_launch_spec({
+    extra_args = opts.extra_args, working_dir = opts.cwd_override })
+  -- An unresolved build-target artifact reports its reason here and exits
+  -- non-zero — reported, never guessed (§16.3 / §16.18).
   if not spec then die("cannot resolve launch: " .. tostring(serr)) end
 
-  local full = { spec.cmd }
-  for _, a in ipairs(spec.args or {}) do full[#full + 1] = a end
+  -- --print / --dry-run: report the resolved invocation, never execute (§16.17
+  -- "Command inspection").
+  if opts.print_mode then
+    return emit_run_print(spec, opts.print_mode, ws.root)
+  end
+
+  -- Build the launched argv (prefix, then cmd, then args) and execute it in the
+  -- launch's resolved cwd/env on the real terminal, so an interactive wrapper
+  -- (gdb, valgrind) drives the tty. The wrapper process's exit status becomes
+  -- the invocation's (§16.17 "Launch prefix").
+  local full = build_run_argv(prefix_tokens, spec)
   out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
     table.concat(full, " ")))
-  return run_spec({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
+  return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
 end
 
 --- `lw launch list [project]` — list command-type launch configs.
@@ -5641,6 +5883,25 @@ Operands (before `--`) — the count picks the form:
   -- args…     everything after `--` is forwarded verbatim to the program
                (a command config's own declared args come first). Required to
                pass args, so the operands are never mistaken for one.
+
+Wrapping and inspecting the launch:
+  --prefix <cmd>        run the program under a wrapper — the process becomes
+                        `<prefix> <cmd> <args>` in the launch's resolved cwd/env,
+                        on the real terminal (interactive gdb/valgrind work).
+                        Repeatable and shell-word split, so
+                        `--prefix 'valgrind --leak-check=full'` and
+                        `--prefix gdb --prefix --args` both give many tokens.
+                        This is the faithful way to run under a wrapper —
+                        `valgrind $(lw run --print)` cannot carry the cwd/env.
+  --print[=sh|json]     resolve the launch but DO NOT run it; report it, exit 0.
+     --dry-run          `sh` (default) is one POSIX-sh-quoted `<cmd> <args>` line
+                        (for `$(lw run --print)`); `json` is
+                        `{"cmd":[argv],"cwd":…,"env":{overrides-only}}` — the
+                        portable form (e.g. on Windows). An unresolved build-
+                        target artifact is reported as such (non-zero), never
+                        guessed.
+  --no-build            skip the build+deploy — run / inspect what is already
+                        built.
 
 Disambiguating a name present more than once:
   <project>:<target>     scope to a project
