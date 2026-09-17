@@ -115,11 +115,23 @@ local function curl_with_retry(args)
   return code, out, err
 end
 
---- Fetch `url` and return its bytes, or nil, err.
-function M.fetch(url)
+--- Turn `opts.headers` (an array of "Name: value" strings) into curl `-H` args.
+--- Used for the releases API, which wants an Accept + a User-Agent header (curl
+--- already sends a default UA, but api.github.com is fussier than the CDN).
+local function header_args(opts)
+  local extra = {}
+  for _, h in ipairs(opts and opts.headers or {}) do
+    extra[#extra + 1] = "-H"; extra[#extra + 1] = h
+  end
+  return extra
+end
+
+--- Fetch `url` and return its bytes, or nil, err. `opts.headers` adds request
+--- headers (ignored for a local-path/file:// read).
+function M.fetch(url, opts)
   local lp = local_path(url)
   if lp then return read_file(lp) end
-  local code, out, err = curl_with_retry(curl_args(url))
+  local code, out, err = curl_with_retry(curl_args(url, header_args(opts)))
   if code == nil then return nil, out end
   if code ~= 0 then
     return nil, "curl failed (" .. tostring(code) .. ") for " .. url ..

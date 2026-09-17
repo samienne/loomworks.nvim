@@ -251,7 +251,9 @@ overwrite the code of a running invocation; a failed or partial acquisition
 MUST leave the previously active bundle intact, so a runner is never left
 without a working system Lua. Acquisition and activation are management
 operations (§16.9): they are never performed as part of a build (§16.4), so
-a read-only or CI invocation neither fetches nor mutates the active bundle.
+a read-only or CI invocation neither fetches nor mutates the active bundle. An
+un-pinned acquisition resolves its target release through the active **update
+channel** (§16.29).
 
 ### 16.14 Host/bundle compatibility
 
@@ -805,3 +807,33 @@ declines with exit 1, exactly as the blank-variable gate does (§16.9). Forcing
 in a non-interactive run is possible only by passing `--force` explicitly. In an
 interactive editor host the same conflict is surfaced through a confirmation
 dialog rather than this flag (see [`spec/ui.md`](../ui.md) §1.5, §1.8).
+
+### 16.29 Update channels
+
+The **release source** (§16.11) is resolved from an **update channel** — a
+named track of releases the host self-update follows. The system defines two:
+
+- **stable** (default) — the newest **full release**, excluding pre-releases.
+- **unstable** — the newest release **including pre-releases**, for testing
+  ahead of a stable cut.
+
+A channel governs only *which* release an un-pinned acquisition (§16.13)
+resolves to; it changes nothing about *how* that release is trusted. Every
+channel's releases are acquired through the identical integrity chain (§16.12,
+§16.15): the manifest MUST verify and every artifact hash MUST match, on
+unstable exactly as on stable. "unstable" denotes release maturity, never
+reduced verification — an unverified or hash-mismatched bundle MUST NOT execute
+regardless of channel.
+
+Channel selection is a host concern with precedence: an explicit per-invocation
+override, then host configuration, then the default (stable). A pin (§16.21) is
+independent of and takes precedence over channel resolution: a pinned
+invocation acquires exactly the pinned version+hash and consults no channel. An
+explicit release-source location override (a mirror) likewise supersedes
+channel resolution, which applies only to the default origin.
+
+A pre-release version orders **below** its corresponding full release: version
+comparison used for activation, "already newest," and cache reclamation
+(§16.13) MUST treat a pre-release as older than the release it precedes — so
+following stable never selects or retains a pre-release over its release, and
+switching channels does not misrank installed bundles.

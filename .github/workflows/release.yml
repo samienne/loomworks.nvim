@@ -174,8 +174,23 @@ jobs:
         with:
           subject-path: 'release/lw-*'
 
+      # A tag with a pre-release suffix (v0.2.0-beta.1) is published as a GitHub
+      # pre-release, so `/releases/latest` — the `stable` update channel
+      # (spec §16.29) — excludes it, while the `unstable` channel (releases API)
+      # still finds it. A full release (no `-`) stays non-prerelease.
+      - name: Determine prerelease
+        id: rel
+        shell: bash
+        run: |
+          ver="${{ github.event.inputs.version || github.ref_name }}"
+          case "$ver" in
+            *-*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
           fail_on_unmatched_files: true
+          prerelease: ${{ steps.rel.outputs.prerelease }}

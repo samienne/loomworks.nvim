@@ -756,5 +756,149 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.paths — version_gt semver ordering (pre-releases below releases, §16.29)")
+do
+  ok(paths.version_gt("0.2.0", "0.2.0-beta.1"), "a full release > its pre-release")
+  ok(not paths.version_gt("0.2.0-beta.1", "0.2.0"), "a pre-release < its release")
+  ok(paths.version_gt("0.2.0-beta.2", "0.2.0-beta.1"), "beta.2 > beta.1 (numeric identifier)")
+  ok(paths.version_gt("0.2.0-beta.10", "0.2.0-beta.2"), "beta.10 > beta.2 (numeric, not lexical)")
+  ok(paths.version_gt("0.2.0-rc.1", "0.2.0-beta.1"), "rc > beta (lexical identifier)")
+  ok(paths.version_gt("1.10.0", "1.9.0"), "1.10.0 > 1.9.0 (numeric core, not lexical)")
+  ok(paths.version_gt("0.2.0", "0.1.9"), "a higher core wins")
+  ok(not paths.version_gt("0.2.0", "0.2.0"), "equal is not strictly greater")
+  ok(paths.version_gt("0.2.0", "0.2.0-rc.1+build.7"), "build metadata ignored; pre-release still lower")
+end
+
+print("boot.paths — installed_releases + gc rank pre-releases below releases")
+do
+  local sb = root .. "/tests/.tmp-relorder"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  for _, v in ipairs({ "0.1.0", "0.2.0-beta.1", "0.2.0" }) do
+    paths.mkdirp(paths.data_dir() .. "/lua-" .. v)
+  end
+  local rels = paths.installed_releases()
+  eq(rels[1] and rels[1].ver, "0.2.0", "newest = the full release")
+  eq(rels[2] and rels[2].ver, "0.2.0-beta.1", "pre-release ranked directly below its release")
+  eq(rels[3] and rels[3].ver, "0.1.0", "older release last")
+  update.gc(1, nil)  -- keep only the single newest release
+  ok(uv.fs_stat(paths.data_dir() .. "/lua-0.2.0"), "gc keeps the newest full release")
+  ok(not uv.fs_stat(paths.data_dir() .. "/lua-0.2.0-beta.1"), "gc removes the pre-release below it")
+  ok(not uv.fs_stat(paths.data_dir() .. "/lua-0.1.0"), "gc removes the older release")
+  paths.rm_rf(sb)
+end
+
+print("boot.update — channel resolution precedence + validation (§16.29)")
+do
+  local sb = root .. "/tests/.tmp-channel"; paths.rm_rf(sb); paths.mkdirp(sb)
+  -- Sandbox the CONFIG dir so read_config reads our file, not the user's.
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")  -- start unset
+  local function put_cfg(body)
+    paths.mkdirp((paths.config_file():gsub("/[^/]*$", "")))
+    local f = assert(io.open(paths.config_file(), "wb")); f:write(body); f:close()
+  end
+
+  eq(update.resolve_channel({}), "stable", "default channel is stable")
+  put_cfg('{"channel":"unstable"}')
+  eq(update.resolve_channel({}), "unstable", "config `channel` is read")
+  uv.os_setenv("LOOMWORKS_CHANNEL", "stable")
+  eq(update.resolve_channel({}), "stable", "LOOMWORKS_CHANNEL overrides config")
+  eq(update.resolve_channel({ channel = "unstable" }), "unstable", "opts.channel overrides env")
+
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")
+  local c, e = update.resolve_channel({ channel = "bogus" })
+  ok(c == nil and type(e) == "string" and e:find("unknown update channel", 1, true) ~= nil,
+    "unknown channel rejected with a clear error")
+  put_cfg('{"channel":"weird"}')
+  ok(select(1, update.resolve_channel({})) == nil, "unknown channel from config rejected")
+  paths.rm_rf(sb)
+end
+
+print("boot.update — unstable resolution picks newest non-draft (incl. pre-release)")
+do
+  local sb = root .. "/tests/.tmp-unstable"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local api = sb .. "/releases.json"
+  local function put(p, body) local f = assert(io.open(p, "wb")); f:write(body); f:close() end
+  -- Newest-first, as the API returns it: a draft on top must be skipped, and a
+  -- pre-release IS eligible (that is what unstable means).
+  put(api, '[{"draft":true,"tag_name":"v9.9.9"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.2.0-beta.1"},'
+    .. '{"draft":false,"prerelease":false,"tag_name":"v0.2.0"}]')
+  local saved = update.RELEASES_API_URL
+  update.RELEASES_API_URL = api  -- bare path -> download.fetch reads it locally
+  local ver, e = update.resolve_unstable_version()
+  eq(ver, "0.2.0-beta.1",
+    "newest NON-draft (pre-release included, draft skipped)" .. (e and (" — " .. e) or ""))
+
+  put(api, '[{"draft":false,"tag_name":"v../../evil"}]')
+  local bad, be = update.resolve_unstable_version()
+  ok(bad == nil and type(be) == "string" and be:find("unsafe", 1, true) ~= nil,
+    "a traversing/malformed API tag is rejected before any URL is built")
+
+  put(api, '[]')
+  ok(select(1, update.resolve_unstable_version()) == nil, "an empty release list is a clean error")
+
+  update.RELEASES_API_URL = saved
+  paths.rm_rf(sb)
+end
+
+print("boot.update — unstable self_update installs the API-named release + still verifies")
+do
+  local sb = root .. "/tests/.tmp-unstable-run"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")  -- NO override, so the channel applies
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")
+  local function put(p, body) local f = assert(io.open(p, "wb")); f:write(body); f:close() end
+
+  -- Point the "default origin" at the local fixtures (a flat mirror) and the
+  -- releases API at a local JSON naming the fixture version. versioned_base of a
+  -- local base is flat, so the whole unstable path stays hermetic (no network).
+  local api = sb .. "/releases.json"
+  put(api, '[{"draft":false,"prerelease":true,"tag_name":"v0.0.0-test"}]')
+  local savedOrigin, savedApi = update.DEFAULT_RELEASE_URL, update.RELEASES_API_URL
+  update.DEFAULT_RELEASE_URL = (FX:gsub("/$", ""))
+  update.RELEASES_API_URL = api
+
+  local res, err = update.self_update({ channel = "unstable" })
+  ok(res ~= nil, "unstable self_update installs" .. (err and (" — " .. err) or ""))
+  if res then eq(res.version, "0.0.0-test", "installed the pre-release the API named") end
+
+  -- Verification is NOT weakened on unstable: a tampered manifest still aborts.
+  local good = readfile(FX .. "manifest.json")
+  local badmirror = sb .. "/badmirror"; paths.mkdirp(badmirror)
+  put(badmirror .. "/manifest.json", (good:gsub("0%.0%.0%-test", "6.6.6-evil")))
+  put(badmirror .. "/manifest.json.sig", readfile(FX .. "manifest.json.sig"))
+  update.DEFAULT_RELEASE_URL = badmirror
+  local bad, berr = update.self_update({ channel = "unstable", force = true })
+  ok(bad == nil and type(berr) == "string", "tampered unstable manifest rejected (signature)")
+
+  update.DEFAULT_RELEASE_URL = savedOrigin
+  update.RELEASES_API_URL = savedApi
+  paths.rm_rf(sb)
+end
+
+print("boot.update — a release-url mirror override bypasses the channel (no API query)")
+do
+  local sb = root .. "/tests/.tmp-override"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")
+  -- Override points at the fixtures mirror; the API URL is a path that does NOT
+  -- exist, so a (wrong) channel query would make the install fail loudly.
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", (FX:gsub("/$", "")))
+  local savedApi = update.RELEASES_API_URL
+  update.RELEASES_API_URL = sb .. "/nonexistent-releases.json"
+
+  local res, err = update.self_update({ channel = "unstable" })
+  ok(res ~= nil, "override + unstable installs from the mirror, API untouched" ..
+    (err and (" — " .. err) or ""))
+  if res then eq(res.version, "0.0.0-test", "version came from the mirror manifest, not the API") end
+
+  update.RELEASES_API_URL = savedApi
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  paths.rm_rf(sb)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
