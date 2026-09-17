@@ -170,3 +170,85 @@ describe("meson.detect_tools_async", function()
         assert.same(sync_tools, async_tools)
     end)
 end)
+
+-- Regression for "getenv must be called in a fast event context" (crash on
+-- opening a meson project). When meson is resolved via the Python-interpreter
+-- probe branch of find_meson_async, its SUCCESS path must return to the main
+-- loop before invoking its callback — matching the failure path's
+-- `vim.schedule(try_next)`. Otherwise the downstream compiler detection (which
+-- legitimately reads `vim.env.PATH` / `vim.fn`) runs inside the `vim.system`
+-- completion (a libuv fast-event context) and throws.
+describe("meson find_meson_async fast-event-context safety", function()
+    local meson = require("loomworks.modules.meson")
+
+    -- Non-Windows so only the GNU-compiler branch would run; meson is NOT on
+    -- PATH, forcing the Python `-c` probe branch that owns the offending path.
+    local function has(feature)
+        if feature == "win32" then return 0 end
+        return 0
+    end
+    local function exepath_no_meson(name)
+        if name == "meson" then return "" end            -- force the probe branch
+        if name == "python" then return "/usr/bin/python" end
+        return exepath(name)
+    end
+
+    -- The only `vim.system` call reaching this stub is the Python `-c` probe
+    -- (cpp.detect_async is spied below, so no `--version` shell-outs fire). It
+    -- reports a valid meson path, driving find_meson_async's SUCCESS path.
+    local function python_probe(_cmd, _opts, cb)
+        cb({ code = 0, stdout = "/usr/bin/meson\n" })
+        return { wait = function() return { code = 0, stdout = "/usr/bin/meson\n" } end }
+    end
+
+    it("invokes its callback on a scheduled tick, not inside the vim.system callback", function()
+        local cpp = require("loomworks.cpp_compilers")
+
+        -- Deferring `vim.schedule`: queue rather than run, so we can observe
+        -- whether the find-meson callback fired synchronously or after a tick.
+        local queue = {}
+        local function defer(fn) queue[#queue + 1] = fn end
+        local function flush()
+            while #queue > 0 do table.remove(queue, 1)() end
+        end
+
+        -- Spy on cpp.detect_async — it is invoked at exactly the moment the
+        -- find-meson callback fires. It stands in for the downstream detection
+        -- that reads vim.env/vim.fn, so if it runs synchronously inside the
+        -- `vim.system` completion the real crash would trigger there.
+        local cpp_called = false
+        local prev_detect_async = cpp.detect_async
+        cpp.detect_async = function(cb) cpp_called = true; cb({}) end
+
+        local called_synchronously, called_after_flush, final
+        local ok, err = pcall(function()
+            with_stubs({
+                ["vim.fn.has"] = has,
+                ["vim.fn.exepath"] = exepath_no_meson,
+                ["vim.system"] = python_probe,
+                ["vim.schedule"] = defer,
+                ["vim.uv.fs_stat"] = function() return {} end,  -- meson path "exists"
+            }, function()
+                meson.detect_tools_async(function(t) final = t end)
+                -- python_probe calls its completion inline, so by now the
+                -- find-meson SUCCESS path has already run. Pre-fix it invoked
+                -- `callback({out})` synchronously and cpp_called is already true
+                -- (the fast-event-context violation). Post-fix it deferred via
+                -- vim.schedule, so nothing has fired yet.
+                called_synchronously = cpp_called
+                flush()
+                called_after_flush = cpp_called
+            end)
+        end)
+
+        cpp.detect_async = prev_detect_async
+        if not ok then error(err) end
+
+        assert.is_false(called_synchronously,
+            "find-meson success path invoked its callback synchronously inside "
+            .. "the vim.system (fast-event) callback")
+        assert.is_true(called_after_flush,
+            "find-meson callback should fire after a scheduled main-loop tick")
+        assert.is_not_nil(final)
+    end)
+end)
