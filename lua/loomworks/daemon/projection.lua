@@ -50,6 +50,12 @@ function M.connect(root, opts, callback)
     self.on_log = opts.on_log       -- fun(record) for device-log records (§6.2)
     self._task_observers = {}       -- task_id -> { on_output, on_progress, on_done }
     self.timeout_ms = opts.timeout_ms or M.REQUEST_TIMEOUT_MS
+    -- Hydrating a full projection Workspace from the snapshot is only for a
+    -- client that renders the model (the editor). A fire-and-forget consumer —
+    -- a CLI `lw build` that just sends a command and streams the task output —
+    -- opts out (`hydrate = false`): it skips the snapshot round-trip entirely, so
+    -- it neither pays for nor depends on model deserialization.
+    self._hydrate_on_connect = opts.hydrate ~= false
     self._pipe = uv.new_pipe(false)
     self._decoder = protocol.new_decoder()
     self._pending = {}      -- req_id -> { cb, timer }
@@ -75,11 +81,17 @@ function M.connect(root, opts, callback)
                 if msg then self:_dispatch(msg) end
             end
         end)
-        -- Handshake, then hydrate the projection from the first snapshot.
+        -- Handshake, then (unless opted out) hydrate the projection from the
+        -- first snapshot.
         self:request({ kind = protocol.KIND.hello, protocol_version = protocol.VERSION },
             function(welcome, herr)
                 if herr then callback(nil, herr); return end
                 self.generation = welcome.session_generation
+                self.seq = welcome.current_seq
+                if not self._hydrate_on_connect then
+                    callback(self, nil) -- ready to send commands / observe tasks
+                    return
+                end
                 self:_hydrate(function(ok, serr)
                     if ok then callback(self, nil) else callback(nil, serr) end
                 end)

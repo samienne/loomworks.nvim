@@ -35,6 +35,7 @@ end
 --- @param id string
 --- @return table|nil
 function M.get(id)
+    if type(id) ~= "string" or id == "" then return nil end
     if registry[id] then return registry[id] end
     if rejected[id] then return nil end
     local ok, mod = pcall(require, "loomworks.modules." .. id)

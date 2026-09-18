@@ -1143,7 +1143,10 @@ function M._maybe_delegate_build(root, args, opts)
 
   local connect = opts.connect or require("loomworks.daemon.projection").connect
   local done, code, cerr = false, nil, nil
-  connect(root, {}, function(proj, err)
+  -- A CLI build only sends a command and streams — it does not render the
+  -- model, so it connects WITHOUT hydrating a projection workspace (lighter, and
+  -- independent of model deserialization).
+  connect(root, { hydrate = false }, function(proj, err)
     if err then cerr = err; done = true; return end
     proj:build({ profile_key = pre[1], extra_args = (#extra > 0) and extra or nil }, {
       on_accept = function(task_id, aerr)

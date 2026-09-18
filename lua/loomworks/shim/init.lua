@@ -315,6 +315,14 @@ function vim.system(cmd, opts, on_exit)
   -- them identically — the stdio table above is the only difference.
   inherit = inherit or inherit_err
 
+  -- nvim's vim.system streams each chunk to an `opts.stdout`/`opts.stderr`
+  -- FUNCTION when one is given (called `(err, data)`, `data=nil` at EOF), and
+  -- then does NOT accumulate that stream into `result`. The daemon build runner
+  -- relies on this to stream live build output, so honor it here (a plain
+  -- capture otherwise). Without this the callbacks were silently ignored and all
+  -- streamed output was lost under the standalone host.
+  local stdout_cb = type(opts.stdout) == "function" and opts.stdout or nil
+  local stderr_cb = type(opts.stderr) == "function" and opts.stderr or nil
   local out, err = {}, {}
   local result, handle
   handle = uv.spawn(exe, {
@@ -328,10 +336,13 @@ function vim.system(cmd, opts, on_exit)
       so:read_stop(); se:read_stop(); so:close(); se:close()
     end
     handle:close()
+    -- Signal EOF to streaming callbacks (nvim calls them once with data=nil).
+    if stdout_cb then pcall(stdout_cb, nil, nil) end
+    if stderr_cb then pcall(stderr_cb, nil, nil) end
     result = {
       code = code,
-      stdout = inherit and "" or table.concat(out),
-      stderr = inherit and "" or table.concat(err),
+      stdout = (inherit or stdout_cb) and "" or table.concat(out),
+      stderr = (inherit or stderr_cb) and "" or table.concat(err),
     }
     if on_exit then on_exit(result) end
   end)
@@ -340,8 +351,14 @@ function vim.system(cmd, opts, on_exit)
     result = { code = 127, stdout = "", stderr = "spawn failed: " .. tostring(exe) }
     if on_exit then on_exit(result) end
   elseif not inherit then
-    uv.read_start(so, function(_, d) if d then out[#out + 1] = d end end)
-    uv.read_start(se, function(_, d) if d then err[#err + 1] = d end end)
+    uv.read_start(so, function(e, d)
+      if stdout_cb then if d then pcall(stdout_cb, e, d) end
+      elseif d then out[#out + 1] = d end
+    end)
+    uv.read_start(se, function(e, d)
+      if stderr_cb then if d then pcall(stderr_cb, e, d) end
+      elseif d then err[#err + 1] = d end
+    end)
   end
   return {
     wait = function()

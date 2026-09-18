@@ -984,10 +984,20 @@ editor identically. The stream coalesces progress (integer-percent dedup) and
 bounds output; `notify` rides the same channel; the durable outcome is a separate
 build-state broadcast. `runner.lua` runs the build daemon-side by reusing the
 same `overseer.plan_profile_build` planning seam and an async streaming
-`vim.system` spawn. Delegation is opt-in: `cli._maybe_delegate_build` streams
-from a reachable daemon when `runtime-mode` is daemon/auto, and returns nil (run
+`vim.system` spawn, and — like the CLI's `run_build_steps` — it applies the build
+gate + artifact-conflict check, holds the per-build-dir `build_lock` (distinct
+from the daemon write-authority lock), and calls `workspace:record_task_result`
+after each step so build **state + cache persist** identically to an in-process
+build. Because the build command is handled in a libuv callback (a Neovim *fast
+event context* when the daemon runs in-process), all `vim.fn`-touching work
+(build-dir mkdir in the task builders, cache write-back) is hopped onto the main
+loop via `vim.schedule`; under the standalone luvi host that is a harmless defer.
+Delegation is opt-in: `cli._maybe_delegate_build` connects a NON-hydrating
+projection (a CLI build streams, it doesn't render the model) and streams from a
+reachable daemon when `runtime-mode` is daemon/auto, returning nil (run
 in-process — the permanent fallback) otherwise, so the default build is never
-changed.
+changed. (The luvi shim's `vim.system` honors the streaming `stdout`/`stderr`
+callback form so this output actually streams under the standalone host.)
 
 **Device/log generalization** (`log_record.lua`, scaffold): a normalized log
 record `{ts, level, tag, pid, message, fields?}` (with a `fields` platform escape
@@ -1319,7 +1329,7 @@ loomworks.nvim/
 │   │   │   ├── commands.lua           Command registry: wire mutation → resolve keys → domain mutation method (ack + broadcast)
 │   │   │   ├── tasks.lua              Workspace task stream: coalesced progress + bounded output + notify (observable by any client)
 │   │   │   ├── log_record.lua         Normalized device-log record schema { ts, level, tag, pid, message, fields? } (§6.2 scaffold)
-│   │   │   ├── runner.lua             Daemon-side build: reuse plan_profile_build + async streaming spawn → task stream
+│   │   │   ├── runner.lua             Daemon-side build: plan_profile_build + streaming spawn → task stream; gate + build-dir lock + record_task_result (cache write-back); runs on the main loop (fast-event-context)
 │   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve snapshot/command/build + broadcasts
 │   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, req/reply, command(), build(), broadcast auto-refresh
 │   │   ├── fidget.lua                 fidget.nvim progress integration
