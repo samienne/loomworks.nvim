@@ -843,9 +843,24 @@ command has detail under `lw help <command>`.
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
+| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `runtime-mode`, …) |
+| `lw daemon [status\|stop\|run\|protocol]` | Inspect / stop / run the per-workspace daemon (opt-in behind `runtime-mode`; in-process stays the default). `status` also reports the resolved runtime mode (see below); `run` starts the server; `protocol` prints the wire version |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
 | `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
+
+**Runtime mode.** loomworks has an optional long-lived `lw` daemon (one process
+per workspace) that owns the model, files, and build execution and serves both
+the editor and the CLI — so a `lw build` streams into the editor and edits stay
+in sync without file polling. It is **opt-in behind a flag and never the
+default**: in-process stays the default and the permanent fallback, and a client
+falls back to in-process whenever the daemon is absent, crashed, or
+protocol-incompatible. Set the mode in the plugin
+(`require("loomworks").setup({ runtime = { mode = "in-process" } })`) or the CLI
+(`lw settings set runtime-mode daemon`); `LOOMWORKS_RUNTIME` overrides both.
+Values: `in-process` (default), `daemon`, `auto`. `lw daemon status` shows the
+resolved mode and whether a daemon is running; `lw daemon run` starts one;
+`lw daemon stop` retires one. See [`DAEMON.md`](DAEMON.md) for the design and
+[`spec/core/daemon.md`](spec/core/daemon.md) §17 for the contract.
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command

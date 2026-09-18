@@ -190,8 +190,8 @@ clears it. Naming a variable not declared in the project's `variables`, or a
 profile that does not exist, is rejected. These fill values are per-machine
 working-copy state and are never published (§2.4). Filling a profile's blank
 variables this way is the non-interactive path through the build gate (§5):
-under `--no-interaction` a build refuses while any blank remains, naming the
-variable and profile to fill.
+under `--no-input` / `--non-interactive` a build refuses while any blank remains,
+naming the variable and profile to fill.
 
 ### 16.10 Toolchains outside the search paths
 
@@ -802,8 +802,9 @@ artifacts (`resolve_artifacts` absent or empty — e.g. the shell module, which
 has no targets) contributes nothing to the index, so its units are never in a
 conflict; this is graceful degradation, not a special case (§8.4).
 
-Under `--no-interaction` the refusal is **never a prompt**: the build simply
-declines with exit 1, exactly as the blank-variable gate does (§16.9). Forcing
+Under `--no-input` / `--non-interactive` the refusal is **never a prompt**: the
+build simply declines with exit 1, exactly as the blank-variable gate does
+(§16.9). Forcing
 in a non-interactive run is possible only by passing `--force` explicitly. In an
 interactive editor host the same conflict is surfaced through a confirmation
 dialog rather than this flag (see [`spec/ui.md`](../ui.md) §1.5, §1.8).

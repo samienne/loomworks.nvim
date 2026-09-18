@@ -196,8 +196,9 @@ These are implementation-specific details not covered by the spec or architectur
   to work via `core:method()`.
 - **Workspace mutation methods**: `config_editor.lua` is no longer used at
   runtime — Workspace has its own mutation methods for adding/removing
-  projects, configuration sets, etc. `rename_project_configuration` does
-  atomic rename with config set, cache, and profile propagation. All
+  projects, configuration sets, etc. `Workspace:rename_project`,
+  `Workspace:rename_configuration_set`, and `Project:rename_configuration` do
+  atomic renames with config set, cache, and profile propagation. All
   mutations write to user.json (working copy). `publish()` writes published
   items to loomworks.json on explicit `:w`.
 - **Publish/working-copy model** (spec §2.4): user.json is the live working
