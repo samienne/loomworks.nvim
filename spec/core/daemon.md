@@ -214,8 +214,8 @@ runs the same merge/deserialize path, producing an identical model. The daemon
 owns the disk-reading half (project-source introspection and toolchain
 detection); the client's deserialize step is disk-free with respect to the
 workspace files. Serializing the daemon's model and re-serializing the client's
-projection MUST yield identical results for the same inputs (the parity property,
-§17.11).
+projection MUST yield identical results for the same inputs (the **parity
+property**, verified by differential testing).
 
 The daemon and its clients are **co-located on one host**, so the client reads the
 project sources locally and identically — those are the project, not the workspace
@@ -256,3 +256,23 @@ a full re-hydrate. Broadcasts are workspace-scoped and reach every connected
 client, so a change made through one client (or by an external file edit the
 daemon reconciles) becomes visible to all — the live shared view the daemon
 exists to provide.
+
+### 17.11 Commands (mutations)
+
+A client mutation is a **command** the daemon applies against its authoritative
+model and persists (it holds the write-authority lock, §17.7). Pure accessors and
+derived queries run **locally on the projection** — only commands (and sync)
+cross the wire.
+
+Commands are **FIFO-serialized** by the single daemon: a command's resulting
+change broadcast is emitted before any later command's, and a client that awaits
+its own ack has seen (or will see, in order) the change its command produced.
+Their *effect* returns as the `model_change` broadcast that re-renders the
+projection (§17.10) — emitted before the ack, which carries only an **outcome**
+(`ok` / `rolled-back` / `partially-applied`) or an error. So the common UI action
+does not wait on a round-trip: the projection updates from the broadcast.
+
+Domain logic stays **reference-based**: a command resolves its wire arguments
+(semantic keys) to domain objects at the serialization boundary — exactly as the
+deserializer does — then calls the object's own mutation method. No key lookup
+leaks into domain logic. A handler error becomes an error ack, never a crash.

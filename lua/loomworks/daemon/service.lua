@@ -9,6 +9,7 @@
 local protocol = require("loomworks.daemon.protocol")
 local snapshot = require("loomworks.daemon.snapshot")
 local ids = require("loomworks.daemon.ids")
+local commands = require("loomworks.daemon.commands")
 
 local M = {}
 
@@ -67,6 +68,20 @@ function M.attach(server, opts)
             seq = srv.seq,
             session_generation = srv.generation,
         })
+    end)
+
+    -- Command (mutation) path (§3.1). The daemon applies the mutation against
+    -- its authoritative workspace and persists it; the mutation emits
+    -- active_set_changed → a model_change broadcast (the effect), which is sent
+    -- to all clients BEFORE this ack (broadcast is synchronous within apply, the
+    -- reply follows). The reply is only ack/error.
+    server:handle("command", function(srv, conn, msg)
+        local outcome, err = commands.apply(srv.workspace, msg.name, msg.args)
+        if err then
+            conn.reply({ kind = protocol.KIND.error, req_id = msg.req_id, error = err })
+        else
+            conn.reply({ kind = protocol.KIND.ok, req_id = msg.req_id, outcome = outcome or "ok" })
+        end
     end)
 
     -- Propagate the daemon's own model changes to every client. `active_set_changed`
