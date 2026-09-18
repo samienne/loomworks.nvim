@@ -155,6 +155,20 @@ function Projection:_pump_refresh()
     end)
 end
 
+--- Send a mutation COMMAND to the daemon (§3.1). Fire-and-forget in effect: the
+--- projection updates from the resulting `model_change` broadcast (auto-refresh),
+--- not from this reply — the callback only reports the ack outcome
+--- (`ok` / `rolled-back` / `partially-applied`) or an error.
+--- @param name string command name (e.g. "profile.activate")
+--- @param args table|nil command arguments (wire-serializable keys)
+--- @param callback? fun(outcome: string|nil, err: string|nil)
+function Projection:command(name, args, callback)
+    callback = callback or function() end
+    self:request({ kind = "command", name = name, args = args }, function(reply, err)
+        if err then callback(nil, err) else callback(reply.outcome or "ok", nil) end
+    end)
+end
+
 --- Request a fresh snapshot and rebuild the projection Workspace in place.
 --- @param callback fun(ok: boolean, err: string|nil)
 function Projection:_hydrate(callback)

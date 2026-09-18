@@ -964,8 +964,19 @@ invalidation, race-guarded by seq; a new session generation forces a full
 re-hydrate). So a change on the daemon reaches every connected client — the live
 shared view. Per-object deltas are the deferred optimization the id-map enables.
 
-Commands and the task stream layer on top of these (following sections /
-commits), all behind the same runtime-mode flag.
+**Commands** (`commands.lua`): a client mutation is a `command{name,args}` the
+daemon applies against its authoritative workspace and persists. Each command
+resolves its wire args (semantic keys) to domain objects at the boundary — the
+same resolution the deserializer does — then calls the object's own mutation
+method (`Profile:activate`, `Workspace:publish`, …); no key lookup leaks into
+domain logic. The mutation emits `active_set_changed` → a `model_change`
+broadcast (the effect, sent before the ack), so the projection updates from the
+broadcast, not the reply; the reply carries only an outcome/error. The registry
+is representative (activate/deactivate/publish); the remaining user.json/cache/
+publish mutations map the same way.
+
+The task stream layers on top of these (following section / commit), all behind
+the same runtime-mode flag.
 
 ### Module bundling and acquisition
 
@@ -1286,8 +1297,9 @@ loomworks.nvim/
 │   │   │   ├── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
 │   │   │   ├── snapshot.lua           Serialize a Workspace to the wire + hydrate a projection (shared deserializer)
 │   │   │   ├── ids.lua                Opaque session-local wire identity (monotonic, rename-stable object→id)
-│   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve `snapshot` + warm header + change broadcasts
-│   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, correlated req/reply + broadcast auto-refresh
+│   │   │   ├── commands.lua           Command registry: wire mutation → resolve keys → domain mutation method (ack + broadcast)
+│   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve snapshot/command + warm header + change broadcasts
+│   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, req/reply, command(), broadcast auto-refresh
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/
