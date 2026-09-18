@@ -1070,6 +1070,100 @@ end
 
 --- `lw build [profile] [-- <build-tool args>]` — configure if needed, then
 --- build. Args after `--` are forwarded to the build tool (e.g. `-- -j 4`).
+--- Best-effort: spawn a daemon for `root` if none is running, and wait (bounded)
+--- for its handle to appear. Only attempted when the host binary is a real `lw`
+--- (the luvi host) — under the nvim-hosted fallback there is no binary to spawn,
+--- so it returns false and the caller runs in-process. Never throws.
+--- @param root string
+--- @return boolean available true if a live daemon is now reachable
+local function spawn_daemon_if_possible(root)
+  local exe = (uv.exepath and uv.exepath()) or nil
+  if not exe or not vim._loomworks_shim then return false end -- only the lw host
+  local ok = pcall(function()
+    uv.spawn(exe, {
+      args = { "daemon", "run" },
+      env = (function()
+        local e = uv.os_environ and uv.os_environ() or {}
+        local arr = {}
+        for k, v in pairs(e) do arr[#arr + 1] = k .. "=" .. v end
+        arr[#arr + 1] = "LW_ROOT=" .. root
+        return arr
+      end)(),
+      stdio = { nil, nil, nil },
+      detached = true,
+    }, function() end)
+  end)
+  if not ok then return false end
+  local client = require("loomworks.daemon.client")
+  vim.wait(10000, function()
+    local st = client.detect(root)
+    return st.present and st.live and st.compatible
+  end, 50)
+  local st = client.detect(root)
+  return st.present and st.live and st.compatible
+end
+
+--- Delegate a build to the daemon when the runtime mode resolves to daemon/auto
+--- and a compatible daemon is (or can be made) reachable; stream its output and
+--- return its exit code. Returns nil to mean "not delegated — run in-process"
+--- (the permanent fallback: in-process is never broken by this path).
+---
+--- `opts` is injectable for tests: `{ mode, detect, connect, spawn }`.
+--- @param root string
+--- @param args string[] the build argv (args[1]=="build")
+--- @param opts? table
+--- @return integer|nil exit_code, or nil when not delegated
+function M._maybe_delegate_build(root, args, opts)
+  opts = opts or {}
+  if not root then return nil end
+  local runtime = require("loomworks.daemon.runtime")
+  local mode = opts.mode or runtime.resolve(read_config()["runtime-mode"])
+  if mode == runtime.IN_PROCESS then return nil end -- default path, unchanged
+
+  local client = require("loomworks.daemon.client")
+  local detect = opts.detect or client.detect
+  local st = detect(root)
+  local reachable = st.present and st.live and st.compatible
+  if not reachable then
+    local spawn = opts.spawn or spawn_daemon_if_possible
+    reachable = spawn(root)
+  end
+  if not reachable then
+    note("lw: no daemon reachable; building in-process")
+    return nil -- fall back
+  end
+
+  -- Parse profile + `-- extra` from argv (mirror cmd_build's split).
+  local pre, extra, seen = {}, {}, false
+  for i = 2, #args do
+    if not seen and args[i] == "--" then seen = true
+    elseif seen then extra[#extra + 1] = args[i]
+    elseif args[i] ~= "--force" then pre[#pre + 1] = args[i] end
+  end
+
+  local connect = opts.connect or require("loomworks.daemon.projection").connect
+  local done, code, cerr = false, nil, nil
+  connect(root, {}, function(proj, err)
+    if err then cerr = err; done = true; return end
+    proj:build({ profile_key = pre[1], extra_args = (#extra > 0) and extra or nil }, {
+      on_accept = function(task_id, aerr)
+        if aerr then cerr = aerr; done = true end
+      end,
+      on_output = function(stream, text)
+        if stream == "stderr" then io.stderr:write(text) else io.write(text) end
+      end,
+      on_done = function(c) code = c; done = true; proj:close() end,
+    })
+  end)
+  vim.wait(600000, function() return done end, 25)
+  if cerr then
+    note("lw: daemon build failed (" .. tostring(cerr) .. "); building in-process")
+    return nil -- fall back on a delegation error
+  end
+  if code == 0 then out("BUILD OK (daemon)") end
+  return code or 1
+end
+
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
@@ -6969,6 +7063,15 @@ local function main()
   -- its own workspace load (build-free, like status) — no tool detection.
   if command == "target" then
     finish(M.cmd_target(root, a))
+  end
+
+  -- Build delegation (spec §17, opt-in via runtime-mode=daemon/auto): if a
+  -- compatible daemon is reachable, stream the build from it instead of loading
+  -- the workspace in-process. Returns nil ⇒ not delegated ⇒ in-process below
+  -- (the permanent fallback), so the default path is never changed.
+  if command == "build" then
+    local delegated = M._maybe_delegate_build(root, a)
+    if delegated ~= nil then finish(delegated) end
   end
 
   local ws = load_workspace(root)

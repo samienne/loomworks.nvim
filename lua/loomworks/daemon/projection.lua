@@ -45,6 +45,9 @@ function M.connect(root, opts, callback)
     self.root = root
     self.core = opts.core or require("loomworks.core").new()
     self.on_broadcast = opts.on_broadcast
+    self.on_task = opts.on_task     -- fun(msg) for any task-stream event
+    self.on_notify = opts.on_notify -- fun(msg) for notifications
+    self._task_observers = {}       -- task_id -> { on_output, on_progress, on_done }
     self.timeout_ms = opts.timeout_ms or M.REQUEST_TIMEOUT_MS
     self._pipe = uv.new_pipe(false)
     self._decoder = protocol.new_decoder()
@@ -118,11 +121,50 @@ function Projection:_dispatch(msg)
         return
     end
     -- Unsolicited broadcast: handle model-change invalidation internally first
-    -- (coarse re-pull, §3.3), then hand the raw event to any observer.
+    -- (coarse re-pull, §3.3), route task/notify to their observers, then hand
+    -- the raw event to any generic observer.
     if msg.kind == protocol.KIND.model_change then
         self:_on_model_change(msg)
+    elseif msg.kind == protocol.KIND.task then
+        self:_on_task(msg)
+    elseif msg.kind == protocol.KIND.notify then
+        if self.on_notify then pcall(self.on_notify, msg) end
     end
     if self.on_broadcast then pcall(self.on_broadcast, msg) end
+end
+
+--- Route a task-stream event to its per-task observer (if any) and the generic
+--- on_task hook. A `done` phase resolves + retires the observer.
+function Projection:_on_task(msg)
+    if self.on_task then pcall(self.on_task, msg) end
+    local obs = msg.task_id and self._task_observers[msg.task_id]
+    if not obs then return end
+    if msg.phase == "output" and obs.on_output then
+        pcall(obs.on_output, msg.stream, msg.text)
+    elseif msg.phase == "progress" and obs.on_progress then
+        pcall(obs.on_progress, msg.fraction, msg.pct)
+    elseif msg.phase == "done" then
+        self._task_observers[msg.task_id] = nil
+        if obs.on_done then pcall(obs.on_done, msg.exit_code) end
+    end
+end
+
+--- Delegate a build to the daemon and observe its task stream. `args` is
+--- `{ profile_key, extra_args? }`; `cbs` may carry `on_accept(task_id|nil, err)`,
+--- `on_output(stream, text)`, `on_progress(fraction, pct)`, `on_done(code)`.
+--- @param args table
+--- @param cbs? table
+function Projection:build(args, cbs)
+    cbs = cbs or {}
+    self:request({ kind = "command", name = "build", args = args }, function(reply, err)
+        if err then
+            if cbs.on_accept then cbs.on_accept(nil, err) end
+            return
+        end
+        local task_id = reply.task_id
+        if task_id then self._task_observers[task_id] = cbs end
+        if cbs.on_accept then cbs.on_accept(task_id, nil) end
+    end)
 end
 
 --- React to a `model_change` broadcast. A new session generation means the

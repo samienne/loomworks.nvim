@@ -276,3 +276,30 @@ Domain logic stays **reference-based**: a command resolves its wire arguments
 (semantic keys) to domain objects at the serialization boundary — exactly as the
 deserializer does — then calls the object's own mutation method. No key lookup
 leaks into domain logic. A handler error becomes an error ack, never a crash.
+
+### 17.12 Task stream and build delegation
+
+A running build/op streams over a **task stream** — high-frequency `progress` /
+`output` events kept SEPARATE from model-change batches, so progress ticks never
+churn the model. The stream is **workspace-scoped and observable by any
+connected client**, so a build launched from the CLI streams into the editor's
+status page identically to an editor-launched one; the DURABLE outcome arrives
+separately as a build-state `model_change` when the task completes. A `notify`
+event (level / title / message / optional task id) rides the same channel,
+rendered as an editor notification or CLI stderr.
+
+**Backpressure.** The task stream is high-volume, so it **coalesces** progress
+(only the latest fraction per task matters — a tick is emitted only when its
+integer percent advances) and **bounds** output per task (after a cap, further
+output is dropped with a single truncation notice). Model-change batches are
+never on this path and are never dropped — they are small and correctness-bearing.
+
+**Build delegation.** When the runtime mode resolves to daemon, a build is a
+command: the daemon runs it (reusing the same build **planning** seam the
+in-process path uses) and streams it; the client renders the stream and exits on
+the durable outcome. The build is **async** — the command is acknowledged with a
+task id immediately and the result follows on the stream — and an outstanding
+task holds the daemon alive (§17.6). Delegation is **opt-in and self-healing**: a
+client only delegates when a compatible daemon is reachable (or can be launched);
+otherwise it runs the build in-process, the permanent fallback. Enabling the
+daemon never changes the default in-process build.

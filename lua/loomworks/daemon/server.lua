@@ -79,6 +79,13 @@ function Server:next_seq()
     return self.seq
 end
 
+--- A fresh task id for the task stream (§3.4). Monotonic within the session.
+--- @return integer
+function Server:next_task_id()
+    self._task_seq = (self._task_seq or 0) + 1
+    return self._task_seq
+end
+
 function Server:_touch() self._last_activity = os.time() end
 
 --- Acquire write authority, bind the pipe, publish the handle, arm the timers.
