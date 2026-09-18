@@ -910,7 +910,9 @@ The **server** (`server.lua`, driven by `lw daemon run`) is one long-lived
 process per workspace. On start it acquires the **write-authority lock**
 (`lock.lua` — `.nvim/loomworks.daemon.lock`, the O_EXCL+heartbeat primitive but a
 distinct file from `build_lock`), binds the **owner-restricted pipe**
-(`pipe.lua` — a 0700 socket dir on POSIX, a named pipe on Windows), and publishes
+(`pipe.lua` — on POSIX a `sun_path`-safe, owner-verified 0700 socket dir under
+`XDG_RUNTIME_DIR`/`TMPDIR`/`/tmp` keyed by a root hash, not under the deep repo
+path; a named pipe on Windows), and publishes
 the handle. It runs a libuv event loop, does the `hello`/`welcome` handshake,
 routes correlated requests, broadcasts to all clients, and idle-times-out (~10
 min) — releasing lock, handle, and socket on any exit. `server:start()` is
@@ -1310,7 +1312,7 @@ loomworks.nvim/
 │   │   │   ├── client.lua             Client: detect() + stop() (shutdown-over-pipe, pid-kill fallback)
 │   │   │   ├── broker.lua             Runtime resolution precedence (LOOMWORKS_LW → pin → PATH → cache → in-process)
 │   │   │   ├── lock.lua               Write-authority lock (.nvim/loomworks.daemon.lock, O_EXCL + heartbeat)
-│   │   │   ├── pipe.lua               Owner-restricted IPC endpoint (0700 socket dir / named pipe)
+│   │   │   ├── pipe.lua               Owner-restricted IPC endpoint: POSIX 0700 owner-verified socket dir (sun_path-safe, under XDG_RUNTIME_DIR/TMPDIR/tmp) / Windows named pipe
 │   │   │   ├── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
 │   │   │   ├── snapshot.lua           Serialize a Workspace to the wire + hydrate a projection (shared deserializer)
 │   │   │   ├── ids.lua                Opaque session-local wire identity (monotonic, rename-stable object→id)

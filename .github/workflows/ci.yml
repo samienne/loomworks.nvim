@@ -33,6 +33,63 @@ jobs:
           nvim --headless -u tests/minimal_init.lua `
             -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
 
+  daemon-specs:
+    name: Daemon specs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Neovim (stable)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      # The daemon specs are vim.uv / vim.json only — no cmake / ninja / meson —
+      # so this job stays lean: Neovim + plenary is all it needs. The plenary
+      # clone path is per-OS: minimal_init looks under stdpath("data")/lazy, which
+      # on BOTH Linux and macOS is $XDG_DATA_HOME (or ~/.local/share)/nvim — NOT
+      # the Windows %LOCALAPPDATA%\nvim-data path the Windows job uses.
+      - name: Install plenary.nvim
+        shell: bash
+        run: |
+          dest="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy/plenary.nvim"
+          mkdir -p "$(dirname "$dest")"
+          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim "$dest"
+
+      # Run ONLY the daemon specs (the full suite is Windows-only by design — its
+      # cmake/meson e2e specs need a toolchain). One PlenaryBustedFile per file so
+      # require("tests.helpers") resolves exactly as in the full suite (cwd = repo
+      # root) and each spec's server/pipe state is isolated in its own nvim
+      # process. The authoritative pass signal is the printed summary: a completed
+      # "Success:" line with zero Failed/Errors — a MISSING summary means the spec
+      # crashed at load (e.g. a POSIX-only bug), which counts as a failure.
+      - name: Run daemon specs (protocol / model / commands / POSIX bind+listen+connect)
+        shell: bash
+        run: |
+          set -u
+          fail=0
+          for f in tests/daemon_*_spec.lua tests/cli_daemon_spec.lua; do
+            echo "::group::$f"
+            log="$(mktemp)"
+            nvim --headless -u tests/minimal_init.lua -c "PlenaryBustedFile $f" > "$log" 2>&1 || true
+            # Strip ANSI portably (BSD sed lacks \x1b; perl is on all GH runners).
+            clean="$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$log")"
+            printf '%s\n' "$clean"
+            if ! printf '%s\n' "$clean" | grep -qE '^Success:[[:space:]]'; then
+              echo "::error::$f produced no test summary (crash or load error)"; fail=1
+            elif printf '%s\n' "$clean" | grep -qE '^(Failed|Errors) :[[:space:]]+[1-9]'; then
+              echo "::error::$f reported failing tests"; fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$fail"
+
   standalone:
     name: Standalone bootstrap tests (Linux)
     runs-on: ubuntu-latest
