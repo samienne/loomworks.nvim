@@ -61,6 +61,50 @@ describe("daemon.broker resolve", function()
         assert.equals("/data/loomworks/lw-1.0", r.path)
     end)
 
+    it("accepts a system lw whose probed protocol is in range", function()
+        local proto = require("loomworks.daemon.protocol")
+        local r = broker.resolve("/ws", probes({
+            which = function() return "/usr/bin/lw" end,
+            probe = function() return { version = proto.VERSION, min = proto.MIN_SUPPORTED } end,
+        }))
+        assert.equals(broker.KIND.system, r.kind)
+        assert.equals(proto.VERSION, r.protocol_version)
+        assert.is_nil(r.needs_protocol_probe)
+    end)
+
+    it("falls through a system lw whose protocol is out of range", function()
+        local proto = require("loomworks.daemon.protocol")
+        local r = broker.resolve("/ws", probes({
+            which = function() return "/usr/bin/lw" end,
+            probe = function() return { version = proto.VERSION + 99, min = proto.VERSION + 99 } end,
+            data_runtime = function() return "/data/lw" end,
+        }))
+        -- Incompatible system host rejected; next rung wins.
+        assert.equals(broker.KIND.data_cache, r.kind)
+    end)
+
+    it("leaves the compat owed when a system lw cannot be probed", function()
+        local r = broker.resolve("/ws", probes({
+            which = function() return "/usr/bin/lw" end,
+            probe = function() return nil end, -- probe ran, told us nothing
+        }))
+        assert.equals(broker.KIND.system, r.kind)
+        assert.is_true(r.needs_protocol_probe)
+    end)
+
+    it("probe parses `protocol N (min M)` output", function()
+        local info = broker.probe("/usr/bin/lw", {
+            run = function() return { code = 0, stdout = "protocol 3 (min 2)\n" } end,
+        })
+        assert.equals(3, info.version)
+        assert.equals(2, info.min)
+    end)
+
+    it("probe reports failure on a bad exit or unparseable output", function()
+        assert.is_nil(broker.probe("/x", { run = function() return { code = 1, stdout = "" } end }))
+        assert.is_nil(broker.probe("/x", { run = function() return { code = 0, stdout = "nope" } end }))
+    end)
+
     it("never resolves to a fetch (never auto-installs)", function()
         -- With nothing present the chain must NOT surface a fetch action; it
         -- falls straight through to the in-process fallback.

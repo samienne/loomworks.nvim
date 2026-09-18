@@ -77,6 +77,22 @@ describe("daemon.handle", function()
         assert.is_false(handle.heartbeat(root))
     end)
 
+    it("marks a well-formed handle as decoded", function()
+        handle.write(root, sample())
+        local info = handle.read(root)
+        assert.is_true(info._decoded)
+    end)
+
+    it("flags a present-but-corrupt handle as not decoded and not live", function()
+        vim.fn.mkdir(root .. "/.nvim", "p")
+        local fd = uv.fs_open(handle.path(root), "w", tonumber("644", 8))
+        uv.fs_write(fd, "{ this is not json")
+        uv.fs_close(fd)
+        local info = handle.read(root)
+        assert.is_false(info._decoded)      -- unreadable record
+        assert.is_false(handle.is_live(info)) -- fresh mtime, but corrupt ⇒ not live
+    end)
+
     it("remove deletes the handle", function()
         handle.write(root, sample())
         assert.is_true(handle.remove(root))

@@ -45,25 +45,29 @@ function M.read(root)
     local st = uv.fs_stat(path)
     if not st then return nil end
     local info = {}
+    local decoded_ok = false
     local fd = uv.fs_open(path, "r", tonumber("400", 8))
     if fd then
         local data = uv.fs_read(fd, (st.size and st.size > 0 and st.size) or 8192, 0)
         uv.fs_close(fd)
         local ok, decoded = pcall(vim.json.decode, data or "")
-        if ok and type(decoded) == "table" then info = decoded end
+        if ok and type(decoded) == "table" then info = decoded; decoded_ok = true end
     end
     local mtime = (st.mtime and st.mtime.sec) or 0
     info.age = now() - mtime
     info.stale = info.age > M.STALE_SECONDS
+    -- Distinguish a well-formed record from a present-but-corrupt/empty file so
+    -- callers never mistake an unreadable handle for a healthy running daemon.
+    info._decoded = decoded_ok
     return info
 end
 
---- True when the handle names a daemon that appears live (present and not
---- past the heartbeat staleness window).
+--- True when the handle names a daemon that appears live: present, decoded, and
+--- not past the heartbeat staleness window. A corrupt/empty handle is NOT live.
 --- @param info table|nil the result of M.read
 --- @return boolean
 function M.is_live(info)
-    return info ~= nil and info.stale == false
+    return info ~= nil and info.stale == false and info._decoded == true
 end
 
 --- Serialize the durable fields of a handle record (never the computed
