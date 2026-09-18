@@ -303,3 +303,15 @@ task holds the daemon alive (§17.6). Delegation is **opt-in and self-healing**:
 client only delegates when a compatible daemon is reachable (or can be launched);
 otherwise it runs the build in-process, the permanent fallback. Enabling the
 daemon never changes the default in-process build.
+
+### 17.13 Parity (differential correctness)
+
+Both backends share the SAME deserializer and serialization (§17.9), so
+correctness is defined **differentially**: the daemon is correct when it produces
+the same model state as the in-process backend for the same inputs. Running an
+operation through in-process and through the daemon (as a command) MUST leave a
+**byte-identical serialized workspace**, and the client projection MUST serialize
+identically to the daemon's authoritative model. This is both the acceptance
+criterion for the daemon and the guard that the in-process path never silently
+diverges — the existing behavioral suite runs against either backend, and a
+dedicated differential test asserts the byte-identity directly.
