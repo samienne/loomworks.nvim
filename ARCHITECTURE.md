@@ -955,8 +955,17 @@ the projection; only sync crosses the wire. `projection.lua` also carries the
 correlated `req_id`→callback request/reply layer (with timeouts and a
 `daemon_lost` rejection on disconnect) reused by commands and broadcasts.
 
-Commands, broadcasts, and the task stream layer on top of these (following
-sections / commits), all behind the same runtime-mode flag.
+**Live invalidation** (`ids.lua` + the broadcast path): the daemon assigns opaque
+session-local ids keyed by object identity (rename-stable, since a rename keeps
+the object and only mutates its key), stamps a key→id index into each snapshot,
+and on any model change (`active_set_changed`) advances the per-workspace seq and
+broadcasts a `model_change`. Each projection client re-pulls the snapshot (coarse
+invalidation, race-guarded by seq; a new session generation forces a full
+re-hydrate). So a change on the daemon reaches every connected client — the live
+shared view. Per-object deltas are the deferred optimization the id-map enables.
+
+Commands and the task stream layer on top of these (following sections /
+commits), all behind the same runtime-mode flag.
 
 ### Module bundling and acquisition
 
@@ -1276,8 +1285,9 @@ loomworks.nvim/
 │   │   │   ├── pipe.lua               Owner-restricted IPC endpoint (0700 socket dir / named pipe)
 │   │   │   ├── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
 │   │   │   ├── snapshot.lua           Serialize a Workspace to the wire + hydrate a projection (shared deserializer)
-│   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve `snapshot` + warm header
-│   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, correlated req/reply + broadcasts
+│   │   │   ├── ids.lua                Opaque session-local wire identity (monotonic, rename-stable object→id)
+│   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve `snapshot` + warm header + change broadcasts
+│   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, correlated req/reply + broadcast auto-refresh
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/

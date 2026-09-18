@@ -229,3 +229,30 @@ watermark and an always-warm **header** (active profile, workspace name, error
 state) — bounded and cheap, so a winbar redraw needs no per-frame query (§3.5).
 When the session generation changes (a daemon restart), the client discards its
 projection and re-hydrates.
+
+### 17.10 Wire identity and change broadcasts
+
+**Opaque wire identity.** Domain objects have no stable semantic id, and a rename
+rewrites their semantic key in place — the only thing preserved across a rename is
+the in-memory object itself. The daemon therefore maintains a **session-local
+opaque-id registry** keyed by object identity: an id is assigned once and, because
+it follows the object and not the key, is **rename-stable** (a rename keeps the id
+under the new key) and **refresh-stable** (the deserializer reuses an object when
+its key still matches). Ids are monotonic and never reused within a session; a
+restart makes a new registry under a new session generation. The daemon stamps a
+current-key → id index into each snapshot, from which the client builds its
+**id↔key map** — the transport-layer router that is also its subscription set. The
+id-map is a serialization-boundary concern; domain logic never consults it.
+
+**Change broadcasts.** A model change advances the per-workspace **seq** and
+broadcasts a typed `model_change` invalidation stamped with the seq and session
+generation (DAEMON.md §3.3). A client reacts by **re-pulling the scope snapshot**
+(coarse invalidation — the model is small, so a snapshot re-pull is cheap and
+always consistent; per-object deltas are a deferred optimization). Re-pulls are
+race-safe: a broadcast whose seq the client has already passed is ignored, and a
+newer seq arriving mid-refresh schedules exactly one more re-pull, closing the
+snapshot/stream race. A `model_change` carrying a new session generation triggers
+a full re-hydrate. Broadcasts are workspace-scoped and reach every connected
+client, so a change made through one client (or by an external file edit the
+daemon reconciles) becomes visible to all — the live shared view the daemon
+exists to provide.
