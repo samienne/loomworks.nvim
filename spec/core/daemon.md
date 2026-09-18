@@ -197,3 +197,35 @@ or a tightened named-pipe DACL) is a further hardening where the host runtime
 exposes it. The endpoint address is derived from the workspace root so it is
 stable and unique per folder; clients never recompute it — they read the bound
 address from the handle file (§17.2).
+
+### 17.9 Model snapshot and the projection client
+
+The daemon is **model-authoritative**; a client keeps a local **projection** of
+the model, hydrated from the daemon and used for rendering and integration (reads
+run locally on the projection, only sync crosses the wire).
+
+**One deserializer, two sources.** The client rebuilds its projection with the
+SAME deserializer the on-disk loader uses — the source is the wire instead of the
+disk. To make that possible the daemon serializes its authoritative model to the
+three file-shaped tables the deserializer consumes — the shared baseline, the
+working copy, and the cache — plus the **resolved toolchain detection** results,
+so the client does not re-detect. The client installs the shipped toolchains and
+runs the same merge/deserialize path, producing an identical model. The daemon
+owns the disk-reading half (project-source introspection and toolchain
+detection); the client's deserialize step is disk-free with respect to the
+workspace files. Serializing the daemon's model and re-serializing the client's
+projection MUST yield identical results for the same inputs (the parity property,
+§17.11).
+
+The daemon and its clients are **co-located on one host**, so the client reads the
+project sources locally and identically — those are the project, not the workspace
+files, and only toolchain detection (machine-scoped and expensive) crosses the
+wire.
+
+**Snapshot request and cold-start.** A client obtains a scope snapshot by request;
+the reply carries the snapshot together with the **seq** at which it was taken and
+the **session generation**. The handshake `welcome` also carries the seq
+watermark and an always-warm **header** (active profile, workspace name, error
+state) — bounded and cheap, so a winbar redraw needs no per-frame query (§3.5).
+When the session generation changes (a daemon restart), the client discards its
+projection and re-hydrates.

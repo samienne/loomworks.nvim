@@ -944,8 +944,19 @@ The awareness/resolution layer:
   **resolves only** and never installs — an unresolved chain falls through to the
   in-process fallback, so the daemon is never a hard dependency.
 
-The projection client, commands, broadcasts, and task stream layer on top of the
-server (following sections / commits), all behind the same runtime-mode flag.
+The **projection** (`snapshot.lua` + `projection.lua`, served by `service.lua`)
+is the shared-deserializer wire path (DAEMON.md §2). The daemon serializes its
+authoritative model to the three file-shaped tables the on-disk deserializer
+already consumes — `_shared_baseline`, `_serialize_user()`, `_serialize_cache()`
+— plus `get_tools_by_type()` so the client doesn't re-detect toolchains. The
+client runs the identical `Workspace.new + remerge` path (`snapshot.hydrate`),
+producing a byte-identical model (the parity property). Reads then run locally on
+the projection; only sync crosses the wire. `projection.lua` also carries the
+correlated `req_id`→callback request/reply layer (with timeouts and a
+`daemon_lost` rejection on disconnect) reused by commands and broadcasts.
+
+Commands, broadcasts, and the task stream layer on top of these (following
+sections / commits), all behind the same runtime-mode flag.
 
 ### Module bundling and acquisition
 
@@ -1263,7 +1274,10 @@ loomworks.nvim/
 │   │   │   ├── broker.lua             Runtime resolution precedence (LOOMWORKS_LW → pin → PATH → cache → in-process)
 │   │   │   ├── lock.lua               Write-authority lock (.nvim/loomworks.daemon.lock, O_EXCL + heartbeat)
 │   │   │   ├── pipe.lua               Owner-restricted IPC endpoint (0700 socket dir / named pipe)
-│   │   │   └── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
+│   │   │   ├── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
+│   │   │   ├── snapshot.lua           Serialize a Workspace to the wire + hydrate a projection (shared deserializer)
+│   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve `snapshot` + warm header
+│   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, correlated req/reply + broadcasts
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/

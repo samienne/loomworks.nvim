@@ -5276,6 +5276,14 @@ function M.cmd_daemon(root, args, opts)
     end
     local server_mod = require("loomworks.daemon.server")
     local server = server_mod.new(root, { idle_seconds = opts.idle_seconds })
+    -- Attach the authoritative workspace (loaded headlessly) + serve the model.
+    if opts.attach_workspace ~= false then
+      note("lw: loading workspace…")
+      local aok, aerr = require("loomworks.daemon.service").attach(server, {
+        load_workspace = function(r) return load_workspace(r) end,
+      })
+      if not aok then die("daemon: " .. tostring(aerr)) end
+    end
     local ok, err = server:start()
     if not ok then
       die("daemon: " .. tostring(err))
