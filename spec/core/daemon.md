@@ -318,6 +318,20 @@ client only delegates when a compatible daemon is reachable (or can be launched)
 otherwise it runs the build in-process, the permanent fallback. Enabling the
 daemon never changes the default in-process build.
 
+A daemon build MUST be **behaviorally identical** to the in-process build it
+replaces, not merely a spawn of the same commands. Specifically it: applies the
+same **build gate** (an unbuildable profile refuses) and **output-artifact
+conflict** rule (§16.28); holds the per-build-directory **advisory lock** (§16.6)
+for the duration, so it coordinates with an editor or CLI building the same
+directory (this is distinct from the daemon's write-authority lock, §17.7, which
+guards *files* not *build directories*); and **writes each step's result back
+through the workspace** — so the configured/built **state and cache persist**
+exactly as an in-process build would, and a later reader (or the projection, via
+the build-state broadcast) sees the true state. Because the command is handled in
+an asynchronous callback, any step that touches host UI/filesystem primitives
+(build-directory creation during planning, cache write-back) MUST run on the
+host's main execution context, never in a callback context that forbids them.
+
 ### 17.13 Parity (differential correctness)
 
 Both backends share the SAME deserializer and serialization (§17.9), so
