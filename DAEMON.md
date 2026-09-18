@@ -1,18 +1,22 @@
 # loomworks daemon — design
 
-> **STATUS: DESIGN + Phase-0 rung-1 landed.** This document captures the planned
-> architecture for a long-lived `lw` daemon and the separation of the `lw`
-> runtime from the Neovim plugin. The daemon **server** is not built yet; the
-> **bottom rung of §8's ladder is** — the mainline-safe foundations under
-> `lua/loomworks/daemon/` (runtime-mode flag, handle file, wire protocol, the
-> daemon **client stub** `lw daemon status|stop`, and the runtime broker),
-> specified normatively in [`spec/core/daemon.md`](spec/core/daemon.md) §17. This
-> is daemon *awareness* without daemon *capability*: no server, no delegation,
-> nothing flipped off in-process. The daemon is developed **off mainline** (a
-> separate branch / optional release channel) from Phase 1 on;
-> **the in-process model stays the permanent default and fallback** on mainline
-> the whole time — the daemon is an opt-in acceleration layer, never a hard
-> dependency (see §8).
+> **STATUS: DESIGN + daemon implemented behind the flag.** This document is the
+> design overview; the normative contract and the implementation now live under
+> [`spec/core/daemon.md`](spec/core/daemon.md) §17 and `lua/loomworks/daemon/`.
+> Implemented on this branch, one green commit per phase: the runtime-mode flag,
+> handle file, wire protocol, client, and broker (§17.1–17.5); the **daemon
+> server** — run loop, write-authority lock, owner-restricted pipe (§17.6–17.8);
+> the **projection** — model snapshot + shared-deserializer client (§17.9); wire
+> identity + change broadcasts (§17.10); **commands** (§17.11); the **task
+> stream** + build delegation (§17.12); the **parity** differential test
+> (§17.13); and the device/log-record generalization scaffold (§17.14).
+> **The in-process model stays the permanent default and fallback** — the daemon
+> is opt-in behind `runtime.mode` / `LOOMWORKS_RUNTIME` (default `in-process`) and
+> a client falls back to in-process whenever the daemon is absent, crashed, or
+> protocol-incompatible (§4). Remaining work is noted per-section (e.g. per-object
+> deltas, launch-if-absent hardening, wiring the real build runner + ohos through
+> the daemon). The `daemon` release channel (§8) is not needed here — everything
+> is on one branch behind the flag.
 >
 > Related: [`ARCHITECTURE.md`](ARCHITECTURE.md),
 > [`spec/core/headless.md`](spec/core/headless.md) (§16 standalone/host),
