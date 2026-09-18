@@ -231,6 +231,65 @@ run_case() {
     if grep -q "CLEAN OK" "$out"; then ok "$label clean"; else note_fail "$label clean" "$rc"; fi
 }
 
+# Drive a REAL build THROUGH the daemon (spec §17, DAEMON.md §3.4/§7): start a
+# daemon for a workspace, then `lw build` with runtime.mode=daemon delegates to
+# it and streams the real toolchain output back. Proves the daemon build path on
+# every CI platform (the in-process plenary spec covers it under nvim). Uses an
+# explicitly-started daemon (no reliance on launch-if-absent). Non-fatal: a
+# fallback to in-process shows up as a missing "(daemon)" marker, reported but
+# not aborting the run.
+test_daemon_build() {
+    say "daemon build (runtime.mode=daemon)"
+    local ws="$TMP/daemon-cmake" out="$TMP/out.txt"
+    mkdir -p "$ws/app"
+    cat > "$ws/app/CMakeLists.txt" <<'CM'
+cmake_minimum_required(VERSION 3.16)
+project(app CXX)
+add_executable(app main.cpp)
+CM
+    cat > "$ws/app/main.cpp" <<'CPP'
+#include <cstdio>
+int main(){ printf("APP-RAN-daemon\n"); return 0; }
+CPP
+    cd "$ws" || { bad "daemon: cd"; return; }
+    run_lw init > "$out" 2>&1 || { note_fail "daemon init" $?; return; }
+    run_lw project add ./app cmake > "$out" 2>&1 || { note_fail "daemon project add" $?; return; }
+    local tool; tool=$(pick_tool)
+    if [ -z "$tool" ]; then note_fail "daemon: no toolchain detected" 0; return; fi
+    run_lw configset create Debug app=variant:Debug > "$out" 2>&1 \
+        || { note_fail "daemon configset create" $?; return; }
+    run_lw profile create Debug "$tool" > "$out" 2>&1 \
+        || { note_fail "daemon profile create" $?; return; }
+    local prof="Debug:$tool"
+
+    # Start a daemon for this workspace in the background; wait (bounded) for its
+    # discovery handle to appear.
+    LW_ROOT="$ws" $LW daemon run > "$TMP/daemon.log" 2>&1 &
+    local dpid=$! i=0
+    while [ ! -f "$ws/.nvim/loomworks.daemon.json" ] && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i + 1)); done
+    if [ ! -f "$ws/.nvim/loomworks.daemon.json" ]; then
+        cp "$TMP/daemon.log" "$out" 2>/dev/null
+        note_fail "daemon: did not start" 0
+        kill "$dpid" 2>/dev/null
+        return
+    fi
+    ok "daemon: started"
+
+    # Delegate a build to the running daemon; it must stream the real toolchain
+    # output back and report the daemon marker (not the in-process fallback).
+    LOOMWORKS_RUNTIME=daemon LW_ROOT="$ws" $LW --no-input build "$prof" > "$out" 2>&1
+    local rc=$?
+    if grep -q "BUILD OK (daemon)" "$out"; then ok "daemon: delegated build"
+    else note_fail "daemon: build did not delegate to the daemon" "$rc"; fi
+    if grep -qE '\[[0-9]+/[0-9]+\]|Linking|Building' "$out"; then ok "daemon: streamed real build output"
+    else note_fail "daemon: no streamed build output" 0; fi
+
+    # Retire the daemon (graceful, then a hard kill as a backstop).
+    LW_ROOT="$ws" $LW --no-input daemon stop > "$out" 2>&1
+    grep -q "stopped" "$out" && ok "daemon: stopped" || note_fail "daemon: stop" 0
+    kill "$dpid" 2>/dev/null
+}
+
 # A shared library's exported symbol. Exported on Windows via __declspec;
 # default-visible everywhere else. Guarded so the same source builds under
 # MSVC, mingw-gcc, gcc and clang.
@@ -324,6 +383,9 @@ CM
 greet_lib_source   > "$TMP/cmake-ml/app/lib/greet.cpp"
 multilib_main_source > "$TMP/cmake-ml/app/main.cpp"
 run_case cmake-multilib cmake "$TMP/cmake-ml" "LINKED-OK"
+
+# A real build driven through the daemon (spec §17), on every CI platform.
+test_daemon_build
 
 # Toolchain-independent root-discovery regression.
 test_worktree_boundary
