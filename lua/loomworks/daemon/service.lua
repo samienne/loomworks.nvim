@@ -10,8 +10,37 @@ local protocol = require("loomworks.daemon.protocol")
 local snapshot = require("loomworks.daemon.snapshot")
 local ids = require("loomworks.daemon.ids")
 local commands = require("loomworks.daemon.commands")
+local tasks = require("loomworks.daemon.tasks")
 
 local M = {}
+
+--- Resolve a profile by its semantic key at the wire boundary.
+local function profile_by_key(ws, key)
+    for _, p in ipairs(ws._profiles or {}) do
+        if p.key == key then return p end
+    end
+    return nil
+end
+
+--- The default build runner: reuse the real planning + streaming spawn
+--- (`daemon.runner`). Injectable via `opts.run_build` for tests.
+--- @param srv loomworks.daemon.Server
+--- @param args table { profile_key, extra_args? }
+--- @param task_id integer
+local function default_run_build(srv, args, task_id)
+    local runner = require("loomworks.daemon.runner")
+    local profile = profile_by_key(srv.workspace, args.profile_key)
+    if not profile then
+        srv.tasks:notify("error", "build", "no such profile: " .. tostring(args.profile_key), task_id)
+        srv.tasks:done(task_id, 1)
+        return
+    end
+    runner.run_build(srv.workspace, profile, srv.tasks, task_id,
+        { extra_args = args.extra_args }, function(_code)
+            -- Durable outcome: the build state changed on disk/cache.
+            srv:notify_model_change({ "build_state" })
+        end)
+end
 
 --- The bounded, always-warm header delivered in `welcome` and kept fresh by
 --- broadcasts — cheap enough for a winbar redraw that cannot query per-frame.
@@ -51,6 +80,9 @@ function M.attach(server, opts)
     server.core = core
     -- The opaque wire-identity registry for this daemon session (§3.2).
     server.ids = server.ids or ids.new()
+    -- The workspace task stream (§3.4) + the (injectable) build runner.
+    server.tasks = server.tasks or tasks.new(server)
+    server.run_build = opts.run_build or default_run_build
 
     -- Warm header for the handshake (§3.5).
     server._header_snapshot = function(self) return header_of(self.workspace) end
@@ -76,6 +108,17 @@ function M.attach(server, opts)
     -- to all clients BEFORE this ack (broadcast is synchronous within apply, the
     -- reply follows). The reply is only ack/error.
     server:handle("command", function(srv, conn, msg)
+        -- `build` is ASYNC (§3.4): ack acceptance with a task_id immediately, then
+        -- stream via the task stream; the durable outcome follows as a
+        -- build_state model_change. An outstanding task holds the daemon alive.
+        if msg.name == "build" then
+            srv:_touch()
+            local task_id = srv:next_task_id()
+            conn.reply({ kind = protocol.KIND.ok, req_id = msg.req_id,
+                outcome = "accepted", task_id = task_id })
+            srv.run_build(srv, msg.args or {}, task_id)
+            return
+        end
         local outcome, err = commands.apply(srv.workspace, msg.name, msg.args)
         if err then
             conn.reply({ kind = protocol.KIND.error, req_id = msg.req_id, error = err })
