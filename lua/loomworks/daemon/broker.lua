@@ -53,6 +53,36 @@ local function default_which(exe)
     return nil
 end
 
+--- Probe a candidate `lw` binary for its wire protocol version by invoking
+--- `<path> daemon protocol`, which prints `protocol <N> (min <M>)` (spec §17.3).
+--- Returns the parsed `{ version, min }`, or nil + reason when it cannot be run
+--- or parsed. Synchronous and time-bounded; injectable via `opts.run`.
+--- @param path string the candidate binary
+--- @param opts? { run?: fun(argv:string[]):{ code:integer, stdout:string }|nil, timeout_ms?: integer }
+--- @return table|nil info, string|nil err
+function M.probe(path, opts)
+    opts = opts or {}
+    local run = opts.run
+    if not run then
+        run = function(argv)
+            local ok, sys = pcall(function()
+                return vim.system(argv, { text = true }):wait(opts.timeout_ms or 4000)
+            end)
+            if not ok or type(sys) ~= "table" then return nil end
+            return { code = sys.code, stdout = sys.stdout or "" }
+        end
+    end
+    local res = run({ path, "daemon", "protocol" })
+    if not res or res.code ~= 0 then
+        return nil, "probe did not run"
+    end
+    local version, min = res.stdout:match("protocol%s+(%d+)%s+%(min%s+(%d+)%)")
+    if not version then
+        return nil, "unrecognized protocol output"
+    end
+    return { version = tonumber(version), min = tonumber(min) }, nil
+end
+
 --- Resolve the runtime the daemon would be driven from.
 ---
 --- All probes are injectable so the decision logic is unit-testable without
@@ -64,6 +94,7 @@ end
 ---   pin_read?: fun(root:string):table|nil,   -- boot.pin.read shape ({ version, hashes })
 ---   which?: fun(exe:string):string|nil,       -- PATH lookup for `lw`
 ---   data_runtime?: fun():string|nil,          -- newest provisioned runtime dir, or nil
+---   probe?: fun(path:string):table|nil,       -- protocol probe; nil ⇒ candidate skipped for probe
 --- }
 --- @return table result {
 ---   kind: string,          -- one of M.KIND
@@ -106,18 +137,42 @@ function M.resolve(root, opts)
         end
     end
 
-    -- 3. System `lw` on PATH. The wire-protocol compatibility floor (§5.3) is a
-    --    Phase-1 probe (it means running the candidate); resolution names it and
-    --    flags that the probe is still owed.
+    -- 3. System `lw` on PATH, gated by the wire-protocol compatibility floor
+    --    (§17.3). When a probe is supplied it is run against the candidate: a
+    --    protocol OUTSIDE our supported range makes the candidate fall through
+    --    (never silently driven); a probe that cannot run leaves the compat owed
+    --    but still names the candidate rather than discarding it. With no probe
+    --    supplied the candidate is named with the probe still owed.
     local sys = which("lw")
     if sys then
-        return {
+        local proto = require("loomworks.daemon.protocol")
+        local probe = opts.probe
+        local result = {
             kind = M.KIND.system,
             in_process = false,
             path = sys,
-            needs_protocol_probe = true,
             reason = "system lw on PATH (" .. sys .. ")",
         }
+        if probe then
+            local info = probe(sys)
+            if info and info.version then
+                -- Compatible when the peer's version is in our range AND our
+                -- version is in the peer's advertised range (symmetric, §17.3).
+                local ours_ok = proto.compatible(info.version)
+                local theirs_ok = (info.min == nil) or (proto.VERSION >= info.min)
+                if ours_ok and theirs_ok then
+                    result.protocol_version = info.version
+                    return result
+                end
+                -- Incompatible: fall through to the next rung.
+            else
+                result.needs_protocol_probe = true -- probe ran but told us nothing
+                return result
+            end
+        else
+            result.needs_protocol_probe = true
+            return result
+        end
     end
 
     -- 4. A previously-provisioned runtime under stdpath("data") (§5.2). Never

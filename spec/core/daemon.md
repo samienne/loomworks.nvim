@@ -66,7 +66,10 @@ write-authority says *who may write the workspace files*. A client MUST NOT infe
 write authority from the handle file.
 
 Reading the handle is tolerant: a malformed or unreadable handle yields no usable
-daemon record rather than an error.
+daemon record rather than an error, and is **never mistaken for a live daemon** —
+a present-but-corrupt handle (empty or non-decoding) reports as unreadable, not as
+running, so a client neither trusts it nor is confused by it (`lw daemon status`
+says the handle is present but unreadable and offers to clear it).
 
 ### 17.3 Wire protocol versioning
 

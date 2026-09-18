@@ -32,6 +32,7 @@ function M.detect(root)
     end
     return {
         present = true,
+        readable = info._decoded == true,
         live = handle.is_live(info),
         compatible = protocol.compatible(info.protocol_version),
         info = info,
