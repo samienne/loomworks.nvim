@@ -1633,14 +1633,19 @@ outside a workspace.
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
 | `lw bootstrap upgrade` | `lw bootstrap install --latest`: move the pin to the newest release |
 
-**Runtime mode (preview).** loomworks is being extended with an optional
-long-lived `lw` daemon; the groundwork ships now behind a `runtime` flag that
-still defaults to — and permanently falls back to — running **in-process**, so
-nothing changes yet. Set it in the plugin (`require("loomworks").setup({ runtime = { mode = "in-process" } })`)
-or the CLI (`lw settings set runtime-mode in-process`); `LOOMWORKS_RUNTIME`
-overrides both. Values: `in-process` (default), `daemon`, `auto`. `lw daemon
-status` shows the resolved mode and whether a daemon is running; `lw daemon stop`
-retires one. See [`DAEMON.md`](DAEMON.md) for the design.
+**Runtime mode.** loomworks has an optional long-lived `lw` daemon (one process
+per workspace) that owns the model, files, and build execution and serves both
+the editor and the CLI — so a `lw build` streams into the editor and edits stay
+in sync without file polling. It is **opt-in behind a flag and never the
+default**: in-process stays the default and the permanent fallback, and a client
+falls back to in-process whenever the daemon is absent, crashed, or
+protocol-incompatible. Set the mode in the plugin
+(`require("loomworks").setup({ runtime = { mode = "in-process" } })`) or the CLI
+(`lw settings set runtime-mode daemon`); `LOOMWORKS_RUNTIME` overrides both.
+Values: `in-process` (default), `daemon`, `auto`. `lw daemon status` shows the
+resolved mode and whether a daemon is running; `lw daemon run` starts one;
+`lw daemon stop` retires one. See [`DAEMON.md`](DAEMON.md) for the design and
+[`spec/core/daemon.md`](spec/core/daemon.md) §17 for the contract.
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command
