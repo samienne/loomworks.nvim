@@ -987,6 +987,14 @@ from a reachable daemon when `runtime-mode` is daemon/auto, and returns nil (run
 in-process — the permanent fallback) otherwise, so the default build is never
 changed.
 
+**Device/log generalization** (`log_record.lua`, scaffold): a normalized log
+record `{ts, level, tag, pid, message, fields?}` (with a `fields` platform escape
+hatch) and `server:emit_log` broadcasting it on the same channel as the task
+stream — the general device/log presentation DAEMON.md §6.2 calls for, so a
+headless module's device logs render without editor-coupled, platform-specific
+code. Wiring a concrete module through it (and migrating ohos) stays dormant
+until that module is actively developed.
+
 ### Module bundling and acquisition
 
 The loomworks distribution bundles the core modules (cmake, meson, shell,
@@ -1308,6 +1316,7 @@ loomworks.nvim/
 │   │   │   ├── ids.lua                Opaque session-local wire identity (monotonic, rename-stable object→id)
 │   │   │   ├── commands.lua           Command registry: wire mutation → resolve keys → domain mutation method (ack + broadcast)
 │   │   │   ├── tasks.lua              Workspace task stream: coalesced progress + bounded output + notify (observable by any client)
+│   │   │   ├── log_record.lua         Normalized device-log record schema { ts, level, tag, pid, message, fields? } (§6.2 scaffold)
 │   │   │   ├── runner.lua             Daemon-side build: reuse plan_profile_build + async streaming spawn → task stream
 │   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve snapshot/command/build + broadcasts
 │   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, req/reply, command(), build(), broadcast auto-refresh

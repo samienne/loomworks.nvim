@@ -315,3 +315,18 @@ identically to the daemon's authoritative model. This is both the acceptance
 criterion for the daemon and the guard that the in-process path never silently
 diverges — the existing behavioral suite runs against either backend, and a
 dedicated differential test asserts the byte-identity directly.
+
+### 17.14 Device/log generalization (scaffold)
+
+Once the daemon owns execution and detection, device logic (install / launch /
+log) is headless and belongs in a daemon-hosted plugin rather than an
+editor-coupled one. The main plugin then gains a **general** device picker and
+**log viewer** driven by a normalized log-record schema `{ ts, level, tag, pid,
+message, fields? }`, where `fields` is a typed escape hatch for platform extras.
+A module's device-log producer emits raw records; the daemon normalizes them
+(unknown level → a default, unknown keys → `fields`) and streams them on the same
+broadcast channel the task stream uses (§17.12) — device-log streaming is the
+natural streaming reference. This schema and stream are defined now; wiring a
+concrete module's device logs through them, and migrating a platform module off
+its editor-coupled implementation, is deferred until that module is actively
+developed.

@@ -47,6 +47,7 @@ function M.connect(root, opts, callback)
     self.on_broadcast = opts.on_broadcast
     self.on_task = opts.on_task     -- fun(msg) for any task-stream event
     self.on_notify = opts.on_notify -- fun(msg) for notifications
+    self.on_log = opts.on_log       -- fun(record) for device-log records (§6.2)
     self._task_observers = {}       -- task_id -> { on_output, on_progress, on_done }
     self.timeout_ms = opts.timeout_ms or M.REQUEST_TIMEOUT_MS
     self._pipe = uv.new_pipe(false)
@@ -129,6 +130,8 @@ function Projection:_dispatch(msg)
         self:_on_task(msg)
     elseif msg.kind == protocol.KIND.notify then
         if self.on_notify then pcall(self.on_notify, msg) end
+    elseif msg.kind == protocol.KIND.log then
+        if self.on_log then pcall(self.on_log, msg.record) end
     end
     if self.on_broadcast then pcall(self.on_broadcast, msg) end
 end

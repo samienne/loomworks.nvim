@@ -237,6 +237,15 @@ end
 --- @return integer
 function Server:client_count() return self._n_conns end
 
+--- Broadcast a normalized device-log record to all clients (§6.2). The record is
+--- normalized here so a producer can hand over a raw platform record; the general
+--- log viewer renders it without platform knowledge.
+--- @param raw table a raw log record (see daemon.log_record)
+function Server:emit_log(raw)
+    local record = require("loomworks.daemon.log_record").normalize(raw)
+    self:broadcast({ kind = protocol.KIND.log, record = record })
+end
+
 function Server:_install_core_handlers()
     -- Handshake (§4): the client announces its protocol; we answer with the
     -- session generation, the seq watermark to base hydration on, and the
