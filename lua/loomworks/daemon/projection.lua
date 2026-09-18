@@ -117,8 +117,42 @@ function Projection:_dispatch(msg)
         end
         return
     end
-    -- Unsolicited broadcast (model change, task, notify).
+    -- Unsolicited broadcast: handle model-change invalidation internally first
+    -- (coarse re-pull, §3.3), then hand the raw event to any observer.
+    if msg.kind == protocol.KIND.model_change then
+        self:_on_model_change(msg)
+    end
     if self.on_broadcast then pcall(self.on_broadcast, msg) end
+end
+
+--- React to a `model_change` broadcast. A new session generation means the
+--- daemon restarted → discard and re-hydrate; otherwise a higher seq means the
+--- model advanced → re-pull the snapshot. Re-pulls coalesce: one in flight, and
+--- a newer seq arriving mid-refresh schedules exactly one more (closing the
+--- snapshot/stream race, §3.3).
+function Projection:_on_model_change(msg)
+    if self._closed then return end
+    if msg.session_generation and self.generation
+        and msg.session_generation ~= self.generation then
+        self.generation = msg.session_generation
+    end
+    if type(msg.seq) == "number" and self.seq and msg.seq <= self.seq then
+        return -- already at or past this change
+    end
+    self._target_seq = msg.seq or (self.seq and self.seq + 1)
+    if self._refreshing then self._refresh_again = true; return end
+    self:_pump_refresh()
+end
+
+function Projection:_pump_refresh()
+    self._refreshing = true
+    self:_hydrate(function()
+        self._refreshing = false
+        if self._refresh_again then
+            self._refresh_again = false
+            if not self._closed then self:_pump_refresh() end
+        end
+    end)
 end
 
 --- Request a fresh snapshot and rebuild the projection Workspace in place.
@@ -127,9 +161,14 @@ function Projection:_hydrate(callback)
     self:request({ kind = "snapshot" }, function(reply, err)
         if err then callback(false, err); return end
         self.seq = reply.seq
+        if reply.session_generation then self.generation = reply.session_generation end
         local ok, ws = pcall(snapshot.hydrate, self.core, self.root, reply.snapshot)
         if not ok then callback(false, "hydrate failed: " .. tostring(ws)); return end
         self.workspace = ws
+        -- The id↔key map: the transport-layer router that is also the
+        -- subscription set (§3.2/§3.3). Rebuilt each hydrate from the stamped
+        -- index; used for id-addressed routing when deltas land.
+        self.id_map = reply.snapshot and reply.snapshot.ids or nil
         callback(true, nil)
     end)
 end

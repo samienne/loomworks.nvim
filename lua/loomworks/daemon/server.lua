@@ -211,6 +211,21 @@ function Server:broadcast(msg)
     end
 end
 
+--- Announce a model change to all clients: advance the seq and broadcast a
+--- `model_change` invalidation stamped with the seq + session generation
+--- (DAEMON.md §3.3). Clients re-pull the scope snapshot (coarse invalidation).
+--- @param kinds? string[] the changed event kinds (e.g. { "active_set" })
+function Server:notify_model_change(kinds)
+    if self._stopped then return end
+    self:_touch()
+    self:broadcast({
+        kind = protocol.KIND.model_change,
+        seq = self:next_seq(),
+        session_generation = self.generation,
+        kinds = kinds,
+    })
+end
+
 --- The number of connected clients (test/introspection).
 --- @return integer
 function Server:client_count() return self._n_conns end

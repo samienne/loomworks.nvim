@@ -8,6 +8,7 @@
 
 local protocol = require("loomworks.daemon.protocol")
 local snapshot = require("loomworks.daemon.snapshot")
+local ids = require("loomworks.daemon.ids")
 
 local M = {}
 
@@ -47,21 +48,39 @@ function M.attach(server, opts)
     end
     server.workspace = ws
     server.core = core
+    -- The opaque wire-identity registry for this daemon session (§3.2).
+    server.ids = server.ids or ids.new()
 
     -- Warm header for the handshake (§3.5).
     server._header_snapshot = function(self) return header_of(self.workspace) end
 
     -- Read path: full model snapshot, seq-stamped for the cold-start hydration
-    -- rule (§3.3). The client rebuilds an identical Workspace from this.
+    -- rule (§3.3), with the key→id index stamped in so the client can build its
+    -- id-map (subscription set). The client rebuilds an identical Workspace.
     server:handle("snapshot", function(srv, conn, msg)
+        local snap = snapshot.serialize(srv.workspace)
+        snap.ids = srv.ids:index(srv.workspace)
         conn.reply({
             kind = protocol.KIND.ok,
             req_id = msg.req_id,
-            snapshot = snapshot.serialize(srv.workspace),
+            snapshot = snap,
             seq = srv.seq,
             session_generation = srv.generation,
         })
     end)
+
+    -- Propagate the daemon's own model changes to every client. `active_set_changed`
+    -- fires on every remerge (external file edit) and every activation/mutation,
+    -- so a coarse `model_change` broadcast (→ client re-pull) keeps projections
+    -- live. Subscribing through the workspace's OWN events dep keeps the daemon's
+    -- stream isolated from any other in-process workspace (single-workspace in
+    -- production; injected per-daemon in tests).
+    if not opts.no_change_subscription and ws._core and ws._core._deps
+        and ws._core._deps.events and ws._core._deps.events.on then
+        ws._core._deps.events.on("active_set_changed", function()
+            server:notify_model_change({ "active_set" })
+        end)
+    end
 
     return ws
 end
