@@ -107,6 +107,8 @@ M.COMMANDS = {
     aliases = { ls = "list", add = "install", upgrade = "update", rm = "remove" },
     default = NONE,
   },
+  -- `lw daemon [status|stop]` (experimental, spec §19).
+  daemon = { subs = { status = NONE, stop = NONE }, default = NONE },
   worktree = {
     subs = { list = NONE, add = spec({ flags = { "--no-pull", "--pull" } }) },
     default = NONE,

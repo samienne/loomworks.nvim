@@ -6345,6 +6345,10 @@ local function effective_config_default(key)
     -- Precedence mirrors boot.update.resolve_channel (env > config > default).
     return os.getenv("LOOMWORKS_CHANNEL") or "stable"
   end
+  if key == "runtime-mode" then
+    -- Precedence mirrors loomworks.daemon.runtime.resolve (env > config > default).
+    return os.getenv("LOOMWORKS_RUNTIME") or require("loomworks.daemon.runtime").DEFAULT
+  end
   return nil
 end
 
@@ -6379,6 +6383,9 @@ function M.cmd_settings(sub, key, value)
     end
     if key == "release-notes" and value ~= "on" and value ~= "off" then
       die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'")
+    end
+    if key == "runtime-mode" and not require("loomworks.daemon.runtime").is_valid(value) then
+      die("invalid runtime-mode '" .. value .. "' — use 'in-process', 'daemon', or 'auto'")
     end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
@@ -8339,6 +8346,85 @@ local function worktree_branch_label(r)
   return label
 end
 
+--- `lw daemon [status|stop]` — the Phase-0 daemon CLIENT STUB surface
+--- (DAEMON.md §8, rung 1): detect a running daemon via the handle file and stop
+--- it. This is daemon-AWARENESS without daemon-CAPABILITY — there is no daemon
+--- server on mainline yet, so `status` mostly reports "not running" and `stop`
+--- retires a stray/leftover daemon (e.g. after switching a machine back to
+--- in-process). It never launches a daemon.
+---
+--- `opts` is injectable for tests: `{ root, detect, stop, config, timeout_ms }`.
+--- @param root string|nil workspace root (nil outside a workspace)
+--- @param args string[] full argv (args[1]=="daemon", args[2]==subcommand)
+--- @param opts? table
+function M.cmd_daemon(root, args, opts)
+  opts = opts or {}
+  root = opts.root or root
+  local sub = (args and args[2]) or "status"
+  if sub ~= "status" and sub ~= "stop" then
+    die("unknown daemon subcommand '" .. tostring(sub) ..
+      "' — usage: lw daemon [status|stop]")
+  end
+
+  local client = opts.client or require("loomworks.daemon.client")
+  local runtime = require("loomworks.daemon.runtime")
+
+  -- Effective runtime mode (settings `runtime-mode` key + LOOMWORKS_RUNTIME).
+  local cfg = opts.config or read_config()
+  local mode, mode_warning = runtime.resolve(cfg["runtime-mode"])
+  if mode_warning then note("lw: " .. mode_warning) end
+
+  if sub == "status" then
+    out("runtime mode: " .. mode .. " (default: " .. runtime.DEFAULT .. ")")
+    if not root then
+      out("daemon: no loomworks workspace here (nothing to report)")
+      return 0
+    end
+    local st = (opts.detect or client.detect)(root)
+    if not st.present then
+      out("daemon: not running")
+      return 0
+    end
+    local info = st.info or {}
+    if info.pid == nil then
+      -- A handle file exists but carried no usable record (empty / corrupt
+      -- JSON). Report that rather than a confident "running" with all "?".
+      out("daemon: handle present but unreadable (corrupt?) — `lw daemon stop` to clear it")
+      return 0
+    end
+    out("daemon: " .. (st.live and "running" or "stale (no heartbeat)"))
+    out("  pid:        " .. tostring(info.pid or "?"))
+    out("  pipe:       " .. tostring(info.pipe or "?"))
+    out("  protocol:   " .. tostring(info.protocol_version or "?") ..
+      (st.compatible and "" or " (incompatible with this lw)"))
+    out("  lw version: " .. tostring(info.lw_version or "?"))
+    out("  generation: " .. tostring(info.session_generation or "?"))
+    out("  last beat:  " .. tostring(info.age or "?") .. "s ago")
+    return 0
+  end
+
+  -- sub == "stop"
+  if not root then
+    out("daemon: no loomworks workspace here (nothing to stop)")
+    return 0
+  end
+  local stop = opts.stop or client.stop
+  local result, done = nil, false
+  stop(root, { timeout_ms = opts.timeout_ms }, function(r)
+    result = r; done = true
+  end)
+  vim.wait(opts.wait_ms or 5000, function() return done end, 25)
+  if not result then
+    die("daemon stop timed out")
+  end
+  if not result.stopped then
+    out("daemon: " .. (result.reason or "nothing to stop"))
+    return 0
+  end
+  out("daemon: stopped (" .. tostring(result.method) .. ")")
+  return 0
+end
+
 --- `lw worktree [list]` — list every git worktree of the current repo, its
 --- branch, whether it is the main / current worktree, and whether loomworks is
 --- initialised there (a workspace file present). Read-only; runs before the
@@ -8704,7 +8790,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
-  "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
+  "pull", "worktree", "daemon", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes",
   "--no-input",
 }
@@ -8775,9 +8861,10 @@ function M.cmd_complete(cword, words)
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
-      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes" })
+      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes", "runtime-mode" })
     end
     if n == 3 and sub == "set" and a[3] == "release-notes" then emit({ "on", "off" }) end
+    if n == 3 and sub == "set" and a[3] == "runtime-mode" then emit({ "in-process", "daemon", "auto" }) end
     return 0
   elseif cmd == "build" and n >= 2 and a[n] == "--target" then
     -- `lw build <profile> --target <TAB>`: the named profile's parsed build
@@ -8799,6 +8886,9 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "build" and n >= 2 and not has(a, "--") then
     emit({ "--target", "--force", "--reconfigure", "--verbose" })
+    return 0
+  elseif cmd == "daemon" then
+    if n == 1 then emit({ "status", "stop" }) end
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
@@ -10557,6 +10647,7 @@ Usage: lw [command] [args]
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
+  daemon [status|stop]  inspect / stop the workspace daemon (see runtime-mode)
   migrate [--check] bring the workspace files up to current conventions
   health            what this workspace needs: suggestions + inventory (--all: everything)
   module <sub>      install | update | remove | list acquirable modules (mod)
@@ -10795,6 +10886,13 @@ local function main()
   -- workspace needed.
   if command == "sdk" and (a[2] == "types" or a[2] == "detect") then
     finish(M.cmd_sdk(a[2], root, a))
+  end
+
+  -- `daemon` inspects / stops the per-workspace daemon (DAEMON.md §8, rung 1).
+  -- It works with or without a resolved workspace — a missing root simply means
+  -- there is no daemon to report or stop — so it runs before the guard.
+  if command == "daemon" then
+    finish(M.cmd_daemon(root, a))
   end
 
   -- Workspace commands.
