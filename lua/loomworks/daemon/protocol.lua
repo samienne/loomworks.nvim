@@ -38,10 +38,11 @@ M.KIND = {
     -- replies
     ok = "ok",
     error = "error",
-    -- broadcasts (§3.3 / §3.4) — reserved, unused in Phase 0
+    -- broadcasts (§3.3 / §3.4)
     model_change = "model_change",
     task = "task",
     notify = "notify",
+    log = "log", -- normalized device-log record stream (§6.2)
 }
 
 --- Is a peer's protocol version compatible with this build's supported range?
