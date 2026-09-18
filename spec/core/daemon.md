@@ -3,25 +3,26 @@
 >
 > This file is written **per-phase** as the daemon line lands (see
 > [`../../DAEMON.md`](../../DAEMON.md), the design overview, and its §8 promotion
-> ladder). It currently specifies only the **Phase-0 / rung-1** surface —
-> runtime-mode resolution, the daemon handle file, wire-protocol versioning, the
-> daemon **client stub**, and the runtime broker. The daemon *server*, the
-> projection client, commands, and broadcasts (DAEMON.md §2–§4) are later phases
-> and are NOT specified here yet.
+> ladder). It specifies: the runtime-mode flag, the handle file, wire-protocol
+> versioning, the client stub, and the broker (§17.1–17.5); and the **daemon
+> server** run loop — lifecycle, write-authority lock, and owner-restricted pipe
+> (§17.6–17.8). The projection client, commands, and broadcasts land in the
+> sections that follow as each phase is implemented.
 
-## 17. Daemon Runtime (Phase 0: awareness without capability)
+## 17. Daemon Runtime
 
 The system runs its workspace either **in-process** — the editor or CLI process
-*is* the workspace, as in §1–§16 — or, in a later phase, by driving a long-lived
-**daemon** that owns the model, files, and execution. Phase 0 establishes the
-mainline foundations for the latter **without shipping a daemon server**: a
-runtime-mode flag, a discovery handle, a versioned wire protocol, a broker that
-resolves which runtime *would* be driven, and a client that can **detect and
-stop** a daemon it finds. This is daemon *awareness*, not daemon *capability*.
+*is* the workspace, as in §1–§16 — or by driving a long-lived **daemon** that
+owns the model, files, and execution and serves both the editor and the CLI. The
+runtime-mode flag (§17.1) selects between them; the handle (§17.2), wire protocol
+(§17.3), client (§17.4), and broker (§17.5) are the discovery and resolution
+layer; the server (§17.6) is the daemon process itself.
 
 **In-process is the permanent default and fallback.** Every contract in §1–§16
-holds unchanged in Phase 0: with no daemon server present, resolving any runtime
-mode still executes in-process. Nothing here may regress the in-process path.
+holds unchanged when the daemon is absent, crashed, or protocol-incompatible: the
+resolved runtime falls back to in-process. The daemon is an opt-in acceleration
+layer selected behind the flag, never a hard dependency, and enabling it never
+regresses the in-process path.
 
 ### 17.1 Runtime mode
 
@@ -123,6 +124,73 @@ Two rules are normative:
 
 This broker chain is **distinct** from the launcher's system-source precedence
 (§16.11) and the pin-aware redirect (§16.23): those choose what to *execute now*;
-the broker chooses what runtime a daemon would be *driven from*. In Phase 0 the
-broker **resolves only** — it never spawns — because there is no daemon server on
-mainline to drive; driving a resolved runtime is a later phase.
+the broker chooses what runtime a daemon would be *driven from*. The broker
+**resolves only** — it never spawns and never installs.
+
+The broker MAY **probe** a resolved system host for wire-protocol compatibility
+before choosing it (§17.3), by invoking it to report its protocol version; a host
+whose protocol falls outside the local supported range is rejected and the chain
+falls through. Probing is optional and best-effort — a host that cannot be probed
+is reported with the probe still owed, never silently trusted or silently
+discarded.
+
+### 17.6 The daemon server
+
+The **daemon server** is one long-lived process per workspace, started by
+`daemon run`. On start it MUST, in order: acquire the workspace's
+**write-authority lock** (§17.7) — refusing to start if another live daemon holds
+it (single primary per folder); bind and listen on the **owner-restricted pipe**
+(§17.8); publish the **handle file** (§17.2) naming that pipe, its pid, protocol
+version, lw version, and a fresh **session generation**; and begin heartbeating
+the handle and lock so their liveness stays fresh (§17.2). A start that cannot
+complete these leaves no partial state — the lock and any bound pipe are released.
+
+The server maintains a per-workspace **monotonic sequence counter** that stamps
+snapshots and broadcasts (used by the projection layer). Its **session
+generation** is session-local and reassigned on every restart, so a client that
+sees a new generation flushes any cached wire identity and re-hydrates.
+
+Message handling has two classes (DAEMON.md §3.1): **correlated request/reply** —
+every client request carries a `req_id` the reply echoes — and **unsolicited
+broadcasts** to all connected clients (no `req_id`). On connect a client sends
+`hello{ protocol_version }`; the server replies `welcome{ session_generation,
+protocol_version, min_supported, current_seq, … }`, giving the client the seq
+watermark to base hydration on and the generation to detect a restart (§4). An
+unknown message kind, a malformed frame, or a handler error yields a typed error
+reply, never a crash. A `shutdown` request is acknowledged and then stops the
+server; a keepalive `ping` resets the idle timer.
+
+**Idle timeout.** With no clients attached and no activity for a bounded window
+(~10 minutes), the server releases the lock, drops the handle and socket, and
+exits (§4). Any connected client, request, or in-flight operation counts as
+activity and holds the daemon alive. Shutdown — requested, idle, or on process
+exit/interrupt — MUST remove the handle file, remove the POSIX socket, and
+release the lock, so no discovery or write-authority state leaks.
+
+### 17.7 Write-authority lock
+
+Exactly one process may write a workspace's files (working copy, cache, published
+snapshot) at a time. The **write-authority lock** is that single-writer token: a
+per-folder lockfile acquired with the same `O_EXCL`-create + mtime-heartbeat
+primitive as the build-dir lock (§16.6) — atomic across processes, with a crashed
+holder's lock going stale and being reclaimed after the heartbeat window — but a
+**distinct** lockfile, never the build-dir lock's per-directory naming. The daemon
+holds it for its lifetime, making it the sole writer. A client enters the
+file-writing fallback lane (§17.4/§4) only after it acquires this lock **itself**,
+never on a bare socket error, so two writers can never race. The lock
+(write-authority) and the handle file (discovery, §17.2) are separate concerns
+with separate files.
+
+### 17.8 Owner-restricted pipe
+
+The daemon's IPC endpoint is a **trust boundary**: any local peer that can open it
+can issue mutation and build commands (and, in a later phase, cause daemon-hosted
+plugin code to run), i.e. code execution as the daemon's owner. The endpoint
+MUST therefore be owner-restricted. On POSIX this is a Unix-domain socket inside a
+per-user directory created `0700`, so only the owner can traverse to it; on
+Windows it is a named pipe reachable, by its default security descriptor, only by
+the creating user. A stronger peer-credential check (`SO_PEERCRED` / `getpeereid`,
+or a tightened named-pipe DACL) is a further hardening where the host runtime
+exposes it. The endpoint address is derived from the workspace root so it is
+stable and unique per folder; clients never recompute it — they read the bound
+address from the handle file (§17.2).

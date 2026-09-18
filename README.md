@@ -844,7 +844,7 @@ command has detail under `lw help <command>`.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `runtime-mode`, …) |
-| `lw daemon [status\|stop]` | Inspect or stop the per-workspace daemon. Phase-0 preview — the runtime is `in-process` today; `status` also reports the resolved runtime mode (see below) |
+| `lw daemon [status\|stop\|run\|protocol]` | Inspect / stop / run the per-workspace daemon (opt-in behind `runtime-mode`; in-process stays the default). `status` also reports the resolved runtime mode (see below); `run` starts the server; `protocol` prints the wire version |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
 | `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
 

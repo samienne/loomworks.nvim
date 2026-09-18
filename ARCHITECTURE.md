@@ -900,38 +900,52 @@ builds the profile up front, then runs both deploy phases). No-argument
 profile (if present) → the single published profile → otherwise an error
 listing candidates.
 
-### Daemon runtime (Phase 0: awareness, no server)
+### Daemon runtime
 
-The daemon line (design: [`DAEMON.md`](DAEMON.md); spec §17) is being built as a
-promotion ladder whose bottom rung is on mainline and cannot regress the
-in-process path. That rung — `lua/loomworks/daemon/` — is **awareness without a
-server**: nothing here starts, connects to, or delegates work to a daemon, and
-every workspace operation still runs in-process.
+The daemon line (design: [`DAEMON.md`](DAEMON.md); spec §17) is an opt-in
+acceleration layer behind `runtime.mode` — in-process stays the default and the
+permanent fallback. `lua/loomworks/daemon/` holds it.
+
+The **server** (`server.lua`, driven by `lw daemon run`) is one long-lived
+process per workspace. On start it acquires the **write-authority lock**
+(`lock.lua` — `.nvim/loomworks.daemon.lock`, the O_EXCL+heartbeat primitive but a
+distinct file from `build_lock`), binds the **owner-restricted pipe**
+(`pipe.lua` — a 0700 socket dir on POSIX, a named pipe on Windows), and publishes
+the handle. It runs a libuv event loop, does the `hello`/`welcome` handshake,
+routes correlated requests, broadcasts to all clients, and idle-times-out (~10
+min) — releasing lock, handle, and socket on any exit. `server:start()` is
+non-blocking (sets up listeners and returns); the CLI host then drives
+`uv.run()`, while tests pump the same server in-process with `vim.wait`. Model
+ownership, commands, broadcasts, and the task stream layer on via its handler
+registry (`:handle`) and `:broadcast`.
+
+The awareness/resolution layer:
 
 - **`runtime.lua`** resolves the runtime-mode flag (`in-process` | `daemon` |
   `auto`) with precedence `LOOMWORKS_RUNTIME` env > configured value >
   `in-process` default. The plugin reads `opts.runtime.mode`
   (`loomworks.runtime_mode()`); the CLI reads the `runtime-mode` setting. The
-  resolved mode is informational in Phase 0 — with no daemon backend, execution
-  stays in-process regardless.
+  resolved mode is informational until a build delegates to the daemon —
+  execution defaults to in-process regardless.
 - **`handle.lua`** reads/writes `.nvim/loomworks.daemon.json`, the daemon
   discovery record, judging liveness by an **mtime heartbeat** (the
   `build_lock.lua` lesson — `uv.kill(pid,0)` is unreliable on Windows). It is
-  distinct from the future per-folder write-authority lock.
+  distinct from the per-folder write-authority lock (`lock.lua`).
 - **`protocol.lua`** versions the wire as a **supported range** (`compatible()`),
   unlike the strict-equality module/SDK doctrine (`api_versions.lua`), and frames
   messages as length-prefixed JSON (a streaming `Decoder`).
-- **`client.lua`** is the client STUB driving `lw daemon status` (detect) and
-  `lw daemon stop` (graceful `shutdown` over a libuv pipe, then a pid-kill
-  fallback). It uses `uv.new_pipe`/`connect`, not nvim `sockconnect`, so the same
-  code runs headless and in the editor.
+- **`client.lua`** drives `lw daemon status` (detect) and `lw daemon stop`
+  (graceful `shutdown` over a libuv pipe, then a pid-kill fallback). It uses
+  `uv.new_pipe`/`connect`, not nvim `sockconnect`, so the same code runs headless
+  and in the editor.
 - **`broker.lua`** resolves *which* runtime a daemon would be driven from
-  (`LOOMWORKS_LW` → repo pin → PATH `lw` → data-cache → in-process). It
+  (`LOOMWORKS_LW` → repo pin → PATH `lw` → data-cache → in-process), with an
+  optional protocol probe on a PATH host (`lw daemon protocol`). It
   **resolves only** and never installs — an unresolved chain falls through to the
   in-process fallback, so the daemon is never a hard dependency.
 
-The daemon **server**, the projection client, commands, and broadcasts live on
-the daemon branch (Phase 1), behind the same runtime-mode flag.
+The projection client, commands, broadcasts, and task stream layer on top of the
+server (following sections / commits), all behind the same runtime-mode flag.
 
 ### Module bundling and acquisition
 
@@ -1241,12 +1255,15 @@ loomworks.nvim/
 │   │   ├── integrations/
 │   │   │   └── lsp/
 │   │   │       └── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)
-│   │   ├── daemon/                    Daemon runtime (Phase 0: awareness, no server yet — DAEMON.md, spec §17)
+│   │   ├── daemon/                    Daemon runtime (DAEMON.md, spec §17) — opt-in behind runtime.mode
 │   │   │   ├── runtime.lua            Runtime-mode resolution (env > config > in-process default)
 │   │   │   ├── handle.lua             .nvim/loomworks.daemon.json discovery file + mtime-heartbeat liveness
 │   │   │   ├── protocol.lua           Wire protocol: supported-range compat + length-prefixed JSON framing
-│   │   │   ├── client.lua             Client STUB: detect() + stop() (shutdown-over-pipe, pid-kill fallback)
-│   │   │   └── broker.lua             Runtime resolution precedence (LOOMWORKS_LW → pin → PATH → cache → in-process)
+│   │   │   ├── client.lua             Client: detect() + stop() (shutdown-over-pipe, pid-kill fallback)
+│   │   │   ├── broker.lua             Runtime resolution precedence (LOOMWORKS_LW → pin → PATH → cache → in-process)
+│   │   │   ├── lock.lua               Write-authority lock (.nvim/loomworks.daemon.lock, O_EXCL + heartbeat)
+│   │   │   ├── pipe.lua               Owner-restricted IPC endpoint (0700 socket dir / named pipe)
+│   │   │   └── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/

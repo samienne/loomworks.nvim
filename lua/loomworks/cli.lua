@@ -5252,9 +5252,40 @@ function M.cmd_daemon(root, args, opts)
   opts = opts or {}
   root = opts.root or root
   local sub = (args and args[2]) or "status"
-  if sub ~= "status" and sub ~= "stop" then
+  local KNOWN = { status = true, stop = true, run = true, protocol = true }
+  if not KNOWN[sub] then
     die("unknown daemon subcommand '" .. tostring(sub) ..
-      "' — usage: lw daemon [status|stop]")
+      "' — usage: lw daemon [status|stop|run|protocol]")
+  end
+
+  -- `lw daemon protocol` — print the wire protocol version + supported range.
+  -- A host/introspection command (no workspace, no daemon): the broker uses it
+  -- to probe a candidate `lw`'s protocol (spec §17.3/§17.5).
+  if sub == "protocol" then
+    local protocol = require("loomworks.daemon.protocol")
+    out(string.format("protocol %d (min %d)", protocol.VERSION, protocol.MIN_SUPPORTED))
+    return 0
+  end
+
+  -- `lw daemon run` — the daemon server run loop (spec §17). Acquires write
+  -- authority, listens on the owner-restricted pipe, publishes the handle, and
+  -- serves clients until shut down or idle. Requires a workspace.
+  if sub == "run" then
+    if not root then
+      die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace")
+    end
+    local server_mod = require("loomworks.daemon.server")
+    local server = server_mod.new(root, { idle_seconds = opts.idle_seconds })
+    local ok, err = server:start()
+    if not ok then
+      die("daemon: " .. tostring(err))
+    end
+    note("lw: daemon running for " .. root .. " on " .. tostring(server.address))
+    -- A Ctrl-C / SIGTERM must drop the handle, lock, and socket, not leak them.
+    on_exit(function() server:stop("process exit") end)
+    local uv2 = vim.uv or vim.loop
+    uv2.run("default")
+    return 0
   end
 
   local client = opts.client or require("loomworks.daemon.client")
@@ -5703,7 +5734,7 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "daemon" then
-    if n == 1 then emit({ "status", "stop" }) end
+    if n == 1 then emit({ "status", "stop", "run", "protocol" }) end
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
