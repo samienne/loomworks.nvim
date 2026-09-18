@@ -900,6 +900,39 @@ builds the profile up front, then runs both deploy phases). No-argument
 profile (if present) → the single published profile → otherwise an error
 listing candidates.
 
+### Daemon runtime (Phase 0: awareness, no server)
+
+The daemon line (design: [`DAEMON.md`](DAEMON.md); spec §17) is being built as a
+promotion ladder whose bottom rung is on mainline and cannot regress the
+in-process path. That rung — `lua/loomworks/daemon/` — is **awareness without a
+server**: nothing here starts, connects to, or delegates work to a daemon, and
+every workspace operation still runs in-process.
+
+- **`runtime.lua`** resolves the runtime-mode flag (`in-process` | `daemon` |
+  `auto`) with precedence `LOOMWORKS_RUNTIME` env > configured value >
+  `in-process` default. The plugin reads `opts.runtime.mode`
+  (`loomworks.runtime_mode()`); the CLI reads the `runtime-mode` setting. The
+  resolved mode is informational in Phase 0 — with no daemon backend, execution
+  stays in-process regardless.
+- **`handle.lua`** reads/writes `.nvim/loomworks.daemon.json`, the daemon
+  discovery record, judging liveness by an **mtime heartbeat** (the
+  `build_lock.lua` lesson — `uv.kill(pid,0)` is unreliable on Windows). It is
+  distinct from the future per-folder write-authority lock.
+- **`protocol.lua`** versions the wire as a **supported range** (`compatible()`),
+  unlike the strict-equality module/SDK doctrine (`api_versions.lua`), and frames
+  messages as length-prefixed JSON (a streaming `Decoder`).
+- **`client.lua`** is the client STUB driving `lw daemon status` (detect) and
+  `lw daemon stop` (graceful `shutdown` over a libuv pipe, then a pid-kill
+  fallback). It uses `uv.new_pipe`/`connect`, not nvim `sockconnect`, so the same
+  code runs headless and in the editor.
+- **`broker.lua`** resolves *which* runtime a daemon would be driven from
+  (`LOOMWORKS_LW` → repo pin → PATH `lw` → data-cache → in-process). It
+  **resolves only** and never installs — an unresolved chain falls through to the
+  in-process fallback, so the daemon is never a hard dependency.
+
+The daemon **server**, the projection client, commands, and broadcasts live on
+the daemon branch (Phase 1), behind the same runtime-mode flag.
+
 ### Module bundling and acquisition
 
 The loomworks distribution bundles the core modules (cmake, meson, shell,
@@ -1208,6 +1241,12 @@ loomworks.nvim/
 │   │   ├── integrations/
 │   │   │   └── lsp/
 │   │   │       └── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)
+│   │   ├── daemon/                    Daemon runtime (Phase 0: awareness, no server yet — DAEMON.md, spec §17)
+│   │   │   ├── runtime.lua            Runtime-mode resolution (env > config > in-process default)
+│   │   │   ├── handle.lua             .nvim/loomworks.daemon.json discovery file + mtime-heartbeat liveness
+│   │   │   ├── protocol.lua           Wire protocol: supported-range compat + length-prefixed JSON framing
+│   │   │   ├── client.lua             Client STUB: detect() + stop() (shutdown-over-pipe, pid-kill fallback)
+│   │   │   └── broker.lua             Runtime resolution precedence (LOOMWORKS_LW → pin → PATH → cache → in-process)
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/

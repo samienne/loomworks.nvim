@@ -843,9 +843,19 @@ command has detail under `lw help <command>`.
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
+| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `runtime-mode`, …) |
+| `lw daemon [status\|stop]` | Inspect or stop the per-workspace daemon. Phase-0 preview — the runtime is `in-process` today; `status` also reports the resolved runtime mode (see below) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
 | `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
+
+**Runtime mode (preview).** loomworks is being extended with an optional
+long-lived `lw` daemon; the groundwork ships now behind a `runtime` flag that
+still defaults to — and permanently falls back to — running **in-process**, so
+nothing changes yet. Set it in the plugin (`require("loomworks").setup({ runtime = { mode = "in-process" } })`)
+or the CLI (`lw settings set runtime-mode in-process`); `LOOMWORKS_RUNTIME`
+overrides both. Values: `in-process` (default), `daemon`, `auto`. `lw daemon
+status` shows the resolved mode and whether a daemon is running; `lw daemon stop`
+retires one. See [`DAEMON.md`](DAEMON.md) for the design.
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command

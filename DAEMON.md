@@ -1,9 +1,15 @@
 # loomworks daemon — design
 
-> **STATUS: DESIGN / NOT IMPLEMENTED.** This document captures the planned
+> **STATUS: DESIGN + Phase-0 rung-1 landed.** This document captures the planned
 > architecture for a long-lived `lw` daemon and the separation of the `lw`
-> runtime from the Neovim plugin. Nothing here is built yet. The daemon is
-> developed **off mainline** (a separate branch / optional release channel);
+> runtime from the Neovim plugin. The daemon **server** is not built yet; the
+> **bottom rung of §8's ladder is** — the mainline-safe foundations under
+> `lua/loomworks/daemon/` (runtime-mode flag, handle file, wire protocol, the
+> daemon **client stub** `lw daemon status|stop`, and the runtime broker),
+> specified normatively in [`spec/core/daemon.md`](spec/core/daemon.md) §17. This
+> is daemon *awareness* without daemon *capability*: no server, no delegation,
+> nothing flipped off in-process. The daemon is developed **off mainline** (a
+> separate branch / optional release channel) from Phase 1 on;
 > **the in-process model stays the permanent default and fallback** on mainline
 > the whole time — the daemon is an opt-in acceleration layer, never a hard
 > dependency (see §8).
