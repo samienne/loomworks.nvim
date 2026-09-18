@@ -1070,6 +1070,100 @@ end
 
 --- `lw build [profile] [-- <build-tool args>]` — configure if needed, then
 --- build. Args after `--` are forwarded to the build tool (e.g. `-- -j 4`).
+--- Best-effort: spawn a daemon for `root` if none is running, and wait (bounded)
+--- for its handle to appear. Only attempted when the host binary is a real `lw`
+--- (the luvi host) — under the nvim-hosted fallback there is no binary to spawn,
+--- so it returns false and the caller runs in-process. Never throws.
+--- @param root string
+--- @return boolean available true if a live daemon is now reachable
+local function spawn_daemon_if_possible(root)
+  local exe = (uv.exepath and uv.exepath()) or nil
+  if not exe or not vim._loomworks_shim then return false end -- only the lw host
+  local ok = pcall(function()
+    uv.spawn(exe, {
+      args = { "daemon", "run" },
+      env = (function()
+        local e = uv.os_environ and uv.os_environ() or {}
+        local arr = {}
+        for k, v in pairs(e) do arr[#arr + 1] = k .. "=" .. v end
+        arr[#arr + 1] = "LW_ROOT=" .. root
+        return arr
+      end)(),
+      stdio = { nil, nil, nil },
+      detached = true,
+    }, function() end)
+  end)
+  if not ok then return false end
+  local client = require("loomworks.daemon.client")
+  vim.wait(10000, function()
+    local st = client.detect(root)
+    return st.present and st.live and st.compatible
+  end, 50)
+  local st = client.detect(root)
+  return st.present and st.live and st.compatible
+end
+
+--- Delegate a build to the daemon when the runtime mode resolves to daemon/auto
+--- and a compatible daemon is (or can be made) reachable; stream its output and
+--- return its exit code. Returns nil to mean "not delegated — run in-process"
+--- (the permanent fallback: in-process is never broken by this path).
+---
+--- `opts` is injectable for tests: `{ mode, detect, connect, spawn }`.
+--- @param root string
+--- @param args string[] the build argv (args[1]=="build")
+--- @param opts? table
+--- @return integer|nil exit_code, or nil when not delegated
+function M._maybe_delegate_build(root, args, opts)
+  opts = opts or {}
+  if not root then return nil end
+  local runtime = require("loomworks.daemon.runtime")
+  local mode = opts.mode or runtime.resolve(read_config()["runtime-mode"])
+  if mode == runtime.IN_PROCESS then return nil end -- default path, unchanged
+
+  local client = require("loomworks.daemon.client")
+  local detect = opts.detect or client.detect
+  local st = detect(root)
+  local reachable = st.present and st.live and st.compatible
+  if not reachable then
+    local spawn = opts.spawn or spawn_daemon_if_possible
+    reachable = spawn(root)
+  end
+  if not reachable then
+    note("lw: no daemon reachable; building in-process")
+    return nil -- fall back
+  end
+
+  -- Parse profile + `-- extra` from argv (mirror cmd_build's split).
+  local pre, extra, seen = {}, {}, false
+  for i = 2, #args do
+    if not seen and args[i] == "--" then seen = true
+    elseif seen then extra[#extra + 1] = args[i]
+    elseif args[i] ~= "--force" then pre[#pre + 1] = args[i] end
+  end
+
+  local connect = opts.connect or require("loomworks.daemon.projection").connect
+  local done, code, cerr = false, nil, nil
+  connect(root, {}, function(proj, err)
+    if err then cerr = err; done = true; return end
+    proj:build({ profile_key = pre[1], extra_args = (#extra > 0) and extra or nil }, {
+      on_accept = function(task_id, aerr)
+        if aerr then cerr = aerr; done = true end
+      end,
+      on_output = function(stream, text)
+        if stream == "stderr" then io.stderr:write(text) else io.write(text) end
+      end,
+      on_done = function(c) code = c; done = true; proj:close() end,
+    })
+  end)
+  vim.wait(600000, function() return done end, 25)
+  if cerr then
+    note("lw: daemon build failed (" .. tostring(cerr) .. "); building in-process")
+    return nil -- fall back on a delegation error
+  end
+  if code == 0 then out("BUILD OK (daemon)") end
+  return code or 1
+end
+
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
@@ -3971,6 +4065,10 @@ local function effective_config_default(key)
     -- Precedence mirrors boot.update.resolve_channel (env > config > default).
     return os.getenv("LOOMWORKS_CHANNEL") or "stable"
   end
+  if key == "runtime-mode" then
+    -- Precedence mirrors loomworks.daemon.runtime.resolve (env > config > default).
+    return os.getenv("LOOMWORKS_RUNTIME") or require("loomworks.daemon.runtime").DEFAULT
+  end
   return nil
 end
 
@@ -4002,6 +4100,9 @@ function M.cmd_settings(sub, key, value)
     -- at the next self-update (the channel is re-validated by the host too).
     if key == "channel" and value ~= "stable" and value ~= "unstable" then
       die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'")
+    end
+    if key == "runtime-mode" and not require("loomworks.daemon.runtime").is_valid(value) then
+      die("invalid runtime-mode '" .. value .. "' — use 'in-process', 'daemon', or 'auto'")
     end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
@@ -5230,6 +5331,124 @@ end
 --- `opts.{dir,git,stat,color}` are injectable for tests.
 --- @param args string[]
 --- @param opts? table
+--- `lw daemon [status|stop]` — the Phase-0 daemon CLIENT STUB surface
+--- (DAEMON.md §8, rung 1): detect a running daemon via the handle file and stop
+--- it. This is daemon-AWARENESS without daemon-CAPABILITY — there is no daemon
+--- server on mainline yet, so `status` mostly reports "not running" and `stop`
+--- retires a stray/leftover daemon (e.g. after switching a machine back to
+--- in-process). It never launches a daemon.
+---
+--- `opts` is injectable for tests: `{ root, detect, stop, config, timeout_ms }`.
+--- @param root string|nil workspace root (nil outside a workspace)
+--- @param args string[] full argv (args[1]=="daemon", args[2]==subcommand)
+--- @param opts? table
+function M.cmd_daemon(root, args, opts)
+  opts = opts or {}
+  root = opts.root or root
+  local sub = (args and args[2]) or "status"
+  local KNOWN = { status = true, stop = true, run = true, protocol = true }
+  if not KNOWN[sub] then
+    die("unknown daemon subcommand '" .. tostring(sub) ..
+      "' — usage: lw daemon [status|stop|run|protocol]")
+  end
+
+  -- `lw daemon protocol` — print the wire protocol version + supported range.
+  -- A host/introspection command (no workspace, no daemon): the broker uses it
+  -- to probe a candidate `lw`'s protocol (spec §17.3/§17.5).
+  if sub == "protocol" then
+    local protocol = require("loomworks.daemon.protocol")
+    out(string.format("protocol %d (min %d)", protocol.VERSION, protocol.MIN_SUPPORTED))
+    return 0
+  end
+
+  -- `lw daemon run` — the daemon server run loop (spec §17). Acquires write
+  -- authority, listens on the owner-restricted pipe, publishes the handle, and
+  -- serves clients until shut down or idle. Requires a workspace.
+  if sub == "run" then
+    if not root then
+      die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace")
+    end
+    local server_mod = require("loomworks.daemon.server")
+    local server = server_mod.new(root, { idle_seconds = opts.idle_seconds })
+    -- Attach the authoritative workspace (loaded headlessly) + serve the model.
+    if opts.attach_workspace ~= false then
+      note("lw: loading workspace…")
+      local aok, aerr = require("loomworks.daemon.service").attach(server, {
+        load_workspace = function(r) return load_workspace(r) end,
+      })
+      if not aok then die("daemon: " .. tostring(aerr)) end
+    end
+    local ok, err = server:start()
+    if not ok then
+      die("daemon: " .. tostring(err))
+    end
+    note("lw: daemon running for " .. root .. " on " .. tostring(server.address))
+    -- A Ctrl-C / SIGTERM must drop the handle, lock, and socket, not leak them.
+    on_exit(function() server:stop("process exit") end)
+    local uv2 = vim.uv or vim.loop
+    uv2.run("default")
+    return 0
+  end
+
+  local client = opts.client or require("loomworks.daemon.client")
+  local runtime = require("loomworks.daemon.runtime")
+
+  -- Effective runtime mode (settings `runtime-mode` key + LOOMWORKS_RUNTIME).
+  local cfg = opts.config or read_config()
+  local mode, mode_warning = runtime.resolve(cfg["runtime-mode"])
+  if mode_warning then note("lw: " .. mode_warning) end
+
+  if sub == "status" then
+    out("runtime mode: " .. mode .. " (default: " .. runtime.DEFAULT .. ")")
+    if not root then
+      out("daemon: no loomworks workspace here (nothing to report)")
+      return 0
+    end
+    local st = (opts.detect or client.detect)(root)
+    if not st.present then
+      out("daemon: not running")
+      return 0
+    end
+    local info = st.info or {}
+    if info.pid == nil then
+      -- A handle file exists but carried no usable record (empty / corrupt
+      -- JSON). Report that rather than a confident "running" with all "?".
+      out("daemon: handle present but unreadable (corrupt?) — `lw daemon stop` to clear it")
+      return 0
+    end
+    out("daemon: " .. (st.live and "running" or "stale (no heartbeat)"))
+    out("  pid:        " .. tostring(info.pid or "?"))
+    out("  pipe:       " .. tostring(info.pipe or "?"))
+    out("  protocol:   " .. tostring(info.protocol_version or "?") ..
+      (st.compatible and "" or " (incompatible with this lw)"))
+    out("  lw version: " .. tostring(info.lw_version or "?"))
+    out("  generation: " .. tostring(info.session_generation or "?"))
+    out("  last beat:  " .. tostring(info.age or "?") .. "s ago")
+    return 0
+  end
+
+  -- sub == "stop"
+  if not root then
+    out("daemon: no loomworks workspace here (nothing to stop)")
+    return 0
+  end
+  local stop = opts.stop or client.stop
+  local result, done = nil, false
+  stop(root, { timeout_ms = opts.timeout_ms }, function(r)
+    result = r; done = true
+  end)
+  vim.wait(opts.wait_ms or 5000, function() return done end, 25)
+  if not result then
+    die("daemon stop timed out")
+  end
+  if not result.stopped then
+    out("daemon: " .. (result.reason or "nothing to stop"))
+    return 0
+  end
+  out("daemon: stopped (" .. tostring(result.method) .. ")")
+  return 0
+end
+
 function M.cmd_worktree(args, opts)
   opts = opts or {}
   local sub = args and args[2]
@@ -5568,7 +5787,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "test", "run", "target", "launch", "publish",
-  "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
+  "pull", "worktree", "daemon", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
 }
 
@@ -5613,8 +5832,11 @@ function M.cmd_complete(cword, words)
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
-      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel" })
+      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "runtime-mode" })
     end
+    return 0
+  elseif cmd == "daemon" then
+    if n == 1 then emit({ "status", "stop", "run", "protocol" }) end
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
@@ -6638,6 +6860,7 @@ Usage: lw [command] [args]
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
+  daemon [status|stop]  inspect / stop the workspace daemon (see runtime-mode)
   migrate [--check] bring the workspace files up to current conventions
   module <sub>      install | update | remove | list acquirable modules (mod)
   settings <...>    get/set lw's own settings (dev-lua, release-url, …)
@@ -6787,6 +7010,13 @@ local function main()
     finish(M.cmd_worktree(a))
   end
 
+  -- `daemon` inspects / stops the per-workspace daemon (DAEMON.md §8, rung 1).
+  -- It works with or without a resolved workspace — a missing root simply means
+  -- there is no daemon to report or stop — so it runs before the guard.
+  if command == "daemon" then
+    finish(M.cmd_daemon(root, a))
+  end
+
   -- Workspace commands.
   if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
 
@@ -6833,6 +7063,15 @@ local function main()
   -- its own workspace load (build-free, like status) — no tool detection.
   if command == "target" then
     finish(M.cmd_target(root, a))
+  end
+
+  -- Build delegation (spec §17, opt-in via runtime-mode=daemon/auto): if a
+  -- compatible daemon is reachable, stream the build from it instead of loading
+  -- the workspace in-process. Returns nil ⇒ not delegated ⇒ in-process below
+  -- (the permanent fallback), so the default path is never changed.
+  if command == "build" then
+    local delegated = M._maybe_delegate_build(root, a)
+    if delegated ~= nil then finish(delegated) end
   end
 
   local ws = load_workspace(root)

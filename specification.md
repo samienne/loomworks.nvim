@@ -28,6 +28,7 @@ never renumbered, and no top-level `§N` is ever split across two files.
 | §9–§14 | Integrations (LSP, SDK, device, overseer, auto-load, commands) | [`spec/core/integrations.md`](spec/core/integrations.md) |
 | §15 | Invariants | this file (`specification.md`) |
 | §16 | Headless / Standalone Execution | [`spec/core/headless.md`](spec/core/headless.md) |
+| §17 | Daemon Runtime (Phase 0: awareness) | [`spec/core/daemon.md`](spec/core/daemon.md) |
 
 Implementation-specific specs live in sibling files under `spec/`:
 
@@ -62,6 +63,7 @@ local to each file and restart at §1.
 | Adding a new module, LSP server, DAP adapter, or SDK provider | a new file under the corresponding `spec/` subdirectory; touch core only if the contract itself needs a new field or hook |
 | A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
 | How the system behaves when run outside the editor (headless / standalone) | `specification.md` §16 |
+| Runtime mode, the daemon handle/protocol/broker, or the daemon client stub | [`spec/core/daemon.md`](spec/core/daemon.md) §17 (design overview: [`DAEMON.md`](DAEMON.md)) |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in

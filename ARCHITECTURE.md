@@ -268,7 +268,7 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `workspace.lua` | **Workspace class**: all object registries (`_projects`, `_profiles`, `_config_sets`, `_profile_projects`, `_config_units`, `_operations`, `_tools_by_type`, `_active_set`), tool state (`_tool_state`, `_tool_waiters`), delete waiters, build dir reverse index (`_build_dir_refs`: normalized dir → set of cache keys, rebuilt in `_sync_build_dir_refs()` during remerge), build dir operation locks (`_build_dir_locks`: per-dir exclusive/shared locks with FIFO queue, `acquire_build_dir_lock`/`release_build_dir_lock`). Shared baseline (`_shared_baseline`: raw parsed loomworks.json, updated on load and `:w`). Business logic: remerge (per-configuration merge of user.json + loomworks.json), `_sync_*`, `_save_cache`, `_save_config` (publish to loomworks.json), `_save_user` (working copy), `_serialize_config`, `publish()` (`:w` handler — full regen), `publish_one(item)` (per-item partial loomworks.json write — preserves untouched entries), `revert_to_baseline()` (`:e!` handler — data-preserving force revert; locally-added items demote to `local`), `revert_one(item)` (per-item baseline restore / removed-upstream demote), `_publishable_to_shared` (transitive effective-intent closure, used by serialization), `_mark_removed_upstream(old_baseline)` (session flag set after baseline change, cleared on publish/revert), `create_operation`, `execute_deletion`, `record_task_result`, `_scan_tools_async`, `_refresh_lsp_database_for(unit)` (generic — drives a module's owned LSP compilation database via the `refresh_lsp_database`/`lsp_database_watch_path` hooks; called after configure/build completion in `record_task_result` and during the startup `_scan_targets_async`; registers the reply-dir `fs_poll` watch). Modified computation: `is_project_modified`, `is_config_modified`, `is_config_set_modified`, `is_profile_modified`, `has_any_modified`. Mutation methods: `add_project`, `remove_project`, `add_configuration_set`, `remove_configuration_set`, `update_config_set_mapping`, `rename_project_configuration` (atomic rename with cache migration), `create_profile`, `activate_profile`, `upgrade_profiles_for_tool`, `downgrade_profiles_from_tool`. Preview: `compute_downgrade_preview`. Query methods: `query_available_configs`, `map_variant`, `generate_default_config_sets`, `get_module`. File tracking: `_start_tracking`, `_stop_tracking`, `_on_file_changed` (snapshots old baseline before remerge, calls `_mark_removed_upstream`, always saves user.json so sticky intent survives restart), `reload_config`. Lifecycle: `on(event, handler)` records workspace-scoped event subscriptions in `_event_handlers`; `teardown()` stops the file tracker, cancels in-flight overseer tasks (collected from `_config_units._task_id`), detaches recorded subscribers, drops `_build_dir_locks`, and clears runtime caches — called by Core on workspace swap and shutdown. **Static helpers** (on the module table, not the class): `resolve_root`, `paths`, `assemble` (pure), `create_workspace_config` (bootstrap) | Do I/O directly (delegates via `_core._deps`); know about UI; render anything |
+| `workspace.lua` | **Workspace class**: all object registries (`_projects`, `_profiles`, `_config_sets`, `_profile_projects`, `_config_units`, `_operations`, `_tools_by_type`, `_active_set`), tool state (`_tool_state`, `_tool_waiters`), delete waiters, build dir reverse index (`_build_dir_refs`: normalized dir → set of cache keys, rebuilt in `_sync_build_dir_refs()` during remerge), build dir operation locks (`_build_dir_locks`: per-dir exclusive/shared locks with FIFO queue, `acquire_build_dir_lock`/`release_build_dir_lock`). Shared baseline (`_shared_baseline`: raw parsed loomworks.json, updated on load and `:w`). Business logic: remerge (per-configuration merge of user.json + loomworks.json), `_sync_*`, `_save_cache`, `_save_config` (publish to loomworks.json), `_save_user` (working copy), `_serialize_config`, `publish()` (`:w` handler — full regen), `publish_one(item)` (per-item partial loomworks.json write — preserves untouched entries), `revert_to_baseline()` (`:e!` handler — data-preserving force revert; locally-added items demote to `local`), `revert_one(item)` (per-item baseline restore / removed-upstream demote), `_publishable_to_shared` (transitive effective-intent closure, used by serialization), `_mark_removed_upstream(old_baseline)` (session flag set after baseline change, cleared on publish/revert), `create_operation`, `execute_deletion`, `record_task_result`, `_scan_tools_async`, `_refresh_lsp_database_for(unit)` (generic — drives a module's owned LSP compilation database via the `refresh_lsp_database`/`lsp_database_watch_path` hooks; called after configure/build completion in `record_task_result` and during the startup `_scan_targets_async`; registers the reply-dir `fs_poll` watch). Modified computation: `is_project_modified`, `is_config_modified`, `is_config_set_modified`, `is_profile_modified`, `has_any_modified`. Mutation methods: `add_project`, `remove_project`, `add_configuration_set`, `remove_configuration_set`, `update_config_set_mapping`, `rename_project`, `rename_configuration_set` (atomic renames with config-set/cache/profile propagation; per-configuration rename is `Project:rename_configuration`), `create_profile`, `activate_profile`, `upgrade_profiles_for_tool`, `downgrade_profiles_from_tool`. Preview: `compute_downgrade_preview`. Query methods: `query_available_configs`, `map_variant`, `generate_default_config_sets`, `get_module`. File tracking: `_start_tracking`, `_stop_tracking`, `_on_file_changed` (snapshots old baseline before remerge, calls `_mark_removed_upstream`, always saves user.json so sticky intent survives restart), `reload_config`. Lifecycle: `on(event, handler)` records workspace-scoped event subscriptions in `_event_handlers`; `teardown()` stops the file tracker, cancels in-flight overseer tasks (collected from `_config_units._task_id`), detaches recorded subscribers, drops `_build_dir_locks`, and clears runtime caches — called by Core on workspace swap and shutdown. **Static helpers** (on the module table, not the class): `resolve_root`, `paths`, `assemble` (pure), `create_workspace_config` (bootstrap) | Do I/O directly (delegates via `_core._deps`); know about UI; render anything |
 | `merge.lua` | Three-file merge algorithm, profile collection, orphaned project detection, tool detection (sync and async) | Mutate state; do I/O; depend on core.lua or workspace.lua |
 | `configuration_set.lua` | ConfigurationSet class: identity-preserving with `_update()`, owns activation (`activate()`/`ensure_profile()`), property-based profile lookup (`find_profile()`), resolves Project references internally. `update_mapping()` cascades `_mark_user_owned` to the set, the project, and the new config (specification.md §2.4 implicit cascade-on-use). References Workspace via `_workspace` | Own state beyond config data; do I/O |
 | `profile.lua` | Profile and ProfileProject classes. Profile owns `_tool_keys` (flat string array, user-ordered, first-match-per-language resolution wins), `tools_for(configuration)` for language-keyed effective tools, `tool_for(mod_type)` compat shim, `add_tool(key)` / `remove_tool(key)` mutators, `toolchain_entries()` UI surface, `missing_languages_for(configuration)` / `language_gaps()` / `unused_tools()` validity probes, status aggregation, plan_deletion, activate/deactivate. `Profile:activate()` cascades `_mark_user_owned` through the profile, its config set, and the set's mappings — so user.json is self-contained for the active profile. Profile also holds per-machine **fill values for blank project variables** (`_profile_variables`, project_key → name → value): `variable_value` / `set_variable_value` / `clear_variable_value` / `variables_data` accessors, `blank_variables()` enumerates the profile's still-blank declared variables, and `assert_buildable()` refuses configure/build while any is unfilled (core §1.3.1). Fill values live in user.json only (top-level `profile_variables`, mirrored on the Workspace as `_profile_variables_data` so they survive remerge) and are NEVER serialized to loomworks.json. Profile resolves mappings + ConfigurationSet reference in `_apply()`. Profile.key derives from `<set>:<sorted-deduped-tool-keys>` — no separate SDK component (kit_id prefix carries it). ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
@@ -900,6 +900,103 @@ builds the profile up front, then runs both deploy phases). No-argument
 profile (if present) → the single published profile → otherwise an error
 listing candidates.
 
+### Daemon runtime
+
+The daemon line (design: [`DAEMON.md`](DAEMON.md); spec §17) is an opt-in
+acceleration layer behind `runtime.mode` — in-process stays the default and the
+permanent fallback. `lua/loomworks/daemon/` holds it.
+
+The **server** (`server.lua`, driven by `lw daemon run`) is one long-lived
+process per workspace. On start it acquires the **write-authority lock**
+(`lock.lua` — `.nvim/loomworks.daemon.lock`, the O_EXCL+heartbeat primitive but a
+distinct file from `build_lock`), binds the **owner-restricted pipe**
+(`pipe.lua` — on POSIX a `sun_path`-safe, owner-verified 0700 socket dir under
+`XDG_RUNTIME_DIR`/`TMPDIR`/`/tmp` keyed by a root hash, not under the deep repo
+path; a named pipe on Windows), and publishes
+the handle. It runs a libuv event loop, does the `hello`/`welcome` handshake,
+routes correlated requests, broadcasts to all clients, and idle-times-out (~10
+min) — releasing lock, handle, and socket on any exit. `server:start()` is
+non-blocking (sets up listeners and returns); the CLI host then drives
+`uv.run()`, while tests pump the same server in-process with `vim.wait`. Model
+ownership, commands, broadcasts, and the task stream layer on via its handler
+registry (`:handle`) and `:broadcast`.
+
+The awareness/resolution layer:
+
+- **`runtime.lua`** resolves the runtime-mode flag (`in-process` | `daemon` |
+  `auto`) with precedence `LOOMWORKS_RUNTIME` env > configured value >
+  `in-process` default. The plugin reads `opts.runtime.mode`
+  (`loomworks.runtime_mode()`); the CLI reads the `runtime-mode` setting. The
+  resolved mode is informational until a build delegates to the daemon —
+  execution defaults to in-process regardless.
+- **`handle.lua`** reads/writes `.nvim/loomworks.daemon.json`, the daemon
+  discovery record, judging liveness by an **mtime heartbeat** (the
+  `build_lock.lua` lesson — `uv.kill(pid,0)` is unreliable on Windows). It is
+  distinct from the per-folder write-authority lock (`lock.lua`).
+- **`protocol.lua`** versions the wire as a **supported range** (`compatible()`),
+  unlike the strict-equality module/SDK doctrine (`api_versions.lua`), and frames
+  messages as length-prefixed JSON (a streaming `Decoder`).
+- **`client.lua`** drives `lw daemon status` (detect) and `lw daemon stop`
+  (graceful `shutdown` over a libuv pipe, then a pid-kill fallback). It uses
+  `uv.new_pipe`/`connect`, not nvim `sockconnect`, so the same code runs headless
+  and in the editor.
+- **`broker.lua`** resolves *which* runtime a daemon would be driven from
+  (`LOOMWORKS_LW` → repo pin → PATH `lw` → data-cache → in-process), with an
+  optional protocol probe on a PATH host (`lw daemon protocol`). It
+  **resolves only** and never installs — an unresolved chain falls through to the
+  in-process fallback, so the daemon is never a hard dependency.
+
+The **projection** (`snapshot.lua` + `projection.lua`, served by `service.lua`)
+is the shared-deserializer wire path (DAEMON.md §2). The daemon serializes its
+authoritative model to the three file-shaped tables the on-disk deserializer
+already consumes — `_shared_baseline`, `_serialize_user()`, `_serialize_cache()`
+— plus `get_tools_by_type()` so the client doesn't re-detect toolchains. The
+client runs the identical `Workspace.new + remerge` path (`snapshot.hydrate`),
+producing a byte-identical model (the parity property). Reads then run locally on
+the projection; only sync crosses the wire. `projection.lua` also carries the
+correlated `req_id`→callback request/reply layer (with timeouts and a
+`daemon_lost` rejection on disconnect) reused by commands and broadcasts.
+
+**Live invalidation** (`ids.lua` + the broadcast path): the daemon assigns opaque
+session-local ids keyed by object identity (rename-stable, since a rename keeps
+the object and only mutates its key), stamps a key→id index into each snapshot,
+and on any model change (`active_set_changed`) advances the per-workspace seq and
+broadcasts a `model_change`. Each projection client re-pulls the snapshot (coarse
+invalidation, race-guarded by seq; a new session generation forces a full
+re-hydrate). So a change on the daemon reaches every connected client — the live
+shared view. Per-object deltas are the deferred optimization the id-map enables.
+
+**Commands** (`commands.lua`): a client mutation is a `command{name,args}` the
+daemon applies against its authoritative workspace and persists. Each command
+resolves its wire args (semantic keys) to domain objects at the boundary — the
+same resolution the deserializer does — then calls the object's own mutation
+method (`Profile:activate`, `Workspace:publish`, …); no key lookup leaks into
+domain logic. The mutation emits `active_set_changed` → a `model_change`
+broadcast (the effect, sent before the ack), so the projection updates from the
+broadcast, not the reply; the reply carries only an outcome/error. The registry
+is representative (activate/deactivate/publish); the remaining user.json/cache/
+publish mutations map the same way.
+
+**Task stream + build delegation** (`tasks.lua` + `runner.lua`): a running
+build/op streams `progress`/`output` on a workspace-scoped **task stream**
+(`server.tasks`) observable by every client — a CLI `lw build` shows in the
+editor identically. The stream coalesces progress (integer-percent dedup) and
+bounds output; `notify` rides the same channel; the durable outcome is a separate
+build-state broadcast. `runner.lua` runs the build daemon-side by reusing the
+same `overseer.plan_profile_build` planning seam and an async streaming
+`vim.system` spawn. Delegation is opt-in: `cli._maybe_delegate_build` streams
+from a reachable daemon when `runtime-mode` is daemon/auto, and returns nil (run
+in-process — the permanent fallback) otherwise, so the default build is never
+changed.
+
+**Device/log generalization** (`log_record.lua`, scaffold): a normalized log
+record `{ts, level, tag, pid, message, fields?}` (with a `fields` platform escape
+hatch) and `server:emit_log` broadcasting it on the same channel as the task
+stream — the general device/log presentation DAEMON.md §6.2 calls for, so a
+headless module's device logs render without editor-coupled, platform-specific
+code. Wiring a concrete module through it (and migrating ohos) stays dormant
+until that module is actively developed.
+
 ### Module bundling and acquisition
 
 The loomworks distribution bundles the core modules (cmake, meson, shell,
@@ -1208,6 +1305,23 @@ loomworks.nvim/
 │   │   ├── integrations/
 │   │   │   └── lsp/
 │   │   │       └── clangd.lua         clangd integration (build_config, function-based cmd/root_dir, auto-restart)
+│   │   ├── daemon/                    Daemon runtime (DAEMON.md, spec §17) — opt-in behind runtime.mode
+│   │   │   ├── runtime.lua            Runtime-mode resolution (env > config > in-process default)
+│   │   │   ├── handle.lua             .nvim/loomworks.daemon.json discovery file + mtime-heartbeat liveness
+│   │   │   ├── protocol.lua           Wire protocol: supported-range compat + length-prefixed JSON framing
+│   │   │   ├── client.lua             Client: detect() + stop() (shutdown-over-pipe, pid-kill fallback)
+│   │   │   ├── broker.lua             Runtime resolution precedence (LOOMWORKS_LW → pin → PATH → cache → in-process)
+│   │   │   ├── lock.lua               Write-authority lock (.nvim/loomworks.daemon.lock, O_EXCL + heartbeat)
+│   │   │   ├── pipe.lua               Owner-restricted IPC endpoint: POSIX 0700 owner-verified socket dir (sun_path-safe, under XDG_RUNTIME_DIR/TMPDIR/tmp) / Windows named pipe
+│   │   │   ├── server.lua             Daemon run loop: lock, listen, handshake, route, broadcast, idle-timeout
+│   │   │   ├── snapshot.lua           Serialize a Workspace to the wire + hydrate a projection (shared deserializer)
+│   │   │   ├── ids.lua                Opaque session-local wire identity (monotonic, rename-stable object→id)
+│   │   │   ├── commands.lua           Command registry: wire mutation → resolve keys → domain mutation method (ack + broadcast)
+│   │   │   ├── tasks.lua              Workspace task stream: coalesced progress + bounded output + notify (observable by any client)
+│   │   │   ├── log_record.lua         Normalized device-log record schema { ts, level, tag, pid, message, fields? } (§6.2 scaffold)
+│   │   │   ├── runner.lua             Daemon-side build: reuse plan_profile_build + async streaming spawn → task stream
+│   │   │   ├── service.lua            Bind the authoritative Workspace to a server; serve snapshot/command/build + broadcasts
+│   │   │   └── projection.lua         Projection client: connect, handshake, hydrate, req/reply, command(), build(), broadcast auto-refresh
 │   │   ├── fidget.lua                 fidget.nvim progress integration
 │   │   ├── config_editor.lua           Legacy JSON read-modify-write (not used at runtime)
 │   │   ├── modules/
