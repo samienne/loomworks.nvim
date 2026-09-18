@@ -295,7 +295,7 @@ function Server:_teardown()
         self._server = nil
     end
     handle.remove(self.root)
-    pipe.cleanup(self.root)
+    pipe.cleanup(self.address)
     if self._lock then lock.release(self._lock); self._lock = nil end
 end
 

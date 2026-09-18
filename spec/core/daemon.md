@@ -189,14 +189,28 @@ with separate files.
 The daemon's IPC endpoint is a **trust boundary**: any local peer that can open it
 can issue mutation and build commands (and, in a later phase, cause daemon-hosted
 plugin code to run), i.e. code execution as the daemon's owner. The endpoint
-MUST therefore be owner-restricted. On POSIX this is a Unix-domain socket inside a
-per-user directory created `0700`, so only the owner can traverse to it; on
-Windows it is a named pipe reachable, by its default security descriptor, only by
-the creating user. A stronger peer-credential check (`SO_PEERCRED` / `getpeereid`,
-or a tightened named-pipe DACL) is a further hardening where the host runtime
-exposes it. The endpoint address is derived from the workspace root so it is
-stable and unique per folder; clients never recompute it — they read the bound
-address from the handle file (§17.2).
+MUST therefore be owner-restricted.
+
+On **POSIX** it is a Unix-domain socket inside a per-user directory created `0700`
+and **verified to be owned by the caller** (refusing a pre-created directory it
+does not own), so only the owner can traverse to it. The directory is **not** under
+the repository's workspace directory: a Unix socket path must fit the kernel's
+`sun_path` limit (~104 on macOS, ~108 on Linux), which a deep repository path would
+overflow. It lives under `XDG_RUNTIME_DIR` (per-user, session-scoped) when present,
+else `TMPDIR`, else `/tmp`; the socket file is keyed by a hash of the normalized
+workspace root, and a length guard falls back to a shorter base if a pathological
+temp path would still overflow. Before binding — and only while holding the
+write-authority lock (§17.7), so no live daemon owns the address — a stale socket
+file from a crashed predecessor is unlinked (else `bind` fails `EADDRINUSE`).
+
+On **Windows** it is a named pipe reachable, by its default security descriptor,
+only by the creating user. A stronger peer-credential check (`SO_PEERCRED` /
+`getpeereid`, or a tightened named-pipe DACL) is a further hardening where the host
+runtime exposes it.
+
+The address is derived from the workspace root so it is stable and unique per
+folder, but clients never recompute it — they read the bound address from the
+handle file (§17.2), so the daemon is the only party that resolves the scheme.
 
 ### 17.9 Model snapshot and the projection client
 
