@@ -45,8 +45,11 @@ local function lw(cli, cwd, args)
     }):wait()
 end
 
---- Parse `lw tools` output for a cmake tool key, preferring a self-contained
---- gcc/clang over MSVC / clang-cl (which need a VS dev environment).
+--- Parse `lw tools` output for a cmake tool key, preferring in order: a
+--- self-contained ninja gcc/clang (no VS env needed), then any ninja-based tool
+--- (single-config, predictable — e.g. ninja-clang-cl on a VS runner), then the
+--- first key. Ninja is preferred over VS multi-config generators for a stable
+--- artifact layout across platforms.
 local function pick_tool(out)
     local keys = {}
     for line in (out .. "\n"):gmatch("([^\n]*)\n") do
@@ -54,9 +57,12 @@ local function pick_tool(out)
         if key then keys[#keys + 1] = key end
     end
     for _, k in ipairs(keys) do
-        if (k:match("gcc") or k:match("clang")) and not k:match("clang%-cl") and not k:match("msvc") then
+        if k:match("^ninja%-") and (k:match("gcc") or k:match("clang")) and not k:match("clang%-cl") then
             return k
         end
+    end
+    for _, k in ipairs(keys) do
+        if k:match("^ninja%-") then return k end
     end
     return keys[1]
 end
