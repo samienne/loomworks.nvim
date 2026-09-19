@@ -860,3 +860,91 @@ describe("build dir operation queue", function()
         end)
     end)
 end)
+
+-- =========================================================================
+-- Part 4: Boundary check reconciles 8.3 SHORT vs LONG Windows path forms
+-- =========================================================================
+--
+-- The workspace root is realpath'd (M.resolve_root -> long, canonical case),
+-- so a build dir that reaches _validate_build_dir in a DIFFERENT form — an 8.3
+-- SHORT segment like `RUNNER~1` from %TEMP%, a shell-module user template, or a
+-- cache entry — must still be recognized as inside the workspace. This is
+-- exercised on a real 8.3 runner (CI user `runneradmin` -> `RUNNER~1`), but is
+-- pinned here deterministically by INJECTING deps.realpath, so it holds without
+-- an 8.3 filesystem or a short-named user.
+describe("_validate_build_dir: 8.3 short<->long reconciliation", function()
+    local Workspace = workspace.Workspace
+
+    -- A workspace whose only wired deps are the boundary check's:
+    -- lowercasing normalize (Windows-style) + an injected realpath.
+    local function boundary_ws(realpath)
+        local ws = setmetatable({}, { __index = Workspace })
+        ws._core = {
+            _deps = {
+                normalize = function(p) return (p or ""):gsub("\\", "/"):lower() end,
+                realpath = realpath,
+                notify = function() end,
+            },
+        }
+        return ws
+    end
+
+    local SHORT_ROOT = "C:/Users/RUNNER~1/ws"
+    local LONG_ROOT = "C:/Users/runneradmin/ws"
+
+    it("ACCEPTS an existing short-form build dir under the long root", function()
+        -- Both the short root and the (existing) short build dir resolve to their
+        -- long canonical form on disk.
+        local realpath = function(p)
+            p = p:gsub("\\", "/"):lower()
+            if p == SHORT_ROOT:lower() or p == LONG_ROOT:lower() then return LONG_ROOT end
+            if p == (SHORT_ROOT .. "/.nvim/build/app/debug"):lower() then
+                return LONG_ROOT .. "/.nvim/build/app/debug"
+            end
+            return nil
+        end
+        local ws = boundary_ws(realpath)
+        assert.is_true(ws:_validate_build_dir(
+            SHORT_ROOT .. "/.nvim/build/app/debug", LONG_ROOT))
+    end)
+
+    it("ACCEPTS a NON-existent short-form build dir via its existing root ancestor", function()
+        -- The build dir itself does not exist yet (never configured); only the
+        -- root resolves. The ancestor walk must still reconcile the root portion.
+        local realpath = function(p)
+            p = p:gsub("\\", "/"):lower()
+            if p == SHORT_ROOT:lower() or p == LONG_ROOT:lower() then return LONG_ROOT end
+            return nil -- build dir + intermediate dirs are absent
+        end
+        local ws = boundary_ws(realpath)
+        assert.is_true(ws:_validate_build_dir(
+            SHORT_ROOT .. "/.nvim/build/app/debug", LONG_ROOT))
+    end)
+
+    it("still REJECTS a path genuinely outside the workspace", function()
+        local realpath = function(p)
+            p = p:gsub("\\", "/"):lower()
+            if p == LONG_ROOT:lower() then return LONG_ROOT end
+            if p == "c:/users/runneradmin/other/evil" then return "C:/Users/runneradmin/other/evil" end
+            return nil
+        end
+        local ws = boundary_ws(realpath)
+        assert.is_false(ws:_validate_build_dir(
+            "C:/Users/runneradmin/other/evil", LONG_ROOT))
+    end)
+
+    it("preserves the trailing-slash boundary (a sibling prefix is not 'inside')", function()
+        -- `/ws/root` must not swallow `/ws/roots/...`. realpath resolves neither
+        -- (they don't exist) so both fall back to plain normalization, exactly as
+        -- the pre-hardening check did.
+        local ws = boundary_ws(function() return nil end)
+        assert.is_false(ws:_validate_build_dir("C:/ws/roots/x/build", "C:/ws/root"))
+        assert.is_true(ws:_validate_build_dir("C:/ws/root/build", "C:/ws/root"))
+    end)
+
+    it("rejects an empty build dir path", function()
+        local ws = boundary_ws(function() return nil end)
+        assert.is_false(ws:_validate_build_dir("", LONG_ROOT))
+        assert.is_false(ws:_validate_build_dir(nil, LONG_ROOT))
+    end)
+end)
