@@ -65,6 +65,21 @@
    (e.g., subprocess was killed, or files were locked on Windows). The only
    user actions available from `unknown` are delete and clean (retry).
    Build and configure are blocked.
+7. **A missing build directory resets to `unconfigured`.** A cached
+   `configured` / `built` / `build_failed` / `configure_failed` unit whose
+   build directory is **absent on disk** — the user deleted it out of band —
+   is reset to `unconfigured` on the next load/remerge, and re-checked at the
+   build gate so a directory that vanishes between remerge and build still
+   forces a fresh configure. Existence is a plain directory `stat`: it is
+   fully generic, with no module-specific probing (never a build-system
+   sentinel file such as `CMakeCache.txt`). This rule **explicitly excludes**
+   the `unknown` and `deleting` states, which sit above `cached` in the
+   derivation priority: the crash-safe deletion sequence (§4.6) sets a unit to
+   `unknown` *before* removing its directory, so a missing directory under
+   `unknown` is the expected mid-deletion condition and MUST NOT be downgraded
+   to `unconfigured` — doing so could let a build run into a directory that is
+   being deleted. A gutted directory (present but emptied) is out of scope;
+   only whole-directory absence is detected.
 
 ### 3.2 Workspace Lifecycle
 
@@ -234,6 +249,15 @@ one branch but the configuration set that produced it no longer exists.
 **Invariant**: every build directory on disk always has a corresponding
 cache entry. Cache entries are only removed **after** the build directory
 has been successfully deleted.
+
+**Out-of-band removal**: the reverse — a build directory deleted outside
+loomworks while its cache entry survives — is self-healed on the next
+load/remerge: a `configured` / `built` / `build_failed` / `configure_failed`
+unit whose directory is gone resets to `unconfigured` (§3.1, rule 7), so the
+next build reconfigures from scratch instead of building into a missing
+directory. The `unknown` state is exempt, because it marks an in-flight
+deletion whose directory is *expected* to be absent (per the crash-safe
+sequence above).
 
 **Config deletion** (`D` key on a configuration):
 1. Show confirmation dialog

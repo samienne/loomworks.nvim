@@ -47,6 +47,15 @@ local DEFAULT_DEPS = {
         return vim.fs.normalize
     end)(),
     schedule  = vim.schedule,
+    --- Whether a filesystem path exists. Used to detect a build directory that
+    --- was removed out of band, so a cached built/configured unit resets to
+    --- unconfigured (spec §3.1 rule 7). A plain `stat` — no module-specific
+    --- probing. Injectable so tests can simulate a present/absent directory.
+    --- @param path string
+    --- @return boolean
+    dir_exists = function(path)
+        return (vim.uv or vim.loop).fs_stat(path) ~= nil
+    end,
     --- Resolve an overseer task by id. Returns nil if overseer not available.
     --- @param task_id number
     --- @return table|nil task

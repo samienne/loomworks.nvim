@@ -443,9 +443,13 @@ redundant with the generator and, because it can only cheaply stat the
 top-level file, strictly less accurate.
 
 The sole loomworks-driven reconfigure triggers are the `unconfigured` /
-`configure_failed` states and option-level staleness via
+`configure_failed` states, option-level staleness via
 `ConfigUnit:is_stale()` (the configuration's `options` / `module_config`
-changed since the cached configure). A plain build does not re-pass changed
+changed since the cached configure), and a **missing build directory** — a
+generic, core-driven reset (`specification.md` §3.1, rule 7) that applies to
+every module, not just cmake: a `built` / `configured` unit whose build
+directory has been deleted out of band reloads as `unconfigured` and
+reconfigures from scratch. A plain build does not re-pass changed
 `-D` cache variables, so that reconfigure is genuinely needed and is not
 something the generator detects on its own.
 

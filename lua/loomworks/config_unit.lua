@@ -325,6 +325,43 @@ function ConfigUnit:build_dir()
     return self.build_dir_value
 end
 
+--- Resolve the injected directory-existence probe (spec §3.1 rule 7), with a
+--- real-filesystem fallback when the workspace carries no dep (defensive; the
+--- production Core and the test mocks both wire one).
+--- @return fun(path: string): boolean
+function ConfigUnit:_dir_exists_fn()
+    local ws = self._workspace
+    local deps = ws and ws._core and ws._core._deps
+    if deps and deps.dir_exists then return deps.dir_exists end
+    return function(p) return (vim.uv or vim.loop).fs_stat(p) ~= nil end
+end
+
+--- Whether this unit's build directory is present on disk. A unit with no
+--- resolved build directory reports present (nothing to reconfigure into yet).
+--- A plain stat — no module-specific probing (spec §3.1 rule 7).
+--- @return boolean
+function ConfigUnit:build_dir_present()
+    local dir = self:build_dir()
+    if not dir or dir == "" then return true end
+    return self:_dir_exists_fn()(dir) ~= false
+end
+
+--- Whether this unit must reconfigure because its build directory was removed
+--- out of band (spec §3.1 rule 7). The load/remerge already resets a vanished
+--- unit to `unconfigured`; this is the build-gate re-check for a directory that
+--- disappears *after* the last remerge. Excludes `unknown` / `deleting` (async
+--- deletion crash safety, §4.6), the running states, and states that carry no
+--- build directory to lose.
+--- @return boolean
+function ConfigUnit:missing_build_dir_needs_reconfigure()
+    local state = self:state()
+    if state ~= "configured" and state ~= "built"
+            and state ~= "build_failed" and state ~= "configure_failed" then
+        return false
+    end
+    return not self:build_dir_present()
+end
+
 --- Get this unit's resolved artifact set (spec §1.7): the absolute on-disk
 --- output paths its last successful configure resolved, in display casing.
 --- Nil/empty until the first successful configure, or when the module does

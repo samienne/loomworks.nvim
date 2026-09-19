@@ -116,6 +116,80 @@ describe("ConfigUnit", function()
         end)
     end)
 
+    describe("build_dir_present / missing_build_dir_needs_reconfigure", function()
+        --- Point the mock's injected probe at a fixed result.
+        local function set_dir_exists(unit, exists)
+            unit._workspace._core._deps.dir_exists = function() return exists end
+        end
+
+        it("build_dir_present reflects the injected probe", function()
+            local unit = make_unit()
+            unit.build_dir_value = "/build/App/Debug"
+            set_dir_exists(unit, true)
+            assert.is_true(unit:build_dir_present())
+            set_dir_exists(unit, false)
+            assert.is_false(unit:build_dir_present())
+        end)
+
+        it("build_dir_present is true when there is no build dir", function()
+            local unit = make_unit()
+            unit.build_dir_value = nil
+            set_dir_exists(unit, false)
+            assert.is_true(unit:build_dir_present())
+        end)
+
+        it("built unit with a missing dir needs reconfigure", function()
+            local unit = make_unit()
+            unit.build_dir_value = "/build/App/Debug"
+            unit.state_value = "built"
+            set_dir_exists(unit, false)
+            assert.is_true(unit:missing_build_dir_needs_reconfigure())
+        end)
+
+        it("built unit with a present dir does not", function()
+            local unit = make_unit()
+            unit.build_dir_value = "/build/App/Debug"
+            unit.state_value = "built"
+            set_dir_exists(unit, true)
+            assert.is_false(unit:missing_build_dir_needs_reconfigure())
+        end)
+
+        it("failed_build/failed_configure with a missing dir need reconfigure", function()
+            for _, cache_state in ipairs({ "failed_build", "failed_configure", "configured" }) do
+                local unit = make_unit()
+                unit.build_dir_value = "/build/App/Debug"
+                unit.state_value = cache_state
+                set_dir_exists(unit, false)
+                assert.is_true(unit:missing_build_dir_needs_reconfigure(),
+                    "expected reconfigure for state " .. cache_state)
+            end
+        end)
+
+        it("unknown unit with a missing dir is exempt (crash safety)", function()
+            local unit = make_unit()
+            unit.build_dir_value = "/build/App/Debug"
+            unit.state_value = "unknown"
+            set_dir_exists(unit, false)
+            assert.is_false(unit:missing_build_dir_needs_reconfigure())
+        end)
+
+        it("deleting unit with a missing dir is exempt", function()
+            local unit = make_unit()
+            unit.build_dir_value = "/build/App/Debug"
+            unit.state_value = "built"
+            unit:mark_deleting(true)
+            set_dir_exists(unit, false)
+            assert.is_false(unit:missing_build_dir_needs_reconfigure())
+        end)
+
+        it("unconfigured unit with a missing dir does not (nothing built)", function()
+            local unit = make_unit()
+            unit.build_dir_value = "/build/App/Debug"
+            set_dir_exists(unit, false)
+            assert.is_false(unit:missing_build_dir_needs_reconfigure())
+        end)
+    end)
+
     describe("is_running", function()
         it("returns false by default", function()
             local unit = make_unit()

@@ -149,6 +149,10 @@ function M.make_mock_workspace(overrides)
             io = { rm_rf_async = function(_, cb) cb(true, nil) end },
             schedule = function(fn) fn() end,
             now = function() return "2000-01-01T00:00:00Z" end,
+            -- Default: every build directory "exists" so cached built/configured
+            -- state survives remerge in tests that use fake paths. Tests that
+            -- exercise the missing-build-dir reset (spec §3.1 rule 7) override this.
+            dir_exists = function() return true end,
         }, core_overrides._deps or {}),
     }
     -- Copy any extra core fields from overrides
@@ -819,6 +823,10 @@ function M.make_test_deps(files, opts)
         schedule = function(fn) fn() end,
         clock = function() return 0 end,
         normalize = function(p) return p:gsub("\\", "/") end,
+        -- Default: build directories "exist" (fake test paths). The
+        -- missing-build-dir reset (spec §3.1 rule 7) is exercised by tests
+        -- that override this to report specific dirs absent.
+        dir_exists = function() return true end,
         events = {
             emit = function(event, data)
                 events_log[#events_log + 1] = { event = event, data = data }

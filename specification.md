@@ -74,7 +74,12 @@ belongs in the matching `spec/` file.
 ## 15. Invariants
 
 1. **Cache is truth**: The cache reflects what exists on disk. It is never
-   contradicted or overridden by config or user files.
+   contradicted or overridden by config or user files. When the two diverge
+   because a build directory was removed out of band, disk wins: a cached
+   `configured` / `built` / `failed_*` unit whose build directory is absent
+   resets to `unconfigured` on the next load/remerge and at the build gate
+   (§3.1, rule 7), excluding the `unknown` / `deleting` states reserved for
+   in-flight deletion.
 
 2. **No auto-clean**: Failed states, orphaned configurations, and stale
    profiles are never automatically removed. Only explicit user action

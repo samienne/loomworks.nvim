@@ -922,6 +922,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         compute_build_dir = function(project, variant, tool_data)
             return self:_compute_build_dir(project, variant, tool_data)
         end,
+        dir_exists = self._core._deps.dir_exists,
     })
 
     self._modules = result.modules
