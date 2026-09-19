@@ -110,12 +110,14 @@ A headless build is read-only toward project sources and toward the working
 copy. Only the cache and build directories are written, under the safety
 rules of §2.3 and §5.3. This contract does not itself serialize cross-process
 concurrent access to a shared build directory; a host MAY add advisory
-exclusion. loomworks does: configure/build/clean hold a **per-build-directory
-advisory lockfile** — an `O_EXCL` create (atomic across processes) with an
+exclusion. loomworks does: configure/build/clean/reset (§16.30) hold a
+**per-build-directory advisory lockfile** — an `O_EXCL` create (atomic across
+processes) with an
 mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
-editor and the CLI share this lock, so neither builds a directory the other is
-building; acquisition is **fail-fast** (the loser reports the holder and
-declines rather than waiting). A stale lock is reclaimed automatically after
+editor and the CLI share this lock, so neither operates on a directory the other
+holds — in particular a reset (§16.30) cannot remove a directory the other is
+building, and a build cannot enter a directory a reset is removing. Acquisition
+is **fail-fast** (the loser reports the holder and declines rather than waiting). A stale lock is reclaimed automatically after
 the heartbeat window; `lw unlock` clears one immediately. The CLI also releases
 its build locks on interrupt (SIGINT/SIGTERM) as well as on normal exit, so an
 interrupted (Ctrl-C'd) build does not leave a lock for the stale-reclaim window.
@@ -837,3 +839,81 @@ comparison used for activation, "already newest," and cache reclamation
 (§16.13) MUST treat a pre-release as older than the release it precedes — so
 following stable never selects or retains a pre-release over its release, and
 switching channels does not misrank installed bundles.
+
+### 16.30 Headless reset
+
+A headless **reset** hard-resets build state: it removes a profile's build
+directories from disk (a full recursive delete, not the build system's own
+artifact clean of §16.1) and returns the affected units to the **unconfigured**
+state (§3), so the next build (§16.4) reconfigures from nothing. It is the
+headless equivalent of the editor's per-profile delete, minus removing the
+profile: the profile, its configuration set, and its toolchain pins are left
+intact and buildable — only cached build state is discarded. Reset is therefore
+distinct from clean (§16.1), which keeps the configuration and only removes
+artifacts.
+
+Scope is a single profile (resolved per §16.3), or — with an explicit
+all-scope flag — every build directory the workspace knows, across all
+profiles and including **orphaned** directories (cached build state no profile
+references any longer). A profile with no configured build directory resets
+nothing and succeeds.
+
+Reset obeys the same directory-safety rules as every other deletion path: a
+build directory is removed only when it lies within the workspace root, and a
+directory still referenced by another unit not part of the reset is **retained**
+on disk (its state cleared for the reset units only) rather than deleted out
+from under the reference. Reset is exclusive, acquiring the per-build-directory
+lock (§16.6) for its directories so it cannot race a concurrent build.
+
+Because reset destroys build state that a build would otherwise reuse, it
+**requires confirmation**. An interactive host prints the directories that will
+be removed and prompts before acting; a confirmation flag skips the prompt. In a
+non-interactive host (§16.3) the confirmation flag is **mandatory** — without it
+reset refuses with a message naming the flag, rather than deleting unprompted.
+This is the destructive-management posture of §16.9: it authors nothing in the
+working copy, but it does discard cache and on-disk state, so it never proceeds
+silently. Reset reports success only after confirming the targeted directories
+are **actually gone from disk** — the removal subprocess exiting is not by itself
+proof (a directory can briefly persist after deletion, or a removal can fail), so
+a directory that is still present once the removal settles is reported as a
+failure rather than reported as removed. On success the removed directories are
+reported and the exit status is **0**; on any failure the reason is reported and
+the exit status is non-zero.
+
+**Concurrent editor.** Reset is designed to run while an editor host is live on
+the same workspace, and coexistence rests on the same three-file/cache
+reconciliation and the same per-build-directory lock the rest of the system
+uses — reset introduces no private channel:
+
+- *In-progress editor build.* A build/configure/clean holds the cross-process
+  build-directory lock (§16.6) for its directory. Reset acquires the **same**
+  lock for every directory it would touch **before** removing anything, and
+  acquisition is fail-fast: if the editor is mid-build on any target directory,
+  reset removes nothing and exits non-zero, naming the holder — it can never
+  rm a directory a build is using. Conversely, once reset holds the lock, the
+  editor's build of that directory fails to acquire and declines, so neither
+  side deletes or writes a directory the other is operating on.
+- *Reload to unconfigured.* Reset's cache rewrite is an ordinary external change
+  to the cache file; the editor's file reconciliation observes it and remerges,
+  so the reset units surface as `unconfigured` without any manual reload. No
+  build state survives the reset for the editor to act on.
+- *Mid-deletion crash-safety window.* Reset marks the cache `unknown` **before**
+  removing a directory and clears the entry only after the removal succeeds
+  (§4.6). An editor that reconciles inside that window reads `unknown` for a
+  directory that is vanishing; the missing-directory downgrade (§3.1 rule 7)
+  **exempts** `unknown`/`deleting`, so the editor does not reset such a unit to
+  `unconfigured`, and a build against an `unknown` unit stays blocked — the
+  editor cannot race the deletion. This exemption is keyed on the on-disk cache
+  state, so it holds across processes, not only within the deleting one.
+- *Post-reset stale in-memory state.* Between reset finishing and the editor's
+  next reconciliation, the editor may still hold an in-memory `built`/`configured`
+  unit pointing at a now-deleted directory. The build gate re-checks directory
+  presence with a **live** stat (§3.1 rule 7), so a build initiated in that
+  window is forced to reconfigure into a fresh directory rather than run the
+  build tool against a deleted one.
+- *Owned LSP database.* The active profile's build directory holds the
+  compilation database (e.g. `compile_commands.json`) an LSP server consumes
+  (§9). Removing it degrades gracefully: database resolution treats an absent
+  file as "no database" rather than pointing the server at a missing path, and
+  the next configure regenerates it, at which point the server reattaches. No
+  server restart is required of reset itself.

@@ -618,6 +618,8 @@ local function load_workspace(root, wait_tools)
   end
   return ws, core
 end
+-- Test seam: load a real workspace the way dispatch does (build/clean/reset).
+M._load_workspace = load_workspace
 
 -- ---------------------------------------------------------------------------
 -- Commands
@@ -1045,10 +1047,10 @@ end
 --- another process, dies with a clear message (releasing any already held). A
 --- release is also registered as an exit hook so a `die()` inside `fn` frees
 --- the locks too.
---- @param profile loomworks.Profile
+--- @param dirs string[] distinct build directories to lock
 --- @param action "build"|"clean"
 --- @param fn fun()
-local function with_build_locks(profile, action, fn)
+local function with_build_dir_locks(dirs, action, fn)
   local build_lock = require("loomworks.build_lock")
   local held = {}
   local function release_all()
@@ -1056,7 +1058,7 @@ local function with_build_locks(profile, action, fn)
     held = {}
   end
   on_exit(release_all)
-  for _, bd in ipairs(profile_build_dirs(profile)) do
+  for _, bd in ipairs(dirs) do
     local h, err = build_lock.acquire(bd, action)
     if not h then
       release_all()
@@ -1066,6 +1068,13 @@ local function with_build_locks(profile, action, fn)
   end
   fn()
   release_all()
+end
+
+--- @param profile loomworks.Profile
+--- @param action "build"|"clean"
+--- @param fn fun()
+local function with_build_locks(profile, action, fn)
+  with_build_dir_locks(profile_build_dirs(profile), action, fn)
 end
 
 --- `lw build [profile] [-- <build-tool args>]` — configure if needed, then
@@ -1125,6 +1134,161 @@ function M.cmd_clean(ws, profile_name)
     end
   end)
   out("CLEAN OK: " .. profile.key)
+  return 0
+end
+
+-- A deletion spawns rm-rf subprocesses; give the whole reset a generous budget
+-- (large trees / slow disks) before declaring it stuck.
+local RESET_TIMEOUT_MS = 120000
+-- After the deletion subprocess exits, the directory can briefly linger on
+-- Windows (delete-pending: an antivirus/indexer handle keeps the entry in the
+-- namespace until it closes). Poll for genuine on-disk absence up to this long
+-- before declaring the removal failed. Instant on a healthy filesystem.
+local RESET_VERIFY_MS = 30000
+
+--- `lw reset [profile] [--all] [-y]` — HARD reset build state (spec §16.30):
+--- remove the build directories (rm -rf, not the build system's own artifact
+--- clean) and drop the config units back to `unconfigured`, so the next build
+--- reconfigures from scratch. The profile itself is KEPT (unlike the editor's
+--- delete). `--all` resets every build dir in the workspace — across all
+--- profiles, including orphaned dirs. Destructive, so it confirms first: `-y` /
+--- `--yes` skips the prompt; a non-interactive host without `-y` refuses rather
+--- than deleting unprompted.
+function M.cmd_reset(ws, args)
+  local all, yes, profile_name = false, false, nil
+  for i = 2, #args do
+    local a = args[i]
+    if a == "--all" then all = true
+    elseif a == "-y" or a == "--yes" then yes = true
+    elseif a:sub(1, 1) == "-" then
+      die("unknown flag '" .. a .. "' — usage: lw reset [profile] [--all] [-y]")
+    elseif not profile_name then profile_name = a
+    else
+      die("unexpected argument '" .. a .. "' — usage: lw reset [profile] [--all] [-y]")
+    end
+  end
+  if all and profile_name then
+    die("`lw reset --all` resets every profile — drop the profile argument")
+  end
+
+  -- Three sets:
+  --  * lock_dirs   — EVERY computed build dir (a loaded profile carries a
+  --                  computed path even when never built, and another process
+  --                  could be configuring it): all must be held exclusive.
+  --  * removal_dirs — dirs that actually EXIST on disk AND are targeted for
+  --                  physical removal (disposition ≠ "keep"): reported, and
+  --                  verified gone after the deletion.
+  --  * state_to_clear — true if any targeted unit carries build state even with
+  --                  no dir on disk (e.g. a build dir deleted out of band): the
+  --                  reset still clears that stale state.
+  local lock_dirs, lock_seen = {}, {}
+  local removal_dirs, removal_seen = {}, {}
+  local state_to_clear = false
+  local function add_lock(bd)
+    if bd and not lock_seen[bd] then lock_seen[bd] = true; lock_dirs[#lock_dirs + 1] = bd end
+  end
+  local function add_removal(bd)
+    if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
+      removal_seen[bd] = true; removal_dirs[#removal_dirs + 1] = bd
+    end
+  end
+  local scope_label, run
+
+  if all then
+    scope_label = "the whole workspace"
+    for _, unit in pairs(ws._config_units or {}) do
+      local bd = unit:build_dir()
+      add_lock(bd)
+      add_removal(bd) -- reset_all batches every unit; none are "keep"
+      if unit.state_value ~= nil then state_to_clear = true end
+    end
+    for _, o in ipairs(ws:get_orphaned_configs()) do
+      add_lock(o.build_dir_obj and o.build_dir_obj.path or nil)
+      add_removal(o.build_dir_obj and o.build_dir_obj.path or nil)
+      state_to_clear = true -- get_orphaned_configs only returns dirs WITH state
+    end
+    run = function(on_done) ws:reset_all(on_done) end
+  else
+    local profile
+    profile, ws = resolve_build_target(ws, profile_name)
+    scope_label = "profile '" .. profile.key .. "'"
+    -- plan_reset marks a unit shared with another profile as "keep" (its dir is
+    -- retained); only non-keep items are physically removed.
+    for _, item in ipairs(profile:plan_reset().items) do
+      add_lock(item.build_dir)
+      if item.disposition ~= "keep" then
+        add_removal(item.build_dir)
+        if item.unit and item.unit.state_value ~= nil then state_to_clear = true end
+      end
+    end
+    run = function(on_done) profile:reset(on_done) end
+  end
+
+  if #removal_dirs == 0 and not state_to_clear then
+    out("nothing to reset for " .. scope_label .. " — no build directories to remove.")
+    return 0
+  end
+
+  if #removal_dirs > 0 then
+    out(string.format("Will remove %d build director%s and reset %s to unconfigured:",
+      #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label))
+    for _, d in ipairs(removal_dirs) do out("  " .. d) end
+  else
+    out("Will reset " .. scope_label .. " to unconfigured "
+      .. "(no build directories on disk; clearing cached state).")
+  end
+
+  -- Destructive → confirm. `-y` skips; a non-interactive host without it refuses
+  -- rather than deleting unprompted (spec §16.30).
+  if not yes then
+    if not interactive() then
+      die("refusing to remove build directories without confirmation.\n"
+        .. "  Re-run with -y to reset " .. scope_label .. ".")
+    end
+    local answer = prompt_line("Reset " .. scope_label .. "? [y/N]")
+    answer = (answer or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then
+      die("aborted — nothing was removed")
+    end
+  end
+
+  -- Exclusive like clean/delete: hold every target dir's lock across the async
+  -- deletion, driving it to completion headlessly (spec §16.6, §16.30). The
+  -- deletion's on_done fires when the rm subprocess exits, but the process
+  -- exiting does not guarantee the directory is gone: on Windows a failed rm
+  -- leaves it, and a successful rm can leave it delete-pending for a moment.
+  -- So after logical completion we VERIFY genuine on-disk absence (polling out
+  -- delete-pending) and fail loudly if a directory truly could not be removed —
+  -- reset must not report success while a build tree survives.
+  local done, still_present = false, nil
+  with_build_dir_locks(lock_dirs, "clean", function()
+    run(function() done = true end)
+    if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then return end
+    if #removal_dirs > 0 then
+      local pending = {}
+      for _, d in ipairs(removal_dirs) do pending[d] = true end
+      vim.wait(M._reset_verify_ms or RESET_VERIFY_MS, function()
+        local any = false
+        for d in pairs(pending) do
+          if uv.fs_stat(d) == nil then pending[d] = nil else any = true end
+        end
+        return not any
+      end, 20)
+      local left = {}
+      for d in pairs(pending) do left[#left + 1] = d end
+      if #left > 0 then table.sort(left); still_present = left end
+    end
+  end)
+  if not done then
+    die("reset timed out — a build-directory deletion did not complete")
+  end
+  if still_present then
+    die(string.format("reset failed — %d build director%s could not be removed:\n  %s",
+      #still_present, (#still_present == 1) and "y" or "ies",
+      table.concat(still_present, "\n  ")))
+  end
+
+  out("RESET OK: " .. scope_label)
   return 0
 end
 
@@ -5567,7 +5731,7 @@ end
 -- cfg, profiles, rm) dispatch but are deliberately kept out of completion.
 local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
-  "profile", "tools", "build", "clean", "test", "run", "target", "launch", "publish",
+  "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
 }
@@ -5621,6 +5785,13 @@ function M.cmd_complete(cword, words)
       local ws = comp_ws(root)
       local names = comp_profile_names(ws)
       for _, s in ipairs(comp_set_names(ws)) do names[#names + 1] = s end -- onboarding form
+      emit(sorted_unique(names))
+    end
+    return 0
+  elseif cmd == "reset" then
+    if n == 1 then
+      local names = comp_profile_names(comp_ws(root))
+      names[#names + 1] = "--all"
       emit(sorted_unique(names))
     end
     return 0
@@ -5857,7 +6028,34 @@ created are skipped. Non-zero exit on any failure.
 
 Profile resolution matches `lw build` (a unique substring works; --no-input
 requires an explicit profile). To remove a build directory entirely rather than
-just its artifacts, delete `.nvim/build/<project>/<tool>/<config>/`.]],
+just its artifacts — a hard reset to unconfigured — use `lw reset`.]],
+  reset = [[lw reset [profile | --all] [-y]
+
+HARD-reset build state: remove the build directories (rm -rf, NOT the build
+system's artifact clean of `lw clean`) and drop the affected configurations back
+to `unconfigured`, so the next `lw build` reconfigures from scratch (spec
+§16.30). The profile, its configuration set, and its toolchain pins are KEPT —
+this is the CLI equivalent of the status page's delete, minus removing the
+profile. Contrast `lw clean`, which keeps the configuration and only removes
+artifacts.
+
+  profile   e.g. Debug:ninja-clang-19  (a unique substring works). Resolution
+            matches `lw build`; --no-input requires an explicit profile.
+  --all     reset EVERY build directory in the workspace — across all profiles
+            and including orphaned ones (cached build state no profile still
+            references). Takes no profile argument.
+  -y | --yes  skip the confirmation prompt (required in --no-input / CI).
+
+Destructive, so it confirms first: the build directories to remove are printed
+and confirmation is requested. In non-interactive mode (--no-input / LW_NO_INPUT
+/ CI, or piped stdin) `-y` is MANDATORY — without it reset refuses rather than
+deleting unprompted. A profile with no build directories resets nothing and
+exits 0.
+
+Reset is exclusive (like clean/delete): it holds each build directory's lock
+(spec §16.6) so it cannot race a concurrent build. A build directory still
+referenced by another profile not being reset is kept on disk (its state cleared
+only for the reset). Non-zero exit on any failure.]],
   unlock = [[lw unlock <profile> | --all
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
@@ -6629,6 +6827,8 @@ Usage: lw [command] [args]
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
+  clean [profile]   build-system clean (remove artifacts, keep configuration)
+  reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
   test  [profile]   build a profile, then run its tests (real exit code)
   run [target]      build, then execute a target on the active profile
   run <profile> <target>  same, on a named profile
@@ -6842,6 +7042,8 @@ local function main()
     finish(M.cmd_build(ws, a))
   elseif command == "clean" then
     finish(M.cmd_clean(ws, a[2]))
+  elseif command == "reset" then
+    finish(M.cmd_reset(ws, a))
   elseif command == "unlock" then
     finish(M.cmd_unlock(ws, a))
   elseif command == "test" then

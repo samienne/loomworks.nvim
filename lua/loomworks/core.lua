@@ -56,6 +56,16 @@ local DEFAULT_DEPS = {
     dir_exists = function(path)
         return (vim.uv or vim.loop).fs_stat(path) ~= nil
     end,
+    --- Resolve a path to its canonical on-disk form (long name + real case on
+    --- Windows, symlinks followed), or nil if it does not exist. Used by the
+    --- deletion boundary check to reconcile 8.3 short vs long path forms before
+    --- the prefix comparison. Injectable so tests can encode the short<->long
+    --- contract without an 8.3 filesystem.
+    --- @param path string
+    --- @return string|nil
+    realpath = function(path)
+        return (vim.uv or vim.loop).fs_realpath(path)
+    end,
     --- Resolve an overseer task by id. Returns nil if overseer not available.
     --- @param task_id number
     --- @return table|nil task

@@ -3167,18 +3167,72 @@ end
 -- Deletion: validate & execute
 -- ===========================================================================
 
+--- Canonicalize a path for the deletion boundary check: resolve it to its real
+--- on-disk form (long name + real case on Windows, symlinks followed) so a path
+--- expressed in an 8.3 SHORT form (e.g. `RUNNER~1`) and one in LONG form
+--- (`runneradmin`) that denote the same location compare equal. The workspace
+--- root is always realpath'd (M.resolve_root), and production derives every
+--- build dir from it, but a cache entry or a shell-module user template can
+--- reach here in a different form; without reconciliation the prefix check
+--- would wrongly reject a directory that is genuinely inside the workspace.
+---
+--- Resolution never WEAKENS the boundary: realpath follows symlinks (so a
+--- symlinked build dir pointing outside the root still resolves outside and is
+--- rejected), and the trailing-"/" prefix rule is preserved by the caller. When
+--- the path does not exist (nothing to reconcile — realpath returns nil), the
+--- longest existing ancestor is resolved and the missing tail re-appended, so
+--- the always-present root portion is still reconciled; if nothing resolves it
+--- falls back to plain normalization (the prior behavior). Result is
+--- `normalize`d, so it is directly comparable to other normalized paths.
+--- @param path string
+--- @return string
+function Workspace:_canonicalize_boundary_path(path)
+    local deps = self._core._deps
+    local realpath = deps.realpath or function(p) return (vim.uv or vim.loop).fs_realpath(p) end
+    -- realpath returns OS-native separators (backslashes on Windows); fold to
+    -- "/" ourselves before normalizing so both sides compare on the same
+    -- separator even if `normalize` doesn't convert them.
+    local function canon(s) return deps.normalize((s:gsub("\\", "/"))) end
+    if not path or path == "" then return canon(path or "") end
+
+    local resolved = realpath(path)
+    if resolved then return canon(resolved) end
+
+    -- Path (or its tail) does not exist: resolve the longest existing ancestor
+    -- and re-append the missing segments.
+    local segments = {}
+    local head = path
+    while true do
+        local parent, name = head:match("^(.*)[/\\]([^/\\]+)$")
+        if not parent or parent == "" or parent == head then break end
+        table.insert(segments, 1, name)
+        local rp = realpath(parent)
+        if rp then
+            return canon(rp .. "/" .. table.concat(segments, "/"))
+        end
+        head = parent
+    end
+    return canon(path)
+end
+
 --- Validate a build directory path is safe to delete (under workspace root).
---- Checks that the path is strictly under the workspace root using a
---- directory boundary check (trailing "/") to prevent prefix collisions
---- (e.g., "/root" must not match "/roots/...").
---- @param build_dir string normalized path
---- @param safe_prefix string normalized workspace root
+--- Both paths are canonicalized (8.3 short<->long + case reconciled, symlinks
+--- resolved) and compared with a directory boundary check (trailing "/") to
+--- prevent prefix collisions (e.g., "/root" must not match "/roots/...").
+--- @param build_dir string path (normalized or raw) to the build dir
+--- @param safe_prefix string path (normalized or raw) to the workspace root
 --- @return boolean safe
 function Workspace:_validate_build_dir(build_dir, safe_prefix)
-    local is_under = build_dir == safe_prefix
-        or build_dir:sub(1, #safe_prefix + 1) == safe_prefix .. "/"
+    if not build_dir or build_dir == "" then
+        self._core._deps.notify("loomworks: refusing to delete empty build dir path", vim.log.levels.ERROR)
+        return false
+    end
+    local abs = self:_canonicalize_boundary_path(build_dir)
+    local root = self:_canonicalize_boundary_path(safe_prefix)
+    local is_under = abs == root
+        or abs:sub(1, #root + 1) == root .. "/"
     if not is_under then
-        self._core._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. build_dir, vim.log.levels.ERROR)
+        self._core._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. abs, vim.log.levels.ERROR)
         return false
     end
     return true
@@ -3432,6 +3486,53 @@ function Workspace:execute_deletion(plan, opts, on_done)
     end, on_done)
 
     return f
+end
+
+--- Hard-reset EVERY build directory the workspace knows (spec §16.30): every
+--- config unit that has a build directory across all profiles, plus every
+--- orphaned build directory (cached state no ConfigUnit references). Removes the
+--- directories from disk and clears build state to `unconfigured`; no profile is
+--- removed. Returns a Future that resolves after both phases complete.
+--- @param on_done? function called when the whole reset is complete
+--- @return loomworks.Future
+function Workspace:reset_all(on_done)
+    local future_mod = require("loomworks.future")
+
+    -- Phase 1: every referenced unit with a build dir → one batched reset plan.
+    -- No Operation is created (see Profile:reset): headless reset runs no tasks,
+    -- so a progress Operation would never complete.
+    local items = {}
+    for _, unit in pairs(self._config_units) do
+        if unit:build_dir() then
+            items[#items + 1] = {
+                unit = unit,
+                build_dir = unit:build_dir(),
+                disposition = "reset",
+            }
+        end
+    end
+
+    -- Phase 2: orphaned build dirs (state, no ConfigUnit). Snapshot their keys
+    -- before any mutation so the list is stable across the async phases.
+    local orphan_keys = {}
+    for _, o in ipairs(self:get_orphaned_configs()) do
+        orphan_keys[#orphan_keys + 1] = o.build_dir_key
+    end
+
+    local ws = self
+    local function delete_orphans(i)
+        if i > #orphan_keys then
+            if on_done then on_done() end
+            return future_mod.resolved(true)
+        end
+        return ws:delete_orphaned_build_dir(orphan_keys[i]):next(function()
+            return delete_orphans(i + 1)
+        end)
+    end
+
+    return self:execute_deletion({ items = items }, nil):next(function()
+        return delete_orphans(1)
+    end)
 end
 
 -- ===========================================================================
