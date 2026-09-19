@@ -833,6 +833,8 @@ command has detail under `lw help <command>`.
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles) |
+| `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
+| `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |

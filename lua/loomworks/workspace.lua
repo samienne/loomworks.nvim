@@ -3434,6 +3434,59 @@ function Workspace:execute_deletion(plan, opts, on_done)
     return f
 end
 
+--- Hard-reset EVERY build directory the workspace knows (spec §16.30): every
+--- config unit that has a build directory across all profiles, plus every
+--- orphaned build directory (cached state no ConfigUnit references). Removes the
+--- directories from disk and clears build state to `unconfigured`; no profile is
+--- removed. Returns a Future that resolves after both phases complete.
+--- @param on_done? function called when the whole reset is complete
+--- @return loomworks.Future
+function Workspace:reset_all(on_done)
+    local future_mod = require("loomworks.future")
+
+    -- Phase 1: every referenced unit with a build dir → one batched reset plan.
+    local items = {}
+    local units = {}
+    local target_states = {}
+    for _, unit in pairs(self._config_units) do
+        if unit:build_dir() then
+            items[#items + 1] = {
+                unit = unit,
+                build_dir = unit:build_dir(),
+                disposition = "reset",
+            }
+            units[#units + 1] = unit
+            target_states[unit] = "unconfigured"
+        end
+    end
+
+    -- Phase 2: orphaned build dirs (state, no ConfigUnit). Snapshot their keys
+    -- before any mutation so the list is stable across the async phases.
+    local orphan_keys = {}
+    for _, o in ipairs(self:get_orphaned_configs()) do
+        orphan_keys[#orphan_keys + 1] = o.build_dir_key
+    end
+
+    if #units > 0 then
+        self:create_operation(nil, "delete", units, target_states)
+    end
+
+    local ws = self
+    local function delete_orphans(i)
+        if i > #orphan_keys then
+            if on_done then on_done() end
+            return future_mod.resolved(true)
+        end
+        return ws:delete_orphaned_build_dir(orphan_keys[i]):next(function()
+            return delete_orphans(i + 1)
+        end)
+    end
+
+    return self:execute_deletion({ items = items }, nil):next(function()
+        return delete_orphans(1)
+    end)
+end
+
 -- ===========================================================================
 -- Tool scanning
 -- ===========================================================================

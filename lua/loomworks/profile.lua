@@ -1437,6 +1437,71 @@ function Profile:delete(on_done)
     return self._workspace:execute_deletion(plan, { deactivate_profile = self }, on_done)
 end
 
+--- Plan a hard reset of this profile's cached configs (spec §16.30). Unlike
+--- `plan_deletion`, the plan carries NO `profile` field, so executing it removes
+--- the build directories and clears build state to `unconfigured` while leaving
+--- the profile (and its set / tool pins) intact and buildable. A config unit
+--- also referenced by ANOTHER profile is marked `keep` so this reset never
+--- clears state the other profile still relies on; the rest are `reset`.
+--- @return loomworks.DeletionPlan
+function Profile:plan_reset()
+    if not self.mappings then return { items = {} } end
+
+    -- Which of our config units are also referenced by a DIFFERENT profile.
+    local other_refs = {}
+    for _, other in pairs(self._workspace._profiles) do
+        if other.key ~= self.key then
+            for _, other_pp in ipairs(other:projects()) do
+                if other_pp._config_unit then
+                    other_refs[other_pp._config_unit] = true
+                end
+            end
+        end
+    end
+
+    local items = {}
+    for _, pp in ipairs(self:projects()) do
+        local shared = pp._config_unit and other_refs[pp._config_unit] or false
+        items[#items + 1] = {
+            unit = pp._config_unit,
+            build_dir = pp:build_dir(),
+            disposition = shared and "keep" or "reset",
+        }
+    end
+
+    table.sort(items, function(a, b)
+        local a_key = a.unit and a.unit._project and a.unit._project.key or ""
+        local b_key = b.unit and b.unit._project and b.unit._project.key or ""
+        return a_key < b_key
+    end)
+
+    return { items = items }
+end
+
+--- Hard-reset this profile (plan + execute, no UI confirmation): rm -rf the
+--- build directories and drop the config units back to `unconfigured`, keeping
+--- the profile itself (spec §16.30). Returns a Future.
+--- @param on_done? function
+--- @return loomworks.Future
+function Profile:reset(on_done)
+    local plan = self:plan_reset()
+
+    local units = {}
+    local target_states = {}
+    for _, item in ipairs(plan.items) do
+        if item.disposition ~= "keep" and item.unit then
+            units[#units + 1] = item.unit
+            target_states[item.unit] = "unconfigured"
+        end
+    end
+    if #units > 0 then
+        self._workspace:create_operation(self, "delete", units, target_states)
+    end
+
+    -- No profile removal, no deactivation — reset preserves the active profile.
+    return self._workspace:execute_deletion(plan, nil, on_done)
+end
+
 --- Clean this profile's configs. Returns a Future.
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future

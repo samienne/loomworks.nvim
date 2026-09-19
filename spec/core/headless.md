@@ -110,8 +110,9 @@ A headless build is read-only toward project sources and toward the working
 copy. Only the cache and build directories are written, under the safety
 rules of §2.3 and §5.3. This contract does not itself serialize cross-process
 concurrent access to a shared build directory; a host MAY add advisory
-exclusion. loomworks does: configure/build/clean hold a **per-build-directory
-advisory lockfile** — an `O_EXCL` create (atomic across processes) with an
+exclusion. loomworks does: configure/build/clean/reset (§16.30) hold a
+**per-build-directory advisory lockfile** — an `O_EXCL` create (atomic across
+processes) with an
 mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither builds a directory the other is
 building; acquisition is **fail-fast** (the loser reports the holder and
@@ -837,3 +838,38 @@ comparison used for activation, "already newest," and cache reclamation
 (§16.13) MUST treat a pre-release as older than the release it precedes — so
 following stable never selects or retains a pre-release over its release, and
 switching channels does not misrank installed bundles.
+
+### 16.30 Headless reset
+
+A headless **reset** hard-resets build state: it removes a profile's build
+directories from disk (a full recursive delete, not the build system's own
+artifact clean of §16.1) and returns the affected units to the **unconfigured**
+state (§3), so the next build (§16.4) reconfigures from nothing. It is the
+headless equivalent of the editor's per-profile delete, minus removing the
+profile: the profile, its configuration set, and its toolchain pins are left
+intact and buildable — only cached build state is discarded. Reset is therefore
+distinct from clean (§16.1), which keeps the configuration and only removes
+artifacts.
+
+Scope is a single profile (resolved per §16.3), or — with an explicit
+all-scope flag — every build directory the workspace knows, across all
+profiles and including **orphaned** directories (cached build state no profile
+references any longer). A profile with no configured build directory resets
+nothing and succeeds.
+
+Reset obeys the same directory-safety rules as every other deletion path: a
+build directory is removed only when it lies within the workspace root, and a
+directory still referenced by another unit not part of the reset is **retained**
+on disk (its state cleared for the reset units only) rather than deleted out
+from under the reference. Reset is exclusive, acquiring the per-build-directory
+lock (§16.6) for its directories so it cannot race a concurrent build.
+
+Because reset destroys build state that a build would otherwise reuse, it
+**requires confirmation**. An interactive host prints the directories that will
+be removed and prompts before acting; a confirmation flag skips the prompt. In a
+non-interactive host (§16.3) the confirmation flag is **mandatory** — without it
+reset refuses with a message naming the flag, rather than deleting unprompted.
+This is the destructive-management posture of §16.9: it authors nothing in the
+working copy, but it does discard cache and on-disk state, so it never proceeds
+silently. On success the removed directories are reported and the exit status is
+**0**; on any failure the reason is reported and the exit status is non-zero.
