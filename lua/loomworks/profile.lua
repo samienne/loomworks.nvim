@@ -1484,22 +1484,13 @@ end
 --- @param on_done? function
 --- @return loomworks.Future
 function Profile:reset(on_done)
-    local plan = self:plan_reset()
-
-    local units = {}
-    local target_states = {}
-    for _, item in ipairs(plan.items) do
-        if item.disposition ~= "keep" and item.unit then
-            units[#units + 1] = item.unit
-            target_states[item.unit] = "unconfigured"
-        end
-    end
-    if #units > 0 then
-        self._workspace:create_operation(self, "delete", units, target_states)
-    end
-
+    -- No Operation is created: an Operation drives the editor's live progress UI
+    -- and only completes when its units reach their target state via task
+    -- tracking. The headless reset runs no tasks, so an Operation here would
+    -- never complete — leaking a progress handle at process teardown. The CLI
+    -- reports its own result instead.
     -- No profile removal, no deactivation — reset preserves the active profile.
-    return self._workspace:execute_deletion(plan, nil, on_done)
+    return self._workspace:execute_deletion(self:plan_reset(), nil, on_done)
 end
 
 --- Clean this profile's configs. Returns a Future.

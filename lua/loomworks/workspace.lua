@@ -3445,9 +3445,9 @@ function Workspace:reset_all(on_done)
     local future_mod = require("loomworks.future")
 
     -- Phase 1: every referenced unit with a build dir → one batched reset plan.
+    -- No Operation is created (see Profile:reset): headless reset runs no tasks,
+    -- so a progress Operation would never complete.
     local items = {}
-    local units = {}
-    local target_states = {}
     for _, unit in pairs(self._config_units) do
         if unit:build_dir() then
             items[#items + 1] = {
@@ -3455,8 +3455,6 @@ function Workspace:reset_all(on_done)
                 build_dir = unit:build_dir(),
                 disposition = "reset",
             }
-            units[#units + 1] = unit
-            target_states[unit] = "unconfigured"
         end
     end
 
@@ -3465,10 +3463,6 @@ function Workspace:reset_all(on_done)
     local orphan_keys = {}
     for _, o in ipairs(self:get_orphaned_configs()) do
         orphan_keys[#orphan_keys + 1] = o.build_dir_key
-    end
-
-    if #units > 0 then
-        self:create_operation(nil, "delete", units, target_states)
     end
 
     local ws = self

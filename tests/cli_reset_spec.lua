@@ -77,8 +77,10 @@ describe("lw reset (on-disk)", function()
 
     assert.is_nil(r.exit_code, "reset should succeed: " .. r.stderr)
     assert.is_truthy(r.stdout:find("RESET OK", 1, true))
-    -- The build directory is gone from disk.
-    assert.is_nil(uv.fs_stat(dir), "build dir must be removed")
+    -- The build directory is gone from disk. The CLI blocks until real on-disk
+    -- absence, so this is already true on return; poll defensively regardless.
+    assert.is_true(vim.wait(5000, function() return uv.fs_stat(dir) == nil end, 20),
+      "build dir must be removed")
     -- The unit is back to unconfigured…
     assert.equals("unconfigured", unit:state())
     assert.is_nil(unit.build_dir_value)
@@ -111,8 +113,10 @@ describe("lw reset (on-disk)", function()
     end)
 
     assert.is_nil(r.exit_code, "reset --all should succeed: " .. r.stderr)
-    assert.is_nil(uv.fs_stat(prof_dir), "profile build dir must be removed")
-    assert.is_nil(uv.fs_stat(orphan_dir), "orphaned build dir must be removed")
+    assert.is_true(vim.wait(5000, function() return uv.fs_stat(prof_dir) == nil end, 20),
+      "profile build dir must be removed")
+    assert.is_true(vim.wait(5000, function() return uv.fs_stat(orphan_dir) == nil end, 20),
+      "orphaned build dir must be removed")
     assert.equals("unconfigured", unit:state())
   end)
 
@@ -144,6 +148,35 @@ describe("lw reset (on-disk)", function()
     end)
     assert.is_nil(r.exit_code)
     assert.is_truthy(r.stdout:find("nothing to reset", 1, true))
+  end)
+
+  it("fails loudly (never reports OK) when the build dir survives the deletion", function()
+    -- The CI failure: the rm subprocess reports completion but the directory is
+    -- still present (a failed rm, or a delete-pending handle that never clears).
+    -- The CLI must VERIFY on-disk absence and fail — not print RESET OK while a
+    -- build tree survives. Simulate by stubbing the async rm to report success
+    -- without deleting, and shrinking the verify budget so the test is fast.
+    local root = make_ws()
+    local ws, profile = load(root)
+    local dir = root .. "/.nvim/build/App/Debug"
+    fake_build_dir(ws, profile, dir)
+
+    local future = require("loomworks.future")
+    ws._core._deps.io.rm_rf_async = function(_, cb)
+      if cb then cb(true, nil) end -- "succeeded" but left the directory in place
+      return future.resolved(true)
+    end
+    cli._reset_verify_ms = 300 -- don't wait the full delete-pending budget
+
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key, "-y" })
+    end)
+    cli._reset_verify_ms = nil
+
+    assert.equals(1, r.exit_code)
+    assert.is_falsy(r.stdout:find("RESET OK", 1, true))
+    assert.is_truthy(r.stderr:find("could not be removed", 1, true))
+    assert.is_not_nil(uv.fs_stat(dir), "the surviving dir is reported, not silently accepted")
   end)
 
   it("rejects a profile argument alongside --all", function()
