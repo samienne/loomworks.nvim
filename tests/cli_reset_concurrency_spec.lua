@@ -61,6 +61,28 @@ local function fake_build_dir(ws, profile, dir, state)
 end
 
 describe("lw reset — CLI/editor concurrency", function()
+  local io_mod = require("loomworks.io")
+  local real_rm_rf_async
+
+  -- Deterministic synchronous deletion (see cli_reset_spec): keep reset fast and
+  -- platform-independent by not spawning `rd` (whose Windows-CI delete-pending
+  -- can stall the verify loop). The lock-contention test dies before any
+  -- deletion, so it is unaffected.
+  before_each(function()
+    real_rm_rf_async = io_mod.rm_rf_async
+    io_mod.rm_rf_async = function(dir, cb)
+      vim.fn.delete(dir, "rf")
+      if cb then vim.schedule(function() cb(true, nil) end) end
+      return require("loomworks.future").resolved(true)
+    end
+    cli._reset_verify_ms = 4000
+  end)
+
+  after_each(function()
+    io_mod.rm_rf_async = real_rm_rf_async
+    cli._reset_verify_ms = nil
+  end)
+
   -- (2) Cross-process lock: reset takes the same O_EXCL build_lock the editor's
   -- task path holds (overseer.lua:476 → build_lock.acquire). If the editor is
   -- mid-build on the dir, reset must FAIL FAST and not rm a directory in use.

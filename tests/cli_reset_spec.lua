@@ -63,7 +63,52 @@ local function fake_build_dir(ws, profile, dir)
   return unit
 end
 
+-- Active libuv handle census (type -> count), so a guard test can assert
+-- cmd_reset leaves nothing running (a lingering deletion subprocess/pipe or an
+-- un-closed timer would show up here).
+local function active_handles()
+  local counts = {}
+  uv.walk(function(h)
+    local ok, active = pcall(function() return h:is_active() end)
+    if not (ok and active) then return end
+    local closing = false
+    pcall(function() closing = h:is_closing() end)
+    if closing then return end
+    local t = "?"
+    pcall(function() t = h:get_type() end)
+    counts[t] = (counts[t] or 0) + 1
+  end)
+  return counts
+end
+
 describe("lw reset (on-disk)", function()
+  local io_mod = require("loomworks.io")
+  local real_rm_rf_async
+
+  before_each(function()
+    real_rm_rf_async = io_mod.rm_rf_async
+    -- Deterministic, SYNCHRONOUS deletion in tests: really remove the tree (so
+    -- on-disk assertions hold) but WITHOUT spawning `rd`/`rm`. A spawned `rd` on
+    -- Windows CI can leave the directory delete-pending for many seconds (an AV
+    -- scan handle), which makes the CLI's verify loop wait out that whole window
+    -- and stalls the test-runner child past its budget. The production path
+    -- keeps the real async rd + full verify ceiling; these tests exercise the
+    -- reset LOGIC (plan -> delete -> clear -> verify -> report) without the
+    -- platform's delete-pending timing. `_reset_verify_ms` is bounded as a
+    -- backstop so no test can ever consume the 30s production ceiling.
+    io_mod.rm_rf_async = function(dir, cb)
+      vim.fn.delete(dir, "rf")
+      if cb then vim.schedule(function() cb(true, nil) end) end
+      return require("loomworks.future").resolved(true)
+    end
+    cli._reset_verify_ms = 4000
+  end)
+
+  after_each(function()
+    io_mod.rm_rf_async = real_rm_rf_async
+    cli._reset_verify_ms = nil
+  end)
+
   it("removes the profile's build dir and drops the unit to unconfigured", function()
     local root = make_ws()
     local ws, profile = load(root)
@@ -177,6 +222,56 @@ describe("lw reset (on-disk)", function()
     assert.is_falsy(r.stdout:find("RESET OK", 1, true))
     assert.is_truthy(r.stderr:find("could not be removed", 1, true))
     assert.is_not_nil(uv.fs_stat(dir), "the surviving dir is reported, not silently accepted")
+  end)
+
+  it("waits out a delete-pending dir (removal reported before it vanishes)", function()
+    -- Delete-pending: the removal subprocess "exits" (on_done fires) while the
+    -- directory is still on disk, and it vanishes a moment later. The verify
+    -- loop must wait for genuine absence and then report success — not fail.
+    local root = make_ws()
+    local ws, profile = load(root)
+    local dir = root .. "/.nvim/build/App/Debug"
+    fake_build_dir(ws, profile, dir)
+    io_mod.rm_rf_async = function(d, cb)
+      vim.defer_fn(function() vim.fn.delete(d, "rf") end, 150) -- vanishes later
+      if cb then vim.schedule(function() cb(true, nil) end) end -- "rd exited" now
+      return require("loomworks.future").resolved(true)
+    end
+
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key, "-y" })
+    end)
+    assert.is_nil(r.exit_code, r.stderr)
+    assert.is_truthy(r.stdout:find("RESET OK", 1, true))
+    assert.is_nil(uv.fs_stat(dir), "verify must have waited until the dir was gone")
+  end)
+
+  it("leaves no libuv handle or subprocess running after reset", function()
+    -- Regression guard for the CI hang: the process must exit promptly after a
+    -- reset, so cmd_reset may not leave a child process, pipe, or extra timer
+    -- alive (the real-CI symptom was the runner hanging ~30s post-suite).
+    local root = make_ws()
+    local ws, profile = load(root)
+    local dir = root .. "/.nvim/build/App/Debug"
+    fake_build_dir(ws, profile, dir)
+
+    local before = active_handles()
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key, "-y" })
+    end)
+    assert.is_nil(r.exit_code, r.stderr)
+    -- Let any close callbacks (a released lock's heartbeat timer) settle.
+    vim.wait(60, function() return false end)
+    local after = active_handles()
+
+    -- The CI symptom was the process hanging on a live handle. A lingering
+    -- deletion subprocess (or its pipes) is the classic cause, so assert none
+    -- outlive reset, and that no timer (e.g. an un-released lock heartbeat) was
+    -- added over the pre-reset baseline.
+    assert.is_nil(after.process, "no child process may outlive reset")
+    assert.is_nil(after.pipe, "no pipe may outlive reset")
+    assert.is_true((after.timer or 0) <= (before.timer or 0),
+      string.format("reset leaked a timer (%d -> %d)", before.timer or 0, after.timer or 0))
   end)
 
   it("rejects a profile argument alongside --all", function()
