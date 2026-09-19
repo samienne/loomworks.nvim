@@ -13,6 +13,33 @@ local ConfigurationSet = require("loomworks.configuration_set")
 local Tool = require("loomworks.tool")
 local Module = require("loomworks.module")
 
+--- Cache-side state names that reset to `unconfigured` when their build
+--- directory is absent on disk (spec §3.1 rule 7). Deliberately EXCLUDES
+--- `unknown` and `deleting`: those sit above `cached` in the state-derivation
+--- priority and mark an in-flight deletion whose directory is *expected* to be
+--- gone (§4.6, crash-safe sequence), so a missing directory there must never
+--- be downgraded — that could let a build run into a directory being deleted.
+--- `unconfigured`/nil already carry no build state.
+local RESETTABLE_ON_MISSING_DIR = {
+    configured = true,
+    built = true,
+    failed_build = true,
+    failed_configure = true,
+}
+
+--- Whether a cached build directory has vanished from disk and its state must
+--- reset to `unconfigured`. Single point pairing the state classification with
+--- the (injected) directory stat.
+--- @param state string|nil cache-side state name
+--- @param abs_path string|nil resolved absolute build directory
+--- @param dir_exists fun(path: string): boolean
+--- @return boolean
+local function build_dir_vanished(state, abs_path, dir_exists)
+    if not state or not RESETTABLE_ON_MISSING_DIR[state] then return false end
+    if not abs_path or abs_path == "" then return false end
+    return not dir_exists(abs_path)
+end
+
 -- ===========================================================================
 -- Deserialization context
 -- ===========================================================================
@@ -376,34 +403,50 @@ end
 --- @return table[] build_dirs array of all BuildDir objects
 local function sync_build_dirs(ctx, workspace, cache)
     local cache_mod = require("loomworks.cache")
+    local dir_exists = ctx.dir_exists
     local seen = {}
+    -- rel_path → true for build dirs whose cached state must reset because the
+    -- directory is gone from disk (spec §3.1 rule 7). Populated here, one stat
+    -- per directory, then reused by sync_profile_projects_and_config_units so
+    -- every ConfigUnit that shares the directory sees the reset without a
+    -- second stat.
+    ctx.missing_build_dirs = {}
 
     if cache and cache.build_dirs then
         for rel_path, entry in pairs(cache.build_dirs) do
             if entry.state and entry.state ~= "unconfigured" then
-                local existing = ctx.build_dirs[rel_path]
-                if existing then
-                    existing.state = entry.state
-                    existing.last_configured = entry.last_configured
-                    existing.last_built = entry.last_built
-                    existing.module_info = entry.module_info
-                    existing.options_snapshot = entry.options
-                    existing.module_config_snapshot = entry.module_config
-                    if entry.tool_key then
-                        existing.tool_snapshot = { key = entry.tool_key, data = entry.tool_data }
-                    end
-                    existing.project_key = entry.project_key
-                    existing.variant = entry.variant
-                    existing.config_key = entry.config_key
-                    existing.mod_type = entry.type
-                    existing._removed = false
+                local abs_path = entry.build_dir
+                    or cache_mod.absolute_build_dir(rel_path, workspace.root)
+
+                if build_dir_vanished(entry.state, abs_path, dir_exists) then
+                    -- Directory removed out of band: record the reset and drop
+                    -- the BuildDir. A missing directory has no on-disk build
+                    -- state to display as an orphan; a prior BuildDir for this
+                    -- key falls out of `seen` below and is marked _removed.
+                    ctx.missing_build_dirs[rel_path] = true
                 else
-                    local abs_path = entry.build_dir
-                        or cache_mod.absolute_build_dir(rel_path, workspace.root)
-                    local bd = BuildDir.new(rel_path, abs_path, entry)
-                    ctx.build_dirs[rel_path] = bd
+                    local existing = ctx.build_dirs[rel_path]
+                    if existing then
+                        existing.state = entry.state
+                        existing.last_configured = entry.last_configured
+                        existing.last_built = entry.last_built
+                        existing.module_info = entry.module_info
+                        existing.options_snapshot = entry.options
+                        existing.module_config_snapshot = entry.module_config
+                        if entry.tool_key then
+                            existing.tool_snapshot = { key = entry.tool_key, data = entry.tool_data }
+                        end
+                        existing.project_key = entry.project_key
+                        existing.variant = entry.variant
+                        existing.config_key = entry.config_key
+                        existing.mod_type = entry.type
+                        existing._removed = false
+                    else
+                        local bd = BuildDir.new(rel_path, abs_path, entry)
+                        ctx.build_dirs[rel_path] = bd
+                    end
+                    seen[rel_path] = true
                 end
-                seen[rel_path] = true
             end
         end
     end
@@ -541,6 +584,15 @@ local function sync_profile_projects_and_config_units(ctx, workspace, cache, dep
                             enriched = vim.tbl_extend("keep", matched_entry, {
                                 build_dir = abs_path or cache_mod.absolute_build_dir(build_dir_id, workspace.root),
                             })
+                            -- Build directory vanished (spec §3.1 rule 7): reset
+                            -- to unconfigured so ConfigUnit:state() reports
+                            -- unconfigured and the planner reconfigures from
+                            -- scratch. The stat was done once in sync_build_dirs.
+                            if ctx.missing_build_dirs[build_dir_id] then
+                                enriched.state = nil
+                                enriched.last_configured = nil
+                                enriched.last_built = nil
+                            end
                         end
 
                         local build_dir_obj = ctx.build_dirs[build_dir_id]
@@ -728,6 +780,10 @@ end
 --- @return table result { modules, projects, config_sets, profiles, config_units, profile_projects, build_dir_refs }
 function M.refresh(workspace, config, cache, active_set, all_profile_defs, current, deps)
     local ctx = build_ctx(current)
+    -- Injected directory-existence probe (spec §3.1 rule 7). Defaulted here so
+    -- the sync helpers never have to guard for a missing dep.
+    ctx.dir_exists = deps.dir_exists
+        or function(p) return (vim.uv or vim.loop).fs_stat(p) ~= nil end
 
     local modules = sync_modules(ctx, config, cache, deps.modules_registry)
 

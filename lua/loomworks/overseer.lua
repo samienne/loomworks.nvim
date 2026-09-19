@@ -736,7 +736,10 @@ end
 
 --- Filter configure tasks to only those whose ConfigUnit needs configuring.
 --- Includes units that are unconfigured, configure_failed, or stale
---- (configuration options changed since last configure).
+--- (configuration options changed since last configure), or whose build
+--- directory was removed out of band (spec §3.1 rule 7) — the load/remerge
+--- resets a vanished unit, and this is the re-check for a directory that
+--- disappears between remerge and build.
 --- @param all_tasks table { configure: table[], build: table[] }
 --- @return table[] configure tasks that actually need running
 local function filter_unconfigured_tasks(all_tasks)
@@ -749,7 +752,8 @@ local function filter_unconfigured_tasks(all_tasks)
         local state = unit:state()
         local project_needs_refresh = unit._project and unit._project.needs_refresh
         if state == "unconfigured" or state == "configure_failed"
-                or unit:is_stale() or project_needs_refresh then
+                or unit:is_stale() or project_needs_refresh
+                or unit:missing_build_dir_needs_reconfigure() then
             needs_configure[#needs_configure + 1] = task_def
         end
 

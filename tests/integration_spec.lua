@@ -166,6 +166,10 @@ local function make_ws(config_overrides, user_overrides, cache_overrides, opts)
             clock = function() return 0 end,
             now = function() return "2000-01-01T00:00:00Z" end,
             log = require("loomworks.log").test(),
+            -- Fake `/root` build paths never exist on disk; report them present
+            -- so cached built/configured state survives remerge. The missing-
+            -- build-dir reset (spec §3.1 rule 7) is covered by its own spec.
+            dir_exists = function() return true end,
         },
         _events_log = events_log,
     }
