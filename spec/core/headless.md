@@ -114,9 +114,10 @@ exclusion. loomworks does: configure/build/clean/reset (§16.30) hold a
 **per-build-directory advisory lockfile** — an `O_EXCL` create (atomic across
 processes) with an
 mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
-editor and the CLI share this lock, so neither builds a directory the other is
-building; acquisition is **fail-fast** (the loser reports the holder and
-declines rather than waiting). A stale lock is reclaimed automatically after
+editor and the CLI share this lock, so neither operates on a directory the other
+holds — in particular a reset (§16.30) cannot remove a directory the other is
+building, and a build cannot enter a directory a reset is removing. Acquisition
+is **fail-fast** (the loser reports the holder and declines rather than waiting). A stale lock is reclaimed automatically after
 the heartbeat window; `lw unlock` clears one immediately. The CLI also releases
 its build locks on interrupt (SIGINT/SIGTERM) as well as on normal exit, so an
 interrupted (Ctrl-C'd) build does not leave a lock for the stale-reclaim window.
@@ -878,3 +879,41 @@ a directory that is still present once the removal settles is reported as a
 failure rather than reported as removed. On success the removed directories are
 reported and the exit status is **0**; on any failure the reason is reported and
 the exit status is non-zero.
+
+**Concurrent editor.** Reset is designed to run while an editor host is live on
+the same workspace, and coexistence rests on the same three-file/cache
+reconciliation and the same per-build-directory lock the rest of the system
+uses — reset introduces no private channel:
+
+- *In-progress editor build.* A build/configure/clean holds the cross-process
+  build-directory lock (§16.6) for its directory. Reset acquires the **same**
+  lock for every directory it would touch **before** removing anything, and
+  acquisition is fail-fast: if the editor is mid-build on any target directory,
+  reset removes nothing and exits non-zero, naming the holder — it can never
+  rm a directory a build is using. Conversely, once reset holds the lock, the
+  editor's build of that directory fails to acquire and declines, so neither
+  side deletes or writes a directory the other is operating on.
+- *Reload to unconfigured.* Reset's cache rewrite is an ordinary external change
+  to the cache file; the editor's file reconciliation observes it and remerges,
+  so the reset units surface as `unconfigured` without any manual reload. No
+  build state survives the reset for the editor to act on.
+- *Mid-deletion crash-safety window.* Reset marks the cache `unknown` **before**
+  removing a directory and clears the entry only after the removal succeeds
+  (§4.6). An editor that reconciles inside that window reads `unknown` for a
+  directory that is vanishing; the missing-directory downgrade (§3.1 rule 7)
+  **exempts** `unknown`/`deleting`, so the editor does not reset such a unit to
+  `unconfigured`, and a build against an `unknown` unit stays blocked — the
+  editor cannot race the deletion. This exemption is keyed on the on-disk cache
+  state, so it holds across processes, not only within the deleting one.
+- *Post-reset stale in-memory state.* Between reset finishing and the editor's
+  next reconciliation, the editor may still hold an in-memory `built`/`configured`
+  unit pointing at a now-deleted directory. The build gate re-checks directory
+  presence with a **live** stat (§3.1 rule 7), so a build initiated in that
+  window is forced to reconfigure into a fresh directory rather than run the
+  build tool against a deleted one.
+- *Owned LSP database.* The active profile's build directory holds the
+  compilation database (e.g. `compile_commands.json`) an LSP server consumes
+  (§9). Removing it degrades gracefully: database resolution treats an absent
+  file as "no database" rather than pointing the server at a missing path, and
+  the next configure regenerates it, at which point the server reattaches. No
+  server restart is required of reset itself.
