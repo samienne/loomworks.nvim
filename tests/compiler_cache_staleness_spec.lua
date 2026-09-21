@@ -48,11 +48,34 @@ describe("ConfigUnit launcher staleness", function()
         return unit
     end
 
-    it("cache installed after configure → stale", function()
-        local unit = make_configured("gcc", nil)
+    it("cache installed after a feature configure (recorded \"none\") → stale", function()
+        -- A unit configured UNDER the feature with no cache records "none", so a
+        -- later-installed cache differs → stale (install-after-configure).
+        local unit = make_configured("gcc", "none")
         set_present({ ccache = true })
         assert.is_true(unit:launcher_changed())
         assert.is_true(unit:is_stale())
+    end)
+
+    it("legacy unit (nil recorded) is NEVER stale, cache present or absent", function()
+        -- Configured before the feature: unknown launcher state. Must not be
+        -- retroactively invalidated just because a cache is now installed.
+        local u1 = make_configured("gcc", nil)
+        set_present({ ccache = true })
+        assert.is_false(u1:launcher_changed())
+        assert.is_false(u1:is_stale())
+
+        local u2 = make_configured("gcc", nil)
+        set_present({})
+        assert.is_false(u2:launcher_changed())
+        assert.is_false(u2:is_stale())
+    end)
+
+    it("feature configure with no cache stays not-stale while still no cache", function()
+        local unit = make_configured("gcc", "none")
+        set_present({})
+        assert.is_false(unit:launcher_changed())
+        assert.is_false(unit:is_stale())
     end)
 
     it("cache removed after configure → stale", function()
@@ -163,7 +186,7 @@ describe("launcher freeze at record_task_result", function()
         return unit:is_stale()
     end
 
-    it("a configure records the launcher; a reconfigure without one CLEARS it", function()
+    it("a configure records the launcher; a reconfigure OVERWRITES it", function()
         local core = make_core()
         local unit = unit_for(core)
         assert.is_not_nil(unit)
@@ -176,8 +199,16 @@ describe("launcher freeze at record_task_result", function()
         })
         assert.equals("/usr/bin/ccache", unit.module_info.cache_launcher)
 
-        -- Reconfigure with NO launcher — the additive merge alone could not
-        -- clear it, so the explicit freeze must.
+        -- Reconfigure with the module's "none" sentinel (no cache): the additive
+        -- module_info merge alone could not replace the old path, so the explicit
+        -- freeze must — otherwise is_stale would compare against a stale value.
+        core:record_task_result({
+            unit = unit, action = "configure", success = true, build_dir = bd,
+            module_info = { generator = "Ninja", cache_launcher = "none" },
+        })
+        assert.equals("none", unit.module_info.cache_launcher)
+
+        -- And an explicit nil still clears (defensive — the freeze uses `or nil`).
         core:record_task_result({
             unit = unit, action = "configure", success = true, build_dir = bd,
             module_info = { generator = "Ninja", cache_launcher = nil },

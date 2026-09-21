@@ -459,7 +459,14 @@ presence + current policy + tool family) and compares it to the recorded value.
 A launcher that **appears**, **disappears**, or **changes** — because the policy
 was edited, or because the cache tool was installed onto or removed from the
 search path — makes the configured unit stale, so the existing build gate (§5.2)
-auto-reconfigures it before the next build. There is no separate eager
+auto-reconfigures it before the next build. The comparison is against a value
+**actually recorded at configure**: a unit configured *under* this feature with
+no cache records an explicit "none", so a later-installed cache still differs and
+fires. A unit with **no recorded launcher** (configured before the feature, or by
+a module that records none) has an *unknown* launcher state and is **never**
+retroactively invalidated — installing a cache does not mass-reconfigure every
+pre-existing build directory; the launcher axis engages only once the unit has
+been configured with the feature active. There is no separate eager
 reconfigure: the launcher change is caught at the gate exactly like an
 option-level change, and the build directory identity is NOT keyed on the
 launcher. The build gate drives this uniformly, but the reconfigure **mechanism**

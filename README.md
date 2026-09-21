@@ -313,8 +313,10 @@ Under cmake, loomworks injects `CMAKE_C/CXX_COMPILER_LAUNCHER` on the Ninja
 configure path (it cannot inject into a `--preset` configuration, and warns when
 one is used); on MSVC with a cache active it also switches debug info to embedded
 (`/Z7`) so the cache can hit, unless you've pinned a conflicting value. Under
-meson, loomworks wraps the pinned `CC`/`CXX` explicitly (rather than relying on
-meson's own ccache auto-detect) so both build systems behave identically.
+meson, loomworks pins the launcher+compiler explicitly through a generated
+native file (`--native-file`, rather than relying on meson's own ccache
+auto-detect — and space-safe, unlike the `CC`/`CXX` env string) so both build
+systems behave identically.
 Changing the policy — or installing/removing the cache tool — reconfigures the
 affected build automatically on the next build. The mechanism differs per build
 system: cmake applies it with an in-place reconfigure (the first build then

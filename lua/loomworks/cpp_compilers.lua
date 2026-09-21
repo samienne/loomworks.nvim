@@ -551,6 +551,22 @@ function M.family_from_tool_data(tool_data)
     return nil
 end
 
+--- Whether a resolved tool builds with the **MSVC ABI** — plain MSVC (`cl`) or
+--- clang-cl. clang-cl uses cl.exe's command line and PDB/`/Z7` debug model, so
+--- callers that must treat it like MSVC — the compiler-cache launcher
+--- preference (module §5d: sccache-first) and cmake's `/Z7` handling — use this
+--- rather than `family_from_tool_data`, which folds clang-cl → `clang` (correct
+--- for compiler-family *overrides*, wrong for the MSVC-ABI decisions here).
+--- @param tool_data table|nil
+--- @return boolean
+function M.is_msvc_style(tool_data)
+    if type(tool_data) ~= "table" then return false end
+    local id = tostring(tool_data.compiler_id or ""):lower()
+    local path = tostring(tool_data.compiler_path or ""):lower()
+    if id:match("clang%-cl") or path:match("clang%-cl") then return true end
+    return M.family_from_tool_data(tool_data) == "msvc"
+end
+
 --- Clear the detection cache. Called by modules' `invalidate_tools`. Also drops
 --- the PATH executable index so a rescan re-reads `$PATH`.
 function M.clear_cache()

@@ -65,13 +65,15 @@ describe("cmake compiler-cache launcher injection", function()
         assert.equals("/usr/bin/ccache", t.loomworks.module_info.cache_launcher)
     end)
 
-    it("injects nothing and records nil when no launcher is resolved", function()
+    it("injects nothing and records \"none\" when no launcher is resolved", function()
         local ctx = ninja_ctx({})
         local t = find_configure(cmake.tasks(ctx, "Debug"))
         local cmd = t.builder().cmd
         assert.is_nil(d_value(cmd, "CMAKE_C_COMPILER_LAUNCHER"))
         assert.is_nil(d_value(cmd, "CMAKE_CXX_COMPILER_LAUNCHER"))
-        assert.is_nil(t.loomworks.module_info.cache_launcher)
+        -- Explicit "none" sentinel (not nil) so is_stale distinguishes a
+        -- feature-configured-without-cache unit from a legacy one.
+        assert.equals("none", t.loomworks.module_info.cache_launcher)
     end)
 
     it("does not touch MSVC debug format for a gcc kit", function()
@@ -177,6 +179,7 @@ describe("cmake compiler-cache preset non-goal", function()
         local cmd = t.builder().cmd
         assert.is_nil(d_value(cmd, "CMAKE_C_COMPILER_LAUNCHER"))
         assert.is_nil(d_value(cmd, "CMAKE_CXX_COMPILER_LAUNCHER"))
-        assert.is_nil(t.loomworks.module_info.cache_launcher)
+        -- No launcher applied to a preset → recorded as "none".
+        assert.equals("none", t.loomworks.module_info.cache_launcher)
     end)
 end)

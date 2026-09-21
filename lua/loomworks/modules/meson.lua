@@ -748,6 +748,48 @@ local function compose_task_env(base_env, tool_data)
 end
 M.compose_task_env = compose_task_env  -- shared with the meson test unit
 
+--- Quote one element of a meson native-file `[binaries]` list. meson parses the
+--- list with a Python-ish literal parser, so a path with SPACES must be a single
+--- quoted element (NOT split). Backslashes are normalized to forward slashes
+--- (meson accepts them on Windows and it sidesteps escape ambiguity), and any
+--- single quote is backslash-escaped.
+--- @param s string
+--- @return string
+local function meson_native_quote(s)
+    return "'" .. tostring(s):gsub("\\", "/"):gsub("'", "\\'") .. "'"
+end
+
+--- Build a meson native-file body pinning the C / C++ compiler commands as
+--- LISTS (`c = ['ccache', '<abs path>']`). This is the space-safe, meson-
+--- sanctioned way to pin a compiler+launcher: unlike the `CC`/`CXX` env string,
+--- meson does NOT shell-split a list, so a compiler path (or launcher) with a
+--- space survives intact. Returns nil when no compiler command is known (let
+--- meson auto-detect). §5a.
+--- @param c_cmd string|nil resolved C compiler command
+--- @param cxx_cmd string|nil resolved C++ compiler command
+--- @param launcher string|nil compiler-cache launcher to prepend (or nil)
+--- @return string|nil native-file content
+local function meson_native_file_body(c_cmd, cxx_cmd, launcher)
+    if (not c_cmd or c_cmd == "") and (not cxx_cmd or cxx_cmd == "") then
+        return nil
+    end
+    local function line(key, cmd)
+        if not cmd or cmd == "" then return nil end
+        local elems = launcher and { launcher, cmd } or { cmd }
+        local quoted = {}
+        for _, e in ipairs(elems) do quoted[#quoted + 1] = meson_native_quote(e) end
+        return key .. " = [" .. table.concat(quoted, ", ") .. "]"
+    end
+    local lines = { "[binaries]" }
+    local c_line = line("c", c_cmd)
+    if c_line then lines[#lines + 1] = c_line end
+    local cpp_line = line("cpp", cxx_cmd)
+    if cpp_line then lines[#lines + 1] = cpp_line end
+    if #lines == 1 then return nil end
+    return table.concat(lines, "\n") .. "\n"
+end
+M._meson_native_file_body = meson_native_file_body  -- exported for tests
+
 --- Return overseer task templates for a project.
 --- Produces:
 ---   * configure: `meson setup <build_dir> --buildtype=X [--cross-file=...] -Dkey=value ...`
@@ -762,16 +804,22 @@ function M.tasks(project, active_config)
     local env, stripped_env = compose_task_env(project.env or {}, project.tool_data)
     local meson_prefix = resolve_meson(project.tool_data)
 
-    -- Compiler-cache launcher (§5a). loomworks owns the caching decision end to
-    -- end and never leans on meson's implicit PATH ccache auto-detect: when core
-    -- resolved a launcher, pin the WRAPPED command explicitly (`CC="<launcher>
-    -- <cc>"`, `CXX="<launcher> <cxx>"`); when it resolved none (policy off /
-    -- launcher absent), leave the bare pinned compiler compose_task_env set, so
-    -- meson cannot layer a cache back on. Recorded for staleness (§11).
+    -- Compiler pinning via a generated **native file** (§5a). meson `shlex`-
+    -- splits the `CC`/`CXX` env string on spaces, so a compiler path (or a
+    -- `<launcher> <path>` wrapper) that contains a space — e.g.
+    -- `C:/Program Files/LLVM/bin/clang++.exe` — shatters into broken tokens.
+    -- The native-file `[binaries]` LIST form is space-safe (meson never splits
+    -- a list), so we pin the compiler there instead: reuse the bare compiler
+    -- commands compose_task_env resolved into `env.CC`/`env.CXX` (MSVC `cl`,
+    -- gnu/clang absolute paths), wrap each with the launcher when core resolved
+    -- one, and DROP `CC`/`CXX` from the setup env so meson uses the native file
+    -- and never re-splits a spaced path. This also owns the caching decision end
+    -- to end — meson's implicit PATH-ccache auto-detect never gets a say.
     local resolved_launcher = project.compiler_cache and project.compiler_cache.path or nil
-    if resolved_launcher then
-        if env.CC and env.CC ~= "" then env.CC = resolved_launcher .. " " .. env.CC end
-        if env.CXX and env.CXX ~= "" then env.CXX = resolved_launcher .. " " .. env.CXX end
+    local native_file_body = meson_native_file_body(env.CC, env.CXX, resolved_launcher)
+    local native_file
+    if native_file_body then
+        env.CC, env.CXX = nil, nil
     end
 
     -- Build dir: core provides cached_build_dir (via M.resolve_build_dir) when a
@@ -802,6 +850,14 @@ function M.tasks(project, active_config)
         configure_cmd[#configure_cmd + 1] = "--cross-file=" .. mf
     end
 
+    -- Generated native file pinning the compiler (+ launcher) as a space-safe
+    -- list (see above). Written by the builder before setup runs; sits OUTSIDE
+    -- the build dir (a sibling file) so `meson setup --wipe` cannot delete it.
+    if native_file_body then
+        native_file = build_dir .. ".lw-native.ini"
+        configure_cmd[#configure_cmd + 1] = "--native-file=" .. native_file
+    end
+
     -- User -D options (project-wide + config-specific)
     for _, opt in ipairs(build_option_args(project, active_config)) do
         configure_cmd[#configure_cmd + 1] = opt
@@ -821,7 +877,15 @@ function M.tasks(project, active_config)
     -- CC/CXX, while preserving the -D options meson re-reads from the wiped dir.
     local wipe_cmd = vim.list_extend({}, configure_cmd)
     table.insert(wipe_cmd, insert_at + 2, "--wipe")
-    local launcher_changed = resolved_launcher ~= project.recorded_cache_launcher
+    -- Wipe only when the launcher genuinely CHANGED against a value recorded at
+    -- the last configure. `recorded` is a launcher path, the explicit "none"
+    -- (feature-configured, no cache), or nil (legacy / never recorded). A nil
+    -- recorded value is UNKNOWN — we do not force a wipe for a launcher we never
+    -- tracked (mirrors `ConfigUnit:launcher_changed`'s legacy carve-out). The
+    -- resolved side uses the same "none" sentinel so off↔off compares equal.
+    local recorded = project.recorded_cache_launcher
+    local resolved_marker = resolved_launcher or "none"
+    local launcher_changed = recorded ~= nil and recorded ~= resolved_marker
 
     local configuration_key = project.configuration_key or active_config
     local cached_tool_data = project.tool_data
@@ -842,6 +906,12 @@ function M.tasks(project, active_config)
                 cmd = configure_cmd
             end
             vim.fn.mkdir(build_dir, "p")
+            -- Write the generated native file (compiler + optional launcher) so
+            -- meson reads it at setup; a sibling of build_dir, survives --wipe.
+            if native_file and native_file_body then
+                local f = io.open(native_file, "w")
+                if f then f:write(native_file_body); f:close() end
+            end
             return { cmd = cmd, cwd = abs_path, env = env }
         end,
         loomworks = {
@@ -858,10 +928,12 @@ function M.tasks(project, active_config)
             module_info = {
                 buildtype = buildtype,
                 source_dir = project.path,
-                -- Resolved compiler-cache launcher this setup applied, or nil
-                -- (policy off / launcher absent). Recorded so is_stale detects a
-                -- launcher change and the next build reconfigures via --wipe (§11).
-                cache_launcher = resolved_launcher,
+                -- Resolved compiler-cache launcher this setup applied, or the
+                -- explicit sentinel "none" (policy off / launcher absent) —
+                -- never nil for a feature configure, so is_stale distinguishes
+                -- feature-no-cache ("none", install-after-configure fires) from
+                -- a legacy/never-recorded unit (nil, not invalidated) (§11).
+                cache_launcher = resolved_launcher or "none",
             },
         },
     }
