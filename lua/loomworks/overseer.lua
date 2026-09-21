@@ -59,6 +59,22 @@ local function resolve_project_variables(project, configuration, tool_data, prof
     return out
 end
 
+--- Resolve the compiler-cache launcher for a build context (core §1.3.2, §8.1).
+--- Core owns this resolution: it derives a concrete launcher from the effective
+--- `cache` policy and the tool's compiler family, PATH-gated. Returns the
+--- `{ tool, path }` a module applies, or nil (policy `off`, or launcher absent).
+--- Single-sourced so every context-assembly site sets `compiler_cache`
+--- identically — the module owns application, core owns resolution.
+--- @param project loomworks.Project|nil
+--- @param configuration loomworks.Configuration|nil
+--- @param tool_data table|nil active tool_data (yields the compiler family)
+--- @param profile loomworks.Profile|nil active profile (machine-local fill)
+--- @return { tool: string, path: string }|nil
+local function resolve_compiler_cache(project, configuration, tool_data, profile)
+    return require("loomworks.compiler_cache").resolve_for(
+        project, configuration, tool_data, profile)
+end
+
 --- Build the configuration map a module's task generator (`mod.tasks`) sees.
 --- Merges the module's regular configurations with its preset configurations,
 --- which arrive under a separate `preset_configurations` key but are keyed by
@@ -121,6 +137,7 @@ local function collect_configuration_tasks(unit)
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     local pt = mod.progress_parser
@@ -201,6 +218,7 @@ function M.build_spec_for(unit, target_id)
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     --- Validate spec types and coerce missing cwd to the workspace root.
@@ -310,6 +328,7 @@ local function collect_profile_tasks(profile)
             env = tool_data and tool_data.env or {},
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
+            compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
         }
 
         local pt = mod.progress_parser
@@ -377,6 +396,7 @@ local function collect_configuration_clean_tasks(unit)
         env = tool_data and tool_data.env or {},
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     return mod.clean_tasks(project_ctx, variant)
@@ -422,6 +442,7 @@ local function collect_profile_clean_tasks(profile)
             env = tool_data and tool_data.env or {},
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
+            compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
         }
 
         local clean = mod.clean_tasks(project_ctx, active_config)
