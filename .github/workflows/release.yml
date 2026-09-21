@@ -188,9 +188,24 @@ jobs:
             *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - name: Publish GitHub Release
+      # Immutable releases: a published release is frozen, so assets cannot be
+      # attached after it goes live. Create it as a DRAFT (still mutable),
+      # upload every asset to the draft, then un-draft it in the next step so it
+      # publishes atomically with its assets already attached.
+      - name: Stage GitHub Release (draft, with assets)
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
           fail_on_unmatched_files: true
           prerelease: ${{ steps.rel.outputs.prerelease }}
+          draft: true
+
+      - name: Publish the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The publish job has no git checkout, so gh cannot infer the repo —
+          # pass it explicitly with -R.
+          tag="${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}"
+          gh release edit "$tag" --draft=false -R "$GITHUB_REPOSITORY"
