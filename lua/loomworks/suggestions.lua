@@ -7,13 +7,21 @@
 --- surface; individual providers register independently and `collect` aggregates
 --- whatever is registered. The compact `N suggestions` line (spec/ui.md §1.1,
 --- headless §16.18) and the full `lw health` report (§16.31) both read this.
+---
+--- An item is one of two **kinds** (§16.31). An **actionable** item
+--- (`kind == "suggestion"`, the default) is a nag with a remedy — it is what the
+--- compact `N suggestions` count reports. An **informational** item
+--- (`kind == "info"`) affirms a healthy state ("using sccache"); it appears in
+--- the full `lw health` report but is deliberately excluded from the count, so a
+--- positive note never inflates the nag total.
 
 local M = {}
 
 --- @class loomworks.Suggestion
 --- @field title string one-line summary
 --- @field detail string why it fires
---- @field remedy string concrete action the user can take
+--- @field remedy string|nil concrete action the user can take (nil for info items)
+--- @field kind? "suggestion"|"info" actionable (default) vs informational
 
 --- Registered **passive** provider functions: `(workspace) -> Suggestion[]`.
 --- These are side-effect-free and MUST NOT spawn tools or touch the network —
@@ -65,11 +73,15 @@ end
 --- Run the **passive** providers only and return the flattened suggestions.
 --- This is what the compact `N suggestions` line (rendered frequently) reads,
 --- so it never touches the network. `lw health` uses `collect_health` instead.
---- @param workspace loomworks.Workspace
+---
+--- `workspace` may be nil (no workspace loaded here): the passive providers are
+--- all workspace-scoped and each guards nil itself, so this returns `{}` — but
+--- the guard lives in the providers, not here, so a future workspace-independent
+--- passive provider would still run.
+--- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
 function M.collect(workspace)
     local out = {}
-    if not workspace then return out end
     run_providers(M._providers, workspace, out)
     return out
 end
@@ -77,14 +89,41 @@ end
 --- Run the passive providers AND the health-only providers (which may make a
 --- network call) and return the flattened suggestions. Invoked ONLY by the
 --- explicit `lw health` report (§16.31), never by a passive render.
---- @param workspace loomworks.Workspace
+---
+--- `workspace` may be nil: the workspace-INDEPENDENT health providers (update
+--- availability, channel override) ignore their argument and still run, so
+--- `lw health` outside a workspace reports them. Workspace-scoped providers
+--- guard nil themselves and simply contribute nothing (§16.31).
+--- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
 function M.collect_health(workspace)
     local out = {}
-    if not workspace then return out end
     run_providers(M._providers, workspace, out)
     run_providers(M._health_providers, workspace, out)
     return out
+end
+
+--- Whether a suggestion is **actionable** — a nag that counts toward the compact
+--- `N suggestions` line — as opposed to an informational item that only shows in
+--- the full health report. Informational items carry `kind == "info"`.
+--- @param s loomworks.Suggestion
+--- @return boolean
+local function is_actionable(s)
+    return s.kind ~= "info"
+end
+
+--- Count of ACTIONABLE passive suggestions — exactly what the compact
+--- `N suggestions` status line (spec/ui.md §1.1, headless §16.18) reports.
+--- Informational items (`kind == "info"`, e.g. the affirmative "using sccache"
+--- note) are excluded so a positive status never inflates the nag count.
+--- @param workspace loomworks.Workspace|nil
+--- @return integer
+function M.count_actionable(workspace)
+    local n = 0
+    for _, s in ipairs(M.collect(workspace)) do
+        if is_actionable(s) then n = n + 1 end
+    end
+    return n
 end
 
 -- ---------------------------------------------------------------------------
@@ -142,17 +181,24 @@ function M._preferred_install_tool()
     return vim.fn.has("win32") == 1 and "sccache" or "ccache"
 end
 
---- Provider: suggest installing a compiler cache when the workspace has C/C++
---- projects and none is present on the toolchain path (headless §16.31). Does
---- not fire when a launcher is already present, nor when every C/C++ project
---- has pinned `cache` to `off`. Reads only resolved state + the PATH index; it
---- never spawns the cache tool.
---- @param workspace loomworks.Workspace
+--- Provider: report the workspace's compiler-cache state when it has C/C++
+--- projects (headless §16.31). Two outcomes, both gated on at least one
+--- non-orphaned C/C++-caching project that has NOT pinned `cache` to `off`:
+---   * a launcher is present on the toolchain path → an INFORMATIONAL item
+---     ("Compiler cache: using <tool>") affirming the healthy state — excluded
+---     from the `N suggestions` count (`kind = "info"`);
+---   * no launcher present → the ACTIONABLE "install one to speed rebuilds"
+---     suggestion (the nag that the count reports).
+--- Silent when there are no caching C/C++ projects, or when every such project
+--- has pinned `cache` to `off` (the user opted out — neither nag nor affirm).
+--- Reads only resolved state + the PATH index; it never spawns the cache tool.
+--- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
 function M.compiler_cache_provider(workspace)
+    if not workspace then return {} end -- workspace-scoped: nothing without one
     local cc = require("loomworks.compiler_cache")
 
-    -- Any non-orphaned C/C++-caching project, and are they all opted out?
+    -- Any non-orphaned C/C++-caching project?
     local cpp_projects = {}
     for _, project in pairs(workspace._projects or {}) do
         if not project.orphaned and project._module and project._module:caches_cpp() then
@@ -161,16 +207,36 @@ function M.compiler_cache_provider(workspace)
     end
     if #cpp_projects == 0 then return {} end
 
-    -- Already have a cache installed → nothing to suggest.
-    if cc.any_present() then return {} end
-
-    -- Every C/C++ project explicitly turned caching off → user opted out.
+    -- Every C/C++ project explicitly turned caching off → user opted out: neither
+    -- nag to install one nor affirm the one that happens to be installed.
     local all_off = true
     for _, project in ipairs(cpp_projects) do
         if not project_opts_out(project) then all_off = false break end
     end
     if all_off then return {} end
 
+    -- A launcher is present → affirmative, informational status (not counted).
+    local present = cc.any_present()
+    if present then
+        local tool = present
+        -- Prefer the active profile's resolved launcher (respects its policy and
+        -- compiler family) when there is one; fall back to whatever is on PATH.
+        local ap = workspace._active_profile
+        if ap then
+            local ok_c, status = pcall(function() return ap:compiler_cache_status() end)
+            if ok_c and status and status.present and status.tool then
+                tool = status.tool
+            end
+        end
+        return { {
+            kind = "info",
+            title = "Compiler cache: using " .. tool,
+            detail = tool .. " is on the toolchain path, so C/C++ rebuilds for this "
+                .. "workspace reuse prior object files instead of recompiling them.",
+        } }
+    end
+
+    -- No launcher present → actionable install suggestion (the nag).
     local tool = M._preferred_install_tool()
     local remedy
     if tool == "sccache" then
@@ -182,6 +248,7 @@ function M.compiler_cache_provider(workspace)
     end
 
     return { {
+        kind = "suggestion",
         title = "No compiler cache found — install one to speed rebuilds",
         detail = "This workspace has C/C++ projects but no ccache/sccache on the "
             .. "toolchain path. A compiler cache reuses prior object files, so "
