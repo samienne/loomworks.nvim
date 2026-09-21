@@ -662,3 +662,21 @@ A small improvement would be a user-facing warning at build time (or in
 rather than silently defaulting. Deferred — the current behavior does not crash
 or corrupt anything; it just isn't self-explaining. (Single-config presets are
 unaffected: their build type is mined into `variant`.)
+
+---
+
+## Compiler-trait refactor for backend-specific behavior
+
+Lift the family-dependent cache decisions — the cache-tool preference (sccache
+vs ccache) and the MSVC-style debug-info / `/Z7` handling — off coarse
+compiler-family enum checks and onto explicit capability **traits** on the Tool
+domain object (e.g. `msvc_style`, `debug_info_model`, `preferred_cache_order`).
+
+Motivated by the clang-cl bug in the compiler-cache feature, where
+`active_compiler_family()` over-normalized clang-cl → `clang` and collapsed a
+behaviorally-significant distinction (clang-cl is msvc-style). The fix threaded a
+dedicated `cpp_compilers.is_msvc_style` signal, but that is a point patch: a
+trait/capability model makes backend-specific behavior capability-driven and
+extensible — a new compiler declares its traits and the cache logic works with no
+new `if family == X` branches — and keeps family-sniffing from metastasizing
+across modules/core. Polish, not urgent.

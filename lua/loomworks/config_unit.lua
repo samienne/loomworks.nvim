@@ -583,19 +583,33 @@ end
 --- Whether the compiler-cache launcher core would resolve NOW differs from the
 --- one recorded at this unit's last configure (`module_info.cache_launcher`).
 --- The recompute rides the same resolution core uses to build the module
---- context (policy → family → PATH gating). Returns false for a unit that has
---- never been configured (no recorded value to compare against a resolved one).
+--- context (policy → family → PATH gating); `lookup` is injectable so the
+--- unit suite stays deterministic regardless of the host's real PATH.
+---
+--- **Legacy carve-out**: a `nil` recorded value means this unit was configured
+--- before the compiler-cache feature (or by a module that records none), so its
+--- launcher state is UNKNOWN — we do NOT retroactively invalidate it just
+--- because a cache now happens to be installed. Only a value actually recorded
+--- at configure — a launcher path, or the explicit sentinel `"none"` — takes
+--- part in staleness. A unit configured *under* the feature with no cache
+--- records `"none"`, so a later-installed cache (resolved `"/…"`) ≠ `"none"`
+--- still fires (install-after-configure), and a removed cache
+--- (recorded `"/…"`, resolved `"none"`) fires too.
+--- @param lookup? fun(name: string): string|nil executable resolver (default: PATH index)
 --- @return boolean
-function ConfigUnit:launcher_changed()
+function ConfigUnit:launcher_changed(lookup)
     if not self._configuration or self._configuration._removed then return false end
     if not self._cached_options and not self._cached_module_config then return false end
     local recorded = self.module_info and self.module_info.cache_launcher or nil
+    -- Never-recorded / legacy: unknown launcher state, never stale.
+    if recorded == nil then return false end
     local tool_data = (self._tool and self._tool.data) or self._tool_data
     local resolved = require("loomworks.compiler_cache").resolve_for(
         self._project, self._configuration, tool_data,
-        self._workspace and self._workspace._active_profile)
-    local resolved_path = resolved and resolved.path or nil
-    return recorded ~= resolved_path
+        self._workspace and self._workspace._active_profile, lookup)
+    -- Absent launcher compares as the same sentinel the module records.
+    local resolved_marker = resolved and resolved.path or "none"
+    return recorded ~= resolved_marker
 end
 
 --- Get the Project domain object for this unit.

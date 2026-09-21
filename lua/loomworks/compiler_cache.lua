@@ -61,6 +61,14 @@ function M.resolve(policy, family, lookup)
     local candidates
     if p == "auto" then
         local fam = require("loomworks.cpp_compilers").normalize_family(family)
+        -- clang-cl is MSVC-ABI (§5d): its auto preference is sccache like msvc,
+        -- not ccache like a gcc-driver clang. normalize_family folds clang-cl →
+        -- clang, so recover the signal from the raw family string. (resolve_for
+        -- passes an already-MSVC-ified family for a clang-cl tool_data; this
+        -- handles a caller passing the "clang-cl" string directly.)
+        if type(family) == "string" and family:lower():find("clang-cl", 1, true) then
+            fam = "msvc"
+        end
         candidates = AUTO_PREFERENCE[fam or ""] or DEFAULT_PREFERENCE
     else
         -- Explicit named launcher: use exactly that tool (still PATH-gated).
@@ -88,10 +96,16 @@ end
 function M.resolve_for(project, configuration, tool_data, profile, lookup)
     if not project then return nil end
     local cpp = require("loomworks.cpp_compilers")
-    local family = cpp.family_from_tool_data(tool_data)
+    -- Compiler-family for OVERRIDES resolution folds clang-cl → clang (spec: a
+    -- clang-cl build honours `overrides.clang`).
+    local override_family = cpp.family_from_tool_data(tool_data)
     local variables = require("loomworks.variables")
-    local policy = variables.resolve_cache_policy(project, configuration, family, profile)
-    return M.resolve(policy, family, lookup)
+    local policy = variables.resolve_cache_policy(
+        project, configuration, override_family, profile)
+    -- Compiler-family for the launcher PREFERENCE treats clang-cl as MSVC-ABI
+    -- (sccache-first, §5d) — distinct from the override family above.
+    local pref_family = cpp.is_msvc_style(tool_data) and "msvc" or override_family
+    return M.resolve(policy, pref_family, lookup)
 end
 
 --- Return the name of the first compiler-cache launcher present on the

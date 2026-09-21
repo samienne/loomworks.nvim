@@ -184,12 +184,12 @@ describe("compiler_cache.resolve", function()
         assert.is_nil(cc.resolve("ccache", "gcc", lookup_of({ sccache = true })))
     end)
 
-    it("clang-cl folds to clang for auto preference", function()
-        -- normalize_family folds clang-cl → clang, which prefers ccache;
-        -- on a cache-less-ccache box the sccache fallback still applies.
-        assert.equals("ccache", cc.resolve("auto", "clang-cl", both).tool)
-        assert.equals("sccache",
-            cc.resolve("auto", "clang-cl", lookup_of({ sccache = true })).tool)
+    it("clang-cl is MSVC-ABI: prefers sccache (like msvc), fallback ccache", function()
+        -- clang-cl uses cl.exe's cmdline/PDB model (§5d), so its auto preference
+        -- is sccache-first — NOT ccache like a gcc-driver clang.
+        assert.equals("sccache", cc.resolve("auto", "clang-cl", both).tool)
+        assert.equals("ccache",
+            cc.resolve("auto", "clang-cl", lookup_of({ ccache = true })).tool)
     end)
 
     it("an unknown/nil family uses the default preference", function()
@@ -233,6 +233,19 @@ describe("compiler_cache.resolve_for", function()
 
     it("returns nil for a nil project", function()
         assert.is_nil(cc.resolve_for(nil, nil, {}, nil, both))
+    end)
+
+    it("clang-cl tool_data prefers sccache; gcc-driver clang prefers ccache", function()
+        local project = { key = "App", variables = {} }
+        -- clang-cl kit (compiler_id carries clang-cl) → MSVC-ABI → sccache.
+        assert.equals("sccache", cc.resolve_for(project, nil,
+            { compiler_id = "clang-cl-17.0.0" }, nil, both).tool)
+        -- ...and the sccache-absent fallback is ccache.
+        assert.equals("ccache", cc.resolve_for(project, nil,
+            { compiler_id = "clang-cl-17.0.0" }, nil, lookup_of({ ccache = true })).tool)
+        -- Plain gcc-driver clang stays ccache-first.
+        assert.equals("ccache", cc.resolve_for(project, nil,
+            { compiler_id = "clang-18.1.8" }, nil, both).tool)
     end)
 end)
 

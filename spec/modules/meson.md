@@ -76,22 +76,30 @@ gcc / clang family tool (`sccache` the cross-platform fallback); an explicit
 `ccache` / `sccache` policy uses that tool. The launcher is applied only when
 core actually resolved one (present on the toolchain search path).
 
-**Explicit CC/CXX wrapping — and deliberate suppression of meson's auto-detect.**
-meson has its own implicit behavior: when it finds `ccache` on `PATH` it silently
-prepends it to compiler invocations. loomworks does **not** rely on that. Instead,
-where §5 pins `CC` / `CXX` in the setup environment, the module takes **explicit
-control** and, when a launcher is resolved, pins the wrapped command for **both**
-tools — the pinned driver becomes `<launcher> <compiler>` (`CC="<path> <cc>"`,
-`CXX="<path> <cxx>"`). When the policy resolves to no launcher (`off`, or a tool
-not found) the module pins the **bare** compiler explicitly, so meson's implicit
-auto-detect cannot layer a cache back on. This is a deliberate divergence from
-meson's default: loomworks owns the caching decision end to end so that (a) meson
-and cmake behave identically under the same `cache` policy, and (b) the staleness
-fingerprint (§11) stays coherent — the wrapper is a resolved input loomworks
-records, not a hidden PATH-sensitive choice meson makes on its own. The compiler
-identity that keys the build directory is unchanged: the launcher wraps the same
-pinned driver, it does not select a different compiler (§5, core §15 "the tool
-owns the compiler").
+**Explicit compiler pinning via a generated native file — and deliberate
+suppression of meson's auto-detect.** meson has its own implicit behavior: when
+it finds `ccache` on `PATH` it silently prepends it to compiler invocations.
+loomworks does **not** rely on that. Instead, where §5 pins `CC` / `CXX`, the
+module takes **explicit control** by writing a generated **native file** whose
+`[binaries]` section pins the compiler as a LIST — `cpp = ['<launcher>',
+'<compiler>']` and `c = ['<launcher>', '<compiler>']` when a launcher is
+resolved, or the bare `cpp = ['<compiler>']` / `c = ['<compiler>']` when the
+policy resolves to no launcher (`off`, or a tool not found) — passed to
+`meson setup` via `--native-file`. The `CC` / `CXX` environment string is **not**
+used to carry the compiler command: meson `shlex`-splits it on whitespace, so a
+compiler path (or a `<launcher> <path>` wrapper) that contains a **space** — e.g.
+`C:/Program Files/LLVM/bin/clang++.exe` — would shatter into broken tokens. A
+native-file list is not split, so spaces are safe; the module therefore drops
+`CC` / `CXX` from the setup environment and relies on the native file. The bare
+pinning (no launcher) means meson's implicit PATH auto-detect cannot layer a
+cache back on. This is a deliberate divergence from meson's default: loomworks
+owns the caching decision end to end so that (a) meson and cmake behave
+identically under the same `cache` policy, and (b) the staleness fingerprint
+(§11) stays coherent — the launcher is a resolved input loomworks records, not a
+hidden PATH-sensitive choice meson makes on its own. The compiler identity that
+keys the build directory is unchanged: the launcher wraps the same pinned
+driver, it does not select a different compiler (§5, core §15 "the tool owns the
+compiler").
 
 **Applying a launcher change requires `meson setup --wipe`, not
 `--reconfigure`.** meson fixes the compiler command at first setup and does not
@@ -101,9 +109,9 @@ dir was configured (the cache tool appeared/disappeared, or the policy was
 edited) would be **silently ignored** by an in-place reconfigure. When the
 resolved launcher differs from the one the build dir was configured with, the
 module therefore reconfigures with `meson setup --wipe`: it wipes and rebuilds
-the build tree, re-detecting the now-wrapped (or now-unwrapped) `CC`/`CXX`, while
-**preserving the existing `-D` options** (meson re-reads them from the wiped
-directory). This `--wipe` is the general mechanism for **any** compiler-command
+the build tree, re-reading the now-wrapped (or now-unwrapped) compiler from the
+`--native-file`, while **preserving the existing `-D` options** (meson re-reads
+them from the wiped directory). This `--wipe` is the general mechanism for **any** compiler-command
 change on the same build directory; the compiler-cache toggle is simply its
 first routine case. This diverges from cmake, whose launcher is a mutable cache
 variable that a plain in-place reconfigure applies (see [`cmake.md` §5d](cmake.md)).
@@ -185,8 +193,8 @@ it resolved into the setup task's `module_info`, and `is_stale()` recomputes it
 (current `cache` policy + compiler family + live toolchain-path presence) and
 compares. A launcher that appears, disappears, or changes — because the tool was
 installed/removed or the policy was edited — marks the unit stale, and the build
-gate reconfigures so the wrapped (or un-wrapped) `CC` / `CXX` takes effect. That
-reconfigure is a **`meson setup --wipe`** (§5a), not a plain
+gate reconfigures so the wrapped (or un-wrapped) native-file compiler takes
+effect. That reconfigure is a **`meson setup --wipe`** (§5a), not a plain
 `meson setup --reconfigure`: meson fixes the compiler command at setup and would
 otherwise ignore the changed launcher. `--wipe` re-detects the compiler while
 preserving the `-D` options, so the caching change is applied without losing

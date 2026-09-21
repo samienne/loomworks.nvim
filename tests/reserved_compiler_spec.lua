@@ -202,7 +202,16 @@ describe("meson strip-at-build", function()
         local configure = find_task(tasks, "configure")
         assert.same({ "CXX" }, configure.loomworks.stripped_compiler_keys.env)
 
-        -- The composed build env carries the tool's compiler, not the config's.
-        assert.equals("/usr/bin/g++", configure.builder().env.CXX)
+        -- The tool's compiler is pinned via the space-safe native file (§5a),
+        -- NOT the `CXX` env string (which meson shlex-splits). The smuggled
+        -- `CXX` is stripped from the env, and the tool's compiler wins in the
+        -- native file.
+        local spec = configure.builder()
+        assert.is_nil(spec.env.CXX)
+        local fh = io.open(root .. "/build.lw-native.ini", "r")
+        local body = fh and fh:read("*a")
+        if fh then fh:close() end
+        assert.is_truthy(body)
+        assert.is_truthy(body:find("cpp = ['/usr/bin/g++']", 1, true))
     end)
 end)

@@ -24,16 +24,13 @@ local function strip_reserved_env(env)
 end
 
 --- True when a kit builds with the MSVC ABI (cl.exe or clang-cl), for which
---- the compiler cache needs `/Z7` debug info to hit (§5d). `family_from_tool_data`
---- folds clang-cl → clang, so clang-cl is detected explicitly here.
+--- the compiler cache needs `/Z7` debug info to hit (§5d). Delegates to the
+--- shared `cpp_compilers.is_msvc_style` — the single clang-cl/MSVC-ABI signal
+--- both the `/Z7` path and the launcher-preference resolver use.
 --- @param kit table|nil tool_data
 --- @return boolean
 local function is_msvc_style(kit)
-    if type(kit) ~= "table" then return false end
-    local id = (kit.compiler_id or ""):lower()
-    local path = (kit.compiler_path or ""):lower()
-    if id:match("clang%-cl") or path:match("clang%-cl") then return true end
-    return require("loomworks.cpp_compilers").family_from_tool_data(kit) == "msvc"
+    return require("loomworks.cpp_compilers").is_msvc_style(kit)
 end
 
 --- A CMake cache key that selects a compiler launcher —
@@ -1070,10 +1067,13 @@ function M.tasks(project, active_config)
                 compiler = kit and kit.compiler_id or nil,
                 source_dir = project.path,
                 -- Resolved compiler-cache launcher path this configure applied,
-                -- or nil (policy off / launcher absent / preset). Recorded so
-                -- `ConfigUnit:is_stale()` can detect a launcher that later
-                -- appears, disappears, or changes value (§5d / §11).
-                cache_launcher = cache_launcher,
+                -- or the explicit sentinel "none" (policy off / launcher absent
+                -- / preset). Recorded — never nil for a feature configure — so
+                -- `ConfigUnit:is_stale()` distinguishes "configured under the
+                -- feature with no cache" (→ "none", install-after-configure
+                -- fires when a cache later appears) from a legacy/never-recorded
+                -- unit (nil, never retroactively invalidated). (§5d / §11.)
+                cache_launcher = cache_launcher or "none",
             },
         },
     }
