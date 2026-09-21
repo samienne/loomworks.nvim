@@ -786,7 +786,7 @@ function Project:save_variable(var_name, declaration)
     end
 
     local vars_mod = require("loomworks.variables")
-    if vars_mod.RESERVED_NAMES[var_name] then
+    if vars_mod.RESERVED_NAMES[var_name] or vars_mod.PREDECLARED_NAMES[var_name] then
         return false, "'" .. var_name .. "' is a reserved variable name"
     end
 
