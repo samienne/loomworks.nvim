@@ -4647,6 +4647,54 @@ function M._worktree_hint(opts)
   return lines
 end
 
+--- Query a compiler cache tool's own usage statistics (headless §16.18,
+--- `--cache-stats`). This spawns the tool, so it is only called under the
+--- explicit flag. `run` is injectable for tests. Returns the (trimmed,
+--- non-empty) output lines, or a one-line diagnostic note.
+--- @param tool string launcher name ("ccache" | "sccache")
+--- @param path string resolved executable path
+--- @param run? fun(cmd: string[]): string runner (default vim.fn.system)
+--- @return string[]
+function M._cache_stats(tool, path, run)
+  run = run or function(cmd) return vim.fn.system(cmd) end
+  local args = (tool == "sccache") and { path, "--show-stats" } or { path, "-s" }
+  local ok, outp = pcall(run, args)
+  if not ok or type(outp) ~= "string" or outp == "" then
+    return { "(could not read " .. tool .. " statistics)" }
+  end
+  local lines = {}
+  for line in (outp .. "\n"):gmatch("([^\n]*)\n") do
+    if line:match("%S") then lines[#lines + 1] = (line:gsub("%s+$", "")) end
+  end
+  if #lines == 0 then return { "(no statistics reported)" } end
+  return lines
+end
+
+--- Render the active profile's compiler-cache line (headless §16.18) — the
+--- resolved launcher, or that caching is off/unavailable, mirroring the
+--- editor's `Cache:` row. Under `--cache-stats` it also folds in the tool's own
+--- usage statistics (spawning the tool). Never lets a broken query break status.
+--- @param pal table status_palette()
+--- @param profile loomworks.Profile active profile
+--- @param cache_stats boolean whether to fold in usage statistics
+local function render_cache_line(pal, profile, cache_stats)
+  local ok_c, cache = pcall(function() return profile:compiler_cache_status() end)
+  if not ok_c or not cache then return end
+  local value = (cache.text:gsub("^Cache: ", ""))
+  local line = pal.title("Cache") .. string.rep(" ", 12) .. value
+  if cache.stale then line = line .. pal.warn(" [stale — reconfigure]") end
+  out(line)
+  if cache_stats then
+    if cache.present and cache.path then
+      for _, l in ipairs(M._cache_stats(cache.tool, cache.path)) do
+        out("  " .. pal.dim(l))
+      end
+    else
+      out("  " .. pal.dim("(no cache resolved — nothing to query)"))
+    end
+  end
+end
+
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
 --- a workspace too. Every section is capped to keep it to a single page.
 --- `opts.check` (from `lw status --check`) makes the invocation exit non-zero
@@ -4692,6 +4740,13 @@ function M.cmd_status(root, opts)
   else
     out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
       pal.inline("lw profile create <set> <tool>"))
+  end
+
+  -- Compiler cache line for the active profile (headless §16.18), sibling to
+  -- the toolchain info, mirroring the editor's Cache: row. Shown only for a
+  -- profile with a C/C++-caching module; --cache-stats folds in usage stats.
+  if ap then
+    render_cache_line(pal, ap, opts.cache_stats)
   end
 
   -- Diagnostics section — right after the active-profile block, before Targets.
@@ -5966,7 +6021,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local HELP = {
-  status = [[lw status [--check]   (also: bare `lw`)
+  status = [[lw status [--check] [--cache-stats]   (also: bare `lw`)
 
 One-screen workspace overview: the active profile and its launchable targets
 (default marked `*`), a Diagnostics section (shown only when non-empty), then
@@ -5976,12 +6031,20 @@ with their configurations. Each section is limited to fit a page — use
 lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
 
+For a profile with a C/C++ project the overview shows a `Cache` line — the
+resolved compiler-cache launcher (ccache/sccache), or that caching is off /
+`auto (none found)`. A `[stale — reconfigure]` marker means the next build
+reconfigures to apply a launcher change.
+
 Diagnostics come from the same source the editor's Diagnostics page uses:
 per-item warnings/errors also appear inline under the relevant profile,
 configuration set, or project.
 
-  --check   exit non-zero if any diagnostic is present (for CI); without it,
-            `lw status` always exits 0.]],
+  --check         exit non-zero if any diagnostic is present (for CI); without
+                  it, `lw status` always exits 0.
+  --cache-stats   also run the resolved cache tool's own stats query
+                  (`ccache -s` / `sccache --show-stats`) and fold it in. Off by
+                  default because it spawns the tool.]],
   tools = [[lw tools [--cached]
 
 List the toolchains detected on this machine, grouped by module (cmake,
@@ -6970,8 +7033,12 @@ local function main()
     -- `--check` (accepted anywhere in argv) makes status exit non-zero when any
     -- diagnostic is present, for CI; it never changes the rendering.
     local check = false
-    for _, v in ipairs(a) do if v == "--check" then check = true end end
-    finish(M.cmd_status(root, { check = check }))
+    local cache_stats = false
+    for _, v in ipairs(a) do
+      if v == "--check" then check = true end
+      if v == "--cache-stats" then cache_stats = true end
+    end
+    finish(M.cmd_status(root, { check = check, cache_stats = cache_stats }))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a
