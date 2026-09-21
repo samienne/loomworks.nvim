@@ -571,7 +571,31 @@ function ConfigUnit:is_stale()
     if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then
         return true
     end
+    -- Compiler-cache launcher change (§5.1 / module §11): recompute the launcher
+    -- core would resolve now (current `cache` policy + compiler family + live
+    -- toolchain-path presence) and compare to the one recorded at configure.
+    -- A launcher that appears, disappears, or changes value marks the unit stale
+    -- so the build gate reconfigures (cmake in-place; meson --wipe).
+    if self:launcher_changed() then return true end
     return false
+end
+
+--- Whether the compiler-cache launcher core would resolve NOW differs from the
+--- one recorded at this unit's last configure (`module_info.cache_launcher`).
+--- The recompute rides the same resolution core uses to build the module
+--- context (policy → family → PATH gating). Returns false for a unit that has
+--- never been configured (no recorded value to compare against a resolved one).
+--- @return boolean
+function ConfigUnit:launcher_changed()
+    if not self._configuration or self._configuration._removed then return false end
+    if not self._cached_options and not self._cached_module_config then return false end
+    local recorded = self.module_info and self.module_info.cache_launcher or nil
+    local tool_data = (self._tool and self._tool.data) or self._tool_data
+    local resolved = require("loomworks.compiler_cache").resolve_for(
+        self._project, self._configuration, tool_data,
+        self._workspace and self._workspace._active_profile)
+    local resolved_path = resolved and resolved.path or nil
+    return recorded ~= resolved_path
 end
 
 --- Get the Project domain object for this unit.

@@ -2778,6 +2778,16 @@ function Workspace:record_task_result(result)
             config_unit.module_info[k] = v
         end
     end
+    -- Freeze the resolved compiler-cache launcher on a configure (§5, module
+    -- §11). It is a resolved value that can go back to *absent* (launcher
+    -- removed / policy edited to off); the additive merge above can never
+    -- clear a key to nil, so assign it explicitly from the configure result so
+    -- `ConfigUnit:is_stale()` sees a removed launcher rather than a stale one.
+    if action == "configure" then
+        config_unit.module_info = config_unit.module_info or {}
+        config_unit.module_info.cache_launcher =
+            result.module_info and result.module_info.cache_launcher or nil
+    end
 
     -- Sync state to BuildDir domain object (create if needed)
     local BuildDir = require("loomworks.build_dir")
