@@ -428,7 +428,10 @@ does not exist, or omitting one with no active profile, is an error that names
 the problem. Being read-only, this view MAY resolve the active profile even in a
 non-interactive host (§16.9).
 
-The human status overview is likewise read-only, and when no workspace resolves
+The human status overview is likewise read-only — it runs no build and authors
+no project or build-system files (§16.9), though it MAY refresh its own internal
+advisory caches under `.nvim/` (the suggestion cache of §16.31, whose passive
+tier is computed lazily on first display). When no workspace resolves
 here (§1.1) it points the user at how to start one, with each suggested command
 on its own line. When a workspace does resolve, the overview MAY present the
 active profile's launchable targets, marking its default target and — when the
@@ -1000,6 +1003,53 @@ invoked and is deliberately excluded from the passive count. This split is a
 hard requirement: a passive status render MUST NOT perform network I/O. Provider
 #1 (compiler cache) is passive; the update-availability provider below is
 on-demand.
+
+**Cached two-tier model.** Because passive detection is no longer free — even a
+passive provider may probe the toolchain path, and the provider set grows over
+time — the suggestion results are cached so the frequently-rendered
+`N suggestions` count does not repeat the work on every render. The cache is a
+small workspace-local file, separate from and independent of the build-state
+cache (its own schema, versioned on its own): it is an internal advisory cache
+under the workspace's `.nvim/` directory, never a project or build-system file,
+so "health authors nothing" (§16.9) continues to hold. It records two tiers:
+
+- a **local tier** — the results of the passive (workspace-scoped, local-detection)
+  providers — stored with the time they were computed and an **invalidation key**:
+  a cheap fingerprint of the inputs those providers read (the projects and their
+  cache policy, the resolved tool selection, the platform). When the fingerprint
+  changes, the local tier is stale;
+- a **network tier** — the results of the on-demand (network-backed) providers —
+  stored with the time they were computed, and governed by a **time-to-live**
+  (on the order of a day).
+
+The two refresh tiers, over that one cache, are:
+
+- **Passive collect** (the `N suggestions` count of §16.18 and `spec/ui.md` §1.1,
+  and the editor status page) reads the cache. If the local tier is absent or its
+  invalidation key no longer matches the current inputs, it **recomputes the
+  passive providers**, rewrites the local tier, and uses the fresh result — a
+  lazy, compute-on-first-use that stays cheap on every subsequent render. It
+  **never** computes the network tier: it includes whatever network-tier items
+  the cache already holds (informational, however old — so a finding surfaced by a
+  prior health run is still reflected in the count) but performs no network I/O.
+  This preserves the hard invariant that a passive render never touches the
+  network.
+- **On-demand health** (`lw health`) is the full refresh. It **always** recomputes
+  the local tier, and recomputes the network tier when the cached network tier is
+  older than its TTL (or when the user forces a refresh); otherwise it reuses the
+  cached network tier, so back-to-back health runs do not repeatedly hit the
+  network. It rewrites the cache and reports every item.
+
+**First run and resilience.** With no cache present, a passive collect computes
+only the local tier (never the network), and a health run computes both. The
+cache is advisory and self-healing: a missing, corrupt, or older-schema cache is
+treated as empty and recomputed — it never raises an error and never blocks a
+render or a health run. Writes are atomic. A passive collect outside a workspace
+(no `.nvim/` to key against) simply runs the passive providers directly without
+caching, and a health run outside a workspace runs its workspace-independent
+providers directly (the local tier has nothing to key or store). No background or
+asynchronous network refresh is implied — the network tier is refreshed strictly
+on an explicit `lw health`.
 
 **Provider #2 — update availability (on-demand).** When the host is running a
 versioned release (a source with a comparable version — not a development/fused

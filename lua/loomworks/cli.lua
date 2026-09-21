@@ -4888,8 +4888,10 @@ end
 --- it still reports them beneath the worktree hint. Project-scoped items (the
 --- compiler-cache status) require a workspace and are simply absent without one.
 --- @param root string|nil workspace root
+--- @param opts? { force?: boolean } force a network-tier refresh (ignore the TTL)
 --- @return integer exit code (always 0)
-function M.cmd_health(root)
+function M.cmd_health(root, opts)
+  opts = opts or {}
   local pal = status_palette(stdout_supports_color())
   local ws = root and load_workspace(root, false) or nil
 
@@ -4909,7 +4911,7 @@ function M.cmd_health(root)
   -- whatever workspace we have (possibly nil); the workspace-independent
   -- providers run regardless, the workspace-scoped ones guard nil themselves.
   local ok_s, suggestions = pcall(function()
-    return require("loomworks.suggestions").collect_health(ws)
+    return require("loomworks.suggestions").collect_health(ws, { force = opts.force })
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
 
@@ -6389,12 +6391,12 @@ Rules:
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
                      could change which option wins.]],
-  health = [[lw health
+  health = [[lw health [--force]
 
 List the workspace's advisory suggestions — the detail behind the compact
 `N suggestions` line the status overview shows. Health is read-only: it runs
-no build and writes nothing, and it ALWAYS exits 0 (a suggestion never gates
-an operation and is distinct from a diagnostic).
+no build and authors no project or build-system files, and it ALWAYS exits 0
+(a suggestion never gates an operation and is distinct from a diagnostic).
 
 Each suggestion prints a title, why it fires, and a concrete remedy. Providers
 are advisory and extensible; the first flags a workspace that has C/C++
@@ -6404,7 +6406,13 @@ whether a newer `lw` release is available on your update channel (this makes a
 network request, so it runs only here — never on the passive count) and notes
 when a release-url override is superseding a non-default channel; a failed/offline
 check is silent. Health never spawns a cache tool — usage statistics live behind
-`lw status --cache-stats`.]],
+`lw status --cache-stats`.
+
+Results are cached in `.nvim/loomworks.health.json` (an internal advisory cache,
+separate from the build cache) so the passive `N suggestions` count stays cheap.
+`lw health` always refreshes the local checks; the network update-availability
+check is refreshed at most once a day. `--force` (alias `--refresh`) refreshes
+the network check now, ignoring that throttle.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as
@@ -7136,7 +7144,11 @@ local function main()
   -- `health` lists advisory suggestions; like status it works outside a
   -- workspace (worktree hint) and never fails, so it runs before the guard.
   if command == "health" then
-    finish(M.cmd_health(root))
+    local force = false
+    for _, v in ipairs(a) do
+      if v == "--force" or v == "--refresh" then force = true end
+    end
+    finish(M.cmd_health(root, { force = force }))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a

@@ -17,6 +17,21 @@
 
 local M = {}
 
+local health_cache = require("loomworks.health_cache")
+
+--- Wall-clock epoch seconds. Injectable so tests drive the local-tier
+--- `computed_at` and the network-tier TTL deterministically. Must be a
+--- persist-across-process clock (NOT the monotonic `deps.clock`, which resets
+--- each `lw` invocation) so a ~day-long TTL survives separate CLI runs.
+--- @type fun(): integer
+M._clock = function() return os.time() end
+
+--- Time-to-live for the cached NETWORK tier (§16.31). Within this window,
+--- back-to-back `lw health` runs reuse the cached update-availability result
+--- instead of re-hitting the API. ~24h.
+--- @type integer
+M.NETWORK_TTL = 24 * 60 * 60
+
 --- @class loomworks.Suggestion
 --- @field title string one-line summary
 --- @field detail string why it fires
@@ -70,19 +85,85 @@ local function run_providers(list, workspace, out)
     end
 end
 
---- Run the **passive** providers only and return the flattened suggestions.
---- This is what the compact `N suggestions` line (rendered frequently) reads,
---- so it never touches the network. `lw health` uses `collect_health` instead.
+--- Run the **passive**/local providers and return their flattened suggestions.
+--- @param workspace loomworks.Workspace|nil
+--- @return loomworks.Suggestion[]
+local function run_local(workspace)
+    local out = {}
+    run_providers(M._providers, workspace, out)
+    return out
+end
+
+--- Run the **health-only**/network providers and return their flattened
+--- suggestions.
+--- @param workspace loomworks.Workspace|nil
+--- @return loomworks.Suggestion[]
+local function run_network(workspace)
+    local out = {}
+    run_providers(M._health_providers, workspace, out)
+    return out
+end
+
+--- The caching backing for a workspace — its `.nvim/` root and an io dependency
+--- — or nil when there is nothing to cache against (a nil workspace, or the bare
+--- table stubs the framework tests pass). Without a backing, `collect` /
+--- `collect_health` run providers live and never persist a cache (§16.31).
+--- @param workspace any
+--- @return {root: string, io: table}|nil
+local function cache_env(workspace)
+    if type(workspace) ~= "table" then return nil end
+    local root = workspace.root
+    local core = workspace._core
+    if type(root) ~= "string" or type(core) ~= "table" or type(core._deps) ~= "table" then
+        return nil
+    end
+    local io_dep = core._deps.io
+    if type(io_dep) ~= "table" then return nil end
+    return { root = root, io = io_dep }
+end
+
+--- Append `items` to `out`.
+--- @param out loomworks.Suggestion[]
+--- @param items loomworks.Suggestion[]|nil
+local function append(out, items)
+    for _, s in ipairs(items or {}) do out[#out + 1] = s end
+end
+
+--- Run the **passive** providers and return the flattened suggestions. This is
+--- what the compact `N suggestions` line (rendered frequently) reads, so it
+--- NEVER touches the network. `lw health` uses `collect_health` instead.
 ---
---- `workspace` may be nil (no workspace loaded here): the passive providers are
---- all workspace-scoped and each guards nil itself, so this returns `{}` — but
---- the guard lives in the providers, not here, so a future workspace-independent
---- passive provider would still run.
+--- Cached two-tier model (§16.31): with a workspace backing, the local tier is
+--- read from the on-disk health cache and recomputed only when it is absent or
+--- its cheap invalidation key (`_local_key`) no longer matches the current
+--- inputs — a lazy compute-on-first-`lw status` that stays cheap on every later
+--- render. The cached NETWORK tier's items (if any, from a prior `lw health`)
+--- are included informationally, however old, but the network tier is NEVER
+--- computed here. Without a workspace backing (nil workspace, or a future
+--- workspace-independent passive provider), the passive providers run live and
+--- nothing is cached.
 --- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
 function M.collect(workspace)
+    local env = cache_env(workspace)
+    if not env then
+        return run_local(workspace)
+    end
+
+    local data = health_cache.read(env.io, env.root)
+    local key = M._local_key(workspace)
+    local tier = data.local_tier
+    if not tier or tier.key ~= key then
+        tier = { items = run_local(workspace), computed_at = M._clock(), key = key }
+        data.local_tier = tier
+        health_cache.write(env.io, env.root, data)
+    end
+
     local out = {}
-    run_providers(M._providers, workspace, out)
+    append(out, tier.items)
+    -- Cached network items are informational context for the count (however
+    -- old); the network tier is refreshed only by `collect_health`, never here.
+    if data.network_tier then append(out, data.network_tier.items) end
     return out
 end
 
@@ -90,16 +171,50 @@ end
 --- network call) and return the flattened suggestions. Invoked ONLY by the
 --- explicit `lw health` report (§16.31), never by a passive render.
 ---
+--- Full refresh over the cached two-tier model (§16.31): the LOCAL tier is
+--- always recomputed; the NETWORK tier is recomputed when it is absent, older
+--- than `NETWORK_TTL`, or `opts.force` is set, and otherwise reused (so
+--- back-to-back health runs don't hammer the API). The cache is then rewritten.
+---
 --- `workspace` may be nil: the workspace-INDEPENDENT health providers (update
 --- availability, channel override) ignore their argument and still run, so
 --- `lw health` outside a workspace reports them. Workspace-scoped providers
---- guard nil themselves and simply contribute nothing (§16.31).
+--- guard nil themselves and simply contribute nothing (§16.31). Without a
+--- workspace backing there is nowhere to key or store a cache, so both tiers run
+--- live (no TTL throttle is possible).
 --- @param workspace loomworks.Workspace|nil
+--- @param opts? { force?: boolean } force a network-tier refresh (ignore TTL)
 --- @return loomworks.Suggestion[]
-function M.collect_health(workspace)
+function M.collect_health(workspace, opts)
+    opts = opts or {}
+    local env = cache_env(workspace)
+    if not env then
+        local out = {}
+        append(out, run_local(workspace))
+        append(out, run_network(workspace))
+        return out
+    end
+
+    local data = health_cache.read(env.io, env.root)
+    local now = M._clock()
+
+    -- Local tier: always recomputed on an explicit health run.
+    local local_items = run_local(workspace)
+    data.local_tier = { items = local_items, computed_at = now, key = M._local_key(workspace) }
+
+    -- Network tier: refresh when forced, absent, or past its TTL; else reuse.
+    local net = data.network_tier
+    local fresh = net and net.computed_at and (now - net.computed_at) < M.NETWORK_TTL
+    if opts.force or not fresh then
+        net = { items = run_network(workspace), computed_at = now }
+        data.network_tier = net
+    end
+
+    health_cache.write(env.io, env.root, data)
+
     local out = {}
-    run_providers(M._providers, workspace, out)
-    run_providers(M._health_providers, workspace, out)
+    append(out, local_items)
+    append(out, net and net.items)
     return out
 end
 
@@ -149,6 +264,61 @@ local function config_explicit_cache(cfg)
         end
     end
     return vals
+end
+
+--- Cheap invalidation fingerprint for the LOCAL suggestion tier (§16.31): a
+--- stable digest of exactly the inputs the passive providers read — the platform,
+--- each non-orphaned project's key + module + whether it caches C/C++ + the
+--- EXPLICIT `cache` values on its configurations (the opt-out signal), and the
+--- active profile's identity + resolved tool keys. It intentionally does NOT
+--- include any toolchain-PATH probe result: computing the key must stay cheap
+--- (in-memory only), so a launcher appearing/disappearing on PATH without a
+--- config change is picked up by the next `lw health` (which always recomputes
+--- the local tier), not by an ever-changing passive key. Overridable so tests
+--- can drive invalidation deterministically.
+--- @param workspace loomworks.Workspace|nil
+--- @return string
+function M._local_key(workspace)
+    local parts = { "win=" .. tostring(vim.fn.has("win32")) }
+
+    if type(workspace) == "table" then
+        -- Projects, deterministically ordered by key.
+        local projects = {}
+        for _, project in pairs(workspace._projects or {}) do
+            projects[#projects + 1] = project
+        end
+        table.sort(projects, function(a, b) return (a.key or "") < (b.key or "") end)
+        for _, project in ipairs(projects) do
+            if not project.orphaned then
+                local mod = project._module
+                local caches = mod and mod.caches_cpp and mod:caches_cpp() or false
+                local cvals = {}
+                for _, cfg in ipairs(project._configurations or {}) do
+                    if not cfg._removed then
+                        for _, v in ipairs(config_explicit_cache(cfg)) do
+                            cvals[#cvals + 1] = tostring(v)
+                        end
+                    end
+                end
+                table.sort(cvals)
+                parts[#parts + 1] = table.concat({
+                    "p", project.key or "?", mod and mod.id or "?",
+                    tostring(caches), table.concat(cvals, ","),
+                }, "|")
+            end
+        end
+
+        -- Active profile identity + resolved tool selection.
+        local ap = workspace._active_profile
+        if ap then
+            local tkeys = {}
+            for _, k in ipairs(ap._tool_keys or {}) do tkeys[#tkeys + 1] = k end
+            table.sort(tkeys)
+            parts[#parts + 1] = "profile|" .. (ap.key or "") .. "|" .. table.concat(tkeys, ",")
+        end
+    end
+
+    return vim.fn.sha256(table.concat(parts, "\n")):sub(1, 16)
 end
 
 --- Whether a project has explicitly opted out of compiler caching — it declares
