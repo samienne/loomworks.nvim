@@ -4753,6 +4753,21 @@ function M.cmd_status(root, opts)
   -- Renders nothing when there are none.
   render_diagnostics(pal, diags)
 
+  -- Suggestions count line (spec/ui.md §1.1, headless §16.18): a one-line
+  -- advisory pointing at `lw health`, shown only when the framework has
+  -- findings. Advisory — it never affects the --check exit status.
+  do
+    local ok_s, suggestions = pcall(function()
+      return require("loomworks.suggestions").collect(ws)
+    end)
+    if ok_s and suggestions and #suggestions > 0 then
+      local n = #suggestions
+      out("")
+      out(pal.warn(n .. (n == 1 and " suggestion" or " suggestions"))
+        .. " — run " .. pal.inline("lw health"))
+    end
+  end
+
   if ap then
     -- Targets: the active profile's launchable targets (the same list
     -- `lw target` shows), default marked `*`+green. Build-free — a build target
@@ -4860,6 +4875,43 @@ function M.cmd_status(root, opts)
   -- `--check` (CI): exit non-zero when ANY diagnostic is present. The rendering
   -- above is unchanged; only the exit code differs. Without it, status is 0.
   return check_exit_code(opts.check, diags)
+end
+
+--- `lw health` — list the workspace's advisory suggestions in full (headless
+--- §16.31), the detail behind the compact `N suggestions` line the overview
+--- shows. Read-only and advisory: it performs no build, authors nothing, and
+--- ALWAYS exits 0 (suggestions never gate). Works outside a workspace (shows
+--- the worktree hint). Never spawns a cache tool.
+--- @param root string|nil workspace root
+--- @return integer exit code (always 0)
+function M.cmd_health(root)
+  if not root then
+    for _, line in ipairs(M._worktree_hint()) do out(line) end
+    return 0
+  end
+  local ws = load_workspace(root, false)
+  local pal = status_palette(stdout_supports_color())
+  out(pal.title("loomworks health — " .. (ws.name or "?")) .. "  "
+    .. pal.dim("(" .. ws.root .. ")"))
+
+  local ok_s, suggestions = pcall(function()
+    return require("loomworks.suggestions").collect(ws)
+  end)
+  if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
+
+  if #suggestions == 0 then
+    out("")
+    out(pal.dim("No suggestions — nothing to flag."))
+    return 0
+  end
+
+  for _, s in ipairs(suggestions) do
+    out("")
+    out(pal.warn("• " .. s.title))
+    if s.detail then out("  " .. s.detail) end
+    if s.remedy then out("  " .. pal.dim(s.remedy)) end
+  end
+  return 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -5788,7 +5840,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "update", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -5821,7 +5873,7 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "status" then
-    if n == 1 then emit({ "--check" }) end
+    if n == 1 then emit({ "--check", "--cache-stats" }) end
     return 0
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
@@ -6314,6 +6366,18 @@ Rules:
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
                      could change which option wins.]],
+  health = [[lw health
+
+List the workspace's advisory suggestions — the detail behind the compact
+`N suggestions` line the status overview shows. Health is read-only: it runs
+no build and writes nothing, and it ALWAYS exits 0 (a suggestion never gates
+an operation and is distinct from a diagnostic).
+
+Each suggestion prints a title, why it fires, and a concrete remedy. Providers
+are advisory and extensible; the first flags a workspace that has C/C++
+projects but no compiler cache (ccache/sccache) on the toolchain path, and
+suggests installing the platform-preferred one. Health never spawns a cache
+tool — usage statistics live behind `lw status --cache-stats`.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as
@@ -6902,6 +6966,7 @@ Usage: lw [command] [args]
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
+  health            list actionable workspace suggestions (advisory, never fails)
   module <sub>      install | update | remove | list acquirable modules (mod)
   settings <...>    get/set lw's own settings (dev-lua, release-url, …)
   completion <shell> print a shell completion script (bash|zsh)
@@ -7039,6 +7104,12 @@ local function main()
       if v == "--cache-stats" then cache_stats = true end
     end
     finish(M.cmd_status(root, { check = check, cache_stats = cache_stats }))
+  end
+
+  -- `health` lists advisory suggestions; like status it works outside a
+  -- workspace (worktree hint) and never fails, so it runs before the guard.
+  if command == "health" then
+    finish(M.cmd_health(root))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a
