@@ -205,5 +205,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The publish job has no git checkout, so gh cannot infer the repo —
+          # pass it explicitly with -R.
           tag="${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}"
-          gh release edit "$tag" --draft=false
+          gh release edit "$tag" --draft=false -R "$GITHUB_REPOSITORY"
