@@ -23,6 +23,78 @@ local function strip_reserved_env(env)
     return filtered, stripped
 end
 
+--- True when a kit builds with the MSVC ABI (cl.exe or clang-cl), for which
+--- the compiler cache needs `/Z7` debug info to hit (§5d). `family_from_tool_data`
+--- folds clang-cl → clang, so clang-cl is detected explicitly here.
+--- @param kit table|nil tool_data
+--- @return boolean
+local function is_msvc_style(kit)
+    if type(kit) ~= "table" then return false end
+    local id = (kit.compiler_id or ""):lower()
+    local path = (kit.compiler_path or ""):lower()
+    if id:match("clang%-cl") or path:match("clang%-cl") then return true end
+    return require("loomworks.cpp_compilers").family_from_tool_data(kit) == "msvc"
+end
+
+--- A CMake cache key that selects a compiler launcher —
+--- `CMAKE_<LANG>_COMPILER_LAUNCHER`. Deliberately NOT reserved (§5b reserves
+--- only `..._COMPILER`); the compiler-cache feature owns it *conditionally*
+--- (§5d / §4f): when core resolved a launcher, the feature's value wins over a
+--- user-set one (with a diagnostic); when it did not, a user launcher passes
+--- through untouched.
+--- @param key any
+--- @return boolean
+local function is_launcher_option(key)
+    return type(key) == "string" and key:match("^CMAKE_.+_COMPILER_LAUNCHER$") ~= nil
+end
+
+--- Memoized `cmake --version` probe. Returns `{ major, minor }` or nil.
+--- Keyed by the resolved cmake executable so a repeated configure pays it once.
+--- Only consulted on the MSVC `/Z7` path (§5d), so a non-MSVC box never runs it.
+M._cmake_version_cache = {}
+--- @param cmake_cmd string
+--- @return { major: integer, minor: integer }|nil
+local function cmake_version(cmake_cmd)
+    local cached = M._cmake_version_cache[cmake_cmd]
+    if cached ~= nil then
+        return cached ~= false and cached or nil
+    end
+    local out
+    local ok, res = pcall(function()
+        return vim.fn.system({ cmake_cmd, "--version" })
+    end)
+    if ok and type(res) == "string" then out = res end
+    local major, minor
+    if out then major, minor = out:match("cmake version (%d+)%.(%d+)") end
+    local v = (major and minor)
+        and { major = tonumber(major), minor = tonumber(minor) } or false
+    M._cmake_version_cache[cmake_cmd] = v
+    return v ~= false and v or nil
+end
+
+--- Whether the resolved cmake is >= 3.25 (introduced
+--- `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT`). Absent version ⇒ treated as older.
+--- @param cmake_cmd string
+--- @return boolean
+local function cmake_at_least_325(cmake_cmd)
+    local v = cmake_version(cmake_cmd)
+    if not v then return false end
+    return v.major > 3 or (v.major == 3 and v.minor >= 25)
+end
+
+--- One-shot non-blocking warnings (§5d preset / launcher-conflict), deduped so
+--- a repeated build does not spam. Keyed by an arbitrary string.
+M._warned = {}
+--- @param key string
+--- @param msg string
+local function warn_once(key, msg)
+    if M._warned[key] then return end
+    M._warned[key] = true
+    vim.schedule(function()
+        vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+    end)
+end
+
 M.id = "cmake"
 M.api_version = 1
 M.has_keyed_tools = true
@@ -759,6 +831,29 @@ function M.tasks(project, active_config)
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
     local configure_cmd = { cmake_cmd }
 
+    -- Compiler-cache launcher (§5d). Core resolved a launcher from the
+    -- effective `cache` policy + compiler family (or nil for policy `off` /
+    -- launcher-absent); the module applies it. Resolve the user options once,
+    -- up front, so the non-preset branch can decide launcher OWNERSHIP: a
+    -- user-set `CMAKE_<LANG>_COMPILER_LAUNCHER` is not reserved (§5b/§4f), so
+    -- when the feature resolved a launcher it WINS over the user's (with a
+    -- diagnostic) and when it did not, the user's launcher passes through.
+    local cache_launcher = project.compiler_cache and project.compiler_cache.path or nil
+    local resolved_opts = M.resolve_options(
+        project.type_config or {}, project.configurations or {}, active_config)
+    local user_launcher_keys = {}
+    local user_debug_format_conflict = false
+    for k, v in pairs(resolved_opts) do
+        if is_launcher_option(k) then
+            user_launcher_keys[#user_launcher_keys + 1] = k
+        elseif k == "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT" then
+            user_debug_format_conflict = true
+        elseif type(v) == "string" and (v:find("/Zi", 1, true) or v:find("/ZI", 1, true)) then
+            user_debug_format_conflict = true
+        end
+    end
+    table.sort(user_launcher_keys)
+
     if from_preset then
         -- cmake wants the bare preset name (`dev`), not our canonical
         -- `preset:dev` key. cmake reads CMakePresets.json and applies the
@@ -769,6 +864,19 @@ function M.tasks(project, active_config)
         -- which cmake accepts alongside --preset.)
         configure_cmd[#configure_cmd + 1] = "--preset"
         configure_cmd[#configure_cmd + 1] = config_info.base_name or active_config
+
+        -- Preset non-goal (§5d): loomworks passes no `-D` flags to a preset,
+        -- so the compiler-cache launcher cannot be injected here. Warn (once)
+        -- and direct the user to set CMAKE_<LANG>_COMPILER_LAUNCHER in the
+        -- preset's own cacheVariables. cache_launcher is left nil below so the
+        -- module records "no launcher applied" for this configuration.
+        if cache_launcher then
+            warn_once("preset:" .. project.name .. ":" .. active_config,
+                "compiler cache not applied to preset configuration "
+                .. project.name .. "/" .. active_config
+                .. "; set CMAKE_<LANG>_COMPILER_LAUNCHER in the preset's cacheVariables.")
+        end
+        cache_launcher = nil
     else
         if generator then
             configure_cmd[#configure_cmd + 1] = "-G"
@@ -790,6 +898,44 @@ function M.tasks(project, active_config)
             end
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER=" .. compiler_path
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER=" .. c_path
+        end
+
+        -- Compiler-cache launcher (§5d): apply the core-resolved launcher via
+        -- CMake's own CMAKE_<LANG>_COMPILER_LAUNCHER cache variables (per the
+        -- C/CXX languages CMake enables). A user launcher option, if any, is
+        -- dropped from emission below (own-launcher wins, §4f).
+        if cache_launcher then
+            configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER_LAUNCHER=" .. cache_launcher
+            configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER_LAUNCHER=" .. cache_launcher
+
+            if #user_launcher_keys > 0 then
+                warn_once("launcher:" .. project.name .. ":" .. active_config,
+                    "compiler cache owns the compiler launcher for "
+                    .. project.name .. "/" .. active_config
+                    .. "; ignoring user-set " .. table.concat(user_launcher_keys, ", ")
+                    .. ". Set `cache` to off to keep your own launcher.")
+            end
+
+            -- MSVC debug-info format: sccache/ccache miss when MSVC writes debug
+            -- info to a shared .pdb (/Zi|/ZI). Switch to embedded (/Z7) so the
+            -- cache can hit — only for MSVC/clang-cl, single-config, cmake >= 3.25,
+            -- and only when the user has not pinned a conflicting value (§5d).
+            if is_msvc_style(kit) and not multi_config then
+                if user_debug_format_conflict then
+                    warn_once("z7conflict:" .. project.name .. ":" .. active_config,
+                        "compiler cache active but a conflicting MSVC debug format is set for "
+                        .. project.name .. "/" .. active_config
+                        .. "; the cache will likely miss until it is 'Embedded' (/Z7).")
+                elseif cmake_at_least_325(cmake_cmd) then
+                    configure_cmd[#configure_cmd + 1] =
+                        "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+                else
+                    warn_once("z7old:" .. project.name .. ":" .. active_config,
+                        "compiler cache active but cmake < 3.25 cannot set embedded MSVC "
+                        .. "debug info; caching may be ineffective for "
+                        .. project.name .. "/" .. active_config)
+                end
+            end
         end
 
         -- Single-config generators support compile_commands.json generation
@@ -835,10 +981,8 @@ function M.tasks(project, active_config)
     -- compiler (managed -DCMAKE_C/CXX_COMPILER above, never touched here)
     -- always wins; skipped keys feed the config's inline diagnostic.
     local stripped_opts = {}
-    local type_config = project.type_config or {}
     do
-        local resolved_opts = M.resolve_options(
-            type_config, project.configurations or {}, active_config)
+        -- resolved_opts was resolved once up front (for launcher ownership).
         if next(resolved_opts) then
             local opt_ctx = {
                 workspace_root = project.workspace_root,
@@ -860,6 +1004,11 @@ function M.tasks(project, active_config)
             for k, v in pairs(resolved_opts) do
                 if reserved_compiler.is_reserved_option(k) then
                     stripped_opts[#stripped_opts + 1] = k
+                elseif cache_launcher and is_launcher_option(k) then
+                    -- The compiler-cache feature owns the launcher (§4f/§5d);
+                    -- the user's launcher option is dropped (warned above).
+                    -- When no cache is resolved, this branch is skipped and the
+                    -- user launcher passes through the else below.
                 else
                     local expanded = expand.expand_string(v, opt_ctx)
                     configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. expanded
@@ -920,6 +1069,11 @@ function M.tasks(project, active_config)
                 generator = generator,
                 compiler = kit and kit.compiler_id or nil,
                 source_dir = project.path,
+                -- Resolved compiler-cache launcher path this configure applied,
+                -- or nil (policy off / launcher absent / preset). Recorded so
+                -- `ConfigUnit:is_stale()` can detect a launcher that later
+                -- appears, disappears, or changes value (§5d / §11).
+                cache_launcher = cache_launcher,
             },
         },
     }
