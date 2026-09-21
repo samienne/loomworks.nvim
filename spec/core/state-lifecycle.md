@@ -462,7 +462,12 @@ search path — makes the configured unit stale, so the existing build gate (§5
 auto-reconfigures it before the next build. There is no separate eager
 reconfigure: the launcher change is caught at the gate exactly like an
 option-level change, and the build directory identity is NOT keyed on the
-launcher.
+launcher. The build gate drives this uniformly, but the reconfigure **mechanism**
+is the module's to choose — some build systems apply a changed compiler-launcher
+with an in-place reconfigure, while others must rebuild the build tree
+(options-preserving) because they fix the compiler command at first configure and
+would otherwise ignore the change. Core does not prescribe which; it only
+requires that the stale unit reconfigures before the next build.
 
 ### 5.2 Auto-configure before build
 

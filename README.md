@@ -316,7 +316,11 @@ one is used); on MSVC with a cache active it also switches debug info to embedde
 meson, loomworks wraps the pinned `CC`/`CXX` explicitly (rather than relying on
 meson's own ccache auto-detect) so both build systems behave identically.
 Changing the policy — or installing/removing the cache tool — reconfigures the
-affected build on the next build. Run `lw health` to be reminded when a C/C++
+affected build automatically on the next build. The mechanism differs per build
+system: cmake applies it with an in-place reconfigure (the first build then
+rebuilds objects to repopulate the cache — expected), while meson uses
+`meson setup --wipe` (a clean, options-preserving reconfigure) because it fixes
+the compiler at setup and ignores it on a plain reconfigure. Run `lw health` to be reminded when a C/C++
 workspace has no cache installed; the status overview shows a compact
 `N suggestions` line, and `lw status --cache-stats` folds in the cache tool's own
 hit-rate statistics (off by default — it spawns the tool).

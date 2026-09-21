@@ -93,6 +93,21 @@ identity that keys the build directory is unchanged: the launcher wraps the same
 pinned driver, it does not select a different compiler (§5, core §15 "the tool
 owns the compiler").
 
+**Applying a launcher change requires `meson setup --wipe`, not
+`--reconfigure`.** meson fixes the compiler command at first setup and does not
+re-evaluate it on a plain `meson setup --reconfigure` — the normal reconfigure
+loomworks issues for an option change. So a launcher that changed since the build
+dir was configured (the cache tool appeared/disappeared, or the policy was
+edited) would be **silently ignored** by an in-place reconfigure. When the
+resolved launcher differs from the one the build dir was configured with, the
+module therefore reconfigures with `meson setup --wipe`: it wipes and rebuilds
+the build tree, re-detecting the now-wrapped (or now-unwrapped) `CC`/`CXX`, while
+**preserving the existing `-D` options** (meson re-reads them from the wiped
+directory). This `--wipe` is the general mechanism for **any** compiler-command
+change on the same build directory; the compiler-cache toggle is simply its
+first routine case. This diverges from cmake, whose launcher is a mutable cache
+variable that a plain in-place reconfigure applies (see [`cmake.md` §5d](cmake.md)).
+
 ## 6. Target discovery (`parse_targets`)
 
 Uses `meson introspect --targets` + `meson introspect --target-sources`
@@ -170,6 +185,11 @@ it resolved into the setup task's `module_info`, and `is_stale()` recomputes it
 (current `cache` policy + compiler family + live toolchain-path presence) and
 compares. A launcher that appears, disappears, or changes — because the tool was
 installed/removed or the policy was edited — marks the unit stale, and the build
-gate re-runs `meson setup` so the wrapped (or un-wrapped) `CC` / `CXX` takes
-effect. Because loomworks pins the driver explicitly rather than leaning on
-meson's PATH auto-detect (§5a), this recompute fully captures the caching state.
+gate reconfigures so the wrapped (or un-wrapped) `CC` / `CXX` takes effect. That
+reconfigure is a **`meson setup --wipe`** (§5a), not a plain
+`meson setup --reconfigure`: meson fixes the compiler command at setup and would
+otherwise ignore the changed launcher. `--wipe` re-detects the compiler while
+preserving the `-D` options, so the caching change is applied without losing
+configuration. Because loomworks pins the driver explicitly rather than leaning
+on meson's PATH auto-detect (§5a), this recompute fully captures the caching
+state.
