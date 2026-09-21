@@ -313,6 +313,14 @@ itself, which would collide with §5b:
 - **Staleness.** The resolved launcher path is recorded in the configure task's
   `module_info` and participates in `ConfigUnit:is_stale()` (§11) on the same
   footing as resolved option values — see §11.
+- **Applied by a plain in-place reconfigure (no wipe).** `CMAKE_<LANG>_COMPILER_LAUNCHER`
+  is a mutable cache variable, so a launcher change is applied by a normal
+  in-place `cmake` reconfigure that re-passes the `-D` line — no build tree wipe
+  is needed. Because the reconfigure changes the compile command, the **first
+  build after the change rebuilds objects** (repopulating the cache); this is
+  expected, not a bug. This is the point of contrast with meson, which must
+  reconfigure with `meson setup --wipe` because it fixes the compiler command at
+  setup and ignores it on a plain reconfigure (see [`meson.md` §5a](meson.md)).
 
 ## 6. Inheritance model
 
