@@ -607,6 +607,70 @@ function Profile:projects()
     return self._projects_list or {}
 end
 
+--- Profile-level compiler-cache status (spec/ui.md profile Cache row, headless
+--- §16.18). Returns nil when the profile contains no C/C++-caching module.
+--- Otherwise a display-ready descriptor: the effective `cache` policy, the
+--- resolved launcher (or nil), whether one is present, and whether any of the
+--- profile's configured units were built with a different launcher (stale).
+--- Resolution is anchored on the profile's first caching project — v1 shows a
+--- single profile-level row. It never spawns the cache tool.
+--- @return { policy: string, tool: string|nil, present: boolean, stale: boolean, text: string }|nil
+function Profile:compiler_cache_status()
+    local cc = require("loomworks.compiler_cache")
+    local variables = require("loomworks.variables")
+    local cpp = require("loomworks.cpp_compilers")
+
+    local target
+    for _, pp in ipairs(self:projects()) do
+        local project = pp._project
+        if project and project._module and project._module:caches_cpp() then
+            target = pp
+            break
+        end
+    end
+    if not target then return nil end
+
+    local project = target._project
+    local configuration = target:configuration()
+    local tool = target:tool_object()
+    local family = cpp.family_from_tool_data(tool and tool.data or nil)
+
+    local policy = cc.normalize_policy(
+        variables.resolve_cache_policy(project, configuration, family, self))
+    local resolved = cc.resolve(policy, family)
+
+    -- Stale when any of the profile's configured caching units were built with
+    -- a launcher different from the one that would resolve now.
+    local stale = false
+    for _, pp in ipairs(self:projects()) do
+        local u = pp._config_unit
+        if u and u.launcher_changed and u:launcher_changed() then
+            stale = true
+            break
+        end
+    end
+
+    local text
+    if resolved then
+        text = "Cache: " .. resolved.tool
+    elseif policy == "off" then
+        text = "Cache: off"
+    elseif policy == "auto" then
+        text = "Cache: auto (none found)"
+    else
+        text = "Cache: " .. policy .. " (not found)"
+    end
+
+    return {
+        policy = policy,
+        tool = resolved and resolved.tool or nil,
+        path = resolved and resolved.path or nil,
+        present = resolved ~= nil,
+        stale = stale,
+        text = text,
+    }
+end
+
 -- ---------------------------------------------------------------------------
 -- Actions
 -- ---------------------------------------------------------------------------

@@ -158,6 +158,20 @@ local function render_profile_details(tree, profile, lw)
         end)
     end
 
+    -- Compiler cache: one profile-level row, sibling to Toolchain, for a
+    -- profile that contains a C/C++-caching module (spec/ui.md). Informational
+    -- in v1 (no picker) — policy is edited through the variable system. A
+    -- launcher mismatch vs the configured units carries a [stale — reconfigure]
+    -- hint (LoomworksStale).
+    local cache_status = profile:compiler_cache_status()
+    if cache_status then
+        local row = { { cache_status.text, "Comment" } }
+        if cache_status.stale then
+            row[#row + 1] = { " [stale — reconfigure]", "LoomworksStale" }
+        end
+        tree:item(row, { direct = true })
+    end
+
     -- Device selection: per-profile, gated on the profile actually
     -- containing a device-capable module project. A cmake-only profile
     -- in a multi-module workspace shouldn't show this row.
@@ -311,6 +325,12 @@ local function render_profile_details(tree, profile, lw)
                 -- longer this unit's, so it needs a rebuild to reclaim it.
                 if unit and unit.is_overwritten and unit:is_overwritten() then
                     row_chunks[#row_chunks + 1] = { " [overwritten]", "LoomworksConflict" }
+                end
+                -- Per-configuration compiler-cache mismatch (spec/ui.md): the
+                -- resolved launcher differs from the one this unit was built
+                -- with, so the next build reconfigures to apply the change.
+                if unit and unit.launcher_changed and unit:launcher_changed() then
+                    row_chunks[#row_chunks + 1] = { " [stale — reconfigure]", "LoomworksStale" }
                 end
                 tree:node(row_chunks, {
                     fold_key = "profile_proj:" .. profile.key .. ":" .. pp_pkey,
