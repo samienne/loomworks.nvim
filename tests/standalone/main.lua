@@ -863,6 +863,9 @@ do
   local res, err = update.self_update({ channel = "unstable" })
   ok(res ~= nil, "unstable self_update installs" .. (err and (" — " .. err) or ""))
   if res then eq(res.version, "0.0.0-test", "installed the pre-release the API named") end
+  -- No override here, so the channel genuinely applies — nothing to warn about.
+  if res then eq(res.channel_overridden, nil,
+    "unstable without an override does not flag an ignored channel") end
 
   -- Verification is NOT weakened on unstable: a tampered manifest still aborts.
   local good = readfile(FX .. "manifest.json")
@@ -894,6 +897,16 @@ do
   ok(res ~= nil, "override + unstable installs from the mirror, API untouched" ..
     (err and (" — " .. err) or ""))
   if res then eq(res.version, "0.0.0-test", "version came from the mirror manifest, not the API") end
+  -- The supersede is BY DESIGN (§16.29) but must be VISIBLE: the requested
+  -- non-default channel was ignored, so self_update flags it for the CLI to warn.
+  if res then eq(res.channel_overridden, "unstable",
+    "self_update reports the requested --channel was superseded by the override") end
+
+  -- Negative: stable channel + the same override is NO conflict (both resolve to
+  -- the override), so there is nothing to warn about.
+  local res2 = update.self_update({ channel = "stable", force = true })
+  if res2 then eq(res2.channel_overridden, nil,
+    "stable + override does not flag an ignored channel (no conflict)") end
 
   update.RELEASES_API_URL = savedApi
   uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
