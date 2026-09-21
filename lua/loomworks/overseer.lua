@@ -138,6 +138,7 @@ local function collect_configuration_tasks(unit)
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
+        recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
     }
 
     local pt = mod.progress_parser
@@ -219,6 +220,7 @@ function M.build_spec_for(unit, target_id)
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
+        recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
     }
 
     --- Validate spec types and coerce missing cwd to the workspace root.
@@ -329,6 +331,8 @@ local function collect_profile_tasks(profile)
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
             compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
+            recorded_cache_launcher = pp._config_unit and pp._config_unit.module_info
+                and pp._config_unit.module_info.cache_launcher or nil,
         }
 
         local pt = mod.progress_parser
