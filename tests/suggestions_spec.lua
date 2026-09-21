@@ -83,8 +83,37 @@ describe("compiler-cache suggestion provider", function()
         assert.is_string(out[1].remedy)
     end)
 
-    it("is silent when a cache is already present", function()
+    it("reports an INFO 'using <tool>' item when a cache IS present", function()
         local ws = make_ws({ App = { cmake = {} } })
+        set_present({ ccache = true })
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("info", out[1].kind)
+        assert.matches("using ccache", out[1].title)
+        assert.is_string(out[1].detail)
+        assert.is_nil(out[1].remedy) -- informational, no action to take
+    end)
+
+    it("does NOT count the affirmative info item in the actionable count", function()
+        local ws = make_ws({ App = { cmake = {} } })
+        set_present({ ccache = true })
+        -- The provider yields one passive item, but it is informational…
+        assert.equals(1, #suggestions.collect(ws))
+        -- …so the compact `N suggestions` count sees zero actionable items.
+        assert.equals(0, suggestions.count_actionable(ws))
+    end)
+
+    it("DOES count the actionable install suggestion", function()
+        local ws = make_ws({ App = { cmake = {} } })
+        set_present({}) -- no cache on PATH → actionable nag
+        assert.equals(1, suggestions.count_actionable(ws))
+    end)
+
+    it("is silent (no info, no nag) when every C/C++ project pinned cache off, even with a cache present", function()
+        local ws = make_ws({
+            App = { cmake = { configurations = { Debug = { variables = { cache = "off" } },
+                                                 Release = { variables = { cache = "off" } } } } },
+        })
         set_present({ ccache = true })
         assert.same({}, suggestions.compiler_cache_provider(ws))
     end)
@@ -260,6 +289,55 @@ describe("channel-override suggestion provider", function()
         update.url_override = function() return "https://mirror.example/lw" end
         update.resolve_channel = function() return update.DEFAULT_CHANNEL end
         assert.same({}, suggestions.channel_override_provider({}))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- collect_health with NO workspace — the workspace-independent providers (update
+-- availability, channel override) must still run; only the workspace-SCOPED ones
+-- fall silent. This is the `lw health` in a plain dir regression (§16.31).
+-- ---------------------------------------------------------------------------
+describe("collect_health without a workspace", function()
+    local update
+    local saved_luaroot, saved_loaded
+    before_each(function()
+        saved_luaroot = _G.__loomworks_luaroot
+        saved_loaded = package.loaded["boot.update"]
+        update = { DEFAULT_CHANNEL = "stable" }
+        package.loaded["boot.update"] = update
+    end)
+    after_each(function()
+        _G.__loomworks_luaroot = saved_luaroot
+        package.loaded["boot.update"] = saved_loaded
+    end)
+
+    it("still reports the update-availability item with a nil workspace", function()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        update.resolve_channel = function() return "stable" end
+        update.resolve_newest_version = function() return "0.2.0" end
+        update.url_override = function() return nil end
+
+        local out = suggestions.collect_health(nil)
+        local titles = {}
+        for _, s in ipairs(out) do titles[s.title] = true end
+        assert.is_true(titles["Update available"])
+    end)
+
+    it("still reports a channel override with a nil workspace", function()
+        _G.__loomworks_luaroot = nil -- no update item; isolate the override
+        update.url_override = function() return "https://mirror.example/lw" end
+        update.resolve_channel = function() return "unstable" end
+
+        local out = suggestions.collect_health(nil)
+        local titles = {}
+        for _, s in ipairs(out) do titles[s.title] = true end
+        assert.is_true(titles["Update channel overridden by release-url"])
+    end)
+
+    it("does not error on the workspace-scoped provider with a nil workspace", function()
+        -- The compiler-cache provider is workspace-scoped: it must guard nil and
+        -- simply contribute nothing rather than throwing.
+        assert.same({}, suggestions.compiler_cache_provider(nil))
     end)
 end)
 

@@ -950,29 +950,45 @@ and the editor status page (`spec/ui.md` §1.1) show. Health is read-only: it
 performs no build and authors nothing (§16.9).
 
 Suggestions come from an **extensible suggestion-provider framework**. A provider
-inspects the resolved workspace and returns zero or more suggestions, each a
+inspects the resolved workspace and returns zero or more items, each a
 `{ title, detail, remedy }` triple: `title` is the one-line summary, `detail`
 explains why it fires, and `remedy` is the concrete action the user can take.
-Providers are advisory only — a suggestion never gates a build, never fails
+Providers are advisory only — an item never gates a build, never fails
 `--check` (§16.18), and is distinct from a **diagnostic** (a structural problem
 that does gate operations). The framework is the general surface; individual
 providers ship independently, and the health report aggregates whatever providers
 are registered.
 
-**Provider #1 — compiler cache.** When the workspace has one or more C/C++
-projects (a project whose module reports the caching-relevant language) and **no**
-compiler cache is present on the toolchain search path, the provider suggests
-installing one to speed rebuilds. Its `remedy` is platform-appropriate — the
-Windows-preferred launcher (`sccache`) on Windows, the Unix-preferred launcher
-(`ccache`) on Linux/macOS — matching the `auto` policy's own preference
-(§1.3.2, module specs). The provider does not fire when a launcher is already
-present, nor when every C/C++ project has pinned `cache` to `off`, since the user
-has opted out.
+**Actionable vs informational items.** An item is one of two **kinds**. An
+**actionable** item is a nag: something the user can act on, carrying a `remedy`.
+An **informational** item affirms a healthy state (for example, that a compiler
+cache is in use) and carries no remedy. Both appear in the full health report, but
+only actionable items contribute to the compact `N suggestions` count (§16.18,
+`spec/ui.md` §1.1) — an affirmative note never inflates the nag total. The report
+renders informational items distinctly (as positive status, not a warning).
 
-The report reads only already-resolved workspace state and the toolchain-path
-index; like the rest of introspection it does **not** spawn the cache tool. Cache
-usage statistics remain behind the explicit `--cache-stats` flag of the status
-overview (§16.18), not the health report.
+**Provider #1 — compiler cache.** When the workspace has one or more C/C++
+projects (a project whose module reports the caching-relevant language), the
+provider reports the cache state affirmatively or actionably:
+
+- a compiler cache **is** present on the toolchain search path → an
+  **informational** item ("Compiler cache: using `<tool>`") naming the launcher
+  in use — the active profile's resolved launcher when there is one, otherwise
+  whichever launcher is on the path;
+- **no** compiler cache present → an **actionable** suggestion to install one to
+  speed rebuilds. Its `remedy` is platform-appropriate — the Windows-preferred
+  launcher (`sccache`) on Windows, the Unix-preferred launcher (`ccache`) on
+  Linux/macOS — matching the `auto` policy's own preference (§1.3.2, module specs).
+
+The provider is silent (neither affirms nor nags) when the workspace has no C/C++
+project, or when every C/C++ project has pinned `cache` to `off`, since the user
+has opted out. It reads only already-resolved workspace state and the
+toolchain-path index; like the rest of introspection it does **not** spawn the
+cache tool. Cache usage statistics remain behind the explicit `--cache-stats` flag
+of the status overview (§16.18), not the health report.
+
+This provider is **workspace-scoped** — it needs a resolved workspace and
+contributes nothing without one (below).
 
 **Passive vs on-demand providers.** A provider is one of two kinds. A **passive**
 provider is side-effect-free and cheap — it reads resolved state only, never
@@ -1015,6 +1031,17 @@ override + channel) but is surfaced in the health view rather than the passive
 count. It is the health-view counterpart of the inline self-update warning for
 the same state; both derive from the identical override/channel resolution
 rather than duplicating it.
+
+**Health runs without a workspace.** A provider is either **workspace-scoped**
+(it inspects the resolved workspace — e.g. the compiler-cache provider) or
+**workspace-independent** (it ignores the workspace — the update-availability and
+channel-override providers, which concern the running `lw` release itself). When
+health is invoked outside a configured workspace, the workspace-independent
+providers still run and report; the workspace-scoped ones simply contribute
+nothing. So `lw health` in a plain directory still surfaces an available update or
+a channel override — it does not fall silent merely because no workspace is
+loaded. The report leads with the same worktree/init hint the status overview
+shows (§16.18) so the absence of project-scoped items is explained.
 
 **Builds are unaffected and need no new flags.** A headless build honors the same
 `cache` policy resolution and launcher staleness as the editor (§1.3.2, §5): the

@@ -4757,11 +4757,12 @@ function M.cmd_status(root, opts)
   -- advisory pointing at `lw health`, shown only when the framework has
   -- findings. Advisory — it never affects the --check exit status.
   do
-    local ok_s, suggestions = pcall(function()
-      return require("loomworks.suggestions").collect(ws)
+    -- Count only ACTIONABLE items — an affirmative "using <cache>" info item
+    -- lives in `lw health`, never inflates this nag count (headless §16.31).
+    local ok_s, n = pcall(function()
+      return require("loomworks.suggestions").count_actionable(ws)
     end)
-    if ok_s and suggestions and #suggestions > 0 then
-      local n = #suggestions
+    if ok_s and type(n) == "number" and n > 0 then
       out("")
       out(pal.warn(n .. (n == 1 and " suggestion" or " suggestions"))
         .. " — run " .. pal.inline("lw health"))
@@ -4880,37 +4881,56 @@ end
 --- `lw health` — list the workspace's advisory suggestions in full (headless
 --- §16.31), the detail behind the compact `N suggestions` line the overview
 --- shows. Read-only and advisory: it performs no build, authors nothing, and
---- ALWAYS exits 0 (suggestions never gate). Works outside a workspace (shows
---- the worktree hint). Never spawns a cache tool.
+--- ALWAYS exits 0 (suggestions never gate). Never spawns a cache tool.
+---
+--- Works outside a workspace: the workspace-INDEPENDENT health providers (update
+--- availability, channel override — §16.31) need no workspace, so with no `root`
+--- it still reports them beneath the worktree hint. Project-scoped items (the
+--- compiler-cache status) require a workspace and are simply absent without one.
 --- @param root string|nil workspace root
 --- @return integer exit code (always 0)
 function M.cmd_health(root)
-  if not root then
-    for _, line in ipairs(M._worktree_hint()) do out(line) end
-    return 0
-  end
-  local ws = load_workspace(root, false)
   local pal = status_palette(stdout_supports_color())
-  out(pal.title("loomworks health — " .. (ws.name or "?")) .. "  "
-    .. pal.dim("(" .. ws.root .. ")"))
+  local ws = root and load_workspace(root, false) or nil
 
-  -- `collect_health` (not the passive `collect`) so the health report includes
-  -- the network-backed providers — the update-availability check (§16.31) — that
-  -- are deliberately kept out of the frequently-rendered `N suggestions` count.
+  if ws then
+    out(pal.title("loomworks health — " .. (ws.name or "?")) .. "  "
+      .. pal.dim("(" .. ws.root .. ")"))
+  else
+    -- No workspace here: lead with the worktree hint so the user knows why no
+    -- project-scoped items appear, then still run the workspace-independent
+    -- health providers below (they ignore the nil workspace).
+    for _, line in ipairs(M._worktree_hint()) do out(line) end
+  end
+
+  -- `collect_health` (not the passive `collect`) so the report includes the
+  -- network-backed providers — the update-availability check (§16.31) — that are
+  -- deliberately kept out of the frequently-rendered `N suggestions` count. Pass
+  -- whatever workspace we have (possibly nil); the workspace-independent
+  -- providers run regardless, the workspace-scoped ones guard nil themselves.
   local ok_s, suggestions = pcall(function()
     return require("loomworks.suggestions").collect_health(ws)
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
 
   if #suggestions == 0 then
-    out("")
-    out(pal.dim("No suggestions — nothing to flag."))
+    -- With a workspace, say so explicitly; without one the hint above already
+    -- explains the emptiness, so don't pile on.
+    if ws then
+      out("")
+      out(pal.dim("No suggestions — nothing to flag."))
+    end
     return 0
   end
 
   for _, s in ipairs(suggestions) do
     out("")
-    out(pal.warn("• " .. s.title))
+    -- Informational items (affirmative status) read as positive, not a warning.
+    if s.kind == "info" then
+      out(pal.active("• " .. s.title))
+    else
+      out(pal.warn("• " .. s.title))
+    end
     if s.detail then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end

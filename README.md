@@ -322,10 +322,14 @@ affected build automatically on the next build. The mechanism differs per build
 system: cmake applies it with an in-place reconfigure (the first build then
 rebuilds objects to repopulate the cache — expected), while meson uses
 `meson setup --wipe` (a clean, options-preserving reconfigure) because it fixes
-the compiler at setup and ignores it on a plain reconfigure. Run `lw health` to be reminded when a C/C++
-workspace has no cache installed; the status overview shows a compact
-`N suggestions` line, and `lw status --cache-stats` folds in the cache tool's own
-hit-rate statistics (off by default — it spawns the tool).
+the compiler at setup and ignores it on a plain reconfigure. Run `lw health` to see
+the cache state of a C/C++ workspace: it reports "Compiler cache: using `<tool>`"
+when a launcher is in use, or an actionable "install one to speed rebuilds"
+suggestion when none is installed. The status overview shows a compact
+`N suggestions` line — that count is only the **actionable** items, so the
+affirmative "using `<tool>`" note (shown in `lw health`, not counted) never adds to
+it. `lw status --cache-stats` folds in the cache tool's own hit-rate statistics
+(off by default — it spawns the tool).
 
 `lw health` also checks whether a newer `lw` release is available on your update
 channel (`stable`/`unstable`, see [Standalone `lw` runner](#standalone-lw-runner))
@@ -336,6 +340,9 @@ never on the passive `N suggestions` count; offline or on any API error it simpl
 reports nothing. If a `release-url` override (or `LOOMWORKS_RELEASE_URL`) is in
 effect while a non-default channel is set, health also notes that the override is
 superseding the channel — the state where your `--channel` is effectively ignored.
+The update and channel-override checks concern the `lw` release itself, not the
+workspace, so `lw health` reports them **even outside a configured workspace** —
+run it in a plain directory and it still tells you an update is available.
 
 ### Languages
 
@@ -892,7 +899,7 @@ command has detail under `lw help <command>`.
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
-| `lw health` | List actionable suggestions for the workspace (advisory — never fails; e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel). The status overview shows a compact `N suggestions` line pointing here. The update check runs only on `lw health` (it makes a network request), never on the passive count |
+| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Runs outside a workspace too — the update / channel-override checks still report there |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |

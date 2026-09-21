@@ -72,11 +72,12 @@ local function render_fn(tree)
     -- — it never gates anything; the page keeps only the count.
     local ws_obj = lw.get_workspace()
     if ws_obj then
-        local ok_s, suggestions = pcall(function()
-            return require("loomworks.suggestions").collect(ws_obj)
+        -- Count only ACTIONABLE items — an affirmative "using <cache>" info item
+        -- shows in `lw health`, never inflates this nag count (headless §16.31).
+        local ok_s, n = pcall(function()
+            return require("loomworks.suggestions").count_actionable(ws_obj)
         end)
-        if ok_s and suggestions and #suggestions > 0 then
-            local n = #suggestions
+        if ok_s and type(n) == "number" and n > 0 then
             tree:leaf(n .. (n == 1 and " suggestion" or " suggestions")
                 .. " — run `lw health`", "LoomworksStale")
             tree:blank()
