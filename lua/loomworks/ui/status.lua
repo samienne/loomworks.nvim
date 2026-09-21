@@ -66,6 +66,23 @@ local function render_fn(tree)
     }
 
     require("loomworks.ui.sections.diagnostics")(tree, ctx)
+
+    -- Suggestions (spec/ui.md §1.1): a single compact advisory line pointing at
+    -- `lw health`, shown only when the framework has findings. Not a diagnostic
+    -- — it never gates anything; the page keeps only the count.
+    local ws_obj = lw.get_workspace()
+    if ws_obj then
+        local ok_s, suggestions = pcall(function()
+            return require("loomworks.suggestions").collect(ws_obj)
+        end)
+        if ok_s and suggestions and #suggestions > 0 then
+            local n = #suggestions
+            tree:leaf(n .. (n == 1 and " suggestion" or " suggestions")
+                .. " — run `lw health`", "LoomworksStale")
+            tree:blank()
+        end
+    end
+
     require("loomworks.ui.sections.profiles")(tree, ctx)
     require("loomworks.ui.sections.orphaned")(tree, ctx)
     require("loomworks.ui.sections.config_sets")(tree, ctx)
