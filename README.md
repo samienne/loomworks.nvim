@@ -634,7 +634,10 @@ chain — the signed manifest must verify and every artifact hash must match, on
 unstable exactly as on stable. It denotes release maturity, never reduced
 verification. A pinned repo (`lw.pin`) and an explicit `release-url` mirror both
 ignore the channel: a pin acquires exactly its pinned version, and a mirror is
-used as-is. `lw version` shows the active channel.
+used as-is. If you pass a non-default `--channel` while a `release-url` override
+(the `LOOMWORKS_RELEASE_URL` env var or the `release-url` setting) is in effect,
+`lw self-update` warns that the channel was ignored — the override wins by
+design, so unset it to follow a channel. `lw version` shows the active channel.
 
 ### Installing `lw`
 

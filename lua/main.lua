@@ -176,6 +176,12 @@ elseif command == "self-update" then
     end
     exit(1)
   end
+  if res.channel_overridden then
+    io.stderr:write("lw: --channel " .. res.channel_overridden ..
+      " is ignored — a release-url override is in effect (LOOMWORKS_RELEASE_URL / " ..
+      "the `release-url` setting). The channel governs only the default origin; " ..
+      "unset the override to use channels.\n")
+  end
   io.write(res.updated
     and ("lw: installed loomworks " .. res.version .. "\n")
     or ("lw: already up to date (" .. res.version .. ")\n"))

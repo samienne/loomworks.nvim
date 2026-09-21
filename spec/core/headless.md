@@ -832,7 +832,11 @@ override, then host configuration, then the default (stable). A pin (§16.21) is
 independent of and takes precedence over channel resolution: a pinned
 invocation acquires exactly the pinned version+hash and consults no channel. An
 explicit release-source location override (a mirror) likewise supersedes
-channel resolution, which applies only to the default origin.
+channel resolution, which applies only to the default origin. When such an
+override supersedes an explicitly-requested **non-default** channel, self-update
+MUST warn that the channel was ignored — the supersede is by design, but it MUST
+NOT be silent, or a user who selected a channel will believe it took effect. (A
+default-channel selection under an override is no conflict and warns nothing.)
 
 A pre-release version orders **below** its corresponding full release: version
 comparison used for activation, "already newest," and cache reclamation

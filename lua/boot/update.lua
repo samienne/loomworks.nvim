@@ -293,14 +293,24 @@ end
 
 --- Acquire/activate the current release. opts: { url?, force?, channel? }.
 --- The channel (§16.29) selects WHICH release an un-pinned, un-overridden fetch
---- targets; it never weakens verification. Returns { version, updated, dir } or
---- nil, err.
+--- targets; it never weakens verification. Returns
+--- { version, updated, dir, channel_overridden } or nil, err. `channel_overridden`
+--- is the requested channel name when a release-url override superseded a
+--- non-default channel (nil otherwise) — for the caller to surface as a warning.
 function M.self_update(opts)
   opts = opts or {}
   local channel, cerr = M.resolve_channel(opts)
   if not channel then return nil, cerr end
 
   local base = release_base(opts)
+  -- A release-url override supersedes the channel (§16.29): it is used as-is and
+  -- the channel (which governs only the default origin) is ignored. That is by
+  -- design, but silent it misleads — a user who passed `--channel unstable`
+  -- believes it applied. So when a NON-DEFAULT channel intent is present AND an
+  -- override is in effect, report the superseded channel for the caller to warn.
+  -- (`stable` == the override's own behavior, so it is no conflict — no report.)
+  local channel_overridden = (channel ~= M.DEFAULT_CHANNEL and url_override(opts))
+    and channel or nil
   -- `unstable` on the default origin resolves the newest release (pre-releases
   -- included) via the API, then fetches that version's assets from its versioned
   -- path. A mirror/override supersedes the channel (§16.29): it is used as-is and
@@ -329,7 +339,8 @@ function M.self_update(opts)
   local version = manifest.version
   local dest_dir = paths.data_dir() .. "/lua-" .. version
   if uv.fs_stat(dest_dir) and not opts.force then
-    return { version = version, updated = false, dir = dest_dir }
+    return { version = version, updated = false, dir = dest_dir,
+      channel_overridden = channel_overridden }
   end
 
   local ok, err = paths.mkdirp(paths.data_dir())
@@ -356,7 +367,8 @@ function M.self_update(opts)
   if not okr then paths.rm_rf(stage); return nil, "activate: " .. tostring(er) end
 
   M.gc(3, version)
-  return { version = version, updated = true, dir = dest_dir }
+  return { version = version, updated = true, dir = dest_dir,
+    channel_overridden = channel_overridden }
 end
 
 --- Describe the resolved runtime for `lw version`.
