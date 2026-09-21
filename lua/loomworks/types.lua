@@ -249,6 +249,8 @@
 --- @field cached_build_dir? string cached build directory, if known
 --- @field type_config? table raw type_config from loomworks.json
 --- @field resolved_variables? table<string, { value: string, type: string }> user-declared project variables resolved for the active configuration
+--- @field compiler_cache? { tool: string, path: string } core-resolved compiler-cache launcher (nil = policy off / launcher absent); module applies it (core §8.1, §1.3.2)
+--- @field recorded_cache_launcher? string launcher path this build dir was last configured with (from cached module_info) — lets a module (meson) detect a launcher change and reconfigure appropriately (§11)
 
 --- Module info() return value.
 --- @class loomworks.ModuleInfo

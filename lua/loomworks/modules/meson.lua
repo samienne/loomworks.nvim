@@ -762,6 +762,18 @@ function M.tasks(project, active_config)
     local env, stripped_env = compose_task_env(project.env or {}, project.tool_data)
     local meson_prefix = resolve_meson(project.tool_data)
 
+    -- Compiler-cache launcher (§5a). loomworks owns the caching decision end to
+    -- end and never leans on meson's implicit PATH ccache auto-detect: when core
+    -- resolved a launcher, pin the WRAPPED command explicitly (`CC="<launcher>
+    -- <cc>"`, `CXX="<launcher> <cxx>"`); when it resolved none (policy off /
+    -- launcher absent), leave the bare pinned compiler compose_task_env set, so
+    -- meson cannot layer a cache back on. Recorded for staleness (§11).
+    local resolved_launcher = project.compiler_cache and project.compiler_cache.path or nil
+    if resolved_launcher then
+        if env.CC and env.CC ~= "" then env.CC = resolved_launcher .. " " .. env.CC end
+        if env.CXX and env.CXX ~= "" then env.CXX = resolved_launcher .. " " .. env.CXX end
+    end
+
     -- Build dir: core provides cached_build_dir (via M.resolve_build_dir) when a
     -- cache entry exists, preserving rename paths. Fall back to the same formula
     -- so the compiler-scoped, sanitized layout is consistent either way.
@@ -801,6 +813,16 @@ function M.tasks(project, active_config)
     local reconfigure_cmd = vim.list_extend({}, configure_cmd)
     table.insert(reconfigure_cmd, insert_at + 2, "--reconfigure")
 
+    -- A compiler-cache launcher CHANGE cannot be applied by a plain
+    -- `--reconfigure`: meson fixes the compiler command at first setup and
+    -- ignores it thereafter (§5a). When the resolved launcher differs from the
+    -- one this build dir was configured with, reconfigure with `--wipe` — it
+    -- wipes and rebuilds the tree, re-detecting the now-wrapped/unwrapped
+    -- CC/CXX, while preserving the -D options meson re-reads from the wiped dir.
+    local wipe_cmd = vim.list_extend({}, configure_cmd)
+    table.insert(wipe_cmd, insert_at + 2, "--wipe")
+    local launcher_changed = resolved_launcher ~= project.recorded_cache_launcher
+
     local configuration_key = project.configuration_key or active_config
     local cached_tool_data = project.tool_data
 
@@ -809,10 +831,16 @@ function M.tasks(project, active_config)
     tasks[#tasks + 1] = {
         name = project.name .. ": configure",
         builder = function()
-            -- Pick reconfigure or first-time setup based on whether the dir exists
+            -- Pick first-time setup, an in-place reconfigure, or a `--wipe`
+            -- reconfigure (when the compiler-cache launcher changed) based on
+            -- whether the dir is already set up.
             local uv2 = vim.uv or vim.loop
-            local cmd = (uv2.fs_stat(build_dir .. "/meson-info")
-                    and reconfigure_cmd) or configure_cmd
+            local cmd
+            if uv2.fs_stat(build_dir .. "/meson-info") then
+                cmd = launcher_changed and wipe_cmd or reconfigure_cmd
+            else
+                cmd = configure_cmd
+            end
             vim.fn.mkdir(build_dir, "p")
             return { cmd = cmd, cwd = abs_path, env = env }
         end,
@@ -830,6 +858,10 @@ function M.tasks(project, active_config)
             module_info = {
                 buildtype = buildtype,
                 source_dir = project.path,
+                -- Resolved compiler-cache launcher this setup applied, or nil
+                -- (policy off / launcher absent). Recorded so is_stale detects a
+                -- launcher change and the next build reconfigures via --wipe (§11).
+                cache_launcher = resolved_launcher,
             },
         },
     }
