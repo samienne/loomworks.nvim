@@ -292,6 +292,35 @@ including its family in the label: `Clang 19.0.0 (custom)`, `GCC
 13.2.0 (custom)`. Profile pinning, completeness checks, and the
 diagnostic gates all work unchanged.
 
+#### Compiler caching (ccache / sccache)
+
+loomworks wires a compiler cache into cmake and meson builds automatically. The
+behavior is chosen by a reserved project variable, `cache`, holding a **policy**:
+
+- `auto` (the default when unset) — use `sccache` for MSVC / clang-cl toolchains
+  and `ccache` for GCC / Clang, whichever is found on `PATH`. If neither is
+  installed, builds run uncached.
+- `ccache` / `sccache` — force that launcher (when present).
+- `off` (or `false`) — no cache.
+
+Because `cache` is an ordinary variable, it rides the same layers as everything
+else: set it per configuration, per compiler family via `overrides`
+(`{ "msvc": { "cache": "off" } }`), or per machine with `lw profile set <profile>
+<project> cache <policy>`. There is no separate on/off switch — absence means
+`auto`.
+
+Under cmake, loomworks injects `CMAKE_C/CXX_COMPILER_LAUNCHER` on the Ninja
+configure path (it cannot inject into a `--preset` configuration, and warns when
+one is used); on MSVC with a cache active it also switches debug info to embedded
+(`/Z7`) so the cache can hit, unless you've pinned a conflicting value. Under
+meson, loomworks wraps the pinned `CC`/`CXX` explicitly (rather than relying on
+meson's own ccache auto-detect) so both build systems behave identically.
+Changing the policy — or installing/removing the cache tool — reconfigures the
+affected build on the next build. Run `lw health` to be reminded when a C/C++
+workspace has no cache installed; the status overview shows a compact
+`N suggestions` line, and `lw status --cache-stats` folds in the cache tool's own
+hit-rate statistics (off by default — it spawns the tool).
+
 ### Languages
 
 Each cmake / meson configuration declares the languages it builds
@@ -844,6 +873,7 @@ command has detail under `lw help <command>`.
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
+| `lw health` | List actionable suggestions for the workspace (advisory — never fails; e.g. "no compiler cache found — install one to speed rebuilds"). The status overview shows a compact `N suggestions` line pointing here |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |

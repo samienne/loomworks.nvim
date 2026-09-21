@@ -264,8 +264,12 @@ circular references and keeps resolution simple. Cross-variable references
 are deferred to a future version (with loop detection).
 
 **Reserved names**: User variables cannot use built-in variable names
-(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`).
-The system rejects declarations with reserved names at parse time.
+(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`) or the
+pre-declared policy name `cache` (§1.3.2). The system rejects *declarations* with
+reserved names at parse time. `cache` is a special case among the reserved names:
+its *declaration* is likewise rejected, but it may be **overridden** (in
+`variables`, in a compiler-family `overrides` block, or as a profile fill value)
+because it is pre-declared by core — see §1.3.2.
 
 **Override validation**: An `overrides` block is rejected at edit time if a
 name is not declared in the project `variables` (mirroring the configuration
@@ -297,6 +301,59 @@ profile's intent.
   skipping the inheritance chain.
 - Cross-variable references with loop detection.
 - Workspace-level variables (shared across projects).
+
+### 1.3.2 The reserved `cache` variable (compiler-cache policy)
+
+`cache` is a **reserved, pre-declared** project variable that selects a
+compiler-cache **policy** for a configuration. It is not a free user variable:
+like the other reserved names (§1.3.1) it cannot be *declared* or *re-typed* in a
+project `variables` block, but — unlike them — it MAY appear as an **override
+target** in a configuration's `variables`, in a compiler-family `overrides`
+block, and as an active-profile fill value. In other words, `cache` rides the
+**existing** variable machinery (§1.3.1) at every layer; the system introduces no
+separate compiler-cache override mechanism.
+
+- **Type and values.** `cache` is a `string`-typed policy. Its value is one of
+  `auto`, `off` (equivalently `false`), or the name of a specific
+  compiler-cache launcher. The set of concrete launcher names is defined by the
+  modules that apply the cache (see the module specs); core treats any
+  non-`auto`, non-`off` value as "prefer this named launcher".
+- **Default.** When unset at every layer the effective policy is `auto`. There
+  is no separate workspace-level on/off switch in v1 — absence *is* `auto`.
+- **Resolution layers.** `cache` uses the **same** precedence machinery as a
+  §1.3.1 variable that declares *no project default* — so it is
+  profile-fillable — with the built-in `auto` standing in for the "blank"
+  terminal: `configuration inheritance → compiler-family override →
+  active-profile fill → built-in auto`. The distinction from a normal blank
+  variable is that an unfilled `cache` is **never** a build-blocking blank
+  (§15): it resolves to `auto` and the profile stays complete. A compiler-family
+  `overrides` entry (`clang` / `gcc` / `msvc`) lets one configuration ask for a
+  different policy per compiler family, and the active-profile fill is the
+  machine-local layer (a CI box may pin one launcher while a laptop turns it
+  `off`) — both come free from the existing machinery, with no cache-specific
+  override code.
+
+  ```json
+  "cmake": {
+      "configurations": {
+          "Debug": {
+              "variables": { "cache": "auto" },
+              "overrides": { "msvc": { "cache": "off" } }
+          }
+      }
+  }
+  ```
+
+- **Policy → launcher is derived, never stored.** The *policy* is workspace
+  state (it lives in the resolved variable); the *resolved launcher* (a concrete
+  executable path for the active compiler family) is **derived** — core computes
+  it from the policy, the active tool's compiler family, and toolchain-path
+  presence each time it builds a module context (§8.1 `compiler_cache`). It is
+  never written to `user.json`, `loomworks.json`, or the cache as a value; it is
+  recorded only into the configure task's `module_info` for staleness comparison
+  (§5). A change to the resolved launcher — the policy changed, or the launcher
+  appeared/disappeared on the search path — makes an already-configured unit
+  stale and reconfigures on the next build (§5, module §11).
 
 ### 1.4 Configuration Set
 

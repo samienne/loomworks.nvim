@@ -81,6 +81,13 @@
    being deleted. A gutted directory (present but emptied) is out of scope;
    only whole-directory absence is detected.
 
+A change in the resolved **compiler-cache launcher** (§8.1 `compiler_cache`) is a
+further core-tracked reconfigure input, but — unlike rule 7's missing-directory
+reset — it does **not** downgrade the unit's state. It is an `is_stale()` axis:
+the configured unit stays `configured` / `built`, is reported stale, and the
+build gate reconfigures it before the next build (§5.1, §5.2). This mirrors
+option-level staleness rather than the disk-vs-cache reset of rule 7.
+
 ### 3.2 Workspace Lifecycle
 
 The workspace has three states:
@@ -443,6 +450,19 @@ fill. Filling every blank (a profile fill value, §1.3.1) clears the gate.
 Because a profile fill value feeds a configuration's resolved options, changing
 one can make an already-configured unit stale (§5), triggering a reconfigure on
 the next build; the build directory identity is NOT keyed on fill values.
+
+The **resolved compiler-cache launcher** (§8.1 `compiler_cache`) is a build input
+of the same kind. Core resolves it from the effective `cache` policy (§1.3.2) and
+the active tool's compiler family and records it in the configure task's
+`module_info`; `ConfigUnit:is_stale()` recomputes it (live toolchain-path
+presence + current policy + tool family) and compares it to the recorded value.
+A launcher that **appears**, **disappears**, or **changes** — because the policy
+was edited, or because the cache tool was installed onto or removed from the
+search path — makes the configured unit stale, so the existing build gate (§5.2)
+auto-reconfigures it before the next build. There is no separate eager
+reconfigure: the launcher change is caught at the gate exactly like an
+option-level change, and the build directory identity is NOT keyed on the
+launcher.
 
 ### 5.2 Auto-configure before build
 

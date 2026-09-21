@@ -272,6 +272,48 @@ command and so participates in `ConfigUnit:is_stale()` (§11) — the staleness
 fingerprint is taken over the *resolved* option values, not the raw `${…}`
 templates.
 
+## 5d. Compiler cache launcher
+
+Core resolves a compiler-cache launcher from the effective `cache` policy
+(core §1.3.2) and the active kit's compiler family, and hands it to the module
+as `ctx.compiler_cache = { tool, path }` (or `nil`). The cmake module applies it
+through CMake's own launcher mechanism — it never wraps the compiler driver
+itself, which would collide with §5b:
+
+- **Auto policy to tool.** For `auto`, the concrete launcher is `sccache` for an
+  MSVC / clang-cl family kit and `ccache` for a gcc / clang family kit, with
+  `sccache` as the cross-platform fallback when the family's first choice is
+  absent. An explicit `ccache` / `sccache` policy uses that tool. Either way the
+  launcher is applied only when core actually resolved one (present on the
+  toolchain search path, via the shared `cpp_compilers` PATH index); when
+  `ctx.compiler_cache` is `nil` the module adds nothing.
+- **Injection (Ninja / non-preset configure path).** On the manual configure
+  path the module appends `-DCMAKE_C_COMPILER_LAUNCHER=<path>` and
+  `-DCMAKE_CXX_COMPILER_LAUNCHER=<path>` (per language actually enabled). These
+  keys are explicitly **not** reserved under §5b (only `CMAKE_<LANG>_COMPILER`
+  is), so injection and the compiler-ownership rule do not conflict.
+- **MSVC debug-info format.** sccache/ccache silently **miss** when MSVC writes
+  debug info to a shared `.pdb` (`/Zi` / `/ZI`). So when a cache is actually
+  resolved **and** the generator is single-config **and** CMake is **>= 3.25**,
+  the module also injects `-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`
+  (`/Z7`, per-object debug info) so the cache can hit. This is applied only for
+  the MSVC / clang-cl families and only when a launcher is present — a cacheless
+  build is left with CMake's default. If the user has pinned a conflicting value
+  (their own `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT`, or a `/Zi`-style option), the
+  module does **not** silently override it: it keeps the user's value and
+  surfaces a non-blocking inline diagnostic that the compiler cache will likely
+  miss until the format is `Embedded`. Below CMake 3.25 (no such variable) the
+  module skips the injection and notes that MSVC caching may be ineffective.
+- **Presets are a documented non-goal.** A `from_preset` configuration is
+  configured with `cmake --preset <name>` and takes **no** `-D` flags from
+  loomworks (§3), so the launcher cannot be injected. The module emits a
+  non-blocking warning that the compiler cache is not applied to preset
+  configurations, and directs the user to set `CMAKE_<LANG>_COMPILER_LAUNCHER`
+  in the preset's own `cacheVariables` if they want it.
+- **Staleness.** The resolved launcher path is recorded in the configure task's
+  `module_info` and participates in `ConfigUnit:is_stale()` (§11) on the same
+  footing as resolved option values — see §11.
+
 ## 6. Inheritance model
 
 Custom configurations inherit from one or more bases. Variant
@@ -458,6 +500,17 @@ expansion (§5c, core §1.3.1), so a change to a variable or a compiler-specific
 override is caught here even though the raw `${…}` option template is
 unchanged. A change of active compiler family is already covered by the build
 directory being keyed on the tool, so it configures separately.
+
+The **resolved compiler-cache launcher** (§5d) is fingerprinted here too: the
+launcher path core resolved at configure time is stored in the configure task's
+`module_info`, and `is_stale()` recomputes it (current `cache` policy + compiler
+family + live toolchain-path presence) and compares. A launcher that appears,
+disappears, or changes value — the cache tool was installed/removed, or the
+policy was edited — marks the unit stale, and the build gate reconfigures so the
+`-DCMAKE_<LANG>_COMPILER_LAUNCHER` line (and the MSVC `/Z7` adjustment) is
+re-passed. A plain build does not re-pass changed `-D` cache variables, so this
+reconfigure is genuinely needed and is not something the generator detects on
+its own.
 
 Output-artifact overwrite is a separate, **core-driven** staleness axis
 (`specification.md` §5.9): it can mark a *built* unit stale when another

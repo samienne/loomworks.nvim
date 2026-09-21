@@ -17,11 +17,19 @@ directly to `Snacks.win`. The page contains these sections in order:
 
 1. **Header** — plugin version, workspace name, workspace root
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
-3. **Profiles** — all materialized and explicit profiles
-4. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
-5. **Configuration Sets** — declared sets with tool entries
-6. **Projects** — all projects with their configurations
-7. **Tasks** — active loomworks-managed tasks and held build-dir locks
+3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
+   health\``, shown only when the suggestion framework has one or more
+   findings (hidden when none). It is advisory, not a diagnostic: unlike the
+   Diagnostics section, suggestions never gate an operation and never fail
+   `--check`. The line's detail lives in `lw health` (core §16.31); the
+   status page keeps only the count so the page stays uncluttered. The
+   first-shipping provider flags a workspace that has C/C++ projects but no
+   compiler cache on the toolchain path (see §16.31).
+4. **Profiles** — all materialized and explicit profiles
+5. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
+6. **Configuration Sets** — declared sets with tool entries
+7. **Projects** — all projects with their configurations
+8. **Tasks** — active loomworks-managed tasks and held build-dir locks
    (hidden when both empty). Placed at the bottom because it's the
    runtime-state diagnostic surface — only interesting when something
    is wrong.
@@ -206,6 +214,21 @@ scope (profile-level) benefits from the explicit pick.
   composite `id`/`kit_id`, and stores the per-module tool_data
   atomically. Host picks set only the target module's `_tools_raw`
   entry and clear the SDK.
+- Compiler cache — a single profile-level row, sibling to the Toolchain
+  row, shown for a profile that contains a C/C++-caching module. Format
+  `Cache: <tool>` naming the resolved launcher (`ccache` / `sccache`), or
+  `Cache: off` when the effective `cache` policy (core §1.3.2) resolves to
+  no launcher, or `Cache: auto (none found)` when policy is `auto` but no
+  launcher is present on the toolchain path. The row is informational only
+  in v1 (no picker); the policy is edited through the variable
+  system. When the launcher currently resolved differs from the one the
+  profile's configured units were built with (§8.1 `compiler_cache`
+  staleness, core §5.1), the row carries a `[stale — reconfigure]` hint
+  (highlight `LoomworksStale`) meaning the next build reconfigures to apply
+  the change. The per-configuration cache mismatch also surfaces as the same
+  `[stale — reconfigure]` hint on the affected project row under the profile
+  (alongside the `(status)` suffix), so the user sees which configs will
+  reconfigure.
 - Device selection (only when the profile contains a project from a
   device-capable module) — shows `Device: <name> (<serial>)` (online),
   `Device: <serial> (offline)` (offline/stale), or
@@ -856,6 +879,7 @@ automatically when no spinners are active.
 | `LoomworksUnknown`       | `DiagnosticWarn`  | Unknown state (partial deletion) |
 | `LoomworksActionable`    | `Normal`          | Actionable items (sets, configs) |
 | `LoomworksConflict`      | `DiagnosticWarn`  | Output-artifact conflict / overwritten unit (§1.5, §1.8) |
+| `LoomworksStale`         | `DiagnosticHint`  | `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (§1.5) |
 
 Users can override these by defining the highlight groups before plugin load.
 
