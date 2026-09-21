@@ -48,12 +48,15 @@ function M.release_base(opts) return release_base(opts) end
 --- The user-supplied release-source override (opts.url > LOOMWORKS_RELEASE_URL >
 --- `release-url` config), or nil when the default origin is in effect. An
 --- override is a mirror used as-is and SUPERSEDES channel resolution (§16.29):
---- the channel governs only the default origin.
-local function url_override(opts)
+--- the channel governs only the default origin. Public so `lw health` can
+--- surface the "channel is being overridden" state (§16.31) without reimplementing
+--- the precedence.
+function M.url_override(opts)
   return (opts and opts.url)
     or paths.getenv("LOOMWORKS_RELEASE_URL")
     or paths.read_config()["release-url"]
 end
+local url_override = M.url_override
 
 --- Resolve the active update channel (§16.29) with precedence: explicit
 --- opts.channel > LOOMWORKS_CHANNEL env > `channel` config key > default
@@ -102,6 +105,44 @@ function M.resolve_unstable_version()
     end
   end
   return nil, "no releases found on the unstable channel"
+end
+
+--- Resolve the newest AVAILABLE release version for the resolved channel, WITHOUT
+--- downloading (or verifying) a bundle — the version-availability probe behind
+--- `lw health`'s update check (§16.31). It performs exactly one lightweight
+--- network fetch: the releases API on `unstable` (reusing resolve_unstable_version),
+--- else `manifest.json` from the `latest`/override base to read the version it
+--- names. It never fetches or executes a bundle, so it applies NO integrity
+--- verification — a real self-update still verifies signature + hash (§16.12). All
+--- failures (offline, HTTP error, malformed body) are returned as `nil, err` so the
+--- caller can degrade silently.
+---
+--- SECURITY: the resolved version is network-derived, so it is validated with
+--- pin.valid_version before it is handed back (defense in depth, §16.29). It is
+--- only ever displayed/compared here — never interpolated into a URL or path.
+--- @return string|nil version, string|nil err
+function M.resolve_newest_version(opts)
+  opts = opts or {}
+  local channel, cerr = M.resolve_channel(opts)
+  if not channel then return nil, cerr end
+  -- `unstable` on the default origin: newest incl. pre-releases via the API. A
+  -- mirror/override supersedes the channel (§16.29) and is peeked like stable.
+  if channel == "unstable" and not url_override(opts) then
+    return M.resolve_unstable_version()
+  end
+  -- `stable`, or an override mirror: the version is whatever the base's
+  -- manifest.json names — reachable without downloading the bundle.
+  local base = release_base(opts)
+  local mbytes, e = download.fetch(base .. "/manifest.json")
+  if not mbytes then return nil, "fetch manifest: " .. tostring(e) end
+  local manifest, de = json.decode(mbytes)
+  if type(manifest) ~= "table" or type(manifest.version) ~= "string" then
+    return nil, "manifest: " .. (de or "no version")
+  end
+  if not pin.valid_version(manifest.version) then
+    return nil, "manifest named an unsafe version '" .. tostring(manifest.version) .. "'"
+  end
+  return manifest.version
 end
 
 --- Is `base` a local path / offline mirror (flat layout) rather than the

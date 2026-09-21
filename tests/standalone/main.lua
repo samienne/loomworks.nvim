@@ -842,6 +842,45 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.update — resolve_newest_version peeks a version without downloading a bundle (§16.31)")
+do
+  local sb = root .. "/tests/.tmp-newest"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  local function put(p, body) local f = assert(io.open(p, "wb")); f:write(body); f:close() end
+
+  local savedOrigin, savedApi = update.DEFAULT_RELEASE_URL, update.RELEASES_API_URL
+  update.DEFAULT_RELEASE_URL = (FX:gsub("/$", ""))  -- stable base = flat fixtures mirror
+
+  -- stable: the version is whatever the base manifest.json names (no bundle fetch).
+  eq(update.resolve_newest_version({}), "0.0.0-test",
+    "stable resolves the manifest version without downloading the bundle")
+
+  -- unstable: newest release the API names (pre-releases included), API reused.
+  local api = sb .. "/releases.json"
+  put(api, '[{"draft":false,"prerelease":true,"tag_name":"v0.3.0-rc.1"}]')
+  update.RELEASES_API_URL = api
+  eq(update.resolve_newest_version({ channel = "unstable" }), "0.3.0-rc.1",
+    "unstable reuses the releases API (pre-release included)")
+
+  -- a release-url override supersedes the channel: peek the mirror manifest,
+  -- never the API (point the API at a missing file to prove it is untouched).
+  update.RELEASES_API_URL = sb .. "/nonexistent.json"
+  eq(update.resolve_newest_version({ channel = "unstable", url = (FX:gsub("/$", "")) }),
+    "0.0.0-test", "an override peeks the mirror manifest, not the API")
+
+  -- offline / missing manifest is a clean error (the caller degrades silently).
+  update.DEFAULT_RELEASE_URL = sb .. "/no-such-mirror"
+  ok(select(1, update.resolve_newest_version({})) == nil,
+    "a missing manifest is a clean error, not a crash")
+
+  update.DEFAULT_RELEASE_URL = savedOrigin
+  update.RELEASES_API_URL = savedApi
+  paths.rm_rf(sb)
+end
+
 print("boot.update — unstable self_update installs the API-named release + still verifies")
 do
   local sb = root .. "/tests/.tmp-unstable-run"; paths.rm_rf(sb); paths.mkdirp(sb)

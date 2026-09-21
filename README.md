@@ -327,6 +327,16 @@ workspace has no cache installed; the status overview shows a compact
 `N suggestions` line, and `lw status --cache-stats` folds in the cache tool's own
 hit-rate statistics (off by default — it spawns the tool).
 
+`lw health` also checks whether a newer `lw` release is available on your update
+channel (`stable`/`unstable`, see [Standalone `lw` runner](#standalone-lw-runner))
+and, if so, suggests
+`lw self-update` — showing `<current> → <newest> on the <channel> channel`. This
+check makes a network request, so it runs **only** when you invoke `lw health`,
+never on the passive `N suggestions` count; offline or on any API error it simply
+reports nothing. If a `release-url` override (or `LOOMWORKS_RELEASE_URL`) is in
+effect while a non-default channel is set, health also notes that the override is
+superseding the channel — the state where your `--channel` is effectively ignored.
+
 ### Languages
 
 Each cmake / meson configuration declares the languages it builds
@@ -882,7 +892,7 @@ command has detail under `lw help <command>`.
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
-| `lw health` | List actionable suggestions for the workspace (advisory — never fails; e.g. "no compiler cache found — install one to speed rebuilds"). The status overview shows a compact `N suggestions` line pointing here |
+| `lw health` | List actionable suggestions for the workspace (advisory — never fails; e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel). The status overview shows a compact `N suggestions` line pointing here. The update check runs only on `lw health` (it makes a network request), never on the passive count |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |

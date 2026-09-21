@@ -4894,8 +4894,11 @@ function M.cmd_health(root)
   out(pal.title("loomworks health — " .. (ws.name or "?")) .. "  "
     .. pal.dim("(" .. ws.root .. ")"))
 
+  -- `collect_health` (not the passive `collect`) so the health report includes
+  -- the network-backed providers — the update-availability check (§16.31) — that
+  -- are deliberately kept out of the frequently-rendered `N suggestions` count.
   local ok_s, suggestions = pcall(function()
-    return require("loomworks.suggestions").collect(ws)
+    return require("loomworks.suggestions").collect_health(ws)
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
 
@@ -6376,8 +6379,12 @@ an operation and is distinct from a diagnostic).
 Each suggestion prints a title, why it fires, and a concrete remedy. Providers
 are advisory and extensible; the first flags a workspace that has C/C++
 projects but no compiler cache (ccache/sccache) on the toolchain path, and
-suggests installing the platform-preferred one. Health never spawns a cache
-tool — usage statistics live behind `lw status --cache-stats`.]],
+suggests installing the platform-preferred one. `lw health` additionally checks
+whether a newer `lw` release is available on your update channel (this makes a
+network request, so it runs only here — never on the passive count) and notes
+when a release-url override is superseding a non-default channel; a failed/offline
+check is silent. Health never spawns a cache tool — usage statistics live behind
+`lw status --cache-stats`.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as

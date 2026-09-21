@@ -974,6 +974,48 @@ index; like the rest of introspection it does **not** spawn the cache tool. Cach
 usage statistics remain behind the explicit `--cache-stats` flag of the status
 overview (§16.18), not the health report.
 
+**Passive vs on-demand providers.** A provider is one of two kinds. A **passive**
+provider is side-effect-free and cheap — it reads resolved state only, never
+spawns a tool and never touches the network — and so contributes to *both* the
+frequently-rendered `N suggestions` count (§16.18, `spec/ui.md` §1.1) and the
+full health report. An **on-demand** provider is permitted a network call or
+other expensive/one-shot check; it runs **only** when health is explicitly
+invoked and is deliberately excluded from the passive count. This split is a
+hard requirement: a passive status render MUST NOT perform network I/O. Provider
+#1 (compiler cache) is passive; the update-availability provider below is
+on-demand.
+
+**Provider #2 — update availability (on-demand).** When the host is running a
+versioned release (a source with a comparable version — not a development/fused
+source, and not the in-editor plugin, neither of which self-updates through the
+CLI), this provider resolves the newest release available on the **resolved
+update channel** (§16.29) and, when that is strictly newer than the running
+version, suggests updating. Its `title` is "Update available", its `detail` is
+`<current> → <newest> on the <channel> channel`, and its `remedy` points at the
+self-update command. Version comparison is the same semver-aware ordering used
+for activation (§16.29), so a pre-release never reads as "newer" than the full
+release it precedes.
+
+Resolving the newest version is a **network** operation (the releases API for
+`unstable`, otherwise a lightweight read of the channel base's manifest to learn
+the version it names — never a bundle download, and this availability probe
+applies no integrity verification; a real self-update still verifies signature +
+hash per §16.12). Because it is network-backed it is on-demand: it never runs on
+the passive `N suggestions` count. It degrades **silently** — an offline host, an
+HTTP/API error, an unknown channel, or an already-current version all yield *no*
+suggestion and no error output. The network-derived version is validated before
+it is displayed and is never interpolated into a URL or path.
+
+**Channel override surfaced.** When a release-source location override (a mirror
+— `LOOMWORKS_RELEASE_URL` or the `release-url` setting) is in effect *and* a
+non-default channel is configured, health reports that the override **supersedes**
+the channel (§16.29): the configured channel is effectively ignored, updates
+come from the override. This item is network-free (it reads only the resolved
+override + channel) but is surfaced in the health view rather than the passive
+count. It is the health-view counterpart of the inline self-update warning for
+the same state; both derive from the identical override/channel resolution
+rather than duplicating it.
+
 **Builds are unaffected and need no new flags.** A headless build honors the same
 `cache` policy resolution and launcher staleness as the editor (§1.3.2, §5): the
 launcher is resolved from policy, applied by the module, and reconfigured on
