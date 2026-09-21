@@ -351,3 +351,264 @@ describe("cli.cmd_health", function()
         assert.equals(0, cli.cmd_health(nil))
     end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- Cached two-tier model (§16.31): the local tier is lazily computed and
+-- invalidated on input change; the network tier is refreshed only on
+-- `collect_health`, TTL-throttled; the passive `collect` NEVER hits the network.
+-- ---------------------------------------------------------------------------
+describe("suggestion cache (two-tier)", function()
+    local health_cache = require("loomworks.health_cache")
+
+    -- In-memory io stub (read_json/write_json/ensure_dir) backing one workspace.
+    local function mem_io()
+        local store = {}
+        return {
+            store = store,
+            read_json = function(path)
+                local c = store[path]
+                if not c then return nil, "enoent" end
+                local ok, d = pcall(vim.json.decode, c)
+                if ok then return d end
+                return nil, "bad"
+            end,
+            write_json = function(path, tbl)
+                local ok, enc = pcall(vim.json.encode, tbl)
+                if not ok then return false, "encode" end
+                store[path] = enc
+                return true
+            end,
+            ensure_dir = function() return true end,
+        }
+    end
+
+    local function fake_ws(io_dep)
+        return {
+            root = "/root",
+            _core = { _deps = { io = io_dep } },
+            _projects = {},
+            _active_profile = nil,
+        }
+    end
+
+    local path = health_cache.path("/root")
+
+    -- Save/restore all injectable knobs the cache path touches.
+    local saved
+    before_each(function()
+        saved = {
+            providers = suggestions._providers,
+            health = suggestions._health_providers,
+            clock = suggestions._clock,
+            local_key = suggestions._local_key,
+        }
+    end)
+    after_each(function()
+        suggestions._providers = saved.providers
+        suggestions._health_providers = saved.health
+        suggestions._clock = saved.clock
+        suggestions._local_key = saved.local_key
+    end)
+
+    it("first collect computes+persists the local tier and never calls network", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local local_calls, net_calls = 0, 0
+        suggestions._providers = { function() local_calls = local_calls + 1; return { { title = "L" } } end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
+        suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 1000 end
+
+        local out = suggestions.collect(ws)
+        assert.equals(1, local_calls)
+        assert.equals(0, net_calls)          -- passive NEVER computes the network tier
+        assert.equals(1, #out)
+        assert.equals("L", out[1].title)
+
+        -- Persisted: the file now holds the local tier with its key + timestamp.
+        assert.is_string(io_dep.store[path])
+        local data = health_cache.read(io_dep, "/root")
+        assert.equals("k1", data.local_tier.key)
+        assert.equals(1000, data.local_tier.computed_at)
+    end)
+
+    it("second collect reads the cache without recomputing the local tier", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local calls = 0
+        suggestions._providers = { function() calls = calls + 1; return { { title = "L" } } end }
+        suggestions._health_providers = {}
+        suggestions._local_key = function() return "stable" end
+        suggestions._clock = function() return 1000 end
+
+        suggestions.collect(ws)
+        suggestions.collect(ws)
+        assert.equals(1, calls) -- computed once, then served from cache
+    end)
+
+    it("a changed invalidation key forces a local recompute", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local calls = 0
+        suggestions._providers = { function() calls = calls + 1; return { { title = "L" } } end }
+        suggestions._health_providers = {}
+        suggestions._clock = function() return 1000 end
+
+        suggestions._local_key = function() return "k1" end
+        suggestions.collect(ws)
+        assert.equals(1, calls)
+
+        suggestions._local_key = function() return "k2" end -- inputs changed
+        suggestions.collect(ws)
+        assert.equals(2, calls)
+    end)
+
+    it("collect includes cached network items but never computes the network tier", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        -- Seed a cache that already carries a network tier (as a prior health run
+        -- would have left it).
+        health_cache.write(io_dep, "/root", {
+            local_tier = { items = { { title = "L" } }, computed_at = 500, key = "seed" },
+            network_tier = { items = { { title = "Update available" } }, computed_at = 500 },
+        })
+        local net_calls = 0
+        suggestions._providers = { function() return { { title = "L" } } end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return {} end }
+        suggestions._local_key = function() return "seed" end
+        suggestions._clock = function() return 1000 end
+
+        local titles = {}
+        for _, s in ipairs(suggestions.collect(ws)) do titles[s.title] = true end
+        assert.equals(0, net_calls)              -- never computed here
+        assert.is_true(titles["L"])              -- local tier
+        assert.is_true(titles["Update available"]) -- cached network item, surfaced
+    end)
+
+    it("collect_health refreshes both tiers and rewrites the cache", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local local_calls, net_calls = 0, 0
+        suggestions._providers = { function() local_calls = local_calls + 1; return { { title = "L" } } end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
+        suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 2000 end
+
+        local out = suggestions.collect_health(ws)
+        assert.equals(1, local_calls)
+        assert.equals(1, net_calls)
+        assert.equals(2, #out)
+
+        local data = health_cache.read(io_dep, "/root")
+        assert.equals(2000, data.local_tier.computed_at)
+        assert.equals(2000, data.network_tier.computed_at)
+        assert.equals("N", data.network_tier.items[1].title)
+    end)
+
+    it("throttles the network tier by TTL across back-to-back health runs", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local local_calls, net_calls = 0, 0
+        suggestions._providers = { function() local_calls = local_calls + 1; return {} end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
+        suggestions._local_key = function() return "k1" end
+
+        local now = 1000
+        suggestions._clock = function() return now end
+
+        suggestions.collect_health(ws)             -- first: computes network
+        assert.equals(1, net_calls)
+
+        now = 1000 + 100                            -- within TTL: reuse
+        suggestions.collect_health(ws)
+        assert.equals(1, net_calls)
+        assert.equals(2, local_calls)               -- local ALWAYS recomputed
+
+        now = 1000 + suggestions.NETWORK_TTL + 1     -- past TTL: recompute
+        suggestions.collect_health(ws)
+        assert.equals(2, net_calls)
+    end)
+
+    it("--force refreshes the network tier within the TTL window", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local net_calls = 0
+        suggestions._providers = { function() return {} end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
+        suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 1000 end
+
+        suggestions.collect_health(ws)
+        assert.equals(1, net_calls)
+        suggestions.collect_health(ws, { force = true }) -- ignore the throttle
+        assert.equals(2, net_calls)
+    end)
+
+    it("recomputes (no error) when the cache file is corrupt", function()
+        local io_dep = mem_io()
+        io_dep.store[path] = "{ this is not valid json"
+        local ws = fake_ws(io_dep)
+        local calls = 0
+        suggestions._providers = { function() calls = calls + 1; return { { title = "L" } } end }
+        suggestions._health_providers = {}
+        suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 1000 end
+
+        local out = suggestions.collect(ws)
+        assert.equals(1, calls)
+        assert.equals(1, #out)
+        assert.equals("L", out[1].title)
+    end)
+
+    it("excludes info items from the count even via the cached path", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        suggestions._providers = { function()
+            return { { title = "affirm", kind = "info" }, { title = "nag" } }
+        end }
+        suggestions._health_providers = {}
+        suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 1000 end
+
+        assert.equals(2, #suggestions.collect(ws))
+        assert.equals(1, suggestions.count_actionable(ws)) -- info item not counted
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- The real local-tier invalidation key reflects the workspace inputs.
+-- ---------------------------------------------------------------------------
+describe("local-tier invalidation key", function()
+    local Core = require("loomworks.core")
+    local real_modules = require("loomworks.modules")
+    local function modules_get(id) return id and real_modules.get(id) or nil end
+
+    local function make_ws(projects)
+        local files = {
+            ["loomworks.json"] = h.make_config_json({ projects = projects }),
+        }
+        local deps = h.make_test_deps(files, {
+            modules = { get = modules_get },
+            cache = { save = function() return true end },
+        })
+        local core = Core.new(deps)
+        core:setup({ root = "/root" })
+        core:remerge()
+        return core:get_workspace()
+    end
+
+    it("is stable for the same workspace and differs when projects differ", function()
+        local ws1 = make_ws({ App = { cmake = {} } })
+        local k1a = suggestions._local_key(ws1)
+        local k1b = suggestions._local_key(ws1)
+        assert.equals(k1a, k1b) -- deterministic
+
+        local ws2 = make_ws({ App = { cmake = {} }, Lib = { cmake = {} } })
+        assert.not_equals(k1a, suggestions._local_key(ws2))
+    end)
+
+    it("is a non-empty short hex string and tolerates a nil workspace", function()
+        assert.is_string(suggestions._local_key(nil))
+        assert.matches("^%x+$", suggestions._local_key(nil))
+    end)
+end)
