@@ -390,7 +390,10 @@ would use, known once the profile pins a toolchain, so the query is valid before
 any build has run. Introspection is scoped to a `(profile, project)` pair, since
 a build directory is a per-project coordinate; the reported facts a caller MAY
 request include the build directory, the pinned configuration, the last known
-build state, and the resolved toolchain.
+build state, the resolved toolchain, and the **resolved compiler cache** — the
+launcher core resolved from the effective `cache` policy (§1.3.2), or that no
+cache is in effect. The compiler-cache fact reports the resolved launcher name
+and whether it is currently present; it never spawns the cache tool.
 
 Introspection MAY also **list a resolved profile's launchable targets** — the
 runnable things a launch (§16.17) can name: each project's **command launch
@@ -410,7 +413,9 @@ Introspection MAY also present a **single-profile detailed view** — the human
 overview (below) narrowed to one resolved profile and only the items it
 references: its **configuration set** and that set's project→configuration
 mappings, and for each project the set maps its configuration, resolved
-toolchain and last known build state; the profile's **toolchains**; and its
+toolchain and last known build state; the profile's **toolchains**; its
+**resolved compiler cache** (the launcher in effect, or that caching is off /
+unavailable); and its
 **launchable targets** with the default marked, incomplete when a project is not
 yet configured, exactly as the target listing above. Its **diagnostics** are
 scoped to the profile — those concerning the profile itself, its configuration
@@ -444,6 +449,21 @@ invocation report a non-zero exit status when any diagnostic is present (for
 CI); without it the overview always exits successfully, since it neither builds
 nor manages state (§16.9). `--check` never changes what is rendered — only the
 exit status.
+
+The overview and the single-profile view report the profile's **compiler cache**
+alongside its toolchain: the resolved launcher, or that caching is off /
+unavailable, mirroring the editor's `Cache:` row (`spec/ui.md`). Cache **usage
+statistics** (hit rate, size) are **off by default** — reading them spawns the
+cache tool, a cost the read-only overview must not pay implicitly — and are shown
+only under an explicit `--cache-stats` flag, which runs the tool's own stats
+query for the profile's resolved launcher and folds the result into the report.
+When no launcher is resolved, `--cache-stats` reports that there is nothing to
+query rather than erroring.
+
+The overview also renders the **suggestions** count line (`spec/ui.md` §1.1) when
+the suggestion framework has findings — a one-line advisory pointing at
+`lw health` (§16.31). Suggestions are advisory: they never change the overview's
+exit status and are independent of `--check`.
 
 ### 16.19 Convention migration
 
@@ -921,3 +941,41 @@ uses — reset introduces no private channel:
   file as "no database" rather than pointing the server at a missing path, and
   the next configure regenerates it, at which point the server reattaches. No
   server restart is required of reset itself.
+
+### 16.31 Headless health and suggestions
+
+A headless **health** report lists the workspace's **suggestions** in full — the
+detail behind the compact `N suggestions` line that the status overview (§16.18)
+and the editor status page (`spec/ui.md` §1.1) show. Health is read-only: it
+performs no build and authors nothing (§16.9).
+
+Suggestions come from an **extensible suggestion-provider framework**. A provider
+inspects the resolved workspace and returns zero or more suggestions, each a
+`{ title, detail, remedy }` triple: `title` is the one-line summary, `detail`
+explains why it fires, and `remedy` is the concrete action the user can take.
+Providers are advisory only — a suggestion never gates a build, never fails
+`--check` (§16.18), and is distinct from a **diagnostic** (a structural problem
+that does gate operations). The framework is the general surface; individual
+providers ship independently, and the health report aggregates whatever providers
+are registered.
+
+**Provider #1 — compiler cache.** When the workspace has one or more C/C++
+projects (a project whose module reports the caching-relevant language) and **no**
+compiler cache is present on the toolchain search path, the provider suggests
+installing one to speed rebuilds. Its `remedy` is platform-appropriate — the
+Windows-preferred launcher (`sccache`) on Windows, the Unix-preferred launcher
+(`ccache`) on Linux/macOS — matching the `auto` policy's own preference
+(§1.3.2, module specs). The provider does not fire when a launcher is already
+present, nor when every C/C++ project has pinned `cache` to `off`, since the user
+has opted out.
+
+The report reads only already-resolved workspace state and the toolchain-path
+index; like the rest of introspection it does **not** spawn the cache tool. Cache
+usage statistics remain behind the explicit `--cache-stats` flag of the status
+overview (§16.18), not the health report.
+
+**Builds are unaffected and need no new flags.** A headless build honors the same
+`cache` policy resolution and launcher staleness as the editor (§1.3.2, §5): the
+launcher is resolved from policy, applied by the module, and reconfigured on
+change through the ordinary build gate. No build-time flag turns caching on or
+off — that decision lives entirely in the `cache` policy variable.

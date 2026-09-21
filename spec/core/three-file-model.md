@@ -66,7 +66,12 @@ for **blank** project variables (§1.3.1), keyed profile → project → variabl
 These are per-machine values (an SDK path, a device address) and — like the
 `active_profile`, `name`, and `device` fields — are personal to this checkout:
 they live in `user.json` only and are never published to `loomworks.json`
-(§2.4), regardless of the profile's intent.
+(§2.4), regardless of the profile's intent. The reserved `cache` policy variable
+(§1.3.2) is filled through this same map when a profile pins a machine-local
+compiler-cache policy; its *configuration-* and *compiler-family-level*
+overrides, by contrast, live in the project's `variables` / `overrides` blocks
+and publish and merge per-variable exactly like any other variable value
+(§2.3 per-configuration merge).
 
 The optional `name` field overrides the workspace display name (§1.1). It is
 present only when the user has set one explicitly (`lw init --name`,

@@ -35,8 +35,10 @@ every plugin that ships that module type must bump in lockstep.
 **When to bump**: required field added, function signature changed,
 return shape changed, capability flag semantics shifted. Adding a
 new *optional* field with a sensible default does NOT require a
-bump. The strict-equality enforcement makes false bumps painful
-(every plugin breaks), so the rule naturally self-enforces.
+bump — e.g. the optional `compiler_cache` field on the `tasks`
+`ModuleContext` (§8.1), which defaults to `nil` and which a module is
+free to ignore. The strict-equality enforcement makes false bumps
+painful (every plugin breaks), so the rule naturally self-enforces.
 
 A rejected module is treated the same as a missing one. Projects in
 `loomworks.json` whose type maps to the rejected module are kept in
@@ -87,7 +89,24 @@ during merge to discover available configurations.
 
 Return overseer task definitions for a project in a given configuration.
 `project` is a `ModuleContext` table with: `name`, `path`, `workspace_root`,
-`configurations`, `tool_data`, `configuration_key`, `env`.
+`configurations`, `tool_data`, `configuration_key`, `env`, and optional
+`compiler_cache`.
+
+**`compiler_cache`** (optional) is a core-resolved **compiler-cache launcher**
+for this profile/configuration — either `nil` or `{ tool, path }`, where `tool`
+names the launcher and `path` is its resolved absolute executable. The split of
+responsibility is deliberate: **core owns resolution**, deriving the launcher
+from the effective cache **policy** (§1.3.1 — the reserved `cache` variable) and
+the active tool's compiler family, gated on the executable actually being present
+in the toolchain search paths; **the module owns application**, deciding how to
+wrap its own compiler invocation with the launcher (see the per-module specs).
+The field is absent (`nil`) when the policy resolves to no launcher (policy
+`off`, or a policy whose launcher is not found). The resolved launcher is *not*
+stored in the workspace files — core recomputes it each time the context is
+built and records it into the configure task's `module_info` for staleness
+comparison (§5, module §11). Because it is an additive optional field with a
+`nil` default, adding it does **not** bump `api_versions.module` (§8.0): a module
+that ignores the field builds exactly as before.
 
 Each task_def has:
 - `name`: display name

@@ -66,6 +66,33 @@ consistent with the `compiler_id` that keys the build directory. The
 (`machine_file`) is the analog of a cmake toolchain file and is out of
 scope (see core §15, invariant "The tool owns the compiler").
 
+## 5a. Compiler cache launcher
+
+Core resolves a compiler-cache launcher from the effective `cache` policy
+(core §1.3.2) and the active tool's compiler family and hands it to the module as
+`ctx.compiler_cache = { tool, path }` (or `nil`). For `auto`, the concrete
+launcher is `sccache` for an MSVC / clang-cl family tool and `ccache` for a
+gcc / clang family tool (`sccache` the cross-platform fallback); an explicit
+`ccache` / `sccache` policy uses that tool. The launcher is applied only when
+core actually resolved one (present on the toolchain search path).
+
+**Explicit CC/CXX wrapping — and deliberate suppression of meson's auto-detect.**
+meson has its own implicit behavior: when it finds `ccache` on `PATH` it silently
+prepends it to compiler invocations. loomworks does **not** rely on that. Instead,
+where §5 pins `CC` / `CXX` in the setup environment, the module takes **explicit
+control** and, when a launcher is resolved, pins the wrapped command for **both**
+tools — the pinned driver becomes `<launcher> <compiler>` (`CC="<path> <cc>"`,
+`CXX="<path> <cxx>"`). When the policy resolves to no launcher (`off`, or a tool
+not found) the module pins the **bare** compiler explicitly, so meson's implicit
+auto-detect cannot layer a cache back on. This is a deliberate divergence from
+meson's default: loomworks owns the caching decision end to end so that (a) meson
+and cmake behave identically under the same `cache` policy, and (b) the staleness
+fingerprint (§11) stays coherent — the wrapper is a resolved input loomworks
+records, not a hidden PATH-sensitive choice meson makes on its own. The compiler
+identity that keys the build directory is unchanged: the launcher wraps the same
+pinned driver, it does not select a different compiler (§5, core §15 "the tool
+owns the compiler").
+
 ## 6. Target discovery (`parse_targets`)
 
 Uses `meson introspect --targets` + `meson introspect --target-sources`
@@ -136,3 +163,13 @@ regeneration rule: Ninja re-runs `meson` automatically at build time when
 "modified since last configure" refresh. The sole loomworks-driven
 reconfigure triggers are `unconfigured` / `configure_failed` and option-level
 staleness via `ConfigUnit:is_stale()`.
+
+The **resolved compiler-cache launcher** (§5a) is an additional `is_stale()`
+input on the same footing as resolved option values: core records the launcher
+it resolved into the setup task's `module_info`, and `is_stale()` recomputes it
+(current `cache` policy + compiler family + live toolchain-path presence) and
+compares. A launcher that appears, disappears, or changes — because the tool was
+installed/removed or the policy was edited — marks the unit stale, and the build
+gate re-runs `meson setup` so the wrapped (or un-wrapped) `CC` / `CXX` takes
+effect. Because loomworks pins the driver explicitly rather than leaning on
+meson's PATH auto-detect (§5a), this recompute fully captures the caching state.

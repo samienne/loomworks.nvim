@@ -196,6 +196,17 @@ belongs in the matching `spec/` file.
     (`CMAKE_<LANG>_COMPILER_LAUNCHER`), toolchain files, and CMake presets
     (a preset owns its own toolchain — see the cmake module spec).
 
+    The **compiler-cache launcher** rides this same ownership boundary from the
+    other side: it is not a compiler and never selects one (it wraps the tool's
+    own compiler), so it is core-resolved from the `cache` **policy** variable
+    (§1.3.2) and the active compiler family rather than from a project's
+    `options`/`env`. The resolved launcher is a build input like any resolved
+    option value: it is recorded at configure time and a change to it
+    (policy edited, or the cache tool appearing/disappearing on the toolchain
+    path) makes an already-configured unit **stale**, so the build gate
+    reconfigures before the next build (§3.1, §5; module `is_stale()`). The
+    launcher never keys the build directory.
+
 14. **Blank variables gate the build**: A declared project variable that is
     blank after configuration resolution (§1.3.1) — no default, no
     configuration or compiler override — MUST be filled by the active profile.
