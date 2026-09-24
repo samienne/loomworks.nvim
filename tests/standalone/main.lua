@@ -1082,6 +1082,15 @@ do
   eq(r.status, "replaced", "unix: host replaced" .. (r.status ~= "replaced" and (" — " .. tostring(r.message)) or ""))
   eq(slurp(exe), NEW, "unix: target now holds the verified new binary")
   ok(not exists(exe .. ".new") and not exists(exe .. ".old"), "unix: no staging leftovers")
+  do  -- the default write probe (O_EXCL create + unlink) leaves nothing behind
+    local names, req = {}, uv.fs_scandir(bindir)
+    while req do
+      local n = uv.fs_scandir_next(req)
+      if not n then break end
+      names[#names + 1] = n
+    end
+    eq(table.concat(names, ","), "lw", "write probe cleaned up (only the host remains)")
+  end
   eq(r.from, nil, "unknown running version reported as nil")
   eq(r.to, ver, "reports the target release")
 

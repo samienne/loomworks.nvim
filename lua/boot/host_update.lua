@@ -8,8 +8,8 @@
 -- (already-trusted) host -> require the list to name the target's own bundle
 -- (anti-replay: binds the signed list to the target release) -> download this
 -- platform's host asset next to the installed binary and verify it against its
--- hash (boot.update
--- ensure_host_binary — mandatory, never relaxed) -> swap it into place.
+-- hash (boot.update ensure_host_binary — mandatory, never relaxed) -> swap it
+-- into place.
 --
 -- The swap never leaves a half-written binary and any failure leaves the
 -- original installed and runnable:
@@ -36,6 +36,7 @@ M.OLD_SUFFIX = ".old"
 M.NEW_SUFFIX = ".new"
 
 --- The running executable's path, forward-slashed.
+--- @return string|nil path nil when libuv cannot report it
 function M.exe_path()
   local ok, p = pcall(uv.exepath)
   if not ok or type(p) ~= "string" or p == "" then return nil end
@@ -49,11 +50,16 @@ local function default_fs()
     unlink = function(p) return uv.fs_unlink(p) end,
     exists = function(p) return uv.fs_stat(p) ~= nil end,
     --- Can new files be created in `dir`? Create + remove a probe file.
+    --- O_CREAT|O_EXCL ("wx"): never opens (or follows a symlink planted at) an
+    --- existing path. The name is unique per process + instant, so a stale
+    --- probe cannot fake "unwritable".
     writable = function(dir)
-      local probe = dir .. "/.lw-write-probe-" .. tostring(uv.os_getpid and uv.os_getpid() or os.time())
-      local f = io.open(probe, "wb")
-      if not f then return false end
-      f:close()
+      local probe = dir .. "/.lw-write-probe-" ..
+        tostring(uv.os_getpid and uv.os_getpid() or os.time()) .. "-" ..
+        tostring(uv.hrtime and uv.hrtime() or os.clock())
+      local fd = uv.fs_open(probe, "wx", 384)  -- 0600
+      if not fd then return false end
+      uv.fs_close(fd)
       uv.fs_unlink(probe)
       return true
     end,
@@ -91,7 +97,8 @@ end
 
 --- Should the running host replace itself? Pure — all inputs explicit.
 --- @param o { exe?: string, running_version?: string, target_version?: string, no_host?: boolean, pinned?: boolean, dev?: boolean, fused_system_lua?: boolean }
---- @return "swap"|"current"|"skip" action, string reason
+--- @return "swap"|"current"|"skip" action
+--- @return string reason
 function M.decide(o)
   if o.no_host then return "skip", "--no-host" end
   if o.pinned then
@@ -126,7 +133,12 @@ end
 --- the first rename back if the second fails. `new` is left for the caller to
 --- remove on failure. Returns true, or nil, err, fatal — `fatal` set only when a
 --- Windows rollback also failed (the original then sits at `<exe>.old`).
+--- @param exe string the installed (running) host binary to replace
+--- @param new string the verified replacement staged next to it (`<exe>.new`)
 --- @param opts? { fs?: table, is_windows?: boolean, sleep?: fun(ms:integer), attempts?: integer }
+--- @return boolean|nil ok true on success
+--- @return string|nil err why the swap failed (original left in place unless `fatal`)
+--- @return boolean|nil fatal set when a Windows rollback also failed
 function M.swap(exe, new, opts)
   opts = opts or {}
   local fs = opts.fs or default_fs()
@@ -181,7 +193,7 @@ end
 --- `message` explains; `manual` (warning/error) says how to replace it by hand.
 ---
 --- @param o { target_version: string, url?: string, exe?: string, running_version?: string, asset?: string, no_host?: boolean, pinned?: boolean, dev?: boolean, fused_system_lua?: boolean, fs?: table, is_windows?: boolean, sleep?: fun(ms:integer), attempts?: integer }
---- @return { status: string, message: string, from?: string, to?: string, exe?: string, manual?: string }
+--- @return { status: "replaced"|"current"|"skipped"|"warning"|"error", message: string, from?: string, to?: string, exe?: string, manual?: string }
 function M.update_host(o)
   local verify = require("boot.verify")
   local update = require("boot.update")
