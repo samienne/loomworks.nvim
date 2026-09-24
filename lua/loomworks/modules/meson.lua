@@ -841,13 +841,15 @@ function M.tasks(project, active_config)
     configure_cmd[#configure_cmd + 1] = build_dir
     configure_cmd[#configure_cmd + 1] = "--buildtype=" .. buildtype
 
-    -- Optional cross-compilation machine file
+    -- Optional cross-compilation machine file (recorded: a change is a
+    -- configure input change → full reconfigure, §5a).
+    local cross_file
     if config_info and config_info.machine_file then
-        local mf = expand_str(tostring(config_info.machine_file), {
+        cross_file = expand_str(tostring(config_info.machine_file), {
             workspace_root = project.workspace_root,
             project_path = project.path or project.name,
         })
-        configure_cmd[#configure_cmd + 1] = "--cross-file=" .. mf
+        configure_cmd[#configure_cmd + 1] = "--cross-file=" .. cross_file
     end
 
     -- Generated native file pinning the compiler (+ launcher) as a space-safe
@@ -859,7 +861,7 @@ function M.tasks(project, active_config)
     end
 
     -- User -D options (project-wide + config-specific). Also recorded
-    -- (name → value) so the next setup can tell an option was REMOVED (§5a).
+    -- (name → value) so the next setup can tell any option changed (§5a).
     local passed_options = {}
     for _, opt in ipairs(build_option_args(project, active_config)) do
         configure_cmd[#configure_cmd + 1] = opt
@@ -872,45 +874,40 @@ function M.tasks(project, active_config)
     -- for both plain meson and `python -m mesonbuild` invocations.
     local reconfigure_cmd = vim.list_extend({}, configure_cmd)
     table.insert(reconfigure_cmd, insert_at + 2, "--reconfigure")
-
-    -- A compiler-cache launcher CHANGE cannot be applied by a plain
-    -- `--reconfigure`: meson fixes the compiler command at first setup and
-    -- ignores it thereafter (§5a). When the resolved launcher differs from the
-    -- one this build dir was configured with, reconfigure with `--wipe` — it
-    -- wipes and rebuilds the tree, re-detecting the now-wrapped/unwrapped
-    -- CC/CXX, while preserving the -D options meson re-reads from the wiped dir.
     local wipe_cmd = vim.list_extend({}, configure_cmd)
     table.insert(wipe_cmd, insert_at + 2, "--wipe")
-    -- Wipe only when the launcher genuinely CHANGED against a value recorded at
-    -- the last configure. `recorded` is a launcher path, the explicit "none"
-    -- (feature-configured, no cache), or nil (legacy / never recorded). A nil
-    -- recorded value is UNKNOWN — we do not force a wipe for a launcher we never
-    -- tracked (mirrors `ConfigUnit:launcher_changed`'s legacy carve-out). The
-    -- resolved side uses the same "none" sentinel so off↔off compares equal.
-    local recorded = project.recorded_cache_launcher
+
+    -- Full reconfigure for EVERY changed configure input (§5a, core §5.1).
+    -- meson fixes the compiler command (launcher included), env-derived
+    -- compiler/linker args and machine files at the first setup, keeps a
+    -- no-longer-passed -D on `--reconfigure`, and `--wipe` REPLAYS the stored
+    -- command line (meson-private/cmd_line.txt). So on any difference against
+    -- the previous setup's record — a -D added/changed/removed, the build
+    -- type, the cross file, the launcher, or the configuration environment
+    -- (core's `configure_env` record vs `configuration_env`) — or for a
+    -- configured unit with no `passed_options` record (cannot be classified
+    -- with certainty), core clears the stored command line
+    -- (`pre_configure_reset`) and the setup runs `--wipe`, rebuilding the tree
+    -- from exactly the inputs passed now. No in-place set is declared: meson
+    -- read-only built-in options make "value change applies in place"
+    -- uncertain per option. An unchanged re-setup runs `--reconfigure`.
     local resolved_marker = resolved_launcher or "none"
-    local launcher_changed = recorded ~= nil and recorded ~= resolved_marker
-
-    -- A removed `-D` option (core §5.1 faithful reconfigure, meson §5a): meson
-    -- keeps it on `--reconfigure`, and `--wipe` REPLAYS the stored command line
-    -- (meson-private/cmd_line.txt) — so neither retracts it, and meson has no
-    -- unset flag. Full reconfigure instead: core removes the stored command
-    -- line (`pre_configure_reset`), then `--wipe` rebuilds the tree from
-    -- exactly the options passed now. The previous set is the module's own
-    -- `passed_options` record, else (legacy unit) core's option snapshot keys.
-    local prev_options
     local rec = project.recorded_module_info
-    if type(rec) == "table" and type(rec.passed_options) == "table" then
-        prev_options = rec.passed_options
-    elseif type(project.recorded_options) == "table" then
-        prev_options = project.recorded_options
+    local configured = rec ~= nil or project.recorded_options ~= nil
+        or project.recorded_cache_launcher ~= nil
+    local full = false
+    if configured then
+        if type(rec) ~= "table" or type(rec.passed_options) ~= "table" then
+            full = true
+        elseif not vim.deep_equal(rec.passed_options, passed_options)
+                or rec.buildtype ~= buildtype
+                or rec.cross_file ~= cross_file
+                or (project.recorded_cache_launcher or rec.cache_launcher) ~= resolved_marker
+                or not vim.deep_equal(rec.configure_env or {}, project.configuration_env or {}) then
+            full = true
+        end
     end
-    local option_removed = false
-    for k in pairs(prev_options or {}) do
-        if passed_options[k] == nil then option_removed = true break end
-    end
-    local pre_configure_reset = option_removed and { "meson-private/cmd_line.txt" } or nil
-
+    local pre_configure_reset = full and { "meson-private/cmd_line.txt" } or nil
     local configuration_key = project.configuration_key or active_config
     local cached_tool_data = project.tool_data
 
@@ -919,13 +916,13 @@ function M.tasks(project, active_config)
     tasks[#tasks + 1] = {
         name = project.name .. ": configure",
         builder = function()
-            -- Pick first-time setup, an in-place reconfigure, or a `--wipe`
-            -- reconfigure (when the compiler-cache launcher changed) based on
-            -- whether the dir is already set up.
+            -- Pick first-time setup, an in-place `--reconfigure` (nothing
+            -- changed), or the full `--wipe` reconfigure (any configure input
+            -- changed, §5a) based on whether the dir is already set up.
             local uv2 = vim.uv or vim.loop
             local cmd
             if uv2.fs_stat(build_dir .. "/meson-info") then
-                cmd = (launcher_changed or option_removed) and wipe_cmd or reconfigure_cmd
+                cmd = full and wipe_cmd or reconfigure_cmd
             else
                 cmd = configure_cmd
             end
@@ -949,8 +946,8 @@ function M.tasks(project, active_config)
             -- pinned CC/CXX is used regardless.
             stripped_compiler_keys = (#stripped_env > 0)
                 and { env = stripped_env } or nil,
-            -- Removed option → core clears the stored command line before the
-            -- `--wipe` setup, so the option is really dropped (§5a).
+            -- Full reconfigure → core clears the stored command line before
+            -- the `--wipe` setup, so meson cannot replay old options (§5a).
             pre_configure_reset = pre_configure_reset,
             module_info = {
                 buildtype = buildtype,
@@ -961,9 +958,10 @@ function M.tasks(project, active_config)
                 -- feature-no-cache ("none", install-after-configure fires) from
                 -- a legacy/never-recorded unit (nil, not invalidated) (§11).
                 cache_launcher = resolved_launcher or "none",
-                -- The `-D` options this setup passed (name → value), so the
-                -- next setup can detect a removed one (§5a).
+                -- The `-D` options (name → value) and cross file this setup
+                -- passed, so the next setup can detect any change (§5a).
                 passed_options = passed_options,
+                cross_file = cross_file,
             },
         },
     }

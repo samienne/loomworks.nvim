@@ -47,7 +47,8 @@ end
 
 --- Memoized `cmake --version` probe. Returns `{ major, minor }` or nil.
 --- Keyed by the resolved cmake executable so a repeated configure pays it once.
---- Only consulted on the MSVC `/Z7` path (§5d), so a non-MSVC box never runs it.
+--- Consulted only on the MSVC `/Z7` path and for a full reconfigure (§5d:
+--- `--fresh` needs >= 3.24), so a plain build never runs it.
 M._cmake_version_cache = {}
 --- @param cmake_cmd string
 --- @return { major: integer, minor: integer }|nil
@@ -89,14 +90,18 @@ local function cmake_at_least_325(cmake_cmd)
     return cmake_at_least(cmake_cmd, 3, 25)
 end
 
---- Cache keys CMake honors only at the FIRST configure of a build tree: a
---- change (added, changed or removed) cannot be applied by an in-place
---- reconfigure, so it escalates to a full reconfigure (§5d, core §5.1).
-local FIRST_CONFIGURE_ONLY = {
-    CMAKE_TOOLCHAIN_FILE = true,
-    CMAKE_GENERATOR_PLATFORM = true,
-    CMAKE_GENERATOR_TOOLSET = true,
-    CMAKE_GENERATOR_INSTANCE = true,
+--- The ONLY cache keys whose change the module applies with an in-place
+--- reconfigure (§5d whitelist, core §5.1 "in place only where certain"). They
+--- are consulted solely to initialize each target's `<LANG>_COMPILER_LAUNCHER`
+--- property when the target is created — and targets are re-created on every
+--- configure run — while taking no part in compiler detection or any other
+--- first-configure-only computation, so re-passing (or `-U`-retracting) them
+--- in place is exactly what a fresh configure would do. Every other change
+--- (including the MSVC debug-info keys, whose CMP0141 effect is baked into the
+--- flag cache defaults at first configure) takes the full reconfigure.
+local IN_PLACE_KEYS = {
+    CMAKE_C_COMPILER_LAUNCHER = true,
+    CMAKE_CXX_COMPILER_LAUNCHER = true,
 }
 
 --- Configure-state entries (relative to the build dir) that `cmake --fresh`
@@ -132,45 +137,54 @@ local function passed_d_options(argv)
     return out
 end
 
---- What this unit's LAST configure passed as `-D` (name → value), for the
---- faithful-reconfigure retraction (§5d, core §5.1). Returns `(record,
---- authoritative)`: the module's own `module_info.passed_options` when
---- recorded (authoritative), else a best-effort reconstruction for a unit
---- configured before that record existed — core's resolved-option snapshot
---- keys (minus the reserved compiler keys, never passed) plus, when a
---- launcher was recorded, the launcher keys and (MSVC-style single-config
---- without a user debug format) the injected debug-info format. nil when the
---- unit has never been configured.
+--- Classify this configure against the unit's previous configure (§5d "Full
+--- reconfigure by default; in place only for the launcher keys", core §5.1):
+---   * `"none"`     — never configured: a plain first configure;
+---   * `"full"`     — any changed configure input: a `-D` added, changed or
+---                    removed outside `IN_PLACE_KEYS`, a generator change, a
+---                    changed configuration environment (core's
+---                    `configure_env` record vs `configuration_env`), or a
+---                    configured unit with no `passed_options` record (it
+---                    cannot be classified with certainty);
+---   * `"in_place"` — nothing changed, or only `IN_PLACE_KEYS` changed; the
+---                    second return lists those that disappeared (to `-U`).
+--- `allow_in_place = false` (the preset path) turns every change into a full
+--- reconfigure, so a per-key `-U` can never clobber a preset's own value.
 --- @param project loomworks.ModuleContext
---- @param kit table|nil
---- @param multi_config boolean
---- @param user_debug_format_conflict boolean
---- @return table<string, string>|nil record, boolean authoritative
-local function previous_passed_options(project, kit, multi_config, user_debug_format_conflict)
+--- @param passed table<string, string> the `-D`s this configure passes
+--- @param generator string|nil generator this configure uses
+--- @param allow_in_place boolean
+--- @return "none"|"full"|"in_place" kind, string[] retract
+local function classify_reconfigure(project, passed, generator, allow_in_place)
     local rec = project.recorded_module_info
-    if type(rec) == "table" and type(rec.passed_options) == "table" then
-        return rec.passed_options, true
+    local configured = rec ~= nil or project.recorded_options ~= nil
+        or project.recorded_cache_launcher ~= nil
+    if not configured then return "none", {} end
+    if type(rec) ~= "table" or type(rec.passed_options) ~= "table" then
+        return "full", {}
     end
-    local prev, any = {}, false
-    if type(project.recorded_options) == "table" then
-        for k, v in pairs(project.recorded_options) do
-            if type(k) == "string" and not reserved_compiler.is_reserved_option(k) then
-                prev[k] = tostring(v)
-                any = true
-            end
+    if type(rec.generator) == "string" and generator and rec.generator ~= generator then
+        -- CMake refuses a generator change in place.
+        return "full", {}
+    end
+    -- An absent record means "no configuration environment" — which is what
+    -- a configure before the record existed actually ran with.
+    if not vim.deep_equal(rec.configure_env or {}, project.configuration_env or {}) then
+        return "full", {}
+    end
+    local prev = rec.passed_options
+    local retract = {}
+    local keys = {}
+    for k in pairs(prev) do keys[k] = true end
+    for k in pairs(passed) do keys[k] = true end
+    for key in pairs(keys) do
+        if prev[key] ~= passed[key] then
+            if not (allow_in_place and IN_PLACE_KEYS[key]) then return "full", {} end
+            if passed[key] == nil then retract[#retract + 1] = key end
         end
     end
-    local launcher = project.recorded_cache_launcher
-    if type(launcher) == "string" and launcher ~= "none" then
-        prev.CMAKE_C_COMPILER_LAUNCHER = launcher
-        prev.CMAKE_CXX_COMPILER_LAUNCHER = launcher
-        if is_msvc_style(kit) and not multi_config and not user_debug_format_conflict then
-            prev.CMAKE_MSVC_DEBUG_INFORMATION_FORMAT = "Embedded"
-        end
-        any = true
-    end
-    if not any then return nil, false end
-    return prev, false
+    table.sort(retract)
+    return "in_place", retract
 end
 
 --- One-shot non-blocking warnings (§5d preset / launcher-conflict), deduped so
@@ -1143,61 +1157,33 @@ function M.tasks(project, active_config)
     end
     table.sort(stripped_opts)
 
-    -- Faithful reconfigure (§5d "Retraction and full reconfigure", core §5.1).
-    -- CMake cache entries persist across reconfigures, so a `-D` loomworks
-    -- passed last time and no longer passes must be RETRACTED, not merely
-    -- omitted. Record every `-D` this configure passes; compare with the
-    -- unit's previous record: a first-configure-only key (or the generator)
-    -- that changed escalates to a full reconfigure (`--fresh`, or a core-run
-    -- reset of CMakeCache.txt + CMakeFiles below 3.24); otherwise each key
-    -- that disappeared gets an in-place `-U<key>`. Only keys in loomworks' own
-    -- record are ever retracted, never the reserved compiler keys, and never
-    -- on the preset path (its cache entries come from the preset).
-    local passed_options, pre_configure_reset
-    if not from_preset then
-        passed_options = passed_d_options(configure_cmd)
-        local prev, authoritative = previous_passed_options(
-            project, kit, multi_config, user_debug_format_conflict)
-        if prev then
-            local full = false
-            if authoritative then
-                for key in pairs(FIRST_CONFIGURE_ONLY) do
-                    if prev[key] ~= passed_options[key] then full = true break end
-                end
-            end
-            local rec = project.recorded_module_info
-            if type(rec) == "table" and type(rec.generator) == "string" and generator
-                    and rec.generator ~= generator then
-                -- CMake refuses a generator change in place.
-                full = true
-            end
-            if full then
-                if cmake_at_least(cmake_cmd, 3, 24) then
-                    table.insert(configure_cmd, 2, "--fresh")
-                else
-                    pre_configure_reset = vim.deepcopy(FRESH_RESET_ENTRIES)
-                end
-            else
-                local retract = {}
-                for key in pairs(prev) do
-                    if passed_options[key] == nil
-                            and not reserved_compiler.is_reserved_option(key)
-                            and not key:find("[%*%?%[]") then
-                        retract[#retract + 1] = key
-                    end
-                end
-                table.sort(retract)
-                if #retract > 0 then
-                    -- Right after `-B <build_dir>`, ahead of every `-D`.
-                    local at = #configure_cmd + 1
-                    for i, a in ipairs(configure_cmd) do
-                        if a == "-B" then at = i + 2 break end
-                    end
-                    for j, key in ipairs(retract) do
-                        table.insert(configure_cmd, at + j - 1, "-U" .. key)
-                    end
-                end
-            end
+    -- Faithful reconfigure (§5d "Full reconfigure by default", core §5.1).
+    -- CMake keeps configure state across reconfigures and computes much of it
+    -- only at the first configure, so any changed configure input is applied
+    -- by a FULL reconfigure (`--fresh`, or a core-run reset of CMakeCache.txt
+    -- + CMakeFiles below 3.24) — except a change confined to the launcher
+    -- keys (`IN_PLACE_KEYS`), applied in place: re-passed, or retracted with
+    -- `-U<key>` when it disappeared. Record every `-D` this configure passes
+    -- (on the preset path: the appended user options) so the next configure
+    -- can classify its change; the preset path never takes the in-place
+    -- route, so a `-U` can never clobber a preset's own cache value.
+    local passed_options = passed_d_options(configure_cmd)
+    local pre_configure_reset
+    local kind, retract = classify_reconfigure(project, passed_options, generator, not from_preset)
+    if kind == "full" then
+        if cmake_at_least(cmake_cmd, 3, 24) then
+            table.insert(configure_cmd, 2, "--fresh")
+        else
+            pre_configure_reset = vim.deepcopy(FRESH_RESET_ENTRIES)
+        end
+    elseif kind == "in_place" and #retract > 0 then
+        -- Right after `-B <build_dir>`, ahead of every `-D`.
+        local at = #configure_cmd + 1
+        for i, a in ipairs(configure_cmd) do
+            if a == "-B" then at = i + 2 break end
+        end
+        for j, key in ipairs(retract) do
+            table.insert(configure_cmd, at + j - 1, "-U" .. key)
         end
     end
 
@@ -1263,9 +1249,9 @@ function M.tasks(project, active_config)
                 -- fires when a cache later appears) from a legacy/never-recorded
                 -- unit (nil, never retroactively invalidated). (§5d / §11.)
                 cache_launcher = cache_launcher or "none",
-                -- Every `-D` this configure passed (name → value), so the
-                -- next configure can retract what it no longer passes (§5d).
-                -- nil on the preset path (never retracted).
+                -- Every `-D` this configure passed (name → value; on the
+                -- preset path the appended user options), so the next
+                -- configure can classify its change (§5d full vs in-place).
                 passed_options = passed_options,
             },
         },

@@ -134,147 +134,177 @@ describe("meson compiler pinning through tasks()", function()
 end)
 
 -- ---------------------------------------------------------------------------
--- --wipe on launcher change (§5a / §11) — with the "none" sentinel + carve-out
+-- Full reconfigure for EVERY changed configure input (meson §5a, core §5.1):
+-- meson fixes the compiler command, env-derived args and machine files at the
+-- first setup, keeps a no-longer-passed -D on --reconfigure, and --wipe replays
+-- the stored command line — so any change clears meson-private/cmd_line.txt
+-- (core reset) and runs `setup --wipe`. No in-place set; an unchanged re-setup
+-- runs --reconfigure.
 -- ---------------------------------------------------------------------------
-describe("meson compiler-cache reconfigure mechanism", function()
-    it("uses --wipe when the launcher changed (none → ccache)", function()
-        local dir = setup_build_dir()
-        local c = ctx({
-            cached_build_dir = dir,
-            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
-            recorded_cache_launcher = "none", -- feature-configured, no cache
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_true(has_arg(cmd, "--wipe"))
-        assert.is_false(has_arg(cmd, "--reconfigure"))
-    end)
-
-    it("uses --reconfigure when the launcher is unchanged", function()
-        local dir = setup_build_dir()
-        local c = ctx({
-            cached_build_dir = dir,
-            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
-            recorded_cache_launcher = "/usr/bin/ccache",
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_true(has_arg(cmd, "--reconfigure"))
-        assert.is_false(has_arg(cmd, "--wipe"))
-    end)
-
-    it("wipes when a launcher was removed (recorded path, now off)", function()
-        local dir = setup_build_dir()
-        local c = ctx({
-            cached_build_dir = dir,
-            recorded_cache_launcher = "/usr/bin/ccache", -- had one
-            -- compiler_cache nil → resolved "none" ≠ recorded path
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_true(has_arg(cmd, "--wipe"))
-    end)
-
-    it("does NOT wipe a legacy build dir (nil recorded) when a cache appears", function()
-        -- Legacy / never-recorded: unknown launcher state — a plain reconfigure,
-        -- never a retroactive wipe (mirrors ConfigUnit:launcher_changed).
-        local dir = setup_build_dir()
-        local c = ctx({
-            cached_build_dir = dir,
-            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
-            recorded_cache_launcher = nil,
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_false(has_arg(cmd, "--wipe"))
-        assert.is_true(has_arg(cmd, "--reconfigure"))
-    end)
-
-    it("off stays off: recorded \"none\", still no cache → plain reconfigure", function()
-        local dir = setup_build_dir()
-        local c = ctx({
-            cached_build_dir = dir,
-            recorded_cache_launcher = "none",
-            -- compiler_cache nil → resolved "none" == recorded "none"
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_false(has_arg(cmd, "--wipe"))
-        assert.is_true(has_arg(cmd, "--reconfigure"))
-    end)
-
-    it("first-time setup uses neither --wipe nor --reconfigure", function()
-        local c = ctx({
-            cached_build_dir = vim.fn.tempname(), -- does not exist
-            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
-            recorded_cache_launcher = "none",
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_false(has_arg(cmd, "--wipe"))
-        assert.is_false(has_arg(cmd, "--reconfigure"))
-    end)
-
-    it("--wipe preserves the -D options (buildtype survives)", function()
-        local dir = setup_build_dir()
-        local c = ctx({
-            cached_build_dir = dir,
-            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
-            recorded_cache_launcher = "none",
-        })
-        local cmd = meson.tasks(c, "Debug")[1].builder().cmd
-        assert.is_true(has_arg(cmd, "--buildtype=debug"))
-    end)
-end)
-
--- ---------------------------------------------------------------------------
--- Faithful reconfigure for a REMOVED option (meson §5a, core §5.1): meson keeps
--- a no-longer-passed -D on --reconfigure and --wipe replays the stored command
--- line, so core must clear meson-private/cmd_line.txt before a --wipe setup.
--- ---------------------------------------------------------------------------
-describe("meson faithful reconfigure (removed option)", function()
+describe("meson full reconfigure on any changed configure input", function()
     local function configure_task(c)
         for _, t in ipairs(meson.tasks(c, "Debug")) do
             if t.loomworks.action == "configure" then return t end
         end
     end
 
-    it("records the -D options it passed", function()
+    --- The record a plain (no options, no cache) Debug setup leaves behind.
+    local function rec(extra)
+        local r = { cache_launcher = "none", passed_options = {}, buildtype = "debug" }
+        for k, v in pairs(extra or {}) do r[k] = v end
+        return r
+    end
+
+    local function is_full(t)
+        local cmd = t.builder().cmd
+        return vim.deep_equal({ "meson-private/cmd_line.txt" }, t.loomworks.pre_configure_reset)
+            and has_arg(cmd, "--wipe") and not has_arg(cmd, "--reconfigure")
+    end
+
+    local function is_in_place(t)
+        local cmd = t.builder().cmd
+        return t.loomworks.pre_configure_reset == nil
+            and has_arg(cmd, "--reconfigure") and not has_arg(cmd, "--wipe")
+    end
+
+    it("records the -D options, build type and cross file it passed", function()
         local t = configure_task(ctx({
             type_config = { options = { werror = "true" } },
-            recorded_cache_launcher = "none",
+            configurations = { Debug = { buildtype = "debug", machine_file = "/x/cross.ini" } },
         }))
-        assert.same({ werror = "true" }, t.loomworks.module_info.passed_options)
+        local mi = t.loomworks.module_info
+        assert.same({ werror = "true" }, mi.passed_options)
+        assert.equals("debug", mi.buildtype)
+        assert.equals("/x/cross.ini", mi.cross_file)
     end)
 
-    it("a removed option resets the stored command line and wipes", function()
-        local dir = setup_build_dir()
+    it("an unchanged setup is a plain --reconfigure", function()
         local t = configure_task(ctx({
-            cached_build_dir = dir,
+            cached_build_dir = setup_build_dir(),
             recorded_cache_launcher = "none",
-            recorded_module_info = { cache_launcher = "none", passed_options = { werror = "true" } },
+            recorded_module_info = rec(),
         }))
-        assert.same({ "meson-private/cmd_line.txt" }, t.loomworks.pre_configure_reset)
-        local cmd = t.builder().cmd
-        assert.is_true(has_arg(cmd, "--wipe"))
-        assert.is_false(has_arg(cmd, "--reconfigure"))
+        assert.is_true(is_in_place(t))
     end)
 
-    it("an added or changed option is a plain --reconfigure (no reset)", function()
-        local dir = setup_build_dir()
+    it("an unchanged launcher stays in place", function()
         local t = configure_task(ctx({
-            cached_build_dir = dir,
+            cached_build_dir = setup_build_dir(),
+            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
+            recorded_cache_launcher = "/usr/bin/ccache",
+            recorded_module_info = rec({ cache_launcher = "/usr/bin/ccache" }),
+        }))
+        assert.is_true(is_in_place(t))
+    end)
+
+    it("a launcher that appeared (none → ccache) is a full reconfigure", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
+            recorded_cache_launcher = "none",
+            recorded_module_info = rec(),
+        }))
+        assert.is_true(is_full(t))
+    end)
+
+    it("a launcher that disappeared is a full reconfigure", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            recorded_cache_launcher = "/usr/bin/ccache",
+            recorded_module_info = rec({ cache_launcher = "/usr/bin/ccache" }),
+        }))
+        assert.is_true(is_full(t))
+    end)
+
+    it("a removed option is a full reconfigure", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            recorded_cache_launcher = "none",
+            recorded_module_info = rec({ passed_options = { werror = "true" } }),
+        }))
+        assert.is_true(is_full(t))
+    end)
+
+    it("an added or changed option is a full reconfigure (no in-place set)", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
             type_config = { options = { werror = "false", b_lto = "true" } },
             recorded_cache_launcher = "none",
-            recorded_module_info = { cache_launcher = "none", passed_options = { werror = "true" } },
+            recorded_module_info = rec({ passed_options = { werror = "true" } }),
         }))
-        assert.is_nil(t.loomworks.pre_configure_reset)
-        assert.is_true(has_arg(t.builder().cmd, "--reconfigure"))
+        assert.is_true(is_full(t))
     end)
 
-    it("a legacy unit falls back to core's option snapshot", function()
-        local dir = setup_build_dir()
+    it("a changed build type is a full reconfigure", function()
         local t = configure_task(ctx({
-            cached_build_dir = dir,
+            cached_build_dir = setup_build_dir(),
             recorded_cache_launcher = "none",
-            recorded_module_info = { cache_launcher = "none" },
+            recorded_module_info = rec({ buildtype = "release" }),
+        }))
+        assert.is_true(is_full(t))
+    end)
+
+    it("a changed cross file is a full reconfigure", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            configurations = { Debug = { buildtype = "debug", machine_file = "/x/new.ini" } },
+            recorded_cache_launcher = "none",
+            recorded_module_info = rec({ cross_file = "/x/old.ini" }),
+        }))
+        assert.is_true(is_full(t))
+    end)
+
+    it("a changed configuration environment is a full reconfigure", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            configuration_env = { CFLAGS = "-O1" },
+            recorded_cache_launcher = "none",
+            recorded_module_info = rec({ configure_env = { CFLAGS = "-O2" } }),
+        }))
+        assert.is_true(is_full(t))
+    end)
+
+    it("an unchanged configuration environment stays in place", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            configuration_env = { CFLAGS = "-O2" },
+            recorded_cache_launcher = "none",
+            recorded_module_info = rec({ configure_env = { CFLAGS = "-O2" } }),
+        }))
+        assert.is_true(is_in_place(t))
+    end)
+
+    it("a configured unit with no passed_options record takes the full path", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
             recorded_options = { werror = "true" },
         }))
-        assert.same({ "meson-private/cmd_line.txt" }, t.loomworks.pre_configure_reset)
-        assert.is_true(has_arg(t.builder().cmd, "--wipe"))
+        assert.is_true(is_full(t))
+    end)
+
+    it("first-time setup uses neither --wipe nor --reconfigure", function()
+        local t = configure_task(ctx({
+            cached_build_dir = vim.fn.tempname(), -- does not exist
+            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
+        }))
+        local cmd = t.builder().cmd
+        assert.is_false(has_arg(cmd, "--wipe"))
+        assert.is_false(has_arg(cmd, "--reconfigure"))
+        assert.is_nil(t.loomworks.pre_configure_reset)
+    end)
+
+    it("the --wipe setup re-passes every loomworks input (buildtype, -D)", function()
+        local t = configure_task(ctx({
+            cached_build_dir = setup_build_dir(),
+            type_config = { options = { werror = "true" } },
+            compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
+            recorded_cache_launcher = "none",
+            recorded_module_info = rec(),
+        }))
+        local cmd = t.builder().cmd
+        assert.is_true(has_arg(cmd, "--wipe"))
+        assert.is_true(has_arg(cmd, "--buildtype=debug"))
+        assert.is_true(has_arg(cmd, "-Dwerror=true"))
     end)
 end)
