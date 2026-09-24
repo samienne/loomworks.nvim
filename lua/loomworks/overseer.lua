@@ -324,8 +324,11 @@ end
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
 --- @param profile loomworks.Profile
+--- @param opts? { force_full_reconfigure?: boolean } forwarded to the module
+---   context (§8.1): every configure takes the module's full path
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
-local function collect_profile_tasks(profile)
+local function collect_profile_tasks(profile, opts)
+    opts = opts or {}
     local loomworks = require("loomworks")
     local modules = require("loomworks.modules")
 
@@ -370,6 +373,7 @@ local function collect_profile_tasks(profile)
                 and pp._config_unit.module_info.cache_launcher or nil,
             recorded_module_info = pp._config_unit and pp._config_unit.module_info or nil,
             recorded_options = pp._config_unit and pp._config_unit._cached_options or nil,
+            force_full_reconfigure = opts.force_full_reconfigure or nil,
         }
 
         local pt = mod.progress_parser
@@ -575,6 +579,17 @@ local function start_one_task(overseer, task_def, on_complete)
                     vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
                     reject(msg)
                     return
+                end
+            end
+
+            -- Why this configure runs (the gate's reason + the module's
+            -- full/in-place choice), to the log — the editor's counterpart of
+            -- the line the headless runner prints (§16.4).
+            if lw_meta.action == "configure" then
+                local why = M.configure_reason_line(lw_meta)
+                local ws = unit._workspace
+                if why and ws and ws._core and ws._core._deps.log then
+                    ws._core._deps.log:info("%s — %s", task_def.name or "?", why)
                 end
             end
 
@@ -833,20 +848,22 @@ end
 --- directory was removed out of band (spec §3.1 rule 7) — the load/remerge
 --- resets a vanished unit, and this is the re-check for a directory that
 --- disappears between remerge and build.
+--- Each selected task's `loomworks.configure_reason` is set to the unit's
+--- `configure_reason()` (why it configures, §16.4). With `forced` every
+--- configure task is selected (a forced full reconfigure, `lw build
+--- --reconfigure`).
 --- @param all_tasks table { configure: table[], build: table[] }
+--- @param forced? boolean
 --- @return table[] configure tasks that actually need running
-local function filter_unconfigured_tasks(all_tasks)
+local function filter_unconfigured_tasks(all_tasks, forced)
     local needs_configure = {}
     for _, task_def in ipairs(all_tasks.configure) do
         local lw_meta = task_def.loomworks
         if not lw_meta then goto next end
 
-        local unit = lw_meta.unit
-        local state = unit:state()
-        local project_needs_refresh = unit._project and unit._project.needs_refresh
-        if state == "unconfigured" or state == "configure_failed"
-                or unit:is_stale() or project_needs_refresh
-                or unit:missing_build_dir_needs_reconfigure() then
+        local reason = lw_meta.unit:configure_reason(forced)
+        if reason then
+            lw_meta.configure_reason = reason
             needs_configure[#needs_configure + 1] = task_def
         end
 
@@ -854,6 +871,29 @@ local function filter_unconfigured_tasks(all_tasks)
     end
 
     return needs_configure
+end
+M._filter_unconfigured_tasks = filter_unconfigured_tasks
+
+--- The one-line "why this configure runs" report (headless §16.4, core
+--- §8.1 `reconfigure`): the gate's reason plus the module's classification,
+--- e.g. `configure: first configure`, `full reconfigure (--fresh): configure
+--- record from an older lw`, `reconfigure (in place): compiler launcher
+--- changed`. `meta` is a configure task's `loomworks` table or a plan step
+--- (same field names). nil when no reason was recorded.
+--- @param meta table { configure_reason?, reconfigure?, reconfigure_detail? }
+--- @return string|nil
+function M.configure_reason_line(meta)
+    local reason = meta and meta.configure_reason
+    if not reason then return nil end
+    local kind = meta.reconfigure
+    if reason == "first configure" or reason == "build directory missing"
+            or kind == nil or kind == "initial" then
+        return "configure: " .. reason
+    elseif kind == "full" then
+        local how = meta.reconfigure_detail
+        return "full reconfigure" .. (how and (" (" .. how .. ")") or "") .. ": " .. reason
+    end
+    return "reconfigure (in place): " .. reason
 end
 
 --- Whether a unit's tests build themselves when run headlessly — true iff the
@@ -886,15 +926,17 @@ end
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
 --- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
---- @param opts? table { for_test?: boolean } for_test drops the build step of
----   any unit whose native test runner self-rebuilds — configuration is still
----   planned for every unit.
---- @return table[]|nil steps list of { kind, name, unit, build_dir, module_info, pre_configure_reset, cmd, cwd, env }
+--- @param opts? table { for_test?: boolean, reconfigure?: boolean } for_test
+---   drops the build step of any unit whose native test runner self-rebuilds —
+---   configuration is still planned for every unit; reconfigure forces a FULL
+---   reconfigure of every unit (`lw build --reconfigure`, §16.4).
+--- @return table[]|nil steps list of { kind, name, unit, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, cmd, cwd, env }
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
-    local all_tasks = collect_profile_tasks(profile)
+    local all_tasks = collect_profile_tasks(profile,
+        { force_full_reconfigure = opts.reconfigure or nil })
     if not all_tasks then return nil end
-    local needs_configure = filter_unconfigured_tasks(all_tasks)
+    local needs_configure = filter_unconfigured_tasks(all_tasks, opts.reconfigure)
 
     local build_tasks = all_tasks.build
     if opts.for_test then
@@ -925,6 +967,11 @@ function M.plan_profile_build(profile, opts)
                         -- editor's task path does.
                         module_info = td.loomworks and td.loomworks.module_info or nil,
                         pre_configure_reset = td.loomworks and td.loomworks.pre_configure_reset or nil,
+                        -- Why this configure runs + how the module runs it
+                        -- (the one-line report, §16.4).
+                        configure_reason = td.loomworks and td.loomworks.configure_reason or nil,
+                        reconfigure = td.loomworks and td.loomworks.reconfigure or nil,
+                        reconfigure_detail = td.loomworks and td.loomworks.reconfigure_detail or nil,
                         cmd = spec.cmd,
                         cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
                             and spec.cwd or nil,

@@ -65,7 +65,8 @@ end
 
 --- A unit configured with `passed` (authoritative record) under Ninja.
 local function recorded(passed, extra)
-    local rec = { generator = "Ninja", cache_launcher = "none", passed_options = passed }
+    local rec = { generator = "Ninja", cache_launcher = "none", passed_options = passed,
+        record_version = cmake.configure_record_version }
     for k, v in pairs(extra or {}) do rec[k] = v end
     return rec
 end
@@ -321,7 +322,8 @@ describe("cmake faithful reconfigure: preset configurations", function()
     it("an unchanged preset reconfigures in place", function()
         local _, cmd = preset_configure(preset_ctx({
             type_config = { options = { FOO = "1" } },
-            recorded_module_info = { cache_launcher = "none", passed_options = { FOO = "1" } },
+            recorded_module_info = { cache_launcher = "none", passed_options = { FOO = "1" },
+                record_version = cmake.configure_record_version },
         }))
         assert.is_false(has(cmd, "--fresh"))
         assert.same({}, u_args(cmd))

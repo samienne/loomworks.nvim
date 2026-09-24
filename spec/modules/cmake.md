@@ -410,10 +410,18 @@ itself, which would collide with §5b:
     `CMAKE_POLICY_DEFAULT_CMP0141=NEW` does not rewrite — so a cache toggle on an
     MSVC-style single-config kit (which changes those keys too) takes the full
     reconfigure. Only keys in loomworks' own record are ever retracted.
-  - **No record.** A unit that was configured but carries no `passed_options`
-    record (configured before the record existed) cannot be classified with
-    certainty, so its next reconfigure is a full one; it records normally from
-    then on. A never-configured build tree just configures.
+  - **No (current) record.** A unit that was configured but carries no
+    `passed_options` record, or a record whose `record_version` differs from
+    the module's `configure_record_version` (currently `1`; core §5.1
+    *Configure record migration*, §8.1) — i.e. it was configured by an older
+    loomworks, e.g. with an empty `module_info` — cannot be classified with
+    certainty, so its next reconfigure is a full one (core also marks it
+    stale, so the build gate runs it); it records normally from then on. This
+    is what discards a compiler launcher (and the `Embedded` debug-info
+    setting) an earlier version persisted in `CMakeCache.txt` but the current
+    policy no longer applies. A never-configured build tree just configures.
+  - **Forced.** With `force_full_reconfigure` (core §8.1, `lw build
+    --reconfigure`) every configure is the full one.
   - **No change.** A reconfigure with nothing changed (e.g. a retry after a
     failed configure) runs in place with the same `-D` set.
 - **Preset configurations take the full reconfigure too.** A `from_preset`
@@ -452,8 +460,9 @@ itself, which would collide with §5b:
   cache status reads `Cache: not applied (<generator> generator)`, and health
   reports an informational item instead of claiming the cache is in use. A unit
   configured under such a generator by an earlier version recorded the launcher
-  path; the expected "none" now differs, so its next build reconfigures once —
-  a launcher-keys-only change, applied in place with `-U`. (Caching a Visual
+  path; its record predates the current record version, so its next build
+  takes one full reconfigure (above) that drops the launcher, after which it
+  records "none" and stays stable. (Caching a Visual
   Studio build needs a different mechanism entirely; it is tracked in the
   backlog.)
 - **Staleness.** The resolved launcher path is recorded in the configure task's
@@ -465,8 +474,10 @@ itself, which would collide with §5b:
   new rule `auto` resolves to none for that kit, so the launcher-staleness check
   (§11: recorded path ≠ expected "none") marks the unit stale and the build gate
   reconfigures it **without** the launcher on its next build. Because that
-  change also drops the injected debug-info keys (single-config) — or the unit
-  predates the `passed_options` record — it is a full reconfigure (`--fresh`),
+  change also drops the injected debug-info keys (single-config) — or the unit's
+  record predates the current record version (which also covers a unit whose
+  record is empty, so no launcher was recorded at all) — it is a full
+  reconfigure (`--fresh`),
   which discards the persisted launcher and debug-info settings; the first
   build afterwards recompiles objects. Users who want to keep caching set
   `cache=sccache` explicitly.
@@ -654,7 +665,9 @@ The sole loomworks-driven reconfigure triggers are the `unconfigured` /
 `configure_failed` states, option-level staleness via
 `ConfigUnit:is_stale()` (the configuration's resolved `options` /
 `module_config` / `env` changed since the cached configure — an option or
-environment variable **added, changed or removed**), and a **missing build
+environment variable **added, changed or removed** — or the unit's configure
+record predates `configure_record_version`, §5d *No (current) record*), a
+forced full reconfigure (`lw build --reconfigure`), and a **missing build
 directory** — a
 generic, core-driven reset (`specification.md` §3.1, rule 7) that applies to
 every module, not just cmake: a `built` / `configured` unit whose build

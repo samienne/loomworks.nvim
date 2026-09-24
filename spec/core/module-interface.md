@@ -132,7 +132,8 @@ back what the unit's last configure recorded:
   key that configure did not return reads as absent afterwards — so a module
   never needs a sentinel to clear an input it stopped passing); a non-configure
   task's `module_info`, if any, is merged onto it. Opaque to core except for the keys
-  core itself defines (`cache_launcher`, `configure_env`, `cache_compat`). A
+  core itself defines (`cache_launcher`, `configure_env`, `cache_compat`,
+  `record_version`). A
   module records whatever it needs to detect a change later — e.g. the options
   it passed — and reads it back here. `configure_env` is **core's** record of
   the resolved configuration environment that configure ran with (absent when
@@ -154,14 +155,38 @@ declares that specific change safe to apply in place, and a unit that was
 configured but carries no record the module can trust (configured before the
 module kept one) takes the full reconfigure too.
 
+**`configure_record_version`** (optional module field, a number). A module
+that keeps a configure record declares its current format here. Core stamps it
+into the unit's record as `recorded_module_info.record_version` after every
+**successful** configure (never after a failed one), and treats a configured
+unit whose record carries a different version — or none — as stale (§5.1
+*Configure record migration*). The module, seeing
+`recorded_module_info.record_version` differ from its own
+`configure_record_version`, classifies the configure as a full reconfigure. A
+module bumps the number when its record gains something its reconfigure
+classification depends on, so every existing build directory takes exactly one
+full reconfigure. A module that declares none takes no part. Additive: no
+`api_versions.module` bump.
+
+**`force_full_reconfigure`** (optional context field, `true` or absent). Set
+when the caller forced a full reconfigure (§5.1, headless `--reconfigure`
+§16.4): the module takes its full-reconfigure path for this configure whatever
+its record says (or a plain first configure where the build tree was never
+configured). Additive: no `api_versions.module` bump.
+
 Each task_def has:
 - `name`: display name
 - `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
 - `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
   `configuration_key`, `build_dir`, optional `tool_data`, `module_info`
   (module-owned record that replaces the unit's record after a configure, see
-  above), and
-  optional `pre_configure_reset` (configure only, below)
+  above),
+  optional `pre_configure_reset` (configure only, below), and optional
+  `reconfigure` (configure only: `"initial"` for a first configure, `"full"`
+  or `"in_place"` — how this configure runs, §5.1) with an optional short
+  `reconfigure_detail` naming the full path's mechanism (e.g. the build
+  system's flag). Core reports these alongside its reason for configuring
+  (§16.4); they never change what runs
 
 **`pre_configure_reset`** (optional, configure tasks only) is a list of paths
 **relative to `build_dir`** naming configure-state files or directories the

@@ -27,6 +27,14 @@ local is_win = vim.fn.has("win32") == 1
 
 M.id = "meson"
 M.api_version = 1
+--- Current format of this module's configure record (`module_info`, core
+--- §8.1 `configure_record_version`). Core stamps it into the record after a
+--- successful configure; a configured unit whose record carries a different
+--- (or no) version was written by an older lw, so core marks it stale and
+--- this module classifies its next configure as a full reconfigure (core
+--- §5.1 *Configure record migration*). Bump when the record gains a key the
+--- reconfigure classification depends on.
+M.configure_record_version = 1
 M.has_keyed_tools = true
 M.has_options = true
 M.languages = { "c++", "c" }
@@ -885,8 +893,10 @@ function M.tasks(project, active_config)
     -- the previous setup's record — a -D added/changed/removed, the build
     -- type, the cross file, the launcher, or the configuration environment
     -- (core's `configure_env` record vs `configuration_env`) — or for a
-    -- configured unit with no `passed_options` record (cannot be classified
-    -- with certainty), core clears the stored command line
+    -- configured unit with no `passed_options` record or a record that
+    -- predates `configure_record_version` (cannot be classified with
+    -- certainty, core §5.1 *Configure record migration*), or when forced
+    -- (`force_full_reconfigure`, core §8.1) — core clears the stored command line
     -- (`pre_configure_reset`) and the setup runs `--wipe`, rebuilding the tree
     -- from exactly the inputs passed now. No in-place set is declared: meson
     -- read-only built-in options make "value change applies in place"
@@ -896,8 +906,11 @@ function M.tasks(project, active_config)
     local configured = rec ~= nil or project.recorded_options ~= nil
         or project.recorded_cache_launcher ~= nil
     local full = false
-    if configured then
-        if type(rec) ~= "table" or type(rec.passed_options) ~= "table" then
+    if project.force_full_reconfigure then
+        full = true
+    elseif configured then
+        if type(rec) ~= "table" or type(rec.passed_options) ~= "table"
+                or rec.record_version ~= M.configure_record_version then
             full = true
         elseif not vim.deep_equal(rec.passed_options, passed_options)
                 or rec.buildtype ~= buildtype
@@ -949,15 +962,19 @@ function M.tasks(project, active_config)
             -- Full reconfigure → core clears the stored command line before
             -- the `--wipe` setup, so meson cannot replay old options (§5a).
             pre_configure_reset = pre_configure_reset,
+            -- How this setup runs, for core's one-line "why" report (§8.1).
+            -- A dir without meson-info runs a plain first setup regardless.
+            reconfigure = full and "full" or (configured and "in_place" or "initial"),
+            reconfigure_detail = full and "--wipe" or (configured and "--reconfigure" or nil),
             module_info = {
                 buildtype = buildtype,
                 source_dir = project.path,
                 -- Resolved compiler-cache launcher this setup applied, or the
                 -- explicit sentinel "none" (policy off / `auto` on an MSVC-style
-                -- compiler / launcher not found) —
-                -- never nil for a feature configure, so is_stale distinguishes
-                -- feature-no-cache ("none", install-after-configure fires) from
-                -- a legacy/never-recorded unit (nil, not invalidated) (§11).
+                -- compiler / launcher not found) — always recorded, so
+                -- is_stale can compare it ("none" → install-after-configure
+                -- fires); a record without it is from an older lw and is
+                -- caught by the record version (core §5.1) (§11).
                 cache_launcher = resolved_launcher or "none",
                 -- The `-D` options (name → value) and cross file this setup
                 -- passed, so the next setup can detect any change (§5a).

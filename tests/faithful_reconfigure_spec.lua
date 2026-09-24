@@ -217,6 +217,8 @@ describe("configure record replacement (nil-can't-clear regression)", function()
     local function make_unit()
         local fake = {
             id = "fakemod", api_version = 1, has_keyed_tools = false, languages = { "c++" },
+            -- Stands in for meson's record (its tasks drive the classification).
+            configure_record_version = meson.configure_record_version,
             resolve_build_dir = function(p, c, _, root) return root .. "/.nvim/build/" .. p .. "/" .. (c or "d") end,
             info = function(_, tc)
                 local Configuration = require("loomworks.configuration")

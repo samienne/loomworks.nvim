@@ -19,7 +19,7 @@
 --- @field build_dir_value string|nil
 --- @field last_configured string|nil ISO 8601 timestamp
 --- @field last_built string|nil ISO 8601 timestamp
---- @field module_info table|nil opaque module-specific cached data (e.g. cmake generator/compiler), plus core-owned keys `cache_launcher`, `configure_env`, `cache_compat` (spec §8.1)
+--- @field module_info table|nil opaque module-specific cached data (e.g. cmake generator/compiler), plus core-owned keys `cache_launcher`, `configure_env`, `cache_compat`, `record_version` (spec §8.1)
 --- @field _config_key string|nil opaque cache key
 --- @field _variant string|nil configuration variant name
 --- @field _tool_key string|nil tool identifier
@@ -544,35 +544,135 @@ function ConfigUnit:resolved_option_fingerprint()
     return out
 end
 
---- Check if this unit is stale: the RESOLVED option values (post-expansion),
---- the Configuration's module_config, the resolved configuration environment
---- or the applied compiler-cache launcher have changed since the last configure.
---- The fingerprint is taken over resolved values (§5c / cmake §11), so editing
---- a variable `default` or a compiler `override` that changes a `-D` value
---- makes the unit stale, while a change with no resolved effect does not.
---- Returns false when the unit has never been configured (no cached snapshot).
+--- Whether this unit carries a configure at all — a configure snapshot
+--- (options / module_config fingerprint) or a cached state that a successful
+--- configure produced. Used by the configure-record check (§5.1 *Configure
+--- record migration*), which must catch a legacy unit whose cache entry kept
+--- only its state.
 --- @return boolean
-function ConfigUnit:is_stale()
+function ConfigUnit:_was_configured()
+    if self._cached_options or self._cached_module_config then return true end
+    local s = self.state_value
+    return s == "configured" or s == "built" or s == "failed_build"
+end
+
+--- Whether this configured unit's configure record predates its module's
+--- current record format (core §5.1 *Configure record migration*, §8.1
+--- `configure_record_version`): the module declares
+--- `configure_record_version = N` and core stamps `module_info.record_version`
+--- after every SUCCESSFUL configure, so a record with a different (or no)
+--- version was written by an older lw — e.g. an empty `module_info` from a
+--- CLI that dropped the module record — and cannot be trusted to classify the
+--- next reconfigure or to compare the launcher. Such a unit is stale, and the
+--- module takes its full reconfigure. Modules that declare no version never
+--- take part. Never true for a never-configured unit.
+--- @return boolean
+function ConfigUnit:record_outdated()
     if not self._configuration or self._configuration._removed then return false end
+    if not self:_was_configured() then return false end
+    local impl = self:_module_impl()
+    local want = impl and impl.configure_record_version
+    if want == nil then return false end
+    local rec = type(self.module_info) == "table" and self.module_info.record_version or nil
+    return rec ~= want
+end
+
+--- Short human-readable description of an options-fingerprint change, e.g.
+--- `FOO removed` / `BAR changed, BAZ added` (at most three names).
+--- @param old table<string, any>
+--- @param new table<string, any>
+--- @return string
+local function describe_option_change(old, new)
+    local names = {}
+    for k in pairs(old) do names[k] = true end
+    for k in pairs(new) do names[k] = true end
+    local sorted = {}
+    for k in pairs(names) do sorted[#sorted + 1] = k end
+    table.sort(sorted)
+    local parts = {}
+    for _, k in ipairs(sorted) do
+        local what
+        if old[k] == nil then what = "added"
+        elseif new[k] == nil then what = "removed"
+        elseif not vim.deep_equal(old[k], new[k]) then what = "changed" end
+        if what then parts[#parts + 1] = tostring(k) .. " " .. what end
+    end
+    if #parts == 0 then return "" end
+    if #parts > 3 then
+        local more = #parts - 3
+        parts = { parts[1], parts[2], parts[3], "+" .. more .. " more" }
+    end
+    return table.concat(parts, ", ")
+end
+
+--- Why this unit is stale (core §5.1), or nil when it is not: a short phrase
+--- the headless runner prints when the build gate reconfigures it
+--- (`configure record from an older lw`, `options changed (FOO removed)`,
+--- `module configuration changed`, `configuration environment changed`,
+--- `compiler launcher changed`). The first applicable reason wins, in that
+--- order. Returns nil for a never-configured unit.
+--- @return string|nil
+function ConfigUnit:stale_reason()
+    if not self._configuration or self._configuration._removed then return nil end
+    -- A configure record from an older lw (§5.1 *Configure record migration*):
+    -- checked first — nothing else in the record can be trusted.
+    if self:record_outdated() then return "configure record from an older lw" end
     -- No cached snapshot means never configured — not stale
-    if not self._cached_options and not self._cached_module_config then return false end
-    if not vim.deep_equal(self._cached_options or {}, self:resolved_option_fingerprint()) then
-        return true
+    if not self._cached_options and not self._cached_module_config then return nil end
+    local fingerprint = self:resolved_option_fingerprint()
+    if not vim.deep_equal(self._cached_options or {}, fingerprint) then
+        local what = describe_option_change(self._cached_options or {}, fingerprint)
+        return what ~= "" and ("options changed (" .. what .. ")") or "options changed"
     end
     if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then
-        return true
+        return "module configuration changed"
     end
     -- Configuration environment change (spec §1.3.3): a configure input like
     -- the options — the module takes a full reconfigure for it (§5.1).
-    if self:env_changed() then return true end
+    if self:env_changed() then return "configuration environment changed" end
     -- Compiler-cache launcher change (§5.1 / module §11): recompute the launcher
     -- core would resolve now (current `cache` policy + compiler family + live
     -- toolchain-path presence) and compare to the one recorded at configure.
     -- A launcher that appears, disappears, or changes value marks the unit stale
     -- so the build gate reconfigures (cmake: in place when only the launcher
     -- moved, `--fresh`/reset when the MSVC /Z7 keys move too; meson: --wipe).
-    if self:launcher_changed() then return true end
-    return false
+    if self:launcher_changed() then return "compiler launcher changed" end
+    return nil
+end
+
+--- Why the build gate (§5.2) must configure this unit, or nil when it need
+--- not: `first configure`, `previous configure failed`, `forced
+--- (--reconfigure)` (when `forced` and the unit was configured before), the
+--- `stale_reason()`, `project files changed` (the module's `inspect` flagged
+--- the project), or `build directory missing` (§3.1 rule 7). The same
+--- conditions the gate has always used; the string is what the headless
+--- runner prints (§16.4).
+--- @param forced? boolean a forced full reconfigure was requested
+--- @return string|nil
+function ConfigUnit:configure_reason(forced)
+    local state = self:state()
+    if state == "unconfigured" then return "first configure" end
+    if forced then return "forced (--reconfigure)" end
+    if state == "configure_failed" then return "previous configure failed" end
+    local stale = self:stale_reason()
+    if stale then return stale end
+    if self._project and self._project.needs_refresh then return "project files changed" end
+    if self:missing_build_dir_needs_reconfigure() then return "build directory missing" end
+    return nil
+end
+
+--- Check if this unit is stale: its configure record predates the module's
+--- current record format, or the RESOLVED option values (post-expansion), the
+--- Configuration's module_config, the resolved configuration environment or
+--- the applied compiler-cache launcher have changed since the last configure.
+--- The fingerprint is taken over resolved values (§5c / cmake §11), so editing
+--- a variable `default` or a compiler `override` that changes a `-D` value
+--- makes the unit stale, while a change with no resolved effect does not.
+--- Returns false when the unit has never been configured. `stale_reason()`
+--- says why.
+--- @return boolean
+function ConfigUnit:is_stale()
+    return self:stale_reason() ~= nil
 end
 
 --- The resolved configuration environment (spec §1.3.3) for this unit: the
@@ -619,22 +719,24 @@ end
 --- expected marker is `"none"`, so a resolvable-but-unapplicable launcher does
 --- not make the unit stale on every build. No hook = always applicable.
 ---
---- **Legacy carve-out**: a `nil` recorded value means this unit was configured
---- before the compiler-cache feature (or by a module that records none), so its
---- launcher state is UNKNOWN — we do NOT retroactively invalidate it just
---- because a cache now happens to be installed. Only a value actually recorded
---- at configure — a launcher path, or the explicit sentinel `"none"` — takes
---- part in staleness. A unit configured *under* the feature with no cache
---- records `"none"`, so a later-installed cache (resolved `"/…"`) ≠ `"none"`
---- still fires (install-after-configure), and a removed cache
---- (recorded `"/…"`, resolved `"none"`) fires too.
+--- **No recorded launcher**: a `nil` recorded value is not compared — it means
+--- the module records no launcher at all (e.g. a module without compiler-cache
+--- support). A module that DOES record one always records a path or the
+--- sentinel `"none"` and declares a `configure_record_version`, so a unit of
+--- such a module with no recorded launcher carries a record from an older lw
+--- and is already stale through `record_outdated()` (core §5.1 *Configure
+--- record migration*) — its one full reconfigure then records the launcher.
+--- A unit configured with no cache records `"none"`, so a later-installed
+--- cache (resolved `"/…"`) ≠ `"none"` fires (install-after-configure), and a
+--- removed cache (recorded `"/…"`, resolved `"none"`) fires too.
 --- @param lookup? fun(name: string): string|nil executable resolver (default: PATH index)
 --- @return boolean
 function ConfigUnit:launcher_changed(lookup)
     if not self._configuration or self._configuration._removed then return false end
     if not self._cached_options and not self._cached_module_config then return false end
     local recorded = self.module_info and self.module_info.cache_launcher or nil
-    -- Never-recorded / legacy: unknown launcher state, never stale.
+    -- The module records no launcher: nothing to compare (an outdated record
+    -- of a module that does record one is caught by record_outdated()).
     if recorded == nil then return false end
     local tool_data = (self._tool and self._tool.data) or self._tool_data
     local resolved

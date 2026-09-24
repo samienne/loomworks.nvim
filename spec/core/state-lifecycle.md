@@ -462,11 +462,11 @@ search path — makes the configured unit stale, so the existing build gate (§5
 auto-reconfigures it before the next build. The comparison is against a value
 **actually recorded at configure**: a unit configured *under* this feature with
 no cache records an explicit "none", so a later-installed cache still differs and
-fires. A unit with **no recorded launcher** (configured before the feature, or by
-a module that records none) has an *unknown* launcher state and is **never**
-retroactively invalidated — installing a cache does not mass-reconfigure every
-pre-existing build directory; the launcher axis engages only once the unit has
-been configured with the feature active. The comparison is against the launcher
+fires. A unit with **no recorded launcher** takes no part in the launcher
+comparison: either its module records none (a module without compiler-cache
+support), or its record predates the module's current record format — and
+then the unit is already stale through the record check below (*Configure
+record migration*), whose full reconfigure records the launcher. The comparison is against the launcher
 the module would **apply**: for a configuration the module declares it cannot
 apply a launcher to (the optional `cache_launcher_applicable` hook, §8), the
 expected value is "none", so a resolvable-but-unapplicable launcher does not make
@@ -521,6 +521,30 @@ not reliably applied by merely re-running the configure with the new inputs.
   tell exactly which inputs changed. An in-place retraction only ever touches
   what **loomworks itself passed** — never a value the user set in the
   project's own build files, presets or by hand.
+- **Configure record migration.** A module that keeps such a record declares
+  its current record format as a number (`configure_record_version`, §8.1).
+  After every **successful** configure core stamps that number into the
+  unit's record (`record_version`); a failed configure leaves it unstamped. A
+  **configured** unit (it has a configure snapshot, or a cached state a
+  successful configure produced) whose record carries a different version or
+  none — written by an older loomworks, e.g. an empty record, a record without
+  the module's options, or a record from before a launcher was recorded — is
+  **stale** (reason "configure record from an older lw"), and the module
+  classifies its configure as a **full reconfigure** (it cannot classify the
+  change with certainty). So every existing build directory of such a module
+  takes exactly **one** full reconfigure on its first build under a newer
+  record format — which also discards configure state an older version
+  persisted (e.g. a compiler launcher it no longer applies) — and is stable
+  afterwards. A configure that fails stays stale (and its retry is full
+  again) until one succeeds. This holds for configurations the module cannot
+  apply a launcher to as well: they migrate once and then compare their
+  recorded "none" as usual. A module that declares no record version takes
+  no part.
+- **Forced full reconfigure.** A caller may force the full path for every unit
+  of a build (the headless `--reconfigure`, §16.4): core hands the module
+  `force_full_reconfigure` (§8.1) and runs the configure even when nothing is
+  stale; the module takes its full reconfigure (or a plain first configure
+  for a build tree never configured).
 - **Core-performed resets.** Where a full reconfigure needs specific
   configure-state files removed from the build directory first, the module
   names them on the configure task (`pre_configure_reset`, §8.1) and **core**

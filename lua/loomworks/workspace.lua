@@ -2800,7 +2800,7 @@ function Workspace:record_task_result(result)
     -- dropped, cmake's `compiler` without a kit, …) must read as absent next
     -- time, or the module would compare against the stale value and classify
     -- every later configure as a full reconfigure. The core-owned keys
-    -- (`cache_launcher`, `configure_env`, `cache_compat`) are all (re)assigned
+    -- (`cache_launcher`, `configure_env`, `cache_compat`, `record_version`) are all (re)assigned
     -- from this configure below. Any other task's `module_info` is merged, so
     -- a build never wipes the configure record.
     if action == "configure" then
@@ -2829,6 +2829,17 @@ function Workspace:record_task_result(result)
         local configuration_env = config_unit:configuration_env()
         config_unit.module_info.configure_env =
             next(configuration_env) and configuration_env or nil
+
+        -- Configure-record version (spec §5.1 *Configure record migration*,
+        -- §8.1 `configure_record_version`): stamped only after a SUCCESSFUL
+        -- configure, from the module's declared current version, so a record
+        -- written by an older lw (absent / different version) — or by a
+        -- failed configure — keeps the unit stale and the module's next
+        -- configure takes the full reconfigure. Modules that declare no
+        -- version get no stamp (and no check).
+        local impl_v = project and project._module and project._module.impl or nil
+        config_unit.module_info.record_version = (success and impl_v
+            and impl_v.configure_record_version) or nil
 
         -- Post-configure compiler-cache compatibility scan (spec §5.1, §8
         -- `cache_compat_scan`): after a SUCCESSFUL configure that applied a

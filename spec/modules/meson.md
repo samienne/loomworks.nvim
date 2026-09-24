@@ -137,8 +137,11 @@ configuration environment (`configure_env`, core §8.1) against the current
 `configuration_env`, with what it passes now. On **any** difference — an option
 added, changed or removed, a build type or cross-file change, a launcher that
 appeared, disappeared or changed, or a configuration-environment change — and
-also for a configured unit that carries no `passed_options` record (configured
-before the record existed, so it cannot be classified with certainty), the
+also for a configured unit that carries no `passed_options` record or whose
+record's `record_version` differs from the module's `configure_record_version`
+(currently `1`; configured by an older loomworks, so it cannot be classified
+with certainty — core §5.1 *Configure record migration*), or when the caller
+forced a full reconfigure (`force_full_reconfigure`, core §8.1), the
 configure task names `meson-private/cmd_line.txt` in `pre_configure_reset` (core
 §8.1) and runs `meson setup --wipe`: core removes the stored command line under
 the deletion-safety rules (otherwise `--wipe` would **replay** the previous

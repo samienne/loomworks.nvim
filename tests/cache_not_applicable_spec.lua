@@ -113,10 +113,11 @@ describe("cmake tasks under a Visual Studio generator", function()
         assert.matches("Visual Studio 17 2022", warned[1])
     end)
 
-    it("a unit recorded with a launcher under VS retracts it in place (-U, no --fresh)", function()
+    it("a current record with a launcher under VS retracts it in place (-U, no --fresh)", function()
         local t = find_configure(cmake.tasks(vs_ctx({
             recorded_cache_launcher = "/x/sccache",
             recorded_module_info = { generator = "Visual Studio 17 2022", cache_launcher = "/x/sccache",
+                record_version = cmake.configure_record_version,
                 passed_options = {
                     CMAKE_C_COMPILER_LAUNCHER = "/x/sccache",
                     CMAKE_CXX_COMPILER_LAUNCHER = "/x/sccache",

@@ -144,8 +144,11 @@ end
 ---                    removed outside `IN_PLACE_KEYS`, a generator change, a
 ---                    changed configuration environment (core's
 ---                    `configure_env` record vs `configuration_env`), or a
----                    configured unit with no `passed_options` record (it
----                    cannot be classified with certainty);
+---                    configured unit whose record is missing, lacks
+---                    `passed_options`, or predates `configure_record_version`
+---                    (it cannot be classified with certainty — core §5.1
+---                    *Configure record migration*), or a forced full
+---                    reconfigure (`force_full_reconfigure`, core §8.1);
 ---   * `"in_place"` — nothing changed, or only `IN_PLACE_KEYS` changed; the
 ---                    second return lists those that disappeared (to `-U`).
 --- `allow_in_place = false` (the preset path) turns every change into a full
@@ -156,11 +159,15 @@ end
 --- @param allow_in_place boolean
 --- @return "none"|"full"|"in_place" kind, string[] retract
 local function classify_reconfigure(project, passed, generator, allow_in_place)
+    -- Forced (`lw build --reconfigure`, core §8.1): always the full path —
+    -- `--fresh` is harmless on a build tree that was never configured.
+    if project.force_full_reconfigure then return "full", {} end
     local rec = project.recorded_module_info
     local configured = rec ~= nil or project.recorded_options ~= nil
         or project.recorded_cache_launcher ~= nil
     if not configured then return "none", {} end
-    if type(rec) ~= "table" or type(rec.passed_options) ~= "table" then
+    if type(rec) ~= "table" or type(rec.passed_options) ~= "table"
+            or rec.record_version ~= M.configure_record_version then
         return "full", {}
     end
     if type(rec.generator) == "string" and generator and rec.generator ~= generator then
@@ -202,6 +209,14 @@ end
 
 M.id = "cmake"
 M.api_version = 1
+--- Current format of this module's configure record (`module_info`, core
+--- §8.1 `configure_record_version`). Core stamps it into the record after a
+--- successful configure; a configured unit whose record carries a different
+--- (or no) version was written by an older lw, so core marks it stale and
+--- this module classifies its next configure as a full reconfigure (core
+--- §5.1 *Configure record migration*). Bump when the record gains a key the
+--- reconfigure classification depends on.
+M.configure_record_version = 1
 M.has_keyed_tools = true
 M.has_options = true
 -- CMake's default `project(name)` call enables both C and CXX, so
@@ -1227,13 +1242,20 @@ function M.tasks(project, active_config)
     local passed_options = passed_d_options(configure_cmd)
     local pre_configure_reset
     local kind, retract = classify_reconfigure(project, passed_options, generator, not from_preset)
+    -- How this configure runs, for core's one-line "why" report (§8.1
+    -- `reconfigure` / `reconfigure_detail`).
+    local reconfigure = kind == "none" and "initial" or kind
+    local reconfigure_detail
     if kind == "full" then
         if cmake_at_least(cmake_cmd, 3, 24) then
             table.insert(configure_cmd, 2, "--fresh")
+            reconfigure_detail = "--fresh"
         else
             pre_configure_reset = vim.deepcopy(FRESH_RESET_ENTRIES)
+            reconfigure_detail = "reset CMakeCache.txt + CMakeFiles"
         end
     elseif kind == "in_place" and #retract > 0 then
+        reconfigure_detail = "-U" .. table.concat(retract, " -U")
         -- Right after `-B <build_dir>`, ahead of every `-D`.
         local at = #configure_cmd + 1
         for i, a in ipairs(configure_cmd) do
@@ -1293,6 +1315,8 @@ function M.tasks(project, active_config)
             -- Full reconfigure below CMake 3.24 (§5d): core removes these
             -- configure-state entries from build_dir before the configure.
             pre_configure_reset = pre_configure_reset,
+            reconfigure = reconfigure,
+            reconfigure_detail = reconfigure_detail,
             module_info = {
                 multi_config = multi_config,
                 generator = generator,
@@ -1301,11 +1325,11 @@ function M.tasks(project, active_config)
                 -- Resolved compiler-cache launcher path this configure applied,
                 -- or the explicit sentinel "none" (policy off / `auto` on an
                 -- MSVC-style compiler / launcher not found / preset / a VS or
-                -- Xcode generator). Recorded — never nil for a feature configure — so
-                -- `ConfigUnit:is_stale()` distinguishes "configured under the
-                -- feature with no cache" (→ "none", install-after-configure
-                -- fires when a cache later appears) from a legacy/never-recorded
-                -- unit (nil, never retroactively invalidated). (§5d / §11.)
+                -- Xcode generator). Always recorded, so `ConfigUnit:is_stale()`
+                -- can compare it: a unit configured with no cache records
+                -- "none" and install-after-configure fires when a cache later
+                -- appears. A record without it is from an older lw and is
+                -- caught by the record version (core §5.1). (§5d / §11.)
                 cache_launcher = cache_launcher or "none",
                 -- Every `-D` this configure passed (name → value; on the
                 -- preset path the appended user options), so the next

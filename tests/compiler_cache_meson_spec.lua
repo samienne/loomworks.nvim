@@ -150,7 +150,8 @@ describe("meson full reconfigure on any changed configure input", function()
 
     --- The record a plain (no options, no cache) Debug setup leaves behind.
     local function rec(extra)
-        local r = { cache_launcher = "none", passed_options = {}, buildtype = "debug" }
+        local r = { cache_launcher = "none", passed_options = {}, buildtype = "debug",
+            record_version = require("loomworks.modules.meson").configure_record_version }
         for k, v in pairs(extra or {}) do r[k] = v end
         return r
     end

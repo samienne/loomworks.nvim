@@ -57,9 +57,10 @@ describe("ConfigUnit launcher staleness", function()
         assert.is_true(unit:is_stale())
     end)
 
-    it("legacy unit (nil recorded) is NEVER stale, cache present or absent", function()
-        -- Configured before the feature: unknown launcher state. Must not be
-        -- retroactively invalidated just because a cache is now installed.
+    it("nil recorded launcher is never launcher-stale, cache present or absent", function()
+        -- The module records no launcher (no module here → no record check):
+        -- nothing to compare. A launcher-recording module's older record is
+        -- caught by the record version instead (configure_record_migration_spec).
         local u1 = make_configured("gcc", nil)
         set_present({ ccache = true })
         assert.is_false(u1:launcher_changed())
@@ -114,7 +115,10 @@ describe("ConfigUnit launcher staleness", function()
         local Module = require("loomworks.module")
 
         local function with_cmake(unit)
-            unit._project._module = Module.new("cmake", require("loomworks.modules.cmake"))
+            local impl = require("loomworks.modules.cmake")
+            unit._project._module = Module.new("cmake", impl)
+            -- A record written by this lw (core stamps it on success).
+            unit.module_info.record_version = impl.configure_record_version
             return unit
         end
 
