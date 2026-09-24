@@ -156,6 +156,18 @@ out="$("$lw" self-update 2>&1)"; code=$?; echo "$out"
 case "$out" in *"lw binary updated to $nv; re-run"*) ok "asks for a re-run to update the bundle" ;; *) bad "no re-run prompt" ;; esac
 cmp -s "$lw" "$T/new-copy" && ok "installed binary is the release's verified host" || bad "host not replaced"
 
+# The boot modules must come from the fused host even when a `lua/` directory
+# sits next to the executable: LuaJIT's Windows default package.path searches
+# `!\lua\?.lua` (the exe's own directory) — the v0.1.29 release check caught a
+# host in the repo root loading the checkout's unversioned boot/verify.lua.
+echo "=== boot modules load from the fused host, not a lua/ dir beside it ==="
+mkdir -p "$T/shadow/lua/boot"
+cp "$T/new-copy" "$T/shadow/$exe_name"
+printf 'local M = {}\nM.RELEASE_VERSION = "shadowed"\nM.HOST_VERSION = 1\nreturn M\n' \
+  > "$T/shadow/lua/boot/verify.lua"
+out="$("$T/shadow/$exe_name" version 2>&1)"; echo "$out"
+case "$out" in *"host: $ver "*) ok "fused boot.verify wins over lua/ beside the exe" ;; *) bad "boot module shadowed: $out" ;; esac
+
 echo
 echo "host self-update e2e: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

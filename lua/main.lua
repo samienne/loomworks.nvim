@@ -23,7 +23,12 @@ local loaders = package.loaders or package.searchers
 local bundle = require("luvi").bundle
 
 -- ---- boot searcher: always resolve boot.* from the fused/source bundle ------
-table.insert(loaders, function(modname)
+-- Inserted right after the preload searcher (position 2), AHEAD of the path
+-- searchers: LuaJIT's Windows default package.path includes `!\lua\?.lua`
+-- (the executable's own directory), so an appended searcher would let a `lua/`
+-- directory beside lw.exe shadow the fused boot modules — including
+-- boot.verify, which carries the release public key.
+table.insert(loaders, 2, function(modname)
   if modname ~= "boot" and modname:sub(1, 5) ~= "boot." then return nil end
   local base = modname:gsub("%.", "/")
   for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do
