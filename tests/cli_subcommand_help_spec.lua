@@ -60,6 +60,16 @@ describe("`lw <command> --help`", function()
     assert.equals(help_text("workspace"), run_main({ "ws", "--help" }, root).stdout)
   end)
 
+  -- The host handles these before the CLI (lua/main.lua) but leaves `--help` to
+  -- this dispatcher, so it must answer for them too.
+  for _, cmd in ipairs({ "self-update", "version" }) do
+    it("host command `lw " .. cmd .. " --help` prints `lw help " .. cmd .. "`", function()
+      local r = run_main({ cmd, "--help" }, root)
+      assert.equals(0, r.exit_code)
+      assert.equals(help_text(cmd), r.stdout)
+    end)
+  end
+
   it("a command without a topic prints the general usage, exit 0", function()
     local r = run_main({ "frobnicate", "--help" }, root)
     assert.equals(0, r.exit_code)

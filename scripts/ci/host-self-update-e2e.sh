@@ -85,6 +85,15 @@ out="$("$lw" self-update --no-host 2>&1)"; code=$?; echo "$out"
 [ $code -eq 0 ] && ok "--no-host exits 0" || bad "--no-host exit $code"
 cmp -s "$lw" "$T/old-copy" && ok "--no-host: host binary unchanged" || bad "--no-host changed the host"
 
+# `--help` on a host command is left to the CLI's help dispatcher — it must never
+# perform the operation. (The fixture bundle carries no CLI, so only the "did
+# nothing" half is checked here; the help text itself is covered by
+# tests/cli_subcommand_help_spec.lua.)
+echo "=== self-update --help updates nothing ==="
+out="$("$lw" self-update --help 2>&1)"; echo "$out" | head -3
+case "$out" in *"checking for updates"*) bad "--help ran an update" ;; *) ok "--help ran no update" ;; esac
+cmp -s "$lw" "$T/old-copy" && ok "--help: host binary unchanged" || bad "--help changed the host"
+
 echo "=== self-update replaces the running host ==="
 out="$("$lw" self-update 2>&1)"; code=$?; echo "$out"
 [ $code -eq 0 ] && ok "self-update exits 0" || bad "self-update exit $code"

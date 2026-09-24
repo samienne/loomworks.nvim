@@ -7449,8 +7449,9 @@ local function main()
     finish(M.cmd_module(a[2], a))
   end
   -- `version` / `self-update` are host commands: on the luvi host the bootstrap
-  -- (main.lua) intercepts them before we run. Reaching here means the
-  -- nvim-hosted fallback, where they don't apply.
+  -- (main.lua) intercepts them before we run — except `--help`/`-h`, which it
+  -- leaves to the help dispatcher above. Reaching here means the nvim-hosted
+  -- fallback, where they don't apply.
   if command == "version" or command == "--version" or command == "-v"
       or command == "self-update" or command == "install"
       or command == "bootstrap" or command == "update" then

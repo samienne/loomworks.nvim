@@ -159,7 +159,9 @@ produced.
 Every command documents itself: `lw help <command>` and, equivalently,
 `--help` / `-h` anywhere among a command's own arguments (never after the `--`
 that hands the rest to a build tool or program) print that command's help and
-exit 0 — the flag is never read as an operand such as a profile name.
+exit 0 — the flag is never read as an operand such as a profile name. This
+holds for the host-level commands too (version reporting, self-update,
+installation, pin management): asking for their help never performs them.
 
 ### 16.8 Host-determined module availability
 

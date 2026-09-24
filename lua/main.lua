@@ -148,7 +148,17 @@ end
 --- `luvi lua --`) fuses it; a release host carries only the bootstrap.
 local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~= nil end
 
-if command == "version" then
+-- `lw <host-command> --help` / `-h` must show help, never perform the operation
+-- (a `self-update --help` that replaced the binary was a real bug). Leave such
+-- invocations to the CLI's central help dispatcher below.
+local help_requested = false
+for _, v in ipairs(forwarded) do
+  if v == "--help" or v == "-h" then help_requested = true; break end
+end
+
+local host_command = (not help_requested) and command or nil
+
+if host_command == "version" then
   local upd = require("boot.update")
   -- Same dev-build predicate self-update uses (§16.32), so the label never
   -- calls a host a dev build that self-update would replace, or vice versa.
@@ -160,7 +170,7 @@ if command == "version" then
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
   io.write(upd.version_line(info, channel) .. "\n")
   exit(0)
-elseif command == "self-update" then
+elseif host_command == "self-update" then
   if source_kind == "dev" then
     io.stderr:write("lw: self-update does not apply to a development source " ..
       "(--dev / default-source=dev).\n")
@@ -252,7 +262,7 @@ elseif command == "self-update" then
     if h.status == "error" then exit(1) end
   end
   exit(0)
-elseif command == "install" then
+elseif host_command == "install" then
   local opts = { dry_run = false, no_modify_path = false, no_bundle = false }
   for _, v in ipairs(forwarded) do
     if v == "-y" or v == "--yes" then opts.assume_yes = true
@@ -273,7 +283,7 @@ elseif command == "install" then
     exit(1)
   end
   exit(0)
-elseif command == "bootstrap" or command == "update" then
+elseif host_command == "bootstrap" or host_command == "update" then
   -- Pin management (spec §16.24): runs as the global host, never redirected.
   local bootstrap = require("boot.bootstrap")
   local ver_opt
