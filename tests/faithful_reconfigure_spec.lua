@@ -176,9 +176,13 @@ describe("previous-configure record round trip (planner + CLI)", function()
     end)
 
     it("an option removed after configure makes the unit stale (gate reconfigures)", function()
+        -- cache pinned off: this test is about options, and under `auto` a
+        -- ccache/sccache on the host PATH would make launcher staleness fire.
         local files = {
             ["loomworks.json"] = h.make_config_json({
-                projects = { App = { cmake = { configurations = { Debug = { options = { FOO = "1" } } } } } },
+                projects = { App = { cmake = { configurations = { Debug = {
+                    options = { FOO = "1" }, variables = { cache = "off" },
+                } } } } },
                 configuration_sets = { debug = { App = "Debug" } },
             }),
             ["loomworks.user.json"] = h.make_user_json({ profiles = { debug = {
