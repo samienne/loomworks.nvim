@@ -1216,9 +1216,13 @@ A host built from a release carries that release's **version identity**,
 fixed into the binary when it is built. A host built from a working tree (a
 development build) carries none. The version-reporting host operation reports
 the host's release version alongside its capability version (§16.14), the
-system-Lua source (§16.11), the active bundle, and the channel (§16.29); a
-host with no release version reports that it is a development build — never a
-guessed version.
+system-Lua source (§16.11), the active bundle, and the channel (§16.29). A
+host with no release version never reports a guessed version: a development
+build reports that it is one, and a release host with no version identity
+(released before identity existed) reports its release as unknown. The
+distinction uses the same development-build determination as host
+replacement below, so a host reported as a development build is never
+replaced and one reported as an unknown release is.
 
 Because host-side behavior (argument handling, source resolution, the
 acquisition procedure itself) lives in the host and not the bundle (§16.11),

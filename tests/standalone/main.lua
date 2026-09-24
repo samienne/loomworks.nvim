@@ -200,9 +200,22 @@ do
   eq(info.bundle, "0.0.0-test", "version_info parses bundle version")
   -- Committed source carries no release version (fuse_host.sh injects it).
   eq(info.release_version, nil, "source host has no embedded release version")
-  local line = update.version_line(info, "stable")
+  -- The label agrees with host_update's dev-build detection (one predicate):
+  -- only a real dev build says "dev build"; an unversioned RELEASE-style host
+  -- (bootstrap-only fuse, i.e. a pre-identity release) is an unknown release —
+  -- self-update WILL replace it, so calling it a dev build would contradict
+  -- "a development build never replaces itself".
+  local dinfo = update.version_info(data .. "/lua-0.0.0-test", "release", { dev_build = true })
+  local line = update.version_line(dinfo, "stable")
   ok(line:find("host: dev build (v" .. verify.HOST_VERSION .. ")", 1, true) ~= nil,
-    "version line reports a dev build for an unversioned host")
+    "version line reports a dev build for an unversioned dev build  (got " .. line .. ")")
+  local uline = update.version_line(info, "stable")
+  ok(uline:find("host: unknown release (v" .. verify.HOST_VERSION .. ")", 1, true) ~= nil,
+    "version line reports an unknown release for an unversioned release host  (got " .. uline .. ")")
+  local hu = require("boot.host_update")
+  ok(hu.dev_build({ exe = "/x/lw", fused_system_lua = true }) ~= nil, "dev_build: fused system Lua")
+  ok(hu.dev_build({ exe = "C:/tools/luvi.exe" }) ~= nil, "dev_build: bare luvi source run")
+  eq(hu.dev_build({ exe = "/x/lw" }), nil, "dev_build: bootstrap-only fuse is not a dev build")
   local line2 = update.version_line({ host_version = 1, release_version = "0.1.29",
     source = "release", bundle = "0.1.29" }, "unstable")
   ok(line2:find("host: 0.1.29 (v1)", 1, true) ~= nil

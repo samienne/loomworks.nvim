@@ -76,9 +76,9 @@ unset LOOMWORKS_LUA LOOMWORKS_PINNED LOOMWORKS_LW LOOMWORKS_CHANNEL
 cd "$T/work"
 lw="$T/install/$exe_name"
 
-echo "=== old host reports a dev build ==="
+echo "=== old (unversioned release-style) host reports an unknown release ==="
 out="$("$lw" version 2>&1)"; echo "$out"
-case "$out" in *"host: dev build"*) ok "unversioned host reports a dev build" ;; *) bad "unexpected version: $out" ;; esac
+case "$out" in *"host: unknown release"*) ok "unversioned release host reports an unknown release" ;; *) bad "unexpected version: $out" ;; esac
 
 echo "=== self-update --no-host leaves the host alone ==="
 out="$("$lw" self-update --no-host 2>&1)"; code=$?; echo "$out"

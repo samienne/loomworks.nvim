@@ -1091,8 +1091,12 @@ release it precedes. `lw version` prints the resolved channel.
 in `boot/verify.lua` `RELEASE_VERSION` — `nil` in source, injected by
 `scripts/release/fuse_host.sh <luvi> <pub> <out> <version>` (release.yml's
 hosts job passes the tag version and fails the leg if `lw version` does not
-report it). `lw version` prints `host: <release> (v<HOST_VERSION>)`, or
-`host: dev build (v1)`. After the bundle step, `main.lua` calls
+report it). `lw version` prints `host: <release> (v<HOST_VERSION>)`; with no
+`RELEASE_VERSION` it prints `host: dev build (v1)` when
+`host_update.dev_build{ exe, fused_system_lua }` says so (bare `luvi`, or
+`loomworks/cli.lua` fused in) and `host: unknown release (v1)` otherwise (a
+bootstrap-only release fuse without a version) — one predicate shared with
+`decide`, so the label never contradicts whether self-update replaces it. After the bundle step, `main.lua` calls
 `boot/host_update.lua` `update_host{ target_version = <bundle's release> }`
 unless `--no-host`. When the release's `min_host_version` exceeds this host,
 `update.self_update` returns `nil, err, { version, host_incompatible = true }`

@@ -7030,7 +7030,8 @@ non-interactive and never blocks; names come from a fast (~250ms) load.]],
   version = [[lw version
 
 Print the host's release version (with its capability version in
-parentheses; `dev build` for a host built from a source tree), the active
+parentheses; `dev build` for a host built from a source tree, `unknown
+release` for a release host without an embedded version), the active
 bundle, the update channel, and which system-Lua source is active — one of:
   dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
   release  a verified release bundle (lua-<ver>/ under the data dir)

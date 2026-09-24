@@ -71,6 +71,24 @@ function M.cleanup_old(exe, fs)
   pcall(fs.unlink, exe .. M.OLD_SUFFIX)
 end
 
+--- Is the running host a development build rather than a release host? The ONE
+--- predicate shared by `decide` (a dev build never replaces itself) and the
+--- `lw version` label (only a dev build is called one), so the two can't
+--- disagree. A dev build is the bare luvi runtime running a source tree, or a
+--- host with system Lua fused in (`make install` / `luvi lua --`); a release
+--- host fuses only the bootstrap — with or without an embedded version.
+--- @param o { exe?: string, fused_system_lua?: boolean }
+--- @return string|nil reason why it is a dev build, or nil for a release host
+function M.dev_build(o)
+  local exe = (o.exe or ""):gsub("\\", "/"):lower()
+  local base = (exe:match("([^/]+)$") or ""):gsub("%.exe$", "")
+  if base == "luvi" then return "running from the bare luvi runtime (a source run)" end
+  if o.fused_system_lua then
+    return "this is a development build (system Lua fused into the binary)"
+  end
+  return nil
+end
+
 --- Should the running host replace itself? Pure — all inputs explicit.
 --- @param o { exe?: string, running_version?: string, target_version?: string, no_host?: boolean, pinned?: boolean, dev?: boolean, fused_system_lua?: boolean }
 --- @return "swap"|"current"|"skip" action, string reason
@@ -83,14 +101,9 @@ function M.decide(o)
   if exe:find("/.nvim/cache/", 1, true) then
     return "skip", "running from a repo-local pinned launcher cache (lw.pin owns this host)"
   end
-  local base = (exe:match("([^/]+)$") or ""):gsub("%.exe$", "")
-  if base == "luvi" then
-    return "skip", "running from the bare luvi runtime (a source run)"
-  end
+  local dev_reason = M.dev_build(o)
+  if dev_reason then return "skip", dev_reason end
   if o.dev then return "skip", "running a development source" end
-  if o.fused_system_lua then
-    return "skip", "this is a development build (system Lua fused into the binary)"
-  end
   -- Upgrade-only (§16.32): replace only an unknown host (nil — released before
   -- version identity existed) or one strictly older than the target. The
   -- bundle never downgrades either (the newest installed release runs), so a

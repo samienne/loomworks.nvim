@@ -144,9 +144,17 @@ if not command then
     if v == "--version" or v == "-v" then command = "version"; break end
   end
 end
+--- Is system Lua fused into this host? A dev build (`make install` /
+--- `luvi lua --`) fuses it; a release host carries only the bootstrap.
+local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~= nil end
+
 if command == "version" then
   local upd = require("boot.update")
-  local info = upd.version_info(luaroot, source_kind)
+  -- Same dev-build predicate self-update uses (§16.32), so the label never
+  -- calls a host a dev build that self-update would replace, or vice versa.
+  local hu = require("boot.host_update")
+  local dev_build = hu.dev_build({ exe = hu.exe_path(), fused_system_lua = fused_system_lua() }) ~= nil
+  local info = upd.version_info(luaroot, source_kind, { dev_build = dev_build })
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
@@ -166,16 +174,14 @@ elseif command == "self-update" then
     elseif type(v) == "string" and v:sub(1, 10) == "--channel=" then channel = v:sub(11)
     elseif channel == "" then channel = v end  -- `--channel <value>` form
   end
-  -- Host-step options (spec §16.32): who may self-replace. A dev build
-  -- (`make install` / `luvi lua --`) fuses system Lua; a release host carries
-  -- only the bootstrap.
+  -- Host-step options (spec §16.32): who may self-replace.
   local function host_opts(target)
     return {
       target_version = target,
       no_host = no_host,
       pinned = pinned_sentinel ~= nil,
       dev = source_kind == "dev",
-      fused_system_lua = bundle.readfile("loomworks/cli.lua") ~= nil,
+      fused_system_lua = fused_system_lua(),
     }
   end
   io.write("lw: checking for updates…\n")

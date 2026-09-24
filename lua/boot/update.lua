@@ -425,17 +425,28 @@ function M.self_update(opts)
 end
 
 --- The one-line `lw version` report. The host's release version (spec §16.32)
---- leads, with the capability version (§16.14) in parentheses; a host with no
---- embedded release version is a dev build and says so rather than guessing.
+--- leads, with the capability version (§16.14) in parentheses. A host with no
+--- embedded release version never guesses one: it is `dev build` when it IS a
+--- development build (`info.dev_build`, from host_update.dev_build — the same
+--- predicate self-update uses), else `unknown release` (a release host built
+--- before version identity existed, which self-update does replace).
+--- @param info { host_version: integer, release_version?: string, dev_build?: boolean, source: string, bundle: string }
+--- @param channel string the resolved update channel
+--- @return string line
 function M.version_line(info, channel)
-  local host = (info.release_version or "dev build") .. " (v" .. info.host_version .. ")"
+  local label = info.release_version
+    or (info.dev_build and "dev build" or "unknown release")
+  local host = label .. " (v" .. info.host_version .. ")"
   return string.format("lw — host: %s · source: %s · bundle: %s · channel: %s",
     host, info.source, info.bundle, channel)
 end
 
 --- Describe the resolved runtime for `lw version`.
---- @return { host_version: integer, release_version: string|nil, source: string, bundle: string, luaroot: string|nil }
-function M.version_info(luaroot, source_kind)
+--- @param luaroot string|nil the resolved system-Lua root
+--- @param source_kind "dev"|"release"|nil the system-Lua source
+--- @param opts? { dev_build?: boolean } whether the host is a development build (host_update.dev_build)
+--- @return { host_version: integer, release_version: string|nil, dev_build: boolean, source: string, bundle: string, luaroot: string|nil }
+function M.version_info(luaroot, source_kind, opts)
   local bundle
   if source_kind == "dev" then
     bundle = "dev (" .. (luaroot or "?") .. ")"
@@ -446,8 +457,10 @@ function M.version_info(luaroot, source_kind)
   end
   return {
     host_version = verify.HOST_VERSION,
-    -- The host's embedded release version (spec §16.32); nil = dev build.
+    -- The host's embedded release version (spec §16.32); nil = a dev build or
+    -- a release host from before version identity (told apart by dev_build).
     release_version = verify.RELEASE_VERSION,
+    dev_build = (opts and opts.dev_build) and true or false,
     source = source_kind or "fused",
     bundle = bundle,
     luaroot = luaroot,

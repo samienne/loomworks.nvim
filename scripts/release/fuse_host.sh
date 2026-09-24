@@ -8,7 +8,8 @@
 # <release_version> (no leading v) becomes the host's M.RELEASE_VERSION
 # (spec §16.32): `lw version` reports it, and `lw self-update` compares it to
 # the target release to decide whether to replace the host. Omit it for a
-# local/dev fuse — the host then reports itself as a dev build.
+# local fuse — the host then reports an unknown release (it fuses only the
+# bootstrap, like a release host) and `lw self-update` would replace it.
 #
 # Run on the target OS/arch with that platform's luvi — `luvi --output` fuses
 # the running luvi, so there is no cross-fusing. The result is a single

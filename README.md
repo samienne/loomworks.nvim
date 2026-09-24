@@ -816,7 +816,9 @@ the binary is already that release, and a binary newer than the release (say,
 after switching from `unstable` back to `stable`) is left alone, not
 downgraded.
 `lw version` reports the binary's release (`host: 0.1.29 (v1)`; `dev build`
-for a binary built from a checkout).
+for a binary built from a checkout, which never replaces itself; `unknown
+release` for a release binary without an embedded version, which
+`lw self-update` does replace).
 
 - `lw self-update --no-host` updates only the bundle.
 - If a release needs a newer `lw` binary than yours (its bundle can't run on
