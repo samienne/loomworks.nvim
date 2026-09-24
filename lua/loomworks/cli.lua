@@ -6967,7 +6967,8 @@ Examples:
               tool       the resolved toolchain key
               cache      the resolved compiler cache, as the `Cache` row shows
                          it (sccache / off / auto (none found) / auto (off for
-                         MSVC) / ccache (not found) / not applied (<reason>));
+                         MSVC-style) / ccache (not found) / not applied
+                         (<reason>));
                          empty for a project with no C/C++ compiler cache
               variables  resolved project variables (name=value lines);
                          variables.<name> prints one
