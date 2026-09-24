@@ -821,6 +821,9 @@ release` for a release binary without an embedded version, which
 `lw self-update` does replace).
 
 - `lw self-update --no-host` updates only the bundle.
+- `--force` reinstalls the *bundle* only; it never forces a reinstall (or
+  downgrade) of the `lw` binary. To repair a damaged binary, reinstall it as in
+  [Installing `lw`](#installing-lw).
 - If a release needs a newer `lw` binary than yours (its bundle can't run on
   your binary), `lw self-update` updates the binary first, then prints
   ``lw binary updated to <ver>; re-run `lw self-update` to update the bundle``

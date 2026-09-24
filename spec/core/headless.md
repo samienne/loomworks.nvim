@@ -1255,7 +1255,9 @@ replacement follows these rules:
   with a note and never downgrades the host, just as the newest installed
   bundle, not an older one, is the one that runs. A running host with **no**
   embedded release version is treated as unknown and is replaced (every host
-  released before version identity existed is such a host).
+  released before version identity existed is such a host). A request to
+  force re-acquisition of the bundle (§16.13) does **not** force a host
+  replacement: the host is still replaced only under this rule.
 - **Verified before swap.** The replacement binary is the platform's host
   asset (§16.22 asset selection), verified against the **signed** release hash
   list (§16.15): the list's signature MUST verify against the key carried by

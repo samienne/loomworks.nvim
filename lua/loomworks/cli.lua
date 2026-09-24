@@ -7083,7 +7083,9 @@ A pinned (lw.pin) or development host never replaces itself.
 If the release needs a newer lw binary than this one, the binary is updated
 first and self-update exits non-zero asking you to re-run it for the bundle.
 
-  --force             reinstall even if that version is already present
+  --force              reinstall the bundle even if that version is already
+                       present (does NOT force a reinstall of the lw binary —
+                       that is replaced only by a newer release)
   --channel <name>     `stable` (default) or `unstable` for this run only
   --no-host            update only the bundle; leave the lw binary as it is
 
