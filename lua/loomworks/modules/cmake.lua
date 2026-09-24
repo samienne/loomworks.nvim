@@ -2725,6 +2725,73 @@ function M.resolve_artifacts(ctx)
     return next(artifacts) and artifacts or nil
 end
 
+--- Post-configure compiler-cache compatibility scan (core §8
+--- `cache_compat_scan`, cmake §5d). After a configure that applied a launcher
+--- to an MSVC-style kit, scan every target's compile flags — the same file-api
+--- codemodel `compileCommandFragments` the owned compile_commands (§12.2) is
+--- reconstructed from, so it covers every generator and never decodes the
+--- native `compile_commands.json` — for PDB-writing debug flags (/Zi, /ZI,
+--- -Zi, -ZI). The `/Z7` request only changes CMake's DEFAULT flags; a target
+--- (typically a FetchContent / add_subdirectory dependency) that adds /Zi
+--- itself is what this finds. ALL targets are scanned, not just
+--- project-owned ones — dependencies are the point. One finding per target:
+--- severity "error" for sccache (fails those compiles), "warning" for ccache
+--- (compiles them uncached). A gcc/clang kit's launchers never fail an
+--- uncacheable compile, so it reports clean without reading anything.
+--- Advisory; spawns nothing.
+--- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, config_name?: string, variant?: string }
+--- @return { scanned: boolean, reason?: string, findings: table[] }
+function M.cache_compat_scan(ctx)
+    local cpp = require("loomworks.cpp_compilers")
+    if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
+        return { scanned = true, findings = {} }
+    end
+    local build_dir = ctx.build_dir
+    local codemodel = build_dir and find_file_api_reply(build_dir, "codemodel", 2) or nil
+    if not codemodel or not codemodel.configurations then
+        return { scanned = false, findings = {},
+            reason = "no CMake file-api codemodel reply for this build" }
+    end
+    local cfg = select_codemodel_config(codemodel, ctx.variant or ctx.config_name)
+    if not cfg or not cfg.targets then
+        return { scanned = false, findings = {},
+            reason = "the CMake codemodel reply lists no targets for this configuration" }
+    end
+
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+    local source_root = codemodel.paths and codemodel.paths.source or nil
+    local acc = {}
+    for _, tref in ipairs(cfg.targets) do
+        local detail = tref.jsonFile and read_json_file(reply_dir .. "/" .. tref.jsonFile)
+        if detail and detail.compileGroups then
+            local sources = detail.sources or {}
+            for _, cg in ipairs(detail.compileGroups) do
+                local tokens = {}
+                for _, f in ipairs(cg.compileCommandFragments or {}) do
+                    if type(f.fragment) == "string" then
+                        for _, tok in ipairs(tokenize_fragment(f.fragment)) do
+                            for _, ex in ipairs(expand_token(tok)) do tokens[#tokens + 1] = ex end
+                        end
+                    end
+                end
+                local flag = cpp.pdb_debug_flag(tokens)
+                if flag then
+                    for _, si in ipairs(cg.sourceIndexes or {}) do
+                        local src = sources[si + 1] -- 0-based
+                        local abs = src and type(src.path) == "string"
+                            and abs_source_path(src.path, source_root) or nil
+                        cpp.pdb_scan_add(acc, detail.name or tref.name or "?", flag, abs)
+                    end
+                end
+            end
+        end
+    end
+    return {
+        scanned = true,
+        findings = cpp.pdb_scan_findings(acc, ctx.compiler_cache and ctx.compiler_cache.tool),
+    }
+end
+
 --- Iterate every compiled source of the selected configuration's targets,
 --- invoking `fn(cg, compiler, abs)` once per source (each compileGroup ×
 --- its sourceIndexes), resolving the per-language compiler with the same

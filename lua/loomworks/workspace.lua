@@ -2787,6 +2787,36 @@ function Workspace:record_task_result(result)
         config_unit.module_info = config_unit.module_info or {}
         config_unit.module_info.cache_launcher =
             result.module_info and result.module_info.cache_launcher or nil
+
+        -- Post-configure compiler-cache compatibility scan (spec §5.1, §8
+        -- `cache_compat_scan`): after a SUCCESSFUL configure that applied a
+        -- launcher, ask the module whether the compile commands it produced
+        -- are compatible with that launcher (e.g. MSVC /Zi under sccache).
+        -- Recorded as `module_info.cache_compat`, REPLACED on every configure
+        -- and dropped (nil) when the configure failed or applied no launcher
+        -- — explicit assignment, since the additive merge cannot clear a key.
+        -- Advisory only: printed here and surfaced by health (§16.31); it
+        -- never gates a build or changes the policy.
+        local compat
+        if success and project then
+            local cc = require("loomworks.compiler_cache")
+            local impl = project._module and project._module.impl or nil
+            local cfg = config_unit._configuration
+            compat = cc.run_compat_scan(impl, {
+                build_dir = result.build_dir or config_unit.build_dir_value,
+                configuration = cfg,
+                tool_data = (result.tool and result.tool.data) or config_unit._tool_data,
+                config_name = result.variant or config_unit._variant,
+                variant = cfg and cfg.module_config and cfg.module_config.variant or nil,
+            }, config_unit.module_info.cache_launcher)
+            local msg, severity = cc.compat_message(compat, project.key,
+                result.variant or config_unit._variant or "?")
+            if msg then
+                self._core._deps.notify("loomworks: " .. msg, severity == "error"
+                    and vim.log.levels.ERROR or vim.log.levels.WARN)
+            end
+        end
+        config_unit.module_info.cache_compat = compat
     end
 
     -- Sync state to BuildDir domain object (create if needed)

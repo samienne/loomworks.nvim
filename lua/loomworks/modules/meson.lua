@@ -1127,6 +1127,56 @@ function M.parse_targets(ctx)
     return next(result) and result or nil
 end
 
+--- Post-configure compiler-cache compatibility scan (core §8
+--- `cache_compat_scan`, meson §5a). After a setup that applied a launcher to
+--- an MSVC-style tool, scan each target's per-source compile `parameters` in
+--- meson's own introspection file (`<build_dir>/meson-info/intro-targets.json`
+--- — read directly, nothing is spawned) for PDB-writing debug flags (/Zi, /ZI,
+--- -Zi, -ZI). One finding per target; "error" for sccache (fails them),
+--- "warning" for ccache (compiles them uncached). The module injects no
+--- debug-format adjustment of its own; a subproject/user option requesting
+--- /Zi is surfaced here, never rewritten. A gcc/clang tool reports clean.
+--- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string } }
+--- @return { scanned: boolean, reason?: string, findings: table[] }
+function M.cache_compat_scan(ctx)
+    local cpp = require("loomworks.cpp_compilers")
+    if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
+        return { scanned = true, findings = {} }
+    end
+    local path = ctx.build_dir and (ctx.build_dir .. "/meson-info/intro-targets.json") or nil
+    local fh = path and io.open(path, "r")
+    if not fh then
+        return { scanned = false, findings = {},
+            reason = "no meson introspection data (meson-info/intro-targets.json) for this build" }
+    end
+    local raw = fh:read("*a")
+    fh:close()
+    local ok, targets = pcall(vim.json.decode, raw)
+    if not ok or type(targets) ~= "table" then
+        return { scanned = false, findings = {},
+            reason = "meson introspection data (intro-targets.json) could not be read" }
+    end
+    local acc = {}
+    for _, t in ipairs(targets) do
+        for _, block in ipairs(type(t.target_sources) == "table" and t.target_sources or {}) do
+            local flag = cpp.pdb_debug_flag(block.parameters)
+            if flag then
+                local srcs = type(block.sources) == "table" and block.sources or {}
+                if #srcs == 0 then
+                    cpp.pdb_scan_add(acc, t.name or "?", flag, nil)
+                end
+                for _, s in ipairs(srcs) do
+                    cpp.pdb_scan_add(acc, t.name or "?", flag, s)
+                end
+            end
+        end
+    end
+    return {
+        scanned = true,
+        findings = cpp.pdb_scan_findings(acc, ctx.compiler_cache and ctx.compiler_cache.tool),
+    }
+end
+
 --- Async companion for parse_targets — yields to the event loop.
 --- @param ctx table
 --- @param callback fun(targets: table|nil)
