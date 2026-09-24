@@ -86,15 +86,18 @@ end
 
 --- Resolve the launcher for a (project, configuration) pair by first resolving
 --- the effective `cache` policy through the variable machinery, then mapping it
---- to a launcher. This is the single seam the build-context assembly calls.
+--- to a launcher. This is the single seam the build-context assembly calls —
+--- and the one status/health reporting must use too, so what is displayed is
+--- exactly what a build applies (e.g. clang-cl's MSVC-ABI sccache preference).
 --- @param project loomworks.Project|nil
 --- @param configuration loomworks.Configuration|nil
 --- @param tool_data table|nil resolved tool_data (yields the compiler family)
 --- @param profile? loomworks.Profile active profile (machine-local fill)
 --- @param lookup? fun(name: string): string|nil executable resolver
---- @return { tool: string, path: string }|nil
+--- @return { tool: string, path: string }|nil launcher
+--- @return "auto"|"off"|string|nil policy the normalized effective policy (nil without a project)
 function M.resolve_for(project, configuration, tool_data, profile, lookup)
-    if not project then return nil end
+    if not project then return nil, nil end
     local cpp = require("loomworks.cpp_compilers")
     -- Compiler-family for OVERRIDES resolution folds clang-cl → clang (spec: a
     -- clang-cl build honours `overrides.clang`).
@@ -105,7 +108,7 @@ function M.resolve_for(project, configuration, tool_data, profile, lookup)
     -- Compiler-family for the launcher PREFERENCE treats clang-cl as MSVC-ABI
     -- (sccache-first, §5d) — distinct from the override family above.
     local pref_family = cpp.is_msvc_style(tool_data) and "msvc" or override_family
-    return M.resolve(policy, pref_family, lookup)
+    return M.resolve(policy, pref_family, lookup), M.normalize_policy(policy)
 end
 
 --- Return the name of the first compiler-cache launcher present on the

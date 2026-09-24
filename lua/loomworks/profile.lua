@@ -613,12 +613,12 @@ end
 --- resolved launcher (or nil), whether one is present, and whether any of the
 --- profile's configured units were built with a different launcher (stale).
 --- Resolution is anchored on the profile's first caching project — v1 shows a
---- single profile-level row. It never spawns the cache tool.
+--- single profile-level row — and goes through `compiler_cache.resolve_for`,
+--- the same resolver the build context uses, so the reported tool is the one a
+--- build applies (clang-cl → sccache-first). It never spawns the cache tool.
 --- @return { policy: string, tool: string|nil, present: boolean, stale: boolean, text: string }|nil
 function Profile:compiler_cache_status()
     local cc = require("loomworks.compiler_cache")
-    local variables = require("loomworks.variables")
-    local cpp = require("loomworks.cpp_compilers")
 
     local target
     for _, pp in ipairs(self:projects()) do
@@ -633,11 +633,9 @@ function Profile:compiler_cache_status()
     local project = target._project
     local configuration = target:configuration()
     local tool = target:tool_object()
-    local family = cpp.family_from_tool_data(tool and tool.data or nil)
-
-    local policy = cc.normalize_policy(
-        variables.resolve_cache_policy(project, configuration, family, self))
-    local resolved = cc.resolve(policy, family)
+    local resolved, policy = cc.resolve_for(
+        project, configuration, tool and tool.data or nil, self)
+    policy = policy or "auto"
 
     -- Stale when any of the profile's configured caching units were built with
     -- a launcher different from the one that would resolve now.
