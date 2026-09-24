@@ -7029,7 +7029,9 @@ paths. `lw` must be on PATH so the completion can call it back. Completion is
 non-interactive and never blocks; names come from a fast (~250ms) load.]],
   version = [[lw version
 
-Print the host version and which system-Lua source is active — one of:
+Print the host's release version (with its capability version in
+parentheses; `dev build` for a host built from a source tree), the active
+bundle, the update channel, and which system-Lua source is active — one of:
   dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
@@ -7057,7 +7059,7 @@ install itself) — from the release page for your platform, e.g.:
     && chmod +x /tmp/lw && /tmp/lw install
 
 A host command (handled by lw itself).]],
-  ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>]
+  ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>] [--no-host]
 
 Download the current release, verify its signature and hashes, and activate
 it (spec §16.12–16.13). Fetches manifest.json + manifest.json.sig, checks the
@@ -7067,8 +7069,18 @@ lua-<version>/ under the data dir — never overwriting a running copy. Integrit
 rests on the signature, not the transport, so it is safe behind a proxy;
 set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
+Then it replaces the lw binary itself with the same release's host (spec
+§16.31), when that release differs from the running host's: the release's
+SHA256SUMS signature is checked against the built-in key and the downloaded
+binary against its hash BEFORE the installed binary is touched (never relaxed,
+even behind a proxy); the swap is atomic and any failure leaves the old binary
+in place. If the binary's location is not writable (a system or
+package-managed install) it warns with the manual steps and still succeeds.
+A pinned (lw.pin) or development host never replaces itself.
+
   --force              reinstall even if that version is already present
   --channel <name>     `stable` (default) or `unstable` for this run only
+  --no-host            update only the bundle; leave the lw binary as it is
 
 Update channel (spec §16.29): `stable` follows the newest full release;
 `unstable` includes pre-releases, for testing ahead of a stable cut. Both are
@@ -7308,7 +7320,7 @@ Usage: lw [command] [args]
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
   install           install the lw binary on PATH + fetch the first bundle
-  self-update       download + verify the latest release bundle
+  self-update       download + verify the latest release (bundle + lw binary)
   bootstrap         install a repo-local launcher + version pin (lw.sh/.cmd/.pin)
   update            repoint lw.pin at a target/latest release
   help  [command]   this help, or details for a command

@@ -13,9 +13,9 @@
 -- A resolved on-disk root is authoritative — no silent bundle fallback.
 --
 -- Bootstrap-only modules live under `lua/boot/` (verify, download, update,
--- json, paths); they load from the fused host regardless of the chosen source,
--- via the boot searcher below. They are NOT part of the release bundle they
--- verify.
+-- host_update, json, paths, pin, ...); they load from the fused host regardless
+-- of the chosen source, via the boot searcher below. They are NOT part of the
+-- release bundle they verify.
 
 local uv_ok, uv = pcall(require, "uv")
 if not uv_ok then uv = require("luv") end
@@ -38,6 +38,11 @@ end)
 
 local paths = require("boot.paths")
 local pin = require("boot.pin")
+
+-- A Windows host self-update (spec §16.31) renames the running exe aside to
+-- `<exe>.old`; the next invocation removes it. Best-effort and silent — the
+-- file may still be in use by another lw process that started before the swap.
+if paths.is_windows then require("boot.host_update").cleanup_old() end
 
 --- Exit, flushing stdout first (host-level bootstrap path; the CLI has its own).
 local function exit(code)
@@ -153,9 +158,10 @@ elseif command == "self-update" then
       "(--dev / default-source=dev).\n")
     exit(1)
   end
-  local force, channel = false, nil
+  local force, channel, no_host = false, nil, false
   for _, v in ipairs(forwarded) do
     if v == "--force" then force = true
+    elseif v == "--no-host" then no_host = true
     elseif v == "--channel" then channel = "" -- flag seen; value is the next token
     elseif type(v) == "string" and v:sub(1, 10) == "--channel=" then channel = v:sub(11)
     elseif channel == "" then channel = v end  -- `--channel <value>` form
@@ -184,6 +190,33 @@ elseif command == "self-update" then
   io.write(res.updated
     and ("lw: installed loomworks " .. res.version .. "\n")
     or ("lw: already up to date (" .. res.version .. ")\n"))
+  -- Then the host binary itself (spec §16.31): host-side fixes never ship in the
+  -- bundle, so a bundle-only update would leave them stranded. Same release as
+  -- the bundle just resolved; verified against the signed SHA256SUMS before any
+  -- swap. Refuses for pinned / dev / source-run hosts (a note, not a failure).
+  local h = require("boot.host_update").update_host({
+    target_version = res.version,
+    no_host = no_host,
+    pinned = pinned_sentinel ~= nil,
+    dev = source_kind == "dev",
+    -- A dev build (`make install` / `luvi lua --`) fuses system Lua; a release
+    -- host carries only the bootstrap.
+    fused_system_lua = bundle.readfile("loomworks/cli.lua") ~= nil,
+  })
+  if h.status == "replaced" then
+    io.write("lw: updated host binary " .. (h.from or "(unknown version)") .. " -> " ..
+      h.to .. " (" .. h.exe .. ")\n")
+  elseif h.status == "current" then
+    io.write("lw: host binary already current (" .. res.version .. ")\n")
+  elseif h.status == "skipped" then
+    if not no_host then io.write("lw: host binary not replaced: " .. h.message .. "\n") end
+  else
+    local label = h.status == "error" and "error" or "warning"
+    io.stderr:write("lw: " .. label .. ": host binary not updated: " .. h.message .. "\n")
+    if h.manual then io.stderr:write("    To update it manually, " .. h.manual .. ".\n") end
+    io.stderr:write("    The bundle update above still stands.\n")
+    if h.status == "error" then exit(1) end
+  end
   exit(0)
 elseif command == "install" then
   local opts = { dry_run = false, no_modify_path = false, no_bundle = false }

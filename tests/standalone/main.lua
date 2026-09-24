@@ -962,5 +962,187 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.host_update — decide (who may self-replace, §16.31)")
+do
+  local hu = require("boot.host_update")
+  local base = { exe = "/home/u/.local/bin/lw", target_version = "2.0.0" }
+  local function with(t)
+    local o = {}
+    for k, v in pairs(base) do o[k] = v end
+    for k, v in pairs(t) do o[k] = v end
+    return o
+  end
+  eq(hu.decide(with({})), "swap", "unknown running version -> swap")
+  eq(hu.decide(with({ running_version = "1.0.0" })), "swap", "older release -> swap")
+  eq(hu.decide(with({ running_version = "2.0.0" })), "current", "same release -> no swap")
+  eq(hu.decide(with({ no_host = true })), "skip", "--no-host -> skip")
+  eq(hu.decide(with({ pinned = true })), "skip", "pinned context -> skip")
+  eq(hu.decide(with({ exe = "/repo/.nvim/cache/lw-1.0.0-lw-linux-x86_64" })), "skip",
+    "repo-local pinned launcher cache -> skip")
+  eq(hu.decide(with({ exe = "C:\\repo\\.nvim\\cache\\lw-1.0.0-lw-windows-x86_64.exe" })), "skip",
+    "pinned cache on Windows (backslashes) -> skip")
+  eq(hu.decide(with({ exe = "C:/tools/luvi.exe" })), "skip", "bare luvi source run -> skip")
+  eq(hu.decide(with({ dev = true })), "skip", "development source -> skip")
+  eq(hu.decide(with({ fused_system_lua = true })), "skip", "dev build (fused system Lua) -> skip")
+end
+
+print("boot.host_update — update_host (signed SHA256SUMS, local mirror)")
+do
+  local hu = require("boot.host_update")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function put(p, body) local f = assert(io.open(p, "wb")); f:write(body); f:close() end
+  local function exists(p) return uv.fs_stat(p) ~= nil end
+
+  local sb = root .. "/tests/.tmp-hostupd"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  local bindir = sb .. "/bin"; paths.mkdirp(bindir)
+  -- update_host forward-slashes the exe path; match it so the seams compare equal.
+  local exe = (bindir .. "/lw"):gsub("\\", "/")
+  local asset, ver = "lw-linux-x86_64", "2.0.0-test"
+  local NEW, OLD = "NEW-HOST-BINARY\n", "OLD-HOST-BINARY\n"
+
+  -- Stage a release in the (flat) mirror: the host asset + a signed hash list.
+  -- `hash_body` lets a test publish a hash that does not match the asset.
+  local function stage(opts)
+    opts = opts or {}
+    paths.rm_rf(mirror); paths.mkdirp(mirror)
+    put(mirror .. "/" .. asset, opts.asset_body or NEW)
+    local sums = opts.sums
+      or (verify.sha256_hex(opts.hash_body or NEW) .. "  " .. asset .. "\n")
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", opts.sig or priv:sign(sums, "sha256"))
+  end
+  local function reset_exe() paths.rm_rf(exe .. ".old"); paths.rm_rf(exe .. ".new"); put(exe, OLD) end
+  local function run(o)
+    local t = { target_version = ver, exe = exe, asset = asset, url = mirror,
+      sleep = function() end, attempts = 2 }
+    for k, v in pairs(o or {}) do t[k] = v end
+    return hu.update_host(t)
+  end
+
+  -- Unix happy path: atomic rename over the target.
+  stage(); reset_exe()
+  local r = run({ is_windows = false })
+  eq(r.status, "replaced", "unix: host replaced" .. (r.status ~= "replaced" and (" — " .. tostring(r.message)) or ""))
+  eq(slurp(exe), NEW, "unix: target now holds the verified new binary")
+  ok(not exists(exe .. ".new") and not exists(exe .. ".old"), "unix: no staging leftovers")
+  eq(r.from, nil, "unknown running version reported as nil")
+  eq(r.to, ver, "reports the target release")
+
+  -- Windows: the running exe cannot be overwritten, only renamed. Simulate that
+  -- with a rename seam that refuses to replace an existing `exe`; the dance
+  -- (exe -> exe.old, new -> exe) must still succeed.
+  local function win_fs(extra)
+    local fs = {
+      rename = function(a, b)
+        if b == exe and exists(exe) then return nil, "EPERM: running executable" end
+        if extra and extra.rename then
+          local okx, ex = extra.rename(a, b)
+          if okx ~= nil or ex ~= nil then return okx, ex end
+        end
+        return uv.fs_rename(a, b)
+      end,
+      unlink = function(p) return uv.fs_unlink(p) end,
+      exists = exists,
+      writable = function() return true end,
+    }
+    return fs
+  end
+  stage(); reset_exe()
+  local ru = run({ is_windows = false, fs = win_fs() })
+  eq(ru.status, "warning", "a plain rename over a running exe fails (the Windows problem)")
+  eq(slurp(exe), OLD, "…and leaves the original in place")
+  ok(not exists(exe .. ".new"), "…and discards the staged binary")
+  reset_exe()
+  local rw = run({ is_windows = true, fs = win_fs() })
+  eq(rw.status, "replaced", "windows: rename-aside dance replaces the running exe" ..
+    (rw.status ~= "replaced" and (" — " .. tostring(rw.message)) or ""))
+  eq(slurp(exe), NEW, "windows: new binary in place")
+  eq(slurp(exe .. ".old"), OLD, "windows: running binary renamed aside to .old")
+  -- .old cleanup at next startup (best-effort, silent)
+  hu.cleanup_old(exe)
+  ok(not exists(exe .. ".old"), "cleanup_old removes the leftover .old")
+  hu.cleanup_old(exe)  -- nothing to remove: must not error
+  ok(true, "cleanup_old is silent when there is no .old")
+  hu.cleanup_old(exe, { unlink = function() error("locked") end })
+  ok(true, "cleanup_old swallows an unlink failure")
+
+  -- Windows: the second rename fails -> the first is rolled back.
+  stage(); reset_exe()
+  local rb = run({ is_windows = true, fs = win_fs({
+    rename = function(a, b)
+      if a == exe .. ".new" then return nil, "EACCES: simulated" end
+    end,
+  }) })
+  eq(rb.status, "warning", "windows: failed move-into-place is a warning")
+  eq(slurp(exe), OLD, "windows: rollback restores the original exe")
+  ok(not exists(exe .. ".old"), "windows: no .old left after rollback")
+  ok(not exists(exe .. ".new"), "windows: staged binary discarded after rollback")
+
+  -- Windows: a leftover .old still in use blocks the swap cleanly.
+  stage(); reset_exe(); put(exe .. ".old", "STUCK")
+  local rs = run({ is_windows = true, fs = {
+    rename = function(a, b) return uv.fs_rename(a, b) end,
+    unlink = function() return nil, "EBUSY" end,
+    exists = exists, writable = function() return true end,
+  } })
+  eq(rs.status, "warning", "windows: an in-use leftover .old aborts the swap")
+  eq(slurp(exe), OLD, "…original untouched")
+  paths.rm_rf(exe .. ".old")
+
+  -- Integrity: a published hash that does not match the asset -> error, and the
+  -- installed binary is never touched.
+  stage({ hash_body = "SOMETHING-ELSE" }); reset_exe()
+  local rv = run({ is_windows = false })
+  eq(rv.status, "error", "hash mismatch is an integrity error")
+  eq(slurp(exe), OLD, "hash mismatch leaves the original untouched")
+  ok(not exists(exe .. ".new") and not exists(exe .. ".new.dl"), "hash mismatch discards the download")
+
+  -- Integrity: a hash list signed by the wrong key -> error, nothing downloaded.
+  stage({ sig = readfile(FX .. "manifest.json.sig") }); reset_exe()
+  local rsig = run({ is_windows = false })
+  eq(rsig.status, "error", "bad SHA256SUMS signature is an integrity error")
+  eq(slurp(exe), OLD, "bad signature leaves the original untouched")
+
+  -- Obtain failures (bundle update already succeeded) are warnings.
+  stage({ sums = "abc123  some-other-asset\n" }); reset_exe()
+  eq(run({ is_windows = false }).status, "warning", "asset missing from the signed list -> warning")
+  paths.rm_rf(mirror .. "/SHA256SUMS")
+  eq(run({ is_windows = false }).status, "warning", "mirror without SHA256SUMS -> warning")
+  eq(slurp(exe), OLD, "…original untouched")
+
+  -- Unwritable install location -> warning with a manual command, no download.
+  stage(); reset_exe()
+  local rn = run({ is_windows = false, fs = {
+    rename = function() error("must not rename") end,
+    unlink = function(p) return uv.fs_unlink(p) end,
+    exists = exists, writable = function() return false end,
+  } })
+  eq(rn.status, "warning", "unwritable location -> warning (exit 0)")
+  ok(type(rn.manual) == "string" and rn.manual:find(asset, 1, true) ~= nil
+    and rn.manual:find(ver, 1, true) ~= nil, "warning names the asset + release to fetch manually")
+  eq(slurp(exe), OLD, "unwritable: original untouched")
+  ok(not exists(exe .. ".new"), "unwritable: nothing downloaded")
+
+  -- Same version -> no swap and no fetch (mirror points nowhere).
+  reset_exe()
+  local rc = run({ running_version = ver, url = sb .. "/nowhere" })
+  eq(rc.status, "current", "same release -> current, nothing fetched")
+  eq(slurp(exe), OLD, "same release: untouched")
+
+  -- --no-host / pinned / dev -> skipped without touching anything.
+  eq(run({ no_host = true, url = sb .. "/nowhere" }).status, "skipped", "--no-host skips")
+  eq(run({ pinned = true, url = sb .. "/nowhere" }).status, "skipped", "pinned context skips")
+  eq(run({ dev = true, url = sb .. "/nowhere" }).status, "skipped", "dev source skips")
+  eq(run({ fused_system_lua = true, url = sb .. "/nowhere" }).status, "skipped", "dev build skips")
+  eq(slurp(exe), OLD, "skips leave the host untouched")
+
+  -- Unsafe target version never reaches a URL or path.
+  eq(run({ target_version = "../../evil" }).status, "error", "unsafe target version refused")
+
+  paths.rm_rf(sb)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
