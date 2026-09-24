@@ -316,6 +316,23 @@ function M._local_key(workspace)
             table.sort(tkeys)
             parts[#parts + 1] = "profile|" .. (ap.key or "") .. "|" .. table.concat(tkeys, ",")
         end
+
+        -- Recorded post-configure cache-compatibility results (§16.31): a new
+        -- configure that finds (or clears) /Zi compiles must refresh the
+        -- cached local tier. In-memory only — cheap.
+        for _, r in ipairs(M._active_compat_records(workspace)) do
+            local rec = r.compat
+            local fparts = {}
+            for _, f in ipairs(rec.findings or {}) do
+                fparts[#fparts + 1] = table.concat({
+                    tostring(f.severity), tostring(f.flag), tostring(f.group), tostring(f.units),
+                }, ":")
+            end
+            parts[#parts + 1] = table.concat({
+                "compat", tostring(r.unit.id or r.unit._config_key), tostring(rec.tool),
+                tostring(rec.scanned), tostring(rec.reason or ""), table.concat(fparts, ","),
+            }, "|")
+        end
     end
 
     return vim.fn.sha256(table.concat(parts, "\n")):sub(1, 16)
@@ -485,6 +502,83 @@ function M.compiler_cache_provider(workspace)
 end
 
 M.register(M.compiler_cache_provider)
+
+--- The active profile's configured units carrying a recorded post-configure
+--- compatibility result (`module_info.cache_compat`), in profile order.
+--- @param workspace loomworks.Workspace|nil
+--- @return { unit: loomworks.ConfigUnit, compat: table }[]
+local function active_compat_records(workspace)
+    local out = {}
+    local ap = type(workspace) == "table" and workspace._active_profile or nil
+    if not ap or type(ap.projects) ~= "function" then return out end
+    for _, pp in ipairs(ap:projects()) do
+        local u = pp._config_unit
+        local compat = u and u.module_info and u.module_info.cache_compat
+        if type(compat) == "table" then out[#out + 1] = { unit = u, compat = compat } end
+    end
+    return out
+end
+M._active_compat_records = active_compat_records -- also read by `_local_key`
+
+--- Provider: post-configure compiler-cache compatibility results (headless
+--- §16.31, core §8 `cache_compat_scan`) for the active profile's units — read
+--- from the record core stored at configure, never recomputed here:
+---   * findings → one ACTIONABLE item per configuration: the applied launcher
+---     will fail (severity "error") / cannot cache ("warning") some compiles;
+---     detail names the offending option and groups with unit counts; remedy
+---     gives both ways out (switch those compiles to /Z7, or `cache` off);
+---   * a scan skipped for lack of compile-command data → an INFORMATIONAL item
+---     saying so, so a clean report is never mistaken for a verified one.
+--- Advisory only (never gates, never changes the policy).
+--- @param workspace loomworks.Workspace|nil
+--- @return loomworks.Suggestion[]
+function M.cache_compat_provider(workspace)
+    if not workspace then return {} end
+    local cc = require("loomworks.compiler_cache")
+    local items = {}
+    for _, r in ipairs(active_compat_records(workspace)) do
+        local u, rec = r.unit, r.compat
+        local pkey = u._project and u._project.key or "<project>"
+        local cname = u._configuration and u._configuration.name or u._variant or "<configuration>"
+        local label = pkey .. "/" .. cname
+        local severity = cc.compat_severity(rec)
+        if rec.scanned == false then
+            items[#items + 1] = {
+                kind = "info",
+                title = "Compiler-cache compatibility check skipped for " .. label,
+                detail = "Could not verify that " .. tostring(rec.tool) .. " can handle every "
+                    .. "compile of " .. label .. ": " .. tostring(rec.reason or "no compile-command data")
+                    .. ". Reconfigure to run the check again.",
+            }
+        elseif severity then
+            local units = 0
+            for _, f in ipairs(rec.findings or {}) do units = units + (f.units or 0) end
+            local flags = {}
+            for _, f in ipairs(rec.findings or {}) do flags[f.flag] = true end
+            local flag_list = {}
+            for f in pairs(flags) do flag_list[#flag_list + 1] = f end
+            table.sort(flag_list)
+            items[#items + 1] = {
+                kind = "suggestion",
+                title = string.format("%s %s %d compile%s in %s", tostring(rec.tool),
+                    severity == "error" and "will fail" or "cannot cache",
+                    units, units == 1 and "" or "s", label),
+                detail = "These compiles use " .. table.concat(flag_list, ", ")
+                    .. " (debug info in a shared .pdb), which " .. tostring(rec.tool)
+                    .. (severity == "error" and " fails" or " cannot cache") .. ":\n  "
+                    .. table.concat(cc.compat_group_lines(rec), "\n  "),
+                remedy = "Switch those targets to embedded debug info (/Z7 — e.g. set the "
+                    .. "MSVC_DEBUG_INFORMATION_FORMAT target property to Embedded, or replace "
+                    .. "/Zi in their compile options), or turn caching off for the "
+                    .. "configuration: `lw config set " .. pkey .. " " .. cname
+                    .. " variables.cache off`.",
+            }
+        end
+    end
+    return items
+end
+
+M.register(M.cache_compat_provider)
 
 -- ---------------------------------------------------------------------------
 -- Provider #2 — update availability (HEALTH-ONLY, headless §16.31)

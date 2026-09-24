@@ -135,6 +135,97 @@ function M.resolve_for(project, configuration, tool_data, profile, lookup)
     return M.resolve(policy, pref_family, lookup), M.normalize_policy(policy)
 end
 
+--- The launcher name (`sccache`, `ccache`, …) for a recorded launcher path —
+--- the lower-cased basename without an `.exe` suffix. nil for nil/"none".
+--- @param path string|nil
+--- @return string|nil
+function M.tool_of_path(path)
+    if type(path) ~= "string" or path == "" or path == "none" then return nil end
+    local base = path:gsub("\\", "/"):match("[^/]+$") or path
+    return (base:lower():gsub("%.exe$", ""))
+end
+
+--- Run a module's optional post-configure compatibility scan (core §5.1, §8
+--- `cache_compat_scan`) for a configure that applied `launcher_path`. Returns
+--- the record core stores in `module_info.cache_compat` —
+--- `{ tool, scanned, reason?, findings[] }` — or nil when the module has no
+--- hook or no launcher was applied. A throwing hook is recorded as skipped
+--- (advisory: never break the configure).
+--- @param impl table|nil module implementation
+--- @param ctx table `{ build_dir, configuration, tool_data, config_name, variant }`
+--- @param launcher_path string|nil recorded launcher ("none"/nil → no scan)
+--- @return table|nil
+function M.run_compat_scan(impl, ctx, launcher_path)
+    local tool = M.tool_of_path(launcher_path)
+    if not tool then return nil end
+    if not impl or type(impl.cache_compat_scan) ~= "function" then return nil end
+    local scan_ctx = vim.tbl_extend("force", {}, ctx or {})
+    scan_ctx.compiler_cache = { tool = tool, path = launcher_path }
+    local ok, res = pcall(impl.cache_compat_scan, scan_ctx)
+    if not ok or type(res) ~= "table" then
+        return { tool = tool, scanned = false, findings = {},
+            reason = "the compatibility check failed: " .. tostring(res) }
+    end
+    return {
+        tool = tool,
+        scanned = res.scanned ~= false,
+        reason = res.reason,
+        findings = type(res.findings) == "table" and res.findings or {},
+    }
+end
+
+--- The worst severity among a compat record's findings ("error" > "warning"),
+--- or nil when there are none.
+--- @param rec table|nil `module_info.cache_compat`
+--- @return "error"|"warning"|nil
+function M.compat_severity(rec)
+    local worst
+    for _, f in ipairs(rec and rec.findings or {}) do
+        if f.severity == "error" then return "error" end
+        worst = "warning"
+    end
+    return worst
+end
+
+--- One-line-per-group summary of a compat record's findings, e.g.
+--- `target zlib: 12 units (/Zi) — a.c, b.c`.
+--- @param rec table
+--- @return string[]
+function M.compat_group_lines(rec)
+    local lines = {}
+    for _, f in ipairs(rec and rec.findings or {}) do
+        local line = string.format("%s: %d unit%s (%s)", tostring(f.group), f.units or 0,
+            (f.units or 0) == 1 and "" or "s", tostring(f.flag))
+        if type(f.sample) == "table" and #f.sample > 0 then
+            line = line .. " — " .. table.concat(f.sample, ", ")
+        end
+        lines[#lines + 1] = line
+    end
+    return lines
+end
+
+--- The end-of-configure message for a compat record with findings (nil when
+--- clean or skipped): what fails / is not cached, where, and both ways out.
+--- @param rec table|nil `module_info.cache_compat`
+--- @param project_key string
+--- @param config_name string
+--- @return string|nil message, "error"|"warning"|nil severity
+function M.compat_message(rec, project_key, config_name)
+    local severity = M.compat_severity(rec)
+    if not severity then return nil, nil end
+    local effect = severity == "error"
+        and (rec.tool .. " will FAIL these compiles")
+        or (rec.tool .. " cannot cache these compiles")
+    local msg = string.format(
+        "%s/%s: %s — they write a shared .pdb debug database:\n  %s\n"
+            .. "Switch those targets to embedded debug info (/Z7, e.g. the "
+            .. "MSVC_DEBUG_INFORMATION_FORMAT target property = Embedded), or turn "
+            .. "caching off: lw config set %s %s variables.cache off",
+        project_key, config_name, effect,
+        table.concat(M.compat_group_lines(rec), "\n  "), project_key, config_name)
+    return msg, severity
+end
+
 --- Return the name of the first compiler-cache launcher present on the
 --- toolchain search path (checking `sccache` then `ccache`), or nil when none
 --- is installed. Used by the health suggestion provider and status reporting;

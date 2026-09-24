@@ -641,6 +641,64 @@ function M.is_msvc_style(tool_data)
     return M.family_from_tool_data(tool_data) == "msvc"
 end
 
+-- ---------------------------------------------------------------------------
+-- Compiler-cache compatibility: PDB-writing debug flags (cmake §5d, meson §5a)
+-- ---------------------------------------------------------------------------
+
+--- MSVC-style debug-info options that write to a SHARED program database
+--- (`.pdb`) — incompatible with a compiler-cache launcher: sccache FAILS such a
+--- compile, ccache compiles it uncached. `/Z7` (embedded) is the compatible
+--- form. Both the slash and dash spellings are accepted by cl / clang-cl.
+local PDB_DEBUG_FLAGS = { ["/Zi"] = true, ["/ZI"] = true, ["-Zi"] = true, ["-ZI"] = true }
+
+--- The first PDB-writing debug flag in an argv/flag list, or nil.
+--- @param args string[]|nil
+--- @return string|nil flag
+function M.pdb_debug_flag(args)
+    for _, a in ipairs(args or {}) do
+        if type(a) == "string" and PDB_DEBUG_FLAGS[a] then return a end
+    end
+    return nil
+end
+
+--- Accumulate one offending compile unit into a scan accumulator (created on
+--- first use as `{}`), grouped by `group` (a target name, else a directory).
+--- @param acc table accumulator (mutated)
+--- @param group string
+--- @param flag string offending flag
+--- @param source string|nil representative source path
+function M.pdb_scan_add(acc, group, flag, source)
+    local g = acc[group]
+    if not g then
+        g = { flag = flag, units = 0, sample = {} }
+        acc[group] = g
+    end
+    g.units = g.units + 1
+    if source and #g.sample < 3 then g.sample[#g.sample + 1] = source end
+end
+
+--- Turn a scan accumulator into `cache_compat_scan` findings (module interface
+--- §8), sorted by group. Severity is "error" for sccache (it fails those
+--- compiles) and "warning" otherwise (ccache compiles them uncached).
+--- @param acc table from `pdb_scan_add`
+--- @param tool string|nil applied launcher name
+--- @return { severity: string, flag: string, group: string, units: integer, sample: string[] }[]
+function M.pdb_scan_findings(acc, tool)
+    local severity = (tool == "sccache") and "error" or "warning"
+    local groups = {}
+    for name in pairs(acc) do groups[#groups + 1] = name end
+    table.sort(groups)
+    local out = {}
+    for _, name in ipairs(groups) do
+        local g = acc[name]
+        out[#out + 1] = {
+            severity = severity, flag = g.flag, group = name,
+            units = g.units, sample = g.sample,
+        }
+    end
+    return out
+end
+
 --- Clear the detection cache. Called by modules' `invalidate_tools`. Also drops
 --- the PATH executable index so a rescan re-reads `$PATH`.
 function M.clear_cache()
