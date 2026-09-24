@@ -335,9 +335,16 @@ end
 --- Acquire/activate the current release. opts: { url?, force?, channel? }.
 --- The channel (§16.29) selects WHICH release an un-pinned, un-overridden fetch
 --- targets; it never weakens verification. Returns
---- { version, updated, dir, channel_overridden } or nil, err. `channel_overridden`
---- is the requested channel name when a release-url override superseded a
---- non-default channel (nil otherwise) — for the caller to surface as a warning.
+--- { version, updated, dir, channel_overridden } or nil, err[, info].
+--- `channel_overridden` is the requested channel name when a release-url
+--- override superseded a non-default channel (nil otherwise) — for the caller
+--- to surface as a warning. `info` is set only when the (verified) release
+--- needs a newer host than this one — { version, host_incompatible = true } —
+--- so the caller can update the host binary first (§16.32).
+--- @param opts? { url?: string, force?: boolean, channel?: string }
+--- @return { version: string, updated: boolean, dir: string, channel_overridden?: string }|nil result
+--- @return string|nil err
+--- @return { version: string, host_incompatible: boolean }|nil info
 function M.self_update(opts)
   opts = opts or {}
   local channel, cerr = M.resolve_channel(opts)
@@ -370,7 +377,12 @@ function M.self_update(opts)
   local manifest, e3 = verify.load_manifest(mbytes, sig)
   if not manifest then return nil, e3 end
   local okh, eh = verify.host_compatible(manifest)
-  if not okh then return nil, eh end
+  if not okh then
+    -- Don't strand the host (§16.32): the manifest is already signature-
+    -- verified, so hand its release back as a host-update target — the caller
+    -- replaces the lw binary (when allowed) and asks for a re-run.
+    return nil, eh, { version = manifest.version, host_incompatible = true }
+  end
 
   local bundle_name = manifest.bundle
   if type(bundle_name) ~= "string" or not (manifest.artifacts or {})[bundle_name] then
@@ -412,8 +424,29 @@ function M.self_update(opts)
     channel_overridden = channel_overridden }
 end
 
+--- The one-line `lw version` report. The host's release version (spec §16.32)
+--- leads, with the capability version (§16.14) in parentheses. A host with no
+--- embedded release version never guesses one: it is `dev build` when it IS a
+--- development build (`info.dev_build`, from host_update.dev_build — the same
+--- predicate self-update uses), else `unknown release` (a release host built
+--- before version identity existed, which self-update does replace).
+--- @param info { host_version: integer, release_version?: string, dev_build?: boolean, source: string, bundle: string }
+--- @param channel string the resolved update channel
+--- @return string line
+function M.version_line(info, channel)
+  local label = info.release_version
+    or (info.dev_build and "dev build" or "unknown release")
+  local host = label .. " (v" .. info.host_version .. ")"
+  return string.format("lw — host: %s · source: %s · bundle: %s · channel: %s",
+    host, info.source, info.bundle, channel)
+end
+
 --- Describe the resolved runtime for `lw version`.
-function M.version_info(luaroot, source_kind)
+--- @param luaroot string|nil the resolved system-Lua root
+--- @param source_kind "dev"|"release"|nil the system-Lua source
+--- @param opts? { dev_build?: boolean } whether the host is a development build (host_update.dev_build)
+--- @return { host_version: integer, release_version: string|nil, dev_build: boolean, source: string, bundle: string, luaroot: string|nil }
+function M.version_info(luaroot, source_kind, opts)
   local bundle
   if source_kind == "dev" then
     bundle = "dev (" .. (luaroot or "?") .. ")"
@@ -424,6 +457,10 @@ function M.version_info(luaroot, source_kind)
   end
   return {
     host_version = verify.HOST_VERSION,
+    -- The host's embedded release version (spec §16.32); nil = a dev build or
+    -- a release host from before version identity (told apart by dev_build).
+    release_version = verify.RELEASE_VERSION,
+    dev_build = (opts and opts.dev_build) and true or false,
     source = source_kind or "fused",
     bundle = bundle,
     luaroot = luaroot,

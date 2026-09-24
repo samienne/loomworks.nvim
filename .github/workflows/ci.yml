@@ -106,6 +106,15 @@ jobs:
           lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
           "$lw" version
 
+      # Fuses real old/new hosts and lets the old one self-update (spec §16.32)
+      # against a local signed mirror — on Windows this is the only check of
+      # the running-.exe rename-aside swap.
+      - name: Host self-update end-to-end
+        shell: bash
+        run: |
+          l="$PWD/luvi"; [ -f "$PWD/luvi.exe" ] && l="$PWD/luvi.exe"
+          bash scripts/ci/host-self-update-e2e.sh "$l"
+
       - name: Run CLI end-to-end (meson + cmake, build/run/test/clean)
         shell: bash
         run: |

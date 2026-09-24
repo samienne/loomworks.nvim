@@ -381,7 +381,13 @@ and, if so, suggests
 `lw self-update` — showing `<current> → <newest> on the <channel> channel`. This
 check makes a network request, so it runs **only** when you invoke `lw health`,
 never on the passive `N suggestions` count; offline or on any API error it simply
-reports nothing. If a `release-url` override (or `LOOMWORKS_RELEASE_URL`) is in
+reports nothing. The same check covers the `lw` **binary**, which can lag the
+bundle (an unwritable install location, `lw self-update --no-host`, or a binary
+from before it could update itself): health then says
+`lw binary <version> is older than <newest>` (run `lw self-update`), or
+`lw binary predates self-update — reinstall once (see README)` — never for a
+development build or a repo-pinned `lw`, and never to move a binary backwards.
+If a `release-url` override (or `LOOMWORKS_RELEASE_URL`) is in
 effect while a non-default channel is set, health also notes that the override is
 superseding the channel — the state where your `--channel` is effectively ignored.
 The update and channel-override checks concern the `lw` release itself, not the
@@ -397,7 +403,9 @@ out what is on your `PATH` (probing it on every render would defeat the cache),
 so installing or removing ccache/sccache does not by itself refresh the passive
 `N suggestions` count — the next `lw health` (which always recomputes the local
 checks) does. `lw health` always refreshes the local checks and
-refreshes the network update check at most once a day; `lw health --force` (alias
+refreshes the network update check at most once a day (sooner once the running
+`lw` or its bundle changes, e.g. after `lw self-update` — a cached "update
+available" never outlives the version it was about); `lw health --force` (alias
 `--refresh`) refreshes it now, ignoring that throttle. The cache is self-healing:
 if it is missing or corrupt it is simply recomputed.
 
@@ -804,6 +812,41 @@ used as-is. If you pass a non-default `--channel` while a `release-url` override
 (the `LOOMWORKS_RELEASE_URL` env var or the `release-url` setting) is in effect,
 `lw self-update` warns that the channel was ignored — the override wins by
 design, so unset it to follow a channel. `lw version` shows the active channel.
+
+**Updating the `lw` binary itself** (spec §16.32). `lw self-update` updates the
+release bundle *and then the `lw` executable*, from the same release, so fixes
+to the binary's own argument handling and update logic reach you too. The new
+binary is checked against the release's signed `SHA256SUMS` (with the key built
+into your current `lw`) before the installed one is touched, and the swap is
+atomic — on Windows the running `lw.exe` is renamed to `lw.exe.old` and removed
+on the next run. It only ever moves the binary *forward*: it is skipped when
+the binary is already that release, and a binary newer than the release (say,
+after switching from `unstable` back to `stable`) is left alone, not
+downgraded.
+`lw version` reports the binary's release (`host: 0.1.29 (v1)`; `dev build`
+for a binary built from a checkout, which never replaces itself; `unknown
+release` for a release binary without an embedded version, which
+`lw self-update` does replace).
+
+- `lw self-update --no-host` updates only the bundle.
+- `--force` reinstalls the *bundle* only; it never forces a reinstall (or
+  downgrade) of the `lw` binary. To repair a damaged binary, reinstall it as in
+  [Installing `lw`](#installing-lw).
+- If a release needs a newer `lw` binary than yours (its bundle can't run on
+  your binary), `lw self-update` updates the binary first, then prints
+  ``lw binary updated to <ver>; re-run `lw self-update` to update the bundle``
+  and exits non-zero — run it once more. Where the binary can't replace itself
+  (`--no-host`, pinned, unwritable), it reports the error and how to install
+  the required binary by hand.
+- If `lw` lives somewhere you can't write (a system or package-managed
+  location), self-update updates the bundle, warns, and prints which release
+  asset to download and verify by hand (as in [Installing `lw`](#installing-lw)).
+- A repo-pinned `lw` (`lw.pin`) or a development build never replaces itself.
+- **Binaries from before this feature can't update themselves** — their
+  `self-update` only knows about the bundle (`lw version` shows `host v1`
+  rather than `host: <release>`). Reinstall once as in
+  [Installing `lw`](#installing-lw) (`lw health` flags such a binary); from then on `lw self-update` keeps the
+  binary current.
 
 ### Installing `lw`
 

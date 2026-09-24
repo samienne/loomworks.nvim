@@ -6675,8 +6675,10 @@ short remedy (some add a line of detail). Providers are advisory and
 extensible; the compiler-cache one gives a one-line verdict for C/C++
 workspaces (using <tool> / available but not enabled / not found / not applied
 / /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
-whether a newer `lw` release is available on your update channel (this makes a
-network request, so it runs only here — never on the passive count) and notes
+whether a newer `lw` release is available on your update channel — for the
+bundle and for the lw binary itself (a binary left behind, or one from before
+`lw self-update` could replace it) — (this makes a network request, so it runs
+only here — never on the passive count) and notes
 when a release-url override is superseding a non-default channel; a failed/offline
 check is silent. Health never spawns a cache tool — usage statistics live behind
 `lw status --cache-stats`.
@@ -6684,8 +6686,9 @@ check is silent. Health never spawns a cache tool — usage statistics live behi
 Results are cached in `.nvim/loomworks.health.json` (an internal advisory cache,
 separate from the build cache) so the passive `N suggestions` count stays cheap.
 `lw health` always refreshes the local checks; the network update-availability
-check is refreshed at most once a day. `--force` (alias `--refresh`) refreshes
-the network check now, ignoring that throttle.]],
+check is refreshed at most once a day, or sooner once the running lw or its
+bundle changes. `--force` (alias `--refresh`) refreshes the network check now,
+ignoring that throttle.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as
@@ -7029,7 +7032,10 @@ paths. `lw` must be on PATH so the completion can call it back. Completion is
 non-interactive and never blocks; names come from a fast (~250ms) load.]],
   version = [[lw version
 
-Print the host version and which system-Lua source is active — one of:
+Print the host's release version (with its capability version in
+parentheses; `dev build` for a host built from a source tree, `unknown
+release` for a release host without an embedded version), the active
+bundle, the update channel, and which system-Lua source is active — one of:
   dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
@@ -7057,7 +7063,7 @@ install itself) — from the release page for your platform, e.g.:
     && chmod +x /tmp/lw && /tmp/lw install
 
 A host command (handled by lw itself).]],
-  ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>]
+  ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>] [--no-host]
 
 Download the current release, verify its signature and hashes, and activate
 it (spec §16.12–16.13). Fetches manifest.json + manifest.json.sig, checks the
@@ -7067,8 +7073,24 @@ lua-<version>/ under the data dir — never overwriting a running copy. Integrit
 rests on the signature, not the transport, so it is safe behind a proxy;
 set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
-  --force              reinstall even if that version is already present
+Then it replaces the lw binary itself with the same release's host (spec
+§16.32), when that release is newer than the running host's (it never
+downgrades the binary, e.g. after a channel switch to stable): the release's
+SHA256SUMS signature is checked against the built-in key and the downloaded
+binary against its hash BEFORE the installed binary is touched (never relaxed,
+even behind a proxy); the swap is atomic and any failure leaves the old binary
+in place. If the binary's location is not writable (a system or
+package-managed install) it warns with the manual steps and still succeeds.
+A pinned (lw.pin) or development host never replaces itself.
+
+If the release needs a newer lw binary than this one, the binary is updated
+first and self-update exits non-zero asking you to re-run it for the bundle.
+
+  --force              reinstall the bundle even if that version is already
+                       present (does NOT force a reinstall of the lw binary —
+                       that is replaced only by a newer release)
   --channel <name>     `stable` (default) or `unstable` for this run only
+  --no-host            update only the bundle; leave the lw binary as it is
 
 Update channel (spec §16.29): `stable` follows the newest full release;
 `unstable` includes pre-releases, for testing ahead of a stable cut. Both are
@@ -7308,7 +7330,7 @@ Usage: lw [command] [args]
   completion <shell> print a shell completion script (bash|zsh)
   version           host version + which system-Lua source is in use
   install           install the lw binary on PATH + fetch the first bundle
-  self-update       download + verify the latest release bundle
+  self-update       download + verify the latest release (bundle + lw binary)
   bootstrap         install a repo-local launcher + version pin (lw.sh/.cmd/.pin)
   update            repoint lw.pin at a target/latest release
   help  [command]   this help, or details for a command
@@ -7430,8 +7452,9 @@ local function main()
     finish(M.cmd_module(a[2], a))
   end
   -- `version` / `self-update` are host commands: on the luvi host the bootstrap
-  -- (main.lua) intercepts them before we run. Reaching here means the
-  -- nvim-hosted fallback, where they don't apply.
+  -- (main.lua) intercepts them before we run — except `--help`/`-h`, which it
+  -- leaves to the help dispatcher above. Reaching here means the nvim-hosted
+  -- fallback, where they don't apply.
   if command == "version" or command == "--version" or command == "-v"
       or command == "self-update" or command == "install"
       or command == "bootstrap" or command == "update" then

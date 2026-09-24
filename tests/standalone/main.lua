@@ -170,11 +170,57 @@ do
   put("manifest.json", (good:gsub("0%.0%.0%-test", "6.6.6-evil")))
   put("manifest.json.sig", readfile(FX .. "manifest.json.sig"))
   uv.os_setenv("LOOMWORKS_RELEASE_URL", badmirror)
-  local bad, berr = update.self_update({})
+  local bad, berr, binfo = update.self_update({})
   ok(bad == nil and type(berr) == "string", "tampered mirror rejected (signature)")
+  eq(binfo, nil, "an unverified manifest yields no host-update target")
+
+  -- A release that raises min_host_version must not strand the host (§16.32):
+  -- the (signature-verified) manifest still names the release, so self_update
+  -- returns it as a host-update target alongside the error.
+  do
+    local ossl = require("openssl")
+    local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+    local newer = sandbox .. "/newhostmirror"
+    paths.mkdirp(newer)
+    local mj = good:gsub('"min_host_version": %d+',
+      '"min_host_version": ' .. (verify.HOST_VERSION + 1)):gsub("0%.0%.0%-test", "0.0.1-test")
+    local function putn(name, bytes) local f = io.open(newer .. "/" .. name, "wb"); f:write(bytes); f:close() end
+    putn("manifest.json", mj)
+    putn("manifest.json.sig", priv:sign(mj, "sha256"))
+    uv.os_setenv("LOOMWORKS_RELEASE_URL", newer)
+    local r3, e3, i3 = update.self_update({})
+    ok(r3 == nil and type(e3) == "string" and e3:find("needs host version", 1, true) ~= nil,
+      "incompatible release refused  (got " .. tostring(e3) .. ")")
+    ok(type(i3) == "table" and i3.host_incompatible == true and i3.version == "0.0.1-test",
+      "incompatible release returned as a host-update target")
+    ok(uv.fs_stat(data .. "/lua-0.0.1-test") == nil, "incompatible bundle not installed")
+  end
 
   local info = update.version_info(data .. "/lua-0.0.0-test", "release")
   eq(info.bundle, "0.0.0-test", "version_info parses bundle version")
+  -- Committed source carries no release version (fuse_host.sh injects it).
+  eq(info.release_version, nil, "source host has no embedded release version")
+  -- The label agrees with host_update's dev-build detection (one predicate):
+  -- only a real dev build says "dev build"; an unversioned RELEASE-style host
+  -- (bootstrap-only fuse, i.e. a pre-identity release) is an unknown release —
+  -- self-update WILL replace it, so calling it a dev build would contradict
+  -- "a development build never replaces itself".
+  local dinfo = update.version_info(data .. "/lua-0.0.0-test", "release", { dev_build = true })
+  local line = update.version_line(dinfo, "stable")
+  ok(line:find("host: dev build (v" .. verify.HOST_VERSION .. ")", 1, true) ~= nil,
+    "version line reports a dev build for an unversioned dev build  (got " .. line .. ")")
+  local uline = update.version_line(info, "stable")
+  ok(uline:find("host: unknown release (v" .. verify.HOST_VERSION .. ")", 1, true) ~= nil,
+    "version line reports an unknown release for an unversioned release host  (got " .. uline .. ")")
+  local hu = require("boot.host_update")
+  ok(hu.dev_build({ exe = "/x/lw", fused_system_lua = true }) ~= nil, "dev_build: fused system Lua")
+  ok(hu.dev_build({ exe = "C:/tools/luvi.exe" }) ~= nil, "dev_build: bare luvi source run")
+  eq(hu.dev_build({ exe = "/x/lw" }), nil, "dev_build: bootstrap-only fuse is not a dev build")
+  local line2 = update.version_line({ host_version = 1, release_version = "0.1.29",
+    source = "release", bundle = "0.1.29" }, "unstable")
+  ok(line2:find("host: 0.1.29 (v1)", 1, true) ~= nil
+    and line2:find("channel: unstable", 1, true) ~= nil,
+    "version line leads with the embedded release version")
 
   paths.rm_rf(sandbox)
 end
@@ -950,6 +996,249 @@ do
   update.RELEASES_API_URL = savedApi
   uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
   paths.rm_rf(sb)
+end
+
+print("boot.host_update — decide (who may self-replace, §16.32)")
+do
+  local hu = require("boot.host_update")
+  local base = { exe = "/home/u/.local/bin/lw", target_version = "2.0.0" }
+  local function with(t)
+    local o = {}
+    for k, v in pairs(base) do o[k] = v end
+    for k, v in pairs(t) do o[k] = v end
+    return o
+  end
+  eq(hu.decide(with({})), "swap", "unknown running version -> swap")
+  eq(hu.decide(with({ running_version = "1.0.0" })), "swap", "older release -> swap")
+  eq(hu.decide(with({ running_version = "2.0.0" })), "current", "same release -> no swap")
+  -- Upgrade-only: a running host newer than the target is never downgraded
+  -- (e.g. a channel switch unstable -> stable resolves an older release).
+  local a_old, r_old = hu.decide(with({ running_version = "2.1.0" }))
+  eq(a_old, "skip", "older target (channel switch) -> no downgrade")
+  ok(r_old:find("2.1.0 is newer than 2.0.0; not downgrading", 1, true) ~= nil,
+    "downgrade skip names both versions  (got " .. tostring(r_old) .. ")")
+  eq(hu.decide(with({ running_version = "1.9.9" })), "swap", "newer target -> swap")
+  -- Prerelease ordering is semver-aware: a beta orders below its release.
+  eq(hu.decide(with({ running_version = "0.1.29-beta.7", target_version = "0.1.29" })), "swap",
+    "0.1.29-beta.7 -> 0.1.29 is an upgrade")
+  eq(hu.decide(with({ running_version = "0.1.29", target_version = "0.1.29-beta.7" })), "skip",
+    "0.1.29 -> 0.1.29-beta.7 is a downgrade")
+  eq(hu.decide(with({ running_version = "0.1.10", target_version = "0.1.9" })), "skip",
+    "numeric core ordering (0.1.10 > 0.1.9)")
+  eq(hu.decide(with({ no_host = true })), "skip", "--no-host -> skip")
+  eq(hu.decide(with({ pinned = true })), "skip", "pinned context -> skip")
+  eq(hu.decide(with({ exe = "/repo/.nvim/cache/lw-1.0.0-lw-linux-x86_64" })), "skip",
+    "repo-local pinned launcher cache -> skip")
+  eq(hu.decide(with({ exe = "C:\\repo\\.nvim\\cache\\lw-1.0.0-lw-windows-x86_64.exe" })), "skip",
+    "pinned cache on Windows (backslashes) -> skip")
+  eq(hu.decide(with({ exe = "C:/tools/luvi.exe" })), "skip", "bare luvi source run -> skip")
+  eq(hu.decide(with({ dev = true })), "skip", "development source -> skip")
+  eq(hu.decide(with({ fused_system_lua = true })), "skip", "dev build (fused system Lua) -> skip")
+end
+
+print("boot.host_update — update_host (signed SHA256SUMS, local mirror)")
+do
+  local hu = require("boot.host_update")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function put(p, body) local f = assert(io.open(p, "wb")); f:write(body); f:close() end
+  local function exists(p) return uv.fs_stat(p) ~= nil end
+
+  local sb = root .. "/tests/.tmp-hostupd"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  local bindir = sb .. "/bin"; paths.mkdirp(bindir)
+  -- update_host forward-slashes the exe path; match it so the seams compare equal.
+  local exe = (bindir .. "/lw"):gsub("\\", "/")
+  local asset, ver = "lw-linux-x86_64", "2.0.0-test"
+  local NEW, OLD = "NEW-HOST-BINARY\n", "OLD-HOST-BINARY\n"
+
+  -- Stage a release in the (flat) mirror: the host asset + a signed hash list.
+  -- `hash_body` lets a test publish a hash that does not match the asset. A
+  -- real release's list always names its own version-bearing bundle
+  -- (loomworks-lua-<ver>.zip); that line binds the list to the release.
+  local function bundle_line(v)
+    return verify.sha256_hex("bundle-" .. v) .. "  loomworks-lua-" .. v .. ".zip\n"
+  end
+  local function stage(opts)
+    opts = opts or {}
+    paths.rm_rf(mirror); paths.mkdirp(mirror)
+    put(mirror .. "/" .. asset, opts.asset_body or NEW)
+    local sums = opts.sums
+      or (verify.sha256_hex(opts.hash_body or NEW) .. "  " .. asset .. "\n" .. bundle_line(ver))
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", opts.sig or priv:sign(sums, "sha256"))
+  end
+  local function reset_exe() paths.rm_rf(exe .. ".old"); paths.rm_rf(exe .. ".new"); put(exe, OLD) end
+  local function run(o)
+    local t = { target_version = ver, exe = exe, asset = asset, url = mirror,
+      sleep = function() end, attempts = 2 }
+    for k, v in pairs(o or {}) do t[k] = v end
+    return hu.update_host(t)
+  end
+
+  -- Unix happy path: atomic rename over the target.
+  stage(); reset_exe()
+  local r = run({ is_windows = false })
+  eq(r.status, "replaced", "unix: host replaced" .. (r.status ~= "replaced" and (" — " .. tostring(r.message)) or ""))
+  eq(slurp(exe), NEW, "unix: target now holds the verified new binary")
+  ok(not exists(exe .. ".new") and not exists(exe .. ".old"), "unix: no staging leftovers")
+  do  -- the default write probe (O_EXCL create + unlink) leaves nothing behind
+    local names, req = {}, uv.fs_scandir(bindir)
+    while req do
+      local n = uv.fs_scandir_next(req)
+      if not n then break end
+      names[#names + 1] = n
+    end
+    eq(table.concat(names, ","), "lw", "write probe cleaned up (only the host remains)")
+  end
+  eq(r.from, nil, "unknown running version reported as nil")
+  eq(r.to, ver, "reports the target release")
+
+  -- Windows: the running exe cannot be overwritten, only renamed. Simulate that
+  -- with a rename seam that refuses to replace an existing `exe`; the dance
+  -- (exe -> exe.old, new -> exe) must still succeed.
+  local function win_fs(extra)
+    local fs = {
+      rename = function(a, b)
+        if b == exe and exists(exe) then return nil, "EPERM: running executable" end
+        if extra and extra.rename then
+          local okx, ex = extra.rename(a, b)
+          if okx ~= nil or ex ~= nil then return okx, ex end
+        end
+        return uv.fs_rename(a, b)
+      end,
+      unlink = function(p) return uv.fs_unlink(p) end,
+      exists = exists,
+      writable = function() return true end,
+    }
+    return fs
+  end
+  stage(); reset_exe()
+  local ru = run({ is_windows = false, fs = win_fs() })
+  eq(ru.status, "warning", "a plain rename over a running exe fails (the Windows problem)")
+  eq(slurp(exe), OLD, "…and leaves the original in place")
+  ok(not exists(exe .. ".new"), "…and discards the staged binary")
+  reset_exe()
+  local rw = run({ is_windows = true, fs = win_fs() })
+  eq(rw.status, "replaced", "windows: rename-aside dance replaces the running exe" ..
+    (rw.status ~= "replaced" and (" — " .. tostring(rw.message)) or ""))
+  eq(slurp(exe), NEW, "windows: new binary in place")
+  eq(slurp(exe .. ".old"), OLD, "windows: running binary renamed aside to .old")
+  -- .old cleanup at next startup (best-effort, silent)
+  hu.cleanup_old(exe)
+  ok(not exists(exe .. ".old"), "cleanup_old removes the leftover .old")
+  hu.cleanup_old(exe)  -- nothing to remove: must not error
+  ok(true, "cleanup_old is silent when there is no .old")
+  hu.cleanup_old(exe, { unlink = function() error("locked") end })
+  ok(true, "cleanup_old swallows an unlink failure")
+
+  -- Windows: the second rename fails -> the first is rolled back.
+  stage(); reset_exe()
+  local rb = run({ is_windows = true, fs = win_fs({
+    rename = function(a, b)
+      if a == exe .. ".new" then return nil, "EACCES: simulated" end
+    end,
+  }) })
+  eq(rb.status, "warning", "windows: failed move-into-place is a warning")
+  eq(slurp(exe), OLD, "windows: rollback restores the original exe")
+  ok(not exists(exe .. ".old"), "windows: no .old left after rollback")
+  ok(not exists(exe .. ".new"), "windows: staged binary discarded after rollback")
+
+  -- Windows: a leftover .old still in use blocks the swap cleanly.
+  stage(); reset_exe(); put(exe .. ".old", "STUCK")
+  local rs = run({ is_windows = true, fs = {
+    rename = function(a, b) return uv.fs_rename(a, b) end,
+    unlink = function() return nil, "EBUSY" end,
+    exists = exists, writable = function() return true end,
+  } })
+  eq(rs.status, "warning", "windows: an in-use leftover .old aborts the swap")
+  eq(slurp(exe), OLD, "…original untouched")
+  paths.rm_rf(exe .. ".old")
+
+  -- Integrity: a published hash that does not match the asset -> error, and the
+  -- installed binary is never touched.
+  stage({ hash_body = "SOMETHING-ELSE" }); reset_exe()
+  local rv = run({ is_windows = false })
+  eq(rv.status, "error", "hash mismatch is an integrity error")
+  eq(slurp(exe), OLD, "hash mismatch leaves the original untouched")
+  ok(not exists(exe .. ".new") and not exists(exe .. ".new.dl"), "hash mismatch discards the download")
+
+  -- Integrity: a hash list signed by the wrong key -> error, nothing downloaded.
+  stage({ sig = readfile(FX .. "manifest.json.sig") }); reset_exe()
+  local rsig = run({ is_windows = false })
+  eq(rsig.status, "error", "bad SHA256SUMS signature is an integrity error")
+  eq(slurp(exe), OLD, "bad signature leaves the original untouched")
+
+  -- Replay: a GENUINE signed list from an older release served for a newer
+  -- target (its signature verifies, its host hash matches that older host)
+  -- must be refused — the list does not name the target's own bundle.
+  stage({ sums = verify.sha256_hex(NEW) .. "  " .. asset .. "\n" .. bundle_line("1.0.0") })
+  reset_exe()
+  local rr = run({ is_windows = false })
+  eq(rr.status, "error", "replayed older signed SHA256SUMS is an integrity error")
+  ok(tostring(rr.message):find("loomworks-lua-" .. ver .. ".zip", 1, true) ~= nil,
+    "replay error names the missing release entry  (got " .. tostring(rr.message) .. ")")
+  eq(slurp(exe), OLD, "replay: original untouched")
+  ok(not exists(exe .. ".new"), "replay: nothing downloaded")
+
+  -- Obtain failures (bundle update already succeeded) are warnings.
+  stage({ sums = "abc123  some-other-asset\n" .. bundle_line(ver) }); reset_exe()
+  eq(run({ is_windows = false }).status, "warning", "asset missing from the signed list -> warning")
+  paths.rm_rf(mirror .. "/SHA256SUMS")
+  eq(run({ is_windows = false }).status, "warning", "mirror without SHA256SUMS -> warning")
+  eq(slurp(exe), OLD, "…original untouched")
+
+  -- Unwritable install location -> warning with a manual command, no download.
+  stage(); reset_exe()
+  local rn = run({ is_windows = false, fs = {
+    rename = function() error("must not rename") end,
+    unlink = function(p) return uv.fs_unlink(p) end,
+    exists = exists, writable = function() return false end,
+  } })
+  eq(rn.status, "warning", "unwritable location -> warning (exit 0)")
+  ok(type(rn.manual) == "string" and rn.manual:find(asset, 1, true) ~= nil
+    and rn.manual:find(ver, 1, true) ~= nil, "warning names the asset + release to fetch manually")
+  eq(slurp(exe), OLD, "unwritable: original untouched")
+  ok(not exists(exe .. ".new"), "unwritable: nothing downloaded")
+
+  -- Same version -> no swap and no fetch (mirror points nowhere).
+  reset_exe()
+  local rc = run({ running_version = ver, url = sb .. "/nowhere" })
+  eq(rc.status, "current", "same release -> current, nothing fetched")
+  eq(slurp(exe), OLD, "same release: untouched")
+
+  -- Older target (running host newer) -> skipped, nothing fetched or touched.
+  reset_exe()
+  local rd = run({ running_version = "9.0.0", url = sb .. "/nowhere" })
+  eq(rd.status, "skipped", "older target -> skipped (no downgrade), nothing fetched")
+  eq(slurp(exe), OLD, "no downgrade: untouched")
+
+  -- --no-host / pinned / dev -> skipped without touching anything.
+  eq(run({ no_host = true, url = sb .. "/nowhere" }).status, "skipped", "--no-host skips")
+  eq(run({ pinned = true, url = sb .. "/nowhere" }).status, "skipped", "pinned context skips")
+  eq(run({ dev = true, url = sb .. "/nowhere" }).status, "skipped", "dev source skips")
+  eq(run({ fused_system_lua = true, url = sb .. "/nowhere" }).status, "skipped", "dev build skips")
+  eq(slurp(exe), OLD, "skips leave the host untouched")
+
+  -- Unsafe target version never reaches a URL or path.
+  eq(run({ target_version = "../../evil" }).status, "error", "unsafe target version refused")
+
+  paths.rm_rf(sb)
+end
+
+print("suggestions._host_facts — lw binary facts on the real luvi host (§16.31/§16.32)")
+do
+  -- Under the real luvi runtime the health update check must see a host (the
+  -- nvim busted suite only ever sees `nil` — no luvi there). Running as bare
+  -- `luvi tests/standalone` this is a source run: a dev build, never flagged.
+  require("loomworks.shim")
+  local facts = require("loomworks.suggestions")._host_facts()
+  ok(type(facts) == "table", "_host_facts sees the luvi host")
+  if type(facts) == "table" then
+    eq(facts.self_update, true, "bootstrap has host self-update")
+    eq(facts.dev_build, true, "bare luvi runtime is a dev build (shared predicate)")
+    eq(facts.release_version, verify.RELEASE_VERSION, "release identity from boot.verify")
+  end
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

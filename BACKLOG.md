@@ -752,3 +752,46 @@ other macros CMake allows there) against the host, and hide — or mark
 "not for this host" — the presets it excludes. Decide whether an excluded
 preset already mapped in a configuration set should be a diagnostic rather
 than silently vanish.
+
+## Compiler-cache / config follow-ups from real-project testing (next patch)
+
+Tester feedback (LumeEditor, lw 0.1.29-beta.8, Windows/MSVC). Ordered by
+severity.
+
+- **MEDIUM — /Zi scan findings go stale when CMake re-configures itself.** The
+  cache-compatibility scan (§5.1, §8 `cache_compat_scan`) only runs after an
+  `lw configure`; when ninja re-runs CMake on its own (after a CMakeLists /
+  `.cmake` edit) the recorded finding is not refreshed, and `lw health` shows
+  the recorded result despite `lw help health` saying it "always refreshes the
+  local checks". Observed both ways: after switching `/Zi` → `/Z7`, health still
+  says "sccache will fail N compiles"; after re-adding `/Zi`, health reports
+  nothing and a failed build gets no closing hint. Fix: health and the
+  failed-build closing line re-scan (compile commands / file-api reply) when
+  that data is newer than the recorded snapshot (the reply mtime is already the
+  freshness signal for the owned compile_commands); at minimum document
+  `lw build --reconfigure` as the way to refresh the scan.
+- **LOW — `env.PATH` and `env.Path` can both be set.** Two entries appear in
+  `lw config show`; with case-insensitive environment layering on Windows one
+  silently wins. Replace the existing case-variant on set (Windows), or warn.
+- **LOW — `lw profile set … cache sccache` when already `sccache`** prints "set"
+  and rewrites user.json; `lw config set` reports "(unchanged)" and does not
+  write. Make profile set match.
+- **LOW — `lw profile set … cache bogus` is accepted**, then shows
+  "bogus (not found)" and silently builds uncached. Validate the policy value
+  (`auto` / `off` / a known launcher name) at set time.
+- **COSMETIC — user.json key order changes on rewrite**, producing noisy diffs.
+  Serialize with a stable (e.g. sorted, or original-order-preserving) key order.
+- **WORDING** —
+  - "nearly every target (… 77 of 77 targets)": only the *unit* count is
+    "nearly"; say "every target" when all targets are affected.
+  - The failed-build closing line says "which sccache cannot cache", underselling
+    it — the scan says the compiles will FAIL; align the severity wording.
+  - Health shows "Compiler cache: using sccache" directly above "sccache will
+    fail N compiles" — reads as contradictory; qualify the affirmation (or
+    suppress it) when a failing finding exists for the same configuration.
+  - The PATH warning for `overrides.msvc.env.path` names it `env.path`; name the
+    full key the user set.
+  - `lw profile query --help` and `lw config unset --help` print the whole
+    parent command's help; show the subcommand's section.
+  - User-facing help still cites spec sections (§16.9 build, §16.16 test, §1.3.1
+    config); help text should not reference the spec.

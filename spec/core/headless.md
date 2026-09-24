@@ -159,7 +159,9 @@ produced.
 Every command documents itself: `lw help <command>` and, equivalently,
 `--help` / `-h` anywhere among a command's own arguments (never after the `--`
 that hands the rest to a build tool or program) print that command's help and
-exit 0 — the flag is never read as an operand such as a profile name.
+exit 0 — the flag is never read as an operand such as a profile name. This
+holds for the host-level commands too (version reporting, self-update,
+installation, pin management): asking for their help never performs them.
 
 ### 16.8 Host-determined module availability
 
@@ -313,7 +315,8 @@ A release bundle declares the minimum runtime-host capability it requires. A
 host that does not meet a bundle's minimum MUST refuse to execute it — rather
 than fail unpredictably — and MUST report that a host update is required.
 Within its compatible range a single host build executes any bundle, so
-behavioral updates ship as bundles without replacing the host.
+behavioral updates ship as bundles without replacing the host. Changes to the
+host itself reach an installed host through host self-update (§16.32).
 
 ### 16.15 Host acquisition integrity
 
@@ -324,7 +327,9 @@ trusted channel *before* its first execution, and only a matching binary is
 run. Installation is that binary placing itself where it can be invoked; it is
 not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
-(§16.12–16.13).
+(§16.12–16.13). A later replacement of an installed host (§16.32) is verified
+by the already-trusted running host against the signed hash list below, before
+the new binary is ever executed.
 
 The published hash list is itself **signed** with the release key (§16.12), and
 the acquisition procedure verifies that signature before trusting any hash in
@@ -1127,8 +1132,12 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
   post-configure cache-compatibility results). When the fingerprint
   changes, the local tier is stale;
 - a **network tier** — the results of the on-demand (network-backed) providers —
-  stored with the time they were computed, and governed by a **time-to-live**
-  (on the order of a day).
+  stored with the time they were computed and a **running-version key** (the
+  running release bundle, the running host binary's release identity (§16.32) and
+  the effective update channel, all read locally), and governed by a
+  **time-to-live** (on the order of a day). Items recorded under a different
+  running-version key (e.g. before a self-update) describe a release that is no
+  longer running and are stale regardless of age.
 
 The two refresh tiers, over that one cache, are:
 
@@ -1138,13 +1147,16 @@ The two refresh tiers, over that one cache, are:
   passive providers**, rewrites the local tier, and uses the fresh result — a
   lazy, compute-on-first-use that stays cheap on every subsequent render. It
   **never** computes the network tier: it includes whatever network-tier items
-  the cache already holds (informational, however old — so a finding surfaced by a
-  prior health run is still reflected in the count) but performs no network I/O.
+  the cache already holds for the current running-version key (informational,
+  however old — so a finding surfaced by a prior health run is still reflected in
+  the count; items recorded for another running version are dropped) but performs
+  no network I/O.
   This preserves the hard invariant that a passive render never touches the
   network.
 - **On-demand health** (`lw health`) is the full refresh. It **always** recomputes
   the local tier, and recomputes the network tier when the cached network tier is
-  older than its TTL (or when the user forces a refresh); otherwise it reuses the
+  older than its TTL, was recorded under a different running-version key, or the
+  user forces a refresh; otherwise it reuses the
   cached network tier, so back-to-back health runs do not repeatedly hit the
   network. It rewrites the cache and reports every item.
 
@@ -1169,6 +1181,31 @@ version, suggests updating. Its `title` is "Update available", its `detail` is
 self-update command. Version comparison is the same semver-aware ordering used
 for activation (§16.29), so a pre-release never reads as "newer" than the full
 release it precedes.
+
+The same check covers the **host binary** (§16.32), which can be left stale while
+the bundle is current (an unwritable install location, a bundle-only update, or a
+host from before host self-update existed). Against the same newest release, and
+upgrade-only by the same rule host self-update applies (§16.32):
+
+- a host that self-update **would replace** — its embedded release version is
+  strictly older than the newest, or it is a release host with no embedded
+  version — gets an **actionable** item "lw binary `<running>` is older than
+  `<newest>`" (`<running>` reads "(unknown release)" for an unversioned release
+  host), remedy: run the self-update command (with the help-topic pointer);
+- a host from **before host self-update** (whose bootstrap cannot replace itself)
+  gets an **actionable** item "lw binary predates self-update — reinstall once
+  (see README)", remedy: reinstall the host once as the installation
+  instructions describe;
+- a **development build** (the same predicate self-update and the version report
+  use, §16.32), a **pinned** host (the pin owns its version, §16.24), or a host at
+  or newer than the newest release → no host item.
+
+When the bundle is also stale, one "Update available" item suffices — the
+self-update it points at replaces a self-updating host too — except for a host
+from before host self-update, whose item is still reported. Reading the host's
+release identity is local and network-free; only the newest-release resolution
+above touches the network, so the host check shares this provider's on-demand
+tier and silent degradation.
 
 Resolving the newest version is a **network** operation (the releases API for
 `unstable`, otherwise a lightweight read of the channel base's manifest to learn
@@ -1206,3 +1243,93 @@ shows (§16.18) so the absence of project-scoped items is explained.
 launcher is resolved from policy, applied by the module, and reconfigured on
 change through the ordinary build gate. No build-time flag turns caching on or
 off — that decision lives entirely in the `cache` policy variable.
+
+### 16.32 Host self-update
+
+A host built from a release carries that release's **version identity**,
+fixed into the binary when it is built. A host built from a working tree (a
+development build) carries none. The version-reporting host operation reports
+the host's release version alongside its capability version (§16.14), the
+system-Lua source (§16.11), the active bundle, and the channel (§16.29). A
+host with no release version never reports a guessed version: a development
+build reports that it is one, and a release host with no version identity
+(released before identity existed) reports its release as unknown. The
+distinction uses the same development-build determination as host
+replacement below, so a host reported as a development build is never
+replaced and one reported as an unknown release is.
+
+Because host-side behavior (argument handling, source resolution, the
+acquisition procedure itself) lives in the host and not the bundle (§16.11),
+a bundle update alone never delivers a host fix. **Self-update therefore also
+replaces the host binary**, after the bundle acquisition (§16.13) succeeds or
+finds the bundle already current (or finds that the release needs a newer
+host, below), unless the caller passes an explicit *no-host* flag. The
+replacement follows these rules:
+
+- **Same release, same origin.** The host is taken from exactly the release
+  the bundle acquisition resolved — through the same channel (§16.29) and the
+  same release-source override — so host and bundle never come from different
+  releases or origins.
+- **A release that needs a newer host.** When the target release's bundle
+  requires a newer host capability than the running host provides (§16.14),
+  the bundle is not installed — but the release's signature-verified identity
+  is still used as the host-replacement target, so raising the minimum never
+  strands an installed host. If the host may replace itself (the rules below),
+  it is replaced first and self-update then reports that the binary was
+  updated and that self-update must be re-run to update the bundle, exiting
+  with a non-zero status since the bundle is not yet updated. If the host step
+  is skipped or fails, the original incompatibility error is reported together
+  with how to install the required host manually, with a non-zero status.
+- **Only when newer.** The host is replaced only when the target release's
+  version is strictly newer than the running host's embedded release version,
+  under the same pre-release-aware ordering the channels use (§16.29): a
+  pre-release orders below its release. A target equal to the running host's
+  version leaves the host as it is (already current); an **older** target —
+  e.g. after switching from the `unstable` to the `stable` channel — is skipped
+  with a note and never downgrades the host, just as the newest installed
+  bundle, not an older one, is the one that runs. A running host with **no**
+  embedded release version is treated as unknown and is replaced (every host
+  released before version identity existed is such a host). A request to
+  force re-acquisition of the bundle (§16.13) does **not** force a host
+  replacement: the host is still replaced only under this rule.
+- **Verified before swap.** The replacement binary is the platform's host
+  asset (§16.22 asset selection), verified against the **signed** release hash
+  list (§16.15): the list's signature MUST verify against the key carried by
+  the running host, and the downloaded binary's hash MUST match its entry.
+  A valid signature proves only that the list is *some* release's; the list
+  MUST also be bound to the **target** release by naming that release's own
+  version-bearing asset (its bundle, whose name carries the version), so a
+  genuine older release's list — and its older host — can never be replayed
+  for a newer target. A list without that entry is an integrity failure.
+  This check is mandatory and unconditional — relaxing transport verification
+  (§16.22) never relaxes it — and it completes **before** the installed binary
+  is touched. A release whose hash list does not verify, is not the target's,
+  or does not name this platform's asset, is never installed.
+- **Atomic, never half-written.** The verified binary is staged next to the
+  installed one and moved into place in a single step. Where the platform
+  forbids replacing a running executable but permits renaming it, the running
+  binary is first renamed aside and the new one moved into its place; the
+  renamed-aside binary is removed, best-effort and silently, by a later
+  invocation. Any failure at any step leaves the original binary installed and
+  runnable — a rename-aside is rolled back.
+- **Unwritable install location.** When the host's location cannot be written
+  (a system directory, a package-managed install), self-update warns — naming
+  the release asset and how to replace it manually — and otherwise succeeds:
+  the bundle update stands and the exit status is 0. A failure to *obtain* the
+  replacement (unreachable origin, a mirror without host assets) is likewise a
+  warning, since the bundle update already succeeded; an **integrity** failure
+  (hash list signature, a list that is not the target release's, or binary
+  hash mismatch) is an error with a non-zero
+  exit status.
+- **Only a globally-installed release host replaces itself.** A host running
+  from a repository's pinned-launcher cache or in pinned context (§16.21–16.23)
+  never replaces itself — its version is owned by the pin. A development build,
+  a host running a development source (§16.11), or the bare runtime used to run
+  a source tree likewise never replaces itself. In these cases the host step
+  is skipped with a note; the bundle behavior is unchanged.
+
+Host replacement is a management operation (§16.9): it happens only on an
+explicit self-update, never as part of a build or any workspace operation.
+A host left stale — by an unwritable location, a no-host update, or because it
+predates host self-update — is reported by the health update check (§16.31),
+which applies these same replacement rules to decide whether to flag it.

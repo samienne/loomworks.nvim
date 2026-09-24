@@ -22,6 +22,15 @@ local M = {}
 -- way bundles can rely on.
 M.HOST_VERSION = 1
 
+-- The release version this host binary was built as (spec §16.32), injected by
+-- scripts/release/fuse_host.sh at release-fuse time. nil in the committed
+-- source: a development build or a source run has no release identity, and
+-- `lw version` reports it as a dev build (or, for a bootstrap-only fuse
+-- without a version, an unknown release) rather than guessing. Self-update
+-- compares it to the target release to decide whether to replace the host.
+-- fuse_host.sh matches this exact line — keep it a single `= nil` assignment.
+M.RELEASE_VERSION = nil
+
 -- Trusted public key, embedded at build time. THIS IS A TEST KEY — the release
 -- build (CI) replaces it with the production public key. Verifying against a
 -- test key means only test-signed bundles are accepted, which is the intent

@@ -394,6 +394,124 @@ describe("update-check suggestion provider", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Update check, lw BINARY (host) staleness: the bundle can be current while the
+-- host binary is stale (an unwritable install dir, `--no-host`, a pre-self-update
+-- host). The running host's facts come from the `_host_facts` seam (nil = not the
+-- standalone host, e.g. the editor).
+-- ---------------------------------------------------------------------------
+describe("update-check provider: lw binary staleness", function()
+    local update
+    local saved_luaroot, saved_loaded, saved_facts
+
+    before_each(function()
+        saved_luaroot = _G.__loomworks_luaroot
+        saved_loaded = package.loaded["boot.update"]
+        saved_facts = suggestions._host_facts
+        update = {
+            DEFAULT_CHANNEL = "stable",
+            resolve_channel = function() return "stable" end,
+            resolve_newest_version = function() return "0.2.0" end,
+        }
+        package.loaded["boot.update"] = update
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.2.0" -- bundle current
+    end)
+    after_each(function()
+        _G.__loomworks_luaroot = saved_luaroot
+        package.loaded["boot.update"] = saved_loaded
+        suggestions._host_facts = saved_facts
+    end)
+
+    --- A self-update-capable release host at `ver` (nil = unversioned).
+    local function host(ver, extra)
+        local f = { release_version = ver, self_update = true, exe = "/opt/lw/lw" }
+        for k, v in pairs(extra or {}) do f[k] = v end
+        return function() return f end
+    end
+
+    it("flags a host older than the newest release, bundle current", function()
+        suggestions._host_facts = host("0.1.28")
+        local out = suggestions.update_check_provider({})
+        assert.equals(1, #out)
+        assert.is_not.equals("info", out[1].kind) -- actionable
+        assert.equals("lw binary 0.1.28 is older than 0.2.0", out[1].title)
+        assert.matches("lw self%-update", out[1].remedy)
+        assert.matches("lw help self%-update", out[1].remedy)
+    end)
+
+    it("flags an unversioned release host (self-update replaces it)", function()
+        suggestions._host_facts = host(nil)
+        local out = suggestions.update_check_provider({})
+        assert.equals(1, #out)
+        assert.equals("lw binary (unknown release) is older than 0.2.0", out[1].title)
+        assert.matches("lw self%-update", out[1].remedy)
+    end)
+
+    it("tells a pre-self-update host to reinstall once", function()
+        suggestions._host_facts = host(nil, { self_update = false })
+        local out = suggestions.update_check_provider({})
+        assert.equals(1, #out)
+        assert.equals("lw binary predates self-update — reinstall once (see README)", out[1].title)
+        assert.matches("Installing lw", out[1].remedy)
+    end)
+
+    it("is silent for a host at or newer than the newest release (upgrade-only)", function()
+        suggestions._host_facts = host("0.2.0")
+        assert.same({}, suggestions.update_check_provider({}))
+        suggestions._host_facts = host("0.2.1")
+        assert.same({}, suggestions.update_check_provider({}))
+        -- a pre-release orders below its release: 0.2.0 host vs 0.2.0-rc.1 feed
+        update.resolve_newest_version = function() return "0.2.0-rc.1" end
+        suggestions._host_facts = host("0.2.0")
+        assert.same({}, suggestions.update_check_provider({}))
+    end)
+
+    it("is silent for a dev build, a pinned host, or no standalone host", function()
+        suggestions._host_facts = host(nil, { dev_build = true })
+        assert.same({}, suggestions.update_check_provider({}))
+        suggestions._host_facts = host(nil, { self_update = false, dev_build = true })
+        assert.same({}, suggestions.update_check_provider({}))
+        suggestions._host_facts = host("0.1.0", { pinned = true })
+        assert.same({}, suggestions.update_check_provider({}))
+        suggestions._host_facts = host("0.1.0", { exe = "/repo/.nvim/cache/lw-0.1.0/lw" })
+        assert.same({}, suggestions.update_check_provider({}))
+        suggestions._host_facts = function() return nil end -- the editor
+        assert.same({}, suggestions.update_check_provider({}))
+    end)
+
+    it("one item when bundle AND host are stale — self-update fixes both", function()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        suggestions._host_facts = host("0.1.0")
+        local out = suggestions.update_check_provider({})
+        assert.equals(1, #out)
+        assert.equals("Update available", out[1].title)
+    end)
+
+    it("still flags a pre-self-update host when the bundle is stale too", function()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        suggestions._host_facts = host(nil, { self_update = false })
+        local titles = {}
+        for _, s in ipairs(suggestions.update_check_provider({})) do titles[s.title] = true end
+        assert.is_true(titles["Update available"])
+        assert.is_true(titles["lw binary predates self-update — reinstall once (see README)"])
+    end)
+
+    it("the network key tracks the running bundle, host and channel", function()
+        suggestions._host_facts = host("0.1.28")
+        local k1 = suggestions._network_key()
+        suggestions._host_facts = host("0.2.0")
+        local k2 = suggestions._network_key()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        local k3 = suggestions._network_key()
+        update.resolve_channel = function() return "unstable" end
+        local k4 = suggestions._network_key()
+        assert.is_string(k1)
+        assert.are_not.equals(k1, k2)
+        assert.are_not.equals(k2, k3)
+        assert.are_not.equals(k3, k4)
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
 -- No-passive-network guarantee: the health-only providers stay out of `collect`
 -- ---------------------------------------------------------------------------
 describe("passive collect never hits the network", function()
@@ -568,13 +686,16 @@ describe("suggestion cache (two-tier)", function()
             health = suggestions._health_providers,
             clock = suggestions._clock,
             local_key = suggestions._local_key,
+            network_key = suggestions._network_key,
         }
+        suggestions._network_key = function() return "n1" end
     end)
     after_each(function()
         suggestions._providers = saved.providers
         suggestions._health_providers = saved.health
         suggestions._clock = saved.clock
         suggestions._local_key = saved.local_key
+        suggestions._network_key = saved.network_key
     end)
 
     it("first collect computes+persists the local tier and never calls network", function()
@@ -637,7 +758,7 @@ describe("suggestion cache (two-tier)", function()
         -- would have left it).
         health_cache.write(io_dep, "/root", {
             local_tier = { items = { { title = "L" } }, computed_at = 500, key = "seed" },
-            network_tier = { items = { { title = "Update available" } }, computed_at = 500 },
+            network_tier = { items = { { title = "Update available" } }, computed_at = 500, key = "n1" },
         })
         local net_calls = 0
         suggestions._providers = { function() return { { title = "L" } } end }
@@ -692,6 +813,42 @@ describe("suggestion cache (two-tier)", function()
         assert.equals(2, local_calls)               -- local ALWAYS recomputed
 
         now = 1000 + suggestions.NETWORK_TTL + 1     -- past TTL: recompute
+        suggestions.collect_health(ws)
+        assert.equals(2, net_calls)
+    end)
+
+    it("collect drops cached network items recorded for another running version", function()
+        -- After `lw self-update` the cached "update available / lw binary is
+        -- older" item describes a version no longer running: never surface it.
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        health_cache.write(io_dep, "/root", {
+            local_tier = { items = {}, computed_at = 500, key = "seed" },
+            network_tier = { items = { { title = "lw binary 0.1.0 is older than 0.2.0" } },
+                computed_at = 500, key = "old-host" },
+        })
+        suggestions._providers = { function() return {} end }
+        suggestions._health_providers = {}
+        suggestions._local_key = function() return "seed" end
+        suggestions._clock = function() return 1000 end
+        assert.same({}, suggestions.collect(ws))
+    end)
+
+    it("collect_health recomputes the network tier within the TTL when the running version changed", function()
+        local io_dep = mem_io()
+        local ws = fake_ws(io_dep)
+        local net_calls = 0
+        suggestions._providers = { function() return {} end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return {} end }
+        suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 1000 end
+
+        suggestions.collect_health(ws)
+        assert.equals(1, net_calls)
+        assert.equals("n1", health_cache.read(io_dep, "/root").network_tier.key)
+        suggestions.collect_health(ws)                  -- same version, within TTL
+        assert.equals(1, net_calls)
+        suggestions._network_key = function() return "n2" end -- self-updated since
         suggestions.collect_health(ws)
         assert.equals(2, net_calls)
     end)
