@@ -86,7 +86,7 @@ describe("Profile compiler-cache status", function()
     -- once reported "ccache" for clang-cl while the build did something else).
     -- Under `auto` a clang-cl (MSVC-style) profile is uncached by design
     -- (spec §1.3.2) and says so — distinct from "none found".
-    it("clang-cl profile under auto reports 'auto (off for MSVC)' (what the build does)", function()
+    it("clang-cl profile under auto reports 'auto (off for MSVC-style)' (what the build does)", function()
         local core = make_core(nil, CLANG_CL)
         set_present({ ccache = true, sccache = true })
         local st = the_profile(core):compiler_cache_status()
@@ -98,7 +98,7 @@ describe("Profile compiler-cache status", function()
         assert.is_nil(st.tool)
         assert.is_false(st.present)
         assert.is_true(st.msvc_auto_off)
-        assert.equals("Cache: auto (off for MSVC)", st.text)
+        assert.equals("Cache: auto (off for MSVC-style)", st.text)
     end)
 
     it("clang-cl profile with an explicit overrides.clang cache reports that tool", function()
@@ -113,7 +113,7 @@ describe("Profile compiler-cache status", function()
         assert.equals("Cache: sccache", st.text)
     end)
 
-    it("a gcc profile under auto is never 'off for MSVC'", function()
+    it("a gcc profile under auto is never 'off for MSVC-style'", function()
         local core = make_core()
         set_present({})
         local st = the_profile(core):compiler_cache_status()

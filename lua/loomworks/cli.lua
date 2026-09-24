@@ -386,6 +386,8 @@ local create_intent = nil
 local function created_intent(default)
   return create_intent or default or "local+shared"
 end
+--- Test seam: set (or clear, nil) the `--local` / `--shared` creation intent.
+function M._set_create_intent(v) create_intent = v end
 
 --- May we prompt the user? False when forced non-interactive, or when stdin
 --- isn't a terminal (piped / redirected / closed — the common CI case).
@@ -3181,7 +3183,19 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   else
     out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
   end
-  out("`lw publish` to update the shared loomworks.json.")
+  -- Point at `lw publish` only when this configuration actually reaches the
+  -- shared loomworks.json — its own intent is shared / local+shared, or a
+  -- published configuration set pulls it in (§2.4 effective intent). A
+  -- local-only configuration has nothing to publish.
+  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
+  local published = true
+  if ok_p and type(pub) == "table" and type(pub.configs) == "table" then
+    published = false
+    for _, c in ipairs(proj._configurations or {}) do
+      if c.name == cfg.name and pub.configs[c] then published = true; break end
+    end
+  end
+  if published then out("`lw publish` to update the shared loomworks.json.") end
   return 0
 end
 
@@ -4000,7 +4014,7 @@ end
 
 --- The `cache` field of `lw profile query`: the resolved compiler cache for
 --- this (profile, project) (§16.18) — the same value as the `Cache` row, e.g.
---- `sccache`, `off`, `auto (none found)`, `auto (off for MSVC)`,
+--- `sccache`, `off`, `auto (none found)`, `auto (off for MSVC-style)`,
 --- `ccache (not found)`, `not applied (preset)`. Empty for a project whose
 --- module does not cache C/C++ (like `tool` with no toolchain). Never spawns
 --- the cache tool.
@@ -4781,15 +4795,27 @@ end
 --- Render the active profile's compiler-cache line (headless §16.18) — the
 --- resolved launcher, or that caching is off/unavailable, mirroring the
 --- editor's `Cache:` row. Under `--cache-stats` it also folds in the tool's own
---- usage statistics (spawning the tool). Never lets a broken query break status.
+--- usage statistics (spawning the tool). `auto (off for MSVC-style)` points at
+--- `lw help cache` (how to opt in). Never lets a broken query break status.
 --- @param pal table status_palette()
 --- @param profile loomworks.Profile active profile
 --- @param cache_stats boolean whether to fold in usage statistics
 local function render_cache_line(pal, profile, cache_stats)
   local ok_c, cache = pcall(function() return profile:compiler_cache_status() end)
-  if not ok_c or not cache then return end
+  if not ok_c or not cache then
+    -- Asked for statistics but this profile has no C/C++ project: say so
+    -- rather than printing nothing.
+    if cache_stats then
+      out(pal.title("Cache") .. string.rep(" ", 12)
+        .. pal.dim("(no C/C++ project in the active profile — no compiler cache)"))
+    end
+    return
+  end
   local value = (cache.text:gsub("^Cache: ", ""))
   local line = pal.title("Cache") .. string.rep(" ", 12) .. value
+  if cache.msvc_auto_off and cache.policy == "auto" and cache.applicable ~= false then
+    line = line .. pal.dim(" — lw help cache")
+  end
   if cache.stale then line = line .. pal.warn(" [stale — reconfigure]") end
   out(line)
   if cache_stats then
@@ -4855,6 +4881,10 @@ function M.cmd_status(root, opts)
   -- profile with a C/C++-caching module; --cache-stats folds in usage stats.
   if ap then
     render_cache_line(pal, ap, opts.cache_stats)
+  elseif opts.cache_stats then
+    -- --cache-stats needs a profile to resolve the cache tool from.
+    out(pal.title("Cache") .. string.rep(" ", 12)
+      .. pal.dim("(no active profile — activate one with `lw profile select` for --cache-stats)"))
   end
 
   -- Diagnostics section — right after the active-profile block, before Targets.
@@ -6223,8 +6253,8 @@ when the target list is incomplete.
 
 For a profile with a C/C++ project the overview shows a `Cache` line — the
 resolved compiler-cache launcher (ccache/sccache), or that caching is `off` /
-`auto (none found)` / `auto (off for MSVC)` (auto never enables a cache for
-MSVC or clang-cl; `lw health` shows how to opt in) / `<tool> (not found)` (an
+`auto (none found)` / `auto (off for MSVC-style)` (auto never enables a cache
+for MSVC or clang-cl; `lw help cache` shows how to opt in) / `<tool> (not found)` (an
 explicit `cache=<tool>` whose launcher is not installed — builds run uncached) /
 `not applied (<reason>)` (the configuration cannot take a launcher, e.g. a
 preset or a Visual Studio / Xcode generator). A `[stale — reconfigure]` marker

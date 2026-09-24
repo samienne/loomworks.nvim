@@ -227,10 +227,10 @@ scope (profile-level) benefits from the explicit pick.
   launcher is present on the toolchain path, or `Cache: <policy> (not found)`
   (e.g. `Cache: ccache (not found)`) when the policy names a launcher
   explicitly but it is not present — the build then runs uncached, and
-  `lw health` reports it as an actionable item — or `Cache: auto (off for MSVC)`
+  `lw health` reports it as an actionable item — or `Cache: auto (off for MSVC-style)`
   when policy is `auto` on an MSVC-style compiler, which never enables a
-  launcher automatically (core §1.3.2) — `lw health` explains how to opt
-  in — or `Cache: not applied (<reason>)` when the policy is not `off` but
+  launcher automatically (core §1.3.2) — the headless row adds a pointer to
+  `lw help cache`, which explains how to opt in — or `Cache: not applied (<reason>)` when the policy is not `off` but
   the module cannot apply a launcher to the profile's configuration at all
   (core §8 `cache_launcher_applicable`, with the module's reason, e.g.
   `not applied (preset)` or `not applied (Visual Studio 17 2022 generator)`);

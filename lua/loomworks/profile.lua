@@ -617,7 +617,7 @@ end
 --- the same resolver the build context uses, so the reported tool is the one a
 --- build applies. `auto` on an MSVC-style compiler (msvc, clang-cl) resolves to
 --- no launcher by design (spec §1.3.2) and is reported as
---- `Cache: auto (off for MSVC)` with `msvc_auto_off = true`, distinct from
+--- `Cache: auto (off for MSVC-style)` with `msvc_auto_off = true`, distinct from
 --- `auto (none found)`. A configuration the module cannot apply a launcher to
 --- at all (its `cache_launcher_applicable` hook, module interface §8 — e.g. a
 --- preset, or a generator that ignores launchers) reads
@@ -679,7 +679,7 @@ function Profile:compiler_cache_status(pp)
     elseif resolved then
         text = "Cache: " .. resolved.tool
     elseif msvc_auto_off then
-        text = "Cache: auto (off for MSVC)"
+        text = "Cache: auto (off for MSVC-style)"
     elseif policy == "auto" then
         text = "Cache: auto (none found)"
     else
