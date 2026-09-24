@@ -351,14 +351,49 @@ function M._preferred_install_tool()
     return vim.fn.has("win32") == 1 and "sccache" or "ccache"
 end
 
+--- The active profile's compiler-cache status (`Profile:compiler_cache_status`),
+--- or nil when there is no active profile / it has no C/C++-caching project /
+--- the query throws (advisory: never break the provider).
+--- @param workspace loomworks.Workspace
+--- @return table|nil
+local function active_cache_status(workspace)
+    local ap = workspace._active_profile
+    if not ap then return nil end
+    local ok_c, status = pcall(function() return ap:compiler_cache_status() end)
+    if ok_c and type(status) == "table" then return status end
+    return nil
+end
+
+--- The exact management command that sets `cache` for the active profile's
+--- configuration (§16.9 param grammar), e.g.
+--- `lw config set App Debug variables.cache sccache`. Falls back to
+--- placeholders when the configuration is unknown.
+--- @param status table|nil active_cache_status()
+--- @param value string policy value to set
+--- @return string
+function M._cache_set_command(status, value)
+    local pkey = status and status.project and status.project.key or "<project>"
+    local cname = status and status.configuration and status.configuration.name
+        or "<configuration>"
+    return string.format("`lw config set %s %s variables.cache %s`", pkey, cname, value)
+end
+
 --- Provider: report the workspace's compiler-cache state when it has C/C++
---- projects (headless §16.31). Two outcomes, both gated on at least one
+--- projects (headless §16.31). All outcomes are gated on at least one
 --- non-orphaned C/C++-caching project that has NOT pinned `cache` to `off`:
 ---   * a launcher is present on the toolchain path → an INFORMATIONAL item
 ---     ("Compiler cache: using <tool>") affirming the healthy state — excluded
 ---     from the `N suggestions` count (`kind = "info"`);
+---   * a launcher is present but the active profile is MSVC-style under `auto`
+---     (§1.3.2: auto never enables a launcher there) → an INFORMATIONAL
+---     "<tool> available — not enabled automatically for MSVC-style compilers"
+---     item whose detail gives the opt-in command, instead of "using";
 ---   * no launcher present → the ACTIONABLE "install one to speed rebuilds"
----     suggestion (the nag that the count reports).
+---     suggestion (the nag that the count reports); for an MSVC-style active
+---     profile its remedy adds that the launcher must then be enabled
+---     explicitly.
+--- Post-configure cache-compatibility findings are reported separately by
+--- `cache_compat_provider`.
 --- Silent when there are no caching C/C++ projects, or when every such project
 --- has pinned `cache` to `off` (the user opted out — neither nag nor affirm).
 --- Reads only resolved state + the PATH index; it never spawns the cache tool.
@@ -385,18 +420,33 @@ function M.compiler_cache_provider(workspace)
     end
     if all_off then return {} end
 
+    local status = active_cache_status(workspace)
+    local msvc_auto_off = status and status.msvc_auto_off or false
+
     -- A launcher is present → affirmative, informational status (not counted).
     local present = cc.any_present()
     if present then
         local tool = present
+        -- `auto` on an MSVC-style compiler left the build uncached on purpose
+        -- (§1.3.2): say the tool is available but not enabled, and how to opt in.
+        if msvc_auto_off then
+            return { {
+                kind = "info",
+                title = tool .. " available — not enabled automatically for MSVC-style compilers",
+                detail = "The `cache` policy is `auto`, which never enables a compiler cache "
+                    .. "for MSVC / clang-cl: " .. tool .. " can make compiles that write a "
+                    .. "shared .pdb (/Zi, /ZI) fail, and such flags may come from dependencies. "
+                    .. "To opt in, set an explicit policy — loomworks then requests embedded "
+                    .. "(/Z7) debug info and scans the configure for leftover /Zi: "
+                    .. M._cache_set_command(status, tool)
+                    .. " (or scope it to the compiler family with `overrides.msvc.cache`, "
+                    .. "or `overrides.clang.cache` for clang-cl).",
+            } }
+        end
         -- Prefer the active profile's resolved launcher (respects its policy and
         -- compiler family) when there is one; fall back to whatever is on PATH.
-        local ap = workspace._active_profile
-        if ap then
-            local ok_c, status = pcall(function() return ap:compiler_cache_status() end)
-            if ok_c and status and status.present and status.tool then
-                tool = status.tool
-            end
+        if status and status.present and status.tool then
+            tool = status.tool
         end
         return { {
             kind = "info",
@@ -415,6 +465,13 @@ function M.compiler_cache_provider(workspace)
     else
         remedy = "Install ccache and put it on PATH (e.g. `apt install ccache`, "
             .. "`dnf install ccache`, or `brew install ccache`)."
+    end
+    if msvc_auto_off then
+        -- Installing is not enough for an MSVC-style compiler: `auto` never
+        -- enables it there (§1.3.2), so the opt-in must be explicit too.
+        remedy = remedy .. " Installing it is not enough for MSVC / clang-cl: `auto` "
+            .. "never enables a cache there, so then enable it explicitly with "
+            .. M._cache_set_command(status, tool) .. "."
     end
 
     return { {

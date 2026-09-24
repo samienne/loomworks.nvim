@@ -155,8 +155,16 @@ describe("compiler_cache.resolve", function()
         assert.equals("ccache", cc.resolve("auto", "clang", both).tool)
     end)
 
-    it("auto + msvc prefers sccache", function()
-        assert.equals("sccache", cc.resolve("auto", "msvc", both).tool)
+    -- Spec §1.3.2: `auto` is family-aware — an MSVC-style family resolves to
+    -- NO launcher (sccache FAILS /Zi compiles loomworks cannot control), so
+    -- caching an MSVC build is an explicit opt-in.
+    it("auto + msvc resolves to no launcher even with both tools present", function()
+        assert.is_nil(cc.resolve("auto", "msvc", both))
+    end)
+
+    it("an explicit launcher is honored on msvc", function()
+        assert.equals("sccache", cc.resolve("sccache", "msvc", both).tool)
+        assert.equals("ccache", cc.resolve("ccache", "msvc", both).tool)
     end)
 
     it("auto + gcc falls back to sccache when ccache is absent", function()
@@ -164,9 +172,16 @@ describe("compiler_cache.resolve", function()
         assert.equals("sccache", cc.resolve("auto", "gcc", only_scc).tool)
     end)
 
-    it("auto + msvc falls back to ccache when sccache is absent", function()
-        local only_cc = lookup_of({ ccache = true })
-        assert.equals("ccache", cc.resolve("auto", "msvc", only_cc).tool)
+    it("auto + msvc stays off when only ccache is present", function()
+        assert.is_nil(cc.resolve("auto", "msvc", lookup_of({ ccache = true })))
+    end)
+
+    it("auto_off_for_family is true only for auto on an MSVC-style family", function()
+        assert.is_true(cc.auto_off_for_family("auto", "msvc"))
+        assert.is_true(cc.auto_off_for_family(nil, "clang-cl"))
+        assert.is_false(cc.auto_off_for_family("auto", "gcc"))
+        assert.is_false(cc.auto_off_for_family("sccache", "msvc"))
+        assert.is_false(cc.auto_off_for_family("off", "msvc"))
     end)
 
     it("returns nil under auto when neither is on PATH", function()
@@ -184,12 +199,11 @@ describe("compiler_cache.resolve", function()
         assert.is_nil(cc.resolve("ccache", "gcc", lookup_of({ sccache = true })))
     end)
 
-    it("clang-cl is MSVC-ABI: prefers sccache (like msvc), fallback ccache", function()
-        -- clang-cl uses cl.exe's cmdline/PDB model (§5d), so its auto preference
-        -- is sccache-first — NOT ccache like a gcc-driver clang.
-        assert.equals("sccache", cc.resolve("auto", "clang-cl", both).tool)
-        assert.equals("ccache",
-            cc.resolve("auto", "clang-cl", lookup_of({ ccache = true })).tool)
+    it("clang-cl is MSVC-style: auto resolves to no launcher (like msvc)", function()
+        -- clang-cl uses cl.exe's cmdline/PDB model (§5d), so it shares msvc's
+        -- auto rule — NOT ccache like a gcc-driver clang.
+        assert.is_nil(cc.resolve("auto", "clang-cl", both))
+        assert.equals("sccache", cc.resolve("sccache", "clang-cl", both).tool)
     end)
 
     it("an unknown/nil family uses the default preference", function()
@@ -235,14 +249,18 @@ describe("compiler_cache.resolve_for", function()
         assert.is_nil(cc.resolve_for(nil, nil, {}, nil, both))
     end)
 
-    it("clang-cl tool_data prefers sccache; gcc-driver clang prefers ccache", function()
+    it("clang-cl tool_data is MSVC-style under auto; gcc-driver clang prefers ccache", function()
         local project = { key = "App", variables = {} }
-        -- clang-cl kit (compiler_id carries clang-cl) → MSVC-ABI → sccache.
-        assert.equals("sccache", cc.resolve_for(project, nil,
+        -- clang-cl kit (compiler_id carries clang-cl) → MSVC-style → auto off.
+        local r, policy = cc.resolve_for(project, nil,
+            { compiler_id = "clang-cl-17.0.0" }, nil, both)
+        assert.is_nil(r)
+        assert.equals("auto", policy)
+        -- An explicit policy via overrides.clang (clang-cl folds to clang for
+        -- overrides) enables it.
+        local cfg = { variables = {}, _overrides = { clang = { cache = "sccache" } } }
+        assert.equals("sccache", cc.resolve_for(project, cfg,
             { compiler_id = "clang-cl-17.0.0" }, nil, both).tool)
-        -- ...and the sccache-absent fallback is ccache.
-        assert.equals("ccache", cc.resolve_for(project, nil,
-            { compiler_id = "clang-cl-17.0.0" }, nil, lookup_of({ ccache = true })).tool)
         -- Plain gcc-driver clang stays ccache-first.
         assert.equals("ccache", cc.resolve_for(project, nil,
             { compiler_id = "clang-18.1.8" }, nil, both).tool)

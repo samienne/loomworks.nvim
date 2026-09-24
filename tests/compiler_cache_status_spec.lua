@@ -77,27 +77,47 @@ describe("Profile compiler-cache status", function()
         end
     end
 
-    -- Regression: status resolved via family_from_tool_data (which folds
-    -- clang-cl → clang) and skipped the MSVC-ABI promotion the build uses, so a
-    -- clang-cl profile with both tools installed reported "ccache" while the
-    -- build actually used sccache. Status must route through the same resolver.
-    it("clang-cl profile with both tools reports sccache (what the build uses)", function()
-        local clang_cl = {
-            compiler_id = "clang-cl-17.0.0", generator = "Ninja",
-            compiler_path = "C:/Program Files/LLVM/bin/clang-cl.exe",
-        }
-        local core = make_core(nil, clang_cl)
+    local CLANG_CL = {
+        compiler_id = "clang-cl-17.0.0", generator = "Ninja",
+        compiler_path = "C:/Program Files/LLVM/bin/clang-cl.exe",
+    }
+
+    -- Status must route through the same resolver the build uses (a regression
+    -- once reported "ccache" for clang-cl while the build did something else).
+    -- Under `auto` a clang-cl (MSVC-style) profile is uncached by design
+    -- (spec §1.3.2) and says so — distinct from "none found".
+    it("clang-cl profile under auto reports 'auto (off for MSVC)' (what the build does)", function()
+        local core = make_core(nil, CLANG_CL)
         set_present({ ccache = true, sccache = true })
         local st = the_profile(core):compiler_cache_status()
         assert.is_not_nil(st)
-        -- Must agree with the build-context resolution.
         local unit = the_unit(core)
         local built = require("loomworks.compiler_cache").resolve_for(
-            unit._project, unit._configuration, clang_cl, the_profile(core))
-        assert.equals("sccache", built.tool)
+            unit._project, unit._configuration, CLANG_CL, the_profile(core))
+        assert.is_nil(built)
+        assert.is_nil(st.tool)
+        assert.is_false(st.present)
+        assert.is_true(st.msvc_auto_off)
+        assert.equals("Cache: auto (off for MSVC)", st.text)
+    end)
+
+    it("clang-cl profile with an explicit overrides.clang cache reports that tool", function()
+        local core = make_core({ configurations = { Debug = {
+            overrides = { clang = { cache = "sccache" } },
+        } } }, CLANG_CL)
+        set_present({ ccache = true, sccache = true })
+        local st = the_profile(core):compiler_cache_status()
         assert.equals("sccache", st.tool)
         assert.equals("/usr/bin/sccache", st.path)
+        assert.is_false(st.msvc_auto_off)
         assert.equals("Cache: sccache", st.text)
+    end)
+
+    it("a gcc profile under auto is never 'off for MSVC'", function()
+        local core = make_core()
+        set_present({})
+        local st = the_profile(core):compiler_cache_status()
+        assert.is_false(st.msvc_auto_off)
     end)
 
     it("reports the resolved launcher under auto", function()
