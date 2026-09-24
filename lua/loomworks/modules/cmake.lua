@@ -995,8 +995,9 @@ function M.tasks(project, active_config)
     local configure_cmd = { cmake_cmd }
 
     -- Compiler-cache launcher (§5d). Core resolved a launcher from the
-    -- effective `cache` policy + compiler family (or nil for policy `off` /
-    -- launcher-absent); the module applies it. Resolve the user options once,
+    -- effective `cache` policy + compiler family (or nil for policy `off`,
+    -- `auto` on an MSVC-style compiler, or launcher not found); the module
+    -- applies it (not on a preset or a VS/Xcode generator, below). Resolve the user options once,
     -- up front, so the non-preset branch can decide launcher OWNERSHIP: a
     -- user-set `CMAKE_<LANG>_COMPILER_LAUNCHER` is not reserved (§5b/§4f), so
     -- when the feature resolved a launcher it WINS over the user's (with a
@@ -1298,8 +1299,9 @@ function M.tasks(project, active_config)
                 compiler = kit and kit.compiler_id or nil,
                 source_dir = project.path,
                 -- Resolved compiler-cache launcher path this configure applied,
-                -- or the explicit sentinel "none" (policy off / launcher absent
-                -- / preset). Recorded — never nil for a feature configure — so
+                -- or the explicit sentinel "none" (policy off / `auto` on an
+                -- MSVC-style compiler / launcher not found / preset / a VS or
+                -- Xcode generator). Recorded — never nil for a feature configure — so
                 -- `ConfigUnit:is_stale()` distinguishes "configured under the
                 -- feature with no cache" (→ "none", install-after-configure
                 -- fires when a cache later appears) from a legacy/never-recorded

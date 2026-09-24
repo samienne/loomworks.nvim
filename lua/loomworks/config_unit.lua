@@ -569,7 +569,8 @@ function ConfigUnit:is_stale()
     -- core would resolve now (current `cache` policy + compiler family + live
     -- toolchain-path presence) and compare to the one recorded at configure.
     -- A launcher that appears, disappears, or changes value marks the unit stale
-    -- so the build gate reconfigures (cmake in-place; meson --wipe).
+    -- so the build gate reconfigures (cmake: in place when only the launcher
+    -- moved, `--fresh`/reset when the MSVC /Z7 keys move too; meson: --wipe).
     if self:launcher_changed() then return true end
     return false
 end

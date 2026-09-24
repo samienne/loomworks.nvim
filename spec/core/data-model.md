@@ -378,8 +378,8 @@ separate compiler-cache override mechanism.
 ### 1.3.3 Configuration environment (`env`)
 
 A configuration MAY carry an **`env`** field: a map of environment-variable name
-→ string value that loomworks sets for the configuration's **configure, build
-and test** tasks. It is a generic configuration field, parallel to `options`
+→ string value that loomworks sets for the configuration's **configure, build,
+clean and test** tasks. It is a generic configuration field, parallel to `options`
 and `variables`, and uses the same machinery:
 
 - **Inheritance.** `env` follows the configuration inheritance chain like

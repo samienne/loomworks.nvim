@@ -3346,6 +3346,11 @@ function Workspace:_pre_configure_reset(build_dir, entries)
     if type(build_dir) ~= "string" or build_dir == "" then
         return false, "full reconfigure refused: no build directory to reset"
     end
+    -- Deliberate: `_validate_build_dir` also accepts build_dir == workspace
+    -- root. That is an in-source build, and resetting it (e.g. removing
+    -- <root>/CMakeCache.txt + <root>/CMakeFiles) is exactly the configure-state
+    -- cleanup the full reconfigure needs there; the per-entry checks below
+    -- still confine every removal to those named entries inside build_dir.
     if not self:_validate_build_dir(build_dir, self.root) then
         return false, "full reconfigure refused: build directory outside the workspace: "
             .. build_dir

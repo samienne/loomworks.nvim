@@ -19,7 +19,12 @@ directly to `Snacks.win`. The page contains these sections in order:
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
    health\``, shown only when the suggestion framework has one or more
-   findings (hidden when none). It is advisory, not a diagnostic: unlike the
+   **actionable** items (hidden when none). `N` counts actionable items only
+   — informational items (e.g. the affirmative "Compiler cache: using
+   `<tool>`") appear in `lw health` but never in the count, so a healthy
+   workspace shows no line. Rendered with the `LoomworksStale` highlight
+   (hint-level, like the `[stale — reconfigure]` hints: advisory, not a
+   warning). It is advisory, not a diagnostic: unlike the
    Diagnostics section, suggestions never gate an operation and never fail
    `--check`. The line's detail lives in `lw health` (core §16.31); the
    status page keeps only the count so the page stays uncluttered. The
@@ -217,9 +222,12 @@ scope (profile-level) benefits from the explicit pick.
 - Compiler cache — a single profile-level row, sibling to the Toolchain
   row, shown for a profile that contains a C/C++-caching module. Format
   `Cache: <tool>` naming the resolved launcher (`ccache` / `sccache`), or
-  `Cache: off` when the effective `cache` policy (core §1.3.2) resolves to
-  no launcher, or `Cache: auto (none found)` when policy is `auto` but no
-  launcher is present on the toolchain path, or `Cache: auto (off for MSVC)`
+  `Cache: off` when the effective `cache` policy (core §1.3.2) is `off`, or
+  `Cache: auto (none found)` when policy is `auto` but no
+  launcher is present on the toolchain path, or `Cache: <policy> (not found)`
+  (e.g. `Cache: ccache (not found)`) when the policy names a launcher
+  explicitly but it is not present — the build then runs uncached, and
+  `lw health` reports it as an actionable item — or `Cache: auto (off for MSVC)`
   when policy is `auto` on an MSVC-style compiler, which never enables a
   launcher automatically (core §1.3.2) — `lw health` explains how to opt
   in — or `Cache: not applied (<reason>)` when the policy is not `off` but
@@ -886,7 +894,7 @@ automatically when no spinners are active.
 | `LoomworksUnknown`       | `DiagnosticWarn`  | Unknown state (partial deletion) |
 | `LoomworksActionable`    | `Normal`          | Actionable items (sets, configs) |
 | `LoomworksConflict`      | `DiagnosticWarn`  | Output-artifact conflict / overwritten unit (§1.5, §1.8) |
-| `LoomworksStale`         | `DiagnosticHint`  | `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (§1.5) |
+| `LoomworksStale`         | `DiagnosticHint`  | `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (§1.5); the `N suggestions` line (§1.1) |
 
 Users can override these by defining the highlight groups before plugin load.
 

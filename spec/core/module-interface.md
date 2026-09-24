@@ -93,7 +93,9 @@ Return overseer task definitions for a project in a given configuration.
 and optional `compiler_cache`.
 
 **`env`** is the task environment every configure, build and clean task the
-module returns runs with: the tool's environment (`tool_data.env`) with the
+module returns runs with (the module's test runs layer the same configuration
+environment, so the configuration environment reaches configure, build, clean
+and test): the tool's environment (`tool_data.env`) with the
 configuration's resolved environment (`configuration_env`, below) layered on
 top. **`configuration_env`** is that resolved configuration environment alone
 (§1.3.3: the configuration's `env` across its inheritance chain and matching

@@ -152,7 +152,7 @@ end
 --- hook or no launcher was applied. A throwing hook is recorded as skipped
 --- (advisory: never break the configure).
 --- @param impl table|nil module implementation
---- @param ctx table `{ build_dir, configuration, tool_data, config_name, variant }`
+--- @param ctx table `{ build_dir, configuration, tool_data, config_name, variant, configuration_env }` (`configuration_env`: the resolved configuration environment the configure ran with, core §1.3.3 — e.g. MSVC's `CL` / `_CL_`, which compile commands do not show)
 --- @param launcher_path string|nil recorded launcher ("none"/nil → no scan)
 --- @return table|nil
 function M.run_compat_scan(impl, ctx, launcher_path)

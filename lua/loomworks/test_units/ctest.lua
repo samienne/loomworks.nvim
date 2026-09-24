@@ -512,7 +512,7 @@ function CTestUnit:run_command_all(opts)
     -- set this up itself, so we prepend the same run environment a target launch
     -- uses. Nil on POSIX / when nothing needs adding — inherit as-is.
     -- The configuration environment (spec §1.3.3) is layered on top, as for
-    -- every configure/build/test task.
+    -- every configure/build/clean/test task.
     local env = self._config_unit:run_env()
     local cenv = type(self._config_unit.configuration_env) == "function"
         and self._config_unit:configuration_env() or {}

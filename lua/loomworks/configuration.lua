@@ -51,7 +51,7 @@ end
 --- @field from_preset boolean from CMakePresets.json
 --- @field variables table<string, string>|nil variable overrides (name → value)
 --- @field env table<string, string>|nil configuration environment (name →
----        value) for configure/build/test tasks — a generic field, inherited
+---        value) for configure/build/clean/test tasks — a generic field, inherited
 ---        along the chain and resolved by `config_env` (spec §1.3.3)
 --- @field _overrides table<string, table>|nil compiler-family overrides
 ---        (family → { name → value, env? = { NAME → value } }); variable
@@ -206,7 +206,7 @@ function Configuration:_update(data)
     self.variables = data.variables or nil
 
     -- Configuration environment (generic, spec §1.3.3): name → value for the
-    -- configure/build/test tasks. Resolved (chain + family overrides +
+    -- configure/build/clean/test tasks. Resolved (chain + family overrides +
     -- expansion) by `loomworks.config_env`, never read raw by modules.
     if type(data.env) == "table" and next(data.env) then
         self.env = data.env

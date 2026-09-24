@@ -62,7 +62,9 @@ end
 --- Resolve the compiler-cache launcher for a build context (core §1.3.2, §8.1).
 --- Core owns this resolution: it derives a concrete launcher from the effective
 --- `cache` policy and the tool's compiler family, PATH-gated. Returns the
---- `{ tool, path }` a module applies, or nil (policy `off`, or launcher absent).
+--- `{ tool, path }` a module applies, or nil (policy `off`, `auto` on an
+--- MSVC-style compiler, or the launcher not found). Applicability (a preset, a
+--- VS/Xcode generator) is the module's call, not reflected here.
 --- Single-sourced so every context-assembly site sets `compiler_cache`
 --- identically — the module owns application, core owns resolution.
 --- @param project loomworks.Project|nil

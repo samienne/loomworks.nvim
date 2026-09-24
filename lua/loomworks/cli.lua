@@ -6210,10 +6210,14 @@ lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
 
 For a profile with a C/C++ project the overview shows a `Cache` line — the
-resolved compiler-cache launcher (ccache/sccache), or that caching is off /
+resolved compiler-cache launcher (ccache/sccache), or that caching is `off` /
 `auto (none found)` / `auto (off for MSVC)` (auto never enables a cache for
-MSVC or clang-cl; `lw health` shows how to opt in). A `[stale — reconfigure]` marker means the next build
-reconfigures to apply a launcher change.
+MSVC or clang-cl; `lw health` shows how to opt in) / `<tool> (not found)` (an
+explicit `cache=<tool>` whose launcher is not installed — builds run uncached) /
+`not applied (<reason>)` (the configuration cannot take a launcher, e.g. a
+preset or a Visual Studio / Xcode generator). A `[stale — reconfigure]` marker
+means the next build reconfigures to apply a launcher change. `lw profile show`
+shows the same line for any profile.
 
 Diagnostics come from the same source the editor's Diagnostics page uses:
 per-item warnings/errors also appear inline under the relevant profile,

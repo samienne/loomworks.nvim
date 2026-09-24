@@ -1,7 +1,7 @@
 --- loomworks/config_env.lua — Configuration environment (`env`) resolution.
 ---
 --- A configuration may carry an `env` map (name → string) that loomworks sets
---- for its configure, build and test tasks (spec §1.3.3). It follows the
+--- for its configure, build, clean and test tasks (spec §1.3.3). It follows the
 --- configuration inheritance chain like `options`, and a compiler-family
 --- `overrides.<family>.env` sub-block applies only for a matching compiler.
 --- Values expand like option values (built-ins + resolved project variables,

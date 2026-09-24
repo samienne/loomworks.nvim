@@ -953,7 +953,8 @@ function M.tasks(project, active_config)
                 buildtype = buildtype,
                 source_dir = project.path,
                 -- Resolved compiler-cache launcher this setup applied, or the
-                -- explicit sentinel "none" (policy off / launcher absent) —
+                -- explicit sentinel "none" (policy off / `auto` on an MSVC-style
+                -- compiler / launcher not found) —
                 -- never nil for a feature configure, so is_stale distinguishes
                 -- feature-no-cache ("none", install-after-configure fires) from
                 -- a legacy/never-recorded unit (nil, not invalidated) (§11).

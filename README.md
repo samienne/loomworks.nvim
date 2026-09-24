@@ -377,8 +377,12 @@ run it in a plain directory and it still tells you an update is available.
 Health results are cached in `.nvim/loomworks.health.json` (an internal advisory
 cache, separate from the build cache) so the passive `N suggestions` count stays
 cheap and never repeats the detection on every render — the local checks are
-recomputed only when their inputs change, and `lw status` never performs the
-network update check at all. `lw health` always refreshes the local checks and
+recomputed only when their configuration inputs change, and `lw status` never
+performs the network update check at all. That fingerprint deliberately leaves
+out what is on your `PATH` (probing it on every render would defeat the cache),
+so installing or removing ccache/sccache does not by itself refresh the passive
+`N suggestions` count — the next `lw health` (which always recomputes the local
+checks) does. `lw health` always refreshes the local checks and
 refreshes the network update check at most once a day; `lw health --force` (alias
 `--refresh`) refreshes it now, ignoring that throttle. The cache is self-healing:
 if it is missing or corrupt it is simply recomputed.
@@ -596,7 +600,10 @@ lw profile set App sdk_root /opt/sdk/3.2           # fill the blank
 *blank*. `lw project show <project>` lists a project's declarations. Declaring
 is the bootstrap for both the per-configuration override
 (`lw config set variables.<name>`) and the per-profile fill
-(`lw profile set`), which require the variable to already be declared.
+(`lw profile set`), which require the variable to already be declared — except
+the reserved `cache` policy, which is pre-declared and can be set with
+`lw profile set <profile> <project> cache <policy>` without declaring it (see
+[Compiler caching](#compiler-caching-ccache--sccache)).
 
 **Compiler-specific overrides.** A configuration may add an `overrides` block
 keyed by compiler family (`clang`, `gcc`, `msvc`) that overrides variable
@@ -642,7 +649,7 @@ survive a full reconfigure. The resolved values are also available headlessly vi
 `lw profile query <profile> <project> variables` (or `variables.<name>`).
 
 **Configuration environment.** A configuration may set environment variables
-for its configure, build and test tasks with an `env` map — e.g. a cache
+for its configure, build, clean and test tasks with an `env` map — e.g. a cache
 directory or `CFLAGS`. It inherits along the configuration chain like `options`,
 can be scoped to a compiler family with `overrides.<family>.env`, and values
 expand variables like option values do. It is layered on top of the tool's own

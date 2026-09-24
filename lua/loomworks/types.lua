@@ -250,8 +250,8 @@
 --- @field cached_build_dir? string cached build directory, if known
 --- @field type_config? table raw type_config from loomworks.json
 --- @field resolved_variables? table<string, { value: string, type: string }> user-declared project variables resolved for the active configuration
---- @field compiler_cache? { tool: string, path: string } core-resolved compiler-cache launcher (nil = policy off / launcher absent); module applies it (core §8.1, §1.3.2)
---- @field recorded_cache_launcher? string launcher path this build dir was last configured with (from cached module_info) — lets a module detect a launcher change (§11)
+--- @field compiler_cache? { tool: string, path: string } core-resolved compiler-cache launcher (nil = policy off / `auto` on an MSVC-style compiler / launcher not found); module applies it (core §8.1, §1.3.2)
+--- @field recorded_cache_launcher? string launcher path this build dir was last configured with (from cached module_info), or the sentinel `"none"` when that configure applied no launcher (nil = never recorded) — lets a module detect a launcher change (§11)
 --- @field recorded_module_info? table the unit's `module_info` as recorded by its last configure (module-owned, e.g. cmake/meson `passed_options`; plus core-owned keys such as `configure_env`) — lets a module classify a reconfigure as full or in-place (core §5.1 faithful reconfigure, §8.1)
 --- @field recorded_options? table<string, any> core's resolved-option snapshot from the last configure (the staleness fingerprint); its presence also marks a unit as configured-before (a unit with no module record takes the full reconfigure, §8.1)
 
