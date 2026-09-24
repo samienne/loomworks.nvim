@@ -466,7 +466,11 @@ fires. A unit with **no recorded launcher** (configured before the feature, or b
 a module that records none) has an *unknown* launcher state and is **never**
 retroactively invalidated — installing a cache does not mass-reconfigure every
 pre-existing build directory; the launcher axis engages only once the unit has
-been configured with the feature active. There is no separate eager
+been configured with the feature active. The comparison is against the launcher
+the module would **apply**: for a configuration the module declares it cannot
+apply a launcher to (the optional `cache_launcher_applicable` hook, §8), the
+expected value is "none", so a resolvable-but-unapplicable launcher does not make
+the unit stale on every build. There is no separate eager
 reconfigure: the launcher change is caught at the gate exactly like an
 option-level change, and the build directory identity is NOT keyed on the
 launcher. The build gate drives this uniformly, but the reconfigure **mechanism**

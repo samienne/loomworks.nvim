@@ -105,6 +105,66 @@ describe("ConfigUnit launcher staleness", function()
         assert.is_true(unit:launcher_changed())
     end)
 
+    -- Regression: a cmake PRESET configuration cannot take the launcher (no -D
+    -- flags pass to `cmake --preset`), so the module records "none". Comparing
+    -- that to the merely-RESOLVED launcher (an installed sccache) made the unit
+    -- stale forever, and the build gate reconfigured on every build. Staleness
+    -- must compare against the launcher the module would actually APPLY.
+    describe("with the real cmake module", function()
+        local Module = require("loomworks.module")
+
+        local function with_cmake(unit)
+            unit._project._module = Module.new("cmake", require("loomworks.modules.cmake"))
+            return unit
+        end
+
+        it("preset unit recorded \"none\" with a resolvable sccache is NOT stale", function()
+            local unit = with_cmake(make_configured("msvc", "none", { from_preset = true }))
+            set_present({ sccache = true })
+            assert.is_false(unit:launcher_changed())
+            assert.is_false(unit:is_stale())
+        end)
+
+        it("preset unit stays not-stale when the cache later disappears", function()
+            local unit = with_cmake(make_configured("gcc", "none", { from_preset = true }))
+            set_present({})
+            assert.is_false(unit:launcher_changed())
+        end)
+
+        it("non-preset unit whose recorded launcher differs is still stale", function()
+            local unit = with_cmake(make_configured("msvc", "none"))
+            set_present({ sccache = true })
+            assert.is_true(unit:launcher_changed())
+            assert.is_true(unit:is_stale())
+        end)
+
+        it("non-preset unit with a matching launcher is not stale", function()
+            local unit = with_cmake(make_configured("msvc", "/usr/bin/sccache"))
+            set_present({ sccache = true })
+            assert.is_false(unit:launcher_changed())
+        end)
+    end)
+
+    it("a module hook declaring the launcher not applicable → expected \"none\"", function()
+        -- Generic core behaviour: any module may say the launcher can't be
+        -- applied for a configuration; core then expects the "none" marker.
+        local unit = make_configured("gcc", "none")
+        local seen
+        unit._project._module = require("loomworks.module").new("fake", {
+            cache_launcher_applicable = function(ctx)
+                seen = ctx
+                return false
+            end,
+        })
+        set_present({ ccache = true })
+        assert.is_false(unit:launcher_changed())
+        assert.equals(unit._configuration, seen.configuration)
+        assert.same({ compiler_family = "gcc" }, seen.tool_data)
+        -- …and a previously-applied launcher now not applicable → stale.
+        unit.module_info.cache_launcher = "/usr/bin/ccache"
+        assert.is_true(unit:launcher_changed())
+    end)
+
     it("never-configured unit is never launcher-stale", function()
         local core = h.make_mock_core()
         local project = Project.new(core, "App", {
