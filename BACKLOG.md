@@ -724,3 +724,31 @@ MSBuild property plumbing, no per-target opt-out) and would need its own
 staleness record, `cache_launcher_applicable` answer and compatibility scan.
 Motivation: LumeEditor measured a hand-made `cl.exe` shim of this kind at
 12.2 → 4.3 min for its Visual Studio generator build.
+
+## Scriptable active-profile selection (`lw profile select <name>`)
+
+Tester feedback (v0.1.29 beta, non-interactive CLI). `lw profile select` is
+interactive-only (a picker on a terminal), and there is no way to CLEAR the
+active profile from the CLI; `lw profile create … --activate` is the only
+scriptable way to set it. A script / agent that needs the editor's active
+profile to follow what it builds (or to reset it to "none", so status and
+health evaluate every profile) has to edit `loomworks.user.json` by hand.
+Wanted: `lw profile select <name>` (non-interactive when a name is given,
+same resolution as `lw build <profile>`) and `lw profile select --none` (or
+`lw profile deselect`) to clear it. Mind the agent guidance (`lw help agent`:
+never change the user's active profile unasked) — the command is for the user's
+own scripts, not something lw does implicitly.
+
+## `lw status` lists presets whose `condition` excludes this host
+
+Tester feedback (v0.1.29 beta, Windows). `lw status` (and the configuration
+lists) show a project's macOS-only CMake presets on Windows: loomworks reads
+`CMakePresets.json` but ignores each preset's `condition` (e.g.
+`{"type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin"}`), so presets
+CMake itself would refuse on this host appear as buildable configurations.
+Evaluate the preset `condition` (equals / notEquals / inList / notInList /
+matches / notMatches / anyOf / allOf / not, with `${hostSystemName}` and the
+other macros CMake allows there) against the host, and hide — or mark
+"not for this host" — the presets it excludes. Decide whether an excluded
+preset already mapped in a configuration set should be a diagnostic rather
+than silently vanish.
