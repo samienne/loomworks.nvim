@@ -340,7 +340,7 @@ function M._local_key(workspace)
         -- Recorded post-configure cache-compatibility results (§16.31): a new
         -- configure that finds (or clears) /Zi compiles must refresh the
         -- cached local tier. In-memory only — cheap.
-        for _, r in ipairs(M._active_compat_records(workspace)) do
+        for _, r in ipairs(M._compat_records(workspace)) do
             local rec = r.compat
             local fparts = {}
             for _, f in ipairs(rec.findings or {}) do
@@ -566,25 +566,44 @@ end
 
 M.register(M.compiler_cache_provider)
 
---- The active profile's configured units carrying a recorded post-configure
---- compatibility result (`module_info.cache_compat`), in profile order.
+--- The configured units carrying a recorded post-configure compatibility result
+--- (`module_info.cache_compat`): the active profile's units, in profile order —
+--- or, with NO active profile (a CI / scripted checkout), every profile's units,
+--- profiles sorted by key, like the other no-active-profile logic here. A unit
+--- shared by several profiles (same project + configuration) is listed once.
 --- @param workspace loomworks.Workspace|nil
 --- @return { unit: loomworks.ConfigUnit, compat: table }[]
-local function active_compat_records(workspace)
+local function compat_records(workspace)
     local out = {}
-    local ap = type(workspace) == "table" and workspace._active_profile or nil
-    if not ap or type(ap.projects) ~= "function" then return out end
-    for _, pp in ipairs(ap:projects()) do
-        local u = pp._config_unit
-        local compat = u and u.module_info and u.module_info.cache_compat
-        if type(compat) == "table" then out[#out + 1] = { unit = u, compat = compat } end
+    if type(workspace) ~= "table" then return out end
+    local profiles
+    if workspace._active_profile then
+        profiles = { workspace._active_profile }
+    else
+        profiles = {}
+        for _, p in pairs(workspace._profiles or {}) do profiles[#profiles + 1] = p end
+        table.sort(profiles, function(a, b) return (a.key or "") < (b.key or "") end)
+    end
+    local seen = {}
+    for _, p in ipairs(profiles) do
+        if type(p.projects) == "function" then
+            for _, pp in ipairs(p:projects()) do
+                local u = pp._config_unit
+                local compat = u and u.module_info and u.module_info.cache_compat
+                if type(compat) == "table" and not seen[u] then
+                    seen[u] = true
+                    out[#out + 1] = { unit = u, compat = compat }
+                end
+            end
+        end
     end
     return out
 end
-M._active_compat_records = active_compat_records -- also read by `_local_key`
+M._compat_records = compat_records -- also read by `_local_key`
 
 --- Provider: post-configure compiler-cache compatibility results (headless
---- §16.31, core §8 `cache_compat_scan`) for the active profile's units — read
+--- §16.31, core §8 `cache_compat_scan`) for the active profile's units (every
+--- profile's, deduplicated per unit, when none is active) — read
 --- from the record core stored at configure, never recomputed here:
 ---   * findings → one ACTIONABLE item per configuration: the applied launcher
 ---     will fail (severity "error") / cannot cache ("warning") some compiles;
@@ -600,7 +619,7 @@ function M.cache_compat_provider(workspace)
     if not workspace then return {} end
     local cc = require("loomworks.compiler_cache")
     local items = {}
-    for _, r in ipairs(active_compat_records(workspace)) do
+    for _, r in ipairs(compat_records(workspace)) do
         local u, rec = r.unit, r.compat
         local pkey = u._project and u._project.key or "<project>"
         local cname = u._configuration and u._configuration.name or u._variant or "<configuration>"

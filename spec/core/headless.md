@@ -1050,8 +1050,10 @@ through the same resolver (its own `Cache` status):
 - otherwise → the **actionable** install item as above.
 
 A **cache-compatibility finding** recorded by the post-configure scan (§5.1, §8
-`cache_compat_scan`) for a unit of the active profile gives an **actionable**
-item per affected configuration: `title` states that the applied launcher will
+`cache_compat_scan`) for a unit of the active profile — or, with **no active
+profile**, of any profile (consistent with the no-active-profile evaluation
+above; a unit shared by several profiles is reported once) — gives an
+**actionable** item per affected configuration: `title` states that the applied launcher will
 fail (severity `"error"`) or cannot cache (severity `"warning"`) some compiles,
 `detail` lists the affected groups (target or directory) with the offending
 option and unit counts, and `remedy` is one line naming both ways out (switch

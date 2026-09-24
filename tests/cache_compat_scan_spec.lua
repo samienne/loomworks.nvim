@@ -204,7 +204,10 @@ describe("cache_compat recording and health", function()
 
     local scan_result
     local notified
-    local function make_core()
+    --- `opts.no_active`: leave no profile active; `opts.second_profile`: a
+    --- second profile (set `debug2`) mapping the SAME App/Debug unit.
+    local function make_core(opts)
+        opts = opts or {}
         local fake_cmake = setmetatable({
             cache_compat_scan = function() return scan_result end,
         }, { __index = real_modules.get("cmake") })
@@ -215,12 +218,18 @@ describe("cache_compat recording and health", function()
         local files = {
             ["loomworks.json"] = h.make_config_json({
                 projects = { App = { cmake = {} } },
-                configuration_sets = { debug = { App = "Debug" } },
+                configuration_sets = { debug = { App = "Debug" }, debug2 = { App = "Debug" } },
             }),
-            ["loomworks.user.json"] = h.make_user_json({ profiles = { debug = {
-                configuration_set = "debug",
-                tools = { cmake = { key = "ninja-msvc", data = MSVC } },
-            } } }),
+            ["loomworks.user.json"] = h.make_user_json({ profiles = {
+                debug = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-msvc", data = MSVC } },
+                },
+                debug2 = opts.second_profile and {
+                    configuration_set = "debug2",
+                    tools = { cmake = { key = "ninja-msvc", data = MSVC } },
+                } or nil,
+            } }),
         }
         local deps = h.make_test_deps(files, { modules = { get = get }, cache = { save = function() return true end } })
         notified = {}
@@ -230,7 +239,7 @@ describe("cache_compat recording and health", function()
         core._workspace._tools_by_type = { cmake = { { tool_key = "ninja-msvc", tool_data = MSVC, tool_label = "msvc" } } }
         core:remerge()
         local ws = core:get_workspace()
-        ws._active_profile = ws._profiles[1]
+        if not opts.no_active then ws._active_profile = ws._profiles[1] end
         return core, ws, ws._profiles[1]:projects()[1]._config_unit
     end
 
@@ -281,6 +290,22 @@ describe("cache_compat recording and health", function()
         assert.matches("/Z7", items[1].remedy, 1, true)
         assert.matches("lw config set App Debug variables.cache off", items[1].remedy, 1, true)
         assert.matches("lw help cache", items[1].remedy, 1, true)
+    end)
+
+    -- `lw health` with no active profile (a CI / scripted checkout) must still
+    -- surface a recorded /Zi finding — every profile's units are considered,
+    -- and a unit shared by several profiles is reported once.
+    it("health with no active profile reports every profile's findings, once per unit", function()
+        local core, ws, unit = make_core({ no_active = true, second_profile = true })
+        assert.is_nil(ws._active_profile)
+        assert.equals(2, #ws._profiles)
+        assert.equals(unit, ws._profiles[2]:projects()[1]._config_unit)
+        scan_result = { scanned = true, findings = FINDINGS }
+        core:record_task_result({ unit = unit, action = "configure", success = true,
+            build_dir = unit:build_dir(), module_info = { cache_launcher = "/x/sccache" } })
+        local items = suggestions.cache_compat_provider(ws)
+        assert.equals(1, #items)
+        assert.matches("sccache will fail 3 compiles in App/Debug", items[1].title, 1, true)
     end)
 
     it("health: a skipped scan is an informational item", function()
