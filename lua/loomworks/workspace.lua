@@ -2226,6 +2226,28 @@ function Workspace:diagnostics()
                             end
                         end
                     end
+                    -- (c) Configuration `env` values (spec §1.3.3) expand
+                    -- exactly like option values, so the same check applies.
+                    if type(cfg.env) == "table" then
+                        local reported = {}
+                        for env_key, env_val in pairs(cfg.env) do
+                            for _, ref in ipairs(expand_mod.unresolved_vars(env_val, allowed)) do
+                                local dedup = env_key .. "=" .. ref
+                                if not reported[dedup] then
+                                    reported[dedup] = true
+                                    add({
+                                        severity = "warn",
+                                        source = "Project/" .. project.key .. "/" .. cfg.name,
+                                        message = "env '" .. env_key
+                                            .. "' references undeclared variable '"
+                                            .. ref .. "'",
+                                        target_fold_key = "config:" .. project.key
+                                            .. ":" .. cfg.name,
+                                    })
+                                end
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -2771,12 +2793,96 @@ function Workspace:record_task_result(result)
         config_unit._tool_data = result.tool.data
     end
 
-    -- Module-specific task result info (e.g., cmake generator/compiler)
-    if result.module_info then
+    -- Module-specific task result info (e.g., cmake generator/compiler).
+    -- A CONFIGURE's `module_info` is the module's complete record of what that
+    -- configure passed (spec §8.1), so it REPLACES the unit's record: a key the
+    -- module no longer returns (meson's `cross_file` once `machine_file` is
+    -- dropped, cmake's `compiler` without a kit, …) must read as absent next
+    -- time, or the module would compare against the stale value and classify
+    -- every later configure as a full reconfigure. The core-owned keys
+    -- (`cache_launcher`, `configure_env`, `cache_compat`, `record_version`) are all (re)assigned
+    -- from this configure below. Any other task's `module_info` is merged, so
+    -- a build never wipes the configure record.
+    if action == "configure" then
+        config_unit.module_info = {}
+        for k, v in pairs(result.module_info or {}) do
+            config_unit.module_info[k] = v
+        end
+    elseif result.module_info then
         config_unit.module_info = config_unit.module_info or {}
         for k, v in pairs(result.module_info) do
             config_unit.module_info[k] = v
         end
+    end
+    if action == "configure" then
+        -- The resolved compiler-cache launcher (§5, module §11) this configure
+        -- applied — a path, the sentinel "none", or nil when the module did
+        -- not record one — frozen for `ConfigUnit:is_stale()`.
+        config_unit.module_info.cache_launcher =
+            result.module_info and result.module_info.cache_launcher or nil
+
+        -- Core's record of the resolved configuration environment this
+        -- configure ran with (spec §1.3.3, §8.1 `configure_env`): the env
+        -- staleness fingerprint (`ConfigUnit:env_changed`) and what a module
+        -- compares `configuration_env` against to choose a full reconfigure.
+        -- Nil when empty. Resolved in the context of the profile the task ran
+        -- for (its blank-variable fills), not whichever profile is active.
+        local configuration_env = config_unit:configuration_env(result.profile)
+        config_unit.module_info.configure_env =
+            next(configuration_env) and configuration_env or nil
+
+        -- Configure-record version (spec §5.1 *Configure record migration*,
+        -- §8.1 `configure_record_version`): stamped only after a SUCCESSFUL
+        -- configure, from the module's declared current version, so a record
+        -- written by an older lw (absent / different version) — or by a
+        -- failed configure — keeps the unit stale and the module's next
+        -- configure takes the full reconfigure. Modules that declare no
+        -- version get no stamp (and no check).
+        local impl_v = project and project._module and project._module.impl or nil
+        config_unit.module_info.record_version = (success and impl_v
+            and impl_v.configure_record_version) or nil
+
+        -- Post-configure compiler-cache compatibility scan (spec §5.1, §8
+        -- `cache_compat_scan`): after a SUCCESSFUL configure that applied a
+        -- launcher, ask the module whether the compile commands it produced
+        -- are compatible with that launcher (e.g. MSVC /Zi under sccache).
+        -- Recorded as `module_info.cache_compat`, REPLACED on every configure
+        -- and dropped (nil) when the configure failed or applied no launcher.
+        -- Advisory only: printed here and surfaced by health (§16.31); it
+        -- never gates a build or changes the policy.
+        local compat
+        if success and project then
+            local cc = require("loomworks.compiler_cache")
+            local impl = project._module and project._module.impl or nil
+            local cfg = config_unit._configuration
+            local scan_tool_data = (result.tool and result.tool.data) or config_unit._tool_data
+            compat = cc.run_compat_scan(impl, {
+                build_dir = result.build_dir or config_unit.build_dir_value,
+                configuration = cfg,
+                tool_data = scan_tool_data,
+                config_name = result.variant or config_unit._variant,
+                variant = cfg and cfg.module_config and cfg.module_config.variant or nil,
+                -- A compiler may take flags from its environment (e.g. MSVC's
+                -- CL / _CL_), which compile commands do not show (§8).
+                configuration_env = configuration_env,
+            }, config_unit.module_info.cache_launcher)
+            if compat then
+                -- Which layer enabled the cache (profile fill, compiler-family
+                -- override, configuration variable) — resolved in the context
+                -- of the profile this configure ran for — so the "turn caching
+                -- off" hint names the mechanism actually in effect.
+                local _, _, source = cc.resolve_for(project, cfg, scan_tool_data,
+                    config_unit:context_profile(result.profile))
+                compat.policy_source = cc.policy_source_record(source)
+            end
+            local msg, severity = cc.compat_message(compat, project.key,
+                result.variant or config_unit._variant or "?")
+            if msg then
+                self._core._deps.notify("loomworks: " .. msg, severity == "error"
+                    and vim.log.levels.ERROR or vim.log.levels.WARN)
+            end
+        end
+        config_unit.module_info.cache_compat = compat
     end
 
     -- Sync state to BuildDir domain object (create if needed)
@@ -2806,8 +2912,10 @@ function Workspace:record_task_result(result)
     -- cmake §11): the fingerprint is the post-expansion `-D` values, so a
     -- later change to a variable default or compiler override that alters a
     -- resolved value is caught even when the raw `${…}` template is unchanged.
+    -- Resolved against the profile the configure ran for (result.profile —
+    -- its fills), the same context the build gate re-checks it in.
     if config_unit._configuration and not config_unit._configuration._removed then
-        bd.options_snapshot = config_unit:resolved_option_fingerprint()
+        bd.options_snapshot = config_unit:resolved_option_fingerprint(result.profile)
         bd.module_config_snapshot = config_unit._configuration.module_config
         config_unit._cached_options = bd.options_snapshot
         config_unit._cached_module_config = bd.module_config_snapshot
@@ -3236,6 +3344,79 @@ function Workspace:_validate_build_dir(build_dir, safe_prefix)
         return false
     end
     return true
+end
+
+--- Remove the configure-state entries a module named for a **full reconfigure**
+--- (core §5.1 / §8.1 `pre_configure_reset`) from inside a build directory —
+--- e.g. cmake's `CMakeCache.txt` + `CMakeFiles` below CMake 3.24, or meson's
+--- stored command line. Core owns this deletion so the module never deletes.
+---
+--- Deletion safety (CLAUDE.md): the build dir must be non-empty and lie within
+--- the workspace root (`_validate_build_dir`: canonical paths + trailing-"/"
+--- boundary) — it can come from the cache, which is never trusted. Each entry
+--- must be a plain relative path (not absolute / drive-qualified, no empty,
+--- "." or ".." segment), and its canonical path (symlinks resolved) must lie
+--- strictly inside the canonical build dir, so a link pointing elsewhere is
+--- refused rather than followed. A missing entry is fine. Synchronous and
+--- scoped to configure state only: no cache entry changes (the unit stays
+--- stale until the configure succeeds, so an interrupted reset simply
+--- repeats on the next build). Callers hold the build dir's exclusive lock.
+--- @param build_dir string|nil absolute build directory
+--- @param entries string[]|nil build-dir-relative paths to remove
+--- @return boolean ok
+--- @return string|nil err
+function Workspace:_pre_configure_reset(build_dir, entries)
+    if type(entries) ~= "table" or #entries == 0 then return true, nil end
+    if type(build_dir) ~= "string" or build_dir == "" then
+        return false, "full reconfigure refused: no build directory to reset"
+    end
+    -- Deliberate: `_validate_build_dir` also accepts build_dir == workspace
+    -- root. That is an in-source build, and resetting it (e.g. removing
+    -- <root>/CMakeCache.txt + <root>/CMakeFiles) is exactly the configure-state
+    -- cleanup the full reconfigure needs there; the per-entry checks below
+    -- still confine every removal to those named entries inside build_dir.
+    if not self:_validate_build_dir(build_dir, self.root) then
+        return false, "full reconfigure refused: build directory outside the workspace: "
+            .. build_dir
+    end
+    local uv = vim.uv or vim.loop
+    local base = (build_dir:gsub("\\", "/"):gsub("/+$", ""))
+    local canon_base = self:_canonicalize_boundary_path(base)
+    local io_dep = self._core._deps.io
+    local rm_rf = (io_dep and io_dep.rm_rf) or require("loomworks.io").rm_rf
+    for _, rel in ipairs(entries) do
+        if type(rel) ~= "string" or rel == "" then
+            return false, "full reconfigure refused: empty reset entry"
+        end
+        local r = rel:gsub("\\", "/")
+        if r:sub(1, 1) == "/" or r:match("^%a:") then
+            return false, "full reconfigure refused: absolute reset entry '" .. rel .. "'"
+        end
+        for seg in (r .. "/"):gmatch("([^/]*)/") do
+            if seg == "" or seg == "." or seg == ".." then
+                return false, "full reconfigure refused: unsafe reset entry '" .. rel .. "'"
+            end
+        end
+        local path = base .. "/" .. r
+        local canon = self:_canonicalize_boundary_path(path)
+        if canon:sub(1, #canon_base + 1) ~= canon_base .. "/" then
+            return false, "full reconfigure refused: '" .. rel
+                .. "' resolves outside the build directory " .. build_dir
+        end
+        local st = uv.fs_lstat(path)
+        if st then
+            local ok, err
+            if st.type == "directory" then
+                ok, err = rm_rf(path)
+            else
+                ok, err = uv.fs_unlink(path)
+            end
+            if not ok then
+                return false, "full reconfigure: could not remove " .. path .. ": " .. tostring(err)
+            end
+        end
+    end
+    return true, nil
 end
 
 --- Remove empty ancestor directories up to (but not including) the stop path.

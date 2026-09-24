@@ -23,8 +23,200 @@ local function strip_reserved_env(env)
     return filtered, stripped
 end
 
+--- True when a kit builds with the MSVC ABI (cl.exe or clang-cl), for which
+--- the compiler cache needs `/Z7` debug info to hit (§5d). Delegates to the
+--- shared `cpp_compilers.is_msvc_style` — the single clang-cl/MSVC-ABI signal
+--- both the `/Z7` path and the launcher-preference resolver use.
+--- @param kit table|nil tool_data
+--- @return boolean
+local function is_msvc_style(kit)
+    return require("loomworks.cpp_compilers").is_msvc_style(kit)
+end
+
+--- A CMake cache key that selects a compiler launcher —
+--- `CMAKE_<LANG>_COMPILER_LAUNCHER`. Deliberately NOT reserved (§5b reserves
+--- only `..._COMPILER`); the compiler-cache feature owns it *conditionally*
+--- (§5d / §4f): when core resolved a launcher, the feature's value wins over a
+--- user-set one (with a diagnostic); when it did not, a user launcher passes
+--- through untouched.
+--- @param key any
+--- @return boolean
+local function is_launcher_option(key)
+    return type(key) == "string" and key:match("^CMAKE_.+_COMPILER_LAUNCHER$") ~= nil
+end
+
+--- Memoized `cmake --version` probe. Returns `{ major, minor }` or nil.
+--- Keyed by the resolved cmake executable so a repeated configure pays it once.
+--- Consulted only on the MSVC `/Z7` path and for a full reconfigure (§5d:
+--- `--fresh` needs >= 3.24), so a plain build never runs it.
+M._cmake_version_cache = {}
+--- @param cmake_cmd string
+--- @return { major: integer, minor: integer }|nil
+local function cmake_version(cmake_cmd)
+    local cached = M._cmake_version_cache[cmake_cmd]
+    if cached ~= nil then
+        return cached ~= false and cached or nil
+    end
+    local out
+    local ok, res = pcall(function()
+        return vim.fn.system({ cmake_cmd, "--version" })
+    end)
+    if ok and type(res) == "string" then out = res end
+    local major, minor
+    if out then major, minor = out:match("cmake version (%d+)%.(%d+)") end
+    local v = (major and minor)
+        and { major = tonumber(major), minor = tonumber(minor) } or false
+    M._cmake_version_cache[cmake_cmd] = v
+    return v ~= false and v or nil
+end
+
+--- Whether the resolved cmake is at least `major.minor`. Absent version ⇒
+--- treated as older (the conservative answer for every caller).
+--- @param cmake_cmd string
+--- @param major integer
+--- @param minor integer
+--- @return boolean
+local function cmake_at_least(cmake_cmd, major, minor)
+    local v = cmake_version(cmake_cmd)
+    if not v then return false end
+    return v.major > major or (v.major == major and v.minor >= minor)
+end
+
+--- Whether the resolved cmake is >= 3.25 (introduced
+--- `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT`).
+--- @param cmake_cmd string
+--- @return boolean
+local function cmake_at_least_325(cmake_cmd)
+    return cmake_at_least(cmake_cmd, 3, 25)
+end
+
+--- The ONLY cache keys whose change the module applies with an in-place
+--- reconfigure (§5d whitelist, core §5.1 "in place only where certain"). They
+--- are consulted solely to initialize each target's `<LANG>_COMPILER_LAUNCHER`
+--- property when the target is created — and targets are re-created on every
+--- configure run — while taking no part in compiler detection or any other
+--- first-configure-only computation, so re-passing (or `-U`-retracting) them
+--- in place is exactly what a fresh configure would do. Every other change
+--- (including the MSVC debug-info keys, whose CMP0141 effect is baked into the
+--- flag cache defaults at first configure) takes the full reconfigure.
+local IN_PLACE_KEYS = {
+    CMAKE_C_COMPILER_LAUNCHER = true,
+    CMAKE_CXX_COMPILER_LAUNCHER = true,
+}
+
+--- Configure-state entries (relative to the build dir) that `cmake --fresh`
+--- discards; removed by core via `pre_configure_reset` below CMake 3.24.
+local FRESH_RESET_ENTRIES = { "CMakeCache.txt", "CMakeFiles" }
+
+--- Collect the `-D` cache entries a configure argv passes: name → value
+--- (a `-DNAME:TYPE=VALUE` records NAME). Handles both the joined `-DNAME=V`
+--- and the split `-D NAME=V` spellings (SDK `extra_args` may use either).
+--- @param argv string[]
+--- @return table<string, string>
+local function passed_d_options(argv)
+    local out = {}
+    local i = 1
+    while i <= #argv do
+        local a = argv[i]
+        local body
+        if a == "-D" then
+            body = argv[i + 1]
+            i = i + 1
+        elseif type(a) == "string" and a:sub(1, 2) == "-D" then
+            body = a:sub(3)
+        end
+        if type(body) == "string" then
+            local lhs, val = body:match("^([^=]+)=(.*)$")
+            if lhs then
+                local name = lhs:match("^([^:]+)") or lhs
+                out[name] = val
+            end
+        end
+        i = i + 1
+    end
+    return out
+end
+
+--- Classify this configure against the unit's previous configure (§5d "Full
+--- reconfigure by default; in place only for the launcher keys", core §5.1):
+---   * `"none"`     — never configured: a plain first configure;
+---   * `"full"`     — any changed configure input: a `-D` added, changed or
+---                    removed outside `IN_PLACE_KEYS`, a generator change, a
+---                    changed configuration environment (core's
+---                    `configure_env` record vs `configuration_env`), or a
+---                    configured unit whose record is missing, lacks
+---                    `passed_options`, or predates `configure_record_version`
+---                    (it cannot be classified with certainty — core §5.1
+---                    *Configure record migration*), or a forced full
+---                    reconfigure (`force_full_reconfigure`, core §8.1);
+---   * `"in_place"` — nothing changed, or only `IN_PLACE_KEYS` changed; the
+---                    second return lists those that disappeared (to `-U`).
+--- `allow_in_place = false` (the preset path) turns every change into a full
+--- reconfigure, so a per-key `-U` can never clobber a preset's own value.
+--- @param project loomworks.ModuleContext
+--- @param passed table<string, string> the `-D`s this configure passes
+--- @param generator string|nil generator this configure uses
+--- @param allow_in_place boolean
+--- @return "none"|"full"|"in_place" kind, string[] retract
+local function classify_reconfigure(project, passed, generator, allow_in_place)
+    -- Forced (`lw build --reconfigure`, core §8.1): always the full path —
+    -- `--fresh` is harmless on a build tree that was never configured.
+    if project.force_full_reconfigure then return "full", {} end
+    local rec = project.recorded_module_info
+    local configured = rec ~= nil or project.recorded_options ~= nil
+        or project.recorded_cache_launcher ~= nil
+    if not configured then return "none", {} end
+    if type(rec) ~= "table" or type(rec.passed_options) ~= "table"
+            or rec.record_version ~= M.configure_record_version then
+        return "full", {}
+    end
+    if type(rec.generator) == "string" and generator and rec.generator ~= generator then
+        -- CMake refuses a generator change in place.
+        return "full", {}
+    end
+    -- An absent record means "no configuration environment" — which is what
+    -- a configure before the record existed actually ran with.
+    if not vim.deep_equal(rec.configure_env or {}, project.configuration_env or {}) then
+        return "full", {}
+    end
+    local prev = rec.passed_options
+    local retract = {}
+    local keys = {}
+    for k in pairs(prev) do keys[k] = true end
+    for k in pairs(passed) do keys[k] = true end
+    for key in pairs(keys) do
+        if prev[key] ~= passed[key] then
+            if not (allow_in_place and IN_PLACE_KEYS[key]) then return "full", {} end
+            if passed[key] == nil then retract[#retract + 1] = key end
+        end
+    end
+    table.sort(retract)
+    return "in_place", retract
+end
+
+--- One-shot non-blocking warnings (§5d preset / launcher-conflict), deduped so
+--- a repeated build does not spam. Keyed by an arbitrary string.
+M._warned = {}
+--- @param key string
+--- @param msg string
+local function warn_once(key, msg)
+    if M._warned[key] then return end
+    M._warned[key] = true
+    vim.schedule(function()
+        vim.notify("loomworks: " .. msg, vim.log.levels.WARN)
+    end)
+end
+
 M.id = "cmake"
 M.api_version = 1
+--- Current format of this module's configure record (`module_info`, core
+--- §8.1 `configure_record_version`). Core stamps it into the record after a
+--- successful configure; a configured unit whose record carries a different
+--- (or no) version was written by an older lw, so core marks it stale and
+--- this module classifies its next configure as a full reconfigure (core
+--- §5.1 *Configure record migration*). Bump when the record gains a key the
+--- reconfigure classification depends on.
+M.configure_record_version = 1
 M.has_keyed_tools = true
 M.has_options = true
 -- CMake's default `project(name)` call enables both C and CXX, so
@@ -700,6 +892,64 @@ function M.resolve_build_dir(project_name, config_name, config_info, workspace_r
     return resolve_build_dir(project_name, config_name, config_info, workspace_root, multi_config, tool_data)
 end
 
+--- Whether a CMake generator implements `CMAKE_<LANG>_COMPILER_LAUNCHER`.
+--- CMake honors the launcher only for the Ninja and Makefile generator
+--- families (`Ninja`, `Ninja Multi-Config`, `Unix Makefiles`, `NMake
+--- Makefiles`, `MinGW Makefiles`, `MSYS Makefiles`, `Watcom WMake`, …); the
+--- Visual Studio and Xcode (and other IDE) generators ignore it (§5d). An
+--- unresolved (nil) generator is treated as supporting it — nothing to say.
+--- @param generator string|nil
+--- @return boolean
+local function generator_supports_launcher(generator)
+    if type(generator) ~= "string" or generator == "" then return true end
+    return generator:match("^Ninja") ~= nil
+        or generator:match("Makefiles$") ~= nil
+        or generator == "Watcom WMake"
+end
+
+--- Why the compiler-cache launcher cannot be applied to a configuration, or
+--- nil when it can (§5d non-goals). Shared by `M.cache_launcher_applicable`
+--- (core's staleness + status/health) and `M.tasks` (which then injects no
+--- launcher and records "none") so the two can never disagree.
+--- @param from_preset boolean
+--- @param generator string|nil resolved generator
+--- @return string|nil reason short noun phrase (status: `not applied (<reason>)`)
+--- @return string|nil hint one sentence: how to get caching (health)
+local function launcher_not_applicable(from_preset, generator)
+    if from_preset then
+        return "preset", "A CMake preset owns its cache variables: set "
+            .. "CMAKE_<LANG>_COMPILER_LAUNCHER in the preset's cacheVariables to cache it."
+    end
+    if not generator_supports_launcher(generator) then
+        return generator .. " generator", "CMake applies a compiler launcher only with a "
+            .. "Ninja or Makefile generator; select a Ninja or Makefile tool for this "
+            .. "profile to enable compiler caching."
+    end
+    return nil, nil
+end
+
+--- Whether a compiler-cache launcher can be applied to a configuration
+--- (module interface §8 optional hook; consulted by core's launcher staleness
+--- and by the profile's cache status / health). Not applicable — so `M.tasks`
+--- injects nothing and records `"none"`, and core expects that marker instead
+--- of reconfiguring on every build — for a preset (configured by
+--- `cmake --preset`, which owns its cache variables) and for a generator that
+--- ignores `CMAKE_<LANG>_COMPILER_LAUNCHER` (Visual Studio, Xcode; §5d). The
+--- generator is the configuration's own (`module_config.generator`), else the
+--- tool's, exactly as `M.tasks` resolves it.
+--- @param ctx { configuration: loomworks.Configuration|nil, tool_data: table|nil }
+--- @return boolean applicable
+--- @return string|nil reason when not applicable (e.g. "preset", "Xcode generator")
+--- @return string|nil hint when not applicable
+function M.cache_launcher_applicable(ctx)
+    local cfg = ctx and ctx.configuration
+    local mc = cfg and cfg.module_config
+    local generator = (mc and mc.generator)
+        or (ctx and ctx.tool_data and ctx.tool_data.generator) or nil
+    local reason, hint = launcher_not_applicable(cfg and cfg.from_preset or false, generator)
+    if reason then return false, reason, hint end
+    return true
+end
 --- Return overseer task templates for a project.
 --- @param project loomworks.ModuleContext
 --- @param active_config string active configuration name
@@ -759,6 +1009,33 @@ function M.tasks(project, active_config)
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
     local configure_cmd = { cmake_cmd }
 
+    -- Compiler-cache launcher (§5d). Core resolved a launcher from the
+    -- effective `cache` policy + compiler family (or nil for policy `off`,
+    -- `auto` on an MSVC-style compiler, or launcher not found); the module
+    -- applies it (not on a preset or a VS/Xcode generator, below). Resolve the user options once,
+    -- up front, so the non-preset branch can decide launcher OWNERSHIP: a
+    -- user-set `CMAKE_<LANG>_COMPILER_LAUNCHER` is not reserved (§5b/§4f), so
+    -- when the feature resolved a launcher it WINS over the user's (with a
+    -- diagnostic) and when it did not, the user's launcher passes through.
+    local cache_launcher = project.compiler_cache and project.compiler_cache.path or nil
+    local resolved_opts = M.resolve_options(
+        project.type_config or {}, project.configurations or {}, active_config)
+    local user_launcher_keys = {}
+    local user_debug_format_conflict = false
+    for k, v in pairs(resolved_opts) do
+        if is_launcher_option(k) then
+            user_launcher_keys[#user_launcher_keys + 1] = k
+        elseif k == "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"
+                or k == "CMAKE_POLICY_DEFAULT_CMP0141" then
+            -- A user-pinned debug format or CMP0141 policy default wins: the
+            -- module injects neither key (§5d).
+            user_debug_format_conflict = true
+        elseif type(v) == "string" and (v:find("/Zi", 1, true) or v:find("/ZI", 1, true)) then
+            user_debug_format_conflict = true
+        end
+    end
+    table.sort(user_launcher_keys)
+
     if from_preset then
         -- cmake wants the bare preset name (`dev`), not our canonical
         -- `preset:dev` key. cmake reads CMakePresets.json and applies the
@@ -769,6 +1046,22 @@ function M.tasks(project, active_config)
         -- which cmake accepts alongside --preset.)
         configure_cmd[#configure_cmd + 1] = "--preset"
         configure_cmd[#configure_cmd + 1] = config_info.base_name or active_config
+
+        -- Preset non-goal (§5d): the preset owns its cache variables (a
+        -- launcher included), so the compiler-cache launcher is not injected
+        -- here. Warn (once)
+        -- and direct the user to set CMAKE_<LANG>_COMPILER_LAUNCHER in the
+        -- preset's own cacheVariables. cache_launcher is left nil below so the
+        -- module records "no launcher applied" ("none") for this configuration;
+        -- `M.cache_launcher_applicable` reports the same to core's staleness
+        -- check so the recorded "none" is not mistaken for a launcher change.
+        if cache_launcher then
+            warn_once("preset:" .. project.name .. ":" .. active_config,
+                "compiler cache not applied to preset configuration "
+                .. project.name .. "/" .. active_config
+                .. "; set CMAKE_<LANG>_COMPILER_LAUNCHER in the preset's cacheVariables.")
+        end
+        cache_launcher = nil
     else
         if generator then
             configure_cmd[#configure_cmd + 1] = "-G"
@@ -790,6 +1083,70 @@ function M.tasks(project, active_config)
             end
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER=" .. compiler_path
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER=" .. c_path
+        end
+
+        -- Generator non-goal (§5d): CMake honors CMAKE_<LANG>_COMPILER_LAUNCHER
+        -- only for Ninja and Makefile generators — Visual Studio / Xcode ignore
+        -- it. Inject nothing (nor the MSVC debug-info keys, which only serve a
+        -- launcher), warn once, and record "none"; `M.cache_launcher_applicable`
+        -- reports the same to core so the unit is not launcher-stale and
+        -- status/health say "not applied".
+        if cache_launcher and not generator_supports_launcher(generator) then
+            warn_once("generator:" .. project.name .. ":" .. active_config,
+                "compiler cache not applied to " .. project.name .. "/" .. active_config
+                .. " under the " .. tostring(generator) .. " generator: CMake honors "
+                .. "CMAKE_<LANG>_COMPILER_LAUNCHER only for Ninja and Makefile generators.")
+            cache_launcher = nil
+        end
+
+        -- Compiler-cache launcher (§5d): apply the core-resolved launcher via
+        -- CMake's own CMAKE_<LANG>_COMPILER_LAUNCHER cache variables (per the
+        -- C/CXX languages CMake enables). A user launcher option, if any, is
+        -- dropped from emission below (own-launcher wins, §4f).
+        if cache_launcher then
+            configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER_LAUNCHER=" .. cache_launcher
+            configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER_LAUNCHER=" .. cache_launcher
+
+            if #user_launcher_keys > 0 then
+                warn_once("launcher:" .. project.name .. ":" .. active_config,
+                    "compiler cache owns the compiler launcher for "
+                    .. project.name .. "/" .. active_config
+                    .. "; ignoring user-set " .. table.concat(user_launcher_keys, ", ")
+                    .. ". Set `cache` to off to keep your own launcher.")
+            end
+
+            -- MSVC debug-info format: a compile that writes debug info to a
+            -- shared .pdb (/Zi|/ZI) is FAILED by sccache and compiled uncached
+            -- by ccache. Switch to embedded (/Z7) — only for MSVC/clang-cl,
+            -- single-config, cmake >= 3.25, and only when the user has not
+            -- pinned a conflicting value (§5d). The format variable only takes
+            -- effect under policy CMP0141=NEW, which a project with an older
+            -- cmake_minimum_required leaves unset — so the policy default is
+            -- injected alongside (it does not override an explicit
+            -- cmake_policy(SET CMP0141 OLD); the post-configure scan reports
+            -- the resulting /Zi compiles).
+            if is_msvc_style(kit) and not multi_config then
+                local cache_tool = project.compiler_cache.tool or "the cache"
+                local effect = cache_tool == "sccache" and "fail" or "miss"
+                if user_debug_format_conflict then
+                    warn_once("z7conflict:" .. project.name .. ":" .. active_config,
+                        "compiler cache active but a conflicting MSVC debug format is set for "
+                        .. project.name .. "/" .. active_config
+                        .. "; " .. cache_tool .. " will " .. effect
+                        .. " /Zi compiles until it is 'Embedded' (/Z7).")
+                elseif cmake_at_least_325(cmake_cmd) then
+                    configure_cmd[#configure_cmd + 1] =
+                        "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+                    configure_cmd[#configure_cmd + 1] =
+                        "-DCMAKE_POLICY_DEFAULT_CMP0141=NEW"
+                else
+                    warn_once("z7old:" .. project.name .. ":" .. active_config,
+                        "compiler cache active but cmake < 3.25 cannot set embedded MSVC "
+                        .. "debug info; caching may " .. (effect == "fail"
+                            and "fail /Zi compiles" or "be ineffective") .. " for "
+                        .. project.name .. "/" .. active_config)
+                end
+            end
         end
 
         -- Single-config generators support compile_commands.json generation
@@ -835,10 +1192,8 @@ function M.tasks(project, active_config)
     -- compiler (managed -DCMAKE_C/CXX_COMPILER above, never touched here)
     -- always wins; skipped keys feed the config's inline diagnostic.
     local stripped_opts = {}
-    local type_config = project.type_config or {}
     do
-        local resolved_opts = M.resolve_options(
-            type_config, project.configurations or {}, active_config)
+        -- resolved_opts was resolved once up front (for launcher ownership).
         if next(resolved_opts) then
             local opt_ctx = {
                 workspace_root = project.workspace_root,
@@ -860,6 +1215,11 @@ function M.tasks(project, active_config)
             for k, v in pairs(resolved_opts) do
                 if reserved_compiler.is_reserved_option(k) then
                     stripped_opts[#stripped_opts + 1] = k
+                elseif cache_launcher and is_launcher_option(k) then
+                    -- The compiler-cache feature owns the launcher (§4f/§5d);
+                    -- the user's launcher option is dropped (warned above).
+                    -- When no cache is resolved, this branch is skipped and the
+                    -- user launcher passes through the else below.
                 else
                     local expanded = expand.expand_string(v, opt_ctx)
                     configure_cmd[#configure_cmd + 1] = "-D" .. k .. "=" .. expanded
@@ -868,6 +1228,43 @@ function M.tasks(project, active_config)
         end
     end
     table.sort(stripped_opts)
+
+    -- Faithful reconfigure (§5d "Full reconfigure by default", core §5.1).
+    -- CMake keeps configure state across reconfigures and computes much of it
+    -- only at the first configure, so any changed configure input is applied
+    -- by a FULL reconfigure (`--fresh`, or a core-run reset of CMakeCache.txt
+    -- + CMakeFiles below 3.24) — except a change confined to the launcher
+    -- keys (`IN_PLACE_KEYS`), applied in place: re-passed, or retracted with
+    -- `-U<key>` when it disappeared. Record every `-D` this configure passes
+    -- (on the preset path: the appended user options) so the next configure
+    -- can classify its change; the preset path never takes the in-place
+    -- route, so a `-U` can never clobber a preset's own cache value.
+    local passed_options = passed_d_options(configure_cmd)
+    local pre_configure_reset
+    local kind, retract = classify_reconfigure(project, passed_options, generator, not from_preset)
+    -- How this configure runs, for core's one-line "why" report (§8.1
+    -- `reconfigure` / `reconfigure_detail`).
+    local reconfigure = kind == "none" and "initial" or kind
+    local reconfigure_detail
+    if kind == "full" then
+        if cmake_at_least(cmake_cmd, 3, 24) then
+            table.insert(configure_cmd, 2, "--fresh")
+            reconfigure_detail = "--fresh"
+        else
+            pre_configure_reset = vim.deepcopy(FRESH_RESET_ENTRIES)
+            reconfigure_detail = "reset CMakeCache.txt + CMakeFiles"
+        end
+    elseif kind == "in_place" and #retract > 0 then
+        reconfigure_detail = "-U" .. table.concat(retract, " -U")
+        -- Right after `-B <build_dir>`, ahead of every `-D`.
+        local at = #configure_cmd + 1
+        for i, a in ipairs(configure_cmd) do
+            if a == "-B" then at = i + 2 break end
+        end
+        for j, key in ipairs(retract) do
+            table.insert(configure_cmd, at + j - 1, "-U" .. key)
+        end
+    end
 
     -- Closure to wrap commands with vcvarsall for this project's kit+generator.
     -- `tag` labels the generated .bat (configure/build) so the two builders
@@ -915,11 +1312,29 @@ function M.tasks(project, active_config)
             -- diagnostic. The tool's compiler is used regardless.
             stripped_compiler_keys = (#stripped_opts > 0 or #stripped_env > 0)
                 and { options = stripped_opts, env = stripped_env } or nil,
+            -- Full reconfigure below CMake 3.24 (§5d): core removes these
+            -- configure-state entries from build_dir before the configure.
+            pre_configure_reset = pre_configure_reset,
+            reconfigure = reconfigure,
+            reconfigure_detail = reconfigure_detail,
             module_info = {
                 multi_config = multi_config,
                 generator = generator,
                 compiler = kit and kit.compiler_id or nil,
                 source_dir = project.path,
+                -- Resolved compiler-cache launcher path this configure applied,
+                -- or the explicit sentinel "none" (policy off / `auto` on an
+                -- MSVC-style compiler / launcher not found / preset / a VS or
+                -- Xcode generator). Always recorded, so `ConfigUnit:is_stale()`
+                -- can compare it: a unit configured with no cache records
+                -- "none" and install-after-configure fires when a cache later
+                -- appears. A record without it is from an older lw and is
+                -- caught by the record version (core §5.1). (§5d / §11.)
+                cache_launcher = cache_launcher or "none",
+                -- Every `-D` this configure passed (name → value; on the
+                -- preset path the appended user options), so the next
+                -- configure can classify its change (§5d full vs in-place).
+                passed_options = passed_options,
             },
         },
     }
@@ -2376,6 +2791,98 @@ function M.resolve_artifacts(ctx)
     end
 
     return next(artifacts) and artifacts or nil
+end
+
+--- Post-configure compiler-cache compatibility scan (core §8
+--- `cache_compat_scan`, cmake §5d). After a configure that applied a launcher
+--- to an MSVC-style kit, scan every target's compile flags — the same file-api
+--- codemodel `compileCommandFragments` the owned compile_commands (§12.2) is
+--- reconstructed from, so it covers every generator and never decodes the
+--- native `compile_commands.json` — for PDB-writing debug flags (/Zi, /ZI,
+--- -Zi, -ZI). The `/Z7` request only changes CMake's DEFAULT flags; a target
+--- (typically a FetchContent / add_subdirectory dependency) that adds /Zi
+--- itself is what this finds. ALL targets are scanned, not just
+--- project-owned ones — dependencies are the point. One finding per target:
+--- severity "error" for sccache (fails those compiles), "warning" for ccache
+--- (compiles them uncached). A gcc/clang kit's launchers never fail an
+--- uncacheable compile, so it reports clean without reading anything.
+--- Advisory; spawns nothing.
+--- Also reports a /Zi-style token in the configuration environment's `CL` /
+--- `_CL_` (group "environment", §5d) — flags no compile command shows.
+--- Returns the scanned build's `totals` (compiled units / targets), so core can
+--- collapse a finding that covers (nearly) every unit into one line, and the
+--- cmake-specific `advice` wording (§5d).
+--- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, config_name?: string, variant?: string, configuration_env?: table<string, string> }
+--- @return { scanned: boolean, reason?: string, findings: table[], totals?: { units: integer, targets: integer }, advice?: table }
+function M.cache_compat_scan(ctx)
+    local cpp = require("loomworks.cpp_compilers")
+    if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
+        return { scanned = true, findings = {} }
+    end
+    -- `CL` / `_CL_` in the configuration environment reach every compile but
+    -- no compile-command data shows them (§5d / §5a): checked separately.
+    local tool = ctx.compiler_cache and ctx.compiler_cache.tool
+    local env_findings = cpp.pdb_env_findings(ctx.configuration_env, tool)
+    local build_dir = ctx.build_dir
+    local codemodel = build_dir and find_file_api_reply(build_dir, "codemodel", 2) or nil
+    if not codemodel or not codemodel.configurations then
+        return { scanned = false, findings = env_findings,
+            reason = "no CMake file-api codemodel reply for this build" }
+    end
+    local cfg = select_codemodel_config(codemodel, ctx.variant or ctx.config_name)
+    if not cfg or not cfg.targets then
+        return { scanned = false, findings = env_findings,
+            reason = "the CMake codemodel reply lists no targets for this configuration" }
+    end
+
+    local reply_dir = build_dir .. "/.cmake/api/v1/reply"
+    local source_root = codemodel.paths and codemodel.paths.source or nil
+    local acc = {}
+    local total_units, total_targets = 0, 0
+    for _, tref in ipairs(cfg.targets) do
+        local detail = tref.jsonFile and read_json_file(reply_dir .. "/" .. tref.jsonFile)
+        if detail and detail.compileGroups and #detail.compileGroups > 0 then
+            total_targets = total_targets + 1
+            local sources = detail.sources or {}
+            for _, cg in ipairs(detail.compileGroups) do
+                total_units = total_units + #(cg.sourceIndexes or {})
+                local tokens = {}
+                for _, f in ipairs(cg.compileCommandFragments or {}) do
+                    if type(f.fragment) == "string" then
+                        for _, tok in ipairs(tokenize_fragment(f.fragment)) do
+                            for _, ex in ipairs(expand_token(tok)) do tokens[#tokens + 1] = ex end
+                        end
+                    end
+                end
+                local flag = cpp.pdb_debug_flag(tokens)
+                if flag then
+                    for _, si in ipairs(cg.sourceIndexes or {}) do
+                        local src = sources[si + 1] -- 0-based
+                        local abs = src and type(src.path) == "string"
+                            and abs_source_path(src.path, source_root) or nil
+                        cpp.pdb_scan_add(acc, detail.name or tref.name or "?", flag, abs)
+                    end
+                end
+            end
+        end
+    end
+    local findings = cpp.pdb_scan_findings(acc, tool)
+    vim.list_extend(findings, env_findings)
+    return {
+        scanned = true, findings = findings,
+        totals = { units = total_units, targets = total_targets },
+        advice = {
+            fix_targets = "switch those targets to embedded debug info (/Z7) — e.g. "
+                .. "replace /Zi in their compile options, or set their "
+                .. "MSVC_DEBUG_INFORMATION_FORMAT property to Embedded",
+            cause_pervasive = "likely a directory-wide add_compile_options or "
+                .. "CMAKE_<LANG>_FLAGS",
+            fix_pervasive = "lw already requests embedded debug info (/Z7) for every "
+                .. "target (cmake >= 3.25); an explicit /Zi overrides it (cl warns D9025 "
+                .. "\"overriding '/Z7' with '/Zi'\"; sccache then fails with C1041 / C1090) "
+                .. "— remove that /Zi (or make it /Z7) where it is set",
+        },
+    }
 end
 
 --- Iterate every compiled source of the selected configuration's targets,

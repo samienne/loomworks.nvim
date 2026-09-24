@@ -183,18 +183,32 @@ belongs in the matching `spec/` file.
 
 13. **The tool owns the compiler**: The compiler for a profile is
     determined solely by the profile's tool (kit). A project
-    configuration's own `options` and `env` may not select a compiler:
+    configuration's own `options` and `env` (§1.3.3) may not select a compiler:
     CMake cache keys matching `^CMAKE_<LANG>_COMPILER$` and the
     compiler-driver environment variables (`CC`, `CXX`, `FC`, `CUDACXX`,
-    `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`) are reserved. They are
-    rejected at config-edit time and defensively stripped at task-build
-    time (with an inline diagnostic) if present from a hand-edited file,
+    `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC` — matched case-insensitively)
+    are reserved. They are rejected at config-edit time and defensively
+    stripped at task-build time (with a warning and an inline diagnostic)
+    if present from a hand-edited file,
     so the tool's compiler always wins — keeping the tool's compiler
     identity (which keys build directories and selects the clangd binary)
     in sync with the compiler actually used. Excluded: compiler flags
     (`CFLAGS`/`CXXFLAGS`/…), compiler launchers
     (`CMAKE_<LANG>_COMPILER_LAUNCHER`), toolchain files, and CMake presets
     (a preset owns its own toolchain — see the cmake module spec).
+
+    The **compiler-cache launcher** rides this same ownership boundary from the
+    other side: it is not a compiler and never selects one (it wraps the tool's
+    own compiler), so it is core-resolved from the `cache` **policy** variable
+    (§1.3.2) and the active compiler family rather than from a project's
+    `options`/`env`. The resolved launcher is a build input like any resolved
+    option value: it is recorded at configure time and a change to it
+    (policy edited, or the cache tool appearing/disappearing on the toolchain
+    path) makes an already-configured unit **stale**, so the build gate
+    reconfigures before the next build (§3.1, §5; module `is_stale()`). The
+    launcher never keys the build directory. Like every configure input, a
+    launcher change is applied by a full reconfigure unless the module declares
+    that change safe to apply in place (§5.1).
 
 14. **Blank variables gate the build**: A declared project variable that is
     blank after configuration resolution (§1.3.1) — no default, no

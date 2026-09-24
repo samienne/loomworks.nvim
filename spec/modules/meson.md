@@ -58,13 +58,112 @@ forwarded to clangd (§ LSP integration).
 
 The tool owns the compiler: a configuration's `env` may not override the
 tool's pinned `CC`/`CXX`. The compiler-driver variables (`CC`, `CXX`,
-`FC`, `CUDACXX`, `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`) are reserved —
+`FC`, `CUDACXX`, `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`, matched
+case-insensitively, core §1.3.3) are reserved —
 rejected at config-edit time and stripped when the task environment is
 composed (with a non-blocking inline diagnostic) — so the compiler stays
 consistent with the `compiler_id` that keys the build directory. The
 `*FLAGS` variables are not reserved. A meson machine/cross file
 (`machine_file`) is the analog of a cmake toolchain file and is out of
 scope (see core §15, invariant "The tool owns the compiler").
+
+## 5a. Compiler cache launcher
+
+Core resolves a compiler-cache launcher from the effective `cache` policy
+(core §1.3.2) and the active tool's compiler family and hands it to the module as
+`ctx.compiler_cache = { tool, path }` (or `nil`). For `auto`, the concrete
+launcher is `ccache` for a gcc / clang family tool (`sccache` the fallback), and
+**none** for an MSVC-style tool (MSVC `cl`, clang-cl) — caching those requires an
+explicit `ccache` / `sccache` policy, for the reason given in
+[`cmake.md` §5d](cmake.md) (sccache fails a PDB-writing `/Zi` / `/ZI` compile;
+core §1.3.2). An explicit `ccache` / `sccache` policy uses that tool on any
+family. The launcher is applied only when core actually resolved one (present on
+the toolchain search path).
+
+**Post-configure PDB-flag scan (`cache_compat_scan`, core §8).** After a
+successful setup that applied a launcher to an MSVC-style tool, the module scans
+the per-target compile parameters of its target introspection data (§6) for the
+same PDB-writing flags as cmake (`/Zi`, `/ZI`, `-Zi`, `-ZI`) and reports findings
+per target with the same severities (`"error"` for sccache, `"warning"` for
+ccache) and remedies (switch those targets to `/Z7`, or `cache=off` through the
+mechanism that enabled it), and the build's `totals` so a finding on (nearly)
+every target collapses to one line naming a project-wide `c_args` / `cpp_args` /
+`add_project_arguments` as the likely source (core §8). The module
+injects no debug-info-format adjustment of its own; a subproject or user option
+that requests `/Zi` is surfaced by the scan, never silently rewritten. When no
+introspection data exists for the build, the scan returns `scanned = false` and
+health reports it as skipped (core §16.31).
+
+**Explicit compiler pinning via a generated native file — and deliberate
+suppression of meson's auto-detect.** meson has its own implicit behavior: when
+it finds `ccache` on `PATH` it silently prepends it to compiler invocations.
+loomworks does **not** rely on that. Instead, where §5 pins `CC` / `CXX`, the
+module takes **explicit control** by writing a generated **native file** whose
+`[binaries]` section pins the compiler as a LIST — `cpp = ['<launcher>',
+'<compiler>']` and `c = ['<launcher>', '<compiler>']` when a launcher is
+resolved, or the bare `cpp = ['<compiler>']` / `c = ['<compiler>']` when the
+policy resolves to no launcher (`off`, or a tool not found) — passed to
+`meson setup` via `--native-file`. The `CC` / `CXX` environment string is **not**
+used to carry the compiler command: meson `shlex`-splits it on whitespace, so a
+compiler path (or a `<launcher> <path>` wrapper) that contains a **space** — e.g.
+`C:/Program Files/LLVM/bin/clang++.exe` — would shatter into broken tokens. A
+native-file list is not split, so spaces are safe; the module therefore drops
+`CC` / `CXX` from the setup environment and relies on the native file. The bare
+pinning (no launcher) means meson's implicit PATH auto-detect cannot layer a
+cache back on. This is a deliberate divergence from meson's default: loomworks
+owns the caching decision end to end so that (a) meson and cmake behave
+identically under the same `cache` policy, and (b) the staleness fingerprint
+(§11) stays coherent — the launcher is a resolved input loomworks records, not a
+hidden PATH-sensitive choice meson makes on its own. The compiler identity that
+keys the build directory is unchanged: the launcher wraps the same pinned
+driver, it does not select a different compiler (§5, core §15 "the tool owns the
+compiler").
+
+**Every changed configure input takes a full reconfigure (core §5.1 *Faithful
+reconfigure*).** meson fixes a great deal at the first setup of a build
+directory and does not re-evaluate it on a plain `meson setup --reconfigure`: the
+compiler command (so a launcher change would be silently ignored), the
+environment-derived compiler and linker arguments (`CFLAGS`, `LDFLAGS`, … are
+read only at first setup), and machine files; `--reconfigure` also keeps an
+option that is no longer passed, and meson has no flag to unset one. So the
+module applies **every** changed configure input with a **full reconfigure**
+and declares **no** in-place set: loomworks cannot tell per option, without
+introspecting meson's option metadata, whether meson applies a value change in
+place (some built-in options are read-only after setup), and "only optimize
+where certain" leaves nothing to optimize.
+
+The module records what each setup was given — the `-D` options it passed
+(name → value) in `module_info.passed_options`, the build type
+(`module_info.buildtype`), the cross file (`module_info.cross_file`), and the
+launcher (`module_info.cache_launcher`) — and on the next setup of an
+already-configured build directory compares them, plus core's recorded
+configuration environment (`configure_env`, core §8.1) against the current
+`configuration_env`, with what it passes now. On **any** difference — an option
+added, changed or removed, a build type or cross-file change, a launcher that
+appeared, disappeared or changed, or a configuration-environment change — and
+also for a configured unit that carries no `passed_options` record or whose
+record's `record_version` differs from the module's `configure_record_version`
+(currently `1`; configured by an older loomworks, so it cannot be classified
+with certainty — core §5.1 *Configure record migration*), or when the caller
+forced a full reconfigure (`force_full_reconfigure`, core §8.1), the
+configure task names `meson-private/cmd_line.txt` in `pre_configure_reset` (core
+§8.1) and runs `meson setup --wipe`: core removes the stored command line under
+the deletion-safety rules (otherwise `--wipe` would **replay** the previous
+options before applying the new ones, so a removed option would survive), and
+meson rebuilds the tree from exactly the options, native file, environment and
+compiler loomworks passes now. A setup with nothing changed (e.g. a retry after
+a failed setup) runs the in-place `--reconfigure`. An option the user set with
+`meson configure` by hand is not loomworks-passed and does not survive a full
+reconfigure (as with any wipe).
+
+**Cost.** meson has no configure-state-only reset: `--wipe` empties the build
+directory, so the first build after a full reconfigure recompiles everything
+(a compiler cache, when enabled, serves most of it). This is the price of
+faithfulness for meson — the same `--wipe` meson itself prescribes for a
+compiler change. The generated native file lives next to the build directory,
+not inside it, so the wipe does not remove it. This diverges from cmake, whose
+full reconfigure keeps build outputs and which applies a launcher-only change in
+place (see [`cmake.md` §5d](cmake.md)).
 
 ## 6. Target discovery (`parse_targets`)
 
@@ -136,3 +235,24 @@ regeneration rule: Ninja re-runs `meson` automatically at build time when
 "modified since last configure" refresh. The sole loomworks-driven
 reconfigure triggers are `unconfigured` / `configure_failed` and option-level
 staleness via `ConfigUnit:is_stale()`.
+
+The **resolved compiler-cache launcher** (§5a) is an additional `is_stale()`
+input on the same footing as resolved option values: core records the launcher
+it resolved into the setup task's `module_info`, and `is_stale()` recomputes it
+(current `cache` policy + compiler family + live toolchain-path presence) and
+compares. A launcher that appears, disappears, or changes — because the tool was
+installed/removed or the policy was edited — marks the unit stale, and the build
+gate reconfigures so the wrapped (or un-wrapped) native-file compiler takes
+effect. That reconfigure is the full reconfigure — a **`meson setup --wipe`**
+with the stored command line cleared (§5a) — not a plain
+`meson setup --reconfigure`: meson fixes the compiler command at setup and would
+otherwise ignore the changed launcher. loomworks re-passes every option it owns,
+so the caching change is applied without losing configuration. Because loomworks
+pins the driver explicitly rather than leaning on meson's PATH auto-detect
+(§5a), this recompute fully captures the caching state.
+
+Option-level staleness covers an option **added, changed or removed**, and a
+change of the configuration environment (core §1.3.3); the resulting reconfigure
+is the full one (§5a *Every changed configure input takes a full reconfigure*):
+a `--wipe` setup after core clears the stored command line, so a removed option
+is really dropped and a changed environment is really re-read.

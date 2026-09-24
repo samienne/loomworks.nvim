@@ -386,6 +386,8 @@ local create_intent = nil
 local function created_intent(default)
   return create_intent or default or "local+shared"
 end
+--- Test seam: set (or clear, nil) the `--local` / `--shared` creation intent.
+function M._set_create_intent(v) create_intent = v end
 
 --- May we prompt the user? False when forced non-interactive, or when stdin
 --- isn't a terminal (piped / redirected / closed — the common CI case).
@@ -954,9 +956,18 @@ local function record_step(ws, step, ok)
   if not step.unit then return end
   if step.build_dir then step.unit.build_dir_value = step.build_dir end
   pcall(function()
-    ws:record_task_result({ unit = step.unit, action = step.kind, success = ok })
+    -- Pass the module's configure record (cache_launcher, passed_options, …)
+    -- exactly like the editor's task path, so launcher staleness and the
+    -- faithful-reconfigure retraction (core §5.1) work for CLI configures too.
+    ws:record_task_result({
+      unit = step.unit, action = step.kind, success = ok,
+      module_info = step.module_info,
+      -- The profile being built: the snapshot is taken in its context.
+      profile = step.profile,
+    })
   end)
 end
+M._record_step = record_step
 
 --- Format the output-artifact conflict refusal (spec §5.9 / §16.28). `die`
 --- prepends "lw: " and exits 1. Names the conflicting profile and the shared
@@ -973,10 +984,11 @@ end
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], force?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], force?: boolean, reconfigure?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool; force overrides the
----   output-artifact conflict gate (§5.9).
+---   output-artifact conflict gate (§5.9); reconfigure forces a FULL
+---   reconfigure of every unit before building (§16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
@@ -1011,11 +1023,37 @@ local function run_build_steps(profile, ws, opts)
     if opts.extra_args and step.kind == "build" then
       step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
     end
+    -- Full reconfigure (core §5.1 / §8.1): remove the module-named
+    -- configure-state entries first. Core validates + deletes; the build-dir
+    -- lock is already held for the whole run (with_build_locks).
+    if step.kind == "configure" and type(step.pre_configure_reset) == "table"
+        and #step.pre_configure_reset > 0 then
+      local ok_r, r_err = ws:_pre_configure_reset(step.build_dir, step.pre_configure_reset)
+      if not ok_r then die(tostring(r_err)) end
+    end
     log(string.format("==> [%s] %s", step.kind, step.name or "?"))
-    local code = run_spec(step, ws.root, quiet)
+    -- Say WHY a configure runs (§16.4): the gate's reason + the module's
+    -- full / in-place choice, e.g. "full reconfigure (--fresh): configure
+    -- record from an older lw".
+    if step.kind == "configure" then
+      local why = overseer.configure_reason_line(step)
+      if why then log("    " .. why) end
+    end
+    -- Through the module table so tests can stub the spawn.
+    local code = M._run_spec(step, ws.root, quiet)
     record_step(ws, step, code == 0)
     if code ~= 0 then
-      die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
+      -- A build that fails after the post-configure scan predicted it (an
+      -- error-severity cache-compat finding, e.g. /Zi under sccache) closes
+      -- with one line pointing back at that finding. Advisory: the scan never
+      -- gates the build (§5.1), it only explains the failure.
+      local hint
+      if step.kind == "build" and step.unit and step.unit.module_info then
+        hint = require("loomworks.compiler_cache").compat_failure_hint(
+          step.unit.module_info.cache_compat)
+      end
+      die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?")
+        .. (hint and ("\nlw: " .. hint) or ""), code)
     end
     -- After a successful configure, populate this unit's resolved artifact set
     -- so a following build step in THIS invocation sees it (the CLI opts out
@@ -1029,6 +1067,7 @@ local function run_build_steps(profile, ws, opts)
   end
   return #steps
 end
+M._run_build_steps = run_build_steps  -- exported for tests
 
 --- The distinct build directories a profile's projects map to.
 --- @param profile loomworks.Profile
@@ -1082,16 +1121,17 @@ end
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
-  local force = false
+  local force, reconfigure = false, false
   for i = 2, #args do
     if not seen_sep and args[i] == "--" then seen_sep = true
     elseif seen_sep then extra[#extra + 1] = args[i]
     elseif args[i] == "--force" then force = true
+    elseif args[i] == "--reconfigure" then reconfigure = true
     else pre[#pre + 1] = args[i] end
   end
   if pre[2] then
     die("unexpected argument '" .. tostring(pre[2]) ..
-      "' — usage: lw build [profile] [--force] [-- build-tool-args…]")
+      "' — usage: lw build [profile] [--force] [--reconfigure] [-- build-tool-args…]")
   end
   local profile
   profile, ws = resolve_build_target(ws, pre[1])
@@ -1100,6 +1140,7 @@ function M.cmd_build(ws, args)
     built = run_build_steps(profile, ws, {
       extra_args = (#extra > 0) and extra or nil,
       force = force,
+      reconfigure = reconfigure,
     })
   end)
   if built == 0 then
@@ -2803,6 +2844,7 @@ local function config_to_data(cfg)
   end
   if cfg.options and next(cfg.options) then data.options = vim.deepcopy(cfg.options) end
   if cfg.variables and next(cfg.variables) then data.variables = vim.deepcopy(cfg.variables) end
+  if cfg.env and next(cfg.env) then data.env = vim.deepcopy(cfg.env) end
   -- Compiler-family variable overrides (family → { name → value }). Live field
   -- is `_overrides` (see configuration.lua); save_configuration validates it.
   if cfg._overrides and next(cfg._overrides) then data.overrides = vim.deepcopy(cfg._overrides) end
@@ -2811,29 +2853,48 @@ local function config_to_data(cfg)
   return data
 end
 
+--- The accepted `lw config get/set/unset` param forms (§16.9), for errors.
+local CONFIG_PARAM_FORMS = "inherits | languages | <module field> | options.<KEY> "
+  .. "| variables.<NAME> | env.<NAME> | overrides.<family>.<NAME> "
+  .. "| overrides.<family>.env.<NAME>  (family ∈ clang|gcc|msvc)"
+
+--- Set (value) or clear (nil / "") `t[key]`, returning the table or nil when
+--- it became empty (so emptied maps are pruned).
+local function set_or_clear(t, key, value)
+  t = t or {}
+  t[key] = (value ~= nil and value ~= "") and value or nil
+  return next(t) and t or nil
+end
+
 --- Apply one `param`/`value` to a config data table (value nil clears). Param
---- namespaces: options.<KEY>, variables.<NAME>,
---- overrides.<family>.<name> (compiler-family variable override, family ∈
---- clang|gcc|msvc), inherits, languages (CSV), and any other bare name →
---- module field.
+--- namespaces (§16.9): options.<KEY>, variables.<NAME>, env.<NAME> (the
+--- configuration environment, §1.3.3), overrides.<family>.<name> (a
+--- compiler-family variable override) and overrides.<family>.env.<NAME> (a
+--- compiler-family environment variable), family ∈ clang|gcc|msvc; the bare
+--- fields inherits and languages (CSV); and any other BARE name → module
+--- field. Any other dotted param is rejected rather than stored as a literal
+--- dotted module-field name.
 local function apply_param(data, param, value)
-  if param == "options" or param == "variables" then
+  if param == "options" or param == "variables" or param == "env" then
     die("specify a key: " .. param .. ".<KEY>")
   end
-  -- Compiler-family variable override: overrides.<family>.<name> (three
-  -- segments, mirroring the nested shape). A nil/empty value CLEARS it and
-  -- empty family tables / an empty `overrides` are pruned. Malformed shapes
-  -- (bare `overrides`, or `overrides.<family>` with no name) are rejected here
-  -- so the error names the expected form; declared-name validation is left to
+  -- Compiler-family override: overrides.<family>.<name> (three segments,
+  -- mirroring the nested shape) or overrides.<family>.env.<NAME> (the
+  -- family's environment sub-block). A nil/empty value CLEARS it and empty
+  -- sub-tables / family tables / an empty `overrides` are pruned. Malformed
+  -- shapes (bare `overrides`, `overrides.<family>` with no name,
+  -- `overrides.<family>.env` with no NAME) are rejected here so the error
+  -- names the expected form; declared-name validation is left to
   -- save_configuration.
   if param == "overrides" then
-    die("specify a family and name: overrides.<family>.<name> "
-      .. "(family ∈ clang|gcc|msvc)")
+    die("specify a family and name: overrides.<family>.<name> or "
+      .. "overrides.<family>.env.<NAME> (family ∈ clang|gcc|msvc)")
   end
   local ov_family, ov_name = param:match("^overrides%.([^.]+)%.(.+)$")
   if not ov_family and param:match("^overrides%.") then
     die("malformed override param '" .. param .. "' — expected "
-      .. "overrides.<family>.<name> (family ∈ clang|gcc|msvc)")
+      .. "overrides.<family>.<name> or overrides.<family>.env.<NAME> "
+      .. "(family ∈ clang|gcc|msvc)")
   end
   if ov_family then
     if ov_family ~= "clang" and ov_family ~= "gcc" and ov_family ~= "msvc" then
@@ -2841,10 +2902,21 @@ local function apply_param(data, param, value)
         .. "' — expected clang, gcc, or msvc")
     end
     data.overrides = data.overrides or {}
-    data.overrides[ov_family] = data.overrides[ov_family] or {}
-    -- A nil (unset) or empty value clears the entry.
-    data.overrides[ov_family][ov_name] = (value ~= nil and value ~= "") and value or nil
-    if not next(data.overrides[ov_family]) then data.overrides[ov_family] = nil end
+    local fam = data.overrides[ov_family] or {}
+    if ov_name == "env" then
+      die("specify a variable: overrides." .. ov_family .. ".env.<NAME>")
+    end
+    local env_name = ov_name:match("^env%.(.+)$")
+    if env_name then
+      local env = type(fam.env) == "table" and fam.env or nil
+      fam.env = set_or_clear(env, env_name, value)
+    elseif ov_name:find(".", 1, true) then
+      die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+    else
+      -- A nil (unset) or empty value clears the entry.
+      fam[ov_name] = (value ~= nil and value ~= "") and value or nil
+    end
+    data.overrides[ov_family] = next(fam) and fam or nil
     if not next(data.overrides) then data.overrides = nil end
     return
   end
@@ -2854,7 +2926,15 @@ local function apply_param(data, param, value)
     data[dictname] = data[dictname] or {}
     data[dictname][key] = value
     if not next(data[dictname]) then data[dictname] = nil end
-  elseif param == "inherits" then
+    return
+  end
+  local env_name = param:match("^env%.(.+)$")
+  if env_name then
+    -- Configuration environment (§1.3.3). An empty value clears, like unset.
+    data.env = set_or_clear(data.env, env_name, value)
+    return
+  end
+  if param == "inherits" then
     if not value or value == "" then
       data.inherits = nil
     else
@@ -2864,6 +2944,9 @@ local function apply_param(data, param, value)
   elseif param == "languages" then
     -- empty clears the override → inherit languages from the module
     data.languages = (value and value ~= "") and split_csv(value) or nil
+  elseif param:find(".", 1, true) then
+    -- Unknown dotted param: never store a literal dotted module-field name.
+    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
   else
     data[param] = value -- module field (variant, toolchain, generator, ...)
   end
@@ -2876,7 +2959,7 @@ local function get_param(cfg, param)
         and table.concat(cfg.inherits_names, ",") or nil
   elseif param == "languages" then
     return (cfg.languages and #cfg.languages > 0) and table.concat(cfg.languages, ",") or nil
-  elseif param == "options" or param == "variables" then
+  elseif param == "options" or param == "variables" or param == "env" then
     return cfg[param]
   elseif param == "overrides" then
     return cfg._overrides
@@ -2885,17 +2968,26 @@ local function get_param(cfg, param)
   if key then return cfg.options and cfg.options[key] end
   key = param:match("^variables%.(.+)$")
   if key then return cfg.variables and cfg.variables[key] end
-  -- overrides.<family>.<name> → the string; overrides.<family> → that dict.
+  key = param:match("^env%.(.+)$")
+  if key then return cfg.env and cfg.env[key] end
+  -- overrides.<family>.env.<NAME> → the string; overrides.<family>.env → the
+  -- family's env dict; overrides.<family>.<name> → the string;
+  -- overrides.<family> → that dict.
   local ov_family, ov_name = param:match("^overrides%.([^.]+)%.(.+)$")
   if ov_family then
-    return cfg._overrides and cfg._overrides[ov_family]
-        and cfg._overrides[ov_family][ov_name]
+    local fam = cfg._overrides and cfg._overrides[ov_family]
+    if not fam then return nil end
+    local env_name = ov_name:match("^env%.(.+)$")
+    if env_name then return type(fam.env) == "table" and fam.env[env_name] or nil end
+    return fam[ov_name]
   end
   ov_family = param:match("^overrides%.([^.]+)$")
   if ov_family then return cfg._overrides and cfg._overrides[ov_family] end
+  if param:find(".", 1, true) then
+    die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
+  end
   return cfg.module_config and cfg.module_config[param]
 end
-
 -- Exported for tests: the pure param-grammar seams behind
 -- `lw config get/set/unset`.
 M._config_to_data = config_to_data
@@ -3056,6 +3148,7 @@ function M.cmd_configuration_show(root, proj_name, cfg_name)
   if next(extra) then out("  module fields:"); print_dict("    ", extra) end
   if cfg.options and next(cfg.options) then out("  options:"); print_dict("    ", cfg.options) end
   if cfg.variables and next(cfg.variables) then out("  variables:"); print_dict("    ", cfg.variables) end
+  if cfg.env and next(cfg.env) then out("  env:"); print_dict("    ", cfg.env) end
   if cfg._overrides and next(cfg._overrides) then
     out("  overrides (compiler-family):"); print_dict("    ", cfg._overrides)
   end
@@ -3072,8 +3165,8 @@ end
 function M.cmd_configuration_get(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
     die("usage: lw config get <project> <name> <param>\n" ..
-      "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
-      "         | overrides[.<family>[.<NAME>]] | <module field>")
+      "  param: inherits | languages | options.<KEY> | variables.<NAME> | env[.<NAME>]\n" ..
+      "         | overrides[.<family>[.<NAME> | .env[.<NAME>]]] | <module field>")
   end
   local ws = load_workspace(root, false)
   local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
@@ -3095,15 +3188,48 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   local cfg = resolve_config(proj, cfg_name, true)
   if param == "variant" then reject_variant_param(proj, value) end
   local data = config_to_data(cfg)
+  local before = vim.deepcopy(data)
   apply_param(data, param, value)
+  -- Nothing changed (an unset of a param that was never set, or a set to the
+  -- value it already has): say so, write nothing, and suggest no publish.
+  -- Exit 0 — an idempotent edit is not an error (a script may re-run it).
+  if vim.deep_equal(before, data) then
+    if verb == "set" then
+      out(string.format("%s/%s: %s = %s (unchanged)", proj.key, cfg.name, param, value))
+    else
+      out(string.format("%s/%s: %s is not set (nothing to unset)", proj.key, cfg.name, param))
+    end
+    return 0
+  end
   local ok, err = proj:save_configuration(cfg.name, data)
   if not ok then die("could not " .. verb .. ": " .. tostring(err)) end
   if verb == "set" then
     out(string.format("%s/%s: set %s = %s", proj.key, cfg.name, param, value))
+    -- `PATH` (any case) is allowed but replaces the tool's PATH wholesale
+    -- (§1.3.3) — say so now, not only when a build later cannot find cl.exe.
+    local env_name = param:match("^env%.(.+)$") or param:match("^overrides%.[^.]+%.env%.(.+)$")
+    if env_name and require("loomworks.reserved_compiler").is_path_env(env_name) then
+      note("warning: env." .. env_name .. " replaces the PATH the tool sets up for every "
+        .. "configure/build/test task of " .. proj.key .. "/" .. cfg.name
+        .. " (e.g. the MSVC developer environment — cl.exe / link.exe may then not be "
+        .. "found). ${PATH} in the value expands to lw's own PATH, not the tool's.")
+    end
   else
     out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
   end
-  out("`lw publish` to update the shared loomworks.json.")
+  -- Point at `lw publish` only when something changed (above) and this
+  -- configuration actually reaches the shared loomworks.json — its own intent is shared / local+shared, or a
+  -- published configuration set pulls it in (§2.4 effective intent). A
+  -- local-only configuration has nothing to publish.
+  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
+  local published = true
+  if ok_p and type(pub) == "table" and type(pub.configs) == "table" then
+    published = false
+    for _, c in ipairs(proj._configurations or {}) do
+      if c.name == cfg.name and pub.configs[c] then published = true; break end
+    end
+  end
+  if published then out("`lw publish` to update the shared loomworks.json.") end
   return 0
 end
 
@@ -3111,8 +3237,9 @@ end
 function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
   if not (proj_name and cfg_name and param) or value == nil then
     die("usage: lw config set <project> <name> <param> <value>\n" ..
-      "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
-      "         | overrides.<family>.<NAME> (family ∈ clang|gcc|msvc) | <module field>\n" ..
+      "  param: inherits | languages | options.<KEY> | variables.<NAME> | env.<NAME>\n" ..
+      "         | overrides.<family>.<NAME> | overrides.<family>.env.<NAME>\n" ..
+      "         (family ∈ clang|gcc|msvc) | <module field>\n" ..
       "  (use `lw config unset` to clear a value)")
   end
   return edit_configuration(root, proj_name, cfg_name, param, value, "set")
@@ -3122,8 +3249,9 @@ end
 function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
   if not (proj_name and cfg_name and param) then
     die("usage: lw config unset <project> <name> <param>\n" ..
-      "  param: inherits | languages | options.<KEY> | variables.<NAME>\n" ..
-      "         | overrides.<family>.<NAME> (family ∈ clang|gcc|msvc) | <module field>")
+      "  param: inherits | languages | options.<KEY> | variables.<NAME> | env.<NAME>\n" ..
+      "         | overrides.<family>.<NAME> | overrides.<family>.env.<NAME>\n" ..
+      "         (family ∈ clang|gcc|msvc) | <module field>")
   end
   return edit_configuration(root, proj_name, cfg_name, param, nil, "unset")
 end
@@ -3918,16 +4046,30 @@ function M.cmd_profile_remove(root, args)
   return 0
 end
 
+--- The `cache` field of `lw profile query`: the resolved compiler cache for
+--- this (profile, project) (§16.18) — the same value as the `Cache` row, e.g.
+--- `sccache`, `off`, `auto (none found)`, `auto (off for MSVC-style)`,
+--- `ccache (not found)`, `not applied (preset)`. Empty for a project whose
+--- module does not cache C/C++ (like `tool` with no toolchain). Never spawns
+--- the cache tool.
+--- @param profile loomworks.Profile
+--- @param pp loomworks.ProfileProject
+--- @return string
+function M._profile_query_cache(profile, pp)
+  local status = profile:compiler_cache_status(pp)
+  return status and (status.text:gsub("^Cache: ", "")) or ""
+end
+
 --- `lw profile query <profile> <project> <field>` — print a single machine-
 --- readable fact about a project within a resolved profile. Read-only
 --- introspection for scripting (e.g. locating CI artifacts). Fields:
---- build-dir | config | state | tool.
+--- build-dir | config | state | tool | cache | variables | variables.<name>.
 function M.cmd_profile_query(root, args)
   -- args: { "profile", "query", <profile>, <project>, <field> }
   local profile_name, project_key, field = args[3], args[4], args[5]
   if not (profile_name and project_key and field) then
     die("usage: lw profile query <profile> <project> <field>\n" ..
-      "  fields: build-dir | config | state | tool | variables | variables.<name>")
+      "  fields: build-dir | config | state | tool | cache | variables | variables.<name>")
   end
   local ws = load_workspace(root, false)
   -- Deterministic machine path: resolve by key only, never a positional number
@@ -3976,6 +4118,8 @@ function M.cmd_profile_query(root, args)
   elseif field == "tool" then
     local t = pp:tool_object()
     value = t and t.key or ""
+  elseif field == "cache" then
+    value = M._profile_query_cache(profile, pp)
   elseif field == "variables" then
     -- Deterministic, machine-parseable: sorted `name=value` lines.
     local resolved = resolved_variables()
@@ -3999,7 +4143,7 @@ function M.cmd_profile_query(root, args)
       value = entry.value or ""
     else
       die("unknown field '" .. field
-        .. "' — use build-dir | config | state | tool | variables | variables.<name>")
+        .. "' — use build-dir | config | state | tool | cache | variables | variables.<name>")
     end
   end
   out(value or "")
@@ -4027,6 +4171,17 @@ local function resolve_profile_for_set(ws, name)
 end
 M._resolve_profile_for_set = resolve_profile_for_set
 
+--- Whether `name` is a variable a profile may fill for `proj`: a declared
+--- project variable, or a core pre-declared policy name (`cache`, core §1.3.2)
+--- which is profile-fillable without any declaration.
+--- @param proj loomworks.Project
+--- @param name string
+--- @return boolean
+local function profile_fillable(proj, name)
+  if proj.variables and proj.variables[name] then return true end
+  return require("loomworks.variables").PREDECLARED_NAMES[name] == true
+end
+
 --- `lw profile set [<profile>] <project> <variable> <value>` — set this
 --- profile's machine-local fill value for a blank project variable (§1.3.1).
 --- Profile defaults to the active one. Written to user.json only; never
@@ -4043,12 +4198,13 @@ function M.cmd_profile_set(root, args)
   else
     die("usage: lw profile set [<profile>] <project> <variable> <value>\n" ..
       "  sets this profile's machine-local value for a blank project variable\n" ..
+      "  (or the pre-declared `cache` policy, e.g. `lw profile set App cache sccache`)\n" ..
       "  (profile defaults to the active one; written to user.json only)")
   end
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_set(ws, profile_name)
   local proj = resolve_project(ws, project_key)
-  if not (proj.variables and proj.variables[var_name]) then
+  if not profile_fillable(proj, var_name) then
     local declared = {}
     for n in pairs(proj.variables or {}) do declared[#declared + 1] = n end
     table.sort(declared)
@@ -4079,8 +4235,13 @@ function M.cmd_profile_unset(root, args)
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_set(ws, profile_name)
   local proj = resolve_project(ws, project_key)
-  if not (proj.variables and proj.variables[var_name]) then
+  if not profile_fillable(proj, var_name) then
     die("project '" .. proj.key .. "' declares no variable '" .. var_name .. "'")
+  end
+  if profile:variable_value(proj.key, var_name) == nil then
+    -- Idempotent (exit 0), like `lw config unset` of a never-set param.
+    out(string.format("%s: %s/%s is not set (nothing to unset)", profile.key, proj.key, var_name))
+    return 0
   end
   profile:clear_variable_value(proj.key, var_name)
   out(string.format("%s: unset %s/%s", profile.key, proj.key, var_name))
@@ -4647,6 +4808,66 @@ function M._worktree_hint(opts)
   return lines
 end
 
+--- Query a compiler cache tool's own usage statistics (headless §16.18,
+--- `--cache-stats`). This spawns the tool, so it is only called under the
+--- explicit flag. `run` is injectable for tests. Returns the (trimmed,
+--- non-empty) output lines, or a one-line diagnostic note.
+--- @param tool string launcher name ("ccache" | "sccache")
+--- @param path string resolved executable path
+--- @param run? fun(cmd: string[]): string runner (default vim.fn.system)
+--- @return string[]
+function M._cache_stats(tool, path, run)
+  run = run or function(cmd) return vim.fn.system(cmd) end
+  local args = (tool == "sccache") and { path, "--show-stats" } or { path, "-s" }
+  local ok, outp = pcall(run, args)
+  if not ok or type(outp) ~= "string" or outp == "" then
+    return { "(could not read " .. tool .. " statistics)" }
+  end
+  local lines = {}
+  for line in (outp .. "\n"):gmatch("([^\n]*)\n") do
+    if line:match("%S") then lines[#lines + 1] = (line:gsub("%s+$", "")) end
+  end
+  if #lines == 0 then return { "(no statistics reported)" } end
+  return lines
+end
+
+--- Render the active profile's compiler-cache line (headless §16.18) — the
+--- resolved launcher, or that caching is off/unavailable, mirroring the
+--- editor's `Cache:` row. Under `--cache-stats` it also folds in the tool's own
+--- usage statistics (spawning the tool). `auto (off for MSVC-style)` points at
+--- `lw help cache` (how to opt in). Never lets a broken query break status.
+--- @param pal table status_palette()
+--- @param profile loomworks.Profile active profile
+--- @param cache_stats boolean whether to fold in usage statistics
+local function render_cache_line(pal, profile, cache_stats)
+  local ok_c, cache = pcall(function() return profile:compiler_cache_status() end)
+  if not ok_c or not cache then
+    -- Asked for statistics but this profile has no C/C++ project: say so
+    -- rather than printing nothing.
+    if cache_stats then
+      out(pal.title("Cache") .. string.rep(" ", 12)
+        .. pal.dim("(no C/C++ project in the active profile — no compiler cache)"))
+    end
+    return
+  end
+  local value = (cache.text:gsub("^Cache: ", ""))
+  local line = pal.title("Cache") .. string.rep(" ", 12) .. value
+  if cache.msvc_auto_off and cache.policy == "auto" and cache.applicable ~= false then
+    line = line .. pal.dim(" — lw help cache")
+  end
+  if cache.stale then line = line .. pal.warn(" [stale — reconfigure]") end
+  out(line)
+  if cache_stats then
+    if cache.present and cache.path then
+      for _, l in ipairs(M._cache_stats(cache.tool, cache.path)) do
+        out("  " .. pal.dim(l))
+      end
+    else
+      out("  " .. pal.dim("(no cache resolved — nothing to query)"))
+    end
+  end
+end
+
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
 --- a workspace too. Every section is capped to keep it to a single page.
 --- `opts.check` (from `lw status --check`) makes the invocation exit non-zero
@@ -4694,9 +4915,36 @@ function M.cmd_status(root, opts)
       pal.inline("lw profile create <set> <tool>"))
   end
 
+  -- Compiler cache line for the active profile (headless §16.18), sibling to
+  -- the toolchain info, mirroring the editor's Cache: row. Shown only for a
+  -- profile with a C/C++-caching module; --cache-stats folds in usage stats.
+  if ap then
+    render_cache_line(pal, ap, opts.cache_stats)
+  elseif opts.cache_stats then
+    -- --cache-stats needs a profile to resolve the cache tool from.
+    out(pal.title("Cache") .. string.rep(" ", 12)
+      .. pal.dim("(no active profile — activate one with `lw profile select` for --cache-stats)"))
+  end
+
   -- Diagnostics section — right after the active-profile block, before Targets.
   -- Renders nothing when there are none.
   render_diagnostics(pal, diags)
+
+  -- Suggestions count line (spec/ui.md §1.1, headless §16.18): a one-line
+  -- advisory pointing at `lw health`, shown only when the framework has
+  -- findings. Advisory — it never affects the --check exit status.
+  do
+    -- Count only ACTIONABLE items — an affirmative "using <cache>" info item
+    -- lives in `lw health`, never inflates this nag count (headless §16.31).
+    local ok_s, n = pcall(function()
+      return require("loomworks.suggestions").count_actionable(ws)
+    end)
+    if ok_s and type(n) == "number" and n > 0 then
+      out("")
+      out(pal.warn(n .. (n == 1 and " suggestion" or " suggestions"))
+        .. " — run " .. pal.inline("lw health"))
+    end
+  end
 
   if ap then
     -- Targets: the active profile's launchable targets (the same list
@@ -4807,6 +5055,67 @@ function M.cmd_status(root, opts)
   return check_exit_code(opts.check, diags)
 end
 
+--- `lw health` — list the workspace's advisory suggestions in full (headless
+--- §16.31), the detail behind the compact `N suggestions` line the overview
+--- shows. Read-only and advisory: it performs no build, authors nothing, and
+--- ALWAYS exits 0 (suggestions never gate). Never spawns a cache tool.
+---
+--- Works outside a workspace: the workspace-INDEPENDENT health providers (update
+--- availability, channel override — §16.31) need no workspace, so with no `root`
+--- it still reports them beneath the worktree hint. Project-scoped items (the
+--- compiler-cache status) require a workspace and are simply absent without one.
+--- @param root string|nil workspace root
+--- @param opts? { force?: boolean } force a network-tier refresh (ignore the TTL)
+--- @return integer exit code (always 0)
+function M.cmd_health(root, opts)
+  opts = opts or {}
+  local pal = status_palette(stdout_supports_color())
+  local ws = root and load_workspace(root, false) or nil
+
+  if ws then
+    out(pal.title("loomworks health — " .. (ws.name or "?")) .. "  "
+      .. pal.dim("(" .. ws.root .. ")"))
+  else
+    -- No workspace here: lead with the worktree hint so the user knows why no
+    -- project-scoped items appear, then still run the workspace-independent
+    -- health providers below (they ignore the nil workspace).
+    for _, line in ipairs(M._worktree_hint()) do out(line) end
+  end
+
+  -- `collect_health` (not the passive `collect`) so the report includes the
+  -- network-backed providers — the update-availability check (§16.31) — that are
+  -- deliberately kept out of the frequently-rendered `N suggestions` count. Pass
+  -- whatever workspace we have (possibly nil); the workspace-independent
+  -- providers run regardless, the workspace-scoped ones guard nil themselves.
+  local ok_s, suggestions = pcall(function()
+    return require("loomworks.suggestions").collect_health(ws, { force = opts.force })
+  end)
+  if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
+
+  if #suggestions == 0 then
+    -- With a workspace, say so explicitly; without one the hint above already
+    -- explains the emptiness, so don't pile on.
+    if ws then
+      out("")
+      out(pal.dim("No suggestions — nothing to flag."))
+    end
+    return 0
+  end
+
+  for _, s in ipairs(suggestions) do
+    out("")
+    -- Informational items (affirmative status) read as positive, not a warning.
+    if s.kind == "info" then
+      out(pal.active("• " .. s.title))
+    else
+      out(pal.warn("• " .. s.title))
+    end
+    if s.detail then out("  " .. s.detail) end
+    if s.remedy then out("  " .. pal.dim(s.remedy)) end
+  end
+  return 0
+end
+
 -- ---------------------------------------------------------------------------
 -- profile show — a `lw status` page narrowed to a single profile (§16.18)
 -- ---------------------------------------------------------------------------
@@ -4900,6 +5209,10 @@ local function profile_show_rows(ws, profile, color)
     local name = trunc(profile.key, nw)
     local painted_name = active and pal.active("* " .. name) or ("  " .. name)
     out(pal.title("Profile") .. " " .. num .. "  " .. painted_name .. suffix)
+    -- The profile's resolved compiler cache (§16.18) — the same `Cache` line
+    -- `lw status` renders under the active profile; nothing for a profile with
+    -- no C/C++-caching project.
+    render_cache_line(pal, profile, false)
 
     -- 2. Diagnostics — scoped to this profile (top section; nothing when empty).
     render_diagnostics(pal, scoped)
@@ -5733,7 +6046,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "module", "bootstrap", "update", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "update", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -5762,11 +6075,12 @@ function M.cmd_complete(cword, words)
       for _, v in ipairs(COMP_COMMANDS) do topics[#topics + 1] = v end
       topics[#topics + 1] = "agent" -- help-only topics (no command)
       topics[#topics + 1] = "ci"
+      topics[#topics + 1] = "cache"
       emit(topics)
     end
     return 0
   elseif cmd == "status" then
-    if n == 1 then emit({ "--check" }) end
+    if n == 1 then emit({ "--check", "--cache-stats" }) end
     return 0
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
@@ -5966,7 +6280,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local HELP = {
-  status = [[lw status [--check]   (also: bare `lw`)
+  status = [[lw status [--check] [--cache-stats]   (also: bare `lw`)
 
 One-screen workspace overview: the active profile and its launchable targets
 (default marked `*`), a Diagnostics section (shown only when non-empty), then
@@ -5976,12 +6290,25 @@ with their configurations. Each section is limited to fit a page — use
 lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
 
+For a profile with a C/C++ project the overview shows a `Cache` line — the
+resolved compiler-cache launcher (ccache/sccache), or that caching is `off` /
+`auto (none found)` / `auto (off for MSVC-style)` (auto never enables a cache
+for MSVC or clang-cl; `lw help cache` shows how to opt in) / `<tool> (not found)` (an
+explicit `cache=<tool>` whose launcher is not installed — builds run uncached) /
+`not applied (<reason>)` (the configuration cannot take a launcher, e.g. a
+preset or a Visual Studio / Xcode generator). A `[stale — reconfigure]` marker
+means the next build reconfigures to apply a launcher change. `lw profile show`
+shows the same line for any profile.
+
 Diagnostics come from the same source the editor's Diagnostics page uses:
 per-item warnings/errors also appear inline under the relevant profile,
 configuration set, or project.
 
-  --check   exit non-zero if any diagnostic is present (for CI); without it,
-            `lw status` always exits 0.]],
+  --check         exit non-zero if any diagnostic is present (for CI); without
+                  it, `lw status` always exits 0.
+  --cache-stats   also run the resolved cache tool's own stats query
+                  (`ccache -s` / `sccache --show-stats`) and fold it in. Off by
+                  default because it spawns the tool.]],
   tools = [[lw tools [--cached]
 
 List the toolchains detected on this machine, grouped by module (cmake,
@@ -5995,7 +6322,7 @@ Probing compilers/vcvarsall is slow, so the result is cached
 refreshes that cache; other commands (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [-- <build-tool args>]
+  build = [[lw build [profile | config-set] [--force] [--reconfigure] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
 `lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI.
@@ -6009,14 +6336,25 @@ activates the profile, then builds — so a freshly-cloned project goes from
 In non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the
 active profile is NOT used and nothing is created — pass a profile explicitly
 for a deterministic build (§16.9). The CI pattern is:
-  lw profile create <set> <tool> --activate  &&  lw build
+  lw profile create <set> <tool>  &&  lw build <set>:<tool>
+(the profile key is `<set>:<tool>`, as `lw profile create` prints it).
 
   profile     e.g. Debug:ninja-clang-19  (a unique substring works too; major
               pins resolve to the installed patch version)
   config-set  a set name; onboards a profile for it (interactive)
 
-Configures first if the build dir isn't configured, then builds. Non-zero
-exit on any failure. Artifacts land under
+  --force        build even if it overwrites an artifact another built profile
+                owns (that profile is marked stale).
+  --reconfigure  force a FULL reconfigure of every project before building
+                (cmake `--fresh`, below CMake 3.24 a reset of CMakeCache.txt +
+                CMakeFiles; meson `setup --wipe`) — for a build tree whose
+                configure state you no longer trust.
+
+Configures first if the build dir isn't configured — or when a configure input
+changed since the last configure (options, env, toolchain, compiler cache), or
+the build dir was configured by an older lw — then builds. Each configure
+prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO
+removed)`. Non-zero exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
   clean = [[lw clean [profile | config-set]
 
@@ -6188,7 +6526,7 @@ and exits 0 — not a failure.
 
 Profile resolution and onboarding match `lw build`: interactively it can create
 a profile from a configuration set; in --no-input / CI it needs an explicit
-profile (`lw profile create <set> <tool> --activate && lw test`).
+profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
 
   profile        e.g. Debug:ninja-clang-19  (unique substring works)
   config-set     a set name (interactive: onboards a profile, then tests)
@@ -6251,6 +6589,103 @@ Rules:
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
                      could change which option wins.]],
+  cache = [[lw help cache — compiler caching (ccache / sccache)   (also: sccache, ccache)
+
+loomworks can wrap C/C++ compiles with a compiler cache so clean and
+switch-branch rebuilds reuse prior objects. It resolves the launcher, the build
+system applies it (cmake: CMAKE_<LANG>_COMPILER_LAUNCHER; meson: a generated
+native file). `lw status` / `lw profile show` show the result on the `Cache`
+row; `lw health` gives a one-line verdict; `lw status --cache-stats` adds the
+tool's own hit statistics.
+
+POLICY — the reserved `cache` variable (per configuration, compiler family or
+profile):
+  auto      the default. gcc/clang: ccache, else sccache, when on PATH.
+            MSVC-style compilers (msvc, clang-cl): OFF — see below.
+  off       never use a compiler cache.
+  sccache | ccache   use exactly that tool (not found → builds run uncached,
+            and `lw health` says so).
+Set it:
+  lw config set <project> <configuration> variables.cache sccache
+  lw config set <project> <configuration> overrides.msvc.cache sccache
+            (clang-cl: overrides.clang.cache) — only for that compiler family
+  lw profile set [<profile>] <project> cache sccache   (this machine's profile)
+  lw config unset <project> <configuration> variables.cache   (back to auto)
+
+WHY `auto` IS OFF FOR MSVC-STYLE COMPILERS — sccache FAILS a compile that
+writes a shared .pdb (/Zi, /ZI; MSVC errors C1041 / C1090), and ccache won't
+cache it.
+Such flags often come from code loomworks does not control (a dependency, the
+project's own CMakeLists). So caching there is an explicit opt-in: set
+`cache=sccache` (or ccache) as above. Opting in, under cmake (>= 3.25,
+single-config generator) loomworks asks for embedded per-object debug info
+(/Z7: CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded + policy CMP0141 NEW); under
+cmake and meson it then SCANS the configured compile commands (and the
+configuration's CL / _CL_ environment) for leftover /Zi.
+Findings show up at the end of the configure and in `lw health` (advisory —
+the build still runs; if it then fails, lw's last line points back here), one
+line per target:
+  fix: switch those targets to /Z7 — replace /Zi in their compile options, or
+       set their MSVC_DEBUG_INFORMATION_FORMAT property to Embedded.
+When (nearly) EVERY target has it, the finding is one line — "every target
+(N units) compiles with /Zi" — and the /Zi comes from a directory-wide setting
+(add_compile_options, CMAKE_<LANG>_FLAGS; meson: project-wide c_args/cpp_args).
+lw already requests /Z7, so cl warns D9025 "overriding '/Z7' with '/Zi'" and
+sccache then fails with C1041 / C1090:
+  fix: remove that /Zi (or make it /Z7) where it is set.
+A finding in the `environment` group comes from /Zi in the configuration's CL or
+_CL_ environment variable — remove it there:
+  lw config unset <p> <c> env.CL        (or edit the value to drop /Zi)
+Or turn caching off where it was turned on — the finding names the command:
+  lw profile set <profile> <project> cache off       (a profile fill)
+  lw config set <p> <c> overrides.msvc.cache off     (a compiler-family override)
+  lw config set <p> <c> variables.cache off          (a configuration variable)
+loomworks never silently turns off a cache you asked for.
+
+CONFIGURING THE TOOL — pass its settings through the configuration's env, e.g.
+  lw config set <p> <c> env.SCCACHE_DIR '${workspace_root}/.cache/sccache'
+  lw config set <p> <c> overrides.msvc.env.SCCACHE_DIR D:/sccache
+(also SCCACHE_CACHE_SIZE, CCACHE_DIR, CCACHE_MAXSIZE, …).
+
+NOT APPLIED — `Cache: not applied (<reason>)`: the configuration cannot take a
+launcher. A cmake PRESET owns its cache variables (set CMAKE_<LANG>_COMPILER_
+LAUNCHER in the preset's cacheVariables instead); a Visual Studio or Xcode
+generator ignores launchers (pick a Ninja or Makefile tool for the profile).
+
+INSTALL — sccache: `scoop install sccache`, `cargo install sccache`, or a
+release binary; ccache: `apt install ccache`, `dnf install ccache`,
+`brew install ccache`, `scoop install ccache`. Put it on PATH; `auto` picks it
+up for gcc/clang (MSVC-style: opt in as above).
+
+RECONFIGURE — changing the policy, or installing/removing the tool, makes the
+build reconfigure automatically on the next `lw build` (it prints why). cmake
+applies a launcher-only change in place (the first build then rebuilds objects
+to fill the cache); when the MSVC /Z7 settings move too it runs `cmake
+--fresh`; meson always re-runs `setup --wipe`. A build dir configured by an
+older lw takes one full reconfigure. `lw build --reconfigure` forces one.]],
+  health = [[lw health [--force]
+
+List the workspace's advisory suggestions — the detail behind the compact
+`N suggestions` line the status overview shows. Health is read-only: it runs
+no build and authors no project or build-system files, and it ALWAYS exits 0
+(a suggestion never gates an operation and is distinct from a diagnostic).
+
+Each suggestion prints a one-line title and, when there is something to do, a
+short remedy (some add a line of detail). Providers are advisory and
+extensible; the compiler-cache one gives a one-line verdict for C/C++
+workspaces (using <tool> / available but not enabled / not found / not applied
+/ /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
+whether a newer `lw` release is available on your update channel (this makes a
+network request, so it runs only here — never on the passive count) and notes
+when a release-url override is superseding a non-default channel; a failed/offline
+check is silent. Health never spawns a cache tool — usage statistics live behind
+`lw status --cache-stats`.
+
+Results are cached in `.nvim/loomworks.health.json` (an internal advisory cache,
+separate from the build cache) so the passive `N suggestions` count stays cheap.
+`lw health` always refreshes the local checks; the network update-availability
+check is refreshed at most once a day. `--force` (alias `--refresh`) refreshes
+the network check now, ignoring that throttle.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as
@@ -6450,8 +6885,15 @@ Params for get/set/unset:
   languages                   comma-separated; empty inherits from the module
   options.<KEY>               a generic build option
   variables.<NAME>            a project variable override
+  env.<NAME>                  a configuration environment variable
   overrides.<family>.<NAME>   a compiler-family variable override
+  overrides.<family>.env.<NAME>  an environment variable for that family only
   <other>                     any module-specific field (e.g. toolchain, generator)
+
+Environment names: the compiler-driver variables (CC, CXX, FC, CUDACXX,
+CUDAHOSTCXX, OBJC, OBJCXX, ISPC — in any case) are refused: the profile's tool
+chooses the compiler. Setting PATH (any case) is allowed but REPLACES the PATH
+the tool sets up (e.g. the MSVC developer environment), so lw warns.
 
 Compiler-family overrides (family ∈ clang|gcc|msvc, clang-cl counts as clang)
 override a project variable's value only when the active tool's compiler
@@ -6524,6 +6966,13 @@ Examples:
               config     the pinned configuration name
               state      last known build state (unconfigured/configured/built…)
               tool       the resolved toolchain key
+              cache      the resolved compiler cache, as the `Cache` row shows
+                         it (sccache / off / auto (none found) / auto (off for
+                         MSVC-style) / ccache (not found) / not applied
+                         (<reason>));
+                         empty for a project with no C/C++ compiler cache
+              variables  resolved project variables (name=value lines);
+                         variables.<name> prints one
             e.g. BD=$(lw profile query Debug:ninja-clang-18 app build-dir)
   set [<profile>] <project> <variable> <value>
             Set this profile's machine-local fill value for a BLANK project
@@ -6688,7 +7137,7 @@ Read-only — safe any time (no writes to user.json / loomworks.json):
   lw workspace                    print the workspace name
   lw project list | show <name>   lw profile list   lw tools [--cached]
   lw config list|show|get         lw configset list|show
-  lw profile query <profile> <project> <field>   (build-dir | config | state | tool | variables[.<name>])
+  lw profile query <profile> <project> <field>   (build-dir | config | state | tool | cache | variables[.<name>])
   lw build <profile> [-- args]    builds; read-only toward config (writes only
                                   the build dir + cache)
   lw version
@@ -6762,7 +7211,7 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
    Pin a toolchain COARSELY — by major version, or without an edition — and it
    resolves to the best installed match, so the job never names the exact patch
    or the runner image's VS edition:
-     lw --no-input profile create Debug ninja-clang-18 --activate
+     lw --no-input profile create Debug ninja-clang-18
    Key shapes differ per MODULE, so run `lw tools` on the runner to see the
    real keys before writing the matrix:
      cmake   generator + compiler:  ninja-clang-18 · ninja-gcc-12 ·
@@ -6782,7 +7231,7 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
      BD=$(lw --no-input profile query Debug:ninja-clang-18 app build-dir)
      cp "$BD/app" out/
    The build directory is deterministic and known BEFORE building. Fields:
-   build-dir | config | state | tool (see `lw help profile`).
+   build-dir | config | state | tool | cache (see `lw help profile`).
 
 Gitignore `.nvim/`: it holds the working copy (loomworks.user.json), the cache,
 and the build trees — all machine-local. If it isn't in the repo's .gitignore,
@@ -6798,16 +7247,30 @@ cache, or offline mode of its own. Fetched deps land inside the build dir
 both fetched sources and compiled objects.]],
 }
 
+--- Command aliases → their canonical help topic.
+local HELP_ALIASES = {
+  configuration = "config",
+  ["configuration-set"] = "configset",
+  cs = "configset",
+  cfg = "config",
+  profiles = "profile",
+  sccache = "cache",
+  ccache = "cache",
+  ["compiler-cache"] = "cache",
+  ws = "workspace",
+  mod = "module",
+}
+
+--- Whether `lw help <cmd>` has a topic (after alias normalization).
+--- @param cmd string|nil
+--- @return boolean
+function M.has_help_topic(cmd)
+  return cmd ~= nil and HELP[HELP_ALIASES[cmd] or cmd] ~= nil
+end
+
 function M.cmd_help(cmd)
   -- Normalize command aliases to their canonical help topic.
-  local alias = {
-    configuration = "config",
-    ["configuration-set"] = "configset",
-    cs = "configset",
-    cfg = "config",
-    profiles = "profile",
-  }
-  cmd = cmd and (alias[cmd] or cmd) or nil
+  cmd = cmd and (HELP_ALIASES[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
     out(HELP[cmd])
     return 0
@@ -6839,6 +7302,7 @@ Usage: lw [command] [args]
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
+  health            list actionable workspace suggestions (advisory, never fails)
   module <sub>      install | update | remove | list acquirable modules (mod)
   settings <...>    get/set lw's own settings (dev-lua, release-url, …)
   completion <shell> print a shell completion script (bash|zsh)
@@ -6873,7 +7337,8 @@ Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile — pass the profile explicitly.
 
 Automation agent? See `lw help agent` — run with --no-input so you never block
-or change the user's settings. Driving CI? See `lw help ci`.
+or change the user's settings. Driving CI? See `lw help ci`. Compiler cache
+(ccache/sccache)? See `lw help cache`.
 
 `lw help <command>` for details.]])
   return cmd and 1 or 0
@@ -6934,6 +7399,20 @@ local function main()
   if command == "help" or command == "-h" or command == "--help" then
     finish(M.cmd_help(a[2]))
   end
+  -- `lw <command> … --help` / `-h` (before any `--`, whose tail belongs to a
+  -- build tool / program) is `lw help <command>` for every command, checked
+  -- before any handler can read the flag as an operand (`lw build --help`
+  -- used to look for a profile named "--help"). A command without a topic of
+  -- its own gets the general usage. Exit 0 either way.
+  if command then
+    for i = 2, #a do
+      if a[i] == "--" then break end
+      if a[i] == "--help" or a[i] == "-h" then
+        M.cmd_help(M.has_help_topic(command) and command or nil)
+        finish(0)
+      end
+    end
+  end
   -- `settings` edits lw's OWN user configuration (dev-lua, release-url, …). It
   -- is a global command (no workspace needed). NOTE: `config` no longer routes
   -- here — it is now the project-configuration command (see below).
@@ -6970,8 +7449,22 @@ local function main()
     -- `--check` (accepted anywhere in argv) makes status exit non-zero when any
     -- diagnostic is present, for CI; it never changes the rendering.
     local check = false
-    for _, v in ipairs(a) do if v == "--check" then check = true end end
-    finish(M.cmd_status(root, { check = check }))
+    local cache_stats = false
+    for _, v in ipairs(a) do
+      if v == "--check" then check = true end
+      if v == "--cache-stats" then cache_stats = true end
+    end
+    finish(M.cmd_status(root, { check = check, cache_stats = cache_stats }))
+  end
+
+  -- `health` lists advisory suggestions; like status it works outside a
+  -- workspace (worktree hint) and never fails, so it runs before the guard.
+  if command == "health" then
+    local force = false
+    for _, v in ipairs(a) do
+      if v == "--force" or v == "--refresh" then force = true end
+    end
+    finish(M.cmd_health(root, { force = force }))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a

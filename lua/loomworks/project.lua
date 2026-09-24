@@ -365,7 +365,7 @@ end
 
 --- Save a project configuration (create or update).
 --- @param config_name string configuration name
---- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @param config_data table { variant?, inherits?, options?, variables?, env?, overrides?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
 function Project:save_configuration(config_name, config_data)
     local ws = self._workspace
@@ -399,11 +399,21 @@ function Project:save_configuration(config_name, config_data)
             end
         end
     end
-    if type(config_data.env) == "table" then
-        for k in pairs(config_data.env) do
-            if reserved.is_reserved_env(k) then
-                return false, k .. " cannot be set here — the compiler is "
-                    .. "chosen by the profile's tool. Select a tool instead."
+    -- The configuration environment (spec §1.3.3) — its own `env` and any
+    -- compiler-family `overrides.<family>.env` sub-block.
+    local env_maps = { config_data.env }
+    if type(config_data.overrides) == "table" then
+        for _, fam in pairs(config_data.overrides) do
+            if type(fam) == "table" then env_maps[#env_maps + 1] = fam.env end
+        end
+    end
+    for _, env in ipairs(env_maps) do
+        if type(env) == "table" then
+            for k in pairs(env) do
+                if reserved.is_reserved_env(k) then
+                    return false, k .. " cannot be set here — the compiler is "
+                        .. "chosen by the profile's tool. Select a tool instead."
+                end
             end
         end
     end
@@ -435,6 +445,9 @@ function Project:save_configuration(config_name, config_data)
     if config_data.variables and next(config_data.variables) then
         clean.variables = config_data.variables
     end
+    if type(config_data.env) == "table" and next(config_data.env) then
+        clean.env = config_data.env
+    end
     if config_data.overrides and next(config_data.overrides) then
         clean.overrides = config_data.overrides
     end
@@ -444,8 +457,8 @@ function Project:save_configuration(config_name, config_data)
     if config_data.role ~= nil then clean.role = config_data.role end
     local generic_keys = {
         is_user = true, is_default = true, from_preset = true, role = true,
-        inherits = true, options = true, variables = true, overrides = true,
-        languages = true, prefix = true, base_name = true,
+        inherits = true, options = true, variables = true, env = true,
+        overrides = true, languages = true, prefix = true, base_name = true,
     }
     for k, v in pairs(config_data) do
         if not generic_keys[k] then clean[k] = v end
@@ -463,6 +476,7 @@ function Project:save_configuration(config_name, config_data)
             role = existing.role,
             options = existing.options,
             variables = existing.variables,
+            env = existing.env,
             overrides = existing._overrides,
             inherits_names = existing.inherits_names,
             module_config = vim.deepcopy(existing.module_config),
@@ -620,6 +634,10 @@ function Project:rename_configuration(old_name, new_name, config_data)
     if config_data.inherits then update_data.inherits = config_data.inherits end
     if config_data.options and next(config_data.options) then
         update_data.options = config_data.options
+    end
+    -- The configuration environment (spec §1.3.3) survives a rename.
+    if type(config_data.env) == "table" and next(config_data.env) then
+        update_data.env = config_data.env
     end
     if config_data.toolchain then update_data.toolchain = config_data.toolchain end
     if config_data.generator then update_data.generator = config_data.generator end
@@ -786,7 +804,7 @@ function Project:save_variable(var_name, declaration)
     end
 
     local vars_mod = require("loomworks.variables")
-    if vars_mod.RESERVED_NAMES[var_name] then
+    if vars_mod.RESERVED_NAMES[var_name] or vars_mod.PREDECLARED_NAMES[var_name] then
         return false, "'" .. var_name .. "' is a reserved variable name"
     end
 

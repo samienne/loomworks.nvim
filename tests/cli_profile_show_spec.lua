@@ -181,6 +181,22 @@ describe("_profile_show_rows", function()
     assert.is_truthy(header:find(ANSI_ACTIVE, 1, true))
   end)
 
+  -- The single-profile view reports the resolved compiler cache (§16.18) with
+  -- the same `Cache` line `lw status` renders.
+  it("renders the profile's Cache line (and none without a caching project)", function()
+    local profile = fake_profile({ key = "dev:ninja-gcc-12", set = "dev", pps = {} })
+    profile.compiler_cache_status = function()
+      return { text = "Cache: ccache (not found)", stale = false, present = false }
+    end
+    local ws = fake_ws({ active = "dev:ninja-gcc-12", profiles = { profile } })
+    local text = join(cli._profile_show_rows(ws, profile, false))
+    assert.is_truthy(text:find("Cache%s+ccache %(not found%)"))
+
+    profile.compiler_cache_status = function() return nil end
+    text = join(cli._profile_show_rows(ws, profile, false))
+    assert.is_nil(text:find("Cache ", 1, true))
+  end)
+
   it("emits no ANSI when color is off", function()
     for _, l in ipairs(build(false)) do
       assert.is_nil(l:find("\27[", 1, true))

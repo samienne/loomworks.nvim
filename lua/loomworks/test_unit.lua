@@ -38,7 +38,9 @@ function TestUnit:test_command_all(opts) end
 --- JUnit XML output. `junit_out` in the result is where the runner actually
 --- wrote it (the requested path when the runner writes there directly, else the
 --- runner's own fixed location, which the caller copies to the request).
---- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- `opts.profile` is the profile the run is for — its blank-variable fills
+--- resolve the configuration environment (nil = the active profile).
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile }
 --- @return table|nil { cmd, env?, cwd?, junit_out?: string }
 function TestUnit:run_command_all(opts) end
 

@@ -81,6 +81,13 @@
    being deleted. A gutted directory (present but emptied) is out of scope;
    only whole-directory absence is detected.
 
+A change in the resolved **compiler-cache launcher** (§8.1 `compiler_cache`) is a
+further core-tracked reconfigure input, but — unlike rule 7's missing-directory
+reset — it does **not** downgrade the unit's state. It is an `is_stale()` axis:
+the configured unit stays `configured` / `built`, is reported stale, and the
+build gate reconfigures it before the next build (§5.1, §5.2). This mirrors
+option-level staleness rather than the disk-vs-cache reset of rule 7.
+
 ### 3.2 Workspace Lifecycle
 
 The workspace has three states:
@@ -443,6 +450,134 @@ fill. Filling every blank (a profile fill value, §1.3.1) clears the gate.
 Because a profile fill value feeds a configuration's resolved options, changing
 one can make an already-configured unit stale (§5), triggering a reconfigure on
 the next build; the build directory identity is NOT keyed on fill values.
+
+**Resolution context (which profile's fills).** A build input that depends on
+profile fill values (resolved options, the configuration environment, the
+compiler-cache launcher via a `cache` fill) is resolved in the context of the
+**profile the operation is for** — the profile being built (e.g. `lw build
+<profile>`, which need not be the active one), or, for an operation on a single
+configuration with no profile in play, the active profile. The staleness check
+recomputes each input in that **same** profile's context, and the record a
+configure leaves behind (the options / environment snapshot) is taken in it
+too, so an unchanged input never reads as changed merely because the profile
+being built is not the active one. A ConfigUnit shared by several profiles
+(same project + configuration) is judged per profile: building a profile whose
+fills differ from the ones the unit was last configured with makes it stale for
+that build, and a profile's status reports staleness in its own context.
+
+The **resolved compiler-cache launcher** (§8.1 `compiler_cache`) is a build input
+of the same kind. Core resolves it from the effective `cache` policy (§1.3.2) and
+the active tool's compiler family and records it in the configure task's
+`module_info`; `ConfigUnit:is_stale()` recomputes it (live toolchain-path
+presence + current policy + tool family) and compares it to the recorded value.
+A launcher that **appears**, **disappears**, or **changes** — because the policy
+was edited, or because the cache tool was installed onto or removed from the
+search path — makes the configured unit stale, so the existing build gate (§5.2)
+auto-reconfigures it before the next build. The comparison is against a value
+**actually recorded at configure**: a unit configured *under* this feature with
+no cache records an explicit "none", so a later-installed cache still differs and
+fires. A unit with **no recorded launcher** takes no part in the launcher
+comparison: either its module records none (a module without compiler-cache
+support), or its record predates the module's current record format — and
+then the unit is already stale through the record check below (*Configure
+record migration*), whose full reconfigure records the launcher. The comparison is against the launcher
+the module would **apply**: for a configuration the module declares it cannot
+apply a launcher to (the optional `cache_launcher_applicable` hook, §8), the
+expected value is "none", so a resolvable-but-unapplicable launcher does not make
+the unit stale on every build. There is no separate eager
+reconfigure: the launcher change is caught at the gate exactly like an
+option-level change, and the build directory identity is NOT keyed on the
+launcher. The build gate drives this uniformly; the reconfigure must really take
+effect in **both** directions — a launcher that *disappeared* must be removed
+from the build tree, not merely recorded as "none" while the build system keeps
+using a launcher persisted by an earlier configure — and it follows the general
+rule below (full reconfigure unless the module declares the launcher change
+safe to apply in place).
+
+**Faithful reconfigure (every configure input).** The launcher is one instance
+of a general guarantee covering **every configure input** loomworks controls:
+the configuration's resolved options (above), the configuration's resolved
+environment (`env`, §1.3.3), the tool-selected toolchain and build-system
+generator, the compiler-cache launcher, and any value a module injects on the
+configure command line on the user's behalf (e.g. a debug-information format a
+launcher requires). When any of them **changes** — a value added, changed, or
+**removed** — the unit is stale and the build gate (§5.2) reconfigures it
+automatically before the next build, and that reconfigure must leave the build
+tree configured exactly as a from-scratch configure with the current inputs
+would. Build systems generally persist configure-time state across
+reconfigures (option values, and values derived once from the environment or
+the toolchain at first configure), so an input that changed or disappeared is
+not reliably applied by merely re-running the configure with the new inputs.
+
+- **Full reconfigure is the default.** The reconfigure for a changed configure
+  input is a **full reconfigure**: the module discards the build system's
+  configure state and configures again from exactly the current inputs.
+  loomworks re-passes every input it owns, so nothing configured through
+  loomworks is lost. A full reconfigure is not a build-directory delete:
+  loomworks deletes no build outputs itself, and a build system whose full
+  reconfigure keeps them rebuilds incrementally afterwards (whether it can is
+  module knowledge — the module specs say what their full reconfigure costs).
+- **In-place only where the module is certain.** A module MAY instead apply a
+  change with a cheaper **in-place** reconfigure, but only for a narrow,
+  explicitly declared set of changes it knows the build system applies
+  faithfully in place — each such change is listed and justified in the
+  module's spec. Anything outside that set, a combination that includes
+  anything outside it, and any case the module cannot classify with certainty
+  (e.g. a unit configured before the module kept the record below) takes the
+  full reconfigure. A reconfigure with **no** changed input (e.g. a retry after
+  a failed configure) runs in place.
+- **Records.** The module records what it passed at each configure in the
+  configure task's `module_info`, and core hands the unit's recorded
+  `module_info` (including core's own record of the resolved environment) and
+  core's resolved-option snapshot back on the next configure
+  (`recorded_module_info`, `recorded_options`, §8.1), together with the
+  current resolved environment (`configuration_env`, §8.1), so the module can
+  tell exactly which inputs changed. An in-place retraction only ever touches
+  what **loomworks itself passed** — never a value the user set in the
+  project's own build files, presets or by hand.
+- **Configure record migration.** A module that keeps such a record declares
+  its current record format as a number (`configure_record_version`, §8.1).
+  After every **successful** configure core stamps that number into the
+  unit's record (`record_version`); a failed configure leaves it unstamped. A
+  **configured** unit (it has a configure snapshot, or a cached state a
+  successful configure produced) whose record carries a different version or
+  none — written by an older loomworks, e.g. an empty record, a record without
+  the module's options, or a record from before a launcher was recorded — is
+  **stale** (reason "configure record from an older lw"), and the module
+  classifies its configure as a **full reconfigure** (it cannot classify the
+  change with certainty). So every existing build directory of such a module
+  takes exactly **one** full reconfigure on its first build under a newer
+  record format — which also discards configure state an older version
+  persisted (e.g. a compiler launcher it no longer applies) — and is stable
+  afterwards. A configure that fails stays stale (and its retry is full
+  again) until one succeeds. This holds for configurations the module cannot
+  apply a launcher to as well: they migrate once and then compare their
+  recorded "none" as usual. A module that declares no record version takes
+  no part.
+- **Forced full reconfigure.** A caller may force the full path for every unit
+  of a build (the headless `--reconfigure`, §16.4): core hands the module
+  `force_full_reconfigure` (§8.1) and runs the configure even when nothing is
+  stale; the module takes its full reconfigure (or a plain first configure
+  for a build tree never configured).
+- **Core-performed resets.** Where a full reconfigure needs specific
+  configure-state files removed from the build directory first, the module
+  names them on the configure task (`pre_configure_reset`, §8.1) and **core**
+  removes them — under the build directory's exclusive lock, only after
+  validating that the build directory lies within the workspace root, and only
+  for plain relative paths inside it. A module never deletes files itself.
+
+A configuration configured through the build system's own preset mechanism is
+covered too: whatever loomworks adds on top of the preset (options appended to
+the preset invocation, the environment) is a configure input, and a change to
+it takes the full reconfigure — which re-applies the preset from scratch
+rather than retracting individual values, so the preset's own values are never
+clobbered.
+
+After a **successful** configure that applied a launcher (recorded value not
+"none"), core runs the module's optional post-configure compatibility scan
+(`cache_compat_scan`, §8) and records its findings with the unit's configure
+record; they are reported at the end of the configure and in health (§16.31),
+and are advisory — they never gate the next build and never change the policy.
 
 ### 5.2 Auto-configure before build
 

@@ -245,10 +245,26 @@
 --- @field configurations table<string, loomworks.ConfigurationInfo> regular + preset configurations, keyed by canonical name (presets under `preset:<name>`)
 --- @field tool_data? table opaque module-specific tool data
 --- @field workspace_root string absolute path
---- @field env table<string, string>
+--- @field env table<string, string> task environment: the tool's `env` with `configuration_env` layered on top (core §8.1)
+--- @field configuration_env? table<string, string> the configuration's resolved `env` alone (chain + family overrides, expanded, reserved names stripped; core §1.3.3) — compared with `recorded_module_info.configure_env` to detect an env change
 --- @field cached_build_dir? string cached build directory, if known
 --- @field type_config? table raw type_config from loomworks.json
 --- @field resolved_variables? table<string, { value: string, type: string }> user-declared project variables resolved for the active configuration
+--- @field compiler_cache? { tool: string, path: string } core-resolved compiler-cache launcher (nil = policy off / `auto` on an MSVC-style compiler / launcher not found); module applies it (core §8.1, §1.3.2)
+--- @field recorded_cache_launcher? string launcher path this build dir was last configured with (from cached module_info), or the sentinel `"none"` when that configure applied no launcher (nil = never recorded) — lets a module detect a launcher change (§11)
+--- @field recorded_module_info? table the unit's `module_info` as recorded by its last configure (module-owned, e.g. cmake/meson `passed_options`; plus core-owned keys such as `configure_env`) — lets a module classify a reconfigure as full or in-place (core §5.1 faithful reconfigure, §8.1)
+--- @field recorded_options? table<string, any> core's resolved-option snapshot from the last configure (the staleness fingerprint); its presence also marks a unit as configured-before (a unit with no module record takes the full reconfigure, §8.1)
+
+--- Loomworks metadata carried on a module task_def (`task_def.loomworks`).
+--- @class loomworks.TaskMeta
+--- @field project_key string
+--- @field action "configure"|"build"
+--- @field configuration_key string
+--- @field build_dir? string
+--- @field tool_data? table
+--- @field module_info? table module-owned record that replaces the unit's `module_info` after a configure (core-owned keys re-added by core)
+--- @field pre_configure_reset? string[] configure only: build-dir-relative paths core removes (validated, under the exclusive lock) before the configure runs — a full reconfigure the build system has no flag for (core §5.1, §8.1)
+--- @field stripped_compiler_keys? { options?: string[], env?: string[] }
 
 --- Module info() return value.
 --- @class loomworks.ModuleInfo
@@ -279,6 +295,7 @@
 --- @field tool? loomworks.ToolRef bundled tool reference
 --- @field build_dir? string
 --- @field module_info? table opaque module-specific info (e.g. cmake generator/compiler)
+--- @field profile? loomworks.Profile the profile whose context the task resolved against (its blank-variable / `cache` fills); nil = the active profile
 --- @field success boolean
 
 --- Running task info for deletion conflict detection.

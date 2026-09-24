@@ -50,9 +50,13 @@ end
 --- @field is_user boolean from loomworks.json user override
 --- @field from_preset boolean from CMakePresets.json
 --- @field variables table<string, string>|nil variable overrides (name → value)
---- @field _overrides table<string, table<string, string>>|nil compiler-family
----        variable overrides (family → { name → value }); applied only when the
----        active tool's compiler family matches (core §1.3.1)
+--- @field env table<string, string>|nil configuration environment (name →
+---        value) for configure/build/clean/test tasks — a generic field, inherited
+---        along the chain and resolved by `config_env` (spec §1.3.3)
+--- @field _overrides table<string, table>|nil compiler-family overrides
+---        (family → { name → value, env? = { NAME → value } }); variable
+---        entries and the `env` sub-block apply only when the active tool's
+---        compiler family matches (core §1.3.1, §1.3.3)
 --- @field _derived table|nil module fields inherited from a base rather than
 ---        declared here; kept at runtime but skipped by serialization
 --- @field languages string[]|nil explicit list of languages this
@@ -201,6 +205,15 @@ function Configuration:_update(data)
     -- Variable overrides (generic, not module-specific)
     self.variables = data.variables or nil
 
+    -- Configuration environment (generic, spec §1.3.3): name → value for the
+    -- configure/build/clean/test tasks. Resolved (chain + family overrides +
+    -- expansion) by `loomworks.config_env`, never read raw by modules.
+    if type(data.env) == "table" and next(data.env) then
+        self.env = data.env
+    else
+        self.env = nil
+    end
+
     -- Compiler-family variable overrides (family → { name → value }). Applied
     -- during variable resolution only when the active tool's compiler family
     -- matches (core §1.3.1). Kept as an opaque nested table.
@@ -238,7 +251,7 @@ function Configuration:_update(data)
     local generic = {
         is_default = true, is_user = true, from_preset = true,
         role = true, inherits = true, options = true, variables = true,
-        overrides = true, languages = true,
+        env = true, overrides = true, languages = true,
         prefix = true, base_name = true, _derived = true,
     }
     for k, v in pairs(data) do
@@ -457,8 +470,8 @@ function Configuration:diagnostic()
 end
 
 --- Reserved compiler-selection keys this configuration carries in its own
---- `options`/`env`. The profile's tool owns the compiler (spec §15 /
---- cmake.md §5b), so such keys are rejected at edit time; a hand-edited
+--- `options`/`env` (including a compiler-family `overrides.<family>.env`).
+--- The profile's tool owns the compiler (spec §15 / cmake.md §5b), so such keys are rejected at edit time; a hand-edited
 --- file can still smuggle them in, where they are stripped at build time.
 --- This surfaces the corresponding NON-blocking inline warning (the config
 --- stays buildable — the tool's compiler is used). Returns a sorted list of
@@ -472,10 +485,19 @@ function Configuration:compiler_override_warnings()
             if reserved.is_reserved_option(k) then keys[#keys + 1] = k end
         end
     end
-    if type(self.env) == "table" then
-        for k in pairs(self.env) do
-            if reserved.is_reserved_env(k) then keys[#keys + 1] = k end
+    local seen = {}
+    local function scan_env(env)
+        if type(env) ~= "table" then return end
+        for k in pairs(env) do
+            if reserved.is_reserved_env(k) and not seen[k] then
+                seen[k] = true
+                keys[#keys + 1] = k
+            end
         end
+    end
+    scan_env(self.env)
+    for _, fam in pairs(type(self._overrides) == "table" and self._overrides or {}) do
+        if type(fam) == "table" then scan_env(fam.env) end
     end
     table.sort(keys)
     return keys
@@ -508,6 +530,7 @@ function Configuration:serialize_user_override()
     end
     if self.options and next(self.options) then entry.options = self.options end
     if self.variables and next(self.variables) then entry.variables = self.variables end
+    if self.env and next(self.env) then entry.env = self.env end
     if self._overrides and next(self._overrides) then entry.overrides = self._overrides end
     if self.languages and #self.languages > 0 then entry.languages = self.languages end
     if self.role then entry.role = self.role end

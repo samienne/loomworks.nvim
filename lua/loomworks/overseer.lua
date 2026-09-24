@@ -59,6 +59,44 @@ local function resolve_project_variables(project, configuration, tool_data, prof
     return out
 end
 
+--- Resolve the compiler-cache launcher for a build context (core §1.3.2, §8.1).
+--- Core owns this resolution: it derives a concrete launcher from the effective
+--- `cache` policy and the tool's compiler family, PATH-gated. Returns the
+--- `{ tool, path }` a module applies, or nil (policy `off`, `auto` on an
+--- MSVC-style compiler, or the launcher not found). Applicability (a preset, a
+--- VS/Xcode generator) is the module's call, not reflected here.
+--- Single-sourced so every context-assembly site sets `compiler_cache`
+--- identically — the module owns application, core owns resolution.
+--- @param project loomworks.Project|nil
+--- @param configuration loomworks.Configuration|nil
+--- @param tool_data table|nil active tool_data (yields the compiler family)
+--- @param profile loomworks.Profile|nil active profile (machine-local fill)
+--- @return { tool: string, path: string }|nil
+local function resolve_compiler_cache(project, configuration, tool_data, profile)
+    return require("loomworks.compiler_cache").resolve_for(
+        project, configuration, tool_data, profile)
+end
+
+--- Resolve the configuration environment (spec §1.3.3) for a build context and
+--- the composed task environment: the tool's `env` with the configuration's
+--- resolved `env` layered on top. Single-sourced so every context-assembly site
+--- (configure/build/clean, per-unit and per-profile) sets `env` and
+--- `configuration_env` identically. The compiler family (for
+--- `overrides.<family>.env`) comes from the tool, like variable resolution.
+--- @param project loomworks.Project|nil
+--- @param configuration loomworks.Configuration|nil
+--- @param tool_data table|nil active tool_data
+--- @param profile loomworks.Profile|nil active profile (blank-variable fill)
+--- @param root string|nil workspace root
+--- @return table<string, string> task_env, table<string, string> configuration_env
+local function resolve_task_env(project, configuration, tool_data, profile, root)
+    local config_env = require("loomworks.config_env")
+    local family = require("loomworks.cpp_compilers").family_from_tool_data(tool_data)
+    local cenv = config_env.resolve(project, configuration, family, profile, root)
+    return config_env.compose(tool_data and tool_data.env, cenv), cenv
+end
+M._resolve_task_env = resolve_task_env  -- exported for target.lua / tests
+
 --- Build the configuration map a module's task generator (`mod.tasks`) sees.
 --- Merges the module's regular configurations with its preset configurations,
 --- which arrive under a separate `preset_configurations` key but are keyed by
@@ -108,6 +146,8 @@ local function collect_configuration_tasks(unit)
         end
     end
 
+    local task_env, configuration_env = resolve_task_env(
+        project, unit._configuration, tool_data, ws._active_profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -118,9 +158,14 @@ local function collect_configuration_tasks(unit)
         type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
+        env = task_env,
+        configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
+        recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
+        recorded_module_info = unit.module_info,
+        recorded_options = unit._cached_options,
     }
 
     local pt = mod.progress_parser
@@ -143,6 +188,11 @@ local function collect_configuration_tasks(unit)
         local lw_meta = task_def.loomworks
         if lw_meta then
             lw_meta.unit = unit
+            -- The profile this context resolved against (its blank-variable
+            -- and `cache` fills): the active one for a unit-scoped action.
+            -- The build gate and the post-configure record use the same one
+            -- (core §5.1).
+            lw_meta.profile = ws._active_profile
             lw_meta.progress_tool = pt
             lw_meta.variant = variant
             lw_meta.tool = tool_ref
@@ -188,6 +238,8 @@ function M.build_spec_for(unit, target_id)
         if ok and result then mod_info = result end
     end
 
+    local task_env, configuration_env = resolve_task_env(
+        project, unit._configuration, tool_data, ws._active_profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -198,9 +250,14 @@ function M.build_spec_for(unit, target_id)
         type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
+        env = task_env,
+        configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
+        recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
+        recorded_module_info = unit.module_info,
+        recorded_options = unit._cached_options,
     }
 
     --- Validate spec types and coerce missing cwd to the workspace root.
@@ -272,8 +329,11 @@ end
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
 --- @param profile loomworks.Profile
+--- @param opts? { force_full_reconfigure?: boolean } forwarded to the module
+---   context (§8.1): every configure takes the module's full path
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
-local function collect_profile_tasks(profile)
+local function collect_profile_tasks(profile, opts)
+    opts = opts or {}
     local loomworks = require("loomworks")
     local modules = require("loomworks.modules")
 
@@ -297,6 +357,8 @@ local function collect_profile_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local task_env, configuration_env = resolve_task_env(
+            project, pp._configuration, tool_data, profile, ws.root)
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
@@ -307,9 +369,16 @@ local function collect_profile_tasks(profile)
             type_config = project:_type_config_for_module(),
             tool_data = tool_data,
             workspace_root = ws.root,
-            env = tool_data and tool_data.env or {},
+            env = task_env,
+            configuration_env = configuration_env,
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
+            compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
+            recorded_cache_launcher = pp._config_unit and pp._config_unit.module_info
+                and pp._config_unit.module_info.cache_launcher or nil,
+            recorded_module_info = pp._config_unit and pp._config_unit.module_info or nil,
+            recorded_options = pp._config_unit and pp._config_unit._cached_options or nil,
+            force_full_reconfigure = opts.force_full_reconfigure or nil,
         }
 
         local pt = mod.progress_parser
@@ -326,6 +395,11 @@ local function collect_profile_tasks(profile)
             local lw_meta = task_def.loomworks
             if lw_meta then
                 lw_meta.unit = pp._config_unit
+                -- The profile being built: its fills resolved this context,
+                -- so the build gate's staleness check and the post-configure
+                -- record resolve against it too (core §5.1), never against
+                -- whichever profile happens to be active.
+                lw_meta.profile = profile
                 lw_meta.progress_tool = pt
                 lw_meta.variant = active_config
                 lw_meta.tool = project_tool
@@ -364,6 +438,8 @@ local function collect_configuration_clean_tasks(unit)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
             or { configurations = {} }
 
+    local task_env, configuration_env = resolve_task_env(
+        project, unit._configuration, tool_data, ws._active_profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -374,9 +450,11 @@ local function collect_configuration_clean_tasks(unit)
         tool_data = tool_data,
         type_config = project.type_config,
         workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
+        env = task_env,
+        configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
+        compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
     return mod.clean_tasks(project_ctx, variant)
@@ -409,6 +487,8 @@ local function collect_profile_clean_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local task_env, configuration_env = resolve_task_env(
+            project, pp._configuration, tool_data, profile, ws.root)
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
@@ -419,9 +499,11 @@ local function collect_profile_clean_tasks(profile)
             tool_data = tool_data,
             type_config = project.type_config,
             workspace_root = ws.root,
-            env = tool_data and tool_data.env or {},
+            env = task_env,
+            configuration_env = configuration_env,
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
+            compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
         }
 
         local clean = mod.clean_tasks(project_ctx, active_config)
@@ -485,6 +567,42 @@ local function start_one_task(overseer, task_def, on_complete)
                 end
             end
 
+            -- Full-reconfigure support (core §5.1 / §8.1 `pre_configure_reset`):
+            -- remove the module-named configure-state entries inside the build
+            -- dir now that the exclusive lock is held. Core performs (and
+            -- validates) the deletion, never the module. On refusal/failure
+            -- the configure is not started.
+            if lw_meta.action == "configure" and type(lw_meta.pre_configure_reset) == "table"
+                    and #lw_meta.pre_configure_reset > 0 then
+                local ws = unit._workspace
+                local ok_r, r_err = true, nil
+                if ws and ws._pre_configure_reset then
+                    ok_r, r_err = ws:_pre_configure_reset(lw_meta.build_dir, lw_meta.pre_configure_reset)
+                end
+                if not ok_r then
+                    if ws and lw_meta.build_dir then
+                        local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                        ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                        if ws._release_file_lock then ws:_release_file_lock(dir) end
+                    end
+                    local msg = "loomworks: " .. tostring(r_err)
+                    vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                    reject(msg)
+                    return
+                end
+            end
+
+            -- Why this configure runs (the gate's reason + the module's
+            -- full/in-place choice), to the log — the editor's counterpart of
+            -- the line the headless runner prints (§16.4).
+            if lw_meta.action == "configure" then
+                local why = M.configure_reason_line(lw_meta)
+                local ws = unit._workspace
+                if why and ws and ws._core and ws._core._deps.log then
+                    ws._core._deps.log:info("%s — %s", task_def.name or "?", why)
+                end
+            end
+
             local build_result = task_def.builder()
             apply_nice(build_result, lw_meta.action)
             build_result.components = build_result.components or { "default" }
@@ -545,6 +663,7 @@ local function start_one_task(overseer, task_def, on_complete)
                         action = lw_meta.action,
                         variant = lw_meta.variant,
                         tool = lw_meta.tool,
+                        profile = lw_meta.profile,
                         build_dir = lw_meta.build_dir,
                         module_info = lw_meta.module_info,
                         success = status == "SUCCESS",
@@ -740,20 +859,22 @@ end
 --- directory was removed out of band (spec §3.1 rule 7) — the load/remerge
 --- resets a vanished unit, and this is the re-check for a directory that
 --- disappears between remerge and build.
+--- Each selected task's `loomworks.configure_reason` is set to the unit's
+--- `configure_reason()` (why it configures, §16.4). With `forced` every
+--- configure task is selected (a forced full reconfigure, `lw build
+--- --reconfigure`).
 --- @param all_tasks table { configure: table[], build: table[] }
+--- @param forced? boolean
 --- @return table[] configure tasks that actually need running
-local function filter_unconfigured_tasks(all_tasks)
+local function filter_unconfigured_tasks(all_tasks, forced)
     local needs_configure = {}
     for _, task_def in ipairs(all_tasks.configure) do
         local lw_meta = task_def.loomworks
         if not lw_meta then goto next end
 
-        local unit = lw_meta.unit
-        local state = unit:state()
-        local project_needs_refresh = unit._project and unit._project.needs_refresh
-        if state == "unconfigured" or state == "configure_failed"
-                or unit:is_stale() or project_needs_refresh
-                or unit:missing_build_dir_needs_reconfigure() then
+        local reason = lw_meta.unit:configure_reason(forced, lw_meta.profile)
+        if reason then
+            lw_meta.configure_reason = reason
             needs_configure[#needs_configure + 1] = task_def
         end
 
@@ -761,6 +882,29 @@ local function filter_unconfigured_tasks(all_tasks)
     end
 
     return needs_configure
+end
+M._filter_unconfigured_tasks = filter_unconfigured_tasks
+
+--- The one-line "why this configure runs" report (headless §16.4, core
+--- §8.1 `reconfigure`): the gate's reason plus the module's classification,
+--- e.g. `configure: first configure`, `full reconfigure (--fresh): configure
+--- record from an older lw`, `reconfigure (in place): compiler launcher
+--- changed`. `meta` is a configure task's `loomworks` table or a plan step
+--- (same field names). nil when no reason was recorded.
+--- @param meta table { configure_reason?, reconfigure?, reconfigure_detail? }
+--- @return string|nil
+function M.configure_reason_line(meta)
+    local reason = meta and meta.configure_reason
+    if not reason then return nil end
+    local kind = meta.reconfigure
+    if reason == "first configure" or reason == "build directory missing"
+            or kind == nil or kind == "initial" then
+        return "configure: " .. reason
+    elseif kind == "full" then
+        local how = meta.reconfigure_detail
+        return "full reconfigure" .. (how and (" (" .. how .. ")") or "") .. ": " .. reason
+    end
+    return "reconfigure (in place): " .. reason
 end
 
 --- Whether a unit's tests build themselves when run headlessly — true iff the
@@ -793,15 +937,17 @@ end
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
 --- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
---- @param opts? table { for_test?: boolean } for_test drops the build step of
----   any unit whose native test runner self-rebuilds — configuration is still
----   planned for every unit.
---- @return table[]|nil steps list of { kind, name, unit, cmd, cwd, env }
+--- @param opts? table { for_test?: boolean, reconfigure?: boolean } for_test
+---   drops the build step of any unit whose native test runner self-rebuilds —
+---   configuration is still planned for every unit; reconfigure forces a FULL
+---   reconfigure of every unit (`lw build --reconfigure`, §16.4).
+--- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, cmd, cwd, env }
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
-    local all_tasks = collect_profile_tasks(profile)
+    local all_tasks = collect_profile_tasks(profile,
+        { force_full_reconfigure = opts.reconfigure or nil })
     if not all_tasks then return nil end
-    local needs_configure = filter_unconfigured_tasks(all_tasks)
+    local needs_configure = filter_unconfigured_tasks(all_tasks, opts.reconfigure)
 
     local build_tasks = all_tasks.build
     if opts.for_test then
@@ -824,7 +970,22 @@ function M.plan_profile_build(profile, opts)
                         kind = kind,
                         name = td.name,
                         unit = td.loomworks and td.loomworks.unit or nil,
+                        -- The profile being built (core §5.1): the headless
+                        -- runner records the configure against it.
+                        profile = td.loomworks and td.loomworks.profile or nil,
                         build_dir = td.loomworks and td.loomworks.build_dir or nil,
+                        -- Module record that replaces the unit's record after a configure
+                        -- (cache_launcher, passed_options, …) and the
+                        -- full-reconfigure reset list (core §5.1 / §8.1); the
+                        -- headless runner records / performs them like the
+                        -- editor's task path does.
+                        module_info = td.loomworks and td.loomworks.module_info or nil,
+                        pre_configure_reset = td.loomworks and td.loomworks.pre_configure_reset or nil,
+                        -- Why this configure runs + how the module runs it
+                        -- (the one-line report, §16.4).
+                        configure_reason = td.loomworks and td.loomworks.configure_reason or nil,
+                        reconfigure = td.loomworks and td.loomworks.reconfigure or nil,
+                        reconfigure_detail = td.loomworks and td.loomworks.reconfigure_detail or nil,
                         cmd = spec.cmd,
                         cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
                             and spec.cwd or nil,
@@ -928,7 +1089,8 @@ function M.plan_profile_test(profile, opts)
     for _, r in ipairs(runnable) do
         local junit_dest = opts.junit and junit_dest_for(opts.junit, r.label, multi) or nil
         local ok, spec = pcall(function()
-            return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest })
+            return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest,
+                profile = profile })
         end)
         if not ok then
             -- A throwing runner is a bug, not "no tests" — surface it

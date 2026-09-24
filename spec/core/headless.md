@@ -94,6 +94,34 @@ resolves from live detection when available, otherwise from cached tool
 data (§1.5, §2.3); resolution MUST succeed from cache alone when detection
 has not run.
 
+**Why a configure runs.** Whenever a headless build (re)configures a unit it
+reports, on one line before the configure's output, why and how: the build
+gate's reason — `first configure`, `previous configure failed`, `forced
+(--reconfigure)`, a staleness reason (§5.1: `configure record from an older
+lw`, `options changed (<names> added|changed|removed)`, `module configuration
+changed`, `configuration environment changed`, `compiler launcher changed`),
+`project files changed`, or `build directory missing` — prefixed with the
+module's classification (§8.1 `reconfigure`): `configure: <reason>` for a
+first configure (or when the module does not say), `full reconfigure
+(<mechanism>): <reason>`, or `reconfigure (in place): <reason>`. For example
+`full reconfigure (--fresh): configure record from an older lw`. The editor
+logs the same line.
+
+**Forced full reconfigure.** `lw build --reconfigure` configures every unit of
+the profile before building, whether or not the gate would, forcing each
+module's **full** reconfigure (§5.1 *Forced full reconfigure*) — for a build
+tree whose configure state the user no longer trusts. Its reason reads
+`forced (--reconfigure)` (`first configure` for a never-configured unit). It
+is transient (nothing is recorded that makes a later build reconfigure again).
+
+**Failure after a cache-compatibility finding.** The post-configure scan (§5.1,
+§8 `cache_compat_scan`) is advisory and never gates the build. When a build
+step then fails for a unit whose recorded scan has an `"error"` finding (the
+applied launcher fails those compiles), the runner's closing failure message
+gains one line pointing back at it, e.g. `build failed — 1870 compiles use
+/Zi, which sccache cannot cache (see the scan finding above; lw health; lw help
+cache)`.
+
 A build is additionally gated by the output-artifact conflict rule (§16.28):
 a unit whose build would overwrite an artifact currently owned by another
 built unit is refused unless the caller forces it.
@@ -128,6 +156,11 @@ Success or failure is reported via process exit status; task output streams
 to standard output and standard error. No editor UI is required or
 produced.
 
+Every command documents itself: `lw help <command>` and, equivalently,
+`--help` / `-h` anywhere among a command's own arguments (never after the `--`
+that hands the rest to a build tool or program) print that command's help and
+exit 0 — the flag is never read as an operand such as a profile name.
+
 ### 16.8 Host-determined module availability
 
 The set of modules available to a host is determined by that host. A build
@@ -152,16 +185,33 @@ explicit publish. A read-only / CI invocation runs no management operation.
 
 Configuration editing addresses a configuration's fields by a **dotted param
 grammar** (`get`/`set`/`unset`): a bare field (`inherits`, `languages`, a
-module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`), and —
-for a compiler-family variable override (§1.3.1) — the three-segment
-`overrides.<family>.<name>` where `family ∈ {clang, gcc, msvc}` (clang-cl
-counts as clang). `set` writes the value; an empty value or `unset` clears it,
+module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`,
+`env.<NAME>` for the configuration environment, §1.3.3), and — for a
+compiler-family override (§1.3.1) — the three-segment
+`overrides.<family>.<name>` for a variable, or the four-segment
+`overrides.<family>.env.<NAME>` for an environment variable, where
+`family ∈ {clang, gcc, msvc}` (clang-cl counts as clang). A dotted param outside
+these namespaces (e.g. `foo.bar`) is **rejected** with an error listing the
+valid forms rather than stored as a literal dotted field name; module fields
+are bare names. A reserved compiler-driver name in `env.<NAME>` or
+`overrides.<family>.env.<NAME>` (invariant 13, matched case-insensitively —
+§1.3.3) is **refused** by the same validation the editor applies: `set` exits 1
+and writes nothing (the runtime strip-with-warning applies only to a
+hand-edited file). Setting `env.PATH` (any case) succeeds but prints a warning
+on stderr that it replaces the tool's PATH (§1.3.3). `set` writes the value; an empty value or `unset` clears it,
 pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the
 project's `variables` is rejected by the same validation the editor applies
-(§1.3.1). `get` returns the resolved string for the full path, or the
-sub-dict for `overrides` / `overrides.<family>`.
+(§1.3.1). A `set`/`unset` that changes nothing — `unset` of a param that
+is not set, or `set` to the value it already has — writes nothing, says so
+(`… is not set` / `(unchanged)`) and exits 0; the same holds for clearing a
+profile fill value that is not set. A reminder to publish is printed only after
+an edit that **changed** a configuration reaching the published snapshot
+(§2.4 effective intent). `get` returns the resolved string for the full path, or the
+sub-dict for `env`, `overrides`, `overrides.<family>` and
+`overrides.<family>.env`. `show` lists the configuration's `env` alongside its
+`options`.
 
 A management host MAY also **rename** an item in place — a project (by key), a
 user configuration (by `(project, configuration)`), or a configuration set (by
@@ -390,7 +440,10 @@ would use, known once the profile pins a toolchain, so the query is valid before
 any build has run. Introspection is scoped to a `(profile, project)` pair, since
 a build directory is a per-project coordinate; the reported facts a caller MAY
 request include the build directory, the pinned configuration, the last known
-build state, and the resolved toolchain.
+build state, the resolved toolchain, and the **resolved compiler cache** — the
+launcher core resolved from the effective `cache` policy (§1.3.2), or that no
+cache is in effect. The compiler-cache fact reports the resolved launcher name
+and whether it is currently present; it never spawns the cache tool.
 
 Introspection MAY also **list a resolved profile's launchable targets** — the
 runnable things a launch (§16.17) can name: each project's **command launch
@@ -410,7 +463,10 @@ Introspection MAY also present a **single-profile detailed view** — the human
 overview (below) narrowed to one resolved profile and only the items it
 references: its **configuration set** and that set's project→configuration
 mappings, and for each project the set maps its configuration, resolved
-toolchain and last known build state; the profile's **toolchains**; and its
+toolchain and last known build state; the profile's **toolchains**; its
+**resolved compiler cache** (the launcher in effect, or that caching is off /
+unavailable / not enabled automatically for an MSVC-style compiler, §1.3.2 —
+the latter pointing at the compiler-cache help topic, §16.31); and its
 **launchable targets** with the default marked, incomplete when a project is not
 yet configured, exactly as the target listing above. Its **diagnostics** are
 scoped to the profile — those concerning the profile itself, its configuration
@@ -423,7 +479,10 @@ does not exist, or omitting one with no active profile, is an error that names
 the problem. Being read-only, this view MAY resolve the active profile even in a
 non-interactive host (§16.9).
 
-The human status overview is likewise read-only, and when no workspace resolves
+The human status overview is likewise read-only — it runs no build and authors
+no project or build-system files (§16.9), though it MAY refresh its own internal
+advisory caches under `.nvim/` (the suggestion cache of §16.31, whose passive
+tier is computed lazily on first display). When no workspace resolves
 here (§1.1) it points the user at how to start one, with each suggested command
 on its own line. When a workspace does resolve, the overview MAY present the
 active profile's launchable targets, marking its default target and — when the
@@ -444,6 +503,25 @@ invocation report a non-zero exit status when any diagnostic is present (for
 CI); without it the overview always exits successfully, since it neither builds
 nor manages state (§16.9). `--check` never changes what is rendered — only the
 exit status.
+
+The overview and the single-profile view report the profile's **compiler cache**
+alongside its toolchain: the resolved launcher, or that caching is off /
+unavailable / not enabled automatically (`auto` on an MSVC-style compiler,
+§1.3.2 — rendered `auto (off for MSVC-style)` with a pointer to the
+compiler-cache help topic, §16.31), mirroring the editor's `Cache:` row
+(`spec/ui.md`). Cache **usage
+statistics** (hit rate, size) are **off by default** — reading them spawns the
+cache tool, a cost the read-only overview must not pay implicitly — and are shown
+only under an explicit `--cache-stats` flag, which runs the tool's own stats
+query for the profile's resolved launcher and folds the result into the report.
+When no launcher is resolved, `--cache-stats` reports that there is nothing to
+query rather than erroring; with **no active profile** (or an active profile
+without a C/C++ project) it prints a one-line reason instead of nothing.
+
+The overview also renders the **suggestions** count line (`spec/ui.md` §1.1) when
+the suggestion framework has findings — a one-line advisory pointing at
+`lw health` (§16.31). Suggestions are advisory: they never change the overview's
+exit status and are independent of `--check`.
 
 ### 16.19 Convention migration
 
@@ -921,3 +999,210 @@ uses — reset introduces no private channel:
   file as "no database" rather than pointing the server at a missing path, and
   the next configure regenerates it, at which point the server reattaches. No
   server restart is required of reset itself.
+
+### 16.31 Headless health and suggestions
+
+A headless **health** report lists the workspace's **suggestions** in full — the
+detail behind the compact `N suggestions` line that the status overview (§16.18)
+and the editor status page (`spec/ui.md` §1.1) show. Health is read-only: it
+performs no build and authors nothing (§16.9).
+
+Suggestions come from an **extensible suggestion-provider framework**. A provider
+inspects the resolved workspace and returns zero or more items, each a
+`{ title, detail, remedy }` triple: `title` is the one-line summary, `detail`
+explains why it fires, and `remedy` is the concrete action the user can take.
+Providers are advisory only — an item never gates a build, never fails
+`--check` (§16.18), and is distinct from a **diagnostic** (a structural problem
+that does gate operations). The framework is the general surface; individual
+providers ship independently, and the health report aggregates whatever providers
+are registered.
+
+**Actionable vs informational items.** An item is one of two **kinds**. An
+**actionable** item is a nag: something the user can act on, carrying a `remedy`.
+An **informational** item affirms a healthy state (for example, that a compiler
+cache is in use) and carries no remedy. Both appear in the full health report, but
+only actionable items contribute to the compact `N suggestions` count (§16.18,
+`spec/ui.md` §1.1) — an affirmative note never inflates the nag total. The report
+renders informational items distinctly (as positive status, not a warning).
+
+**Provider #1 — compiler cache.** When the workspace has one or more C/C++
+projects (a project whose module reports the caching-relevant language), the
+provider gives a **one-line verdict** — a title and, for an actionable item, a
+short remedy; the explanations (why `auto` is off for MSVC-style compilers, how
+to opt in, the debug-information adjustment and the post-configure scan, tool
+configuration through the environment, the not-applied cases, per-platform
+install commands, reconfigure behavior) live in a **help topic** the items point
+at (`lw help cache`, also reachable as `lw help sccache` / `lw help ccache`).
+Health must **never claim a cache is in use** when the build would not use it.
+
+With an **active profile** that has a C/C++ configuration, the item reflects
+**that profile's resolved cache status** — the same resolution its `Cache` row
+shows (§16.18), so the health report never contradicts the status overview:
+
+- its effective policy is `off` → nothing (the user opted out for that
+  configuration, as below);
+- its C/C++ configuration is one the module **cannot apply** a launcher to (§8
+  `cache_launcher_applicable` returned `false`) → an **informational** item,
+  "Compiler cache not applied (`<reason>`) — lw help cache", whether or not a
+  launcher is installed (installing one would not help);
+- its launcher **resolved** → **informational** "Compiler cache: using `<tool>`";
+- its policy names a launcher explicitly (`cache=<tool>`) that is **not found**
+  → **actionable** "`cache=<tool>` set but `<tool>` not found" (remedy: install
+  it — `lw help cache`), never a "using" item for some other launcher;
+- a compiler cache is present but the configuration uses an **MSVC-style**
+  compiler under `auto` (§1.3.2: no launcher) → **informational** "`<tool>`
+  available — not enabled for MSVC-style (lw help cache)";
+- otherwise → **actionable** "No compiler cache found", whose remedy names the
+  platform-customary launcher (`sccache` on Windows, `ccache` on Linux/macOS —
+  an install recommendation only, not the `auto` preference, §1.3.2) and, for an
+  MSVC-style compiler, that it must then be opted into.
+
+With **no active profile**, every profile that has a C/C++ project is evaluated
+through the same resolver (its own `Cache` status):
+
+- every such profile resolves `off` → nothing;
+- some profile resolves a launcher → **informational** "Compiler cache: using
+  `<tool>` (`<profiles>`)", naming the profiles that would use it;
+- otherwise, a profile's explicit `cache=<tool>` is not found → the
+  **actionable** not-found item, naming the profile;
+- otherwise, a launcher is present on the toolchain path → **informational**
+  "`<tool>` available — not enabled (lw help cache)" (with "for MSVC-style" when
+  a profile is MSVC-style under `auto`); with no profiles at all, "`<tool>`
+  available (lw help cache)";
+- otherwise → the **actionable** install item as above.
+
+A **cache-compatibility finding** recorded by the post-configure scan (§5.1, §8
+`cache_compat_scan`) for a unit of the active profile — or, with **no active
+profile**, of any profile (consistent with the no-active-profile evaluation
+above; a unit shared by several profiles is reported once) — gives an
+**actionable** item per affected configuration: `title` states that the applied launcher will
+fail (severity `"error"`) or cannot cache (severity `"warning"`) some compiles,
+`detail` lists the affected groups (target or directory) with the offending
+option and unit counts (a pervasive finding collapsed to one line, §8), and
+`remedy` is one line naming both ways out — switch those compiles to a
+cache-compatible option (module specs; for a pervasive finding, remove the
+directory-wide option) or turn caching off with the command for the mechanism
+that enabled it (`lw profile set <profile> <project> cache off` for a profile
+fill, `lw config set <project> <configuration> overrides.<family>.cache off` for
+a compiler-family override, `… variables.cache off` for a configuration
+variable, §8) — and the help topic. A scan that
+was **skipped** for lack of compile-command data yields an **informational**
+item saying the check was skipped for that configuration (detail: why), so a
+clean report is never mistaken for a verified one.
+
+The provider is silent (neither affirms nor nags) when the workspace has no C/C++
+project, or when every C/C++ project has pinned `cache` to `off`, since the user
+has opted out. It reads only already-resolved workspace state and the
+toolchain-path index; like the rest of introspection it does **not** spawn the
+cache tool. Cache usage statistics remain behind the explicit `--cache-stats` flag
+of the status overview (§16.18), not the health report.
+
+This provider is **workspace-scoped** — it needs a resolved workspace and
+contributes nothing without one (below).
+
+**Passive vs on-demand providers.** A provider is one of two kinds. A **passive**
+provider is side-effect-free and cheap — it reads resolved state only, never
+spawns a tool and never touches the network — and so contributes to *both* the
+frequently-rendered `N suggestions` count (§16.18, `spec/ui.md` §1.1) and the
+full health report. An **on-demand** provider is permitted a network call or
+other expensive/one-shot check; it runs **only** when health is explicitly
+invoked and is deliberately excluded from the passive count. This split is a
+hard requirement: a passive status render MUST NOT perform network I/O. Provider
+#1 (compiler cache) is passive; the update-availability provider below is
+on-demand.
+
+**Cached two-tier model.** Because passive detection is no longer free — even a
+passive provider may probe the toolchain path, and the provider set grows over
+time — the suggestion results are cached so the frequently-rendered
+`N suggestions` count does not repeat the work on every render. The cache is a
+small workspace-local file, separate from and independent of the build-state
+cache (its own schema, versioned on its own): it is an internal advisory cache
+under the workspace's `.nvim/` directory, never a project or build-system file,
+so "health authors nothing" (§16.9) continues to hold. It records two tiers:
+
+- a **local tier** — the results of the passive (workspace-scoped, local-detection)
+  providers — stored with the time they were computed and an **invalidation key**:
+  a cheap fingerprint of the inputs those providers read (the projects and their
+  cache policy, the resolved tool selection, the platform, and the recorded
+  post-configure cache-compatibility results). When the fingerprint
+  changes, the local tier is stale;
+- a **network tier** — the results of the on-demand (network-backed) providers —
+  stored with the time they were computed, and governed by a **time-to-live**
+  (on the order of a day).
+
+The two refresh tiers, over that one cache, are:
+
+- **Passive collect** (the `N suggestions` count of §16.18 and `spec/ui.md` §1.1,
+  and the editor status page) reads the cache. If the local tier is absent or its
+  invalidation key no longer matches the current inputs, it **recomputes the
+  passive providers**, rewrites the local tier, and uses the fresh result — a
+  lazy, compute-on-first-use that stays cheap on every subsequent render. It
+  **never** computes the network tier: it includes whatever network-tier items
+  the cache already holds (informational, however old — so a finding surfaced by a
+  prior health run is still reflected in the count) but performs no network I/O.
+  This preserves the hard invariant that a passive render never touches the
+  network.
+- **On-demand health** (`lw health`) is the full refresh. It **always** recomputes
+  the local tier, and recomputes the network tier when the cached network tier is
+  older than its TTL (or when the user forces a refresh); otherwise it reuses the
+  cached network tier, so back-to-back health runs do not repeatedly hit the
+  network. It rewrites the cache and reports every item.
+
+**First run and resilience.** With no cache present, a passive collect computes
+only the local tier (never the network), and a health run computes both. The
+cache is advisory and self-healing: a missing, corrupt, or older-schema cache is
+treated as empty and recomputed — it never raises an error and never blocks a
+render or a health run. Writes are atomic. A passive collect outside a workspace
+(no `.nvim/` to key against) simply runs the passive providers directly without
+caching, and a health run outside a workspace runs its workspace-independent
+providers directly (the local tier has nothing to key or store). No background or
+asynchronous network refresh is implied — the network tier is refreshed strictly
+on an explicit `lw health`.
+
+**Provider #2 — update availability (on-demand).** When the host is running a
+versioned release (a source with a comparable version — not a development/fused
+source, and not the in-editor plugin, neither of which self-updates through the
+CLI), this provider resolves the newest release available on the **resolved
+update channel** (§16.29) and, when that is strictly newer than the running
+version, suggests updating. Its `title` is "Update available", its `detail` is
+`<current> → <newest> on the <channel> channel`, and its `remedy` points at the
+self-update command. Version comparison is the same semver-aware ordering used
+for activation (§16.29), so a pre-release never reads as "newer" than the full
+release it precedes.
+
+Resolving the newest version is a **network** operation (the releases API for
+`unstable`, otherwise a lightweight read of the channel base's manifest to learn
+the version it names — never a bundle download, and this availability probe
+applies no integrity verification; a real self-update still verifies signature +
+hash per §16.12). Because it is network-backed it is on-demand: it never runs on
+the passive `N suggestions` count. It degrades **silently** — an offline host, an
+HTTP/API error, an unknown channel, or an already-current version all yield *no*
+suggestion and no error output. The network-derived version is validated before
+it is displayed and is never interpolated into a URL or path.
+
+**Channel override surfaced.** When a release-source location override (a mirror
+— `LOOMWORKS_RELEASE_URL` or the `release-url` setting) is in effect *and* a
+non-default channel is configured, health reports that the override **supersedes**
+the channel (§16.29): the configured channel is effectively ignored, updates
+come from the override. This item is network-free (it reads only the resolved
+override + channel) but is surfaced in the health view rather than the passive
+count. It is the health-view counterpart of the inline self-update warning for
+the same state; both derive from the identical override/channel resolution
+rather than duplicating it.
+
+**Health runs without a workspace.** A provider is either **workspace-scoped**
+(it inspects the resolved workspace — e.g. the compiler-cache provider) or
+**workspace-independent** (it ignores the workspace — the update-availability and
+channel-override providers, which concern the running `lw` release itself). When
+health is invoked outside a configured workspace, the workspace-independent
+providers still run and report; the workspace-scoped ones simply contribute
+nothing. So `lw health` in a plain directory still surfaces an available update or
+a channel override — it does not fall silent merely because no workspace is
+loaded. The report leads with the same worktree/init hint the status overview
+shows (§16.18) so the absence of project-scoped items is explained.
+
+**Builds are unaffected and need no new flags.** A headless build honors the same
+`cache` policy resolution and launcher staleness as the editor (§1.3.2, §5): the
+launcher is resolved from policy, applied by the module, and reconfigured on
+change through the ordinary build gate. No build-time flag turns caching on or
+off — that decision lives entirely in the `cache` policy variable.

@@ -268,8 +268,9 @@ entries with `+ Add tool` / `D`. Multi-language profiles (e.g. cmake
 The **compiler is chosen solely by the profile's tool**. A project
 configuration cannot override it through cmake cache variables
 (`CMAKE_<LANG>_COMPILER`) or environment (`CC` / `CXX` / …): those keys are
-reserved — rejected when you edit a configuration, and ignored (with a
-`⚠ ignored compiler override` marker) if present in a hand-edited config.
+reserved — rejected when you edit a configuration (`lw config set` exits 1),
+and ignored (with a warning and a `⚠ ignored compiler override` marker) if
+present in a hand-edited config. Environment names match in any case.
 To build with a different compiler, pick a different tool. Compiler *flags*
 (`CFLAGS` / `CXXFLAGS`), launchers, toolchain files, and CMake presets are
 unaffected.
@@ -291,6 +292,114 @@ The resulting kit appears in the toolchain picker like any other,
 including its family in the label: `Clang 19.0.0 (custom)`, `GCC
 13.2.0 (custom)`. Profile pinning, completeness checks, and the
 diagnostic gates all work unchanged.
+
+#### Compiler caching (ccache / sccache)
+
+loomworks wires a compiler cache into cmake and meson builds — automatically for
+GCC / Clang, on request for MSVC / clang-cl. The behavior is chosen by a reserved
+project variable, `cache`, holding a **policy**:
+
+- `auto` (the default when unset) — for GCC / Clang, use `ccache` (or `sccache`
+  if only that is installed), whichever is found on `PATH`; if neither is
+  installed, builds run uncached. For **MSVC / clang-cl**, `auto` means **off**:
+  sccache makes any compile that writes a shared `.pdb` (`/Zi`, `/ZI`) fail, and
+  such flags can come from dependencies you don't control, so caching there is
+  opt-in.
+- `ccache` / `sccache` — use that launcher (when present). This is how you
+  enable caching for MSVC / clang-cl, e.g.
+  `lw config set <project> <configuration> variables.cache sccache`
+  (or `overrides.msvc.cache` to scope it to MSVC; clang-cl uses
+  `overrides.clang.cache`).
+- `off` (or `false`) — no cache.
+
+Because `cache` is an ordinary variable, it rides the same layers as everything
+else: set it per configuration, per compiler family via `overrides`
+(`{ "msvc": { "cache": "off" } }`), or per machine with `lw profile set <profile>
+<project> cache <policy>`. There is no separate on/off switch — absence means
+`auto`.
+
+Under cmake, loomworks injects `CMAKE_C/CXX_COMPILER_LAUNCHER` on the Ninja /
+Makefile configure path. CMake ignores the launcher under the **Visual Studio**
+and **Xcode** generators, and a `--preset` configuration owns its own cache
+variables, so there loomworks injects nothing, warns once, and the profile's
+row reads `Cache: not applied (preset)` / `Cache: not applied (<generator>
+generator)` (`lw health` says caching needs a Ninja or Makefile generator);
+on MSVC with a cache enabled it also switches debug info to embedded
+(`/Z7`, plus `CMAKE_POLICY_DEFAULT_CMP0141=NEW` so it works for projects with an
+older `cmake_minimum_required`), unless you've pinned a conflicting value. That
+only changes CMake's default flags, so after configuring an MSVC build with a
+cache loomworks scans the compile commands for leftover `/Zi` / `/ZI` (e.g. from
+a `FetchContent` dependency) and warns loudly, per target — sccache will fail
+those compiles, ccache won't cache them. Fix them by switching those targets to
+`/Z7`, or turn the cache off — the warning names the exact command for how you
+turned it on (`lw profile set <profile> <project> cache off` for a profile fill,
+`overrides.<family>.cache` or `variables.cache` for a configuration);
+loomworks never silently turns off a cache you asked for. When (nearly) every
+target has `/Zi` the warning is a single line ("every target (N units) compiles
+with /Zi") — that comes from a directory-wide `add_compile_options` /
+`CMAKE_<LANG>_FLAGS` overriding the `/Z7` loomworks asked for (cl warns D9025
+"overriding '/Z7' with '/Zi'"), so remove it there. The scan is advisory: the
+build still runs, and if it then fails, lw's last line points back at the
+finding. If you used MSVC caching via `auto` in an earlier beta, your next
+build reconfigures without the launcher; set `cache=sccache` to keep it. Under
+meson, loomworks pins the launcher+compiler explicitly through a generated
+native file (`--native-file`, rather than relying on meson's own ccache
+auto-detect — and space-safe, unlike the `CC`/`CXX` env string) so both build
+systems behave identically.
+Changing the policy — or installing/removing the cache tool — reconfigures the
+affected build automatically on the next build. Under cmake a change that only
+moves the launcher is applied in place (the one change loomworks knows CMake
+applies faithfully that way; turning the cache **off** retracts the launcher from
+`CMakeCache.txt` with `-U`), and the first build then rebuilds objects to
+repopulate the cache — expected. If the change also moves the MSVC `/Z7`
+settings it is a full `cmake --fresh` reconfigure, and under meson every such
+change is a full `meson setup --wipe`, because meson fixes the compiler at setup.
+Run `lw health` for a
+one-line verdict on the cache state of a C/C++ workspace — for the active profile
+it always agrees with that profile's `Cache` row: "Compiler cache: using
+`<tool>`", "cache=`<tool>` set but `<tool>` not found" (actionable), "`<tool>`
+available — not enabled for MSVC-style (lw help cache)" when `auto` left an MSVC
+build uncached, "Compiler cache not applied (`<reason>`)", an actionable item
+listing any `/Zi` targets the scan found, or "No compiler cache found"
+(actionable). With no active profile it looks at every profile and only says
+"using" when one of them would use the cache (and reports `/Zi` findings of
+every profile's configurations). **`lw help cache`** (also `lw help
+sccache` / `lw help ccache`) explains all of it — the policy values, how to opt
+in for MSVC, the `/Z7` switch and `/Zi` scan, `SCCACHE_*` settings through `env`,
+the not-applied cases and install commands. The status overview shows a compact
+`N suggestions` line — that count is only the **actionable** items, so the
+affirmative "using `<tool>`" note (shown in `lw health`, not counted) never adds to
+it. `lw status --cache-stats` folds in the cache tool's own hit-rate statistics
+(off by default — it spawns the tool; with no active profile it says so). `lw profile show [<profile>]` renders the
+same `Cache` row for any profile, and `lw profile query <profile> <project> cache`
+prints it for scripts (e.g. `sccache`, `off`, `auto (off for MSVC-style)`,
+`ccache (not found)`, `not applied (preset)`).
+
+`lw health` also checks whether a newer `lw` release is available on your update
+channel (`stable`/`unstable`, see [Standalone `lw` runner](#standalone-lw-runner))
+and, if so, suggests
+`lw self-update` — showing `<current> → <newest> on the <channel> channel`. This
+check makes a network request, so it runs **only** when you invoke `lw health`,
+never on the passive `N suggestions` count; offline or on any API error it simply
+reports nothing. If a `release-url` override (or `LOOMWORKS_RELEASE_URL`) is in
+effect while a non-default channel is set, health also notes that the override is
+superseding the channel — the state where your `--channel` is effectively ignored.
+The update and channel-override checks concern the `lw` release itself, not the
+workspace, so `lw health` reports them **even outside a configured workspace** —
+run it in a plain directory and it still tells you an update is available.
+
+Health results are cached in `.nvim/loomworks.health.json` (an internal advisory
+cache, separate from the build cache) so the passive `N suggestions` count stays
+cheap and never repeats the detection on every render — the local checks are
+recomputed only when their configuration inputs change, and `lw status` never
+performs the network update check at all. That fingerprint deliberately leaves
+out what is on your `PATH` (probing it on every render would defeat the cache),
+so installing or removing ccache/sccache does not by itself refresh the passive
+`N suggestions` count — the next `lw health` (which always recomputes the local
+checks) does. `lw health` always refreshes the local checks and
+refreshes the network update check at most once a day; `lw health --force` (alias
+`--refresh`) refreshes it now, ignoring that throttle. The cache is self-healing:
+if it is missing or corrupt it is simply recomputed.
 
 ### Languages
 
@@ -505,7 +614,10 @@ lw profile set App sdk_root /opt/sdk/3.2           # fill the blank
 *blank*. `lw project show <project>` lists a project's declarations. Declaring
 is the bootstrap for both the per-configuration override
 (`lw config set variables.<name>`) and the per-profile fill
-(`lw profile set`), which require the variable to already be declared.
+(`lw profile set`), which require the variable to already be declared — except
+the reserved `cache` policy, which is pre-declared and can be set with
+`lw profile set <profile> <project> cache <policy>` without declaring it (see
+[Compiler caching](#compiler-caching-ccache--sccache)).
 
 **Compiler-specific overrides.** A configuration may add an `overrides` block
 keyed by compiler family (`clang`, `gcc`, `msvc`) that overrides variable
@@ -535,8 +647,62 @@ matching `overrides[family]` wins over the plain `variables` value, but a
 nearer plain value shadows a farther override. Because the *resolved* option
 value is fingerprinted, editing a variable default or a compiler override
 that changes a `-D` value makes the configuration stale (auto-reconfigure on
-next build). The resolved values are also available headlessly via
+next build). **Any** change to what a configure is given — an option added,
+changed or **removed**, the configuration `env` (below), the toolchain, the
+compiler-cache launcher — is applied by a **full reconfigure**, because build
+systems compute much of their configuration once, at the first configure, and
+keep old values around: cmake reconfigures with `cmake --fresh` (below CMake
+3.24 loomworks deletes just `CMakeCache.txt` and `CMakeFiles/` instead) and
+keeps your build outputs, so the next build is incremental; meson redoes the
+setup with `--wipe` from exactly the options loomworks passes (meson empties the
+build directory, so that build recompiles everything). The only change applied
+in place is a cmake compiler-launcher-only change, which CMake is known to apply
+faithfully. loomworks re-passes everything it owns, so nothing you configured
+through it is lost; a cache variable you set by hand outside loomworks does not
+survive a full reconfigure. A build directory configured by an older `lw` whose
+record of that configure is incomplete takes exactly one full reconfigure on its
+first build with the newer `lw` (`lw build` prints `full reconfigure (--fresh):
+configure record from an older lw`) — this also clears configure state the
+older version left behind, such as a compiler launcher it no longer applies —
+and builds normally afterwards. `lw build --reconfigure` forces that full
+reconfigure whenever you no longer trust a build tree's configure state. The resolved values are also available headlessly via
 `lw profile query <profile> <project> variables` (or `variables.<name>`).
+
+**Configuration environment.** A configuration may set environment variables
+for its configure, build, clean and test tasks with an `env` map — e.g. a cache
+directory or `CFLAGS`. It inherits along the configuration chain like `options`,
+can be scoped to a compiler family with `overrides.<family>.env`, and values
+expand variables like option values do. It is layered on top of the tool's own
+environment. The compiler-selecting variables (`CC`, `CXX`, …, matched in any
+case — `cc` is `CC` on Windows) are reserved: `lw config set` and the editor
+refuse them, and one found in a hand-edited file is ignored with a warning.
+Setting `PATH` (any case) is allowed but **replaces** the PATH the tool sets up
+(e.g. the MSVC developer environment, so `cl.exe` may no longer be found; a
+`${PATH}` in the value expands to lw's own PATH, not the tool's) — lw warns when
+you set it and once when a task uses it. Changing the environment reconfigures
+on the next build (a full reconfigure, as above).
+
+```json
+"Debug": {
+  "env": { "SCCACHE_DIR": "${workspace_root}/.cache/sccache" },
+  "overrides": { "msvc": { "env": { "SCCACHE_DIR": "D:/sccache" } } }
+}
+```
+
+```sh
+lw config set   App Debug env.SCCACHE_DIR '${workspace_root}/.cache/sccache'
+lw config set   App Debug overrides.msvc.env.SCCACHE_DIR D:/sccache
+lw config unset App Debug env.SCCACHE_DIR
+lw config get   App Debug env            # the whole map
+```
+
+The `lw config get/set/unset` param grammar is: `inherits`, `languages`, a bare
+module field (e.g. `toolchain`), `options.<KEY>`, `variables.<NAME>`,
+`env.<NAME>`, `overrides.<family>.<NAME>` and `overrides.<family>.env.<NAME>`
+(family `clang`, `gcc` or `msvc`). Any other dotted param (`foo.bar`) is rejected
+rather than stored. With MSVC caching enabled, a `/Zi` in a configuration's `CL`
+or `_CL_` environment variable is reported by the post-configure scan (it
+reaches every compile but no compile-command listing shows it).
 
 **Profile variables (machine-specific values).** `default` is optional. A
 variable declared with no default — and no configuration/compiler override — is
@@ -823,7 +989,7 @@ cleanly if that release isn't fetchable) and refreshes the launcher scripts. See
 ### Commands
 
 `lw` with no command prints workspace status and the active profile. Every
-command has detail under `lw help <command>`.
+command has detail under `lw help <command>` (or `lw <command> --help`).
 
 | Command | Description |
 |---|---|
@@ -835,7 +1001,7 @@ command has detail under `lw help <command>`.
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
-| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles) |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)` |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
@@ -847,6 +1013,7 @@ command has detail under `lw help <command>`.
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
+| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Results are cached in `.nvim/loomworks.health.json`; the network update check is throttled to ~once a day (`lw health --force` refreshes it now). Runs outside a workspace too — the update / channel-override checks still report there |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
@@ -975,8 +1142,8 @@ don't use this — install the module plugin the usual way.)
   picks the highest installed `18.x`, and `msvc-17` picks a VS 17 without
   naming the edition.
 - `lw profile query <profile> <project> build-dir` prints one machine-readable
-  fact — also `config`, `state`, `tool` — for archiving artifacts without
-  parsing build output.
+  fact — also `config`, `state`, `tool`, `cache` (the resolved compiler cache),
+  `variables[.<name>]` — for archiving artifacts without parsing build output.
 
 ## Status Page
 
@@ -1232,6 +1399,9 @@ workspace-root/
     │                            source of truth (projects, config sets, profiles,
     │                            active selection, intent overrides).
     ├── loomworks.cache.json     Always gitignored (build state).
+    ├── loomworks.health.json    Always gitignored. Advisory suggestion cache
+    │                            (`lw health` / `N suggestions`); self-healing,
+    │                            recomputed if missing or stale.
     └── build/
         ├── ProjectA/
         │   ├── Debug/

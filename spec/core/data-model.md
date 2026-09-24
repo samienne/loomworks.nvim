@@ -97,6 +97,8 @@ Loomworks configuration fields in the workspace config:
 <type>.options                              — project-wide -D flags
 <type>.configurations.<name>.inherits       — base config(s), string or array
 <type>.configurations.<name>.options        — per-config -D flags
+<type>.configurations.<name>.env            — per-config task environment
+                                              (§1.3.3)
 <type>.configurations.<name>.toolchain      — path to .cmake toolchain file
 <type>.configurations.<name>.generator      — override generator
 <type>.configurations.<name>.languages      — explicit language list override
@@ -257,6 +259,13 @@ each profile on each machine. Key properties:
 Precedence, end to end: `default → configuration inheritance → compiler
 override → (if still blank) active-profile fill value`.
 
+"The active profile" here means the profile the resolution is for: an operation
+on a named profile (building, showing or querying a profile that is not the
+active one) resolves with **that** profile's fill values; only an operation with
+no profile in play (a single configuration's action in the editor) uses the
+active profile's. Staleness is judged in the same context (§5.1 *Resolution
+context*).
+
 **Value expansion**: Variable values can reference built-in variables
 (`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
 `${project_path}`) but NOT other user-defined variables. This prevents
@@ -264,11 +273,16 @@ circular references and keeps resolution simple. Cross-variable references
 are deferred to a future version (with loop detection).
 
 **Reserved names**: User variables cannot use built-in variable names
-(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`).
-The system rejects declarations with reserved names at parse time.
+(`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`) or the
+pre-declared policy name `cache` (§1.3.2), nor the name `env`, which inside a
+compiler-family `overrides` block denotes the environment sub-block (§1.3.3). The
+system rejects *declarations* with reserved names at parse time. `cache` is a special case among the reserved names:
+its *declaration* is likewise rejected, but it may be **overridden** (in
+`variables`, in a compiler-family `overrides` block, or as a profile fill value)
+because it is pre-declared by core — see §1.3.2.
 
 **Override validation**: An `overrides` block is rejected at edit time if a
-name is not declared in the project `variables` (mirroring the configuration
+name (other than the `env` sub-block, §1.3.3) is not declared in the project `variables` (mirroring the configuration
 `variables` override rule), and its keys must be known compiler families
 (`clang`, `gcc`, `msvc`) — an unknown family key surfaces as a workspace
 diagnostic rather than being silently ignored. An option or launch value that
@@ -297,6 +311,140 @@ profile's intent.
   skipping the inheritance chain.
 - Cross-variable references with loop detection.
 - Workspace-level variables (shared across projects).
+
+### 1.3.2 The reserved `cache` variable (compiler-cache policy)
+
+`cache` is a **reserved, pre-declared** project variable that selects a
+compiler-cache **policy** for a configuration. It is not a free user variable:
+like the other reserved names (§1.3.1) it cannot be *declared* or *re-typed* in a
+project `variables` block, but — unlike them — it MAY appear as an **override
+target** in a configuration's `variables`, in a compiler-family `overrides`
+block, and as an active-profile fill value. In other words, `cache` rides the
+**existing** variable machinery (§1.3.1) at every layer; the system introduces no
+separate compiler-cache override mechanism.
+
+- **Type and values.** `cache` is a `string`-typed policy. Its value is one of
+  `auto`, `off` (equivalently `false`), or the name of a specific
+  compiler-cache launcher. The set of concrete launcher names is defined by the
+  modules that apply the cache (see the module specs); core treats any
+  non-`auto`, non-`off` value as "prefer this named launcher".
+- **Default.** When unset at every layer the effective policy is `auto`. There
+  is no separate workspace-level on/off switch in v1 — absence *is* `auto`.
+- **`auto` is compiler-family-aware.** `auto` enables a launcher only for a
+  compiler family on which a launcher is *safe by default* — one whose launchers
+  fall back to a plain, uncached compile when a compile cannot be cached, so the
+  worst case is a cache miss. For the **MSVC-style** families — `msvc`, and the
+  MSVC-ABI clang-cl driver (which counts as `clang` for `overrides`, below, but
+  is MSVC-style here) — an uncacheable compile can instead **fail the build**
+  (a compile that writes debug info to a shared program database, which code
+  outside loomworks' control may request), so under `auto` they resolve to
+  **no launcher**. Caching an MSVC-style build is an explicit opt-in: a named
+  launcher policy at any layer below (configuration, compiler-family override,
+  or profile fill). Any concrete launcher may be named on an MSVC-style family;
+  the module specs define what applying it entails (e.g. the debug-info format
+  the cache requires) and how incompatible compiles are reported.
+- **Resolution layers.** `cache` uses the **same** precedence machinery as a
+  §1.3.1 variable that declares *no project default* — so it is
+  profile-fillable — with the built-in `auto` standing in for the "blank"
+  terminal: `configuration inheritance → compiler-family override →
+  active-profile fill → built-in auto`. The distinction from a normal blank
+  variable is that an unfilled `cache` is **never** a build-blocking blank
+  (§15): it resolves to `auto` and the profile stays complete. A compiler-family
+  `overrides` entry (`clang` / `gcc` / `msvc`) lets one configuration ask for a
+  different policy per compiler family, and the active-profile fill is the
+  machine-local layer (a CI box may pin one launcher while a laptop turns it
+  `off`) — both come free from the existing machinery, with no cache-specific
+  override code.
+
+  ```json
+  "cmake": {
+      "configurations": {
+          "Debug": {
+              "variables": { "cache": "auto" },
+              "overrides": { "msvc": { "cache": "sccache" } }
+          }
+      }
+  }
+  ```
+
+- **Policy → launcher is derived, never stored.** The *policy* is workspace
+  state (it lives in the resolved variable); the *resolved launcher* (a concrete
+  executable path for the active compiler family) is **derived** — core computes
+  it from the policy, the active tool's compiler family, and toolchain-path
+  presence each time it builds a module context (§8.1 `compiler_cache`). It is
+  never written to `user.json`, `loomworks.json`, or the cache as a value; it is
+  recorded only into the configure task's `module_info` for staleness comparison
+  (§5). A change to the resolved launcher — the policy changed, or the launcher
+  appeared/disappeared on the search path — makes an already-configured unit
+  stale and reconfigures on the next build (§5, module §11). This includes a
+  change in what `auto` *means* for a family: a unit configured while `auto`
+  still resolved a launcher for an MSVC-style family recorded that launcher, so
+  it now differs from the resolved "none" and reconfigures without it on its next
+  build.
+
+### 1.3.3 Configuration environment (`env`)
+
+A configuration MAY carry an **`env`** field: a map of environment-variable name
+→ string value that loomworks sets for the configuration's **configure, build,
+clean and test** tasks. It is a generic configuration field, parallel to `options`
+and `variables`, and uses the same machinery:
+
+- **Inheritance.** `env` follows the configuration inheritance chain like
+  `options`: bases depth-first left-to-right, then the configuration's own
+  entries (later wins, per variable name).
+- **Compiler-family overrides.** A compiler-family `overrides` block (§1.3.1)
+  may carry an `env` sub-block — `overrides.<family>.env.<NAME>` — applied only
+  when the active tool's compiler belongs to that family. Within one level a
+  matching family entry wins over the plain `env` entry; chain position
+  dominates, exactly as for variables (a nearer plain value shadows a farther
+  family entry).
+
+  ```json
+  "Debug": {
+      "env": { "SCCACHE_DIR": "${workspace_root}/.cache/sccache" },
+      "overrides": { "msvc": { "env": { "SCCACHE_DIR": "D:/sccache" } } }
+  }
+  ```
+
+- **Expansion.** Values expand exactly like option values: built-in variables,
+  the project's resolved variables (§1.3.1, compiler overrides and profile fill
+  included), then the process environment.
+- **Composition.** The resolved configuration environment is layered **on top
+  of** the tool's environment (a tool may carry one, e.g. an SDK kit's), so a
+  configuration value wins over a tool value of the same name (same name
+  ignoring case on a case-insensitive host). Test runs layer
+  a test's own declared environment on top of it.
+- **Reserved names.** The compiler-driver variables reserved by invariant 13
+  (§15: `CC`, `CXX`, …) may not be set. Names are matched
+  **case-insensitively** on every host — environment names are
+  case-insensitive on Windows (`cc` *is* `CC` there), and a configuration is
+  shared across hosts, so a name that would select the compiler anywhere is
+  refused everywhere. They are **refused at edit time** (the editor, and the
+  headless `set`, which exits non-zero, §16.9) and, if present from a
+  hand-edited file, stripped when the environment is composed, with a one-time
+  warning and the non-blocking diagnostic. Everything else — `*FLAGS`,
+  cache-tool settings such as a cache directory — is allowed.
+- **`PATH`.** `PATH` (any case) is not reserved, but a value for it
+  **replaces** the tool's PATH for every task of the configuration (e.g. the
+  MSVC developer environment, so the compiler may no longer be found; a
+  `${PATH}` reference expands from the process environment, not the tool's).
+  The host warns when it is set and once at runtime when a task uses it. On a
+  case-insensitive host the composition treats names case-insensitively, so a
+  configuration `Path` replaces the tool's `PATH` rather than both reaching the
+  process.
+- **Persistence.** `env` lives in the configuration entry in `user.json`
+  (working copy) and is published to `loomworks.json` with the configuration
+  under the usual intent model (§2.4). It is never written to the cache except
+  as the configure snapshot below.
+- **Staleness.** The resolved configuration environment is a configure input:
+  core records it with the unit's configure record and `ConfigUnit:is_stale()`
+  compares it with the current resolution, so adding, changing or removing a
+  variable (directly, via a base, via a compiler override, or via a variable it
+  references) makes a configured unit stale and the build gate reconfigures it
+  — a **full** reconfigure (§5.1), because build systems read parts of their
+  environment only at first configure. A unit configured before the record
+  existed compares as having had no configuration environment (none was
+  applied then).
 
 ### 1.4 Configuration Set
 

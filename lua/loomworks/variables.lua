@@ -7,13 +7,36 @@
 
 local M = {}
 
---- Built-in variable names that user declarations cannot use.
+--- Built-in variable names that user declarations cannot use. These are the
+--- expandable built-ins (`${workspace_root}` …); they double as the allowed
+--- reference set for option/launch expansion validation.
 M.RESERVED_NAMES = {
     workspace_root = true,
     build_dir = true,
     variant = true,
     config_set = true,
     project_path = true,
+}
+
+--- Pre-declared policy variables (core §1.3.2). Unlike `RESERVED_NAMES`, these
+--- are NOT expandable built-ins — they are core-owned *policy* names that ride
+--- the ordinary override machinery. A pre-declared name:
+---   * cannot be *declared* or re-typed by a project `variables` block
+---     (rejected at edit time, exactly like a reserved name), yet
+---   * MAY appear as an override target in a configuration's `variables`, in a
+---     compiler-family `overrides` block, and as an active-profile fill value.
+--- `cache` (compiler-cache policy) is the sole pre-declared name in v1.
+M.PREDECLARED_NAMES = {
+    cache = true,
+}
+
+--- Names reserved as override NAMESPACES (spec §1.3.1 / §1.3.3). `env` inside
+--- a compiler-family `overrides` block is the environment sub-block
+--- (`overrides.<family>.env.<NAME>`), so a project variable may not be
+--- declared with that name — it would be ambiguous there. Not an expansion
+--- built-in (so `${env}` stays an ordinary undeclared reference).
+M.NAMESPACE_NAMES = {
+    env = true,
 }
 
 local VALID_TYPES = {
@@ -36,7 +59,7 @@ function M.validate_declarations(variables)
         if type(name) ~= "string" or name == "" then
             return false, "variable name must be a non-empty string"
         end
-        if M.RESERVED_NAMES[name] then
+        if M.RESERVED_NAMES[name] or M.PREDECLARED_NAMES[name] or M.NAMESPACE_NAMES[name] then
             return false, "variable '" .. name .. "' uses a reserved name"
         end
         if type(decl) ~= "table" then
@@ -64,11 +87,18 @@ function M.validate_overrides(overrides, declarations)
         return false, "variable overrides must be a table"
     end
     for name, value in pairs(overrides) do
-        if not declarations[name] then
+        if not declarations[name] and not M.PREDECLARED_NAMES[name] then
             return false, "variable override '" .. name
                 .. "' is not declared in project variables"
         end
-        if type(value) ~= "string" then
+        -- A pre-declared policy variable (§1.3.2, e.g. `cache`) may carry a
+        -- boolean `false` (== policy "off"); a normal variable must be a string.
+        if M.PREDECLARED_NAMES[name] then
+            if type(value) ~= "string" and type(value) ~= "boolean" then
+                return false, "variable override '" .. name
+                    .. "' must be a string or boolean value"
+            end
+        elseif type(value) ~= "string" then
             return false, "variable override '" .. name
                 .. "' must be a string value"
         end
@@ -83,7 +113,9 @@ M.KNOWN_FAMILIES = require("loomworks.cpp_compilers").KNOWN_FAMILIES
 
 --- Validate a configuration's compiler-family `overrides` block against the
 --- project's variable declarations (core §1.3.1). Shape is
---- `family → { name → value }`. Every overridden `name` MUST be declared in
+--- `family → { name → value, env? = { NAME → value } }` — the `env` key is
+--- the family's environment sub-block (core §1.3.3): a map of string values,
+--- exempt from the declared-name rule. Every overridden `name` MUST be declared in
 --- the project `variables` — this is enforced at edit time so a bad block
 --- never reaches the working copy. Unknown family keys are NOT rejected here;
 --- they surface later as a workspace diagnostic (see
@@ -106,14 +138,33 @@ function M.validate_compiler_overrides(overrides, declarations)
                 .. "'] must be a table of name → value"
         end
         for name, value in pairs(entries) do
-            if not declarations[name] then
+            if M.NAMESPACE_NAMES[name] then
+                if type(value) ~= "table" then
+                    return false, "overrides['" .. family .. "']." .. name
+                        .. " must be a table of NAME → value"
+                end
+                for ek, ev in pairs(value) do
+                    if type(ek) ~= "string" or ek == "" or type(ev) ~= "string" then
+                        return false, "overrides['" .. family .. "']." .. name
+                            .. " entries must be non-empty names with string values"
+                    end
+                end
+                goto continue
+            end
+            if not declarations[name] and not M.PREDECLARED_NAMES[name] then
                 return false, "compiler override '" .. name .. "' (family '"
                     .. family .. "') is not declared in project variables"
             end
-            if type(value) ~= "string" then
+            if M.PREDECLARED_NAMES[name] then
+                if type(value) ~= "string" and type(value) ~= "boolean" then
+                    return false, "compiler override '" .. name .. "' (family '"
+                        .. family .. "') must be a string or boolean value"
+                end
+            elseif type(value) ~= "string" then
                 return false, "compiler override '" .. name .. "' (family '"
                     .. family .. "') must be a string value"
             end
+            ::continue::
         end
     end
     return true
@@ -257,6 +308,56 @@ function M._search_override(config, name, active_family, visited)
     end
 
     return nil, nil, nil
+end
+
+--- Resolve the effective compiler-cache **policy** for a (project, configuration)
+--- pair (core §1.3.2). `cache` is a pre-declared policy variable that rides the
+--- ordinary override machinery: it is resolved through the configuration
+--- inheritance chain and compiler-family `overrides` (via `_search_override`),
+--- then the active profile's fill value, and finally the built-in `auto`
+--- terminal default. Unlike a normal blank variable, an unfilled `cache` is
+--- never build-blocking — it resolves to `auto`.
+---
+--- The returned value is the RAW policy (a string like `auto`/`off`/`ccache`,
+--- or a boolean `false` meaning "off"); normalization to a launcher is done by
+--- `loomworks.compiler_cache`.
+---
+--- The second return is the policy's **provenance** — which layer supplied it,
+--- so a message can point at the mechanism actually in effect (e.g. "turn it
+--- off" must name the profile fill when that is what enabled it):
+---   * `{ layer = "override", configuration = <cfg>, family = <family> }` — a
+---     compiler-family `overrides.<family>.cache` on `configuration` (the
+---     chain level that supplied it, possibly a base);
+---   * `{ layer = "configuration", configuration = <cfg> }` — a plain
+---     `variables.cache` on that chain level;
+---   * `{ layer = "profile", profile = <profile> }` — the profile's fill;
+---   * `{ layer = "default" }` — nothing set it (`auto`).
+--- @param project loomworks.Project
+--- @param configuration loomworks.Configuration|nil
+--- @param active_family? "clang"|"gcc"|"msvc"|nil active compiler family
+--- @param profile? loomworks.Profile active profile supplying a machine-local fill
+--- @return string|boolean policy raw policy value (never nil; defaults to "auto")
+--- @return { layer: "override"|"configuration"|"profile"|"default", configuration?: loomworks.Configuration, family?: string, profile?: loomworks.Profile } source
+function M.resolve_cache_policy(project, configuration, active_family, profile)
+    -- 1. Configuration inheritance chain + compiler-family override.
+    if configuration then
+        local value, src, is_override = M._search_override(configuration, "cache", active_family, {})
+        if value ~= nil then
+            if is_override then
+                return value, { layer = "override", configuration = src, family = active_family }
+            end
+            return value, { layer = "configuration", configuration = src }
+        end
+    end
+
+    -- 2. Active-profile fill (machine-local policy).
+    if profile and profile.variable_value and project then
+        local pv = profile:variable_value(project.key, "cache")
+        if pv ~= nil then return pv, { layer = "profile", profile = profile } end
+    end
+
+    -- 3. Built-in terminal default.
+    return "auto", { layer = "default" }
 end
 
 return M

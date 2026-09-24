@@ -35,8 +35,10 @@ every plugin that ships that module type must bump in lockstep.
 **When to bump**: required field added, function signature changed,
 return shape changed, capability flag semantics shifted. Adding a
 new *optional* field with a sensible default does NOT require a
-bump. The strict-equality enforcement makes false bumps painful
-(every plugin breaks), so the rule naturally self-enforces.
+bump — e.g. the optional `compiler_cache` field on the `tasks`
+`ModuleContext` (§8.1), which defaults to `nil` and which a module is
+free to ignore. The strict-equality enforcement makes false bumps
+painful (every plugin breaks), so the rule naturally self-enforces.
 
 A rejected module is treated the same as a missing one. Projects in
 `loomworks.json` whose type maps to the rejected module are kept in
@@ -87,13 +89,117 @@ during merge to discover available configurations.
 
 Return overseer task definitions for a project in a given configuration.
 `project` is a `ModuleContext` table with: `name`, `path`, `workspace_root`,
-`configurations`, `tool_data`, `configuration_key`, `env`.
+`configurations`, `tool_data`, `configuration_key`, `env`, `configuration_env`,
+and optional `compiler_cache`.
+
+**`env`** is the task environment every configure, build and clean task the
+module returns runs with (the module's test runs layer the same configuration
+environment, so the configuration environment reaches configure, build, clean
+and test): the tool's environment (`tool_data.env`) with the
+configuration's resolved environment (`configuration_env`, below) layered on
+top. **`configuration_env`** is that resolved configuration environment alone
+(§1.3.3: the configuration's `env` across its inheritance chain and matching
+compiler-family `overrides`, values expanded, reserved compiler-driver names
+already stripped by core), a name → string map (empty when none) — separate so
+a module can tell what the configuration contributed and detect a change
+against the recorded one (below). Both are additive fields (no
+`api_versions.module` bump): a module that only reads `env` already runs its
+tasks with the configuration environment.
+
+**`compiler_cache`** (optional) is a core-resolved **compiler-cache launcher**
+for this profile/configuration — either `nil` or `{ tool, path }`, where `tool`
+names the launcher and `path` is its resolved absolute executable. The split of
+responsibility is deliberate: **core owns resolution**, deriving the launcher
+from the effective cache **policy** (§1.3.1 — the reserved `cache` variable) and
+the active tool's compiler family (`auto` is family-aware and resolves to no
+launcher for an MSVC-style family, §1.3.2), gated on the executable actually being present
+in the toolchain search paths; **the module owns application**, deciding how to
+wrap its own compiler invocation with the launcher (see the per-module specs).
+The field is absent (`nil`) when the policy resolves to no launcher (policy
+`off`, `auto` on an MSVC-style family, or a policy whose launcher is not found). The resolved launcher is *not*
+stored in the workspace files — core recomputes it each time the context is
+built and records it into the configure task's `module_info` for staleness
+comparison (§5, module §11). Because it is an additive optional field with a
+`nil` default, adding it does **not** bump `api_versions.module` (§8.0): a module
+that ignores the field builds exactly as before.
+
+**Previous-configure record** (optional, all `nil` for a never-configured unit).
+To let a module reconfigure faithfully (§5.1 *Faithful reconfigure*), core hands
+back what the unit's last configure recorded:
+
+- `recorded_module_info` — the `module_info` table the module's last configure
+  task returned. A configure's `module_info` **replaces** the unit's record (a
+  key that configure did not return reads as absent afterwards — so a module
+  never needs a sentinel to clear an input it stopped passing); a non-configure
+  task's `module_info`, if any, is merged onto it. Opaque to core except for the keys
+  core itself defines (`cache_launcher`, `configure_env`, `cache_compat`,
+  `record_version`). A
+  module records whatever it needs to detect a change later — e.g. the options
+  it passed — and reads it back here. `configure_env` is **core's** record of
+  the resolved configuration environment that configure ran with (absent when
+  it was empty, or for a unit configured before the record existed — both read
+  as "no configuration environment", which is what such a configure had); a
+  module compares it with the current `configuration_env` to detect an
+  environment change.
+- `recorded_cache_launcher` — shorthand for `recorded_module_info.cache_launcher`
+  (a launcher path, the sentinel `"none"`, or `nil` when never recorded).
+- `recorded_options` — core's resolved-option snapshot from that configure (the
+  staleness fingerprint, §5.1): option name → resolved value. Lets a module
+  recognise a unit configured before it began keeping its own record (which
+  then takes the full reconfigure, below).
+
+All three are additive optional fields (no `api_versions.module` bump). A
+module uses them to classify a reconfigure (§5.1 *Faithful reconfigure*): any
+changed configure input takes the full reconfigure unless the module's spec
+declares that specific change safe to apply in place, and a unit that was
+configured but carries no record the module can trust (configured before the
+module kept one) takes the full reconfigure too.
+
+**`configure_record_version`** (optional module field, a number). A module
+that keeps a configure record declares its current format here. Core stamps it
+into the unit's record as `recorded_module_info.record_version` after every
+**successful** configure (never after a failed one), and treats a configured
+unit whose record carries a different version — or none — as stale (§5.1
+*Configure record migration*). The module, seeing
+`recorded_module_info.record_version` differ from its own
+`configure_record_version`, classifies the configure as a full reconfigure. A
+module bumps the number when its record gains something its reconfigure
+classification depends on, so every existing build directory takes exactly one
+full reconfigure. A module that declares none takes no part. Additive: no
+`api_versions.module` bump.
+
+**`force_full_reconfigure`** (optional context field, `true` or absent). Set
+when the caller forced a full reconfigure (§5.1, headless `--reconfigure`
+§16.4): the module takes its full-reconfigure path for this configure whatever
+its record says (or a plain first configure where the build tree was never
+configured). Additive: no `api_versions.module` bump.
 
 Each task_def has:
 - `name`: display name
 - `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
 - `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
-  `configuration_key`, `build_dir`, optional `tool_data` and `cmake` info
+  `configuration_key`, `build_dir`, optional `tool_data`, `module_info`
+  (module-owned record that replaces the unit's record after a configure, see
+  above),
+  optional `pre_configure_reset` (configure only, below), and optional
+  `reconfigure` (configure only: `"initial"` for a first configure, `"full"`
+  or `"in_place"` — how this configure runs, §5.1) with an optional short
+  `reconfigure_detail` naming the full path's mechanism (e.g. the build
+  system's flag). Core reports these alongside its reason for configuring
+  (§16.4); they never change what runs
+
+**`pre_configure_reset`** (optional, configure tasks only) is a list of paths
+**relative to `build_dir`** naming configure-state files or directories the
+module needs removed before this configure runs — the mechanism for a *full
+reconfigure* where the build system offers no flag for it (§5.1). Core performs
+the removal, never the module: after acquiring the build directory's exclusive
+lock and immediately before starting the task, core validates that `build_dir`
+lies within the workspace root (directory-boundary check) and that each entry
+is a plain relative path (not absolute, no `..` segment) resolving inside
+`build_dir`, then removes each entry (recursively for a directory; a missing
+entry is fine). If validation or removal fails, the configure is not started and
+fails with an error naming the path. Additive and optional: no
+`api_versions.module` bump.
 
 **`inspect(path, config, cached) → { needs_refresh, reasons[], notes[] }`**
 
@@ -401,6 +507,78 @@ absolute directories, or `nil`. `ctx` carries `build_dir` and the
 configuration's `tool_data`. This covers only the *toolchain* runtime; the
 build tree's own shared-library output directories are added generically by
 core (derived from `parse_targets`), so a module need not enumerate them.
+
+**`cache_launcher_applicable(ctx) → boolean, reason?, hint?`** *(optional)*
+
+Whether the module can apply a compiler-cache launcher (`compiler_cache`,
+§8.1) to a configuration at all. `ctx` carries `configuration` (the
+Configuration) and the configuration's `tool_data`. A module that cannot inject
+the launcher for some configurations — and so records the "none" sentinel for
+them even though core resolved a launcher — returns `false` there, and core's
+launcher staleness (§5) then expects "none" rather than the resolved launcher.
+With `false` the module MAY return a short `reason` (a noun phrase naming what
+prevents it, shown as `not applied (<reason>)` in the profile's cache status,
+ui.md) and a one-sentence `hint` (what the user can change to get caching,
+shown in health, §16.31). Absent hook = always applicable. Additive and
+optional: no `api_versions.module` bump (§8.0).
+
+**`cache_compat_scan(ctx) → { scanned, reason?, findings[], totals?, advice? }`** *(optional)*
+
+Post-configure check that the configuration's compile commands are compatible
+with the compiler-cache launcher that configure **applied**. Core calls it after
+a **successful** configure whose recorded launcher is not "none" (§5.1); it is
+never called for an uncached configure, and never on a status render or health
+run. `ctx` carries `build_dir`, `configuration`, the configuration's
+`tool_data`, `compiler_cache` (the applied `{ tool, path }`), and
+`configuration_env` (the resolved configuration environment the configure ran
+with, §8.1 — a compiler may take flags from its environment, which compile
+commands do not show). The module reads its own post-configure build metadata —
+it spawns nothing and never decodes a monolithic compilation database it would
+otherwise stream.
+
+- `scanned = false` with a `reason` means the module had no compile-command
+  data to inspect (e.g. no compilation database for this build); core reports
+  that the check was **skipped** rather than treating it as clean.
+- Each finding is `{ severity, flag, group, units, sample }`: `severity` is
+  `"error"` when the applied launcher **fails** the affected compiles and
+  `"warning"` when it only fails to cache them; `flag` is the offending compile
+  option; `group` names where the units live (a target where the module knows
+  it, else a directory, or `"environment"` for a flag that reaches every compile
+  through the environment); `units` is the count (omitted for an environment
+  finding, which applies to every compile); `sample` a few representative
+  source paths (for an environment finding, the variable names).
+- `totals` *(optional)* — `{ units, targets }`, the number of compiled units
+  and targets in the scanned build. With it, core reports a **pervasive**
+  finding — unit findings in more than one group covering at least 90% of the
+  compiled units — as ONE line (`every target (N units) compiles with /Zi — …`,
+  or `nearly every target (U of N units, T of M targets) …`) instead of one line
+  per group: the flag then comes from a directory- or project-wide setting, and
+  per-target advice would be wrong. Sample paths are shortened to their last two
+  components.
+- `advice` *(optional)* — the module's wording, all strings:
+  `fix_targets` (how to fix per-target findings), `cause_pervasive` (the likely
+  source of a pervasive finding, appended to its line) and `fix_pervasive` (how
+  to fix it). Absent, core uses generic wording.
+
+Core records the result with the unit's configure record (replaced on every
+configure, dropped when a configure applies no launcher), adding the effective
+`cache` policy's **provenance** — which layer enabled the cache: the profile
+fill (with the profile), a compiler-family override or a configuration variable
+(with the configuration that set it) — resolved for the profile the configure
+ran for (§5.1 *Resolution context*). It prints the result at the end of the
+configure (a warning, or an error-severity message for `"error"` findings),
+naming the fix (module `advice`) and the command that turns caching off
+**through the mechanism in effect** (`lw profile set <profile> <project> cache
+off`, `lw config set <project> <configuration> overrides.<family>.cache off`, or
+`… variables.cache off`), and surfaces it through health (§16.31). When a build
+of that unit then **fails** while an `"error"` finding is recorded, the
+headless runner closes with one line pointing back at the finding (§16.4). A finding is **advisory**:
+it never gates a build, never fails `--check`, and never changes the effective
+`cache` policy — the user's explicit choice stands, and the build itself reports
+any compile the launcher fails. Which options are incompatible with which
+launcher on which compiler family is module knowledge (see the per-module
+specs). Absent hook = no check. Additive and optional: no `api_versions.module`
+bump (§8.0).
 
 ### 8.5 Module implementations
 

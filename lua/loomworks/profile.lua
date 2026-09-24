@@ -607,6 +607,102 @@ function Profile:projects()
     return self._projects_list or {}
 end
 
+--- Profile-level compiler-cache status (spec/ui.md profile Cache row, headless
+--- §16.18). Returns nil when the profile contains no C/C++-caching module.
+--- Otherwise a display-ready descriptor: the effective `cache` policy, the
+--- resolved launcher (or nil), whether one is present, and whether any of the
+--- profile's configured units were built with a different launcher (stale).
+--- Resolution is anchored on the profile's first caching project — v1 shows a
+--- single profile-level row — and goes through `compiler_cache.resolve_for`,
+--- the same resolver the build context uses, so the reported tool is the one a
+--- build applies. `auto` on an MSVC-style compiler (msvc, clang-cl) resolves to
+--- no launcher by design (spec §1.3.2) and is reported as
+--- `Cache: auto (off for MSVC-style)` with `msvc_auto_off = true`, distinct from
+--- `auto (none found)`. A configuration the module cannot apply a launcher to
+--- at all (its `cache_launcher_applicable` hook, module interface §8 — e.g. a
+--- preset, or a generator that ignores launchers) reads
+--- `Cache: not applied (<reason>)` with `applicable = false`, never naming a
+--- launcher the build does not use (policy `off` still reads `Cache: off`).
+--- It never spawns the cache tool.
+---
+--- With `pp` (one of this profile's ProfileProjects), the status is resolved
+--- for that project instead of the first caching one — the per-`(profile,
+--- project)` fact `lw profile query … cache` reports (§16.18) — and nil when
+--- that project's module does not cache C/C++; `stale` then covers only that
+--- project's unit.
+--- @param pp? loomworks.ProfileProject
+--- @return { policy: string, tool: string|nil, path: string|nil, present: boolean, stale: boolean, msvc_auto_off: boolean, applicable: boolean, not_applied_reason: string|nil, not_applied_hint: string|nil, project: loomworks.Project, configuration: loomworks.Configuration|nil, text: string }|nil
+function Profile:compiler_cache_status(pp)
+    local cc = require("loomworks.compiler_cache")
+
+    local function caches(p)
+        local project = p and p._project
+        return project and project._module and project._module:caches_cpp() or false
+    end
+    local target
+    if pp then
+        if caches(pp) then target = pp end
+    else
+        for _, candidate in ipairs(self:projects()) do
+            if caches(candidate) then target = candidate; break end
+        end
+    end
+    if not target then return nil end
+
+    local project = target._project
+    local configuration = target:configuration()
+    local tool = target:tool_object()
+    local tool_data = tool and tool.data or nil
+    local resolved, policy = cc.resolve_for(project, configuration, tool_data, self)
+    policy = policy or "auto"
+    local msvc_auto_off = policy == "auto"
+        and require("loomworks.cpp_compilers").is_msvc_style(tool_data)
+    local applicable, not_applied_reason, not_applied_hint = cc.applicability(
+        project._module and project._module.impl or nil, configuration, tool_data)
+
+    -- Stale when any of the profile's configured caching units were built with
+    -- a launcher different from the one that would resolve now — resolved in
+    -- THIS profile's context (its `cache` fill), not the active profile's.
+    local stale = false
+    for _, p in ipairs(pp and { pp } or self:projects()) do
+        local u = p._config_unit
+        if u and u.launcher_changed and u:launcher_changed(self) then
+            stale = true
+            break
+        end
+    end
+
+    local text
+    if policy == "off" then
+        text = "Cache: off"
+    elseif not applicable then
+        text = "Cache: not applied (" .. (not_applied_reason or "not supported") .. ")"
+    elseif resolved then
+        text = "Cache: " .. resolved.tool
+    elseif msvc_auto_off then
+        text = "Cache: auto (off for MSVC-style)"
+    elseif policy == "auto" then
+        text = "Cache: auto (none found)"
+    else
+        text = "Cache: " .. policy .. " (not found)"
+    end
+
+    return {
+        policy = policy,
+        tool = resolved and resolved.tool or nil,
+        path = resolved and resolved.path or nil,
+        present = resolved ~= nil,
+        stale = stale,
+        msvc_auto_off = msvc_auto_off,
+        applicable = applicable,
+        not_applied_reason = not_applied_reason,
+        not_applied_hint = not_applied_hint,
+        project = project,
+        configuration = configuration,
+        text = text,
+    }
+end
+
 -- ---------------------------------------------------------------------------
 -- Actions
 -- ---------------------------------------------------------------------------

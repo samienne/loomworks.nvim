@@ -59,6 +59,18 @@ function Module:primary_language()
     return self.languages[1]
 end
 
+--- Whether this module participates in C/C++ compiler caching — it declares a
+--- `c` or `c++` language. Drives the profile Cache row (spec/ui.md) and the
+--- health compiler-cache suggestion provider (core §16.31).
+--- @return boolean
+function Module:caches_cpp()
+    for _, lang in ipairs(self.languages or {}) do
+        local l = tostring(lang):lower()
+        if l == "c" or l == "c++" then return true end
+    end
+    return false
+end
+
 --- Look up a Tool by key. Exact match first, then a coarse-pin
 --- fallback: a truncated key matches any registered tool that extends it on a
 --- SEGMENT BOUNDARY — either a dotted version (`ninja-clang-19` →

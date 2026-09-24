@@ -662,3 +662,93 @@ A small improvement would be a user-facing warning at build time (or in
 rather than silently defaulting. Deferred — the current behavior does not crash
 or corrupt anything; it just isn't self-explaining. (Single-config presets are
 unaffected: their build type is mined into `variant`.)
+
+---
+
+## Compiler-trait refactor for backend-specific behavior
+
+Lift the family-dependent cache decisions — the cache-tool preference (sccache
+vs ccache) and the MSVC-style debug-info / `/Z7` handling — off coarse
+compiler-family enum checks and onto explicit capability **traits** on the Tool
+domain object (e.g. `msvc_style`, `debug_info_model`, `preferred_cache_order`).
+
+Motivated by the clang-cl bug in the compiler-cache feature, where
+`active_compiler_family()` over-normalized clang-cl → `clang` and collapsed a
+behaviorally-significant distinction (clang-cl is msvc-style). The fix threaded a
+dedicated `cpp_compilers.is_msvc_style` signal, but that is a point patch: a
+trait/capability model makes backend-specific behavior capability-driven and
+extensible — a new compiler declares its traits and the cache logic works with no
+new `if family == X` branches — and keeps family-sniffing from metastasizing
+across modules/core. Polish, not urgent.
+
+## Comprehensive `lw health` environment inventory
+
+Make `lw health` a full "is this machine ready?" check (like `:checkhealth`).
+Outside a workspace: detect everything loomworks knows about — build systems
+(cmake + version, meson, ninja, make), compilers (gcc/clang/MSVC via
+vswhere/clang-cl), compiler caches, LSP servers (clangd, qmlls), debug adapters
+detectable headlessly (mason dir / PATH), installed module/SDK plugins, lw
+host/bundle/channel/update — and report found (with versions) vs missing.
+Inside a workspace: same inventory, but grouped **Required by this workspace**
+(derived from the projects' module types + the active profile's tools — nothing
+new to declare) vs **Other**; only a missing *required* item is actionable and
+counts toward `lw status`'s "N suggestions".
+
+Design: a generic optional hook per module/SDK/integration (e.g.
+`health_inventory(ctx)` → items with found/missing, version, required-by) so
+core only aggregates and renders (no module-specific logic in core). Runs only
+on explicit `lw health` (vswhere / `--version` probes are slow), fits the
+two-tier health cache (§16.31). `:checkhealth loomworks` can later render the
+same data. Spec: §16.31 + a module-interface hook. Planned as its own feature
+branch after v0.1.29 stable.
+
+## Compiler cache for Visual Studio generator builds
+
+CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` is honored only by the Ninja and
+Makefile generators, so loomworks' compiler cache is **not applied** under the
+Visual Studio (and Xcode) generators — cmake.md §5d documents this as a non-goal
+and the profile row reads `Cache: not applied (<generator> generator)`.
+Caching an MSBuild build needs a different mechanism. sccache's documented
+recipe (unverified against the current sccache docs — re-check before building
+on it) goes through `CMAKE_VS_GLOBALS`:
+
+- `CLToolExe` / `CLToolPath` pointing at a copy of `sccache.exe` renamed to
+  `cl.exe` (sccache acts as the compiler when invoked under that name),
+- `UseMultiToolTask=true` (so MSBuild still parallelises per file),
+- `DebugInformationFormat=OldStyle` (i.e. `/Z7`; `/Zi` makes sccache fail the
+  compile — the same PDB problem as §5d),
+- `TrackFileAccess=false` (MSBuild's file tracker does not follow the wrapper).
+
+It is more fragile than the Ninja launcher (a copied/renamed binary to manage,
+MSBuild property plumbing, no per-target opt-out) and would need its own
+staleness record, `cache_launcher_applicable` answer and compatibility scan.
+Motivation: LumeEditor measured a hand-made `cl.exe` shim of this kind at
+12.2 → 4.3 min for its Visual Studio generator build.
+
+## Scriptable active-profile selection (`lw profile select <name>`)
+
+Tester feedback (v0.1.29 beta, non-interactive CLI). `lw profile select` is
+interactive-only (a picker on a terminal), and there is no way to CLEAR the
+active profile from the CLI; `lw profile create … --activate` is the only
+scriptable way to set it. A script / agent that needs the editor's active
+profile to follow what it builds (or to reset it to "none", so status and
+health evaluate every profile) has to edit `loomworks.user.json` by hand.
+Wanted: `lw profile select <name>` (non-interactive when a name is given,
+same resolution as `lw build <profile>`) and `lw profile select --none` (or
+`lw profile deselect`) to clear it. Mind the agent guidance (`lw help agent`:
+never change the user's active profile unasked) — the command is for the user's
+own scripts, not something lw does implicitly.
+
+## `lw status` lists presets whose `condition` excludes this host
+
+Tester feedback (v0.1.29 beta, Windows). `lw status` (and the configuration
+lists) show a project's macOS-only CMake presets on Windows: loomworks reads
+`CMakePresets.json` but ignores each preset's `condition` (e.g.
+`{"type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin"}`), so presets
+CMake itself would refuse on this host appear as buildable configurations.
+Evaluate the preset `condition` (equals / notEquals / inList / notInList /
+matches / notMatches / anyOf / allOf / not, with `${hostSystemName}` and the
+other macros CMake allows there) against the host, and hide — or mark
+"not for this host" — the presets it excludes. Decide whether an excluded
+preset already mapped in a configuration set should be a diagnostic rather
+than silently vanish.
