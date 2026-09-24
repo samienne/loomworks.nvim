@@ -624,16 +624,27 @@ end
 --- `Cache: not applied (<reason>)` with `applicable = false`, never naming a
 --- launcher the build does not use (policy `off` still reads `Cache: off`).
 --- It never spawns the cache tool.
+---
+--- With `pp` (one of this profile's ProfileProjects), the status is resolved
+--- for that project instead of the first caching one — the per-`(profile,
+--- project)` fact `lw profile query … cache` reports (§16.18) — and nil when
+--- that project's module does not cache C/C++; `stale` then covers only that
+--- project's unit.
+--- @param pp? loomworks.ProfileProject
 --- @return { policy: string, tool: string|nil, path: string|nil, present: boolean, stale: boolean, msvc_auto_off: boolean, applicable: boolean, not_applied_reason: string|nil, not_applied_hint: string|nil, project: loomworks.Project, configuration: loomworks.Configuration|nil, text: string }|nil
-function Profile:compiler_cache_status()
+function Profile:compiler_cache_status(pp)
     local cc = require("loomworks.compiler_cache")
 
+    local function caches(p)
+        local project = p and p._project
+        return project and project._module and project._module:caches_cpp() or false
+    end
     local target
-    for _, pp in ipairs(self:projects()) do
-        local project = pp._project
-        if project and project._module and project._module:caches_cpp() then
-            target = pp
-            break
+    if pp then
+        if caches(pp) then target = pp end
+    else
+        for _, candidate in ipairs(self:projects()) do
+            if caches(candidate) then target = candidate; break end
         end
     end
     if not target then return nil end
@@ -652,8 +663,8 @@ function Profile:compiler_cache_status()
     -- Stale when any of the profile's configured caching units were built with
     -- a launcher different from the one that would resolve now.
     local stale = false
-    for _, pp in ipairs(self:projects()) do
-        local u = pp._config_unit
+    for _, p in ipairs(pp and { pp } or self:projects()) do
+        local u = p._config_unit
         if u and u.launcher_changed and u:launcher_changed() then
             stale = true
             break

@@ -160,6 +160,51 @@ describe("Profile compiler-cache status", function()
         assert.is_true(st.stale)
     end)
 
+    -- `lw profile query <profile> <project> cache` (headless §16.18): the
+    -- per-(profile, project) status string, the Cache row without its prefix.
+    it("profile query `cache` reports the (profile, project) status string", function()
+        local cli = require("loomworks.cli")
+        local core = make_core()
+        local profile = the_profile(core)
+        local pp = profile:projects()[1]
+        set_present({ ccache = true })
+        assert.equals("ccache", cli._profile_query_cache(profile, pp))
+        set_present({})
+        assert.equals("auto (none found)", cli._profile_query_cache(profile, pp))
+
+        local explicit = make_core({ configurations = { Debug = { variables = { cache = "sccache" } } } })
+        local ep = the_profile(explicit)
+        assert.equals("sccache (not found)", cli._profile_query_cache(ep, ep:projects()[1]))
+
+        local off = make_core({ configurations = { Debug = { variables = { cache = "off" } } } })
+        local op = the_profile(off)
+        assert.equals("off", cli._profile_query_cache(op, op:projects()[1]))
+    end)
+
+    it("per-project status is nil (query prints empty) for a non-caching project", function()
+        local files = {
+            ["loomworks.json"] = h.make_config_json({
+                projects = { Web = { typescript = {} } },
+                configuration_sets = { debug = { Web = "default" } },
+            }),
+            ["loomworks.user.json"] = h.make_user_json({
+                profiles = { debug = { configuration_set = "debug", tools = {} } },
+            }),
+        }
+        local deps = h.make_test_deps(files, {
+            modules = { get = modules_get },
+            cache = { save = function() return true end },
+        })
+        local core = Core.new(deps)
+        core:setup({ root = "/root" })
+        core:remerge()
+        local profile = the_profile(core)
+        local pp = profile:projects()[1]
+        assert.is_not_nil(pp)
+        assert.is_nil(profile:compiler_cache_status(pp))
+        assert.equals("", require("loomworks.cli")._profile_query_cache(profile, pp))
+    end)
+
     it("is nil for a profile with no C/C++-caching module", function()
         -- A typescript-only workspace: the shim declares no c/c++ language.
         local files = {

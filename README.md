@@ -354,7 +354,10 @@ an actionable "install one to speed rebuilds" suggestion when none is installed.
 `N suggestions` line — that count is only the **actionable** items, so the
 affirmative "using `<tool>`" note (shown in `lw health`, not counted) never adds to
 it. `lw status --cache-stats` folds in the cache tool's own hit-rate statistics
-(off by default — it spawns the tool).
+(off by default — it spawns the tool). `lw profile show [<profile>]` renders the
+same `Cache` row for any profile, and `lw profile query <profile> <project> cache`
+prints it for scripts (e.g. `sccache`, `off`, `auto (off for MSVC)`,
+`ccache (not found)`, `not applied (preset)`).
 
 `lw health` also checks whether a newer `lw` release is available on your update
 channel (`stable`/`unstable`, see [Standalone `lw` runner](#standalone-lw-runner))
@@ -1105,8 +1108,8 @@ don't use this — install the module plugin the usual way.)
   picks the highest installed `18.x`, and `msvc-17` picks a VS 17 without
   naming the edition.
 - `lw profile query <profile> <project> build-dir` prints one machine-readable
-  fact — also `config`, `state`, `tool` — for archiving artifacts without
-  parsing build output.
+  fact — also `config`, `state`, `tool`, `cache` (the resolved compiler cache),
+  `variables[.<name>]` — for archiving artifacts without parsing build output.
 
 ## Status Page
 

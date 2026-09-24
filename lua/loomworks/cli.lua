@@ -3987,16 +3987,30 @@ function M.cmd_profile_remove(root, args)
   return 0
 end
 
+--- The `cache` field of `lw profile query`: the resolved compiler cache for
+--- this (profile, project) (§16.18) — the same value as the `Cache` row, e.g.
+--- `sccache`, `off`, `auto (none found)`, `auto (off for MSVC)`,
+--- `ccache (not found)`, `not applied (preset)`. Empty for a project whose
+--- module does not cache C/C++ (like `tool` with no toolchain). Never spawns
+--- the cache tool.
+--- @param profile loomworks.Profile
+--- @param pp loomworks.ProfileProject
+--- @return string
+function M._profile_query_cache(profile, pp)
+  local status = profile:compiler_cache_status(pp)
+  return status and (status.text:gsub("^Cache: ", "")) or ""
+end
+
 --- `lw profile query <profile> <project> <field>` — print a single machine-
 --- readable fact about a project within a resolved profile. Read-only
 --- introspection for scripting (e.g. locating CI artifacts). Fields:
---- build-dir | config | state | tool.
+--- build-dir | config | state | tool | cache | variables | variables.<name>.
 function M.cmd_profile_query(root, args)
   -- args: { "profile", "query", <profile>, <project>, <field> }
   local profile_name, project_key, field = args[3], args[4], args[5]
   if not (profile_name and project_key and field) then
     die("usage: lw profile query <profile> <project> <field>\n" ..
-      "  fields: build-dir | config | state | tool | variables | variables.<name>")
+      "  fields: build-dir | config | state | tool | cache | variables | variables.<name>")
   end
   local ws = load_workspace(root, false)
   -- Deterministic machine path: resolve by key only, never a positional number
@@ -4045,6 +4059,8 @@ function M.cmd_profile_query(root, args)
   elseif field == "tool" then
     local t = pp:tool_object()
     value = t and t.key or ""
+  elseif field == "cache" then
+    value = M._profile_query_cache(profile, pp)
   elseif field == "variables" then
     -- Deterministic, machine-parseable: sorted `name=value` lines.
     local resolved = resolved_variables()
@@ -4068,7 +4084,7 @@ function M.cmd_profile_query(root, args)
       value = entry.value or ""
     else
       die("unknown field '" .. field
-        .. "' — use build-dir | config | state | tool | variables | variables.<name>")
+        .. "' — use build-dir | config | state | tool | cache | variables | variables.<name>")
     end
   end
   out(value or "")
@@ -5113,6 +5129,10 @@ local function profile_show_rows(ws, profile, color)
     local name = trunc(profile.key, nw)
     local painted_name = active and pal.active("* " .. name) or ("  " .. name)
     out(pal.title("Profile") .. " " .. num .. "  " .. painted_name .. suffix)
+    -- The profile's resolved compiler cache (§16.18) — the same `Cache` line
+    -- `lw status` renders under the active profile; nothing for a profile with
+    -- no C/C++-caching project.
+    render_cache_line(pal, profile, false)
 
     -- 2. Diagnostics — scoped to this profile (top section; nothing when empty).
     render_diagnostics(pal, scoped)
@@ -6768,6 +6788,12 @@ Examples:
               config     the pinned configuration name
               state      last known build state (unconfigured/configured/built…)
               tool       the resolved toolchain key
+              cache      the resolved compiler cache, as the `Cache` row shows
+                         it (sccache / off / auto (none found) / auto (off for
+                         MSVC) / ccache (not found) / not applied (<reason>));
+                         empty for a project with no C/C++ compiler cache
+              variables  resolved project variables (name=value lines);
+                         variables.<name> prints one
             e.g. BD=$(lw profile query Debug:ninja-clang-18 app build-dir)
   set [<profile>] <project> <variable> <value>
             Set this profile's machine-local fill value for a BLANK project
@@ -6932,7 +6958,7 @@ Read-only — safe any time (no writes to user.json / loomworks.json):
   lw workspace                    print the workspace name
   lw project list | show <name>   lw profile list   lw tools [--cached]
   lw config list|show|get         lw configset list|show
-  lw profile query <profile> <project> <field>   (build-dir | config | state | tool | variables[.<name>])
+  lw profile query <profile> <project> <field>   (build-dir | config | state | tool | cache | variables[.<name>])
   lw build <profile> [-- args]    builds; read-only toward config (writes only
                                   the build dir + cache)
   lw version
@@ -7026,7 +7052,7 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
      BD=$(lw --no-input profile query Debug:ninja-clang-18 app build-dir)
      cp "$BD/app" out/
    The build directory is deterministic and known BEFORE building. Fields:
-   build-dir | config | state | tool (see `lw help profile`).
+   build-dir | config | state | tool | cache (see `lw help profile`).
 
 Gitignore `.nvim/`: it holds the working copy (loomworks.user.json), the cache,
 and the build trees — all machine-local. If it isn't in the repo's .gitignore,

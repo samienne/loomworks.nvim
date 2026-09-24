@@ -866,7 +866,11 @@ replaces it, which would drop `PATH`).
   lacks, so the CLI additionally probes the providers bundled with core.
 - `lw profile query <profile> <project> <field>` — read-only introspection
   (spec §16.18): prints one machine-readable fact (`build-dir` / `config` /
-  `state` / `tool`) for scripting, e.g. locating CI artifacts. No build.
+  `state` / `tool` / `cache` / `variables[.<name>]`) for scripting, e.g.
+  locating CI artifacts. No build. `cache` is the `(profile, project)` compiler
+  cache status — `Profile:compiler_cache_status(pp)` with the `Cache: ` prefix
+  stripped (the same string `render_cache_line` prints for `lw status` and
+  `lw profile show`); empty for a project with no C/C++ compiler cache.
 - Profile/tool **selection** (spec §16.3) is a boundary-anchored matcher
   (`merge.match_profile` for profile keys, `Module:find_tool` for tool keys):
   a version-truncated selector (`ninja-clang-18`) resolves to the highest
