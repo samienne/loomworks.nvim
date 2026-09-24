@@ -201,7 +201,54 @@ describe("compiler-cache suggestion provider", function()
         assert.matches("variables.cache", out[1].remedy, 1, true)
     end)
 
-    it("recommends the platform-preferred tool", function()
+    -- Health must agree with the active profile's Cache row: an explicit policy
+    -- whose tool is missing resolves to NO launcher (status reads
+    -- `Cache: ccache (not found)`), so health must not claim "using sccache"
+    -- just because another launcher happens to be on PATH.
+    local GCC_TOOL = { compiler_id = "gcc-12", generator = "Ninja", compiler_path = "/usr/bin/g++" }
+    it("explicit cache=<tool> not found: actionable 'set but not found', never 'using' another", function()
+        local ws = make_ws_with_profile({ configurations = { Debug = {
+            variables = { cache = "ccache" },
+        } } }, GCC_TOOL)
+        set_present({ sccache = true })
+        assert.equals("Cache: ccache (not found)", ws._active_profile:compiler_cache_status().text)
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("suggestion", out[1].kind)
+        assert.matches("cache=ccache set but ccache not found", out[1].title, 1, true)
+        assert.is_nil(out[1].title:find("using", 1, true))
+        assert.matches("ccache", out[1].remedy, 1, true)
+        assert.equals(1, suggestions.count_actionable(ws))
+    end)
+
+    it("active profile resolving `off` (other configurations cache) is silent, not 'using'", function()
+        local ws = make_ws_with_profile({ configurations = {
+            Debug = { variables = { cache = "off" } },
+            Release = { variables = { cache = "ccache" } },
+        } }, GCC_TOOL)
+        set_present({ ccache = true })
+        assert.equals("Cache: off", ws._active_profile:compiler_cache_status().text)
+        assert.same({}, suggestions.compiler_cache_provider(ws))
+    end)
+
+    it("active profile with a resolved launcher reports that launcher", function()
+        local ws = make_ws_with_profile({ configurations = { Debug = {
+            variables = { cache = "sccache" },
+        } } }, GCC_TOOL)
+        set_present({ ccache = true, sccache = true })
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.matches("using sccache", out[1].title, 1, true)
+    end)
+
+    it("the local-tier key changes with the active profile's `cache` fill", function()
+        local ws = make_ws_with_profile(nil, GCC_TOOL)
+        local before = suggestions._local_key(ws)
+        ws._active_profile._profile_variables = { App = { cache = "sccache" } }
+        assert.are_not.equal(before, suggestions._local_key(ws))
+    end)
+
+    it("recommends the platform-customary tool", function()
         local tool = suggestions._preferred_install_tool()
         assert.is_true(tool == "sccache" or tool == "ccache")
         local ws = make_ws({ App = { cmake = {} } })

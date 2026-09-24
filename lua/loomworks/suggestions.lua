@@ -270,7 +270,9 @@ end
 --- stable digest of exactly the inputs the passive providers read — the platform,
 --- each non-orphaned project's key + module + whether it caches C/C++ + the
 --- EXPLICIT `cache` values on its configurations (the opt-out signal), and the
---- active profile's identity + resolved tool keys. It intentionally does NOT
+--- active profile's identity + resolved tool keys + mapped configurations +
+--- per-project `cache` fill values (the compiler-cache provider follows that
+--- profile's effective policy). It intentionally does NOT
 --- include any toolchain-PATH probe result: computing the key must stay cheap
 --- (in-memory only), so a launcher appearing/disappearing on PATH without a
 --- config change is picked up by the next `lw health` (which always recomputes
@@ -315,6 +317,17 @@ function M._local_key(workspace)
             for _, k in ipairs(ap._tool_keys or {}) do tkeys[#tkeys + 1] = k end
             table.sort(tkeys)
             parts[#parts + 1] = "profile|" .. (ap.key or "") .. "|" .. table.concat(tkeys, ",")
+            -- Mapped configurations + `cache` fills: they change the active
+            -- profile's effective cache policy, which the provider follows.
+            local mapped = {}
+            for _, pp in ipairs(ap.projects and ap:projects() or {}) do
+                local pkey = pp.project_key and pp:project_key() or "?"
+                local fills = ap._profile_variables and ap._profile_variables[pkey]
+                mapped[#mapped + 1] = pkey .. "=" .. tostring(pp.variant_name and pp:variant_name())
+                    .. ":" .. tostring(fills and fills.cache or "")
+            end
+            table.sort(mapped)
+            parts[#parts + 1] = "mapped|" .. table.concat(mapped, ",")
         end
 
         -- Recorded post-configure cache-compatibility results (§16.31): a new
@@ -361,11 +374,28 @@ local function project_opts_out(project)
     return saw_off
 end
 
---- The launcher this platform's `auto` policy prefers to install — the same
---- preference the resolver uses (sccache on Windows, ccache elsewhere).
+--- The platform-customary launcher to suggest installing when none is present
+--- (sccache on Windows, ccache elsewhere). This is only an install
+--- recommendation — NOT the `auto` resolver's preference, which is ccache
+--- (sccache as fallback) for gcc/clang on every platform and no launcher for
+--- MSVC-style compilers (§1.3.2).
 --- @return string
 function M._preferred_install_tool()
     return vim.fn.has("win32") == 1 and "sccache" or "ccache"
+end
+
+--- Install instructions for a launcher (the `remedy` text).
+--- @param tool string "ccache"|"sccache"|other
+--- @return string
+local function install_remedy(tool)
+    if tool == "sccache" then
+        return "Install sccache and put it on PATH (e.g. `scoop install sccache`, "
+            .. "`cargo install sccache`, or a release binary)."
+    elseif tool == "ccache" then
+        return "Install ccache and put it on PATH (e.g. `apt install ccache`, "
+            .. "`dnf install ccache`, `brew install ccache`, or `scoop install ccache`)."
+    end
+    return "Install " .. tool .. " and put it on PATH."
 end
 
 --- The active profile's compiler-cache status (`Profile:compiler_cache_status`),
@@ -397,22 +427,27 @@ end
 
 --- Provider: report the workspace's compiler-cache state when it has C/C++
 --- projects (headless §16.31). All outcomes are gated on at least one
---- non-orphaned C/C++-caching project that has NOT pinned `cache` to `off`:
----   * a launcher is present on the toolchain path → an INFORMATIONAL item
----     ("Compiler cache: using <tool>") affirming the healthy state — excluded
----     from the `N suggestions` count (`kind = "info"`);
----   * a launcher is present but the active profile is MSVC-style under `auto`
----     (§1.3.2: auto never enables a launcher there) → an INFORMATIONAL
----     "<tool> available — not enabled automatically for MSVC-style compilers"
----     item whose detail gives the opt-in command, instead of "using";
----   * no launcher present → the ACTIONABLE "install one to speed rebuilds"
----     suggestion (the nag that the count reports); for an MSVC-style active
----     profile its remedy adds that the launcher must then be enabled
----     explicitly.
----   * the active profile's configuration cannot take a launcher at all
----     (`compiler_cache_status().applicable == false`) → an INFORMATIONAL
----     "Compiler cache not applied (<reason>)" item with the module's hint,
----     instead of any of the above.
+--- non-orphaned C/C++-caching project that has NOT pinned `cache` to `off`.
+--- When there is an active profile with a C/C++ configuration, the outcome
+--- follows THAT profile's resolved status (`Profile:compiler_cache_status`,
+--- the same one the `Cache` row shows), so health never contradicts status.
+--- First match wins:
+---   1. the active profile's effective policy is `off` → silent (opted out);
+---   2. its configuration cannot take a launcher at all
+---      (`compiler_cache_status().applicable == false`) → an INFORMATIONAL
+---      "Compiler cache not applied (<reason>)" item with the module's hint;
+---   3. its launcher resolved → an INFORMATIONAL "Compiler cache: using <tool>"
+---      item — excluded from the `N suggestions` count (`kind = "info"`);
+---   4. an explicit `cache=<tool>` whose tool is not found → the ACTIONABLE
+---      "cache=<tool> set but <tool> not found" item (remedy: install it);
+---   5. a launcher is on PATH and either there is no active C/C++ profile (→
+---      INFORMATIONAL "using <whichever is present>") or the active profile is
+---      MSVC-style under `auto` (§1.3.2: auto never enables a launcher there →
+---      INFORMATIONAL "<tool> available — not enabled automatically for
+---      MSVC-style compilers", detail gives the opt-in command);
+---   6. otherwise the ACTIONABLE "install one to speed rebuilds" suggestion
+---      (platform-customary tool; for an MSVC-style active profile the remedy
+---      adds that the launcher must then be enabled explicitly).
 --- Post-configure cache-compatibility findings are reported separately by
 --- `cache_compat_provider`.
 --- Silent when there are no caching C/C++ projects, or when every such project
@@ -444,6 +479,11 @@ function M.compiler_cache_provider(workspace)
     local status = active_cache_status(workspace)
     local msvc_auto_off = status and status.msvc_auto_off or false
 
+    -- The active profile resolved `off` (e.g. a per-configuration or profile
+    -- fill `cache=off`): the user opted out there — neither nag nor affirm,
+    -- and never claim a launcher that its Cache row says is off.
+    if status and status.policy == "off" then return {} end
+
     -- The active profile's configuration cannot take a launcher at all (the
     -- module's `cache_launcher_applicable` hook, §8 — e.g. a preset, or a
     -- generator that ignores launchers): say so, with the module's hint,
@@ -462,9 +502,41 @@ function M.compiler_cache_provider(workspace)
         } }
     end
 
+    -- The active profile's launcher resolved → affirm exactly that one.
+    if status and status.present and status.tool then
+        return { {
+            kind = "info",
+            title = "Compiler cache: using " .. status.tool,
+            detail = status.tool .. " is on the toolchain path, so C/C++ rebuilds for this "
+                .. "workspace reuse prior object files instead of recompiling them.",
+        } }
+    end
+
+    -- An explicit policy naming a launcher that is not found: the Cache row
+    -- reads `<tool> (not found)` and the build runs uncached — actionable, and
+    -- never "using" some other launcher that happens to be on PATH.
+    if status and status.policy ~= "auto" and not status.present then
+        local tool = status.policy
+        return { {
+            kind = "suggestion",
+            title = "cache=" .. tool .. " set but " .. tool .. " not found",
+            detail = "The active profile's `cache` policy for "
+                .. (status.project and status.project.key or "this project") .. "/"
+                .. (status.configuration and status.configuration.name or "?")
+                .. " is `" .. tool .. "`, but " .. tool .. " is not on the toolchain "
+                .. "path, so builds run uncached.",
+            remedy = install_remedy(tool) .. " Or change the policy, e.g. "
+                .. M._cache_set_command(status, "auto") .. ".",
+        } }
+    end
+
     -- A launcher is present → affirmative, informational status (not counted).
+    -- With an active C/C++ profile under `auto` that resolved nothing, only
+    -- the MSVC-style "available but not enabled" case reaches here usefully;
+    -- a non-MSVC `auto` with nothing resolved falls through to the install nag
+    -- (matching its `auto (none found)` Cache row).
     local present = cc.any_present()
-    if present then
+    if present and (not status or msvc_auto_off) then
         local tool = present
         -- `auto` on an MSVC-style compiler left the build uncached on purpose
         -- (§1.3.2): say the tool is available but not enabled, and how to opt in.
@@ -482,11 +554,7 @@ function M.compiler_cache_provider(workspace)
                     .. "or `overrides.clang.cache` for clang-cl).",
             } }
         end
-        -- Prefer the active profile's resolved launcher (respects its policy and
-        -- compiler family) when there is one; fall back to whatever is on PATH.
-        if status and status.present and status.tool then
-            tool = status.tool
-        end
+        -- No active C/C++ profile: report whichever launcher is on PATH.
         return { {
             kind = "info",
             title = "Compiler cache: using " .. tool,
@@ -497,14 +565,7 @@ function M.compiler_cache_provider(workspace)
 
     -- No launcher present → actionable install suggestion (the nag).
     local tool = M._preferred_install_tool()
-    local remedy
-    if tool == "sccache" then
-        remedy = "Install sccache and put it on PATH (e.g. `scoop install sccache`, "
-            .. "`cargo install sccache`, or a release binary)."
-    else
-        remedy = "Install ccache and put it on PATH (e.g. `apt install ccache`, "
-            .. "`dnf install ccache`, or `brew install ccache`)."
-    end
+    local remedy = install_remedy(tool)
     if msvc_auto_off then
         -- Installing is not enough for an MSVC-style compiler: `auto` never
         -- enables it there (§1.3.2), so the opt-in must be explicit too.

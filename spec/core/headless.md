@@ -981,12 +981,23 @@ renders informational items distinctly (as positive status, not a warning).
 
 **Provider #1 — compiler cache.** When the workspace has one or more C/C++
 projects (a project whose module reports the caching-relevant language), the
-provider reports the cache state affirmatively or actionably:
+provider reports the cache state affirmatively or actionably. When there is an
+active profile with a C/C++ configuration, the item reflects **that profile's
+resolved cache status** — the same resolution its `Cache` row shows (§16.18) —
+so the health report never contradicts the status overview; only without such a
+profile does it fall back to whichever launcher is on the path:
 
-- a compiler cache **is** present on the toolchain search path → an
-  **informational** item ("Compiler cache: using `<tool>`") naming the launcher
-  in use — the active profile's resolved launcher when there is one, otherwise
-  whichever launcher is on the path;
+- the active profile's launcher **resolved** → an **informational** item
+  ("Compiler cache: using `<tool>`") naming that launcher; with no active C/C++
+  profile, a compiler cache present on the toolchain search path gives the same
+  item naming whichever launcher is present;
+- the active profile's effective policy is `off` → nothing (the user opted out
+  for that configuration, as below);
+- the active profile's effective policy names a launcher explicitly
+  (`cache=<tool>`) that is **not found** → an **actionable** item
+  ("`cache=<tool>` set but `<tool>` not found", matching its `<tool> (not
+  found)` `Cache` row) whose `remedy` is installing that launcher (or changing
+  the policy) — never a "using" item for some other launcher on the path;
 - a compiler cache is present but the active profile's C/C++ configuration uses
   an **MSVC-style** compiler whose effective policy is `auto`, so it resolved to
   no launcher (§1.3.2) → an **informational** item, not counted, instead of the
@@ -1005,10 +1016,13 @@ provider reports the cache state affirmatively or actionably:
   items: "Compiler cache not applied (`<reason>`)", whose `detail` carries the
   module's `hint` (what to change to get caching). It is reported whether or
   not a launcher is installed, since installing one would not help;
-- **no** compiler cache present → an **actionable** suggestion to install one to
-  speed rebuilds. Its `remedy` is platform-appropriate — the Windows-preferred
-  launcher (`sccache`) on Windows, the Unix-preferred launcher (`ccache`) on
-  Linux/macOS — matching the `auto` policy's own preference (§1.3.2, module specs).
+- **no** compiler cache resolved or present (the active profile's `auto` found
+  none) → an **actionable** suggestion to install one to speed rebuilds. Its
+  `remedy` names the platform-customary launcher — `sccache` on Windows,
+  `ccache` on Linux/macOS. This is only an install recommendation, not the
+  `auto` policy's preference (§1.3.2: ccache first for GCC / Clang on every
+  platform, none for an MSVC-style compiler); either launcher, once installed,
+  is picked up by `auto` for GCC / Clang.
   When the active profile's compiler is MSVC-style the remedy also states that
   installing the launcher is not enough on its own: it must then be enabled with
   an explicit `cache=<tool>` policy, as above;

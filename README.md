@@ -346,8 +346,10 @@ repopulate the cache — expected. If the change also moves the MSVC `/Z7`
 settings it is a full `cmake --fresh` reconfigure, and under meson every such
 change is a full `meson setup --wipe`, because meson fixes the compiler at setup.
 Run `lw health` to see
-the cache state of a C/C++ workspace: it reports "Compiler cache: using `<tool>`"
-when a launcher is in use, "`<tool>` available — not enabled automatically for
+the cache state of a C/C++ workspace — for the active profile it always agrees
+with that profile's `Cache` row: it reports "Compiler cache: using `<tool>`"
+when a launcher is in use, "cache=`<tool>` set but `<tool>` not found" (actionable)
+when you asked for a launcher that isn't installed, "`<tool>` available — not enabled automatically for
 MSVC-style compilers" (with the command to enable it) when `auto` left an MSVC
 build uncached, an actionable item listing any `/Zi` targets the scan found, or
 an actionable "install one to speed rebuilds" suggestion when none is installed. The status overview shows a compact
