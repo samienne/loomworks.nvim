@@ -313,7 +313,8 @@ A release bundle declares the minimum runtime-host capability it requires. A
 host that does not meet a bundle's minimum MUST refuse to execute it — rather
 than fail unpredictably — and MUST report that a host update is required.
 Within its compatible range a single host build executes any bundle, so
-behavioral updates ship as bundles without replacing the host.
+behavioral updates ship as bundles without replacing the host. Changes to the
+host itself reach an installed host through host self-update (§16.31).
 
 ### 16.15 Host acquisition integrity
 
@@ -324,7 +325,9 @@ trusted channel *before* its first execution, and only a matching binary is
 run. Installation is that binary placing itself where it can be invoked; it is
 not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
-(§16.12–16.13).
+(§16.12–16.13). A later replacement of an installed host (§16.31) is verified
+by the already-trusted running host against the signed hash list below, before
+the new binary is ever executed.
 
 The published hash list is itself **signed** with the release key (§16.12), and
 the acquisition procedure verifies that signature before trusting any hash in
@@ -1206,3 +1209,62 @@ shows (§16.18) so the absence of project-scoped items is explained.
 launcher is resolved from policy, applied by the module, and reconfigured on
 change through the ordinary build gate. No build-time flag turns caching on or
 off — that decision lives entirely in the `cache` policy variable.
+
+### 16.31 Host self-update
+
+A host built from a release carries that release's **version identity**,
+fixed into the binary when it is built. A host built from a working tree (a
+development build) carries none. The version-reporting host operation reports
+the host's release version alongside its capability version (§16.14), the
+system-Lua source (§16.11), the active bundle, and the channel (§16.29); a
+host with no release version reports that it is a development build — never a
+guessed version.
+
+Because host-side behavior (argument handling, source resolution, the
+acquisition procedure itself) lives in the host and not the bundle (§16.11),
+a bundle update alone never delivers a host fix. **Self-update therefore also
+replaces the host binary**, after the bundle acquisition (§16.13) succeeds or
+finds the bundle already current, unless the caller passes an explicit
+*no-host* flag. The replacement follows these rules:
+
+- **Same release, same origin.** The host is taken from exactly the release
+  the bundle acquisition resolved — through the same channel (§16.29) and the
+  same release-source override — so host and bundle never come from different
+  releases or origins.
+- **Only when different.** The host is replaced only when the target release's
+  version differs from the running host's embedded release version. A running
+  host with **no** embedded release version is treated as unknown and is
+  replaced (every host released before version identity existed is such a
+  host).
+- **Verified before swap.** The replacement binary is the platform's host
+  asset (§16.22 asset selection), verified against the **signed** release hash
+  list (§16.15): the list's signature MUST verify against the key carried by
+  the running host, and the downloaded binary's hash MUST match its entry.
+  This check is mandatory and unconditional — relaxing transport verification
+  (§16.22) never relaxes it — and it completes **before** the installed binary
+  is touched. A release whose hash list does not verify, or does not name this
+  platform's asset, is never installed.
+- **Atomic, never half-written.** The verified binary is staged next to the
+  installed one and moved into place in a single step. Where the platform
+  forbids replacing a running executable but permits renaming it, the running
+  binary is first renamed aside and the new one moved into its place; the
+  renamed-aside binary is removed, best-effort and silently, by a later
+  invocation. Any failure at any step leaves the original binary installed and
+  runnable — a rename-aside is rolled back.
+- **Unwritable install location.** When the host's location cannot be written
+  (a system directory, a package-managed install), self-update warns — naming
+  the release asset and how to replace it manually — and otherwise succeeds:
+  the bundle update stands and the exit status is 0. A failure to *obtain* the
+  replacement (unreachable origin, a mirror without host assets) is likewise a
+  warning, since the bundle update already succeeded; an **integrity** failure
+  (hash list signature or binary hash mismatch) is an error with a non-zero
+  exit status.
+- **Only a globally-installed release host replaces itself.** A host running
+  from a repository's pinned-launcher cache or in pinned context (§16.21–16.23)
+  never replaces itself — its version is owned by the pin. A development build,
+  a host running a development source (§16.11), or the bare runtime used to run
+  a source tree likewise never replaces itself. In these cases the host step
+  is skipped with a note; the bundle behavior is unchanged.
+
+Host replacement is a management operation (§16.9): it happens only on an
+explicit self-update, never as part of a build or any workspace operation.
