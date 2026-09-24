@@ -214,4 +214,43 @@ describe("lw project set/unset (on-disk)", function()
     end)
     assert.equals("/opt/sdk", vim.trim(q.stdout))
   end)
+
+  -- Regression: the pre-declared `cache` policy (core §1.3.2) is
+  -- profile-fillable without a project declaration (README "Compiler
+  -- caching"), but `lw profile set` required `proj.variables[name]` and
+  -- rejected it with "declares no variable 'cache'".
+  it("profile set/unset accept the pre-declared `cache` policy without a declaration", function()
+    local root = make_ws()
+    local s = capture(function()
+      cli.cmd_profile("set", root, { "profile", "set", "App", "cache", "sccache" })
+    end)
+    assert.is_nil(s.exit_code, s.stderr)
+    assert.equals("sccache", read_user(root).profile_variables.Dev.App.cache)
+
+    -- The fill reaches the effective policy resolution.
+    local ws = cli._load_workspace(root, false)
+    local profile
+    for _, p in ipairs(ws._profiles) do if p.key == "Dev" then profile = p end end
+    local proj
+    for _, p in pairs(ws._projects) do if p.key == "App" then proj = p end end
+    assert.equals("sccache",
+      require("loomworks.variables").resolve_cache_policy(proj, nil, nil, profile))
+
+    local u = capture(function()
+      cli.cmd_profile("unset", root, { "profile", "unset", "App", "cache" })
+    end)
+    assert.is_nil(u.exit_code, u.stderr)
+    local user = read_user(root)
+    assert.is_true(user.profile_variables == nil or user.profile_variables.Dev == nil
+      or user.profile_variables.Dev.App == nil)
+  end)
+
+  it("profile set still rejects an undeclared, non-predeclared variable", function()
+    local root = make_ws()
+    local s = capture(function()
+      cli.cmd_profile("set", root, { "profile", "set", "App", "nope", "x" })
+    end)
+    assert.equals(1, s.exit_code)
+    assert.is_truthy(s.stderr:find("declares no variable 'nope'", 1, true))
+  end)
 end)
