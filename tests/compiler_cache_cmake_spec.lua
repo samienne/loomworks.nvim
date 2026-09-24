@@ -121,13 +121,62 @@ describe("cmake compiler-cache MSVC debug format", function()
             d_value(configure_cmd(ctx), "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"))
     end)
 
+    -- The format variable only takes effect under policy CMP0141=NEW; a project
+    -- with an older cmake_minimum_required leaves it unset, so the policy
+    -- default is injected alongside (§5d).
+    it("injects CMAKE_POLICY_DEFAULT_CMP0141=NEW alongside Embedded", function()
+        cmake._cmake_version_cache["/fake/cmake"] = { major = 3, minor = 27 }
+        local ctx = ninja_ctx({
+            tool_data = { generator = "Ninja", compiler_id = "msvc-17", cmake_path = "/fake/cmake" },
+            compiler_cache = { tool = "sccache", path = "/usr/bin/sccache" },
+        })
+        local cmd = configure_cmd(ctx)
+        assert.equals("NEW", d_value(cmd, "CMAKE_POLICY_DEFAULT_CMP0141"))
+        assert.equals(1, d_count(cmd, "CMAKE_POLICY_DEFAULT_CMP0141"))
+    end)
+
+    it("injects neither key without a launcher (auto on MSVC is uncached)", function()
+        cmake._cmake_version_cache["/fake/cmake"] = { major = 3, minor = 27 }
+        local ctx = ninja_ctx({
+            tool_data = { generator = "Ninja", compiler_id = "msvc-17", cmake_path = "/fake/cmake" },
+        })
+        local cmd = configure_cmd(ctx)
+        assert.is_nil(d_value(cmd, "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"))
+        assert.is_nil(d_value(cmd, "CMAKE_POLICY_DEFAULT_CMP0141"))
+    end)
+
+    it("a user-set CMP0141 policy default wins: neither key is injected", function()
+        cmake._cmake_version_cache["/fake/cmake"] = { major = 3, minor = 27 }
+        local ctx = ninja_ctx({
+            tool_data = { generator = "Ninja", compiler_id = "msvc-17", cmake_path = "/fake/cmake" },
+            compiler_cache = { tool = "sccache", path = "/usr/bin/sccache" },
+            type_config = { options = { CMAKE_POLICY_DEFAULT_CMP0141 = "OLD" } },
+        })
+        local cmd = configure_cmd(ctx)
+        assert.equals("OLD", d_value(cmd, "CMAKE_POLICY_DEFAULT_CMP0141"))
+        assert.equals(1, d_count(cmd, "CMAKE_POLICY_DEFAULT_CMP0141"))
+        assert.is_nil(d_value(cmd, "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"))
+    end)
+
+    it("a user-set debug format suppresses the CMP0141 injection too", function()
+        cmake._cmake_version_cache["/fake/cmake"] = { major = 3, minor = 27 }
+        local ctx = ninja_ctx({
+            tool_data = { generator = "Ninja", compiler_id = "msvc-17", cmake_path = "/fake/cmake" },
+            compiler_cache = { tool = "sccache", path = "/usr/bin/sccache" },
+            type_config = { options = { CMAKE_MSVC_DEBUG_INFORMATION_FORMAT = "ProgramDatabase" } },
+        })
+        assert.is_nil(d_value(configure_cmd(ctx), "CMAKE_POLICY_DEFAULT_CMP0141"))
+    end)
+
     it("skips Embedded below cmake 3.25", function()
         cmake._cmake_version_cache["/fake/cmake"] = { major = 3, minor = 20 }
         local ctx = ninja_ctx({
             tool_data = { generator = "Ninja", compiler_id = "msvc-17", cmake_path = "/fake/cmake" },
             compiler_cache = { tool = "sccache", path = "/usr/bin/sccache" },
         })
-        assert.is_nil(d_value(configure_cmd(ctx), "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"))
+        local cmd = configure_cmd(ctx)
+        assert.is_nil(d_value(cmd, "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"))
+        assert.is_nil(d_value(cmd, "CMAKE_POLICY_DEFAULT_CMP0141"))
     end)
 
     it("keeps a user's conflicting debug format (does not override)", function()
