@@ -1007,7 +1007,9 @@ changes rarely — only when the runtime surface changes (a libuv/OpenSSL bump
 or a new native capability). CI builds one host per platform:
 `lw-linux-x86_64`, `lw-macos-arm64`, `lw-macos-x86_64`,
 `lw-windows-x86_64.exe`. Because `luvi --output` fuses the *running* luvi,
-each asset is built on its own OS in a CI matrix (no cross-fusing).
+each asset is built on its own OS in a CI matrix (no cross-fusing). Each
+release host embeds its release version, and `lw self-update` replaces an
+installed host with the release's (see "Host self-update" below).
 
 ### Release layout
 
@@ -1084,6 +1086,35 @@ pinned invocation acquires exactly its version+hash and consults no channel.
 `paths.version_gt` is semver-aware so a pre-release orders below its release —
 `installed_releases` ordering and `gc` never retain a pre-release over the full
 release it precedes. `lw version` prints the resolved channel.
+
+**Host self-update** (spec §16.31). The fused host carries its release version
+in `boot/verify.lua` `RELEASE_VERSION` — `nil` in source, injected by
+`scripts/release/fuse_host.sh <luvi> <pub> <out> <version>` (release.yml's
+hosts job passes the tag version and fails the leg if `lw version` does not
+report it). `lw version` prints `host: <release> (v<HOST_VERSION>)`, or
+`host: dev build (v1)`. After the bundle step, `main.lua` calls
+`boot/host_update.lua` `update_host{ target_version = <bundle's release> }`
+unless `--no-host`:
+
+- `decide` (pure) skips pinned context (`LOOMWORKS_PINNED`), an exe under a
+  `.nvim/cache/` launcher cache, bare `luvi`, a dev source, and a dev build
+  (the host bundle contains `loomworks/cli.lua`); same `RELEASE_VERSION` →
+  `current`; `nil` → swap.
+- The exe path is `uv.exepath()`. A write probe in its directory runs first;
+  failure → **warning** + manual instructions (bundle update stands, exit 0).
+- `SHA256SUMS` + `.sig` come from `versioned_base(target)` — the same origin
+  and release-url override as the bundle — and the signature is verified with
+  the embedded key; the asset (`pin.detect_asset`) is fetched through
+  `update.ensure_host_binary` (mandatory hash, no `--insecure` bypass exists)
+  into `<exe>.new`. Signature/hash failure → **error** (exit 1); fetch
+  failure or a list without this asset → warning.
+- `swap`: Unix renames `<exe>.new` over the target (atomic). Windows renames
+  the running exe to `<exe>.old`, moves the new one in, and on failure renames
+  `.old` back; `main.lua` calls `cleanup_old()` early on every Windows start to
+  delete a leftover `.old` (silent). Renames go through `rename_with_retry`.
+
+`scripts/ci/host-self-update-e2e.sh` fuses a real old and new host and
+self-updates against a signed local mirror (CI cli-e2e job, all three OSes).
 
 ### Module acquisition
 
@@ -1200,9 +1231,11 @@ detects, never installs, C/C++ toolchains.
 
 `lua/main.lua` (bootstrap), `lua/boot/` (bootstrap-only modules: `paths.lua`
 data-dir/version/mkdir helpers + acquired-module enumeration, `json.lua`
-decode + small encode, `verify.lua` ECDSA-P256 manifest verifier, `download.lua`
+decode + small encode, `verify.lua` ECDSA-P256 manifest verifier + the host's
+`HOST_VERSION`/`RELEASE_VERSION`, `download.lua`
 curl/local fetch, `update.lua` self-update + miniz extraction + pinned
-provisioning (`ensure_host_binary` / `ensure_version`), `install.lua`
+provisioning (`ensure_host_binary` / `ensure_version`), `host_update.lua` host
+binary self-replacement (spec §16.31), `install.lua`
 self-install, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap`/`update` + the
 launcher-script templates), `lua/loomworks/shim/`, `modules.json` (the curated
@@ -1211,7 +1244,7 @@ commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
 `lw update`, and redirects workspace ops to a repo's pinned `lw`; `lw module` is
 a CLI command (system Lua) that calls into `boot.modules`.
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
-manifest) and `scripts/release/fuse_host.sh` (inject the production key + fuse
+manifest) and `scripts/release/fuse_host.sh` (inject the production key + release version + fuse
 one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix
 builds a host per platform (each fetching the matching luvi), a job builds the
 signed bundle, and a publish job generates and signs `SHA256SUMS`, attests build

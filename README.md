@@ -805,6 +805,27 @@ used as-is. If you pass a non-default `--channel` while a `release-url` override
 `lw self-update` warns that the channel was ignored — the override wins by
 design, so unset it to follow a channel. `lw version` shows the active channel.
 
+**Updating the `lw` binary itself** (spec §16.31). `lw self-update` updates the
+release bundle *and then the `lw` executable*, from the same release, so fixes
+to the binary's own argument handling and update logic reach you too. The new
+binary is checked against the release's signed `SHA256SUMS` (with the key built
+into your current `lw`) before the installed one is touched, and the swap is
+atomic — on Windows the running `lw.exe` is renamed to `lw.exe.old` and removed
+on the next run. It is skipped when the binary is already that release.
+`lw version` reports the binary's release (`host: 0.1.29 (v1)`; `dev build`
+for a binary built from a checkout).
+
+- `lw self-update --no-host` updates only the bundle.
+- If `lw` lives somewhere you can't write (a system or package-managed
+  location), self-update updates the bundle, warns, and prints which release
+  asset to download and verify by hand (as in [Installing `lw`](#installing-lw)).
+- A repo-pinned `lw` (`lw.pin`) or a development build never replaces itself.
+- **Binaries from before this feature can't update themselves** — their
+  `self-update` only knows about the bundle (`lw version` shows `host v1`
+  rather than `host: <release>`). Reinstall once as in
+  [Installing `lw`](#installing-lw); from then on `lw self-update` keeps the
+  binary current.
+
 ### Installing `lw`
 
 `lw` installs itself: download the binary for your platform, **verify it**,
