@@ -268,8 +268,9 @@ entries with `+ Add tool` / `D`. Multi-language profiles (e.g. cmake
 The **compiler is chosen solely by the profile's tool**. A project
 configuration cannot override it through cmake cache variables
 (`CMAKE_<LANG>_COMPILER`) or environment (`CC` / `CXX` / …): those keys are
-reserved — rejected when you edit a configuration, and ignored (with a
-`⚠ ignored compiler override` marker) if present in a hand-edited config.
+reserved — rejected when you edit a configuration (`lw config set` exits 1),
+and ignored (with a warning and a `⚠ ignored compiler override` marker) if
+present in a hand-edited config. Environment names match in any case.
 To build with a different compiler, pick a different tool. Compiler *flags*
 (`CFLAGS` / `CXXFLAGS`), launchers, toolchain files, and CMake presets are
 unaffected.
@@ -663,9 +664,14 @@ for its configure, build, clean and test tasks with an `env` map — e.g. a cach
 directory or `CFLAGS`. It inherits along the configuration chain like `options`,
 can be scoped to a compiler family with `overrides.<family>.env`, and values
 expand variables like option values do. It is layered on top of the tool's own
-environment. The compiler-selecting variables (`CC`, `CXX`, …) are reserved and
-rejected. Changing it reconfigures on the next build (a full reconfigure, as
-above).
+environment. The compiler-selecting variables (`CC`, `CXX`, …, matched in any
+case — `cc` is `CC` on Windows) are reserved: `lw config set` and the editor
+refuse them, and one found in a hand-edited file is ignored with a warning.
+Setting `PATH` (any case) is allowed but **replaces** the PATH the tool sets up
+(e.g. the MSVC developer environment, so `cl.exe` may no longer be found; a
+`${PATH}` in the value expands to lw's own PATH, not the tool's) — lw warns when
+you set it and once when a task uses it. Changing the environment reconfigures
+on the next build (a full reconfigure, as above).
 
 ```json
 "Debug": {

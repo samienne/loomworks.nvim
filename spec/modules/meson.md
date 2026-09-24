@@ -58,7 +58,8 @@ forwarded to clangd (§ LSP integration).
 
 The tool owns the compiler: a configuration's `env` may not override the
 tool's pinned `CC`/`CXX`. The compiler-driver variables (`CC`, `CXX`,
-`FC`, `CUDACXX`, `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`) are reserved —
+`FC`, `CUDACXX`, `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`, matched
+case-insensitively, core §1.3.3) are reserved —
 rejected at config-edit time and stripped when the task environment is
 composed (with a non-blocking inline diagnostic) — so the compiler stays
 consistent with the `compiler_id` that keys the build directory. The

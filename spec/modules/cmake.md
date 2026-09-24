@@ -234,7 +234,8 @@ Enforcement is twofold:
 
 1. **Reject at edit time.** Configuration mutation paths
    (`Project:save_configuration`) refuse a config whose `options` carries
-   a reserved cache key or whose `env` carries a reserved driver var,
+   a reserved cache key or whose `env` carries a reserved driver var (any
+   case — core §1.3.3),
    returning an error that names the key and directs the user to pick a
    tool instead (mirrors the reserved-variable-name rule). The reserved
    key never reaches the working copy.

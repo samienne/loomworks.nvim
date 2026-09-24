@@ -180,8 +180,12 @@ compiler-family override (§1.3.1) — the three-segment
 `family ∈ {clang, gcc, msvc}` (clang-cl counts as clang). A dotted param outside
 these namespaces (e.g. `foo.bar`) is **rejected** with an error listing the
 valid forms rather than stored as a literal dotted field name; module fields
-are bare names. A reserved compiler-driver name in `env.<NAME>` (invariant 13)
-is rejected by the same validation the editor applies. `set` writes the value; an empty value or `unset` clears it,
+are bare names. A reserved compiler-driver name in `env.<NAME>` or
+`overrides.<family>.env.<NAME>` (invariant 13, matched case-insensitively —
+§1.3.3) is **refused** by the same validation the editor applies: `set` exits 1
+and writes nothing (the runtime strip-with-warning applies only to a
+hand-edited file). Setting `env.PATH` (any case) succeeds but prints a warning
+on stderr that it replaces the tool's PATH (§1.3.3). `set` writes the value; an empty value or `unset` clears it,
 pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the

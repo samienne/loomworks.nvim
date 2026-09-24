@@ -3182,6 +3182,15 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   if not ok then die("could not " .. verb .. ": " .. tostring(err)) end
   if verb == "set" then
     out(string.format("%s/%s: set %s = %s", proj.key, cfg.name, param, value))
+    -- `PATH` (any case) is allowed but replaces the tool's PATH wholesale
+    -- (§1.3.3) — say so now, not only when a build later cannot find cl.exe.
+    local env_name = param:match("^env%.(.+)$") or param:match("^overrides%.[^.]+%.env%.(.+)$")
+    if env_name and require("loomworks.reserved_compiler").is_path_env(env_name) then
+      note("warning: env." .. env_name .. " replaces the PATH the tool sets up for every "
+        .. "configure/build/test task of " .. proj.key .. "/" .. cfg.name
+        .. " (e.g. the MSVC developer environment — cl.exe / link.exe may then not be "
+        .. "found). ${PATH} in the value expands to lw's own PATH, not the tool's.")
+    end
   else
     out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
   end
@@ -6833,8 +6842,15 @@ Params for get/set/unset:
   languages                   comma-separated; empty inherits from the module
   options.<KEY>               a generic build option
   variables.<NAME>            a project variable override
+  env.<NAME>                  a configuration environment variable
   overrides.<family>.<NAME>   a compiler-family variable override
+  overrides.<family>.env.<NAME>  an environment variable for that family only
   <other>                     any module-specific field (e.g. toolchain, generator)
+
+Environment names: the compiler-driver variables (CC, CXX, FC, CUDACXX,
+CUDAHOSTCXX, OBJC, OBJCXX, ISPC — in any case) are refused: the profile's tool
+chooses the compiler. Setting PATH (any case) is allowed but REPLACES the PATH
+the tool sets up (e.g. the MSVC developer environment), so lw warns.
 
 Compiler-family overrides (family ∈ clang|gcc|msvc, clang-cl counts as clang)
 override a project variable's value only when the active tool's compiler

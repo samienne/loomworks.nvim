@@ -411,13 +411,27 @@ and `variables`, and uses the same machinery:
   included), then the process environment.
 - **Composition.** The resolved configuration environment is layered **on top
   of** the tool's environment (a tool may carry one, e.g. an SDK kit's), so a
-  configuration value wins over a tool value of the same name. Test runs layer
+  configuration value wins over a tool value of the same name (same name
+  ignoring case on a case-insensitive host). Test runs layer
   a test's own declared environment on top of it.
 - **Reserved names.** The compiler-driver variables reserved by invariant 13
-  (§15: `CC`, `CXX`, …) may not be set: they are rejected at edit time and, if
-  present from a hand-edited file, stripped when the environment is composed
-  (with a non-blocking diagnostic). Everything else — `*FLAGS`, cache-tool
-  settings such as a cache directory — is allowed.
+  (§15: `CC`, `CXX`, …) may not be set. Names are matched
+  **case-insensitively** on every host — environment names are
+  case-insensitive on Windows (`cc` *is* `CC` there), and a configuration is
+  shared across hosts, so a name that would select the compiler anywhere is
+  refused everywhere. They are **refused at edit time** (the editor, and the
+  headless `set`, which exits non-zero, §16.9) and, if present from a
+  hand-edited file, stripped when the environment is composed, with a one-time
+  warning and the non-blocking diagnostic. Everything else — `*FLAGS`,
+  cache-tool settings such as a cache directory — is allowed.
+- **`PATH`.** `PATH` (any case) is not reserved, but a value for it
+  **replaces** the tool's PATH for every task of the configuration (e.g. the
+  MSVC developer environment, so the compiler may no longer be found; a
+  `${PATH}` reference expands from the process environment, not the tool's).
+  The host warns when it is set and once at runtime when a task uses it. On a
+  case-insensitive host the composition treats names case-insensitively, so a
+  configuration `Path` replaces the tool's `PATH` rather than both reaching the
+  process.
 - **Persistence.** `env` lives in the configuration entry in `user.json`
   (working copy) and is published to `loomworks.json` with the configuration
   under the usual intent model (§2.4). It is never written to the cache except

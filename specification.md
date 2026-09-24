@@ -186,9 +186,10 @@ belongs in the matching `spec/` file.
     configuration's own `options` and `env` (§1.3.3) may not select a compiler:
     CMake cache keys matching `^CMAKE_<LANG>_COMPILER$` and the
     compiler-driver environment variables (`CC`, `CXX`, `FC`, `CUDACXX`,
-    `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`) are reserved. They are
-    rejected at config-edit time and defensively stripped at task-build
-    time (with an inline diagnostic) if present from a hand-edited file,
+    `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC` — matched case-insensitively)
+    are reserved. They are rejected at config-edit time and defensively
+    stripped at task-build time (with a warning and an inline diagnostic)
+    if present from a hand-edited file,
     so the tool's compiler always wins — keeping the tool's compiler
     identity (which keys build directories and selects the clangd binary)
     in sync with the compiler actually used. Excluded: compiler flags
