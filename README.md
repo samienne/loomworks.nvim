@@ -294,13 +294,21 @@ diagnostic gates all work unchanged.
 
 #### Compiler caching (ccache / sccache)
 
-loomworks wires a compiler cache into cmake and meson builds automatically. The
-behavior is chosen by a reserved project variable, `cache`, holding a **policy**:
+loomworks wires a compiler cache into cmake and meson builds — automatically for
+GCC / Clang, on request for MSVC / clang-cl. The behavior is chosen by a reserved
+project variable, `cache`, holding a **policy**:
 
-- `auto` (the default when unset) — use `sccache` for MSVC / clang-cl toolchains
-  and `ccache` for GCC / Clang, whichever is found on `PATH`. If neither is
-  installed, builds run uncached.
-- `ccache` / `sccache` — force that launcher (when present).
+- `auto` (the default when unset) — for GCC / Clang, use `ccache` (or `sccache`
+  if only that is installed), whichever is found on `PATH`; if neither is
+  installed, builds run uncached. For **MSVC / clang-cl**, `auto` means **off**:
+  sccache makes any compile that writes a shared `.pdb` (`/Zi`, `/ZI`) fail, and
+  such flags can come from dependencies you don't control, so caching there is
+  opt-in.
+- `ccache` / `sccache` — use that launcher (when present). This is how you
+  enable caching for MSVC / clang-cl, e.g.
+  `lw config set <project> <configuration> variables.cache sccache`
+  (or `overrides.msvc.cache` to scope it to MSVC; clang-cl uses
+  `overrides.clang.cache`).
 - `off` (or `false`) — no cache.
 
 Because `cache` is an ordinary variable, it rides the same layers as everything
@@ -311,8 +319,16 @@ else: set it per configuration, per compiler family via `overrides`
 
 Under cmake, loomworks injects `CMAKE_C/CXX_COMPILER_LAUNCHER` on the Ninja
 configure path (it cannot inject into a `--preset` configuration, and warns when
-one is used); on MSVC with a cache active it also switches debug info to embedded
-(`/Z7`) so the cache can hit, unless you've pinned a conflicting value. Under
+one is used); on MSVC with a cache enabled it also switches debug info to embedded
+(`/Z7`, plus `CMAKE_POLICY_DEFAULT_CMP0141=NEW` so it works for projects with an
+older `cmake_minimum_required`), unless you've pinned a conflicting value. That
+only changes CMake's default flags, so after configuring an MSVC build with a
+cache loomworks scans the compile commands for leftover `/Zi` / `/ZI` (e.g. from
+a `FetchContent` dependency) and warns loudly, per target — sccache will fail
+those compiles, ccache won't cache them. Fix them by switching those targets to
+`/Z7`, or set `cache` back to `off`; loomworks never silently turns off a cache
+you asked for. If you used MSVC caching via `auto` in an earlier beta, your next
+build reconfigures without the launcher; set `cache=sccache` to keep it. Under
 meson, loomworks pins the launcher+compiler explicitly through a generated
 native file (`--native-file`, rather than relying on meson's own ccache
 auto-detect — and space-safe, unlike the `CC`/`CXX` env string) so both build
@@ -322,10 +338,14 @@ affected build automatically on the next build. The mechanism differs per build
 system: cmake applies it with an in-place reconfigure (the first build then
 rebuilds objects to repopulate the cache — expected), while meson uses
 `meson setup --wipe` (a clean, options-preserving reconfigure) because it fixes
-the compiler at setup and ignores it on a plain reconfigure. Run `lw health` to see
+the compiler at setup and ignores it on a plain reconfigure. Turning a cache
+**off** really removes it: cmake retracts the launcher (and the `/Z7` settings)
+from `CMakeCache.txt` with `-U` rather than just no longer passing it. Run `lw health` to see
 the cache state of a C/C++ workspace: it reports "Compiler cache: using `<tool>`"
-when a launcher is in use, or an actionable "install one to speed rebuilds"
-suggestion when none is installed. The status overview shows a compact
+when a launcher is in use, "`<tool>` available — not enabled automatically for
+MSVC-style compilers" (with the command to enable it) when `auto` left an MSVC
+build uncached, an actionable item listing any `/Zi` targets the scan found, or
+an actionable "install one to speed rebuilds" suggestion when none is installed. The status overview shows a compact
 `N suggestions` line — that count is only the **actionable** items, so the
 affirmative "using `<tool>`" note (shown in `lw health`, not counted) never adds to
 it. `lw status --cache-stats` folds in the cache tool's own hit-rate statistics
@@ -596,7 +616,16 @@ matching `overrides[family]` wins over the plain `variables` value, but a
 nearer plain value shadows a farther override. Because the *resolved* option
 value is fingerprinted, editing a variable default or a compiler override
 that changes a `-D` value makes the configuration stale (auto-reconfigure on
-next build). The resolved values are also available headlessly via
+next build). This holds in both directions: when an option loomworks passed is
+**removed** (or changes to nothing), the reconfigure retracts it rather than
+leaving the old value behind in the build tree — cmake removes it from
+`CMakeCache.txt` with `-U` (only keys loomworks itself passed; your own
+`CMakeLists.txt` cache variables are never touched) and falls back to a full
+`cmake --fresh` reconfigure when a change can't be applied in place (e.g.
+`CMAKE_TOOLCHAIN_FILE`; below CMake 3.24 loomworks deletes just `CMakeCache.txt`
+and `CMakeFiles/` instead), while meson redoes the setup with `--wipe` from
+exactly the options loomworks passes. Build outputs are kept; loomworks re-passes
+everything it owns, so nothing you configured through it is lost. The resolved values are also available headlessly via
 `lw profile query <profile> <project> variables` (or `variables.<name>`).
 
 **Profile variables (machine-specific values).** `default` is optional. A

@@ -320,6 +320,19 @@ separate compiler-cache override mechanism.
   non-`auto`, non-`off` value as "prefer this named launcher".
 - **Default.** When unset at every layer the effective policy is `auto`. There
   is no separate workspace-level on/off switch in v1 — absence *is* `auto`.
+- **`auto` is compiler-family-aware.** `auto` enables a launcher only for a
+  compiler family on which a launcher is *safe by default* — one whose launchers
+  fall back to a plain, uncached compile when a compile cannot be cached, so the
+  worst case is a cache miss. For the **MSVC-style** families — `msvc`, and the
+  MSVC-ABI clang-cl driver (which counts as `clang` for `overrides`, below, but
+  is MSVC-style here) — an uncacheable compile can instead **fail the build**
+  (a compile that writes debug info to a shared program database, which code
+  outside loomworks' control may request), so under `auto` they resolve to
+  **no launcher**. Caching an MSVC-style build is an explicit opt-in: a named
+  launcher policy at any layer below (configuration, compiler-family override,
+  or profile fill). Any concrete launcher may be named on an MSVC-style family;
+  the module specs define what applying it entails (e.g. the debug-info format
+  the cache requires) and how incompatible compiles are reported.
 - **Resolution layers.** `cache` uses the **same** precedence machinery as a
   §1.3.1 variable that declares *no project default* — so it is
   profile-fillable — with the built-in `auto` standing in for the "blank"
@@ -338,7 +351,7 @@ separate compiler-cache override mechanism.
       "configurations": {
           "Debug": {
               "variables": { "cache": "auto" },
-              "overrides": { "msvc": { "cache": "off" } }
+              "overrides": { "msvc": { "cache": "sccache" } }
           }
       }
   }
@@ -353,7 +366,11 @@ separate compiler-cache override mechanism.
   recorded only into the configure task's `module_info` for staleness comparison
   (§5). A change to the resolved launcher — the policy changed, or the launcher
   appeared/disappeared on the search path — makes an already-configured unit
-  stale and reconfigures on the next build (§5, module §11).
+  stale and reconfigures on the next build (§5, module §11). This includes a
+  change in what `auto` *means* for a family: a unit configured while `auto`
+  still resolved a launcher for an MSVC-style family recorded that launcher, so
+  it now differs from the resolved "none" and reconfigures without it on its next
+  build.
 
 ### 1.4 Configuration Set
 

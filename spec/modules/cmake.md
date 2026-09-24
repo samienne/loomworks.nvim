@@ -280,30 +280,120 @@ as `ctx.compiler_cache = { tool, path }` (or `nil`). The cmake module applies it
 through CMake's own launcher mechanism — it never wraps the compiler driver
 itself, which would collide with §5b:
 
-- **Auto policy to tool.** For `auto`, the concrete launcher is `sccache` for an
-  MSVC / clang-cl family kit and `ccache` for a gcc / clang family kit, with
-  `sccache` as the cross-platform fallback when the family's first choice is
-  absent. An explicit `ccache` / `sccache` policy uses that tool. Either way the
-  launcher is applied only when core actually resolved one (present on the
-  toolchain search path, via the shared `cpp_compilers` PATH index); when
-  `ctx.compiler_cache` is `nil` the module adds nothing.
+- **Auto policy to tool (compiler-family-aware, core §1.3.2).** For a gcc /
+  clang family kit, `auto` resolves to `ccache`, with `sccache` as the fallback
+  when `ccache` is absent — both fall back to a plain compile for anything they
+  cannot cache, so enabling them automatically is safe. For an **MSVC-style**
+  kit (MSVC `cl`, and clang-cl), `auto` resolves to **no launcher**: sccache
+  **fails** (rather than misses) a compile that writes debug info to a shared
+  `.pdb` (`/Zi` / `/ZI`), and such flags can come from code loomworks does not
+  control — an in-tree dependency pulled in with `FetchContent` /
+  `add_subdirectory` that hardcodes `/Zi`, or a project whose policy settings
+  keep CMake's `/Zi` default (below). Caching an MSVC-style build therefore
+  requires an explicit `cache=sccache` or `cache=ccache` at any layer
+  (configuration `variables`, `overrides.msvc` — `overrides.clang` for clang-cl —
+  or the profile fill). Both named launchers are allowed on MSVC-style kits and
+  get the same debug-info handling and post-configure scan below; they differ
+  only in how a `/Zi` compile behaves (sccache fails it, ccache compiles it
+  uncached). An explicit `ccache` / `sccache` policy uses exactly that tool on
+  any family. Either way the launcher is applied only when core actually
+  resolved one (present on the toolchain search path, via the shared
+  `cpp_compilers` PATH index); when `ctx.compiler_cache` is `nil` the module
+  adds no launcher (but see *Retraction* below).
 - **Injection (Ninja / non-preset configure path).** On the manual configure
   path the module appends `-DCMAKE_C_COMPILER_LAUNCHER=<path>` and
   `-DCMAKE_CXX_COMPILER_LAUNCHER=<path>` (per language actually enabled). These
   keys are explicitly **not** reserved under §5b (only `CMAKE_<LANG>_COMPILER`
   is), so injection and the compiler-ownership rule do not conflict.
-- **MSVC debug-info format.** sccache/ccache silently **miss** when MSVC writes
-  debug info to a shared `.pdb` (`/Zi` / `/ZI`). So when a cache is actually
-  resolved **and** the generator is single-config **and** CMake is **>= 3.25**,
-  the module also injects `-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded`
-  (`/Z7`, per-object debug info) so the cache can hit. This is applied only for
-  the MSVC / clang-cl families and only when a launcher is present — a cacheless
-  build is left with CMake's default. If the user has pinned a conflicting value
-  (their own `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT`, or a `/Zi`-style option), the
-  module does **not** silently override it: it keeps the user's value and
-  surfaces a non-blocking inline diagnostic that the compiler cache will likely
-  miss until the format is `Embedded`. Below CMake 3.25 (no such variable) the
-  module skips the injection and notes that MSVC caching may be ineffective.
+  <!-- TODO(#5b): Visual Studio generator — launcher not applicable; pending separate amendment. -->
+- **MSVC debug-info format.** A compile that writes debug info to a shared
+  `.pdb` (`/Zi` / `/ZI`) is **failed** by sccache and compiled **uncached** by
+  ccache. So when a launcher is applied to an MSVC-style kit (which, per the
+  rule above, only happens on an explicit policy) **and** the generator is
+  single-config **and** CMake is **>= 3.25**, the module also injects
+  `-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` (`/Z7`, per-object debug info)
+  **and** `-DCMAKE_POLICY_DEFAULT_CMP0141=NEW`. The format variable only takes
+  effect under policy CMP0141 `NEW`; a project whose `cmake_minimum_required` is
+  below 3.25 leaves CMP0141 unset, and without the policy default CMake would
+  keep putting `/Zi` in its default flags and ignore the format request. The
+  policy default does not override a project that explicitly sets CMP0141 to
+  `OLD` — the post-configure scan (below) reports the resulting `/Zi` compiles.
+  This is applied only for MSVC-style kits and only when a launcher is applied —
+  a cacheless build is left with CMake's defaults. If the user has pinned a
+  conflicting value (their own `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` or
+  `CMAKE_POLICY_DEFAULT_CMP0141`, or a `/Zi`-style option), the module does
+  **not** silently override it: it keeps the user's value (injecting neither
+  `-D`) and surfaces a non-blocking inline diagnostic that the compiler cache
+  will fail (sccache) or miss (ccache) those compiles until the format is
+  `Embedded`. Below CMake 3.25 (no such variable) the module skips the injection
+  and notes that MSVC caching may fail (sccache) or be ineffective (ccache).
+- **Post-configure PDB-flag scan (`cache_compat_scan`, core §8).** The `/Z7`
+  request only changes CMake's *default* flags; a target that adds `/Zi` itself
+  (e.g. a `FetchContent` / `add_subdirectory` dependency's
+  `target_compile_options`) is unaffected. So after a successful configure that
+  applied a launcher to an MSVC-style kit, the module scans the configuration's
+  compile commands for PDB-writing debug flags — `/Zi`, `/ZI`, and the dash
+  forms `-Zi`, `-ZI` — and returns one finding per affected **target** (the
+  source's directory when no target is known), with the unit count and a few
+  sample sources. Severity is `"error"` for sccache (those compiles will fail)
+  and `"warning"` for ccache (those compiles will not be cached). The message
+  says why and how to fix it: switch those targets to `/Z7` (e.g. the
+  `MSVC_DEBUG_INFORMATION_FORMAT` target property set to `Embedded`, or
+  replacing `/Zi` in their options), or set `cache=off` for the configuration.
+  The explicit policy is never silently disabled. The scan reads the per-target
+  compile commands the module already reconstructs for the owned compilation
+  database (§12.2 — the file-api codemodel's `compileCommandFragments`), so it
+  covers every generator and never decodes the native `compile_commands.json`
+  (§12). When that data is unavailable (no codemodel reply for the build), the
+  module returns `scanned = false` with the reason, and health reports the check
+  as skipped (core §16.31). The scan is not run for gcc / clang family kits,
+  whose launchers never fail an uncacheable compile.
+  <!-- TODO(#4): a configuration `env` field could inject /Zi via the `CL` / `_CL_` environment variables, which the compile commands do not show; revisit when #4 lands. -->
+- **Retraction and full reconfigure (core §5.1 *Faithful reconfigure*).** CMake
+  cache variables persist across reconfigures, so merely *omitting* a `-D` —
+  e.g. `-DCMAKE_<LANG>_COMPILER_LAUNCHER` after caching was turned off — would
+  leave the old value in effect. This applies to **every** `-D` loomworks passes,
+  not only the cache keys. On the non-preset path the module records each `-D`
+  it passed, with its value, in `module_info.passed_options` (the configuration's
+  resolved options, the launcher keys, the injected debug-info format and policy
+  default, and the managed keys such as `CMAKE_BUILD_TYPE`), and on the next
+  configure compares that record (`recorded_module_info`, core §8.1) with what it
+  passes now:
+  - A key it passed before and does not pass now is retracted **in place** with
+    `-U<key>` (placed before the `-D` flags), which removes the entry from
+    `CMakeCache.txt`; the project's own `option()` / `set(... CACHE ...)` default
+    then applies again. Only keys in loomworks' own record are ever retracted —
+    a cache variable the user set in their `CMakeLists.txt`, a preset, or by hand
+    is never touched. This is what makes turning caching off (explicitly, or
+    because `auto` now resolves to none) actually remove the launcher keys,
+    `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` and `CMAKE_POLICY_DEFAULT_CMP0141`,
+    restoring CMake's default debug-info handling; and it makes removing an
+    option from a configuration really remove it. A user-set key that is still
+    passed is passed through unchanged.
+  - A key CMake honors **only at first configure** — `CMAKE_TOOLCHAIN_FILE`,
+    `CMAKE_GENERATOR_PLATFORM`, `CMAKE_GENERATOR_TOOLSET`,
+    `CMAKE_GENERATOR_INSTANCE` — that was added, changed or removed cannot be
+    applied in place, so the module does a **full reconfigure** instead: on
+    CMake **>= 3.24** it adds `--fresh` (CMake discards `CMakeCache.txt` and the
+    `CMakeFiles/` configure state and configures from scratch); below 3.24 it
+    gets the same effect by naming `CMakeCache.txt` and `CMakeFiles` in the
+    configure task's `pre_configure_reset` (core §8.1), which core removes from
+    the build directory under the deletion-safety rules before running the
+    configure. Either way loomworks re-passes every option it owns, so nothing
+    configured through loomworks is lost, and build outputs are kept (the
+    generator rebuilds what the new configuration changes).
+  - **Legacy record.** A unit configured before `passed_options` was recorded
+    has no record. The module then reconstructs what it passed from what core
+    recorded: the keys of the resolved-option snapshot (`recorded_options`, core
+    §8.1) except the reserved compiler keys (§5b, never passed), plus — when the
+    recorded launcher is a path rather than `"none"` — both
+    `CMAKE_<LANG>_COMPILER_LAUNCHER` keys and, for an MSVC-style single-config
+    kit with no user-set debug-format option, `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT`.
+    This is what lets the migration below retract a launcher injected before the
+    record existed.
+  - `-U` and `--fresh` on a build tree that was never configured are no-ops.
+    A preset configuration (below) is exempt: its cache variables come from the
+    preset, and a retraction could clobber them.
 - **Presets are a documented non-goal.** A `from_preset` configuration is
   configured with `cmake --preset <name>` and takes **no** `-D` flags from
   loomworks (§3), so the launcher cannot be injected. The module emits a
@@ -315,6 +405,16 @@ itself, which would collide with §5b:
 - **Staleness.** The resolved launcher path is recorded in the configure task's
   `module_info` and participates in `ConfigUnit:is_stale()` (§11) on the same
   footing as resolved option values — see §11.
+- **Migration from `auto`-enabled MSVC caching.** Before `auto` became
+  family-aware, an MSVC-style kit with sccache (or ccache) on the path got the
+  launcher under `auto`, and its configure recorded that launcher path. With the
+  new rule `auto` resolves to none for that kit, so the launcher-staleness check
+  (§11: recorded path ≠ expected "none") marks the unit stale and the build gate
+  reconfigures it in place **without** the launcher on its next build — the
+  retraction above removes the persisted launcher (and the injected debug-info
+  format), using the legacy-record reconstruction when the unit predates
+  `passed_options` — and the first build afterwards recompiles objects.
+  Users who want to keep caching set `cache=sccache` explicitly.
 - **Applied by a plain in-place reconfigure (no wipe).** `CMAKE_<LANG>_COMPILER_LAUNCHER`
   is a mutable cache variable, so a launcher change is applied by a normal
   in-place `cmake` reconfigure that re-passes the `-D` line — no build tree wipe
@@ -496,14 +596,20 @@ top-level file, strictly less accurate.
 
 The sole loomworks-driven reconfigure triggers are the `unconfigured` /
 `configure_failed` states, option-level staleness via
-`ConfigUnit:is_stale()` (the configuration's `options` / `module_config`
-changed since the cached configure), and a **missing build directory** — a
+`ConfigUnit:is_stale()` (the configuration's resolved `options` /
+`module_config` changed since the cached configure — an option **added,
+changed or removed**), and a **missing build directory** — a
 generic, core-driven reset (`specification.md` §3.1, rule 7) that applies to
 every module, not just cmake: a `built` / `configured` unit whose build
 directory has been deleted out of band reloads as `unconfigured` and
 reconfigures from scratch. A plain build does not re-pass changed
 `-D` cache variables, so that reconfigure is genuinely needed and is not
-something the generator detects on its own.
+something the generator detects on its own. The reconfigure is **faithful**
+(§5d *Retraction and full reconfigure*): it re-passes the current `-D` set,
+retracts with `-U` every key loomworks passed at the last configure but no
+longer passes, and escalates to a full reconfigure (`--fresh`, or the
+`pre_configure_reset` fallback below CMake 3.24) when a first-configure-only key
+changed — so a removed option is really gone from `CMakeCache.txt`.
 
 Option values that reference project variables are fingerprinted **after**
 expansion (§5c, core §1.3.1), so a change to a variable or a compiler-specific
@@ -517,8 +623,9 @@ launcher path core resolved at configure time is stored in the configure task's
 family + live toolchain-path presence) and compares. A launcher that appears,
 disappears, or changes value — the cache tool was installed/removed, or the
 policy was edited — marks the unit stale, and the build gate reconfigures so the
-`-DCMAKE_<LANG>_COMPILER_LAUNCHER` line (and the MSVC `/Z7` adjustment) is
-re-passed. A plain build does not re-pass changed `-D` cache variables, so this
+`-DCMAKE_<LANG>_COMPILER_LAUNCHER` line (and the MSVC `/Z7` + CMP0141
+adjustment) is re-passed — or, for a launcher that disappeared, retracted with
+`-U` together with the injected debug-info keys (§5d). A plain build does not re-pass changed `-D` cache variables, so this
 reconfigure is genuinely needed and is not something the generator detects on
 its own.
 

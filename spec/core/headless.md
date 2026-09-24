@@ -415,7 +415,7 @@ references: its **configuration set** and that set's project→configuration
 mappings, and for each project the set maps its configuration, resolved
 toolchain and last known build state; the profile's **toolchains**; its
 **resolved compiler cache** (the launcher in effect, or that caching is off /
-unavailable); and its
+unavailable / not enabled automatically for an MSVC-style compiler, §1.3.2); and its
 **launchable targets** with the default marked, incomplete when a project is not
 yet configured, exactly as the target listing above. Its **diagnostics** are
 scoped to the profile — those concerning the profile itself, its configuration
@@ -455,7 +455,8 @@ exit status.
 
 The overview and the single-profile view report the profile's **compiler cache**
 alongside its toolchain: the resolved launcher, or that caching is off /
-unavailable, mirroring the editor's `Cache:` row (`spec/ui.md`). Cache **usage
+unavailable / not enabled automatically (`auto` on an MSVC-style compiler,
+§1.3.2), mirroring the editor's `Cache:` row (`spec/ui.md`). Cache **usage
 statistics** (hit rate, size) are **off by default** — reading them spawns the
 cache tool, a cost the read-only overview must not pay implicitly — and are shown
 only under an explicit `--cache-stats` flag, which runs the tool's own stats
@@ -974,10 +975,35 @@ provider reports the cache state affirmatively or actionably:
   **informational** item ("Compiler cache: using `<tool>`") naming the launcher
   in use — the active profile's resolved launcher when there is one, otherwise
   whichever launcher is on the path;
+- a compiler cache is present but the active profile's C/C++ configuration uses
+  an **MSVC-style** compiler whose effective policy is `auto`, so it resolved to
+  no launcher (§1.3.2) → an **informational** item, not counted, instead of the
+  "using" item: "`<tool>` available — not enabled automatically for MSVC-style
+  compilers". Being informational it carries no `remedy`; its `detail` names the
+  opt-in and its requirement — enable it with an explicit `cache=<tool>` policy
+  (the module then requests embedded, per-object debug info; see the module
+  specs) — and gives the exact management command for the active profile's
+  configuration, e.g. `lw config set <project> <configuration>
+  variables.cache <tool>` (§16.9 param grammar; `overrides.msvc.cache`, or
+  `overrides.clang.cache` for clang-cl, scopes it to the compiler family);
 - **no** compiler cache present → an **actionable** suggestion to install one to
   speed rebuilds. Its `remedy` is platform-appropriate — the Windows-preferred
   launcher (`sccache`) on Windows, the Unix-preferred launcher (`ccache`) on
   Linux/macOS — matching the `auto` policy's own preference (§1.3.2, module specs).
+  When the active profile's compiler is MSVC-style the remedy also states that
+  installing the launcher is not enough on its own: it must then be enabled with
+  an explicit `cache=<tool>` policy, as above;
+- a **cache-compatibility finding** recorded by the post-configure scan (§5.1,
+  §8 `cache_compat_scan`) for a unit of the active profile → an **actionable**
+  item per affected configuration: `title` states that the applied launcher will
+  fail (severity `"error"`) or cannot cache (severity `"warning"`) some compiles,
+  `detail` names the offending option and the affected groups (target or
+  directory) with unit counts, and `remedy` gives both ways out — change those
+  compiles to a cache-compatible option (module specs), or turn caching off for
+  the configuration (`lw config set <project> <configuration> variables.cache
+  off`). A scan that was **skipped** for lack of compile-command data yields an
+  **informational** item saying the check could not run for that configuration
+  and why, so a clean report is never mistaken for a verified one.
 
 The provider is silent (neither affirms nor nags) when the workspace has no C/C++
 project, or when every C/C++ project has pinned `cache` to `off`, since the user
@@ -1012,7 +1038,8 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
 - a **local tier** — the results of the passive (workspace-scoped, local-detection)
   providers — stored with the time they were computed and an **invalidation key**:
   a cheap fingerprint of the inputs those providers read (the projects and their
-  cache policy, the resolved tool selection, the platform). When the fingerprint
+  cache policy, the resolved tool selection, the platform, and the recorded
+  post-configure cache-compatibility results). When the fingerprint
   changes, the local tier is stale;
 - a **network tier** — the results of the on-demand (network-backed) providers —
   stored with the time they were computed, and governed by a **time-to-live**
