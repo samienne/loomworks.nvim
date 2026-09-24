@@ -284,9 +284,19 @@ end)
 describe("cpp_compilers PATH executable index", function()
     -- `_build_path_index` is a pure function: it scans a raw $PATH string via an
     -- injected directory-lister, so it is testable without touching the real FS.
-    -- The lister maps a directory to the entry names it "contains".
+    -- The lister maps a directory to the entries it "contains". A plain name
+    -- is reported as a regular file ({ name, "file" }) so these fake paths are
+    -- never stat'ed; a table entry is passed through as a `{ name, type }` pair.
     local function lister(dirs)
-        return function(dir) return dirs[dir] end
+        return function(dir)
+            local names = dirs[dir]
+            if not names then return nil end
+            local entries = {}
+            for _, n in ipairs(names) do
+                entries[#entries + 1] = type(n) == "table" and n or { n, "file" }
+            end
+            return entries
+        end
     end
 
     it("strips exe extensions and matches case-insensitively on Windows", function()
@@ -296,8 +306,103 @@ describe("cpp_compilers PATH executable index", function()
         -- Base key is lower-cased and the extension stripped.
         assert.equals("C:/tools/bin/GCC.EXE", index["gcc"])
         assert.equals("C:/tools/bin/Clang.Cmd", index["clang"])
-        -- A non-exe file is still indexed (Windows key is lower-cased whole).
-        assert.equals("C:/tools/bin/notes.txt", index["notes.txt"])
+        -- A name whose extension is not in PATHEXT is not an executable.
+        assert.is_nil(index["notes.txt"])
+        assert.is_nil(index["notes"])
+    end)
+
+    -- Regression: a DIRECTORY on PATH named like a tool (e.g. the
+    -- `D:\swigwin-4.0.2\ccache` folder) was indexed as the executable, so the
+    -- compiler cache resolved to a directory, cmake got it as the compiler
+    -- launcher and every compile failed. It also shadowed a real ccache.exe
+    -- later on PATH.
+    it("does not index directories (Windows)", function()
+        local index = cpp._build_path_index(
+            [[D:\swigwin-4.0.2;C:\tools\bin]], true,
+            lister({
+                ["D:\\swigwin-4.0.2"] = { { "ccache", "directory" }, { "gcc.exe", "directory" } },
+                ["C:\\tools\\bin"] = { "ccache.exe" },
+            }))
+        assert.equals("C:/tools/bin/ccache.exe", index["ccache"])
+        assert.is_nil(index["gcc"])
+    end)
+
+    it("does not index directories (Unix)", function()
+        local index = cpp._build_path_index(
+            "/opt/a:/usr/bin", false,
+            lister({
+                ["/opt/a"] = { { "ccache", "directory" }, { "clang", "directory" } },
+                ["/usr/bin"] = { "ccache" },
+            }))
+        assert.equals("/usr/bin/ccache", index["ccache"])
+        assert.is_nil(index["clang"])
+    end)
+
+    it("drops extensionless names on Windows", function()
+        local index = cpp._build_path_index(
+            [[C:\tools\bin]], true,
+            lister({ ["C:\\tools\\bin"] = { "ccache", "sccache.exe" } }))
+        assert.is_nil(index["ccache"])
+        assert.equals("C:/tools/bin/sccache.exe", index["sccache"])
+    end)
+
+    it("honours a custom PATHEXT case-insensitively", function()
+        local index = cpp._build_path_index(
+            [[C:\tools\bin]], true,
+            lister({ ["C:\\tools\\bin"] = { "tool.PS1", "gcc.exe", "x.bat" } }),
+            { pathext = ".exe;.ps1" })
+        assert.equals("C:/tools/bin/tool.PS1", index["tool"])
+        assert.equals("C:/tools/bin/gcc.exe", index["gcc"])
+        assert.is_nil(index["x"])  -- .bat not in this PATHEXT
+    end)
+
+    it("prefers the earlier PATHEXT extension within one directory", function()
+        local index = cpp._build_path_index(
+            [[C:\tools\bin]], true,
+            lister({ ["C:\\tools\\bin"] = { "ccache.bat", "ccache.exe" } }))
+        -- Default PATHEXT order is .COM;.EXE;.BAT;.CMD → .exe beats .bat.
+        assert.equals("C:/tools/bin/ccache.exe", index["ccache"])
+    end)
+
+    it("stats links and unknown entry types, keeping only regular files", function()
+        local stats = {
+            ["/usr/bin/cc-link"] = { type = "file" },       -- link → file
+            ["/usr/bin/dir-link"] = { type = "directory" }, -- link → dir
+            ["/usr/bin/mystery"] = { type = "file" },       -- unknown → file
+            -- "/usr/bin/dangling" → stat nil (broken link)
+        }
+        local stat_calls = 0
+        local index = cpp._build_path_index(
+            "/usr/bin", false,
+            lister({ ["/usr/bin"] = {
+                { "cc-link", "link" }, { "dir-link", "link" },
+                { "mystery" }, { "dangling", "link" }, { "plain", "file" },
+            } }),
+            { stat_fn = function(p)
+                stat_calls = stat_calls + 1
+                return stats[p]
+            end })
+        assert.equals("/usr/bin/cc-link", index["cc-link"])
+        assert.is_nil(index["dir-link"])
+        assert.equals("/usr/bin/mystery", index["mystery"])
+        assert.is_nil(index["dangling"])
+        assert.equals("/usr/bin/plain", index["plain"])
+        -- Only the ambiguous entries were stat'ed (never the known "file").
+        assert.equals(4, stat_calls)
+    end)
+
+    it("does not index a real directory on disk", function()
+        -- End-to-end through the real libuv scandir + stat seam.
+        cpp.clear_cache()
+        local is_win = vim.fn.has("win32") == 1
+        local dir = vim.fn.tempname()
+        vim.fn.mkdir(dir .. "/ccache", "p")
+        vim.fn.mkdir(dir .. "/sccache.exe", "p")
+        cpp._path_index = cpp._build_path_index(dir, is_win, cpp._scandir_entries)
+        assert.is_nil(cpp.lookup_path("ccache"))
+        assert.is_nil(cpp.lookup_path("sccache"))
+        cpp.clear_cache()
+        vim.fn.delete(dir, "rf")
     end)
 
     it("keeps names verbatim and case-sensitive on Unix", function()
