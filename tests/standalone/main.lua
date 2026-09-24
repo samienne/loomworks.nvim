@@ -962,7 +962,7 @@ do
   paths.rm_rf(sb)
 end
 
-print("boot.host_update — decide (who may self-replace, §16.31)")
+print("boot.host_update — decide (who may self-replace, §16.32)")
 do
   local hu = require("boot.host_update")
   local base = { exe = "/home/u/.local/bin/lw", target_version = "2.0.0" }

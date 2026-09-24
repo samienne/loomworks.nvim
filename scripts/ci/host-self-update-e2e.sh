@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host self-update end-to-end (spec §16.31): fuse a real "old" host (no release
+# Host self-update end-to-end (spec §16.32): fuse a real "old" host (no release
 # version) and a "new" host (release 0.0.0-test), publish the new one in a
 # local mirror with a SHA256SUMS signed by the TEST key, then let the old host
 # `self-update` itself — on Windows this exercises the real running-.exe

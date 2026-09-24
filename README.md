@@ -805,7 +805,7 @@ used as-is. If you pass a non-default `--channel` while a `release-url` override
 `lw self-update` warns that the channel was ignored — the override wins by
 design, so unset it to follow a channel. `lw version` shows the active channel.
 
-**Updating the `lw` binary itself** (spec §16.31). `lw self-update` updates the
+**Updating the `lw` binary itself** (spec §16.32). `lw self-update` updates the
 release bundle *and then the `lw` executable*, from the same release, so fixes
 to the binary's own argument handling and update logic reach you too. The new
 binary is checked against the release's signed `SHA256SUMS` (with the key built

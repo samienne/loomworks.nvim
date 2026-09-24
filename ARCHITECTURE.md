@@ -1087,7 +1087,7 @@ pinned invocation acquires exactly its version+hash and consults no channel.
 `installed_releases` ordering and `gc` never retain a pre-release over the full
 release it precedes. `lw version` prints the resolved channel.
 
-**Host self-update** (spec §16.31). The fused host carries its release version
+**Host self-update** (spec §16.32). The fused host carries its release version
 in `boot/verify.lua` `RELEASE_VERSION` — `nil` in source, injected by
 `scripts/release/fuse_host.sh <luvi> <pub> <out> <version>` (release.yml's
 hosts job passes the tag version and fails the leg if `lw version` does not
@@ -1235,7 +1235,7 @@ decode + small encode, `verify.lua` ECDSA-P256 manifest verifier + the host's
 `HOST_VERSION`/`RELEASE_VERSION`, `download.lua`
 curl/local fetch, `update.lua` self-update + miniz extraction + pinned
 provisioning (`ensure_host_binary` / `ensure_version`), `host_update.lua` host
-binary self-replacement (spec §16.31), `install.lua`
+binary self-replacement (spec §16.32), `install.lua`
 self-install, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap`/`update` + the
 launcher-script templates), `lua/loomworks/shim/`, `modules.json` (the curated

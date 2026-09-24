@@ -106,7 +106,7 @@ jobs:
           lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
           "$lw" version
 
-      # Fuses real old/new hosts and lets the old one self-update (spec §16.31)
+      # Fuses real old/new hosts and lets the old one self-update (spec §16.32)
       # against a local signed mirror — on Windows this is the only check of
       # the running-.exe rename-aside swap.
       - name: Host self-update end-to-end

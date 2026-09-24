@@ -39,7 +39,7 @@ end)
 local paths = require("boot.paths")
 local pin = require("boot.pin")
 
--- A Windows host self-update (spec §16.31) renames the running exe aside to
+-- A Windows host self-update (spec §16.32) renames the running exe aside to
 -- `<exe>.old`; the next invocation removes it. Best-effort and silent — the
 -- file may still be in use by another lw process that started before the swap.
 if paths.is_windows then require("boot.host_update").cleanup_old() end
@@ -190,7 +190,7 @@ elseif command == "self-update" then
   io.write(res.updated
     and ("lw: installed loomworks " .. res.version .. "\n")
     or ("lw: already up to date (" .. res.version .. ")\n"))
-  -- Then the host binary itself (spec §16.31): host-side fixes never ship in the
+  -- Then the host binary itself (spec §16.32): host-side fixes never ship in the
   -- bundle, so a bundle-only update would leave them stranded. Same release as
   -- the bundle just resolved; verified against the signed SHA256SUMS before any
   -- swap. Refuses for pinned / dev / source-run hosts (a note, not a failure).

@@ -1,4 +1,4 @@
--- Host self-update (spec §16.31): replace the running `lw` host binary with the
+-- Host self-update (spec §16.32): replace the running `lw` host binary with the
 -- target release's, after `self-update` has handled the bundle.
 --
 -- Flow: decide (skip for --no-host / pinned / dev / source runs / same release)
@@ -139,7 +139,7 @@ function M.swap(exe, new, opts)
   return nil, "move new host into place: " .. tostring(e2)
 end
 
---- Replace the running host with `o.target_version`'s host binary (§16.31).
+--- Replace the running host with `o.target_version`'s host binary (§16.32).
 ---
 --- Result `status`:
 ---   "replaced" — swapped in; `from`/`to` set.

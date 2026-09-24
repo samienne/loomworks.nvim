@@ -412,7 +412,7 @@ function M.self_update(opts)
     channel_overridden = channel_overridden }
 end
 
---- The one-line `lw version` report. The host's release version (spec §16.31)
+--- The one-line `lw version` report. The host's release version (spec §16.32)
 --- leads, with the capability version (§16.14) in parentheses; a host with no
 --- embedded release version is a dev build and says so rather than guessing.
 function M.version_line(info, channel)
@@ -434,7 +434,7 @@ function M.version_info(luaroot, source_kind)
   end
   return {
     host_version = verify.HOST_VERSION,
-    -- The host's embedded release version (spec §16.31); nil = dev build.
+    -- The host's embedded release version (spec §16.32); nil = dev build.
     release_version = verify.RELEASE_VERSION,
     source = source_kind or "fused",
     bundle = bundle,

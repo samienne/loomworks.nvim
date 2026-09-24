@@ -22,7 +22,7 @@ local M = {}
 -- way bundles can rely on.
 M.HOST_VERSION = 1
 
--- The release version this host binary was built as (spec §16.31), injected by
+-- The release version this host binary was built as (spec §16.32), injected by
 -- scripts/release/fuse_host.sh at release-fuse time. nil in the committed
 -- source: a development build or a source run has no release identity, and
 -- `lw version` reports it as a dev build rather than guessing. Self-update

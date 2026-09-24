@@ -6,7 +6,7 @@
 #   fuse_host.sh <luvi_binary> <public_key.pem> <out_path> [<release_version>]
 #
 # <release_version> (no leading v) becomes the host's M.RELEASE_VERSION
-# (spec §16.31): `lw version` reports it, and `lw self-update` compares it to
+# (spec §16.32): `lw version` reports it, and `lw self-update` compares it to
 # the target release to decide whether to replace the host. Omit it for a
 # local/dev fuse — the host then reports itself as a dev build.
 #

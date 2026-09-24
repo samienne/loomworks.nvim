@@ -314,7 +314,7 @@ host that does not meet a bundle's minimum MUST refuse to execute it — rather
 than fail unpredictably — and MUST report that a host update is required.
 Within its compatible range a single host build executes any bundle, so
 behavioral updates ship as bundles without replacing the host. Changes to the
-host itself reach an installed host through host self-update (§16.31).
+host itself reach an installed host through host self-update (§16.32).
 
 ### 16.15 Host acquisition integrity
 
@@ -325,7 +325,7 @@ trusted channel *before* its first execution, and only a matching binary is
 run. Installation is that binary placing itself where it can be invoked; it is
 not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
-(§16.12–16.13). A later replacement of an installed host (§16.31) is verified
+(§16.12–16.13). A later replacement of an installed host (§16.32) is verified
 by the already-trusted running host against the signed hash list below, before
 the new binary is ever executed.
 
@@ -1210,7 +1210,7 @@ launcher is resolved from policy, applied by the module, and reconfigured on
 change through the ordinary build gate. No build-time flag turns caching on or
 off — that decision lives entirely in the `cache` policy variable.
 
-### 16.31 Host self-update
+### 16.32 Host self-update
 
 A host built from a release carries that release's **version identity**,
 fixed into the binary when it is built. A host built from a working tree (a

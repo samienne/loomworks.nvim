@@ -60,7 +60,7 @@ jobs:
           chmod +x "${{ matrix.luvi }}" || true
 
       # The release version is baked into the host (boot/verify.lua
-      # RELEASE_VERSION, spec §16.31) so `lw version` reports it and
+      # RELEASE_VERSION, spec §16.32) so `lw version` reports it and
       # `lw self-update` can tell whether the installed host is current.
       - name: Resolve version
         id: v
