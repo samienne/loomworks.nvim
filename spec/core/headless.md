@@ -1245,10 +1245,15 @@ finds the bundle already current, unless the caller passes an explicit
   asset (§16.22 asset selection), verified against the **signed** release hash
   list (§16.15): the list's signature MUST verify against the key carried by
   the running host, and the downloaded binary's hash MUST match its entry.
+  A valid signature proves only that the list is *some* release's; the list
+  MUST also be bound to the **target** release by naming that release's own
+  version-bearing asset (its bundle, whose name carries the version), so a
+  genuine older release's list — and its older host — can never be replayed
+  for a newer target. A list without that entry is an integrity failure.
   This check is mandatory and unconditional — relaxing transport verification
   (§16.22) never relaxes it — and it completes **before** the installed binary
-  is touched. A release whose hash list does not verify, or does not name this
-  platform's asset, is never installed.
+  is touched. A release whose hash list does not verify, is not the target's,
+  or does not name this platform's asset, is never installed.
 - **Atomic, never half-written.** The verified binary is staged next to the
   installed one and moved into place in a single step. Where the platform
   forbids replacing a running executable but permits renaming it, the running
@@ -1262,7 +1267,8 @@ finds the bundle already current, unless the caller passes an explicit
   the bundle update stands and the exit status is 0. A failure to *obtain* the
   replacement (unreachable origin, a mirror without host assets) is likewise a
   warning, since the bundle update already succeeded; an **integrity** failure
-  (hash list signature or binary hash mismatch) is an error with a non-zero
+  (hash list signature, a list that is not the target release's, or binary
+  hash mismatch) is an error with a non-zero
   exit status.
 - **Only a globally-installed release host replaces itself.** A host running
   from a repository's pinned-launcher cache or in pinned context (§16.21–16.23)

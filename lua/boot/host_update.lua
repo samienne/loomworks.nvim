@@ -5,8 +5,10 @@
 -- host at or newer than the target release — upgrade-only)
 -- -> probe that the install dir is writable -> fetch the release's SIGNED
 -- SHA256SUMS + .sig and verify the signature with the key embedded in THIS
--- (already-trusted) host -> download this platform's host asset next to the
--- installed binary and verify it against its hash (boot.update
+-- (already-trusted) host -> require the list to name the target's own bundle
+-- (anti-replay: binds the signed list to the target release) -> download this
+-- platform's host asset next to the installed binary and verify it against its
+-- hash (boot.update
 -- ensure_host_binary — mandatory, never relaxed) -> swap it into place.
 --
 -- The swap never leaves a half-written binary and any failure leaves the
@@ -160,8 +162,9 @@ end
 ---                or the running host is newer than the target (no downgrade).
 ---   "warning"  — not replaced, original intact, bundle update stands (exit 0):
 ---                unwritable location, host asset/hash list unobtainable.
----   "error"    — integrity failure (hash-list signature / binary hash), or a
----                failed rollback. Caller exits non-zero.
+---   "error"    — integrity failure (hash-list signature / a list that is not
+---                the target's / binary hash), or a failed rollback. Caller
+---                exits non-zero.
 --- `message` explains; `manual` (warning/error) says how to replace it by hand.
 ---
 --- @param o { target_version: string, url?: string, exe?: string, running_version?: string, asset?: string, no_host?: boolean, pinned?: boolean, dev?: boolean, fused_system_lua?: boolean, fs?: table, is_windows?: boolean, sleep?: fun(ms:integer), attempts?: integer }
@@ -222,7 +225,19 @@ function M.update_host(o)
   if not okv then
     return { status = "error", manual = manual, message = "SHA256SUMS signature: " .. tostring(ev) }
   end
-  local sha = require("boot.bootstrap").parse_sums(sums)[asset]
+  local list = require("boot.bootstrap").parse_sums(sums)
+  -- The signature proves this is SOME release's genuine list, not the target's:
+  -- a hostile origin could replay an older release's signed list (and its older
+  -- host) for a newer target. Bind the list to the target by requiring the
+  -- target's own version-bearing entry — its bundle, `loomworks-lua-<ver>.zip`,
+  -- which every release's SHA256SUMS covers. Absent -> integrity error.
+  local own = pin.bundle_asset(target)
+  if not list[own] then
+    return { status = "error", manual = manual,
+      message = "SHA256SUMS is not release " .. target .. "'s hash list (no '" ..
+        own .. "' entry — a replayed or mismatched list)" }
+  end
+  local sha = list[asset]
   if not sha then
     return { status = "warning", manual = manual,
       message = "release " .. target .. " publishes no hash for '" .. asset .. "'" }

@@ -1106,7 +1106,10 @@ unless `--no-host`:
   failure → **warning** + manual instructions (bundle update stands, exit 0).
 - `SHA256SUMS` + `.sig` come from `versioned_base(target)` — the same origin
   and release-url override as the bundle — and the signature is verified with
-  the embedded key; the asset (`pin.detect_asset`) is fetched through
+  the embedded key; the list must then contain the target's own
+  `pin.bundle_asset(target)` (`loomworks-lua-<ver>.zip`, covered by every
+  release's `sha256sum *`) or it is a replayed/mismatched list → **error**; the
+  asset (`pin.detect_asset`) is fetched through
   `update.ensure_host_binary` (mandatory hash, no `--insecure` bypass exists)
   into `<exe>.new`. Signature/hash failure → **error** (exit 1); fetch
   failure or a list without this asset → warning.

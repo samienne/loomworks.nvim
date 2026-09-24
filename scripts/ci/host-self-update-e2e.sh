@@ -54,8 +54,15 @@ cp "$T/install/$exe_name" "$T/old-copy"
 
 # The mirror: the fixture bundle + signed manifest, and the signed hash list.
 cp "$fx/manifest.json" "$fx/manifest.json.sig" "$fx/loomworks-lua-$ver.zip" "$T/mirror/"
+# Like a real release, the list names the release's own version-bearing bundle
+# (loomworks-lua-<ver>.zip) — the host refuses a list without it (anti-replay).
+# `sign_sums <bundle-version>` forges another release's list (replay test).
 sign_sums() {
-  ( cd "$T/mirror" && printf '%s  %s\n' "$(sha_of "$asset")" "$asset" > SHA256SUMS )
+  local bver="${1:-$ver}"
+  ( cd "$T/mirror" && {
+      printf '%s  %s\n' "$(sha_of "$asset")" "$asset"
+      printf '%s  %s\n' "$(sha_of "loomworks-lua-$ver.zip")" "loomworks-lua-$bver.zip"
+    } > SHA256SUMS )
   openssl dgst -sha256 -sign "$fx/test_ec_priv.pem" -out "$T/mirror/SHA256SUMS.sig" "$T/mirror/SHA256SUMS"
 }
 sign_sums
@@ -95,6 +102,14 @@ echo "=== second self-update is a no-op for the host ==="
 out="$("$lw" self-update 2>&1)"; code=$?; echo "$out"
 [ $code -eq 0 ] && ok "exits 0" || bad "exit $code"
 case "$out" in *"host binary already current"*) ok "host already current" ;; *) bad "host not reported current" ;; esac
+
+echo "=== a replayed hash list (another release's, validly signed) is refused ==="
+cp "$T/old-copy" "$lw"
+sign_sums 0.0.0-older
+out="$("$lw" self-update 2>&1)"; code=$?; echo "$out"
+[ $code -ne 0 ] && ok "replayed list exits non-zero" || bad "replayed list accepted (exit 0)"
+cmp -s "$lw" "$T/old-copy" && ok "original host untouched" || bad "host changed despite a replayed list"
+sign_sums
 
 echo "=== a tampered host asset is refused; the original stays ==="
 cp "$T/old-copy" "$lw"

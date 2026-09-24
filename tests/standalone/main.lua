@@ -1017,13 +1017,18 @@ do
   local NEW, OLD = "NEW-HOST-BINARY\n", "OLD-HOST-BINARY\n"
 
   -- Stage a release in the (flat) mirror: the host asset + a signed hash list.
-  -- `hash_body` lets a test publish a hash that does not match the asset.
+  -- `hash_body` lets a test publish a hash that does not match the asset. A
+  -- real release's list always names its own version-bearing bundle
+  -- (loomworks-lua-<ver>.zip); that line binds the list to the release.
+  local function bundle_line(v)
+    return verify.sha256_hex("bundle-" .. v) .. "  loomworks-lua-" .. v .. ".zip\n"
+  end
   local function stage(opts)
     opts = opts or {}
     paths.rm_rf(mirror); paths.mkdirp(mirror)
     put(mirror .. "/" .. asset, opts.asset_body or NEW)
     local sums = opts.sums
-      or (verify.sha256_hex(opts.hash_body or NEW) .. "  " .. asset .. "\n")
+      or (verify.sha256_hex(opts.hash_body or NEW) .. "  " .. asset .. "\n" .. bundle_line(ver))
     put(mirror .. "/SHA256SUMS", sums)
     put(mirror .. "/SHA256SUMS.sig", opts.sig or priv:sign(sums, "sha256"))
   end
@@ -1119,8 +1124,20 @@ do
   eq(rsig.status, "error", "bad SHA256SUMS signature is an integrity error")
   eq(slurp(exe), OLD, "bad signature leaves the original untouched")
 
+  -- Replay: a GENUINE signed list from an older release served for a newer
+  -- target (its signature verifies, its host hash matches that older host)
+  -- must be refused — the list does not name the target's own bundle.
+  stage({ sums = verify.sha256_hex(NEW) .. "  " .. asset .. "\n" .. bundle_line("1.0.0") })
+  reset_exe()
+  local rr = run({ is_windows = false })
+  eq(rr.status, "error", "replayed older signed SHA256SUMS is an integrity error")
+  ok(tostring(rr.message):find("loomworks-lua-" .. ver .. ".zip", 1, true) ~= nil,
+    "replay error names the missing release entry  (got " .. tostring(rr.message) .. ")")
+  eq(slurp(exe), OLD, "replay: original untouched")
+  ok(not exists(exe .. ".new"), "replay: nothing downloaded")
+
   -- Obtain failures (bundle update already succeeded) are warnings.
-  stage({ sums = "abc123  some-other-asset\n" }); reset_exe()
+  stage({ sums = "abc123  some-other-asset\n" .. bundle_line(ver) }); reset_exe()
   eq(run({ is_windows = false }).status, "warning", "asset missing from the signed list -> warning")
   paths.rm_rf(mirror .. "/SHA256SUMS")
   eq(run({ is_windows = false }).status, "warning", "mirror without SHA256SUMS -> warning")
