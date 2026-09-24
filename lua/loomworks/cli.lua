@@ -4042,6 +4042,17 @@ local function resolve_profile_for_set(ws, name)
 end
 M._resolve_profile_for_set = resolve_profile_for_set
 
+--- Whether `name` is a variable a profile may fill for `proj`: a declared
+--- project variable, or a core pre-declared policy name (`cache`, core §1.3.2)
+--- which is profile-fillable without any declaration.
+--- @param proj loomworks.Project
+--- @param name string
+--- @return boolean
+local function profile_fillable(proj, name)
+  if proj.variables and proj.variables[name] then return true end
+  return require("loomworks.variables").PREDECLARED_NAMES[name] == true
+end
+
 --- `lw profile set [<profile>] <project> <variable> <value>` — set this
 --- profile's machine-local fill value for a blank project variable (§1.3.1).
 --- Profile defaults to the active one. Written to user.json only; never
@@ -4058,12 +4069,13 @@ function M.cmd_profile_set(root, args)
   else
     die("usage: lw profile set [<profile>] <project> <variable> <value>\n" ..
       "  sets this profile's machine-local value for a blank project variable\n" ..
+      "  (or the pre-declared `cache` policy, e.g. `lw profile set App cache sccache`)\n" ..
       "  (profile defaults to the active one; written to user.json only)")
   end
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_set(ws, profile_name)
   local proj = resolve_project(ws, project_key)
-  if not (proj.variables and proj.variables[var_name]) then
+  if not profile_fillable(proj, var_name) then
     local declared = {}
     for n in pairs(proj.variables or {}) do declared[#declared + 1] = n end
     table.sort(declared)
@@ -4094,7 +4106,7 @@ function M.cmd_profile_unset(root, args)
   local ws = load_workspace(root, false)
   local profile = resolve_profile_for_set(ws, profile_name)
   local proj = resolve_project(ws, project_key)
-  if not (proj.variables and proj.variables[var_name]) then
+  if not profile_fillable(proj, var_name) then
     die("project '" .. proj.key .. "' declares no variable '" .. var_name .. "'")
   end
   profile:clear_variable_value(proj.key, var_name)
