@@ -12,8 +12,9 @@
 --- Two tiers (§16.31):
 ---   * `local_tier`   — `{ items, computed_at, key }`, the passive providers'
 ---     results plus a cheap invalidation fingerprint of their inputs;
----   * `network_tier` — `{ items, computed_at }`, the on-demand providers'
----     results, governed by a TTL.
+---   * `network_tier` — `{ items, computed_at, key }`, the on-demand providers'
+---     results, governed by a TTL and keyed to the running version (bundle, host
+---     binary, channel) they describe.
 ---
 --- The module is pure: it takes an injected `io` table (the same shape as
 --- `loomworks.io` — `read_json`/`read_file`/`write_json`/`ensure_dir`) so both

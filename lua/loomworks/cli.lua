@@ -6675,8 +6675,10 @@ short remedy (some add a line of detail). Providers are advisory and
 extensible; the compiler-cache one gives a one-line verdict for C/C++
 workspaces (using <tool> / available but not enabled / not found / not applied
 / /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
-whether a newer `lw` release is available on your update channel (this makes a
-network request, so it runs only here — never on the passive count) and notes
+whether a newer `lw` release is available on your update channel — for the
+bundle and for the lw binary itself (a binary left behind, or one from before
+`lw self-update` could replace it) — (this makes a network request, so it runs
+only here — never on the passive count) and notes
 when a release-url override is superseding a non-default channel; a failed/offline
 check is silent. Health never spawns a cache tool — usage statistics live behind
 `lw status --cache-stats`.
@@ -6684,8 +6686,9 @@ check is silent. Health never spawns a cache tool — usage statistics live behi
 Results are cached in `.nvim/loomworks.health.json` (an internal advisory cache,
 separate from the build cache) so the passive `N suggestions` count stays cheap.
 `lw health` always refreshes the local checks; the network update-availability
-check is refreshed at most once a day. `--force` (alias `--refresh`) refreshes
-the network check now, ignoring that throttle.]],
+check is refreshed at most once a day, or sooner once the running lw or its
+bundle changes. `--force` (alias `--refresh`) refreshes the network check now,
+ignoring that throttle.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as

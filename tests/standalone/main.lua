@@ -1226,5 +1226,20 @@ do
   paths.rm_rf(sb)
 end
 
+print("suggestions._host_facts — lw binary facts on the real luvi host (§16.31/§16.32)")
+do
+  -- Under the real luvi runtime the health update check must see a host (the
+  -- nvim busted suite only ever sees `nil` — no luvi there). Running as bare
+  -- `luvi tests/standalone` this is a source run: a dev build, never flagged.
+  require("loomworks.shim")
+  local facts = require("loomworks.suggestions")._host_facts()
+  ok(type(facts) == "table", "_host_facts sees the luvi host")
+  if type(facts) == "table" then
+    eq(facts.self_update, true, "bootstrap has host self-update")
+    eq(facts.dev_build, true, "bare luvi runtime is a dev build (shared predicate)")
+    eq(facts.release_version, verify.RELEASE_VERSION, "release identity from boot.verify")
+  end
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -1132,8 +1132,12 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
   post-configure cache-compatibility results). When the fingerprint
   changes, the local tier is stale;
 - a **network tier** — the results of the on-demand (network-backed) providers —
-  stored with the time they were computed, and governed by a **time-to-live**
-  (on the order of a day).
+  stored with the time they were computed and a **running-version key** (the
+  running release bundle, the running host binary's release identity (§16.32) and
+  the effective update channel, all read locally), and governed by a
+  **time-to-live** (on the order of a day). Items recorded under a different
+  running-version key (e.g. before a self-update) describe a release that is no
+  longer running and are stale regardless of age.
 
 The two refresh tiers, over that one cache, are:
 
@@ -1143,13 +1147,16 @@ The two refresh tiers, over that one cache, are:
   passive providers**, rewrites the local tier, and uses the fresh result — a
   lazy, compute-on-first-use that stays cheap on every subsequent render. It
   **never** computes the network tier: it includes whatever network-tier items
-  the cache already holds (informational, however old — so a finding surfaced by a
-  prior health run is still reflected in the count) but performs no network I/O.
+  the cache already holds for the current running-version key (informational,
+  however old — so a finding surfaced by a prior health run is still reflected in
+  the count; items recorded for another running version are dropped) but performs
+  no network I/O.
   This preserves the hard invariant that a passive render never touches the
   network.
 - **On-demand health** (`lw health`) is the full refresh. It **always** recomputes
   the local tier, and recomputes the network tier when the cached network tier is
-  older than its TTL (or when the user forces a refresh); otherwise it reuses the
+  older than its TTL, was recorded under a different running-version key, or the
+  user forces a refresh; otherwise it reuses the
   cached network tier, so back-to-back health runs do not repeatedly hit the
   network. It rewrites the cache and reports every item.
 
@@ -1174,6 +1181,31 @@ version, suggests updating. Its `title` is "Update available", its `detail` is
 self-update command. Version comparison is the same semver-aware ordering used
 for activation (§16.29), so a pre-release never reads as "newer" than the full
 release it precedes.
+
+The same check covers the **host binary** (§16.32), which can be left stale while
+the bundle is current (an unwritable install location, a bundle-only update, or a
+host from before host self-update existed). Against the same newest release, and
+upgrade-only by the same rule host self-update applies (§16.32):
+
+- a host that self-update **would replace** — its embedded release version is
+  strictly older than the newest, or it is a release host with no embedded
+  version — gets an **actionable** item "lw binary `<running>` is older than
+  `<newest>`" (`<running>` reads "(unknown release)" for an unversioned release
+  host), remedy: run the self-update command (with the help-topic pointer);
+- a host from **before host self-update** (whose bootstrap cannot replace itself)
+  gets an **actionable** item "lw binary predates self-update — reinstall once
+  (see README)", remedy: reinstall the host once as the installation
+  instructions describe;
+- a **development build** (the same predicate self-update and the version report
+  use, §16.32), a **pinned** host (the pin owns its version, §16.24), or a host at
+  or newer than the newest release → no host item.
+
+When the bundle is also stale, one "Update available" item suffices — the
+self-update it points at replaces a self-updating host too — except for a host
+from before host self-update, whose item is still reported. Reading the host's
+release identity is local and network-free; only the newest-release resolution
+above touches the network, so the host check shares this provider's on-demand
+tier and silent degradation.
 
 Resolving the newest version is a **network** operation (the releases API for
 `unstable`, otherwise a lightweight read of the channel base's manifest to learn
@@ -1298,3 +1330,6 @@ replacement follows these rules:
 
 Host replacement is a management operation (§16.9): it happens only on an
 explicit self-update, never as part of a build or any workspace operation.
+A host left stale — by an unwritable location, a no-host update, or because it
+predates host self-update — is reported by the health update check (§16.31),
+which applies these same replacement rules to decide whether to flag it.

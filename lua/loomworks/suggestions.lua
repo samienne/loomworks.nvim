@@ -138,8 +138,10 @@ end
 --- its cheap invalidation key (`_local_key`) no longer matches the current
 --- inputs — a lazy compute-on-first-`lw status` that stays cheap on every later
 --- render. The cached NETWORK tier's items (if any, from a prior `lw health`)
---- are included informationally, however old, but the network tier is NEVER
---- computed here. Without a workspace backing (nil workspace, or a future
+--- are included informationally, however old — unless they were recorded for a
+--- different running version (`_network_key`: after a self-update they describe
+--- a bundle/host no longer running, so they are dropped) — but the network tier
+--- is NEVER computed here. Without a workspace backing (nil workspace, or a future
 --- workspace-independent passive provider), the passive providers run live and
 --- nothing is cached.
 --- @param workspace loomworks.Workspace|nil
@@ -162,8 +164,10 @@ function M.collect(workspace)
     local out = {}
     append(out, tier.items)
     -- Cached network items are informational context for the count (however
-    -- old); the network tier is refreshed only by `collect_health`, never here.
-    if data.network_tier then append(out, data.network_tier.items) end
+    -- old) as long as they describe what is running now; the network tier is
+    -- refreshed only by `collect_health`, never here.
+    local net = data.network_tier
+    if net and net.key == M._network_key() then append(out, net.items) end
     return out
 end
 
@@ -173,8 +177,9 @@ end
 ---
 --- Full refresh over the cached two-tier model (§16.31): the LOCAL tier is
 --- always recomputed; the NETWORK tier is recomputed when it is absent, older
---- than `NETWORK_TTL`, or `opts.force` is set, and otherwise reused (so
---- back-to-back health runs don't hammer the API). The cache is then rewritten.
+--- than `NETWORK_TTL`, recorded for another running version (`_network_key`), or
+--- `opts.force` is set, and otherwise reused (so back-to-back health runs don't
+--- hammer the API). The cache is then rewritten.
 ---
 --- `workspace` may be nil: the workspace-INDEPENDENT health providers (update
 --- availability, channel override) ignore their argument and still run, so
@@ -202,11 +207,14 @@ function M.collect_health(workspace, opts)
     local local_items = run_local(workspace)
     data.local_tier = { items = local_items, computed_at = now, key = M._local_key(workspace) }
 
-    -- Network tier: refresh when forced, absent, or past its TTL; else reuse.
+    -- Network tier: refresh when forced, absent, past its TTL, or recorded for
+    -- another running version (e.g. before a self-update); else reuse.
     local net = data.network_tier
+    local net_key = M._network_key()
     local fresh = net and net.computed_at and (now - net.computed_at) < M.NETWORK_TTL
+        and net.key == net_key
     if opts.force or not fresh then
-        net = { items = run_network(workspace), computed_at = now }
+        net = { items = run_network(workspace), computed_at = now, key = net_key }
         data.network_tier = net
     end
 
@@ -679,10 +687,102 @@ function M._current_release_version()
     return luaroot:match("lua%-(.+)$")
 end
 
---- Health provider: a newer release is available on the resolved update channel.
+--- Facts about the running standalone `lw` host binary (§16.32), or nil when
+--- this is not the standalone host (the editor / nvim-hosted fallback — there is
+--- no lw binary to update). Network-free and cheap; a seam tests replace.
+---
+--- `self_update` is false on a host released before host self-update existed:
+--- its bootstrap has no `boot.host_update`, so `lw self-update` cannot replace it
+--- and it needs one manual reinstall. `dev_build` uses the shared predicate
+--- (`host_update.dev_build`) — on such an old host, whose bootstrap lacks it, the
+--- predicate's fused-system-Lua test is applied directly (a bare-luvi source run
+--- reads the source tree as its bundle, so that test covers it too).
+--- @return { release_version?: string, self_update: boolean, dev_build: boolean, pinned: boolean, exe?: string, fused_system_lua: boolean }|nil
+function M._host_facts()
+    local ok_l, luvi = pcall(require, "luvi")
+    if not ok_l or type(luvi) ~= "table" or type(luvi.bundle) ~= "table" then return nil end
+    local fused = luvi.bundle.readfile("loomworks/cli.lua") ~= nil
+    local ok_v, verify = pcall(require, "boot.verify")
+    local ok_h, hu = pcall(require, "boot.host_update")
+    local facts = {
+        release_version = ok_v and type(verify) == "table" and verify.RELEASE_VERSION or nil,
+        self_update = ok_h and type(hu) == "table" and type(hu.decide) == "function",
+        pinned = os.getenv("LOOMWORKS_PINNED") ~= nil,
+        fused_system_lua = fused,
+    }
+    if facts.self_update then
+        facts.exe = hu.exe_path()
+        facts.dev_build = hu.dev_build({ exe = facts.exe, fused_system_lua = fused }) ~= nil
+    else
+        facts.dev_build = fused
+    end
+    return facts
+end
+
+--- The lw binary (host) staleness item, or nil. Upgrade-only (§16.32): a host
+--- self-update would replace — per the same `host_update.decide` it uses — gets
+--- "run `lw self-update`"; a host too old to self-update gets "reinstall once".
+--- Never for a dev build, a pinned host (lw.pin owns its version) or a host at
+--- or newer than `newest`.
+--- @param facts table|nil `_host_facts()` result
+--- @param newest string newest release on the effective channel
+--- @return loomworks.Suggestion|nil
+local function host_item(facts, newest)
+    if not facts or facts.dev_build or facts.pinned then return nil end
+    if not facts.self_update then
+        local exe = (facts.exe or ""):gsub("\\", "/"):lower()
+        if exe:find("/.nvim/cache/", 1, true) then return nil end -- pinned launcher cache
+        return {
+            title = "lw binary predates self-update — reinstall once (see README)",
+            remedy = "install the current lw binary as in the README's \"Installing lw\"; "
+                .. "`lw self-update` keeps it current from then on",
+        }
+    end
+    local hu = require("boot.host_update")
+    local action = hu.decide({
+        exe = facts.exe,
+        running_version = facts.release_version,
+        target_version = newest,
+        pinned = facts.pinned,
+        fused_system_lua = facts.fused_system_lua,
+    })
+    if action ~= "swap" then return nil end
+    return {
+        title = "lw binary " .. (facts.release_version or "(unknown release)")
+            .. " is older than " .. newest,
+        remedy = "run `lw self-update` — lw help self-update",
+    }
+end
+
+--- Fingerprint of what the network tier's items describe: the running bundle,
+--- the running host binary and the effective channel. Cached network items
+--- recorded under another key (e.g. before a self-update) are stale. Cheap and
+--- network-free — safe on the passive path.
+--- @return string
+function M._network_key()
+    local channel = "?"
+    local ok, update = pcall(require, "boot.update")
+    if ok and type(update) == "table" and type(update.resolve_channel) == "function" then
+        local okc, c = pcall(update.resolve_channel, {})
+        if okc and c then channel = c end
+    end
+    local okf, facts = pcall(M._host_facts)
+    local hostv = "-"
+    if okf and facts then
+        hostv = facts.release_version
+            or (facts.dev_build and "dev") or (facts.self_update and "unknown") or "pre"
+    end
+    return table.concat({ M._current_release_version() or "-", hostv, channel }, "|")
+end
+
+--- Health provider: a newer release is available on the resolved update channel
+--- — for the bundle ("Update available") and/or the lw binary itself (a host
+--- left stale by an unwritable install dir, `--no-host`, or a host from before
+--- self-update, §16.32). One item when both are stale: `lw self-update` updates
+--- both — except a pre-self-update host, which it cannot replace.
 --- HEALTH-ONLY — it performs a network fetch (`resolve_newest_version`). Silent
 --- (returns `{}`) when: this is not a versioned release source, the channel is
---- unknown, the check fails (offline / API error), or we are already up to date.
+--- unknown, the check fails (offline / API error), or everything is up to date.
 --- @param _workspace loomworks.Workspace
 --- @return loomworks.Suggestion[]
 function M.update_check_provider(_workspace)
@@ -698,13 +798,24 @@ function M.update_check_provider(_workspace)
     if not newest or err then return {} end -- offline / API failure: silent
 
     local paths = require("boot.paths")
-    if not paths.version_gt(newest, current) then return {} end -- up to date
+    local okf, facts = pcall(M._host_facts)
+    facts = okf and facts or nil
+    local okh, host = pcall(host_item, facts, newest)
+    host = okh and host or nil
 
-    return { {
-        title = "Update available",
-        detail = current .. " → " .. newest .. " on the " .. channel .. " channel",
-        remedy = "run `lw self-update`",
-    } }
+    local out = {}
+    if paths.version_gt(newest, current) then
+        out[1] = {
+            title = "Update available",
+            detail = current .. " → " .. newest .. " on the " .. channel .. " channel",
+            remedy = "run `lw self-update`",
+        }
+        -- self-update replaces a self-updating host too; only a host it cannot
+        -- replace needs its own item.
+        if host and facts and facts.self_update then host = nil end
+    end
+    if host then out[#out + 1] = host end
+    return out
 end
 
 --- Health provider: a `release-url` override is superseding a non-default update
