@@ -811,7 +811,10 @@ to the binary's own argument handling and update logic reach you too. The new
 binary is checked against the release's signed `SHA256SUMS` (with the key built
 into your current `lw`) before the installed one is touched, and the swap is
 atomic — on Windows the running `lw.exe` is renamed to `lw.exe.old` and removed
-on the next run. It is skipped when the binary is already that release.
+on the next run. It only ever moves the binary *forward*: it is skipped when
+the binary is already that release, and a binary newer than the release (say,
+after switching from `unstable` back to `stable`) is left alone, not
+downgraded.
 `lw version` reports the binary's release (`host: 0.1.29 (v1)`; `dev build`
 for a binary built from a checkout).
 

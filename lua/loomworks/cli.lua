@@ -7070,7 +7070,8 @@ rests on the signature, not the transport, so it is safe behind a proxy;
 set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
 Then it replaces the lw binary itself with the same release's host (spec
-§16.32), when that release differs from the running host's: the release's
+§16.32), when that release is newer than the running host's (it never
+downgrades the binary, e.g. after a channel switch to stable): the release's
 SHA256SUMS signature is checked against the built-in key and the downloaded
 binary against its hash BEFORE the installed binary is touched (never relaxed,
 even behind a proxy); the swap is atomic and any failure leaves the old binary

@@ -1,7 +1,8 @@
 -- Host self-update (spec §16.32): replace the running `lw` host binary with the
 -- target release's, after `self-update` has handled the bundle.
 --
--- Flow: decide (skip for --no-host / pinned / dev / source runs / same release)
+-- Flow: decide (skip for --no-host / pinned / dev / source runs / a running
+-- host at or newer than the target release — upgrade-only)
 -- -> probe that the install dir is writable -> fetch the release's SIGNED
 -- SHA256SUMS + .sig and verify the signature with the key embedded in THIS
 -- (already-trusted) host -> download this platform's host asset next to the
@@ -88,10 +89,21 @@ function M.decide(o)
   if o.fused_system_lua then
     return "skip", "this is a development build (system Lua fused into the binary)"
   end
-  if o.running_version and o.running_version == o.target_version then
-    return "current", "host already at " .. o.running_version
+  -- Upgrade-only (§16.32): replace only an unknown host (nil — released before
+  -- version identity existed) or one strictly older than the target. The
+  -- bundle never downgrades either (the newest installed release runs), so a
+  -- channel switch that resolves an older release leaves the host alone.
+  local running, target = o.running_version, o.target_version
+  if running and target then
+    if running == target or paths.compare_versions(running, target) == 0 then
+      return "current", "host already at " .. running
+    end
+    if not paths.version_gt(target, running) then
+      return "skip", "lw binary " .. running .. " is newer than " .. target ..
+        "; not downgrading"
+    end
   end
-  return "swap", (o.running_version or "unknown version") .. " -> " .. tostring(o.target_version)
+  return "swap", (running or "unknown version") .. " -> " .. tostring(target)
 end
 
 --- Move the verified `new` binary over `exe`. Unix: one atomic rename. Windows:
@@ -144,7 +156,8 @@ end
 --- Result `status`:
 ---   "replaced" — swapped in; `from`/`to` set.
 ---   "current"  — running host already is the target release.
----   "skipped"  — not a self-replacing host (--no-host / pinned / dev / source).
+---   "skipped"  — not a self-replacing host (--no-host / pinned / dev / source),
+---                or the running host is newer than the target (no downgrade).
 ---   "warning"  — not replaced, original intact, bundle update stands (exit 0):
 ---                unwritable location, host asset/hash list unobtainable.
 ---   "error"    — integrity failure (hash-list signature / binary hash), or a

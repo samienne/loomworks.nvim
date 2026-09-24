@@ -975,6 +975,20 @@ do
   eq(hu.decide(with({})), "swap", "unknown running version -> swap")
   eq(hu.decide(with({ running_version = "1.0.0" })), "swap", "older release -> swap")
   eq(hu.decide(with({ running_version = "2.0.0" })), "current", "same release -> no swap")
+  -- Upgrade-only: a running host newer than the target is never downgraded
+  -- (e.g. a channel switch unstable -> stable resolves an older release).
+  local a_old, r_old = hu.decide(with({ running_version = "2.1.0" }))
+  eq(a_old, "skip", "older target (channel switch) -> no downgrade")
+  ok(r_old:find("2.1.0 is newer than 2.0.0; not downgrading", 1, true) ~= nil,
+    "downgrade skip names both versions  (got " .. tostring(r_old) .. ")")
+  eq(hu.decide(with({ running_version = "1.9.9" })), "swap", "newer target -> swap")
+  -- Prerelease ordering is semver-aware: a beta orders below its release.
+  eq(hu.decide(with({ running_version = "0.1.29-beta.7", target_version = "0.1.29" })), "swap",
+    "0.1.29-beta.7 -> 0.1.29 is an upgrade")
+  eq(hu.decide(with({ running_version = "0.1.29", target_version = "0.1.29-beta.7" })), "skip",
+    "0.1.29 -> 0.1.29-beta.7 is a downgrade")
+  eq(hu.decide(with({ running_version = "0.1.10", target_version = "0.1.9" })), "skip",
+    "numeric core ordering (0.1.10 > 0.1.9)")
   eq(hu.decide(with({ no_host = true })), "skip", "--no-host -> skip")
   eq(hu.decide(with({ pinned = true })), "skip", "pinned context -> skip")
   eq(hu.decide(with({ exe = "/repo/.nvim/cache/lw-1.0.0-lw-linux-x86_64" })), "skip",
@@ -1130,6 +1144,12 @@ do
   local rc = run({ running_version = ver, url = sb .. "/nowhere" })
   eq(rc.status, "current", "same release -> current, nothing fetched")
   eq(slurp(exe), OLD, "same release: untouched")
+
+  -- Older target (running host newer) -> skipped, nothing fetched or touched.
+  reset_exe()
+  local rd = run({ running_version = "9.0.0", url = sb .. "/nowhere" })
+  eq(rd.status, "skipped", "older target -> skipped (no downgrade), nothing fetched")
+  eq(slurp(exe), OLD, "no downgrade: untouched")
 
   -- --no-host / pinned / dev -> skipped without touching anything.
   eq(run({ no_host = true, url = sb .. "/nowhere" }).status, "skipped", "--no-host skips")

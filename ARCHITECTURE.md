@@ -1098,8 +1098,10 @@ unless `--no-host`:
 
 - `decide` (pure) skips pinned context (`LOOMWORKS_PINNED`), an exe under a
   `.nvim/cache/` launcher cache, bare `luvi`, a dev source, and a dev build
-  (the host bundle contains `loomworks/cli.lua`); same `RELEASE_VERSION` →
-  `current`; `nil` → swap.
+  (the host bundle contains `loomworks/cli.lua`); upgrade-only: same
+  `RELEASE_VERSION` → `current`, a running version newer than the target
+  (`paths.version_gt`, pre-release-aware) → skip ("not downgrading"); `nil` or
+  strictly older → swap.
 - The exe path is `uv.exepath()`. A write probe in its directory runs first;
   failure → **warning** + manual instructions (bundle update stands, exit 0).
 - `SHA256SUMS` + `.sig` come from `versioned_base(target)` — the same origin

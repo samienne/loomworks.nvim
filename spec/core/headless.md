@@ -1231,11 +1231,16 @@ finds the bundle already current, unless the caller passes an explicit
   the bundle acquisition resolved — through the same channel (§16.29) and the
   same release-source override — so host and bundle never come from different
   releases or origins.
-- **Only when different.** The host is replaced only when the target release's
-  version differs from the running host's embedded release version. A running
-  host with **no** embedded release version is treated as unknown and is
-  replaced (every host released before version identity existed is such a
-  host).
+- **Only when newer.** The host is replaced only when the target release's
+  version is strictly newer than the running host's embedded release version,
+  under the same pre-release-aware ordering the channels use (§16.29): a
+  pre-release orders below its release. A target equal to the running host's
+  version leaves the host as it is (already current); an **older** target —
+  e.g. after switching from the `unstable` to the `stable` channel — is skipped
+  with a note and never downgrades the host, just as the newest installed
+  bundle, not an older one, is the one that runs. A running host with **no**
+  embedded release version is treated as unknown and is replaced (every host
+  released before version identity existed is such a host).
 - **Verified before swap.** The replacement binary is the platform's host
   asset (§16.22 asset selection), verified against the **signed** release hash
   list (§16.15): the list's signature MUST verify against the key carried by
