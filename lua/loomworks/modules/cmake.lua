@@ -860,7 +860,10 @@ function M.tasks(project, active_config)
     for k, v in pairs(resolved_opts) do
         if is_launcher_option(k) then
             user_launcher_keys[#user_launcher_keys + 1] = k
-        elseif k == "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT" then
+        elseif k == "CMAKE_MSVC_DEBUG_INFORMATION_FORMAT"
+                or k == "CMAKE_POLICY_DEFAULT_CMP0141" then
+            -- A user-pinned debug format or CMP0141 policy default wins: the
+            -- module injects neither key (§5d).
             user_debug_format_conflict = true
         elseif type(v) == "string" and (v:find("/Zi", 1, true) or v:find("/ZI", 1, true)) then
             user_debug_format_conflict = true
@@ -932,23 +935,35 @@ function M.tasks(project, active_config)
                     .. ". Set `cache` to off to keep your own launcher.")
             end
 
-            -- MSVC debug-info format: sccache/ccache miss when MSVC writes debug
-            -- info to a shared .pdb (/Zi|/ZI). Switch to embedded (/Z7) so the
-            -- cache can hit — only for MSVC/clang-cl, single-config, cmake >= 3.25,
-            -- and only when the user has not pinned a conflicting value (§5d).
+            -- MSVC debug-info format: a compile that writes debug info to a
+            -- shared .pdb (/Zi|/ZI) is FAILED by sccache and compiled uncached
+            -- by ccache. Switch to embedded (/Z7) — only for MSVC/clang-cl,
+            -- single-config, cmake >= 3.25, and only when the user has not
+            -- pinned a conflicting value (§5d). The format variable only takes
+            -- effect under policy CMP0141=NEW, which a project with an older
+            -- cmake_minimum_required leaves unset — so the policy default is
+            -- injected alongside (it does not override an explicit
+            -- cmake_policy(SET CMP0141 OLD); the post-configure scan reports
+            -- the resulting /Zi compiles).
             if is_msvc_style(kit) and not multi_config then
+                local cache_tool = project.compiler_cache.tool or "the cache"
+                local effect = cache_tool == "sccache" and "fail" or "miss"
                 if user_debug_format_conflict then
                     warn_once("z7conflict:" .. project.name .. ":" .. active_config,
                         "compiler cache active but a conflicting MSVC debug format is set for "
                         .. project.name .. "/" .. active_config
-                        .. "; the cache will likely miss until it is 'Embedded' (/Z7).")
+                        .. "; " .. cache_tool .. " will " .. effect
+                        .. " /Zi compiles until it is 'Embedded' (/Z7).")
                 elseif cmake_at_least_325(cmake_cmd) then
                     configure_cmd[#configure_cmd + 1] =
                         "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+                    configure_cmd[#configure_cmd + 1] =
+                        "-DCMAKE_POLICY_DEFAULT_CMP0141=NEW"
                 else
                     warn_once("z7old:" .. project.name .. ":" .. active_config,
                         "compiler cache active but cmake < 3.25 cannot set embedded MSVC "
-                        .. "debug info; caching may be ineffective for "
+                        .. "debug info; caching may " .. (effect == "fail"
+                            and "fail /Zi compiles" or "be ineffective") .. " for "
                         .. project.name .. "/" .. active_config)
                 end
             end
