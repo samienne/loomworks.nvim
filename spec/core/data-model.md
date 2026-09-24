@@ -97,6 +97,8 @@ Loomworks configuration fields in the workspace config:
 <type>.options                              — project-wide -D flags
 <type>.configurations.<name>.inherits       — base config(s), string or array
 <type>.configurations.<name>.options        — per-config -D flags
+<type>.configurations.<name>.env            — per-config task environment
+                                              (§1.3.3)
 <type>.configurations.<name>.toolchain      — path to .cmake toolchain file
 <type>.configurations.<name>.generator      — override generator
 <type>.configurations.<name>.languages      — explicit language list override
@@ -265,14 +267,15 @@ are deferred to a future version (with loop detection).
 
 **Reserved names**: User variables cannot use built-in variable names
 (`workspace_root`, `build_dir`, `variant`, `config_set`, `project_path`) or the
-pre-declared policy name `cache` (§1.3.2). The system rejects *declarations* with
-reserved names at parse time. `cache` is a special case among the reserved names:
+pre-declared policy name `cache` (§1.3.2), nor the name `env`, which inside a
+compiler-family `overrides` block denotes the environment sub-block (§1.3.3). The
+system rejects *declarations* with reserved names at parse time. `cache` is a special case among the reserved names:
 its *declaration* is likewise rejected, but it may be **overridden** (in
 `variables`, in a compiler-family `overrides` block, or as a profile fill value)
 because it is pre-declared by core — see §1.3.2.
 
 **Override validation**: An `overrides` block is rejected at edit time if a
-name is not declared in the project `variables` (mirroring the configuration
+name (other than the `env` sub-block, §1.3.3) is not declared in the project `variables` (mirroring the configuration
 `variables` override rule), and its keys must be known compiler families
 (`clang`, `gcc`, `msvc`) — an unknown family key surfaces as a workspace
 diagnostic rather than being silently ignored. An option or launch value that
@@ -371,6 +374,56 @@ separate compiler-cache override mechanism.
   still resolved a launcher for an MSVC-style family recorded that launcher, so
   it now differs from the resolved "none" and reconfigures without it on its next
   build.
+
+### 1.3.3 Configuration environment (`env`)
+
+A configuration MAY carry an **`env`** field: a map of environment-variable name
+→ string value that loomworks sets for the configuration's **configure, build
+and test** tasks. It is a generic configuration field, parallel to `options`
+and `variables`, and uses the same machinery:
+
+- **Inheritance.** `env` follows the configuration inheritance chain like
+  `options`: bases depth-first left-to-right, then the configuration's own
+  entries (later wins, per variable name).
+- **Compiler-family overrides.** A compiler-family `overrides` block (§1.3.1)
+  may carry an `env` sub-block — `overrides.<family>.env.<NAME>` — applied only
+  when the active tool's compiler belongs to that family. Within one level a
+  matching family entry wins over the plain `env` entry; chain position
+  dominates, exactly as for variables (a nearer plain value shadows a farther
+  family entry).
+
+  ```json
+  "Debug": {
+      "env": { "SCCACHE_DIR": "${workspace_root}/.cache/sccache" },
+      "overrides": { "msvc": { "env": { "SCCACHE_DIR": "D:/sccache" } } }
+  }
+  ```
+
+- **Expansion.** Values expand exactly like option values: built-in variables,
+  the project's resolved variables (§1.3.1, compiler overrides and profile fill
+  included), then the process environment.
+- **Composition.** The resolved configuration environment is layered **on top
+  of** the tool's environment (a tool may carry one, e.g. an SDK kit's), so a
+  configuration value wins over a tool value of the same name. Test runs layer
+  a test's own declared environment on top of it.
+- **Reserved names.** The compiler-driver variables reserved by invariant 13
+  (§15: `CC`, `CXX`, …) may not be set: they are rejected at edit time and, if
+  present from a hand-edited file, stripped when the environment is composed
+  (with a non-blocking diagnostic). Everything else — `*FLAGS`, cache-tool
+  settings such as a cache directory — is allowed.
+- **Persistence.** `env` lives in the configuration entry in `user.json`
+  (working copy) and is published to `loomworks.json` with the configuration
+  under the usual intent model (§2.4). It is never written to the cache except
+  as the configure snapshot below.
+- **Staleness.** The resolved configuration environment is a configure input:
+  core records it with the unit's configure record and `ConfigUnit:is_stale()`
+  compares it with the current resolution, so adding, changing or removing a
+  variable (directly, via a base, via a compiler override, or via a variable it
+  references) makes a configured unit stale and the build gate reconfigures it
+  — a **full** reconfigure (§5.1), because build systems read parts of their
+  environment only at first configure. A unit configured before the record
+  existed compares as having had no configuration environment (none was
+  applied then).
 
 ### 1.4 Configuration Set
 

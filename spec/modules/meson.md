@@ -115,41 +115,48 @@ keys the build directory is unchanged: the launcher wraps the same pinned
 driver, it does not select a different compiler (§5, core §15 "the tool owns the
 compiler").
 
-**Applying a launcher change requires `meson setup --wipe`, not
-`--reconfigure`.** meson fixes the compiler command at first setup and does not
-re-evaluate it on a plain `meson setup --reconfigure` — the normal reconfigure
-loomworks issues for an option change. So a launcher that changed since the build
-dir was configured (the cache tool appeared/disappeared, or the policy was
-edited) would be **silently ignored** by an in-place reconfigure. When the
-resolved launcher differs from the one the build dir was configured with, the
-module therefore reconfigures with `meson setup --wipe`: it wipes and rebuilds
-the build tree, re-reading the now-wrapped (or now-unwrapped) compiler from the
-`--native-file`, while **preserving the existing `-D` options** (meson re-reads
-them from the wiped directory). This `--wipe` is the general mechanism for **any** compiler-command
-change on the same build directory; the compiler-cache toggle is simply its
-first routine case. This diverges from cmake, whose launcher is a mutable cache
-variable that a plain in-place reconfigure applies (see [`cmake.md` §5d](cmake.md)).
+**Every changed configure input takes a full reconfigure (core §5.1 *Faithful
+reconfigure*).** meson fixes a great deal at the first setup of a build
+directory and does not re-evaluate it on a plain `meson setup --reconfigure`: the
+compiler command (so a launcher change would be silently ignored), the
+environment-derived compiler and linker arguments (`CFLAGS`, `LDFLAGS`, … are
+read only at first setup), and machine files; `--reconfigure` also keeps an
+option that is no longer passed, and meson has no flag to unset one. So the
+module applies **every** changed configure input with a **full reconfigure**
+and declares **no** in-place set: loomworks cannot tell per option, without
+introspecting meson's option metadata, whether meson applies a value change in
+place (some built-in options are read-only after setup), and "only optimize
+where certain" leaves nothing to optimize.
 
-**Removed options need a full reconfigure (core §5.1 *Faithful reconfigure*).**
-meson persists every `-D` option in the build directory: `--reconfigure` keeps an
-option that is no longer passed, and `--wipe` deliberately **replays** the
-previous command line (`meson-private/cmd_line.txt`) before applying the new one,
-so neither can retract an option, and meson has no flag to unset one. The module
-therefore records the `-D` options it passed (name → value) in
-`module_info.passed_options`, and on the next setup of an already-configured
-build directory compares that record (`recorded_module_info`, core §8.1; for a
-unit configured before the record existed, the keys of core's
-`recorded_options` snapshot) with what it passes now. An option **added or
-changed** is applied by the normal `--reconfigure` (or the `--wipe` above when
-the launcher also changed). An option loomworks passed before and **no longer
-passes** triggers a **full reconfigure**: the configure task names
-`meson-private/cmd_line.txt` in `pre_configure_reset` (core §8.1), so core
-removes the stored command line under the deletion-safety rules, and the module
-runs `meson setup --wipe` with the complete current option set — meson then
-rebuilds the tree from exactly the options loomworks passes, and the removed
-option returns to its `meson.options` default. Only options in loomworks' own
-record trigger this; an option the user set with `meson configure` by hand is
-not loomworks-passed and is left alone by a plain `--reconfigure`.
+The module records what each setup was given — the `-D` options it passed
+(name → value) in `module_info.passed_options`, the build type
+(`module_info.buildtype`), the cross file (`module_info.cross_file`), and the
+launcher (`module_info.cache_launcher`) — and on the next setup of an
+already-configured build directory compares them, plus core's recorded
+configuration environment (`configure_env`, core §8.1) against the current
+`configuration_env`, with what it passes now. On **any** difference — an option
+added, changed or removed, a build type or cross-file change, a launcher that
+appeared, disappeared or changed, or a configuration-environment change — and
+also for a configured unit that carries no `passed_options` record (configured
+before the record existed, so it cannot be classified with certainty), the
+configure task names `meson-private/cmd_line.txt` in `pre_configure_reset` (core
+§8.1) and runs `meson setup --wipe`: core removes the stored command line under
+the deletion-safety rules (otherwise `--wipe` would **replay** the previous
+options before applying the new ones, so a removed option would survive), and
+meson rebuilds the tree from exactly the options, native file, environment and
+compiler loomworks passes now. A setup with nothing changed (e.g. a retry after
+a failed setup) runs the in-place `--reconfigure`. An option the user set with
+`meson configure` by hand is not loomworks-passed and does not survive a full
+reconfigure (as with any wipe).
+
+**Cost.** meson has no configure-state-only reset: `--wipe` empties the build
+directory, so the first build after a full reconfigure recompiles everything
+(a compiler cache, when enabled, serves most of it). This is the price of
+faithfulness for meson — the same `--wipe` meson itself prescribes for a
+compiler change. The generated native file lives next to the build directory,
+not inside it, so the wipe does not remove it. This diverges from cmake, whose
+full reconfigure keeps build outputs and which applies a launcher-only change in
+place (see [`cmake.md` §5d](cmake.md)).
 
 ## 6. Target discovery (`parse_targets`)
 
@@ -229,15 +236,16 @@ it resolved into the setup task's `module_info`, and `is_stale()` recomputes it
 compares. A launcher that appears, disappears, or changes — because the tool was
 installed/removed or the policy was edited — marks the unit stale, and the build
 gate reconfigures so the wrapped (or un-wrapped) native-file compiler takes
-effect. That reconfigure is a **`meson setup --wipe`** (§5a), not a plain
+effect. That reconfigure is the full reconfigure — a **`meson setup --wipe`**
+with the stored command line cleared (§5a) — not a plain
 `meson setup --reconfigure`: meson fixes the compiler command at setup and would
-otherwise ignore the changed launcher. `--wipe` re-detects the compiler while
-preserving the `-D` options, so the caching change is applied without losing
-configuration. Because loomworks pins the driver explicitly rather than leaning
-on meson's PATH auto-detect (§5a), this recompute fully captures the caching
-state.
+otherwise ignore the changed launcher. loomworks re-passes every option it owns,
+so the caching change is applied without losing configuration. Because loomworks
+pins the driver explicitly rather than leaning on meson's PATH auto-detect
+(§5a), this recompute fully captures the caching state.
 
-Option-level staleness covers an option **added, changed or removed**; the
-resulting reconfigure is faithful (§5a *Removed options need a full
-reconfigure*): a removed option is dropped from the build directory by a
-`--wipe` setup after core clears the stored command line.
+Option-level staleness covers an option **added, changed or removed**, and a
+change of the configuration environment (core §1.3.3); the resulting reconfigure
+is the full one (§5a *Every changed configure input takes a full reconfigure*):
+a `--wipe` setup after core clears the stored command line, so a removed option
+is really dropped and a changed environment is really re-read.

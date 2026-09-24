@@ -473,52 +473,67 @@ expected value is "none", so a resolvable-but-unapplicable launcher does not mak
 the unit stale on every build. There is no separate eager
 reconfigure: the launcher change is caught at the gate exactly like an
 option-level change, and the build directory identity is NOT keyed on the
-launcher. The build gate drives this uniformly, but the reconfigure **mechanism**
-is the module's to choose — some build systems apply a changed compiler-launcher
-with an in-place reconfigure, while others must rebuild the build tree
-(options-preserving) because they fix the compiler command at first configure and
-would otherwise ignore the change. Core does not prescribe which; it only
-requires that the stale unit reconfigures before the next build, and that the
-reconfigure really takes effect in **both** directions: a launcher that
-*disappeared* must be removed from the build tree, not merely recorded as
-"none" while the build system keeps using a launcher persisted by an earlier
-configure — the general rule below.
+launcher. The build gate drives this uniformly; the reconfigure must really take
+effect in **both** directions — a launcher that *disappeared* must be removed
+from the build tree, not merely recorded as "none" while the build system keeps
+using a launcher persisted by an earlier configure — and it follows the general
+rule below (full reconfigure unless the module declares the launcher change
+safe to apply in place).
 
-**Faithful reconfigure (every loomworks-passed option).** The launcher is one
-instance of a general guarantee covering **every option loomworks passes to the
-build system**: the configuration's resolved options (above), the compiler-cache
-launcher, and any value a module injects on the configure command line on the
-user's behalf (e.g. a debug-information format a launcher requires). When what
-loomworks passes **changes** — a value added, changed, or **removed** — the unit
-is stale and the build gate (§5.2) reconfigures it automatically before the next
-build, and that reconfigure must leave the build tree configured exactly as a
-from-scratch configure with the current options would. Build systems generally
-persist configure-time options across reconfigures, so an option loomworks
-passed before and no longer passes must be actively **retracted**, not merely
-omitted. The module owns how:
+**Faithful reconfigure (every configure input).** The launcher is one instance
+of a general guarantee covering **every configure input** loomworks controls:
+the configuration's resolved options (above), the configuration's resolved
+environment (`env`, §1.3.3), the tool-selected toolchain and build-system
+generator, the compiler-cache launcher, and any value a module injects on the
+configure command line on the user's behalf (e.g. a debug-information format a
+launcher requires). When any of them **changes** — a value added, changed, or
+**removed** — the unit is stale and the build gate (§5.2) reconfigures it
+automatically before the next build, and that reconfigure must leave the build
+tree configured exactly as a from-scratch configure with the current inputs
+would. Build systems generally persist configure-time state across
+reconfigures (option values, and values derived once from the environment or
+the toolchain at first configure), so an input that changed or disappeared is
+not reliably applied by merely re-running the configure with the new inputs.
 
-- it records what it passed at each configure in the configure task's
-  `module_info`, and core hands the unit's recorded `module_info` (and its own
-  resolved-option snapshot) back on the next configure (`recorded_module_info`,
-  `recorded_options`, §8.1), so the module can retract precisely the options
-  **loomworks itself passed** — never a value the user set in the project's own
-  build files, presets or by hand;
-- when an in-place reconfigure cannot faithfully apply the change (the build
-  system fixes the value at first configure, or offers no way to retract it),
-  the module performs a **full reconfigure** instead, rebuilding the build
-  system's configure state from the current options. loomworks re-passes every
-  option it owns, so nothing configured through loomworks is lost, and build
-  outputs are not deleted (the build system decides what to rebuild);
-- where a full reconfigure needs specific configure-state files removed from the
-  build directory first, the module names them on the configure task
-  (`pre_configure_reset`, §8.1) and **core** removes them — under the build
-  directory's exclusive lock, only after validating that the build directory
-  lies within the workspace root, and only for plain relative paths inside it.
-  A module never deletes files itself.
+- **Full reconfigure is the default.** The reconfigure for a changed configure
+  input is a **full reconfigure**: the module discards the build system's
+  configure state and configures again from exactly the current inputs.
+  loomworks re-passes every input it owns, so nothing configured through
+  loomworks is lost. A full reconfigure is not a build-directory delete:
+  loomworks deletes no build outputs itself, and a build system whose full
+  reconfigure keeps them rebuilds incrementally afterwards (whether it can is
+  module knowledge — the module specs say what their full reconfigure costs).
+- **In-place only where the module is certain.** A module MAY instead apply a
+  change with a cheaper **in-place** reconfigure, but only for a narrow,
+  explicitly declared set of changes it knows the build system applies
+  faithfully in place — each such change is listed and justified in the
+  module's spec. Anything outside that set, a combination that includes
+  anything outside it, and any case the module cannot classify with certainty
+  (e.g. a unit configured before the module kept the record below) takes the
+  full reconfigure. A reconfigure with **no** changed input (e.g. a retry after
+  a failed configure) runs in place.
+- **Records.** The module records what it passed at each configure in the
+  configure task's `module_info`, and core hands the unit's recorded
+  `module_info` (including core's own record of the resolved environment) and
+  core's resolved-option snapshot back on the next configure
+  (`recorded_module_info`, `recorded_options`, §8.1), together with the
+  current resolved environment (`configuration_env`, §8.1), so the module can
+  tell exactly which inputs changed. An in-place retraction only ever touches
+  what **loomworks itself passed** — never a value the user set in the
+  project's own build files, presets or by hand.
+- **Core-performed resets.** Where a full reconfigure needs specific
+  configure-state files removed from the build directory first, the module
+  names them on the configure task (`pre_configure_reset`, §8.1) and **core**
+  removes them — under the build directory's exclusive lock, only after
+  validating that the build directory lies within the workspace root, and only
+  for plain relative paths inside it. A module never deletes files itself.
 
-A module may exempt configurations whose configure state belongs to the build
-system's own preset mechanism, where retracting could clobber the preset's values
-(module specs).
+A configuration configured through the build system's own preset mechanism is
+covered too: whatever loomworks adds on top of the preset (options appended to
+the preset invocation, the environment) is a configure input, and a change to
+it takes the full reconfigure — which re-applies the preset from scratch
+rather than retracting individual values, so the preset's own values are never
+clobbered.
 
 After a **successful** configure that applied a launcher (recorded value not
 "none"), core runs the module's optional post-configure compatibility scan

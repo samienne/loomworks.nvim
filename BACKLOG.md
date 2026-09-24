@@ -701,3 +701,26 @@ on explicit `lw health` (vswhere / `--version` probes are slow), fits the
 two-tier health cache (§16.31). `:checkhealth loomworks` can later render the
 same data. Spec: §16.31 + a module-interface hook. Planned as its own feature
 branch after v0.1.29 stable.
+
+## Compiler cache for Visual Studio generator builds
+
+CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` is honored only by the Ninja and
+Makefile generators, so loomworks' compiler cache is **not applied** under the
+Visual Studio (and Xcode) generators — cmake.md §5d documents this as a non-goal
+and the profile row reads `Cache: not applied (<generator> generator)`.
+Caching an MSBuild build needs a different mechanism. sccache's documented
+recipe (unverified against the current sccache docs — re-check before building
+on it) goes through `CMAKE_VS_GLOBALS`:
+
+- `CLToolExe` / `CLToolPath` pointing at a copy of `sccache.exe` renamed to
+  `cl.exe` (sccache acts as the compiler when invoked under that name),
+- `UseMultiToolTask=true` (so MSBuild still parallelises per file),
+- `DebugInformationFormat=OldStyle` (i.e. `/Z7`; `/Zi` makes sccache fail the
+  compile — the same PDB problem as §5d),
+- `TrackFileAccess=false` (MSBuild's file tracker does not follow the wrapper).
+
+It is more fragile than the Ninja launcher (a copied/renamed binary to manage,
+MSBuild property plumbing, no per-target opt-out) and would need its own
+staleness record, `cache_launcher_applicable` answer and compatibility scan.
+Motivation: LumeEditor measured a hand-made `cl.exe` shim of this kind at
+12.2 → 4.3 min for its Visual Studio generator build.

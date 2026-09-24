@@ -152,16 +152,24 @@ explicit publish. A read-only / CI invocation runs no management operation.
 
 Configuration editing addresses a configuration's fields by a **dotted param
 grammar** (`get`/`set`/`unset`): a bare field (`inherits`, `languages`, a
-module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`), and —
-for a compiler-family variable override (§1.3.1) — the three-segment
-`overrides.<family>.<name>` where `family ∈ {clang, gcc, msvc}` (clang-cl
-counts as clang). `set` writes the value; an empty value or `unset` clears it,
+module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`,
+`env.<NAME>` for the configuration environment, §1.3.3), and — for a
+compiler-family override (§1.3.1) — the three-segment
+`overrides.<family>.<name>` for a variable, or the four-segment
+`overrides.<family>.env.<NAME>` for an environment variable, where
+`family ∈ {clang, gcc, msvc}` (clang-cl counts as clang). A dotted param outside
+these namespaces (e.g. `foo.bar`) is **rejected** with an error listing the
+valid forms rather than stored as a literal dotted field name; module fields
+are bare names. A reserved compiler-driver name in `env.<NAME>` (invariant 13)
+is rejected by the same validation the editor applies. `set` writes the value; an empty value or `unset` clears it,
 pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the
 project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). `get` returns the resolved string for the full path, or the
-sub-dict for `overrides` / `overrides.<family>`.
+sub-dict for `env`, `overrides`, `overrides.<family>` and
+`overrides.<family>.env`. `show` lists the configuration's `env` alongside its
+`options`.
 
 A management host MAY also **rename** an item in place — a project (by key), a
 user configuration (by `(project, configuration)`), or a configuration set (by
@@ -990,6 +998,13 @@ provider reports the cache state affirmatively or actionably:
   configuration, e.g. `lw config set <project> <configuration>
   variables.cache <tool>` (§16.9 param grammar; `overrides.msvc.cache`, or
   `overrides.clang.cache` for clang-cl, scopes it to the compiler family);
+- the active profile's C/C++ configuration is one the module **cannot apply** a
+  launcher to (§8 `cache_launcher_applicable` returned `false`, e.g. a
+  build-system generator or configure mode without launcher support) → an
+  **informational** item, not counted, instead of the "using" / "available"
+  items: "Compiler cache not applied (`<reason>`)", whose `detail` carries the
+  module's `hint` (what to change to get caching). It is reported whether or
+  not a launcher is installed, since installing one would not help;
 - **no** compiler cache present → an **actionable** suggestion to install one to
   speed rebuilds. Its `remedy` is platform-appropriate — the Windows-preferred
   launcher (`sccache`) on Windows, the Unix-preferred launcher (`ccache`) on

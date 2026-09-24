@@ -89,8 +89,20 @@ during merge to discover available configurations.
 
 Return overseer task definitions for a project in a given configuration.
 `project` is a `ModuleContext` table with: `name`, `path`, `workspace_root`,
-`configurations`, `tool_data`, `configuration_key`, `env`, and optional
-`compiler_cache`.
+`configurations`, `tool_data`, `configuration_key`, `env`, `configuration_env`,
+and optional `compiler_cache`.
+
+**`env`** is the task environment every configure, build and clean task the
+module returns runs with: the tool's environment (`tool_data.env`) with the
+configuration's resolved environment (`configuration_env`, below) layered on
+top. **`configuration_env`** is that resolved configuration environment alone
+(§1.3.3: the configuration's `env` across its inheritance chain and matching
+compiler-family `overrides`, values expanded, reserved compiler-driver names
+already stripped by core), a name → string map (empty when none) — separate so
+a module can tell what the configuration contributed and detect a change
+against the recorded one (below). Both are additive fields (no
+`api_versions.module` bump): a module that only reads `env` already runs its
+tasks with the configuration environment.
 
 **`compiler_cache`** (optional) is a core-resolved **compiler-cache launcher**
 for this profile/configuration — either `nil` or `{ tool, path }`, where `tool`
@@ -115,8 +127,14 @@ back what the unit's last configure recorded:
 
 - `recorded_module_info` — the `module_info` table the module's last configure
   task returned (as merged onto the unit), opaque to core except for the keys
-  core itself defines (`cache_launcher`). A module records whatever it needs to
-  retract later — e.g. the options it passed — and reads it back here.
+  core itself defines (`cache_launcher`, `configure_env`, `cache_compat`). A
+  module records whatever it needs to detect a change later — e.g. the options
+  it passed — and reads it back here. `configure_env` is **core's** record of
+  the resolved configuration environment that configure ran with (absent when
+  it was empty, or for a unit configured before the record existed — both read
+  as "no configuration environment", which is what such a configure had); a
+  module compares it with the current `configuration_env` to detect an
+  environment change.
 - `recorded_cache_launcher` — shorthand for `recorded_module_info.cache_launcher`
   (a launcher path, the sentinel `"none"`, or `nil` when never recorded).
 - `recorded_options` — core's resolved-option snapshot from that configure (the
@@ -124,7 +142,12 @@ back what the unit's last configure recorded:
   reconstruct what it passed for a unit configured before it began keeping its
   own record.
 
-All three are additive optional fields (no `api_versions.module` bump).
+All three are additive optional fields (no `api_versions.module` bump). A
+module uses them to classify a reconfigure (§5.1 *Faithful reconfigure*): any
+changed configure input takes the full reconfigure unless the module's spec
+declares that specific change safe to apply in place, and a unit that was
+configured but carries no record the module can trust (configured before the
+module kept one) takes the full reconfigure too.
 
 Each task_def has:
 - `name`: display name
@@ -454,7 +477,7 @@ configuration's `tool_data`. This covers only the *toolchain* runtime; the
 build tree's own shared-library output directories are added generically by
 core (derived from `parse_targets`), so a module need not enumerate them.
 
-**`cache_launcher_applicable(ctx) → boolean`** *(optional)*
+**`cache_launcher_applicable(ctx) → boolean, reason?, hint?`** *(optional)*
 
 Whether the module can apply a compiler-cache launcher (`compiler_cache`,
 §8.1) to a configuration at all. `ctx` carries `configuration` (the
@@ -462,8 +485,11 @@ Configuration) and the configuration's `tool_data`. A module that cannot inject
 the launcher for some configurations — and so records the "none" sentinel for
 them even though core resolved a launcher — returns `false` there, and core's
 launcher staleness (§5) then expects "none" rather than the resolved launcher.
-Absent hook = always applicable. Additive and optional: no
-`api_versions.module` bump (§8.0).
+With `false` the module MAY return a short `reason` (a noun phrase naming what
+prevents it, shown as `not applied (<reason>)` in the profile's cache status,
+ui.md) and a one-sentence `hint` (what the user can change to get caching,
+shown in health, §16.31). Absent hook = always applicable. Additive and
+optional: no `api_versions.module` bump (§8.0).
 
 **`cache_compat_scan(ctx) → { scanned, reason?, findings[] }`** *(optional)*
 
@@ -472,9 +498,12 @@ with the compiler-cache launcher that configure **applied**. Core calls it after
 a **successful** configure whose recorded launcher is not "none" (§5.1); it is
 never called for an uncached configure, and never on a status render or health
 run. `ctx` carries `build_dir`, `configuration`, the configuration's
-`tool_data`, and `compiler_cache` (the applied `{ tool, path }`). The module
-reads its own post-configure build metadata — it spawns nothing and never
-decodes a monolithic compilation database it would otherwise stream.
+`tool_data`, `compiler_cache` (the applied `{ tool, path }`), and
+`configuration_env` (the resolved configuration environment the configure ran
+with, §8.1 — a compiler may take flags from its environment, which compile
+commands do not show). The module reads its own post-configure build metadata —
+it spawns nothing and never decodes a monolithic compilation database it would
+otherwise stream.
 
 - `scanned = false` with a `reason` means the module had no compile-command
   data to inspect (e.g. no compilation database for this build); core reports
@@ -483,8 +512,10 @@ decodes a monolithic compilation database it would otherwise stream.
   `"error"` when the applied launcher **fails** the affected compiles and
   `"warning"` when it only fails to cache them; `flag` is the offending compile
   option; `group` names where the units live (a target where the module knows
-  it, else a directory); `units` is the count; `sample` a few representative
-  source paths.
+  it, else a directory, or `"environment"` for a flag that reaches every compile
+  through the environment); `units` is the count (omitted for an environment
+  finding, which applies to every compile); `sample` a few representative
+  source paths (for an environment finding, the variable names).
 
 Core records the result with the unit's configure record (replaced on every
 configure, dropped when a configure applies no launcher), prints it at the end

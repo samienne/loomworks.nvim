@@ -183,7 +183,7 @@ belongs in the matching `spec/` file.
 
 13. **The tool owns the compiler**: The compiler for a profile is
     determined solely by the profile's tool (kit). A project
-    configuration's own `options` and `env` may not select a compiler:
+    configuration's own `options` and `env` (§1.3.3) may not select a compiler:
     CMake cache keys matching `^CMAKE_<LANG>_COMPILER$` and the
     compiler-driver environment variables (`CC`, `CXX`, `FC`, `CUDACXX`,
     `CUDAHOSTCXX`, `OBJC`, `OBJCXX`, `ISPC`) are reserved. They are
@@ -205,7 +205,9 @@ belongs in the matching `spec/` file.
     (policy edited, or the cache tool appearing/disappearing on the toolchain
     path) makes an already-configured unit **stale**, so the build gate
     reconfigures before the next build (§3.1, §5; module `is_stale()`). The
-    launcher never keys the build directory.
+    launcher never keys the build directory. Like every configure input, a
+    launcher change is applied by a full reconfigure unless the module declares
+    that change safe to apply in place (§5.1).
 
 14. **Blank variables gate the build**: A declared project variable that is
     blank after configuration resolution (§1.3.1) — no default, no

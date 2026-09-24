@@ -317,9 +317,13 @@ else: set it per configuration, per compiler family via `overrides`
 <project> cache <policy>`. There is no separate on/off switch — absence means
 `auto`.
 
-Under cmake, loomworks injects `CMAKE_C/CXX_COMPILER_LAUNCHER` on the Ninja
-configure path (it cannot inject into a `--preset` configuration, and warns when
-one is used); on MSVC with a cache enabled it also switches debug info to embedded
+Under cmake, loomworks injects `CMAKE_C/CXX_COMPILER_LAUNCHER` on the Ninja /
+Makefile configure path. CMake ignores the launcher under the **Visual Studio**
+and **Xcode** generators, and a `--preset` configuration owns its own cache
+variables, so there loomworks injects nothing, warns once, and the profile's
+row reads `Cache: not applied (preset)` / `Cache: not applied (<generator>
+generator)` (`lw health` says caching needs a Ninja or Makefile generator);
+on MSVC with a cache enabled it also switches debug info to embedded
 (`/Z7`, plus `CMAKE_POLICY_DEFAULT_CMP0141=NEW` so it works for projects with an
 older `cmake_minimum_required`), unless you've pinned a conflicting value. That
 only changes CMake's default flags, so after configuring an MSVC build with a
@@ -334,13 +338,14 @@ native file (`--native-file`, rather than relying on meson's own ccache
 auto-detect — and space-safe, unlike the `CC`/`CXX` env string) so both build
 systems behave identically.
 Changing the policy — or installing/removing the cache tool — reconfigures the
-affected build automatically on the next build. The mechanism differs per build
-system: cmake applies it with an in-place reconfigure (the first build then
-rebuilds objects to repopulate the cache — expected), while meson uses
-`meson setup --wipe` (a clean, options-preserving reconfigure) because it fixes
-the compiler at setup and ignores it on a plain reconfigure. Turning a cache
-**off** really removes it: cmake retracts the launcher (and the `/Z7` settings)
-from `CMakeCache.txt` with `-U` rather than just no longer passing it. Run `lw health` to see
+affected build automatically on the next build. Under cmake a change that only
+moves the launcher is applied in place (the one change loomworks knows CMake
+applies faithfully that way; turning the cache **off** retracts the launcher from
+`CMakeCache.txt` with `-U`), and the first build then rebuilds objects to
+repopulate the cache — expected. If the change also moves the MSVC `/Z7`
+settings it is a full `cmake --fresh` reconfigure, and under meson every such
+change is a full `meson setup --wipe`, because meson fixes the compiler at setup.
+Run `lw health` to see
 the cache state of a C/C++ workspace: it reports "Compiler cache: using `<tool>`"
 when a launcher is in use, "`<tool>` available — not enabled automatically for
 MSVC-style compilers" (with the command to enable it) when `auto` left an MSVC
@@ -616,17 +621,51 @@ matching `overrides[family]` wins over the plain `variables` value, but a
 nearer plain value shadows a farther override. Because the *resolved* option
 value is fingerprinted, editing a variable default or a compiler override
 that changes a `-D` value makes the configuration stale (auto-reconfigure on
-next build). This holds in both directions: when an option loomworks passed is
-**removed** (or changes to nothing), the reconfigure retracts it rather than
-leaving the old value behind in the build tree — cmake removes it from
-`CMakeCache.txt` with `-U` (only keys loomworks itself passed; your own
-`CMakeLists.txt` cache variables are never touched) and falls back to a full
-`cmake --fresh` reconfigure when a change can't be applied in place (e.g.
-`CMAKE_TOOLCHAIN_FILE`; below CMake 3.24 loomworks deletes just `CMakeCache.txt`
-and `CMakeFiles/` instead), while meson redoes the setup with `--wipe` from
-exactly the options loomworks passes. Build outputs are kept; loomworks re-passes
-everything it owns, so nothing you configured through it is lost. The resolved values are also available headlessly via
+next build). **Any** change to what a configure is given — an option added,
+changed or **removed**, the configuration `env` (below), the toolchain, the
+compiler-cache launcher — is applied by a **full reconfigure**, because build
+systems compute much of their configuration once, at the first configure, and
+keep old values around: cmake reconfigures with `cmake --fresh` (below CMake
+3.24 loomworks deletes just `CMakeCache.txt` and `CMakeFiles/` instead) and
+keeps your build outputs, so the next build is incremental; meson redoes the
+setup with `--wipe` from exactly the options loomworks passes (meson empties the
+build directory, so that build recompiles everything). The only change applied
+in place is a cmake compiler-launcher-only change, which CMake is known to apply
+faithfully. loomworks re-passes everything it owns, so nothing you configured
+through it is lost; a cache variable you set by hand outside loomworks does not
+survive a full reconfigure. The resolved values are also available headlessly via
 `lw profile query <profile> <project> variables` (or `variables.<name>`).
+
+**Configuration environment.** A configuration may set environment variables
+for its configure, build and test tasks with an `env` map — e.g. a cache
+directory or `CFLAGS`. It inherits along the configuration chain like `options`,
+can be scoped to a compiler family with `overrides.<family>.env`, and values
+expand variables like option values do. It is layered on top of the tool's own
+environment. The compiler-selecting variables (`CC`, `CXX`, …) are reserved and
+rejected. Changing it reconfigures on the next build (a full reconfigure, as
+above).
+
+```json
+"Debug": {
+  "env": { "SCCACHE_DIR": "${workspace_root}/.cache/sccache" },
+  "overrides": { "msvc": { "env": { "SCCACHE_DIR": "D:/sccache" } } }
+}
+```
+
+```sh
+lw config set   App Debug env.SCCACHE_DIR '${workspace_root}/.cache/sccache'
+lw config set   App Debug overrides.msvc.env.SCCACHE_DIR D:/sccache
+lw config unset App Debug env.SCCACHE_DIR
+lw config get   App Debug env            # the whole map
+```
+
+The `lw config get/set/unset` param grammar is: `inherits`, `languages`, a bare
+module field (e.g. `toolchain`), `options.<KEY>`, `variables.<NAME>`,
+`env.<NAME>`, `overrides.<family>.<NAME>` and `overrides.<family>.env.<NAME>`
+(family `clang`, `gcc` or `msvc`). Any other dotted param (`foo.bar`) is rejected
+rather than stored. With MSVC caching enabled, a `/Zi` in a configuration's `CL`
+or `_CL_` environment variable is reported by the post-configure scan (it
+reaches every compile but no compile-command listing shows it).
 
 **Profile variables (machine-specific values).** `default` is optional. A
 variable declared with no default — and no configuration/compiler override — is

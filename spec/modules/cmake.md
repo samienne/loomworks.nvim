@@ -60,7 +60,9 @@ full preset inheritance:
   using the bare preset name (not the internal `preset:<name>` key).
   cmake reads `CMakePresets.json` and applies the preset's generator,
   `binaryDir`, toolchain, and cache variables itself; loomworks adds
-  none of the manual `-G` / `-S` / `-B` / `-D…` flags for a preset. For
+  none of the managed `-G` / `-S` / `-B` / `-D…` flags for a preset —
+  only the project's user-declared `options` are appended as `-D…`
+  (and the configuration environment is set, core §1.3.3). For
   a multi-config preset that declares no `CMAKE_BUILD_TYPE`, the build
   step omits `--config` (cmake builds the generator's default) rather
   than pass a name it cannot resolve.
@@ -304,8 +306,10 @@ itself, which would collide with §5b:
   path the module appends `-DCMAKE_C_COMPILER_LAUNCHER=<path>` and
   `-DCMAKE_CXX_COMPILER_LAUNCHER=<path>` (per language actually enabled). These
   keys are explicitly **not** reserved under §5b (only `CMAKE_<LANG>_COMPILER`
-  is), so injection and the compiler-ownership rule do not conflict.
-  <!-- TODO(#5b): Visual Studio generator — launcher not applicable; pending separate amendment. -->
+  is), so injection and the compiler-ownership rule do not conflict. CMake
+  honors `CMAKE_<LANG>_COMPILER_LAUNCHER` only for the **Ninja** and
+  **Makefile** generators, so injection happens only there (see the Visual
+  Studio / Xcode non-goal below).
 - **MSVC debug-info format.** A compile that writes debug info to a shared
   `.pdb` (`/Zi` / `/ZI`) is **failed** by sccache and compiled **uncached** by
   ccache. So when a launcher is applied to an MSVC-style kit (which, per the
@@ -348,62 +352,110 @@ itself, which would collide with §5b:
   module returns `scanned = false` with the reason, and health reports the check
   as skipped (core §16.31). The scan is not run for gcc / clang family kits,
   whose launchers never fail an uncacheable compile.
-  <!-- TODO(#4): a configuration `env` field could inject /Zi via the `CL` / `_CL_` environment variables, which the compile commands do not show; revisit when #4 lands. -->
-- **Retraction and full reconfigure (core §5.1 *Faithful reconfigure*).** CMake
-  cache variables persist across reconfigures, so merely *omitting* a `-D` —
-  e.g. `-DCMAKE_<LANG>_COMPILER_LAUNCHER` after caching was turned off — would
-  leave the old value in effect. This applies to **every** `-D` loomworks passes,
-  not only the cache keys. On the non-preset path the module records each `-D`
-  it passed, with its value, in `module_info.passed_options` (the configuration's
+  The MSVC driver also reads flags from the **`CL` and `_CL_` environment
+  variables** (prepended / appended to every command line), which neither the
+  file-api nor any compilation database shows. So the scan also checks the
+  configuration's resolved environment (`configuration_env`, core §1.3.3 / §8
+  — the variables loomworks sets for the configure and build) and reports a
+  `/Zi`, `/ZI`, `-Zi` or `-ZI` token in `CL` or `_CL_` as one finding with
+  `group = "environment"` (no unit count — it applies to every compile; the
+  sample names the variable), with the same severities and the remedy to drop
+  the flag from that variable (or use `/Z7`). Only the configuration's own
+  environment is checked: a `CL` inherited from the shell that launched
+  loomworks is outside loomworks' configuration and is not scanned.
+- **Full reconfigure by default; in place only for the launcher keys (core §5.1
+  *Faithful reconfigure*).** CMake persists configure state across reconfigures:
+  cache variables stay in `CMakeCache.txt` when no longer passed, and much of it
+  is computed **once**, at the first configure of a build tree, from the inputs
+  in effect then — compiler detection, the default `CMAKE_<LANG>_FLAGS*` cache
+  entries (which depend on policies such as CMP0141 and on environment variables
+  such as `CFLAGS` / `CXXFLAGS`), `find_*` results, the toolchain file and the
+  generator platform / toolset. A plain re-run of `cmake` with the new `-D` set
+  therefore does not reliably apply a change. The module records every `-D` it
+  passes, with its value, in `module_info.passed_options` (the configuration's
   resolved options, the launcher keys, the injected debug-info format and policy
-  default, and the managed keys such as `CMAKE_BUILD_TYPE`), and on the next
-  configure compares that record (`recorded_module_info`, core §8.1) with what it
-  passes now:
-  - A key it passed before and does not pass now is retracted **in place** with
-    `-U<key>` (placed before the `-D` flags), which removes the entry from
-    `CMakeCache.txt`; the project's own `option()` / `set(... CACHE ...)` default
-    then applies again. Only keys in loomworks' own record are ever retracted —
-    a cache variable the user set in their `CMakeLists.txt`, a preset, or by hand
-    is never touched. This is what makes turning caching off (explicitly, or
-    because `auto` now resolves to none) actually remove the launcher keys,
-    `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT` and `CMAKE_POLICY_DEFAULT_CMP0141`,
-    restoring CMake's default debug-info handling; and it makes removing an
-    option from a configuration really remove it. A user-set key that is still
-    passed is passed through unchanged.
-  - A key CMake honors **only at first configure** — `CMAKE_TOOLCHAIN_FILE`,
-    `CMAKE_GENERATOR_PLATFORM`, `CMAKE_GENERATOR_TOOLSET`,
-    `CMAKE_GENERATOR_INSTANCE` — that was added, changed or removed, or a
-    change of the recorded generator (`module_info.generator`) on the same
-    build directory, cannot be applied in place (CMake refuses or ignores it),
-    so the module does a **full reconfigure** instead: on
-    CMake **>= 3.24** it adds `--fresh` (CMake discards `CMakeCache.txt` and the
-    `CMakeFiles/` configure state and configures from scratch); below 3.24 it
-    gets the same effect by naming `CMakeCache.txt` and `CMakeFiles` in the
-    configure task's `pre_configure_reset` (core §8.1), which core removes from
-    the build directory under the deletion-safety rules before running the
-    configure. Either way loomworks re-passes every option it owns, so nothing
-    configured through loomworks is lost, and build outputs are kept (the
-    generator rebuilds what the new configuration changes).
-  - **Legacy record.** A unit configured before `passed_options` was recorded
-    has no record. The module then reconstructs what it passed from what core
-    recorded: the keys of the resolved-option snapshot (`recorded_options`, core
-    §8.1) except the reserved compiler keys (§5b, never passed), plus — when the
-    recorded launcher is a path rather than `"none"` — both
-    `CMAKE_<LANG>_COMPILER_LAUNCHER` keys and, for an MSVC-style single-config
-    kit with no user-set debug-format option, `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT`.
-    This is what lets the migration below retract a launcher injected before the
-    record existed.
-  - `-U` and `--fresh` on a build tree that was never configured are no-ops.
-    A preset configuration (below) is exempt: its cache variables come from the
-    preset, and a retraction could clobber them.
-- **Presets are a documented non-goal.** A `from_preset` configuration is
-  configured with `cmake --preset <name>` and takes **no** `-D` flags from
-  loomworks (§3), so the launcher cannot be injected. The module emits a
+  default, and the managed keys such as `CMAKE_BUILD_TYPE`,
+  `CMAKE_<LANG>_COMPILER` and `CMAKE_TOOLCHAIN_FILE`), and on the next configure
+  compares that record (`recorded_module_info`, core §8.1), the recorded
+  generator (`module_info.generator`) and core's recorded configuration
+  environment (`configure_env`) with what it passes now:
+  - **Full reconfigure (the default).** Any difference — a `-D` added, changed
+    or removed, a generator change, or a change of the configuration environment
+    (core §1.3.3) — other than the in-place set below makes the module do a
+    **full reconfigure**: on CMake **>= 3.24** it adds `--fresh` (CMake discards
+    `CMakeCache.txt` and the `CMakeFiles/` configure state and configures from
+    scratch); below 3.24 it gets the same effect by naming `CMakeCache.txt` and
+    `CMakeFiles` in the configure task's `pre_configure_reset` (core §8.1), which
+    core removes from the build directory under the deletion-safety rules before
+    running the configure. loomworks re-passes every option it owns, so nothing
+    configured through loomworks is lost; build outputs are kept, and the
+    generator rebuilds only what the new configuration changes. A cache variable
+    the user set by hand (`cmake -D…` outside loomworks, or `ccmake`) does not
+    survive a full reconfigure — the same as `cmake --fresh`; values set in the
+    project's own `CMakeLists.txt` are re-established by the configure itself.
+  - **In place — the compiler-launcher keys only.** A change confined to
+    `CMAKE_C_COMPILER_LAUNCHER` / `CMAKE_CXX_COMPILER_LAUNCHER` (added, changed
+    or removed, and nothing else in the list above) is applied by an in-place
+    reconfigure: a changed or added value is simply re-passed, and a removed one
+    is retracted with `-U<key>` (placed before the `-D` flags), which removes the
+    entry from `CMakeCache.txt`. This is the whole whitelist, and it is safe
+    because these variables are consulted only to **initialize each target's
+    `<LANG>_COMPILER_LAUNCHER` property when the target is created** — and
+    targets are re-created from scratch on every configure run — while they take
+    no part in compiler detection or in any first-configure-only computation. So
+    an in-place reconfigure applies them exactly as a fresh configure would. The
+    injected debug-info keys are deliberately **not** in the set: with policy
+    CMP0141 `OLD` at the first configure, CMake wrote `/Zi` into the
+    `CMAKE_<LANG>_FLAGS_<CONFIG>` cache defaults, which a later in-place
+    `CMAKE_POLICY_DEFAULT_CMP0141=NEW` does not rewrite — so a cache toggle on an
+    MSVC-style single-config kit (which changes those keys too) takes the full
+    reconfigure. Only keys in loomworks' own record are ever retracted.
+  - **No record.** A unit that was configured but carries no `passed_options`
+    record (configured before the record existed) cannot be classified with
+    certainty, so its next reconfigure is a full one; it records normally from
+    then on. A never-configured build tree just configures.
+  - **No change.** A reconfigure with nothing changed (e.g. a retry after a
+    failed configure) runs in place with the same `-D` set.
+- **Preset configurations take the full reconfigure too.** A `from_preset`
+  configuration is configured with `cmake --preset <name>`; the preset supplies
+  its own cache variables, and loomworks appends only the project's
+  user-declared options (`-D…`, §3) and sets the configuration environment. The
+  module records those appended `-D`s in `passed_options` as well, and a change
+  to them (an option added, changed or **removed**) or to the configuration
+  environment triggers the full reconfigure — `cmake --preset <name> --fresh` on
+  CMake >= 3.24 (the `pre_configure_reset` fallback below it, the build
+  directory being the preset's `binaryDir`). This re-applies the preset from
+  scratch, so a removed option really disappears without any per-key `-U` that
+  could clobber a value the preset itself sets. The launcher is never injected
+  on the preset path (below), so the in-place set does not apply there.
+- **Presets are a documented non-goal.** A `from_preset` configuration's cache
+  variables — including any launcher — belong to the preset (§3), so loomworks
+  does not inject the compiler-cache launcher there. The module emits a
   non-blocking warning that the compiler cache is not applied to preset
   configurations, and directs the user to set `CMAKE_<LANG>_COMPILER_LAUNCHER`
-  in the preset's own `cacheVariables` if they want it. The module records "none"
-  for such a configuration and reports it via `cache_launcher_applicable` (core
-  §8), so the preset is not launcher-stale merely because a cache is installed.
+  in the preset's own `cacheVariables` if they want it. The module records
+  "none" for such a configuration and reports it via `cache_launcher_applicable`
+  (core §8, reason `preset`), so the preset is not launcher-stale merely because
+  a cache is installed, and the profile's cache status reads
+  `Cache: not applied (preset)` (ui.md) rather than naming a launcher the build
+  does not use.
+- **Visual Studio and Xcode generators are a documented non-goal.** CMake
+  implements `CMAKE_<LANG>_COMPILER_LAUNCHER` only for the Makefile and Ninja
+  generators; the Visual Studio and Xcode generators (and any other generator
+  outside those two families) ignore it. So for a configuration whose resolved
+  generator is not a Ninja or Makefile generator, the module injects no launcher
+  (nor the MSVC debug-info keys, which exist only to serve a launcher), records
+  "none", warns once that the compiler cache is not applied under that
+  generator, and reports `cache_launcher_applicable = false` with reason
+  `<generator> generator` and a hint that caching needs a Ninja or Makefile
+  generator — so the unit is not launcher-stale on every build, the profile's
+  cache status reads `Cache: not applied (<generator> generator)`, and health
+  reports an informational item instead of claiming the cache is in use. A unit
+  configured under such a generator by an earlier version recorded the launcher
+  path; the expected "none" now differs, so its next build reconfigures once —
+  a launcher-keys-only change, applied in place with `-U`. (Caching a Visual
+  Studio build needs a different mechanism entirely; it is tracked in the
+  backlog.)
 - **Staleness.** The resolved launcher path is recorded in the configure task's
   `module_info` and participates in `ConfigUnit:is_stale()` (§11) on the same
   footing as resolved option values — see §11.
@@ -412,19 +464,21 @@ itself, which would collide with §5b:
   launcher under `auto`, and its configure recorded that launcher path. With the
   new rule `auto` resolves to none for that kit, so the launcher-staleness check
   (§11: recorded path ≠ expected "none") marks the unit stale and the build gate
-  reconfigures it in place **without** the launcher on its next build — the
-  retraction above removes the persisted launcher (and the injected debug-info
-  format), using the legacy-record reconstruction when the unit predates
-  `passed_options` — and the first build afterwards recompiles objects.
-  Users who want to keep caching set `cache=sccache` explicitly.
-- **Applied by a plain in-place reconfigure (no wipe).** `CMAKE_<LANG>_COMPILER_LAUNCHER`
-  is a mutable cache variable, so a launcher change is applied by a normal
-  in-place `cmake` reconfigure that re-passes the `-D` line — no build tree wipe
-  is needed. Because the reconfigure changes the compile command, the **first
-  build after the change rebuilds objects** (repopulating the cache); this is
-  expected, not a bug. This is the point of contrast with meson, which must
-  reconfigure with `meson setup --wipe` because it fixes the compiler command at
-  setup and ignores it on a plain reconfigure (see [`meson.md` §5a](meson.md)).
+  reconfigures it **without** the launcher on its next build. Because that
+  change also drops the injected debug-info keys (single-config) — or the unit
+  predates the `passed_options` record — it is a full reconfigure (`--fresh`),
+  which discards the persisted launcher and debug-info settings; the first
+  build afterwards recompiles objects. Users who want to keep caching set
+  `cache=sccache` explicitly.
+- **A launcher-only change is applied in place (no `--fresh`).**
+  `CMAKE_<LANG>_COMPILER_LAUNCHER` is the one input the module applies with an
+  in-place reconfigure (re-passing the `-D`, or `-U` when it disappeared — the
+  whitelist above). Because the reconfigure changes the compile command, the
+  **first build after the change rebuilds objects** (repopulating the cache);
+  this is expected, not a bug. This is the point of contrast with meson, which
+  applies every configure-input change — the launcher included — with a full
+  `meson setup --wipe` because it fixes the compiler command at setup (see
+  [`meson.md` §5a](meson.md)).
 
 ## 6. Inheritance model
 
@@ -599,19 +653,20 @@ top-level file, strictly less accurate.
 The sole loomworks-driven reconfigure triggers are the `unconfigured` /
 `configure_failed` states, option-level staleness via
 `ConfigUnit:is_stale()` (the configuration's resolved `options` /
-`module_config` changed since the cached configure — an option **added,
-changed or removed**), and a **missing build directory** — a
+`module_config` / `env` changed since the cached configure — an option or
+environment variable **added, changed or removed**), and a **missing build
+directory** — a
 generic, core-driven reset (`specification.md` §3.1, rule 7) that applies to
 every module, not just cmake: a `built` / `configured` unit whose build
 directory has been deleted out of band reloads as `unconfigured` and
 reconfigures from scratch. A plain build does not re-pass changed
 `-D` cache variables, so that reconfigure is genuinely needed and is not
 something the generator detects on its own. The reconfigure is **faithful**
-(§5d *Retraction and full reconfigure*): it re-passes the current `-D` set,
-retracts with `-U` every key loomworks passed at the last configure but no
-longer passes, and escalates to a full reconfigure (`--fresh`, or the
-`pre_configure_reset` fallback below CMake 3.24) when a first-configure-only key
-changed — so a removed option is really gone from `CMakeCache.txt`.
+(§5d *Full reconfigure by default*): any changed configure input is applied by a
+full reconfigure (`--fresh`, or the `pre_configure_reset` fallback below CMake
+3.24) — so a removed option is really gone from `CMakeCache.txt` and a changed
+environment is really re-read — except a change confined to the compiler-launcher
+keys, which is applied in place (re-passed, or retracted with `-U`).
 
 Option values that reference project variables are fingerprinted **after**
 expansion (§5c, core §1.3.1), so a change to a variable or a compiler-specific
@@ -625,11 +680,11 @@ launcher path core resolved at configure time is stored in the configure task's
 family + live toolchain-path presence) and compares. A launcher that appears,
 disappears, or changes value — the cache tool was installed/removed, or the
 policy was edited — marks the unit stale, and the build gate reconfigures so the
-`-DCMAKE_<LANG>_COMPILER_LAUNCHER` line (and the MSVC `/Z7` + CMP0141
-adjustment) is re-passed — or, for a launcher that disappeared, retracted with
-`-U` together with the injected debug-info keys (§5d). A plain build does not re-pass changed `-D` cache variables, so this
-reconfigure is genuinely needed and is not something the generator detects on
-its own.
+`-DCMAKE_<LANG>_COMPILER_LAUNCHER` line is re-passed in place (or retracted with
+`-U` when the launcher disappeared) — unless the change also moves the MSVC
+`/Z7` + CMP0141 adjustment, which takes the full reconfigure (§5d). A plain
+build does not re-pass changed `-D` cache variables, so this reconfigure is
+genuinely needed and is not something the generator detects on its own.
 
 Output-artifact overwrite is a separate, **core-driven** staleness axis
 (`specification.md` §5.9): it can mark a *built* unit stale when another
