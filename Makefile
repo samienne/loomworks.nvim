@@ -31,5 +31,5 @@ install:
 dist:
 	@command -v luvi >/dev/null 2>&1 || { echo "luvi not found on PATH"; exit 1; }
 	bash scripts/release/build_bundle.sh 0.0.0-dev dist tests/fixtures/dist/test_ec_priv.pem
-	bash scripts/release/fuse_host.sh "$$(command -v luvi)" tests/fixtures/dist/test_ec_pub.pem dist/lw-local
+	bash scripts/release/fuse_host.sh "$$(command -v luvi)" tests/fixtures/dist/test_ec_pub.pem dist/lw-local 0.0.0-dev
 	@echo "dist/ built (dry-run, test key). Real releases: CI on a v* tag."

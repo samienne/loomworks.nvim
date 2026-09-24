@@ -175,6 +175,16 @@ do
 
   local info = update.version_info(data .. "/lua-0.0.0-test", "release")
   eq(info.bundle, "0.0.0-test", "version_info parses bundle version")
+  -- Committed source carries no release version (fuse_host.sh injects it).
+  eq(info.release_version, nil, "source host has no embedded release version")
+  local line = update.version_line(info, "stable")
+  ok(line:find("host: dev build (v" .. verify.HOST_VERSION .. ")", 1, true) ~= nil,
+    "version line reports a dev build for an unversioned host")
+  local line2 = update.version_line({ host_version = 1, release_version = "0.1.29",
+    source = "release", bundle = "0.1.29" }, "unstable")
+  ok(line2:find("host: 0.1.29 (v1)", 1, true) ~= nil
+    and line2:find("channel: unstable", 1, true) ~= nil,
+    "version line leads with the embedded release version")
 
   paths.rm_rf(sandbox)
 end

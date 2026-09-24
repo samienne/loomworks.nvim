@@ -412,7 +412,17 @@ function M.self_update(opts)
     channel_overridden = channel_overridden }
 end
 
+--- The one-line `lw version` report. The host's release version (spec §16.31)
+--- leads, with the capability version (§16.14) in parentheses; a host with no
+--- embedded release version is a dev build and says so rather than guessing.
+function M.version_line(info, channel)
+  local host = (info.release_version or "dev build") .. " (v" .. info.host_version .. ")"
+  return string.format("lw — host: %s · source: %s · bundle: %s · channel: %s",
+    host, info.source, info.bundle, channel)
+end
+
 --- Describe the resolved runtime for `lw version`.
+--- @return { host_version: integer, release_version: string|nil, source: string, bundle: string, luaroot: string|nil }
 function M.version_info(luaroot, source_kind)
   local bundle
   if source_kind == "dev" then
@@ -424,6 +434,8 @@ function M.version_info(luaroot, source_kind)
   end
   return {
     host_version = verify.HOST_VERSION,
+    -- The host's embedded release version (spec §16.31); nil = dev build.
+    release_version = verify.RELEASE_VERSION,
     source = source_kind or "fused",
     bundle = bundle,
     luaroot = luaroot,

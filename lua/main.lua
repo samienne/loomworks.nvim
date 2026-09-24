@@ -145,8 +145,7 @@ if command == "version" then
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
-  io.write(string.format("lw — host v%d · source: %s · bundle: %s · channel: %s\n",
-    info.host_version, info.source, info.bundle, channel))
+  io.write(upd.version_line(info, channel) .. "\n")
   exit(0)
 elseif command == "self-update" then
   if source_kind == "dev" then
