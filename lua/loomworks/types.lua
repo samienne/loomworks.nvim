@@ -262,7 +262,7 @@
 --- @field configuration_key string
 --- @field build_dir? string
 --- @field tool_data? table
---- @field module_info? table module-owned record merged onto the unit after a configure
+--- @field module_info? table module-owned record that replaces the unit's `module_info` after a configure (core-owned keys re-added by core)
 --- @field pre_configure_reset? string[] configure only: build-dir-relative paths core removes (validated, under the exclusive lock) before the configure runs — a full reconfigure the build system has no flag for (core §5.1, §8.1)
 --- @field stripped_compiler_keys? { options?: string[], env?: string[] }
 

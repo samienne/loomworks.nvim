@@ -2793,20 +2793,31 @@ function Workspace:record_task_result(result)
         config_unit._tool_data = result.tool.data
     end
 
-    -- Module-specific task result info (e.g., cmake generator/compiler)
-    if result.module_info then
+    -- Module-specific task result info (e.g., cmake generator/compiler).
+    -- A CONFIGURE's `module_info` is the module's complete record of what that
+    -- configure passed (spec §8.1), so it REPLACES the unit's record: a key the
+    -- module no longer returns (meson's `cross_file` once `machine_file` is
+    -- dropped, cmake's `compiler` without a kit, …) must read as absent next
+    -- time, or the module would compare against the stale value and classify
+    -- every later configure as a full reconfigure. The core-owned keys
+    -- (`cache_launcher`, `configure_env`, `cache_compat`) are all (re)assigned
+    -- from this configure below. Any other task's `module_info` is merged, so
+    -- a build never wipes the configure record.
+    if action == "configure" then
+        config_unit.module_info = {}
+        for k, v in pairs(result.module_info or {}) do
+            config_unit.module_info[k] = v
+        end
+    elseif result.module_info then
         config_unit.module_info = config_unit.module_info or {}
         for k, v in pairs(result.module_info) do
             config_unit.module_info[k] = v
         end
     end
-    -- Freeze the resolved compiler-cache launcher on a configure (§5, module
-    -- §11). It is a resolved value that can go back to *absent* (launcher
-    -- removed / policy edited to off); the additive merge above can never
-    -- clear a key to nil, so assign it explicitly from the configure result so
-    -- `ConfigUnit:is_stale()` sees a removed launcher rather than a stale one.
     if action == "configure" then
-        config_unit.module_info = config_unit.module_info or {}
+        -- The resolved compiler-cache launcher (§5, module §11) this configure
+        -- applied — a path, the sentinel "none", or nil when the module did
+        -- not record one — frozen for `ConfigUnit:is_stale()`.
         config_unit.module_info.cache_launcher =
             result.module_info and result.module_info.cache_launcher or nil
 
@@ -2814,8 +2825,7 @@ function Workspace:record_task_result(result)
         -- configure ran with (spec §1.3.3, §8.1 `configure_env`): the env
         -- staleness fingerprint (`ConfigUnit:env_changed`) and what a module
         -- compares `configuration_env` against to choose a full reconfigure.
-        -- Assigned explicitly (nil when empty) — the additive merge above can
-        -- never clear it.
+        -- Nil when empty.
         local configuration_env = config_unit:configuration_env()
         config_unit.module_info.configure_env =
             next(configuration_env) and configuration_env or nil
@@ -2825,8 +2835,7 @@ function Workspace:record_task_result(result)
         -- launcher, ask the module whether the compile commands it produced
         -- are compatible with that launcher (e.g. MSVC /Zi under sccache).
         -- Recorded as `module_info.cache_compat`, REPLACED on every configure
-        -- and dropped (nil) when the configure failed or applied no launcher
-        -- — explicit assignment, since the additive merge cannot clear a key.
+        -- and dropped (nil) when the configure failed or applied no launcher.
         -- Advisory only: printed here and surfaced by health (§16.31); it
         -- never gates a build or changes the policy.
         local compat

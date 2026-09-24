@@ -126,7 +126,10 @@ To let a module reconfigure faithfully (§5.1 *Faithful reconfigure*), core hand
 back what the unit's last configure recorded:
 
 - `recorded_module_info` — the `module_info` table the module's last configure
-  task returned (as merged onto the unit), opaque to core except for the keys
+  task returned. A configure's `module_info` **replaces** the unit's record (a
+  key that configure did not return reads as absent afterwards — so a module
+  never needs a sentinel to clear an input it stopped passing); a non-configure
+  task's `module_info`, if any, is merged onto it. Opaque to core except for the keys
   core itself defines (`cache_launcher`, `configure_env`, `cache_compat`). A
   module records whatever it needs to detect a change later — e.g. the options
   it passed — and reads it back here. `configure_env` is **core's** record of
@@ -154,7 +157,8 @@ Each task_def has:
 - `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
 - `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
   `configuration_key`, `build_dir`, optional `tool_data`, `module_info`
-  (module-owned record merged onto the unit after a configure, see above), and
+  (module-owned record that replaces the unit's record after a configure, see
+  above), and
   optional `pre_configure_reset` (configure only, below)
 
 **`pre_configure_reset`** (optional, configure tasks only) is a list of paths

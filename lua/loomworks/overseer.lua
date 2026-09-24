@@ -916,7 +916,7 @@ function M.plan_profile_build(profile, opts)
                         name = td.name,
                         unit = td.loomworks and td.loomworks.unit or nil,
                         build_dir = td.loomworks and td.loomworks.build_dir or nil,
-                        -- Module record merged onto the unit after a configure
+                        -- Module record that replaces the unit's record after a configure
                         -- (cache_launcher, passed_options, …) and the
                         -- full-reconfigure reset list (core §5.1 / §8.1); the
                         -- headless runner records / performs them like the

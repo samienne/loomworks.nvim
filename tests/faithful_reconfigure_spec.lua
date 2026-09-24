@@ -205,3 +205,92 @@ describe("previous-configure record round trip (planner + CLI)", function()
         assert.is_true(unit:is_stale())
     end)
 end)
+
+-- A configure REPLACES the unit's module-owned record (core §8.1): a key the
+-- module stopped returning (meson's `cross_file` after `machine_file` is
+-- dropped) must not survive from the previous configure, or every later
+-- configure compares against the stale value and takes the full reconfigure
+-- forever (regression: additive merge kept `cross_file`).
+describe("configure record replacement (nil-can't-clear regression)", function()
+    local meson = require("loomworks.modules.meson")
+
+    local function make_unit()
+        local fake = {
+            id = "fakemod", api_version = 1, has_keyed_tools = false, languages = { "c++" },
+            resolve_build_dir = function(p, c, _, root) return root .. "/.nvim/build/" .. p .. "/" .. (c or "d") end,
+            info = function(_, tc)
+                local Configuration = require("loomworks.configuration")
+                return { configurations = Configuration.canonicalize({}, tc and tc.configurations, "fakemod") }
+            end,
+            tasks = function() return {} end,
+        }
+        local function get(id) if id == "fakemod" then return fake end return modules_get(id) end
+        local files = {
+            ["loomworks.json"] = h.make_config_json({
+                projects = { App = { fakemod = { configurations = { Debug = {} } } } },
+                configuration_sets = { debug = { App = "Debug" } },
+            }),
+            ["loomworks.user.json"] = h.make_user_json({
+                profiles = { debug = { configuration_set = "debug", tools = {} } },
+            }),
+        }
+        local deps = h.make_test_deps(files, { modules = { get = get }, cache = { save = function() return true end } })
+        local core = Core.new(deps)
+        core:setup({ root = "/root" })
+        core:remerge()
+        return core, core:get_workspace()._profiles[1]:projects()[1]._config_unit
+    end
+
+    local function meson_configure(unit, machine_file, build_dir)
+        local cfg = { buildtype = "debug", machine_file = machine_file }
+        for _, t in ipairs(meson.tasks({
+            name = "App", path = "app", workspace_root = "/root",
+            tool_data = { meson = { "/usr/bin/meson" } },
+            configurations = { Debug = cfg }, env = {},
+            cached_build_dir = build_dir,
+            recorded_module_info = unit.module_info,
+            recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
+        }, "Debug")) do
+            if t.loomworks.action == "configure" then return t end
+        end
+    end
+
+    local function is_full(t) return t.loomworks.pre_configure_reset ~= nil end
+
+    it("removing machine_file takes exactly one full reconfigure, then the next is in place", function()
+        local core, unit = make_unit()
+        local build_dir = vim.fn.tempname()
+        vim.fn.mkdir(build_dir .. "/meson-info", "p")
+        local function record(t)
+            core:record_task_result({ unit = unit, action = "configure", success = true,
+                build_dir = build_dir, module_info = t.loomworks.module_info })
+        end
+
+        record(meson_configure(unit, "/x/cross.ini", build_dir))
+        assert.equals("/x/cross.ini", unit.module_info.cross_file)
+        assert.is_false(is_full(meson_configure(unit, "/x/cross.ini", build_dir)))
+
+        -- Drop the cross file: one full reconfigure.
+        local t = meson_configure(unit, nil, build_dir)
+        assert.is_true(is_full(t))
+        record(t)
+        assert.is_nil(unit.module_info.cross_file)
+
+        -- The next configure is NOT full.
+        assert.is_false(is_full(meson_configure(unit, nil, build_dir)))
+        vim.fn.delete(build_dir, "rf")
+    end)
+
+    it("a non-configure result merges (does not wipe the configure record)", function()
+        local core, unit = make_unit()
+        core:record_task_result({ unit = unit, action = "configure", success = true,
+            build_dir = "/root/.nvim/build/App/Debug",
+            module_info = { passed_options = { A = "1" }, cache_launcher = "none" } })
+        core:record_task_result({ unit = unit, action = "build", success = true,
+            module_info = { extra = true } })
+        core:record_task_result({ unit = unit, action = "build", success = true })
+        assert.same({ A = "1" }, unit.module_info.passed_options)
+        assert.equals("none", unit.module_info.cache_launcher)
+        assert.is_true(unit.module_info.extra)
+    end)
+end)
