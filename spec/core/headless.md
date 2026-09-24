@@ -190,7 +190,12 @@ pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the
 project's `variables` is rejected by the same validation the editor applies
-(§1.3.1). `get` returns the resolved string for the full path, or the
+(§1.3.1). A `set`/`unset` that changes nothing — `unset` of a param that
+is not set, or `set` to the value it already has — writes nothing, says so
+(`… is not set` / `(unchanged)`) and exits 0; the same holds for clearing a
+profile fill value that is not set. A reminder to publish is printed only after
+an edit that **changed** a configuration reaching the published snapshot
+(§2.4 effective intent). `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and
 `overrides.<family>.env`. `show` lists the configuration's `env` alongside its
 `options`.

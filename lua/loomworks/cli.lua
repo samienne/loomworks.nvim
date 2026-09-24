@@ -3177,7 +3177,19 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   local cfg = resolve_config(proj, cfg_name, true)
   if param == "variant" then reject_variant_param(proj, value) end
   local data = config_to_data(cfg)
+  local before = vim.deepcopy(data)
   apply_param(data, param, value)
+  -- Nothing changed (an unset of a param that was never set, or a set to the
+  -- value it already has): say so, write nothing, and suggest no publish.
+  -- Exit 0 — an idempotent edit is not an error (a script may re-run it).
+  if vim.deep_equal(before, data) then
+    if verb == "set" then
+      out(string.format("%s/%s: %s = %s (unchanged)", proj.key, cfg.name, param, value))
+    else
+      out(string.format("%s/%s: %s is not set (nothing to unset)", proj.key, cfg.name, param))
+    end
+    return 0
+  end
   local ok, err = proj:save_configuration(cfg.name, data)
   if not ok then die("could not " .. verb .. ": " .. tostring(err)) end
   if verb == "set" then
@@ -3194,8 +3206,8 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   else
     out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
   end
-  -- Point at `lw publish` only when this configuration actually reaches the
-  -- shared loomworks.json — its own intent is shared / local+shared, or a
+  -- Point at `lw publish` only when something changed (above) and this
+  -- configuration actually reaches the shared loomworks.json — its own intent is shared / local+shared, or a
   -- published configuration set pulls it in (§2.4 effective intent). A
   -- local-only configuration has nothing to publish.
   local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
@@ -4214,6 +4226,11 @@ function M.cmd_profile_unset(root, args)
   local proj = resolve_project(ws, project_key)
   if not profile_fillable(proj, var_name) then
     die("project '" .. proj.key .. "' declares no variable '" .. var_name .. "'")
+  end
+  if profile:variable_value(proj.key, var_name) == nil then
+    -- Idempotent (exit 0), like `lw config unset` of a never-set param.
+    out(string.format("%s: %s/%s is not set (nothing to unset)", profile.key, proj.key, var_name))
+    return 0
   end
   profile:clear_variable_value(proj.key, var_name)
   out(string.format("%s: unset %s/%s", profile.key, proj.key, var_name))
