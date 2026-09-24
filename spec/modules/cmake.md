@@ -372,8 +372,10 @@ itself, which would collide with §5b:
     passed is passed through unchanged.
   - A key CMake honors **only at first configure** — `CMAKE_TOOLCHAIN_FILE`,
     `CMAKE_GENERATOR_PLATFORM`, `CMAKE_GENERATOR_TOOLSET`,
-    `CMAKE_GENERATOR_INSTANCE` — that was added, changed or removed cannot be
-    applied in place, so the module does a **full reconfigure** instead: on
+    `CMAKE_GENERATOR_INSTANCE` — that was added, changed or removed, or a
+    change of the recorded generator (`module_info.generator`) on the same
+    build directory, cannot be applied in place (CMake refuses or ignores it),
+    so the module does a **full reconfigure** instead: on
     CMake **>= 3.24** it adds `--fresh` (CMake discards `CMakeCache.txt` and the
     `CMakeFiles/` configure state and configures from scratch); below 3.24 it
     gets the same effect by naming `CMakeCache.txt` and `CMakeFiles` in the
