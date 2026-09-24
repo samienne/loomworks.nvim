@@ -877,23 +877,64 @@ function M.resolve_build_dir(project_name, config_name, config_info, workspace_r
     return resolve_build_dir(project_name, config_name, config_info, workspace_root, multi_config, tool_data)
 end
 
---- Whether a compiler-cache launcher can be applied to a configuration
---- (module interface §8 optional hook; consulted by core's launcher staleness).
---- A preset configuration is configured with `cmake --preset` and takes no
---- `-D` flags from loomworks, so `M.tasks` never injects the launcher there and
---- records `"none"` (§5d non-goal) — report it not applicable so core expects
---- that marker instead of reconfiguring on every build. `ctx.tool_data` (with
---- `ctx.configuration.module_config`) carries the generator, so a future
---- generator-specific exclusion can be expressed here too.
---- @param ctx { configuration: loomworks.Configuration|nil, tool_data: table|nil }
+--- Whether a CMake generator implements `CMAKE_<LANG>_COMPILER_LAUNCHER`.
+--- CMake honors the launcher only for the Ninja and Makefile generator
+--- families (`Ninja`, `Ninja Multi-Config`, `Unix Makefiles`, `NMake
+--- Makefiles`, `MinGW Makefiles`, `MSYS Makefiles`, `Watcom WMake`, …); the
+--- Visual Studio and Xcode (and other IDE) generators ignore it (§5d). An
+--- unresolved (nil) generator is treated as supporting it — nothing to say.
+--- @param generator string|nil
 --- @return boolean
-function M.cache_launcher_applicable(ctx)
-    local cfg = ctx and ctx.configuration
-    -- Must stay in step with the `from_preset` branch in `M.tasks`.
-    if cfg and cfg.from_preset then return false end
-    return true
+local function generator_supports_launcher(generator)
+    if type(generator) ~= "string" or generator == "" then return true end
+    return generator:match("^Ninja") ~= nil
+        or generator:match("Makefiles$") ~= nil
+        or generator == "Watcom WMake"
 end
 
+--- Why the compiler-cache launcher cannot be applied to a configuration, or
+--- nil when it can (§5d non-goals). Shared by `M.cache_launcher_applicable`
+--- (core's staleness + status/health) and `M.tasks` (which then injects no
+--- launcher and records "none") so the two can never disagree.
+--- @param from_preset boolean
+--- @param generator string|nil resolved generator
+--- @return string|nil reason short noun phrase (status: `not applied (<reason>)`)
+--- @return string|nil hint one sentence: how to get caching (health)
+local function launcher_not_applicable(from_preset, generator)
+    if from_preset then
+        return "preset", "A CMake preset owns its cache variables: set "
+            .. "CMAKE_<LANG>_COMPILER_LAUNCHER in the preset's cacheVariables to cache it."
+    end
+    if not generator_supports_launcher(generator) then
+        return generator .. " generator", "CMake applies a compiler launcher only with a "
+            .. "Ninja or Makefile generator; select a Ninja or Makefile tool for this "
+            .. "profile to enable compiler caching."
+    end
+    return nil, nil
+end
+
+--- Whether a compiler-cache launcher can be applied to a configuration
+--- (module interface §8 optional hook; consulted by core's launcher staleness
+--- and by the profile's cache status / health). Not applicable — so `M.tasks`
+--- injects nothing and records `"none"`, and core expects that marker instead
+--- of reconfiguring on every build — for a preset (configured by
+--- `cmake --preset`, which owns its cache variables) and for a generator that
+--- ignores `CMAKE_<LANG>_COMPILER_LAUNCHER` (Visual Studio, Xcode; §5d). The
+--- generator is the configuration's own (`module_config.generator`), else the
+--- tool's, exactly as `M.tasks` resolves it.
+--- @param ctx { configuration: loomworks.Configuration|nil, tool_data: table|nil }
+--- @return boolean applicable
+--- @return string|nil reason when not applicable (e.g. "preset", "Xcode generator")
+--- @return string|nil hint when not applicable
+function M.cache_launcher_applicable(ctx)
+    local cfg = ctx and ctx.configuration
+    local mc = cfg and cfg.module_config
+    local generator = (mc and mc.generator)
+        or (ctx and ctx.tool_data and ctx.tool_data.generator) or nil
+    local reason, hint = launcher_not_applicable(cfg and cfg.from_preset or false, generator)
+    if reason then return false, reason, hint end
+    return true
+end
 --- Return overseer task templates for a project.
 --- @param project loomworks.ModuleContext
 --- @param active_config string active configuration name
@@ -990,8 +1031,9 @@ function M.tasks(project, active_config)
         configure_cmd[#configure_cmd + 1] = "--preset"
         configure_cmd[#configure_cmd + 1] = config_info.base_name or active_config
 
-        -- Preset non-goal (§5d): loomworks passes no `-D` flags to a preset,
-        -- so the compiler-cache launcher cannot be injected here. Warn (once)
+        -- Preset non-goal (§5d): the preset owns its cache variables (a
+        -- launcher included), so the compiler-cache launcher is not injected
+        -- here. Warn (once)
         -- and direct the user to set CMAKE_<LANG>_COMPILER_LAUNCHER in the
         -- preset's own cacheVariables. cache_launcher is left nil below so the
         -- module records "no launcher applied" ("none") for this configuration;
@@ -1025,6 +1067,20 @@ function M.tasks(project, active_config)
             end
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_CXX_COMPILER=" .. compiler_path
             configure_cmd[#configure_cmd + 1] = "-DCMAKE_C_COMPILER=" .. c_path
+        end
+
+        -- Generator non-goal (§5d): CMake honors CMAKE_<LANG>_COMPILER_LAUNCHER
+        -- only for Ninja and Makefile generators — Visual Studio / Xcode ignore
+        -- it. Inject nothing (nor the MSVC debug-info keys, which only serve a
+        -- launcher), warn once, and record "none"; `M.cache_launcher_applicable`
+        -- reports the same to core so the unit is not launcher-stale and
+        -- status/health say "not applied".
+        if cache_launcher and not generator_supports_launcher(generator) then
+            warn_once("generator:" .. project.name .. ":" .. active_config,
+                "compiler cache not applied to " .. project.name .. "/" .. active_config
+                .. " under the " .. tostring(generator) .. " generator: CMake honors "
+                .. "CMAKE_<LANG>_COMPILER_LAUNCHER only for Ninja and Makefile generators.")
+            cache_launcher = nil
         end
 
         -- Compiler-cache launcher (§5d): apply the core-resolved launcher via

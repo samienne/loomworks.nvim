@@ -409,6 +409,10 @@ end
 ---     suggestion (the nag that the count reports); for an MSVC-style active
 ---     profile its remedy adds that the launcher must then be enabled
 ---     explicitly.
+---   * the active profile's configuration cannot take a launcher at all
+---     (`compiler_cache_status().applicable == false`) → an INFORMATIONAL
+---     "Compiler cache not applied (<reason>)" item with the module's hint,
+---     instead of any of the above.
 --- Post-configure cache-compatibility findings are reported separately by
 --- `cache_compat_provider`.
 --- Silent when there are no caching C/C++ projects, or when every such project
@@ -439,6 +443,24 @@ function M.compiler_cache_provider(workspace)
 
     local status = active_cache_status(workspace)
     local msvc_auto_off = status and status.msvc_auto_off or false
+
+    -- The active profile's configuration cannot take a launcher at all (the
+    -- module's `cache_launcher_applicable` hook, §8 — e.g. a preset, or a
+    -- generator that ignores launchers): say so, with the module's hint,
+    -- whether or not a cache is installed (installing one would not help).
+    -- Informational — never counted as a nag.
+    if status and status.applicable == false then
+        local reason = status.not_applied_reason or "not supported"
+        return { {
+            kind = "info",
+            title = "Compiler cache not applied (" .. reason .. ")",
+            detail = "The compiler cache cannot be applied to "
+                .. (status.project and status.project.key or "this project") .. "/"
+                .. (status.configuration and status.configuration.name or "?")
+                .. " (" .. reason .. ")."
+                .. (status.not_applied_hint and (" " .. status.not_applied_hint) or ""),
+        } }
+    end
 
     -- A launcher is present → affirmative, informational status (not counted).
     local present = cc.any_present()

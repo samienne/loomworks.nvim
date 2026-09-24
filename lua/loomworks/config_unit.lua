@@ -655,14 +655,9 @@ end
 --- @param tool_data table|nil resolved tool_data for this unit
 --- @return boolean
 function ConfigUnit:_cache_launcher_applicable(tool_data)
-    local impl = self:_module_impl()
-    if not impl or type(impl.cache_launcher_applicable) ~= "function" then return true end
-    local ok, applicable = pcall(impl.cache_launcher_applicable, {
-        configuration = self._configuration,
-        tool_data = tool_data,
-    })
-    if not ok then return true end
-    return applicable ~= false
+    local applicable = require("loomworks.compiler_cache").applicability(
+        self:_module_impl(), self._configuration, tool_data)
+    return applicable
 end
 
 --- Get the Project domain object for this unit.

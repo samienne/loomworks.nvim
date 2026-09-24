@@ -233,6 +233,27 @@ function M.compat_message(rec, project_key, config_name)
     return msg, severity
 end
 
+--- Whether a module can apply a compiler-cache launcher to a configuration at
+--- all — its optional `cache_launcher_applicable(ctx)` hook (module interface
+--- §8), which may also return a short `reason` and a one-sentence `hint` when
+--- it cannot. Absent hook, or a hook that errors, means applicable. Shared by
+--- launcher staleness (`ConfigUnit`) and the profile's cache status / health so
+--- they never disagree.
+--- @param impl table|nil module implementation
+--- @param configuration loomworks.Configuration|nil
+--- @param tool_data table|nil
+--- @return boolean applicable, string|nil reason, string|nil hint
+function M.applicability(impl, configuration, tool_data)
+    if not impl or type(impl.cache_launcher_applicable) ~= "function" then return true end
+    local ok, applicable, reason, hint = pcall(impl.cache_launcher_applicable, {
+        configuration = configuration,
+        tool_data = tool_data,
+    })
+    if not ok or applicable ~= false then return true end
+    return false, type(reason) == "string" and reason or nil,
+        type(hint) == "string" and hint or nil
+end
+
 --- Return the name of the first compiler-cache launcher present on the
 --- toolchain search path (checking `sccache` then `ccache`), or nil when none
 --- is installed. Used by the health suggestion provider and status reporting;

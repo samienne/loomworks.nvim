@@ -618,8 +618,13 @@ end
 --- build applies. `auto` on an MSVC-style compiler (msvc, clang-cl) resolves to
 --- no launcher by design (spec §1.3.2) and is reported as
 --- `Cache: auto (off for MSVC)` with `msvc_auto_off = true`, distinct from
---- `auto (none found)`. It never spawns the cache tool.
---- @return { policy: string, tool: string|nil, path: string|nil, present: boolean, stale: boolean, msvc_auto_off: boolean, project: loomworks.Project, configuration: loomworks.Configuration|nil, text: string }|nil
+--- `auto (none found)`. A configuration the module cannot apply a launcher to
+--- at all (its `cache_launcher_applicable` hook, module interface §8 — e.g. a
+--- preset, or a generator that ignores launchers) reads
+--- `Cache: not applied (<reason>)` with `applicable = false`, never naming a
+--- launcher the build does not use (policy `off` still reads `Cache: off`).
+--- It never spawns the cache tool.
+--- @return { policy: string, tool: string|nil, path: string|nil, present: boolean, stale: boolean, msvc_auto_off: boolean, applicable: boolean, not_applied_reason: string|nil, not_applied_hint: string|nil, project: loomworks.Project, configuration: loomworks.Configuration|nil, text: string }|nil
 function Profile:compiler_cache_status()
     local cc = require("loomworks.compiler_cache")
 
@@ -641,6 +646,8 @@ function Profile:compiler_cache_status()
     policy = policy or "auto"
     local msvc_auto_off = policy == "auto"
         and require("loomworks.cpp_compilers").is_msvc_style(tool_data)
+    local applicable, not_applied_reason, not_applied_hint = cc.applicability(
+        project._module and project._module.impl or nil, configuration, tool_data)
 
     -- Stale when any of the profile's configured caching units were built with
     -- a launcher different from the one that would resolve now.
@@ -654,10 +661,12 @@ function Profile:compiler_cache_status()
     end
 
     local text
-    if resolved then
-        text = "Cache: " .. resolved.tool
-    elseif policy == "off" then
+    if policy == "off" then
         text = "Cache: off"
+    elseif not applicable then
+        text = "Cache: not applied (" .. (not_applied_reason or "not supported") .. ")"
+    elseif resolved then
+        text = "Cache: " .. resolved.tool
     elseif msvc_auto_off then
         text = "Cache: auto (off for MSVC)"
     elseif policy == "auto" then
@@ -673,6 +682,9 @@ function Profile:compiler_cache_status()
         present = resolved ~= nil,
         stale = stale,
         msvc_auto_off = msvc_auto_off,
+        applicable = applicable,
+        not_applied_reason = not_applied_reason,
+        not_applied_hint = not_applied_hint,
         project = project,
         configuration = configuration,
         text = text,
