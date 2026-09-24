@@ -6006,6 +6006,7 @@ function M.cmd_complete(cword, words)
       for _, v in ipairs(COMP_COMMANDS) do topics[#topics + 1] = v end
       topics[#topics + 1] = "agent" -- help-only topics (no command)
       topics[#topics + 1] = "ci"
+      topics[#topics + 1] = "cache"
       emit(topics)
     end
     return 0
@@ -6518,6 +6519,66 @@ Rules:
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
                      could change which option wins.]],
+  cache = [[lw help cache — compiler caching (ccache / sccache)   (also: sccache, ccache)
+
+loomworks can wrap C/C++ compiles with a compiler cache so clean and
+switch-branch rebuilds reuse prior objects. It resolves the launcher, the build
+system applies it (cmake: CMAKE_<LANG>_COMPILER_LAUNCHER; meson: a generated
+native file). `lw status` / `lw profile show` show the result on the `Cache`
+row; `lw health` gives a one-line verdict; `lw status --cache-stats` adds the
+tool's own hit statistics.
+
+POLICY — the reserved `cache` variable (per configuration, compiler family or
+profile):
+  auto      the default. gcc/clang: ccache, else sccache, when on PATH.
+            MSVC-style compilers (msvc, clang-cl): OFF — see below.
+  off       never use a compiler cache.
+  sccache | ccache   use exactly that tool (not found → builds run uncached,
+            and `lw health` says so).
+Set it:
+  lw config set <project> <configuration> variables.cache sccache
+  lw config set <project> <configuration> overrides.msvc.cache sccache
+            (clang-cl: overrides.clang.cache) — only for that compiler family
+  lw profile set [<profile>] <project> cache sccache   (this machine's profile)
+  lw config unset <project> <configuration> variables.cache   (back to auto)
+
+WHY `auto` IS OFF FOR MSVC-STYLE COMPILERS — sccache FAILS a compile that
+writes a shared .pdb (/Zi, /ZI; MSVC error C1041), and ccache won't cache it.
+Such flags often come from code loomworks does not control (a dependency, the
+project's own CMakeLists). So caching there is an explicit opt-in: set
+`cache=sccache` (or ccache) as above. Opting in, under cmake (>= 3.25,
+single-config generator) loomworks asks for embedded per-object debug info
+(/Z7: CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded + policy CMP0141 NEW); under
+cmake and meson it then SCANS the configured compile commands (and the
+configuration's CL / _CL_ environment) for leftover /Zi.
+Findings show up at the end of the configure and in `lw health`, per target:
+  fix: switch those targets to /Z7 — e.g. set the MSVC_DEBUG_INFORMATION_FORMAT
+       target property to Embedded, or replace /Zi in their compile options (an
+       `environment` group: remove it from that variable of the configuration's
+       `env`) — or turn caching off: lw config set <p> <c> variables.cache off
+loomworks never silently turns off a cache you asked for.
+
+CONFIGURING THE TOOL — pass its settings through the configuration's env, e.g.
+  lw config set <p> <c> env.SCCACHE_DIR '${workspace_root}/.cache/sccache'
+  lw config set <p> <c> overrides.msvc.env.SCCACHE_DIR D:/sccache
+(also SCCACHE_CACHE_SIZE, CCACHE_DIR, CCACHE_MAXSIZE, …).
+
+NOT APPLIED — `Cache: not applied (<reason>)`: the configuration cannot take a
+launcher. A cmake PRESET owns its cache variables (set CMAKE_<LANG>_COMPILER_
+LAUNCHER in the preset's cacheVariables instead); a Visual Studio or Xcode
+generator ignores launchers (pick a Ninja or Makefile tool for the profile).
+
+INSTALL — sccache: `scoop install sccache`, `cargo install sccache`, or a
+release binary; ccache: `apt install ccache`, `dnf install ccache`,
+`brew install ccache`, `scoop install ccache`. Put it on PATH; `auto` picks it
+up for gcc/clang (MSVC-style: opt in as above).
+
+RECONFIGURE — changing the policy, or installing/removing the tool, makes the
+build reconfigure automatically on the next `lw build` (it prints why). cmake
+applies a launcher-only change in place (the first build then rebuilds objects
+to fill the cache); when the MSVC /Z7 settings move too it runs `cmake
+--fresh`; meson always re-runs `setup --wipe`. A build dir configured by an
+older lw takes one full reconfigure. `lw build --reconfigure` forces one.]],
   health = [[lw health [--force]
 
 List the workspace's advisory suggestions — the detail behind the compact
@@ -6525,10 +6586,11 @@ List the workspace's advisory suggestions — the detail behind the compact
 no build and authors no project or build-system files, and it ALWAYS exits 0
 (a suggestion never gates an operation and is distinct from a diagnostic).
 
-Each suggestion prints a title, why it fires, and a concrete remedy. Providers
-are advisory and extensible; the first flags a workspace that has C/C++
-projects but no compiler cache (ccache/sccache) on the toolchain path, and
-suggests installing the platform-preferred one. `lw health` additionally checks
+Each suggestion prints a one-line title and, when there is something to do, a
+short remedy (some add a line of detail). Providers are advisory and
+extensible; the compiler-cache one gives a one-line verdict for C/C++
+workspaces (using <tool> / available but not enabled / not found / not applied
+/ /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
 whether a newer `lw` release is available on your update channel (this makes a
 network request, so it runs only here — never on the passive count) and notes
 when a release-url override is superseding a non-default channel; a failed/offline
@@ -7101,6 +7163,9 @@ function M.cmd_help(cmd)
     cs = "configset",
     cfg = "config",
     profiles = "profile",
+    sccache = "cache",
+    ccache = "cache",
+    ["compiler-cache"] = "cache",
   }
   cmd = cmd and (alias[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
@@ -7169,7 +7234,8 @@ Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile — pass the profile explicitly.
 
 Automation agent? See `lw help agent` — run with --no-input so you never block
-or change the user's settings. Driving CI? See `lw help ci`.
+or change the user's settings. Driving CI? See `lw help ci`. Compiler cache
+(ccache/sccache)? See `lw help cache`.
 
 `lw help <command>` for details.]])
   return cmd and 1 or 0

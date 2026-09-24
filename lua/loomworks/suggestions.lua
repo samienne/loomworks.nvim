@@ -34,7 +34,7 @@ M.NETWORK_TTL = 24 * 60 * 60
 
 --- @class loomworks.Suggestion
 --- @field title string one-line summary
---- @field detail string why it fires
+--- @field detail string|nil why it fires (optional — terse items carry only a title)
 --- @field remedy string|nil concrete action the user can take (nil for info items)
 --- @field kind? "suggestion"|"info" actionable (default) vs informational
 
@@ -269,10 +269,11 @@ end
 --- Cheap invalidation fingerprint for the LOCAL suggestion tier (§16.31): a
 --- stable digest of exactly the inputs the passive providers read — the platform,
 --- each non-orphaned project's key + module + whether it caches C/C++ + the
---- EXPLICIT `cache` values on its configurations (the opt-out signal), and the
---- active profile's identity + resolved tool keys + mapped configurations +
---- per-project `cache` fill values (the compiler-cache provider follows that
---- profile's effective policy). It intentionally does NOT
+--- EXPLICIT `cache` values on its configurations (the opt-out signal), the
+--- active profile's key, and every profile's identity + resolved tool keys +
+--- mapped configurations + per-project `cache` fill values (the compiler-cache
+--- provider follows the active profile's effective policy, or every profile's
+--- when none is active). It intentionally does NOT
 --- include any toolchain-PATH probe result: computing the key must stay cheap
 --- (in-memory only), so a launcher appearing/disappearing on PATH without a
 --- config change is picked up by the next `lw health` (which always recomputes
@@ -310,19 +311,25 @@ function M._local_key(workspace)
             end
         end
 
-        -- Active profile identity + resolved tool selection.
+        -- Every profile's identity + resolved tool selection + mapped
+        -- configurations + `cache` fills (they change a profile's effective
+        -- cache policy): the provider follows the active profile's, and with
+        -- no active profile evaluates every profile.
         local ap = workspace._active_profile
-        if ap then
+        parts[#parts + 1] = "active|" .. tostring(ap and ap.key or "")
+        local profiles = {}
+        for _, p in pairs(workspace._profiles or {}) do profiles[#profiles + 1] = p end
+        table.sort(profiles, function(a, b) return (a.key or "") < (b.key or "") end)
+        if ap and not vim.tbl_contains(profiles, ap) then profiles[#profiles + 1] = ap end
+        for _, p in ipairs(profiles) do
             local tkeys = {}
-            for _, k in ipairs(ap._tool_keys or {}) do tkeys[#tkeys + 1] = k end
+            for _, k in ipairs(p._tool_keys or {}) do tkeys[#tkeys + 1] = k end
             table.sort(tkeys)
-            parts[#parts + 1] = "profile|" .. (ap.key or "") .. "|" .. table.concat(tkeys, ",")
-            -- Mapped configurations + `cache` fills: they change the active
-            -- profile's effective cache policy, which the provider follows.
+            parts[#parts + 1] = "profile|" .. (p.key or "") .. "|" .. table.concat(tkeys, ",")
             local mapped = {}
-            for _, pp in ipairs(ap.projects and ap:projects() or {}) do
+            for _, pp in ipairs(p.projects and p:projects() or {}) do
                 local pkey = pp.project_key and pp:project_key() or "?"
-                local fills = ap._profile_variables and ap._profile_variables[pkey]
+                local fills = p._profile_variables and p._profile_variables[pkey]
                 mapped[#mapped + 1] = pkey .. "=" .. tostring(pp.variant_name and pp:variant_name())
                     .. ":" .. tostring(fills and fills.cache or "")
             end
@@ -384,18 +391,14 @@ function M._preferred_install_tool()
     return vim.fn.has("win32") == 1 and "sccache" or "ccache"
 end
 
---- Install instructions for a launcher (the `remedy` text).
---- @param tool string "ccache"|"sccache"|other
+--- Install remedy for a launcher: one short line pointing at `lw help cache`
+--- (per-platform install commands live there). `opt_in` adds that an
+--- MSVC-style compiler also needs an explicit `cache=<tool>` (§1.3.2).
+--- @param tool string
+--- @param opt_in? boolean
 --- @return string
-local function install_remedy(tool)
-    if tool == "sccache" then
-        return "Install sccache and put it on PATH (e.g. `scoop install sccache`, "
-            .. "`cargo install sccache`, or a release binary)."
-    elseif tool == "ccache" then
-        return "Install ccache and put it on PATH (e.g. `apt install ccache`, "
-            .. "`dnf install ccache`, `brew install ccache`, or `scoop install ccache`)."
-    end
-    return "Install " .. tool .. " and put it on PATH."
+local function install_remedy(tool, opt_in)
+    return "install " .. tool .. (opt_in and ", then opt in" or "") .. " — lw help cache"
 end
 
 --- The active profile's compiler-cache status (`Profile:compiler_cache_status`),
@@ -411,48 +414,74 @@ local function active_cache_status(workspace)
     return nil
 end
 
---- The exact management command that sets `cache` for the active profile's
---- configuration (§16.9 param grammar), e.g.
---- `lw config set App Debug variables.cache sccache`. Falls back to
---- placeholders when the configuration is unknown.
---- @param status table|nil active_cache_status()
---- @param value string policy value to set
---- @return string
-function M._cache_set_command(status, value)
-    local pkey = status and status.project and status.project.key or "<project>"
-    local cname = status and status.configuration and status.configuration.name
-        or "<configuration>"
-    return string.format("`lw config set %s %s variables.cache %s`", pkey, cname, value)
+--- Every profile's compiler-cache status (profiles with a C/C++-caching
+--- project only), sorted by profile key — the no-active-profile basis.
+--- @param workspace loomworks.Workspace
+--- @return { profile: loomworks.Profile, status: table }[]
+local function all_cache_statuses(workspace)
+    local out = {}
+    for _, p in pairs(workspace._profiles or {}) do
+        local ok_c, status = pcall(function() return p:compiler_cache_status() end)
+        if ok_c and type(status) == "table" then out[#out + 1] = { profile = p, status = status } end
+    end
+    table.sort(out, function(a, b) return (a.profile.key or "") < (b.profile.key or "") end)
+    return out
+end
+
+--- One terse item per outcome (headless §16.31). The explanations — why `auto`
+--- is off for MSVC-style compilers, how to opt in, /Z7 + the /Zi scan,
+--- install commands, not-applied cases — live in `lw help cache`.
+local function info(title) return { { kind = "info", title = title } } end
+local function nag(title, remedy) return { { kind = "suggestion", title = title, remedy = remedy } } end
+
+--- The outcome for ONE profile's resolved status (the active profile's, so
+--- health always agrees with its Cache row), or nil to fall through to the
+--- "is a launcher on PATH?" outcomes.
+--- @param status table `Profile:compiler_cache_status()`
+--- @return loomworks.Suggestion[]|nil
+local function status_outcome(status)
+    if status.policy == "off" then return {} end
+    if status.applicable == false then
+        return info("Compiler cache not applied (" .. (status.not_applied_reason or "not supported")
+            .. ") — lw help cache")
+    end
+    if status.present and status.tool then return info("Compiler cache: using " .. status.tool) end
+    if status.policy ~= "auto" then
+        return nag("cache=" .. status.policy .. " set but " .. status.policy .. " not found",
+            install_remedy(status.policy))
+    end
+    return nil
 end
 
 --- Provider: report the workspace's compiler-cache state when it has C/C++
---- projects (headless §16.31). All outcomes are gated on at least one
---- non-orphaned C/C++-caching project that has NOT pinned `cache` to `off`.
---- When there is an active profile with a C/C++ configuration, the outcome
---- follows THAT profile's resolved status (`Profile:compiler_cache_status`,
---- the same one the `Cache` row shows), so health never contradicts status.
---- First match wins:
----   1. the active profile's effective policy is `off` → silent (opted out);
----   2. its configuration cannot take a launcher at all
----      (`compiler_cache_status().applicable == false`) → an INFORMATIONAL
----      "Compiler cache not applied (<reason>)" item with the module's hint;
----   3. its launcher resolved → an INFORMATIONAL "Compiler cache: using <tool>"
----      item — excluded from the `N suggestions` count (`kind = "info"`);
----   4. an explicit `cache=<tool>` whose tool is not found → the ACTIONABLE
----      "cache=<tool> set but <tool> not found" item (remedy: install it);
----   5. a launcher is on PATH and either there is no active C/C++ profile (→
----      INFORMATIONAL "using <whichever is present>") or the active profile is
----      MSVC-style under `auto` (§1.3.2: auto never enables a launcher there →
----      INFORMATIONAL "<tool> available — not enabled automatically for
----      MSVC-style compilers", detail gives the opt-in command);
----   6. otherwise the ACTIONABLE "install one to speed rebuilds" suggestion
----      (platform-customary tool; for an MSVC-style active profile the remedy
----      adds that the launcher must then be enabled explicitly).
---- Post-configure cache-compatibility findings are reported separately by
---- `cache_compat_provider`.
---- Silent when there are no caching C/C++ projects, or when every such project
---- has pinned `cache` to `off` (the user opted out — neither nag nor affirm).
---- Reads only resolved state + the PATH index; it never spawns the cache tool.
+--- projects (headless §16.31). Every item is ONE terse line; `lw help cache`
+--- holds the explanations. Gated on at least one non-orphaned C/C++-caching
+--- project that has NOT pinned `cache` to `off` (else silent).
+---
+--- **Active profile with a C/C++ configuration** — follows THAT profile's
+--- resolved status (`Profile:compiler_cache_status`, its Cache row):
+---   * policy `off` → silent;
+---   * not applicable (module hook, §8) → INFO "Compiler cache not applied
+---     (<reason>) — lw help cache";
+---   * launcher resolved → INFO "Compiler cache: using <tool>";
+---   * explicit `cache=<tool>` not found → ACTIONABLE "cache=<tool> set but
+---     <tool> not found" (remedy: install it — lw help cache);
+---   * `auto` on an MSVC-style compiler with a launcher on PATH → INFO "<tool>
+---     available — not enabled for MSVC-style (lw help cache)";
+---   * otherwise → ACTIONABLE "No compiler cache found" (remedy: install the
+---     platform-customary tool — plus "then opt in" for MSVC-style).
+---
+--- **No active profile** — never claims a cache is in use unless some profile
+--- would use it: every profile with a C/C++ project is evaluated through the
+--- same resolver:
+---   * every such profile resolves `off` → silent;
+---   * some resolve a launcher → INFO "Compiler cache: using <tool> (<profiles>)";
+---   * else an explicit `cache=<tool>` not found → ACTIONABLE (names the profile);
+---   * else a launcher on PATH → INFO "<tool> available — not enabled[ for
+---     MSVC-style] (lw help cache)" (no profiles at all: "<tool> available");
+---   * else → the ACTIONABLE install suggestion.
+--- Post-configure compatibility findings are `cache_compat_provider`'s. Reads
+--- only resolved state + the PATH index; it never spawns the cache tool.
 --- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
 function M.compiler_cache_provider(workspace)
@@ -476,112 +505,63 @@ function M.compiler_cache_provider(workspace)
     end
     if all_off then return {} end
 
-    local status = active_cache_status(workspace)
-    local msvc_auto_off = status and status.msvc_auto_off or false
-
-    -- The active profile resolved `off` (e.g. a per-configuration or profile
-    -- fill `cache=off`): the user opted out there — neither nag nor affirm,
-    -- and never claim a launcher that its Cache row says is off.
-    if status and status.policy == "off" then return {} end
-
-    -- The active profile's configuration cannot take a launcher at all (the
-    -- module's `cache_launcher_applicable` hook, §8 — e.g. a preset, or a
-    -- generator that ignores launchers): say so, with the module's hint,
-    -- whether or not a cache is installed (installing one would not help).
-    -- Informational — never counted as a nag.
-    if status and status.applicable == false then
-        local reason = status.not_applied_reason or "not supported"
-        return { {
-            kind = "info",
-            title = "Compiler cache not applied (" .. reason .. ")",
-            detail = "The compiler cache cannot be applied to "
-                .. (status.project and status.project.key or "this project") .. "/"
-                .. (status.configuration and status.configuration.name or "?")
-                .. " (" .. reason .. ")."
-                .. (status.not_applied_hint and (" " .. status.not_applied_hint) or ""),
-        } }
-    end
-
-    -- The active profile's launcher resolved → affirm exactly that one.
-    if status and status.present and status.tool then
-        return { {
-            kind = "info",
-            title = "Compiler cache: using " .. status.tool,
-            detail = status.tool .. " is on the toolchain path, so C/C++ rebuilds for this "
-                .. "workspace reuse prior object files instead of recompiling them.",
-        } }
-    end
-
-    -- An explicit policy naming a launcher that is not found: the Cache row
-    -- reads `<tool> (not found)` and the build runs uncached — actionable, and
-    -- never "using" some other launcher that happens to be on PATH.
-    if status and status.policy ~= "auto" and not status.present then
-        local tool = status.policy
-        return { {
-            kind = "suggestion",
-            title = "cache=" .. tool .. " set but " .. tool .. " not found",
-            detail = "The active profile's `cache` policy for "
-                .. (status.project and status.project.key or "this project") .. "/"
-                .. (status.configuration and status.configuration.name or "?")
-                .. " is `" .. tool .. "`, but " .. tool .. " is not on the toolchain "
-                .. "path, so builds run uncached.",
-            remedy = install_remedy(tool) .. " Or change the policy, e.g. "
-                .. M._cache_set_command(status, "auto") .. ".",
-        } }
-    end
-
-    -- A launcher is present → affirmative, informational status (not counted).
-    -- With an active C/C++ profile under `auto` that resolved nothing, only
-    -- the MSVC-style "available but not enabled" case reaches here usefully;
-    -- a non-MSVC `auto` with nothing resolved falls through to the install nag
-    -- (matching its `auto (none found)` Cache row).
     local present = cc.any_present()
-    if present and (not status or msvc_auto_off) then
-        local tool = present
-        -- `auto` on an MSVC-style compiler left the build uncached on purpose
-        -- (§1.3.2): say the tool is available but not enabled, and how to opt in.
-        if msvc_auto_off then
-            return { {
-                kind = "info",
-                title = tool .. " available — not enabled automatically for MSVC-style compilers",
-                detail = "The `cache` policy is `auto`, which never enables a compiler cache "
-                    .. "for MSVC / clang-cl: " .. tool .. " can make compiles that write a "
-                    .. "shared .pdb (/Zi, /ZI) fail, and such flags may come from dependencies. "
-                    .. "To opt in, set an explicit policy — loomworks then requests embedded "
-                    .. "(/Z7) debug info and scans the configure for leftover /Zi: "
-                    .. M._cache_set_command(status, tool)
-                    .. " (or scope it to the compiler family with `overrides.msvc.cache`, "
-                    .. "or `overrides.clang.cache` for clang-cl).",
-            } }
+    local tool = present or M._preferred_install_tool()
+
+    local status = active_cache_status(workspace)
+    if status then
+        local out = status_outcome(status)
+        if out then return out end
+        if present and status.msvc_auto_off then
+            return info(present .. " available — not enabled for MSVC-style (lw help cache)")
         end
-        -- No active C/C++ profile: report whichever launcher is on PATH.
-        return { {
-            kind = "info",
-            title = "Compiler cache: using " .. tool,
-            detail = tool .. " is on the toolchain path, so C/C++ rebuilds for this "
-                .. "workspace reuse prior object files instead of recompiling them.",
-        } }
+        return nag("No compiler cache found", install_remedy(tool, status.msvc_auto_off))
     end
 
-    -- No launcher present → actionable install suggestion (the nag).
-    local tool = M._preferred_install_tool()
-    local remedy = install_remedy(tool)
-    if msvc_auto_off then
-        -- Installing is not enough for an MSVC-style compiler: `auto` never
-        -- enables it there (§1.3.2), so the opt-in must be explicit too.
-        remedy = remedy .. " Installing it is not enough for MSVC / clang-cl: `auto` "
-            .. "never enables a cache there, so then enable it explicitly with "
-            .. M._cache_set_command(status, tool) .. "."
+    -- No active C/C++ profile: evaluate every profile through the same resolver.
+    local statuses = all_cache_statuses(workspace)
+    local considered, any_msvc = {}, false
+    for _, e in ipairs(statuses) do
+        if e.status.policy ~= "off" then
+            considered[#considered + 1] = e
+            if e.status.msvc_auto_off then any_msvc = true end
+        end
+    end
+    if #statuses > 0 and #considered == 0 then return {} end -- every profile opted out
+
+    -- Some profile would use a launcher → name the tool(s) and the profiles.
+    local by_tool, tools = {}, {}
+    for _, e in ipairs(considered) do
+        local st = e.status
+        if st.applicable ~= false and st.present and st.tool then
+            if not by_tool[st.tool] then by_tool[st.tool] = {}; tools[#tools + 1] = st.tool end
+            table.insert(by_tool[st.tool], e.profile.key)
+        end
+    end
+    if #tools > 0 then
+        table.sort(tools)
+        local parts = {}
+        for _, t in ipairs(tools) do
+            parts[#parts + 1] = t .. " (" .. table.concat(by_tool[t], ", ") .. ")"
+        end
+        return info("Compiler cache: using " .. table.concat(parts, "; "))
     end
 
-    return { {
-        kind = "suggestion",
-        title = "No compiler cache found — install one to speed rebuilds",
-        detail = "This workspace has C/C++ projects but no ccache/sccache on the "
-            .. "toolchain path. A compiler cache reuses prior object files, so "
-            .. "clean and switch-branch rebuilds finish far faster.",
-        remedy = remedy,
-    } }
+    -- An explicit policy naming a launcher that is not found.
+    for _, e in ipairs(considered) do
+        local st = e.status
+        if st.applicable ~= false and st.policy ~= "auto" and not st.present then
+            return nag("cache=" .. st.policy .. " set but " .. st.policy .. " not found (profile "
+                .. e.profile.key .. ")", install_remedy(st.policy))
+        end
+    end
+
+    if present then
+        if #considered == 0 then return info(present .. " available (lw help cache)") end
+        return info(present .. " available — not enabled" .. (any_msvc and " for MSVC-style" or "")
+            .. " (lw help cache)")
+    end
+    return nag("No compiler cache found", install_remedy(tool, any_msvc))
 end
 
 M.register(M.compiler_cache_provider)
@@ -608,10 +588,11 @@ M._active_compat_records = active_compat_records -- also read by `_local_key`
 --- from the record core stored at configure, never recomputed here:
 ---   * findings → one ACTIONABLE item per configuration: the applied launcher
 ---     will fail (severity "error") / cannot cache ("warning") some compiles;
----     detail names the offending option and groups with unit counts; remedy
----     gives both ways out (switch those compiles to /Z7, or `cache` off);
+---     detail lists the groups (flag + unit counts); remedy is one short line
+---     (switch them to /Z7, or `cache` off — `lw help cache` explains);
 ---   * a scan skipped for lack of compile-command data → an INFORMATIONAL item
----     saying so, so a clean report is never mistaken for a verified one.
+---     saying so (detail: why), so a clean report is never mistaken for a
+---     verified one.
 --- Advisory only (never gates, never changes the policy).
 --- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
@@ -628,10 +609,8 @@ function M.cache_compat_provider(workspace)
         if rec.scanned == false then
             items[#items + 1] = {
                 kind = "info",
-                title = "Compiler-cache compatibility check skipped for " .. label,
-                detail = "Could not verify that " .. tostring(rec.tool) .. " can handle every "
-                    .. "compile of " .. label .. ": " .. tostring(rec.reason or "no compile-command data")
-                    .. ". Reconfigure to run the check again.",
+                title = "Compiler-cache check skipped for " .. label .. " — lw help cache",
+                detail = tostring(rec.reason or "no compile-command data"),
             }
         elseif severity then
             -- An environment finding (units = nil, §8) reaches every compile.
@@ -639,11 +618,6 @@ function M.cache_compat_provider(workspace)
             for _, f in ipairs(rec.findings or {}) do
                 if f.units == nil then every = true else units = units + f.units end
             end
-            local flags = {}
-            for _, f in ipairs(rec.findings or {}) do flags[f.flag] = true end
-            local flag_list = {}
-            for f in pairs(flags) do flag_list[#flag_list + 1] = f end
-            table.sort(flag_list)
             items[#items + 1] = {
                 kind = "suggestion",
                 title = every
@@ -652,16 +626,11 @@ function M.cache_compat_provider(workspace)
                     or string.format("%s %s %d compile%s in %s", tostring(rec.tool),
                         severity == "error" and "will fail" or "cannot cache",
                         units, units == 1 and "" or "s", label),
-                detail = "These compiles use " .. table.concat(flag_list, ", ")
-                    .. " (debug info in a shared .pdb), which " .. tostring(rec.tool)
-                    .. (severity == "error" and " fails" or " cannot cache") .. ":\n  "
-                    .. table.concat(cc.compat_group_lines(rec), "\n  "),
-                remedy = "Switch those targets to embedded debug info (/Z7 — e.g. set the "
-                    .. "MSVC_DEBUG_INFORMATION_FORMAT target property to Embedded, or replace "
-                    .. "/Zi in their compile options; for an `environment` group, remove it "
-                    .. "from that variable of the configuration's `env`), or turn caching off "
-                    .. "for the configuration: `lw config set " .. pkey .. " " .. cname
-                    .. " variables.cache off`.",
+                -- The findings themselves (where: one line per group, with
+                -- the flag); the how-to-fix explanation is `lw help cache`.
+                detail = table.concat(cc.compat_group_lines(rec), "\n  "),
+                remedy = "switch them to /Z7, or `lw config set " .. pkey .. " " .. cname
+                    .. " variables.cache off` — lw help cache",
             }
         end
     end

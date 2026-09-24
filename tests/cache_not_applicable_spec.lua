@@ -193,14 +193,15 @@ describe("status and health for a not-applicable configuration", function()
         assert.equals("Cache: off", ws._active_profile:compiler_cache_status().text)
     end)
 
-    it("health reports an info item with the module's hint, not 'using sccache'", function()
+    it("health reports a terse info item pointing at `lw help cache`, not 'using sccache'", function()
         local ws = make_ws(EXPLICIT, VS_TOOL)
         set_present({ sccache = true })
         local out = suggestions.compiler_cache_provider(ws)
         assert.equals(1, #out)
         assert.equals("info", out[1].kind)
-        assert.equals("Compiler cache not applied (Visual Studio 17 2022 generator)", out[1].title)
-        assert.matches("Ninja or Makefile generator", out[1].detail)
+        assert.equals("Compiler cache not applied (Visual Studio 17 2022 generator) — lw help cache",
+            out[1].title)
+        assert.is_nil(out[1].detail)
         assert.equals(0, suggestions.count_actionable(ws))
     end)
 

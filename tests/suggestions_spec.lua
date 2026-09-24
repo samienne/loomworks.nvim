@@ -78,19 +78,19 @@ describe("compiler-cache suggestion provider", function()
         set_present({})
         local out = suggestions.compiler_cache_provider(ws)
         assert.equals(1, #out)
-        assert.matches("compiler cache", out[1].title)
-        assert.is_string(out[1].detail)
-        assert.is_string(out[1].remedy)
+        assert.equals("No compiler cache found", out[1].title)
+        assert.is_nil(out[1].detail) -- terse: the explanation is `lw help cache`
+        assert.matches("lw help cache", out[1].remedy, 1, true)
     end)
 
-    it("reports an INFO 'using <tool>' item when a cache IS present", function()
+    it("no profiles: a cache on PATH is 'available' (INFO), never 'using'", function()
         local ws = make_ws({ App = { cmake = {} } })
         set_present({ ccache = true })
         local out = suggestions.compiler_cache_provider(ws)
         assert.equals(1, #out)
         assert.equals("info", out[1].kind)
-        assert.matches("using ccache", out[1].title)
-        assert.is_string(out[1].detail)
+        assert.equals("ccache available (lw help cache)", out[1].title)
+        assert.is_nil(out[1].title:find("using", 1, true))
         assert.is_nil(out[1].remedy) -- informational, no action to take
     end)
 
@@ -134,22 +134,27 @@ describe("compiler-cache suggestion provider", function()
     end)
 
     -- MSVC-style active profile under `auto` (spec §1.3.2 / §16.31).
+    local GCC_TOOL_P = { compiler_id = "gcc-12", generator = "Ninja", compiler_path = "/usr/bin/g++" }
     local MSVC_TOOL = {
         compiler_id = "msvc-19.40", generator = "Ninja",
         compiler_path = "C:/VS/VC/bin/cl.exe", vcvarsall = "C:/VS/vcvarsall.bat",
     }
-    local function make_ws_with_profile(cfg_extra, tool_data)
+    --- `profiles` (optional): { [key] = tool_data } — several profiles on the
+    --- same `debug` set; default one profile `debug` on `tool_data`.
+    local function make_ws_with_profile(cfg_extra, tool_data, no_active, profiles)
+        local prof = {}
+        for key, td in pairs(profiles or { debug = tool_data }) do
+            prof[key] = {
+                configuration_set = "debug",
+                tools = { cmake = { key = "t-" .. key, data = td } },
+            }
+        end
         local files = {
             ["loomworks.json"] = h.make_config_json({
                 projects = { App = { cmake = cfg_extra or {} } },
                 configuration_sets = { debug = { App = "Debug" } },
             }),
-            ["loomworks.user.json"] = h.make_user_json({
-                profiles = { debug = {
-                    configuration_set = "debug",
-                    tools = { cmake = { key = "ninja-msvc", data = tool_data } },
-                } },
-            }),
+            ["loomworks.user.json"] = h.make_user_json({ profiles = prof }),
         }
         local deps = h.make_test_deps(files, {
             modules = { get = modules_get },
@@ -157,26 +162,27 @@ describe("compiler-cache suggestion provider", function()
         })
         local core = Core.new(deps)
         core:setup({ root = "/root" })
-        core._workspace._tools_by_type = { cmake = { {
-            tool_key = "ninja-msvc", tool_data = tool_data, tool_label = "msvc",
-        } } }
+        local tools = {}
+        for key, td in pairs(profiles or { debug = tool_data }) do
+            tools[#tools + 1] = { tool_key = "t-" .. key, tool_data = td, tool_label = key }
+        end
+        core._workspace._tools_by_type = { cmake = tools }
         core:remerge()
         local ws = core:get_workspace()
-        ws._active_profile = ws._profiles[1]
+        ws._active_profile = (not no_active) and ws._profiles[1] or nil
+        ws._active_profile_key = ws._active_profile and ws._active_profile.key or nil
         return ws
     end
 
-    it("MSVC under auto with a cache present: info 'available — not enabled automatically' with the opt-in command", function()
+    it("MSVC under auto with a cache present: one-line info 'available — not enabled for MSVC-style'", function()
         local ws = make_ws_with_profile(nil, MSVC_TOOL)
         set_present({ sccache = true })
         local out = suggestions.compiler_cache_provider(ws)
         assert.equals(1, #out)
         assert.equals("info", out[1].kind)
-        assert.matches("sccache available — not enabled automatically for MSVC%-style compilers",
-            out[1].title)
+        assert.equals("sccache available — not enabled for MSVC-style (lw help cache)", out[1].title)
         assert.is_nil(out[1].remedy)
-        assert.matches("lw config set App Debug variables.cache sccache", out[1].detail, 1, true)
-        assert.matches("overrides.clang.cache", out[1].detail, 1, true)
+        assert.is_nil(out[1].detail)
         -- informational → not counted
         assert.equals(0, suggestions.count_actionable(ws))
     end)
@@ -197,8 +203,54 @@ describe("compiler-cache suggestion provider", function()
         local out = suggestions.compiler_cache_provider(ws)
         assert.equals(1, #out)
         assert.equals("suggestion", out[1].kind)
-        assert.matches("enable it explicitly", out[1].remedy, 1, true)
-        assert.matches("variables.cache", out[1].remedy, 1, true)
+        assert.matches("then opt in", out[1].remedy, 1, true)
+        assert.matches("lw help cache", out[1].remedy, 1, true)
+    end)
+
+    -- Tester case: NO active profile while every profile is MSVC-style under
+    -- auto (would not use sccache) — health used to claim "using sccache".
+    it("no active profile, all profiles MSVC-style under auto: 'available — not enabled', never 'using'", function()
+        local ws = make_ws_with_profile(nil, nil, true,
+            { debug = MSVC_TOOL, release = MSVC_TOOL })
+        set_present({ sccache = true })
+        assert.is_nil(ws._active_profile)
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("info", out[1].kind)
+        assert.equals("sccache available — not enabled for MSVC-style (lw help cache)", out[1].title)
+        assert.is_nil(out[1].title:find("using", 1, true))
+    end)
+
+    it("no active profile, one gcc profile would use ccache: 'using' names that profile", function()
+        local ws = make_ws_with_profile(nil, nil, true,
+            { gccprof = GCC_TOOL_P, msvcprof = MSVC_TOOL })
+        set_present({ ccache = true })
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("Compiler cache: using ccache (debug:t-gccprof)", out[1].title)
+    end)
+
+    it("no active profile, no cache on PATH: the install nag (opt-in note for MSVC-style)", function()
+        local ws = make_ws_with_profile(nil, nil, true, { debug = MSVC_TOOL })
+        set_present({})
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("suggestion", out[1].kind)
+        assert.matches("then opt in", out[1].remedy, 1, true)
+    end)
+
+    it("no active profile, every profile resolves off: silent", function()
+        local ws = make_ws_with_profile(nil, nil, true, { a = GCC_TOOL_P, b = GCC_TOOL_P })
+        for _, p in ipairs(ws._profiles) do p._profile_variables = { App = { cache = "off" } } end
+        set_present({ ccache = true })
+        assert.same({}, suggestions.compiler_cache_provider(ws))
+    end)
+
+    it("the local-tier key changes with a NON-active profile's `cache` fill", function()
+        local ws = make_ws_with_profile(nil, nil, true, { a = GCC_TOOL_P })
+        local before = suggestions._local_key(ws)
+        ws._profiles[1]._profile_variables = { App = { cache = "sccache" } }
+        assert.are_not.equal(before, suggestions._local_key(ws))
     end)
 
     -- Health must agree with the active profile's Cache row: an explicit policy

@@ -443,7 +443,8 @@ references: its **configuration set** and that set's project→configuration
 mappings, and for each project the set maps its configuration, resolved
 toolchain and last known build state; the profile's **toolchains**; its
 **resolved compiler cache** (the launcher in effect, or that caching is off /
-unavailable / not enabled automatically for an MSVC-style compiler, §1.3.2); and its
+unavailable / not enabled automatically for an MSVC-style compiler, §1.3.2 —
+the latter pointing at the compiler-cache help topic, §16.31); and its
 **launchable targets** with the default marked, incomplete when a project is not
 yet configured, exactly as the target listing above. Its **diagnostics** are
 scoped to the profile — those concerning the profile itself, its configuration
@@ -484,13 +485,16 @@ exit status.
 The overview and the single-profile view report the profile's **compiler cache**
 alongside its toolchain: the resolved launcher, or that caching is off /
 unavailable / not enabled automatically (`auto` on an MSVC-style compiler,
-§1.3.2), mirroring the editor's `Cache:` row (`spec/ui.md`). Cache **usage
+§1.3.2 — rendered `auto (off for MSVC-style)` with a pointer to the
+compiler-cache help topic, §16.31), mirroring the editor's `Cache:` row
+(`spec/ui.md`). Cache **usage
 statistics** (hit rate, size) are **off by default** — reading them spawns the
 cache tool, a cost the read-only overview must not pay implicitly — and are shown
 only under an explicit `--cache-stats` flag, which runs the tool's own stats
 query for the profile's resolved launcher and folds the result into the report.
 When no launcher is resolved, `--cache-stats` reports that there is nothing to
-query rather than erroring.
+query rather than erroring; with **no active profile** (or an active profile
+without a C/C++ project) it prints a one-line reason instead of nothing.
 
 The overview also renders the **suggestions** count line (`spec/ui.md` §1.1) when
 the suggestion framework has findings — a one-line advisory pointing at
@@ -1001,62 +1005,61 @@ renders informational items distinctly (as positive status, not a warning).
 
 **Provider #1 — compiler cache.** When the workspace has one or more C/C++
 projects (a project whose module reports the caching-relevant language), the
-provider reports the cache state affirmatively or actionably. When there is an
-active profile with a C/C++ configuration, the item reflects **that profile's
-resolved cache status** — the same resolution its `Cache` row shows (§16.18) —
-so the health report never contradicts the status overview; only without such a
-profile does it fall back to whichever launcher is on the path:
+provider gives a **one-line verdict** — a title and, for an actionable item, a
+short remedy; the explanations (why `auto` is off for MSVC-style compilers, how
+to opt in, the debug-information adjustment and the post-configure scan, tool
+configuration through the environment, the not-applied cases, per-platform
+install commands, reconfigure behavior) live in a **help topic** the items point
+at (`lw help cache`, also reachable as `lw help sccache` / `lw help ccache`).
+Health must **never claim a cache is in use** when the build would not use it.
 
-- the active profile's launcher **resolved** → an **informational** item
-  ("Compiler cache: using `<tool>`") naming that launcher; with no active C/C++
-  profile, a compiler cache present on the toolchain search path gives the same
-  item naming whichever launcher is present;
-- the active profile's effective policy is `off` → nothing (the user opted out
-  for that configuration, as below);
-- the active profile's effective policy names a launcher explicitly
-  (`cache=<tool>`) that is **not found** → an **actionable** item
-  ("`cache=<tool>` set but `<tool>` not found", matching its `<tool> (not
-  found)` `Cache` row) whose `remedy` is installing that launcher (or changing
-  the policy) — never a "using" item for some other launcher on the path;
-- a compiler cache is present but the active profile's C/C++ configuration uses
-  an **MSVC-style** compiler whose effective policy is `auto`, so it resolved to
-  no launcher (§1.3.2) → an **informational** item, not counted, instead of the
-  "using" item: "`<tool>` available — not enabled automatically for MSVC-style
-  compilers". Being informational it carries no `remedy`; its `detail` names the
-  opt-in and its requirement — enable it with an explicit `cache=<tool>` policy
-  (the module then requests embedded, per-object debug info; see the module
-  specs) — and gives the exact management command for the active profile's
-  configuration, e.g. `lw config set <project> <configuration>
-  variables.cache <tool>` (§16.9 param grammar; `overrides.msvc.cache`, or
-  `overrides.clang.cache` for clang-cl, scopes it to the compiler family);
-- the active profile's C/C++ configuration is one the module **cannot apply** a
-  launcher to (§8 `cache_launcher_applicable` returned `false`, e.g. a
-  build-system generator or configure mode without launcher support) → an
-  **informational** item, not counted, instead of the "using" / "available"
-  items: "Compiler cache not applied (`<reason>`)", whose `detail` carries the
-  module's `hint` (what to change to get caching). It is reported whether or
-  not a launcher is installed, since installing one would not help;
-- **no** compiler cache resolved or present (the active profile's `auto` found
-  none) → an **actionable** suggestion to install one to speed rebuilds. Its
-  `remedy` names the platform-customary launcher — `sccache` on Windows,
-  `ccache` on Linux/macOS. This is only an install recommendation, not the
-  `auto` policy's preference (§1.3.2: ccache first for GCC / Clang on every
-  platform, none for an MSVC-style compiler); either launcher, once installed,
-  is picked up by `auto` for GCC / Clang.
-  When the active profile's compiler is MSVC-style the remedy also states that
-  installing the launcher is not enough on its own: it must then be enabled with
-  an explicit `cache=<tool>` policy, as above;
-- a **cache-compatibility finding** recorded by the post-configure scan (§5.1,
-  §8 `cache_compat_scan`) for a unit of the active profile → an **actionable**
-  item per affected configuration: `title` states that the applied launcher will
-  fail (severity `"error"`) or cannot cache (severity `"warning"`) some compiles,
-  `detail` names the offending option and the affected groups (target or
-  directory) with unit counts, and `remedy` gives both ways out — change those
-  compiles to a cache-compatible option (module specs), or turn caching off for
-  the configuration (`lw config set <project> <configuration> variables.cache
-  off`). A scan that was **skipped** for lack of compile-command data yields an
-  **informational** item saying the check could not run for that configuration
-  and why, so a clean report is never mistaken for a verified one.
+With an **active profile** that has a C/C++ configuration, the item reflects
+**that profile's resolved cache status** — the same resolution its `Cache` row
+shows (§16.18), so the health report never contradicts the status overview:
+
+- its effective policy is `off` → nothing (the user opted out for that
+  configuration, as below);
+- its C/C++ configuration is one the module **cannot apply** a launcher to (§8
+  `cache_launcher_applicable` returned `false`) → an **informational** item,
+  "Compiler cache not applied (`<reason>`) — lw help cache", whether or not a
+  launcher is installed (installing one would not help);
+- its launcher **resolved** → **informational** "Compiler cache: using `<tool>`";
+- its policy names a launcher explicitly (`cache=<tool>`) that is **not found**
+  → **actionable** "`cache=<tool>` set but `<tool>` not found" (remedy: install
+  it — `lw help cache`), never a "using" item for some other launcher;
+- a compiler cache is present but the configuration uses an **MSVC-style**
+  compiler under `auto` (§1.3.2: no launcher) → **informational** "`<tool>`
+  available — not enabled for MSVC-style (lw help cache)";
+- otherwise → **actionable** "No compiler cache found", whose remedy names the
+  platform-customary launcher (`sccache` on Windows, `ccache` on Linux/macOS —
+  an install recommendation only, not the `auto` preference, §1.3.2) and, for an
+  MSVC-style compiler, that it must then be opted into.
+
+With **no active profile**, every profile that has a C/C++ project is evaluated
+through the same resolver (its own `Cache` status):
+
+- every such profile resolves `off` → nothing;
+- some profile resolves a launcher → **informational** "Compiler cache: using
+  `<tool>` (`<profiles>`)", naming the profiles that would use it;
+- otherwise, a profile's explicit `cache=<tool>` is not found → the
+  **actionable** not-found item, naming the profile;
+- otherwise, a launcher is present on the toolchain path → **informational**
+  "`<tool>` available — not enabled (lw help cache)" (with "for MSVC-style" when
+  a profile is MSVC-style under `auto`); with no profiles at all, "`<tool>`
+  available (lw help cache)";
+- otherwise → the **actionable** install item as above.
+
+A **cache-compatibility finding** recorded by the post-configure scan (§5.1, §8
+`cache_compat_scan`) for a unit of the active profile gives an **actionable**
+item per affected configuration: `title` states that the applied launcher will
+fail (severity `"error"`) or cannot cache (severity `"warning"`) some compiles,
+`detail` lists the affected groups (target or directory) with the offending
+option and unit counts, and `remedy` is one line naming both ways out (switch
+those compiles to a cache-compatible option — module specs — or `lw config set
+<project> <configuration> variables.cache off`) and the help topic. A scan that
+was **skipped** for lack of compile-command data yields an **informational**
+item saying the check was skipped for that configuration (detail: why), so a
+clean report is never mistaken for a verified one.
 
 The provider is silent (neither affirms nor nags) when the workspace has no C/C++
 project, or when every C/C++ project has pinned `cache` to `off`, since the user
