@@ -335,9 +335,16 @@ end
 --- Acquire/activate the current release. opts: { url?, force?, channel? }.
 --- The channel (§16.29) selects WHICH release an un-pinned, un-overridden fetch
 --- targets; it never weakens verification. Returns
---- { version, updated, dir, channel_overridden } or nil, err. `channel_overridden`
---- is the requested channel name when a release-url override superseded a
---- non-default channel (nil otherwise) — for the caller to surface as a warning.
+--- { version, updated, dir, channel_overridden } or nil, err[, info].
+--- `channel_overridden` is the requested channel name when a release-url
+--- override superseded a non-default channel (nil otherwise) — for the caller
+--- to surface as a warning. `info` is set only when the (verified) release
+--- needs a newer host than this one — { version, host_incompatible = true } —
+--- so the caller can update the host binary first (§16.32).
+--- @param opts? { url?: string, force?: boolean, channel?: string }
+--- @return { version: string, updated: boolean, dir: string, channel_overridden?: string }|nil result
+--- @return string|nil err
+--- @return { version: string, host_incompatible: boolean }|nil info
 function M.self_update(opts)
   opts = opts or {}
   local channel, cerr = M.resolve_channel(opts)
@@ -370,7 +377,12 @@ function M.self_update(opts)
   local manifest, e3 = verify.load_manifest(mbytes, sig)
   if not manifest then return nil, e3 end
   local okh, eh = verify.host_compatible(manifest)
-  if not okh then return nil, eh end
+  if not okh then
+    -- Don't strand the host (§16.32): the manifest is already signature-
+    -- verified, so hand its release back as a host-update target — the caller
+    -- replaces the lw binary (when allowed) and asks for a re-run.
+    return nil, eh, { version = manifest.version, host_incompatible = true }
+  end
 
   local bundle_name = manifest.bundle
   if type(bundle_name) ~= "string" or not (manifest.artifacts or {})[bundle_name] then

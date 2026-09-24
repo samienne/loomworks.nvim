@@ -170,8 +170,31 @@ do
   put("manifest.json", (good:gsub("0%.0%.0%-test", "6.6.6-evil")))
   put("manifest.json.sig", readfile(FX .. "manifest.json.sig"))
   uv.os_setenv("LOOMWORKS_RELEASE_URL", badmirror)
-  local bad, berr = update.self_update({})
+  local bad, berr, binfo = update.self_update({})
   ok(bad == nil and type(berr) == "string", "tampered mirror rejected (signature)")
+  eq(binfo, nil, "an unverified manifest yields no host-update target")
+
+  -- A release that raises min_host_version must not strand the host (§16.32):
+  -- the (signature-verified) manifest still names the release, so self_update
+  -- returns it as a host-update target alongside the error.
+  do
+    local ossl = require("openssl")
+    local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+    local newer = sandbox .. "/newhostmirror"
+    paths.mkdirp(newer)
+    local mj = good:gsub('"min_host_version": %d+',
+      '"min_host_version": ' .. (verify.HOST_VERSION + 1)):gsub("0%.0%.0%-test", "0.0.1-test")
+    local function putn(name, bytes) local f = io.open(newer .. "/" .. name, "wb"); f:write(bytes); f:close() end
+    putn("manifest.json", mj)
+    putn("manifest.json.sig", priv:sign(mj, "sha256"))
+    uv.os_setenv("LOOMWORKS_RELEASE_URL", newer)
+    local r3, e3, i3 = update.self_update({})
+    ok(r3 == nil and type(e3) == "string" and e3:find("needs host version", 1, true) ~= nil,
+      "incompatible release refused  (got " .. tostring(e3) .. ")")
+    ok(type(i3) == "table" and i3.host_incompatible == true and i3.version == "0.0.1-test",
+      "incompatible release returned as a host-update target")
+    ok(uv.fs_stat(data .. "/lua-0.0.1-test") == nil, "incompatible bundle not installed")
+  end
 
   local info = update.version_info(data .. "/lua-0.0.0-test", "release")
   eq(info.bundle, "0.0.0-test", "version_info parses bundle version")

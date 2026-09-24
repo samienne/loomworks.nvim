@@ -819,6 +819,12 @@ downgraded.
 for a binary built from a checkout).
 
 - `lw self-update --no-host` updates only the bundle.
+- If a release needs a newer `lw` binary than yours (its bundle can't run on
+  your binary), `lw self-update` updates the binary first, then prints
+  ``lw binary updated to <ver>; re-run `lw self-update` to update the bundle``
+  and exits non-zero — run it once more. Where the binary can't replace itself
+  (`--no-host`, pinned, unwritable), it reports the error and how to install
+  the required binary by hand.
 - If `lw` lives somewhere you can't write (a system or package-managed
   location), self-update updates the bundle, warns, and prints which release
   asset to download and verify by hand (as in [Installing `lw`](#installing-lw)).

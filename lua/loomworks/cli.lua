@@ -7079,7 +7079,10 @@ in place. If the binary's location is not writable (a system or
 package-managed install) it warns with the manual steps and still succeeds.
 A pinned (lw.pin) or development host never replaces itself.
 
-  --force              reinstall even if that version is already present
+If the release needs a newer lw binary than this one, the binary is updated
+first and self-update exits non-zero asking you to re-run it for the bundle.
+
+  --force             reinstall even if that version is already present
   --channel <name>     `stable` (default) or `unstable` for this run only
   --no-host            update only the bundle; leave the lw binary as it is
 

@@ -1094,7 +1094,12 @@ hosts job passes the tag version and fails the leg if `lw version` does not
 report it). `lw version` prints `host: <release> (v<HOST_VERSION>)`, or
 `host: dev build (v1)`. After the bundle step, `main.lua` calls
 `boot/host_update.lua` `update_host{ target_version = <bundle's release> }`
-unless `--no-host`:
+unless `--no-host`. When the release's `min_host_version` exceeds this host,
+`update.self_update` returns `nil, err, { version, host_incompatible = true }`
+(the manifest is already signature-verified); `main.lua` then runs
+`update_host` for that version *instead*, and on `replaced` prints "lw binary
+updated to <ver>; re-run `lw self-update` to update the bundle" and exits 1;
+otherwise it prints the original error plus manual steps and exits 1.
 
 - `decide` (pure) skips pinned context (`LOOMWORKS_PINNED`), an exe under a
   `.nvim/cache/` launcher cache, bare `luvi`, a dev source, and a dev build

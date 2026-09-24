@@ -166,8 +166,44 @@ elseif command == "self-update" then
     elseif type(v) == "string" and v:sub(1, 10) == "--channel=" then channel = v:sub(11)
     elseif channel == "" then channel = v end  -- `--channel <value>` form
   end
+  -- Host-step options (spec §16.32): who may self-replace. A dev build
+  -- (`make install` / `luvi lua --`) fuses system Lua; a release host carries
+  -- only the bootstrap.
+  local function host_opts(target)
+    return {
+      target_version = target,
+      no_host = no_host,
+      pinned = pinned_sentinel ~= nil,
+      dev = source_kind == "dev",
+      fused_system_lua = bundle.readfile("loomworks/cli.lua") ~= nil,
+    }
+  end
   io.write("lw: checking for updates…\n")
-  local res, err = require("boot.update").self_update({ force = force, channel = channel ~= "" and channel or nil })
+  local res, err, info = require("boot.update").self_update({ force = force, channel = channel ~= "" and channel or nil })
+  if not res and info and info.host_incompatible then
+    -- The (verified) release needs a newer host than this one. Replace the
+    -- host first — otherwise the first release raising min_host_version would
+    -- strand every installed host — then ask for a re-run to fetch the bundle
+    -- with the new host. Non-zero exit either way: the bundle is NOT updated.
+    local h = require("boot.host_update").update_host(host_opts(info.version))
+    if h.status == "replaced" then
+      io.write("lw: " .. tostring(err) .. "\n")
+      io.write("lw: lw binary updated to " .. info.version ..
+        "; re-run `lw self-update` to update the bundle\n")
+      exit(1)
+    end
+    io.stderr:write("lw: self-update failed: " .. tostring(err) .. "\n")
+    io.stderr:write("    The lw binary was not updated: " .. tostring(h.message) .. "\n")
+    if h.manual then
+      io.stderr:write("    To update it manually, " .. h.manual .. ".\n")
+    else
+      io.stderr:write("    Install the lw binary of release " .. tostring(info.version) ..
+        " or later as in the README's \"Installing lw\"" ..
+        (no_host and " (or re-run without --no-host)" or "") .. ", then re-run " ..
+        "`lw self-update`.\n")
+    end
+    exit(1)
+  end
   if not res then
     io.stderr:write("lw: self-update failed: " .. tostring(err) .. "\n")
     -- A 404 here usually means this build points at a release feed that has no
@@ -194,15 +230,7 @@ elseif command == "self-update" then
   -- bundle, so a bundle-only update would leave them stranded. Same release as
   -- the bundle just resolved; verified against the signed SHA256SUMS before any
   -- swap. Refuses for pinned / dev / source-run hosts (a note, not a failure).
-  local h = require("boot.host_update").update_host({
-    target_version = res.version,
-    no_host = no_host,
-    pinned = pinned_sentinel ~= nil,
-    dev = source_kind == "dev",
-    -- A dev build (`make install` / `luvi lua --`) fuses system Lua; a release
-    -- host carries only the bootstrap.
-    fused_system_lua = bundle.readfile("loomworks/cli.lua") ~= nil,
-  })
+  local h = require("boot.host_update").update_host(host_opts(res.version))
   if h.status == "replaced" then
     io.write("lw: updated host binary " .. (h.from or "(unknown version)") .. " -> " ..
       h.to .. " (" .. h.exe .. ")\n")

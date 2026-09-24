@@ -1224,13 +1224,24 @@ Because host-side behavior (argument handling, source resolution, the
 acquisition procedure itself) lives in the host and not the bundle (§16.11),
 a bundle update alone never delivers a host fix. **Self-update therefore also
 replaces the host binary**, after the bundle acquisition (§16.13) succeeds or
-finds the bundle already current, unless the caller passes an explicit
-*no-host* flag. The replacement follows these rules:
+finds the bundle already current (or finds that the release needs a newer
+host, below), unless the caller passes an explicit *no-host* flag. The
+replacement follows these rules:
 
 - **Same release, same origin.** The host is taken from exactly the release
   the bundle acquisition resolved — through the same channel (§16.29) and the
   same release-source override — so host and bundle never come from different
   releases or origins.
+- **A release that needs a newer host.** When the target release's bundle
+  requires a newer host capability than the running host provides (§16.14),
+  the bundle is not installed — but the release's signature-verified identity
+  is still used as the host-replacement target, so raising the minimum never
+  strands an installed host. If the host may replace itself (the rules below),
+  it is replaced first and self-update then reports that the binary was
+  updated and that self-update must be re-run to update the bundle, exiting
+  with a non-zero status since the bundle is not yet updated. If the host step
+  is skipped or fails, the original incompatibility error is reported together
+  with how to install the required host manually, with a non-zero status.
 - **Only when newer.** The host is replaced only when the target release's
   version is strictly newer than the running host's embedded release version,
   under the same pre-release-aware ordering the channels use (§16.29): a

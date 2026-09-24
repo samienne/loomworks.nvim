@@ -51,6 +51,7 @@ fuse() { bash "$repo/scripts/release/fuse_host.sh" "$luvi" "$fx/test_ec_pub.pem"
 fuse "$T/install/$exe_name" || { echo "fuse (old) failed" >&2; exit 1; }
 fuse "$T/mirror/$asset" "$ver" || { echo "fuse (new) failed" >&2; exit 1; }
 cp "$T/install/$exe_name" "$T/old-copy"
+cp "$T/mirror/$asset" "$T/new-copy"
 
 # The mirror: the fixture bundle + signed manifest, and the signed hash list.
 cp "$fx/manifest.json" "$fx/manifest.json.sig" "$fx/loomworks-lua-$ver.zip" "$T/mirror/"
@@ -118,6 +119,33 @@ out="$("$lw" self-update 2>&1)"; code=$?; echo "$out"
 [ $code -ne 0 ] && ok "integrity failure exits non-zero" || bad "tampered asset accepted (exit 0)"
 cmp -s "$lw" "$T/old-copy" && ok "original host untouched" || bad "host changed despite a bad hash"
 [ ! -e "$lw.new" ] && ok "no staged leftover" || bad "staged .new left behind"
+
+# A release that raises min_host_version must not strand the host: the old host
+# replaces itself first, then asks for a re-run (non-zero, bundle not updated).
+echo "=== a release needing a newer host updates the binary first ==="
+nv="0.0.1-test"
+mkdir -p "$T/mirror2"
+sed -e 's/"min_host_version": [0-9]*/"min_host_version": 999/' -e "s/0\.0\.0-test/$nv/g" \
+  "$fx/manifest.json" > "$T/mirror2/manifest.json"
+openssl dgst -sha256 -sign "$fx/test_ec_priv.pem" \
+  -out "$T/mirror2/manifest.json.sig" "$T/mirror2/manifest.json"
+cp "$T/new-copy" "$T/mirror2/$asset"
+( cd "$T/mirror2" && {
+    printf '%s  %s\n' "$(sha_of "$asset")" "$asset"
+    printf '%s  %s\n' "$(sha_of manifest.json)" "loomworks-lua-$nv.zip"
+  } > SHA256SUMS )
+openssl dgst -sha256 -sign "$fx/test_ec_priv.pem" -out "$T/mirror2/SHA256SUMS.sig" "$T/mirror2/SHA256SUMS"
+export LOOMWORKS_RELEASE_URL="$T/mirror2"
+[ "$os" = windows ] && export LOOMWORKS_RELEASE_URL="$(cygpath -m "$T/mirror2")"
+cp "$T/old-copy" "$lw"
+out="$("$lw" self-update --no-host 2>&1)"; code=$?; echo "$out"
+[ $code -ne 0 ] && ok "--no-host: incompatible release exits non-zero" || bad "--no-host: exit 0"
+case "$out" in *"needs host version"*"Installing lw"*) ok "--no-host: original error + manual steps" ;; *) bad "--no-host: missing error/manual steps" ;; esac
+cmp -s "$lw" "$T/old-copy" && ok "--no-host: host binary unchanged" || bad "--no-host changed the host"
+out="$("$lw" self-update 2>&1)"; code=$?; echo "$out"
+[ $code -ne 0 ] && ok "host updated for an incompatible release still exits non-zero" || bad "exit 0 without a bundle update"
+case "$out" in *"lw binary updated to $nv; re-run"*) ok "asks for a re-run to update the bundle" ;; *) bad "no re-run prompt" ;; esac
+cmp -s "$lw" "$T/new-copy" && ok "installed binary is the release's verified host" || bad "host not replaced"
 
 echo
 echo "host self-update e2e: $PASS passed, $FAIL failed"
