@@ -522,7 +522,7 @@ ui.md) and a one-sentence `hint` (what the user can change to get caching,
 shown in health, §16.31). Absent hook = always applicable. Additive and
 optional: no `api_versions.module` bump (§8.0).
 
-**`cache_compat_scan(ctx) → { scanned, reason?, findings[] }`** *(optional)*
+**`cache_compat_scan(ctx) → { scanned, reason?, findings[], totals?, advice? }`** *(optional)*
 
 Post-configure check that the configuration's compile commands are compatible
 with the compiler-cache launcher that configure **applied**. Core calls it after
@@ -547,11 +547,32 @@ otherwise stream.
   through the environment); `units` is the count (omitted for an environment
   finding, which applies to every compile); `sample` a few representative
   source paths (for an environment finding, the variable names).
+- `totals` *(optional)* — `{ units, targets }`, the number of compiled units
+  and targets in the scanned build. With it, core reports a **pervasive**
+  finding — unit findings in more than one group covering at least 90% of the
+  compiled units — as ONE line (`every target (N units) compiles with /Zi — …`,
+  or `nearly every target (U of N units, T of M targets) …`) instead of one line
+  per group: the flag then comes from a directory- or project-wide setting, and
+  per-target advice would be wrong. Sample paths are shortened to their last two
+  components.
+- `advice` *(optional)* — the module's wording, all strings:
+  `fix_targets` (how to fix per-target findings), `cause_pervasive` (the likely
+  source of a pervasive finding, appended to its line) and `fix_pervasive` (how
+  to fix it). Absent, core uses generic wording.
 
 Core records the result with the unit's configure record (replaced on every
-configure, dropped when a configure applies no launcher), prints it at the end
-of the configure (a warning, or an error-severity message for `"error"`
-findings), and surfaces it through health (§16.31). A finding is **advisory**:
+configure, dropped when a configure applies no launcher), adding the effective
+`cache` policy's **provenance** — which layer enabled the cache: the profile
+fill (with the profile), a compiler-family override or a configuration variable
+(with the configuration that set it) — resolved for the profile the configure
+ran for (§5.1 *Resolution context*). It prints the result at the end of the
+configure (a warning, or an error-severity message for `"error"` findings),
+naming the fix (module `advice`) and the command that turns caching off
+**through the mechanism in effect** (`lw profile set <profile> <project> cache
+off`, `lw config set <project> <configuration> overrides.<family>.cache off`, or
+`… variables.cache off`), and surfaces it through health (§16.31). When a build
+of that unit then **fails** while an `"error"` finding is recorded, the
+headless runner closes with one line pointing back at the finding (§16.4). A finding is **advisory**:
 it never gates a build, never fails `--check`, and never changes the effective
 `cache` policy — the user's explicit choice stands, and the build itself reports
 any compile the launcher fails. Which options are incompatible with which

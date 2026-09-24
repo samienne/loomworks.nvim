@@ -120,19 +120,61 @@ end
 --- @param lookup? fun(name: string): string|nil executable resolver
 --- @return { tool: string, path: string }|nil launcher
 --- @return "auto"|"off"|string|nil policy the normalized effective policy (nil without a project)
+--- @return table|nil source which layer supplied the policy (`variables.resolve_cache_policy`)
 function M.resolve_for(project, configuration, tool_data, profile, lookup)
-    if not project then return nil, nil end
+    if not project then return nil, nil, nil end
     local cpp = require("loomworks.cpp_compilers")
     -- Compiler-family for OVERRIDES resolution folds clang-cl → clang (spec: a
     -- clang-cl build honours `overrides.clang`).
     local override_family = cpp.family_from_tool_data(tool_data)
     local variables = require("loomworks.variables")
-    local policy = variables.resolve_cache_policy(
+    local policy, source = variables.resolve_cache_policy(
         project, configuration, override_family, profile)
     -- Compiler-family for the launcher PREFERENCE treats clang-cl as MSVC-style
     -- (auto → no launcher, §1.3.2) — distinct from the override family above.
     local pref_family = cpp.is_msvc_style(tool_data) and "msvc" or override_family
-    return M.resolve(policy, pref_family, lookup), M.normalize_policy(policy)
+    return M.resolve(policy, pref_family, lookup), M.normalize_policy(policy), source
+end
+
+--- A persistable (string-only) form of a policy provenance from `resolve_for`
+--- / `variables.resolve_cache_policy`, stored with a compat record so its
+--- "turn caching off" hint names the mechanism that enabled the cache.
+--- @param source table|nil
+--- @return { layer: string, configuration?: string, family?: string, profile?: string }|nil
+function M.policy_source_record(source)
+    if type(source) ~= "table" or type(source.layer) ~= "string" then return nil end
+    return {
+        layer = source.layer,
+        configuration = source.configuration and source.configuration.name or nil,
+        family = source.family,
+        profile = source.profile and source.profile.key or nil,
+    }
+end
+
+--- The command that turns caching off through the mechanism that enabled it
+--- (a compat record's `policy_source`): the profile fill → `lw profile set
+--- <profile> <project> cache off`; a compiler-family override → `lw config set
+--- <project> <cfg> overrides.<family>.cache off`; a configuration variable →
+--- `lw config set <project> <cfg> variables.cache off` (on the chain level that
+--- set it). Without a recorded source (an older record, or the default), the
+--- configuration's own `variables.cache`.
+--- @param rec table|nil `module_info.cache_compat`
+--- @param project_key string
+--- @param config_name string
+--- @return string
+function M.cache_off_command(rec, project_key, config_name)
+    local src = type(rec) == "table" and rec.policy_source or nil
+    local layer = type(src) == "table" and src.layer or nil
+    if layer == "profile" and src.profile then
+        return string.format("lw profile set %s %s cache off", src.profile, project_key)
+    elseif layer == "override" and src.family then
+        return string.format("lw config set %s %s overrides.%s.cache off", project_key,
+            src.configuration or config_name, src.family)
+    elseif layer == "configuration" then
+        return string.format("lw config set %s %s variables.cache off", project_key,
+            src.configuration or config_name)
+    end
+    return string.format("lw config set %s %s variables.cache off", project_key, config_name)
 end
 
 --- The launcher name (`sccache`, `ccache`, …) for a recorded launcher path —
@@ -148,9 +190,11 @@ end
 --- Run a module's optional post-configure compatibility scan (core §5.1, §8
 --- `cache_compat_scan`) for a configure that applied `launcher_path`. Returns
 --- the record core stores in `module_info.cache_compat` —
---- `{ tool, scanned, reason?, findings[] }` — or nil when the module has no
---- hook or no launcher was applied. A throwing hook is recorded as skipped
---- (advisory: never break the configure).
+--- `{ tool, scanned, reason?, findings[], totals?, advice? }` (`totals` =
+--- `{ units, targets }` compiled in the scanned build, `advice` = the module's
+--- wording, both optional) — or nil when the module has no hook or no launcher
+--- was applied. A throwing hook is recorded as skipped (advisory: never break
+--- the configure). Core adds `policy_source` (which layer enabled the cache).
 --- @param impl table|nil module implementation
 --- @param ctx table `{ build_dir, configuration, tool_data, config_name, variant, configuration_env }` (`configuration_env`: the resolved configuration environment the configure ran with, core §1.3.3 — e.g. MSVC's `CL` / `_CL_`, which compile commands do not show)
 --- @param launcher_path string|nil recorded launcher ("none"/nil → no scan)
@@ -166,11 +210,21 @@ function M.run_compat_scan(impl, ctx, launcher_path)
         return { tool = tool, scanned = false, findings = {},
             reason = "the compatibility check failed: " .. tostring(res) }
     end
+    local totals = type(res.totals) == "table" and res.totals or nil
+    local advice = type(res.advice) == "table" and res.advice or nil
     return {
         tool = tool,
         scanned = res.scanned ~= false,
         reason = res.reason,
         findings = type(res.findings) == "table" and res.findings or {},
+        totals = totals and {
+            units = tonumber(totals.units), targets = tonumber(totals.targets),
+        } or nil,
+        advice = advice and {
+            fix_targets = type(advice.fix_targets) == "string" and advice.fix_targets or nil,
+            cause_pervasive = type(advice.cause_pervasive) == "string" and advice.cause_pervasive or nil,
+            fix_pervasive = type(advice.fix_pervasive) == "string" and advice.fix_pervasive or nil,
+        } or nil,
     }
 end
 
@@ -187,32 +241,132 @@ function M.compat_severity(rec)
     return worst
 end
 
+--- Shorten a sample source path to its last two components (`…/dir/a.c`), so
+--- a finding line stays readable for deep dependency trees.
+--- @param p any
+--- @return string
+local function short_path(p)
+    local s = tostring(p):gsub("\\", "/")
+    local parts = {}
+    for seg in s:gmatch("[^/]+") do parts[#parts + 1] = seg end
+    if #parts <= 2 then return s end
+    return "…/" .. parts[#parts - 1] .. "/" .. parts[#parts]
+end
+
+--- The unit-level findings of a compat record (those with a unit count — not
+--- an environment finding) and their summed unit count.
+--- @param rec table|nil
+--- @return table[] findings, integer units
+local function unit_findings(rec)
+    local out, units = {}, 0
+    for _, f in ipairs(rec and rec.findings or {}) do
+        if type(f.units) == "number" then
+            out[#out + 1] = f
+            units = units + f.units
+        end
+    end
+    return out, units
+end
+
+--- Share of the scanned build's compiled units a finding must cover to be
+--- reported as PERVASIVE (one collapsed line instead of one per target).
+M.PERVASIVE_SHARE = 0.9
+
+--- Whether a compat record's unit findings cover every (or nearly every —
+--- `PERVASIVE_SHARE`) compiled unit of the scanned build, across more than one
+--- group: the flag then almost certainly comes from a directory- or
+--- project-wide setting, not from individual targets, so listing every target
+--- (hundreds) helps nobody and per-target advice is wrong. Needs the module's
+--- `totals`; false without them.
+--- @param rec table|nil
+--- @return boolean pervasive, integer units, integer total_units
+function M.compat_pervasive(rec)
+    local total = rec and type(rec.totals) == "table" and tonumber(rec.totals.units) or nil
+    local list, units = unit_findings(rec)
+    if not total or total <= 0 or #list < 2 then return false, units, total or 0 end
+    return units >= M.PERVASIVE_SHARE * total, units, total
+end
+
 --- One-line-per-group summary of a compat record's findings, e.g.
---- `target zlib: 12 units (/Zi) — a.c, b.c`, or for an environment finding
---- (no unit count) `environment: every compile (/Zi) — CL`.
+--- `zlib: 12 units (/Zi) — …/zlib/a.c, …/zlib/b.c`, or for an environment
+--- finding (no unit count) `environment: every compile (/Zi) — CL`. A
+--- PERVASIVE record (`compat_pervasive`) collapses its unit findings into ONE
+--- line — `every target (1870 units) compiles with /Zi — <module cause>` (or
+--- `nearly every target (… of … units, … of … targets)`) — keeping any
+--- environment lines. Sample paths are shortened to their last two components.
 --- @param rec table
 --- @return string[]
 function M.compat_group_lines(rec)
     local lines = {}
+    local pervasive, units, total = M.compat_pervasive(rec)
+    if pervasive then
+        local list = unit_findings(rec)
+        local flag = tostring(list[1].flag)
+        local total_targets = type(rec.totals) == "table" and tonumber(rec.totals.targets) or nil
+        local scope
+        if units >= total and (not total_targets or #list >= total_targets) then
+            scope = string.format("every target (%d units)", units)
+        else
+            scope = string.format("nearly every target (%d of %d units%s)", units, total,
+                total_targets and string.format(", %d of %d targets", #list, total_targets) or "")
+        end
+        local cause = rec.advice and rec.advice.cause_pervasive
+            or "likely a directory- or project-wide compile option"
+        lines[#lines + 1] = string.format("%s compiles with %s — %s", scope, flag, cause)
+    end
     for _, f in ipairs(rec and rec.findings or {}) do
         local line
         if f.units == nil then
             -- An environment finding (§8): the flag reaches every compile.
             line = string.format("%s: every compile (%s)", tostring(f.group), tostring(f.flag))
-        else
+        elseif not pervasive then
             line = string.format("%s: %d unit%s (%s)", tostring(f.group), f.units,
                 f.units == 1 and "" or "s", tostring(f.flag))
         end
-        if type(f.sample) == "table" and #f.sample > 0 then
-            line = line .. " — " .. table.concat(f.sample, ", ")
+        if line then
+            if type(f.sample) == "table" and #f.sample > 0 then
+                local sample = {}
+                for i, p in ipairs(f.sample) do sample[i] = f.units == nil and tostring(p) or short_path(p) end
+                line = line .. " — " .. table.concat(sample, ", ")
+            end
+            lines[#lines + 1] = line
         end
-        lines[#lines + 1] = line
     end
     return lines
 end
 
+--- How to fix a compat record's findings (without the cache-off alternative):
+--- the module's `advice` wording for a pervasive / per-target record, else a
+--- generic sentence. An environment finding adds where to remove it.
+--- @param rec table
+--- @return string
+local function compat_fix(rec)
+    local advice = rec.advice or {}
+    local parts = {}
+    local list = unit_findings(rec)
+    if #list > 0 then
+        if M.compat_pervasive(rec) then
+            parts[#parts + 1] = advice.fix_pervasive
+                or "remove that /Zi where it is set (or make it /Z7)"
+        else
+            parts[#parts + 1] = advice.fix_targets
+                or "switch those targets to embedded debug info (/Z7)"
+        end
+    end
+    for _, f in ipairs(rec.findings or {}) do
+        if f.units == nil then
+            local var = type(f.sample) == "table" and f.sample[1] or "CL"
+            parts[#parts + 1] = string.format("remove %s from the configuration's env.%s",
+                tostring(f.flag), tostring(var))
+        end
+    end
+    return table.concat(parts, "; ")
+end
+
 --- The end-of-configure message for a compat record with findings (nil when
---- clean or skipped): what fails / is not cached, where, and both ways out.
+--- clean or skipped): what fails / is not cached, where, and both ways out —
+--- the fix (module advice) and turning caching off through the mechanism that
+--- enabled it (`cache_off_command`).
 --- @param rec table|nil `module_info.cache_compat`
 --- @param project_key string
 --- @param config_name string
@@ -223,14 +377,60 @@ function M.compat_message(rec, project_key, config_name)
     local effect = severity == "error"
         and (rec.tool .. " will FAIL these compiles")
         or (rec.tool .. " cannot cache these compiles")
+    local fix = compat_fix(rec)
     local msg = string.format(
         "%s/%s: %s — they write a shared .pdb debug database:\n  %s\n"
-            .. "Switch those targets to embedded debug info (/Z7, e.g. the "
-            .. "MSVC_DEBUG_INFORMATION_FORMAT target property = Embedded), or turn "
-            .. "caching off: lw config set %s %s variables.cache off",
+            .. "Fix: %s — or turn caching off: %s   (lw help cache)",
         project_key, config_name, effect,
-        table.concat(M.compat_group_lines(rec), "\n  "), project_key, config_name)
+        table.concat(M.compat_group_lines(rec), "\n  "),
+        fix, M.cache_off_command(rec, project_key, config_name))
     return msg, severity
+end
+
+--- The one-line health remedy for a compat record: the short fix plus the
+--- cache-off command for the mechanism in effect, and the help topic.
+--- @param rec table
+--- @param project_key string
+--- @param config_name string
+--- @return string
+function M.compat_remedy(rec, project_key, config_name)
+    local list = unit_findings(rec)
+    local fix
+    if #list == 0 then
+        fix = "remove it from the configuration's env"
+    elseif M.compat_pervasive(rec) then
+        fix = "remove the directory-wide /Zi"
+    else
+        fix = "switch them to /Z7"
+    end
+    return string.format("%s, or `%s` — lw help cache", fix,
+        M.cache_off_command(rec, project_key, config_name))
+end
+
+--- The closing line after a FAILED build of a unit whose post-configure scan
+--- recorded an error-severity finding (the launcher fails those compiles):
+--- points back at the finding instead of leaving the reader to connect a
+--- compiler error to it. nil when the record has no error finding. Advisory
+--- only — the scan never gates the build (§5.1).
+--- @param rec table|nil `module_info.cache_compat`
+--- @return string|nil
+function M.compat_failure_hint(rec)
+    if M.compat_severity(rec) ~= "error" then return nil end
+    local _, units = unit_findings(rec)
+    local env = false
+    for _, f in ipairs(rec.findings or {}) do if f.units == nil then env = true end end
+    local flag = rec.findings[1] and rec.findings[1].flag or "/Zi"
+    local what
+    if units > 0 then
+        what = string.format("%d compile%s use%s %s", units, units == 1 and "" or "s",
+            units == 1 and "s" or "", tostring(flag))
+    elseif env then
+        what = string.format("every compile gets %s from the configuration env", tostring(flag))
+    else
+        what = "some compiles use " .. tostring(flag)
+    end
+    return string.format("build failed — %s, which %s cannot cache (see the scan finding "
+        .. "above; lw health; lw help cache)", what, tostring(rec.tool))
 end
 
 --- Whether a module can apply a compiler-cache launcher to a configuration at

@@ -2809,8 +2809,11 @@ end
 --- Advisory; spawns nothing.
 --- Also reports a /Zi-style token in the configuration environment's `CL` /
 --- `_CL_` (group "environment", §5d) — flags no compile command shows.
+--- Returns the scanned build's `totals` (compiled units / targets), so core can
+--- collapse a finding that covers (nearly) every unit into one line, and the
+--- cmake-specific `advice` wording (§5d).
 --- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, config_name?: string, variant?: string, configuration_env?: table<string, string> }
---- @return { scanned: boolean, reason?: string, findings: table[] }
+--- @return { scanned: boolean, reason?: string, findings: table[], totals?: { units: integer, targets: integer }, advice?: table }
 function M.cache_compat_scan(ctx)
     local cpp = require("loomworks.cpp_compilers")
     if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
@@ -2835,11 +2838,14 @@ function M.cache_compat_scan(ctx)
     local reply_dir = build_dir .. "/.cmake/api/v1/reply"
     local source_root = codemodel.paths and codemodel.paths.source or nil
     local acc = {}
+    local total_units, total_targets = 0, 0
     for _, tref in ipairs(cfg.targets) do
         local detail = tref.jsonFile and read_json_file(reply_dir .. "/" .. tref.jsonFile)
-        if detail and detail.compileGroups then
+        if detail and detail.compileGroups and #detail.compileGroups > 0 then
+            total_targets = total_targets + 1
             local sources = detail.sources or {}
             for _, cg in ipairs(detail.compileGroups) do
+                total_units = total_units + #(cg.sourceIndexes or {})
                 local tokens = {}
                 for _, f in ipairs(cg.compileCommandFragments or {}) do
                     if type(f.fragment) == "string" then
@@ -2862,7 +2868,21 @@ function M.cache_compat_scan(ctx)
     end
     local findings = cpp.pdb_scan_findings(acc, tool)
     vim.list_extend(findings, env_findings)
-    return { scanned = true, findings = findings }
+    return {
+        scanned = true, findings = findings,
+        totals = { units = total_units, targets = total_targets },
+        advice = {
+            fix_targets = "switch those targets to embedded debug info (/Z7) — e.g. "
+                .. "replace /Zi in their compile options, or set their "
+                .. "MSVC_DEBUG_INFORMATION_FORMAT property to Embedded",
+            cause_pervasive = "likely a directory-wide add_compile_options or "
+                .. "CMAKE_<LANG>_FLAGS",
+            fix_pervasive = "lw already requests embedded debug info (/Z7) for every "
+                .. "target (cmake >= 3.25); an explicit /Zi overrides it (cl warns D9025 "
+                .. "\"overriding '/Z7' with '/Zi'\"; sccache then fails with C1041 / C1090) "
+                .. "— remove that /Zi (or make it /Z7) where it is set",
+        },
+    }
 end
 
 --- Iterate every compiled source of the selected configuration's targets,

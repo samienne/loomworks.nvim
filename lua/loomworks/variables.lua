@@ -321,26 +321,43 @@ end
 --- The returned value is the RAW policy (a string like `auto`/`off`/`ccache`,
 --- or a boolean `false` meaning "off"); normalization to a launcher is done by
 --- `loomworks.compiler_cache`.
+---
+--- The second return is the policy's **provenance** — which layer supplied it,
+--- so a message can point at the mechanism actually in effect (e.g. "turn it
+--- off" must name the profile fill when that is what enabled it):
+---   * `{ layer = "override", configuration = <cfg>, family = <family> }` — a
+---     compiler-family `overrides.<family>.cache` on `configuration` (the
+---     chain level that supplied it, possibly a base);
+---   * `{ layer = "configuration", configuration = <cfg> }` — a plain
+---     `variables.cache` on that chain level;
+---   * `{ layer = "profile", profile = <profile> }` — the profile's fill;
+---   * `{ layer = "default" }` — nothing set it (`auto`).
 --- @param project loomworks.Project
 --- @param configuration loomworks.Configuration|nil
 --- @param active_family? "clang"|"gcc"|"msvc"|nil active compiler family
 --- @param profile? loomworks.Profile active profile supplying a machine-local fill
 --- @return string|boolean policy raw policy value (never nil; defaults to "auto")
+--- @return { layer: "override"|"configuration"|"profile"|"default", configuration?: loomworks.Configuration, family?: string, profile?: loomworks.Profile } source
 function M.resolve_cache_policy(project, configuration, active_family, profile)
     -- 1. Configuration inheritance chain + compiler-family override.
     if configuration then
-        local value = M._search_override(configuration, "cache", active_family, {})
-        if value ~= nil then return value end
+        local value, src, is_override = M._search_override(configuration, "cache", active_family, {})
+        if value ~= nil then
+            if is_override then
+                return value, { layer = "override", configuration = src, family = active_family }
+            end
+            return value, { layer = "configuration", configuration = src }
+        end
     end
 
     -- 2. Active-profile fill (machine-local policy).
     if profile and profile.variable_value and project then
         local pv = profile:variable_value(project.key, "cache")
-        if pv ~= nil then return pv end
+        if pv ~= nil then return pv, { layer = "profile", profile = profile } end
     end
 
     -- 3. Built-in terminal default.
-    return "auto"
+    return "auto", { layer = "default" }
 end
 
 return M

@@ -114,6 +114,14 @@ tree whose configure state the user no longer trusts. Its reason reads
 `forced (--reconfigure)` (`first configure` for a never-configured unit). It
 is transient (nothing is recorded that makes a later build reconfigure again).
 
+**Failure after a cache-compatibility finding.** The post-configure scan (§5.1,
+§8 `cache_compat_scan`) is advisory and never gates the build. When a build
+step then fails for a unit whose recorded scan has an `"error"` finding (the
+applied launcher fails those compiles), the runner's closing failure message
+gains one line pointing back at it, e.g. `build failed — 1870 compiles use
+/Zi, which sccache cannot cache (see the scan finding above; lw health; lw help
+cache)`.
+
 A build is additionally gated by the output-artifact conflict rule (§16.28):
 a unit whose build would overwrite an artifact currently owned by another
 built unit is refused unless the caller forces it.
@@ -1065,9 +1073,14 @@ above; a unit shared by several profiles is reported once) — gives an
 **actionable** item per affected configuration: `title` states that the applied launcher will
 fail (severity `"error"`) or cannot cache (severity `"warning"`) some compiles,
 `detail` lists the affected groups (target or directory) with the offending
-option and unit counts, and `remedy` is one line naming both ways out (switch
-those compiles to a cache-compatible option — module specs — or `lw config set
-<project> <configuration> variables.cache off`) and the help topic. A scan that
+option and unit counts (a pervasive finding collapsed to one line, §8), and
+`remedy` is one line naming both ways out — switch those compiles to a
+cache-compatible option (module specs; for a pervasive finding, remove the
+directory-wide option) or turn caching off with the command for the mechanism
+that enabled it (`lw profile set <profile> <project> cache off` for a profile
+fill, `lw config set <project> <configuration> overrides.<family>.cache off` for
+a compiler-family override, `… variables.cache off` for a configuration
+variable, §8) — and the help topic. A scan that
 was **skipped** for lack of compile-command data yields an **informational**
 item saying the check was skipped for that configuration (detail: why), so a
 clean report is never mistaken for a verified one.

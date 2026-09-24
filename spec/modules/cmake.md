@@ -342,10 +342,17 @@ itself, which would collide with §5b:
   source's directory when no target is known), with the unit count and a few
   sample sources. Severity is `"error"` for sccache (those compiles will fail)
   and `"warning"` for ccache (those compiles will not be cached). The message
-  says why and how to fix it: switch those targets to `/Z7` (e.g. the
-  `MSVC_DEBUG_INFORMATION_FORMAT` target property set to `Embedded`, or
-  replacing `/Zi` in their options), or set `cache=off` for the configuration.
-  The explicit policy is never silently disabled. The scan reads the per-target
+  says why and how to fix it: switch those targets to `/Z7` (replacing `/Zi` in
+  their options, or the `MSVC_DEBUG_INFORMATION_FORMAT` target property set to
+  `Embedded`), or turn caching off through the mechanism that enabled it (core
+  §8). The scan also returns the build's `totals` (compiled units / targets):
+  when (nearly) every target carries the flag (core §8 *pervasive*), it is
+  reported as one line — `every target (N units) compiles with /Zi — likely a
+  directory-wide add_compile_options or CMAKE_<LANG>_FLAGS` — and the fix is NOT
+  a per-target property: the module already requests `Embedded` (above), and an
+  explicit `/Zi` overrides that (cl warns D9025 "overriding '/Z7' with '/Zi'";
+  sccache then fails with C1041 / C1090), so the `/Zi` must be removed (or made
+  `/Z7`) where it is set. The explicit policy is never silently disabled. The scan reads the per-target
   compile commands the module already reconstructs for the owned compilation
   database (§12.2 — the file-api codemodel's `compileCommandFragments`), so it
   covers every generator and never decodes the native `compile_commands.json`

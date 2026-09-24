@@ -1043,7 +1043,17 @@ local function run_build_steps(profile, ws, opts)
     local code = M._run_spec(step, ws.root, quiet)
     record_step(ws, step, code == 0)
     if code ~= 0 then
-      die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
+      -- A build that fails after the post-configure scan predicted it (an
+      -- error-severity cache-compat finding, e.g. /Zi under sccache) closes
+      -- with one line pointing back at that finding. Advisory: the scan never
+      -- gates the build (§5.1), it only explains the failure.
+      local hint
+      if step.kind == "build" and step.unit and step.unit.module_info then
+        hint = require("loomworks.compiler_cache").compat_failure_hint(
+          step.unit.module_info.cache_compat)
+      end
+      die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?")
+        .. (hint and ("\nlw: " .. hint) or ""), code)
     end
     -- After a successful configure, populate this unit's resolved artifact set
     -- so a following build step in THIS invocation sees it (the CLI opts out
@@ -1057,6 +1067,7 @@ local function run_build_steps(profile, ws, opts)
   end
   return #steps
 end
+M._run_build_steps = run_build_steps  -- exported for tests
 
 --- The distinct build directories a profile's projects map to.
 --- @param profile loomworks.Profile
@@ -6601,7 +6612,8 @@ Set it:
   lw config unset <project> <configuration> variables.cache   (back to auto)
 
 WHY `auto` IS OFF FOR MSVC-STYLE COMPILERS — sccache FAILS a compile that
-writes a shared .pdb (/Zi, /ZI; MSVC error C1041), and ccache won't cache it.
+writes a shared .pdb (/Zi, /ZI; MSVC errors C1041 / C1090), and ccache won't
+cache it.
 Such flags often come from code loomworks does not control (a dependency, the
 project's own CMakeLists). So caching there is an explicit opt-in: set
 `cache=sccache` (or ccache) as above. Opting in, under cmake (>= 3.25,
@@ -6609,11 +6621,24 @@ single-config generator) loomworks asks for embedded per-object debug info
 (/Z7: CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded + policy CMP0141 NEW); under
 cmake and meson it then SCANS the configured compile commands (and the
 configuration's CL / _CL_ environment) for leftover /Zi.
-Findings show up at the end of the configure and in `lw health`, per target:
-  fix: switch those targets to /Z7 — e.g. set the MSVC_DEBUG_INFORMATION_FORMAT
-       target property to Embedded, or replace /Zi in their compile options (an
-       `environment` group: remove it from that variable of the configuration's
-       `env`) — or turn caching off: lw config set <p> <c> variables.cache off
+Findings show up at the end of the configure and in `lw health` (advisory —
+the build still runs; if it then fails, lw's last line points back here), one
+line per target:
+  fix: switch those targets to /Z7 — replace /Zi in their compile options, or
+       set their MSVC_DEBUG_INFORMATION_FORMAT property to Embedded.
+When (nearly) EVERY target has it, the finding is one line — "every target
+(N units) compiles with /Zi" — and the /Zi comes from a directory-wide setting
+(add_compile_options, CMAKE_<LANG>_FLAGS; meson: project-wide c_args/cpp_args).
+lw already requests /Z7, so cl warns D9025 "overriding '/Z7' with '/Zi'" and
+sccache then fails with C1041 / C1090:
+  fix: remove that /Zi (or make it /Z7) where it is set.
+A finding in the `environment` group comes from /Zi in the configuration's CL or
+_CL_ environment variable — remove it there:
+  lw config unset <p> <c> env.CL        (or edit the value to drop /Zi)
+Or turn caching off where it was turned on — the finding names the command:
+  lw profile set <profile> <project> cache off       (a profile fill)
+  lw config set <p> <c> overrides.msvc.cache off     (a compiler-family override)
+  lw config set <p> <c> variables.cache off          (a configuration variable)
 loomworks never silently turns off a cache you asked for.
 
 CONFIGURING THE TOOL — pass its settings through the configuration's env, e.g.

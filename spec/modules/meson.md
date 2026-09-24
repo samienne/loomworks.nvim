@@ -85,7 +85,10 @@ successful setup that applied a launcher to an MSVC-style tool, the module scans
 the per-target compile parameters of its target introspection data (§6) for the
 same PDB-writing flags as cmake (`/Zi`, `/ZI`, `-Zi`, `-ZI`) and reports findings
 per target with the same severities (`"error"` for sccache, `"warning"` for
-ccache) and remedies (switch those targets to `/Z7`, or `cache=off`). The module
+ccache) and remedies (switch those targets to `/Z7`, or `cache=off` through the
+mechanism that enabled it), and the build's `totals` so a finding on (nearly)
+every target collapses to one line naming a project-wide `c_args` / `cpp_args` /
+`add_project_arguments` as the likely source (core §8). The module
 injects no debug-info-format adjustment of its own; a subproject or user option
 that requests `/Zi` is surfaced by the scan, never silently rewritten. When no
 introspection data exists for the build, the scan returns `scanned = false` and

@@ -1154,8 +1154,10 @@ end
 --- /Zi is surfaced here, never rewritten. A gcc/clang tool reports clean.
 --- Also reports a /Zi-style token in the configuration environment's `CL` /
 --- `_CL_` (group "environment", §5a) — flags no introspection data shows.
+--- Returns the scanned build's `totals` (compiled units / targets) and the
+--- meson-specific `advice` wording, like cmake.
 --- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, configuration_env?: table<string, string> }
---- @return { scanned: boolean, reason?: string, findings: table[] }
+--- @return { scanned: boolean, reason?: string, findings: table[], totals?: { units: integer, targets: integer }, advice?: table }
 function M.cache_compat_scan(ctx)
     local cpp = require("loomworks.cpp_compilers")
     if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
@@ -1179,8 +1181,13 @@ function M.cache_compat_scan(ctx)
             reason = "meson introspection data (intro-targets.json) could not be read" }
     end
     local acc = {}
+    local total_units, total_targets = 0, 0
     for _, t in ipairs(targets) do
-        for _, block in ipairs(type(t.target_sources) == "table" and t.target_sources or {}) do
+        local blocks = type(t.target_sources) == "table" and t.target_sources or {}
+        if #blocks > 0 then total_targets = total_targets + 1 end
+        for _, block in ipairs(blocks) do
+            local nsrc = type(block.sources) == "table" and #block.sources or 0
+            total_units = total_units + math.max(nsrc, 1)
             local flag = cpp.pdb_debug_flag(block.parameters)
             if flag then
                 local srcs = type(block.sources) == "table" and block.sources or {}
@@ -1195,7 +1202,18 @@ function M.cache_compat_scan(ctx)
     end
     local findings = cpp.pdb_scan_findings(acc, tool)
     vim.list_extend(findings, env_findings)
-    return { scanned = true, findings = findings }
+    return {
+        scanned = true, findings = findings,
+        totals = { units = total_units, targets = total_targets },
+        advice = {
+            fix_targets = "switch those targets to embedded debug info (/Z7) — replace "
+                .. "/Zi in their c_args / cpp_args",
+            cause_pervasive = "likely a project-wide add_project_arguments / "
+                .. "add_global_arguments or c_args / cpp_args",
+            fix_pervasive = "replace that /Zi with /Z7 where it is set (sccache fails "
+                .. "/Zi compiles with C1041 / C1090)",
+        },
+    }
 end
 
 --- Async companion for parse_targets — yields to the event loop.

@@ -331,8 +331,16 @@ only changes CMake's default flags, so after configuring an MSVC build with a
 cache loomworks scans the compile commands for leftover `/Zi` / `/ZI` (e.g. from
 a `FetchContent` dependency) and warns loudly, per target — sccache will fail
 those compiles, ccache won't cache them. Fix them by switching those targets to
-`/Z7`, or set `cache` back to `off`; loomworks never silently turns off a cache
-you asked for. If you used MSVC caching via `auto` in an earlier beta, your next
+`/Z7`, or turn the cache off — the warning names the exact command for how you
+turned it on (`lw profile set <profile> <project> cache off` for a profile fill,
+`overrides.<family>.cache` or `variables.cache` for a configuration);
+loomworks never silently turns off a cache you asked for. When (nearly) every
+target has `/Zi` the warning is a single line ("every target (N units) compiles
+with /Zi") — that comes from a directory-wide `add_compile_options` /
+`CMAKE_<LANG>_FLAGS` overriding the `/Z7` loomworks asked for (cl warns D9025
+"overriding '/Z7' with '/Zi'"), so remove it there. The scan is advisory: the
+build still runs, and if it then fails, lw's last line points back at the
+finding. If you used MSVC caching via `auto` in an earlier beta, your next
 build reconfigures without the launcher; set `cache=sccache` to keep it. Under
 meson, loomworks pins the launcher+compiler explicitly through a generated
 native file (`--native-file`, rather than relying on meson's own ccache
@@ -354,7 +362,8 @@ available — not enabled for MSVC-style (lw help cache)" when `auto` left an MS
 build uncached, "Compiler cache not applied (`<reason>`)", an actionable item
 listing any `/Zi` targets the scan found, or "No compiler cache found"
 (actionable). With no active profile it looks at every profile and only says
-"using" when one of them would use the cache. **`lw help cache`** (also `lw help
+"using" when one of them would use the cache (and reports `/Zi` findings of
+every profile's configurations). **`lw help cache`** (also `lw help
 sccache` / `lw help ccache`) explains all of it — the policy values, how to opt
 in for MSVC, the `/Z7` switch and `/Zi` scan, `SCCACHE_*` settings through `env`,
 the not-applied cases and install commands. The status overview shows a compact

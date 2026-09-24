@@ -648,8 +648,9 @@ function M.cache_compat_provider(workspace)
                 -- The findings themselves (where: one line per group, with
                 -- the flag); the how-to-fix explanation is `lw help cache`.
                 detail = table.concat(cc.compat_group_lines(rec), "\n  "),
-                remedy = "switch them to /Z7, or `lw config set " .. pkey .. " " .. cname
-                    .. " variables.cache off` — lw help cache",
+                -- Fix + the cache-off command for the mechanism that enabled
+                -- the cache (profile fill / family override / configuration).
+                remedy = cc.compat_remedy(rec, pkey, cname),
             }
         end
     end

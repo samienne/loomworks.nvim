@@ -2855,16 +2855,26 @@ function Workspace:record_task_result(result)
             local cc = require("loomworks.compiler_cache")
             local impl = project._module and project._module.impl or nil
             local cfg = config_unit._configuration
+            local scan_tool_data = (result.tool and result.tool.data) or config_unit._tool_data
             compat = cc.run_compat_scan(impl, {
                 build_dir = result.build_dir or config_unit.build_dir_value,
                 configuration = cfg,
-                tool_data = (result.tool and result.tool.data) or config_unit._tool_data,
+                tool_data = scan_tool_data,
                 config_name = result.variant or config_unit._variant,
                 variant = cfg and cfg.module_config and cfg.module_config.variant or nil,
                 -- A compiler may take flags from its environment (e.g. MSVC's
                 -- CL / _CL_), which compile commands do not show (§8).
                 configuration_env = configuration_env,
             }, config_unit.module_info.cache_launcher)
+            if compat then
+                -- Which layer enabled the cache (profile fill, compiler-family
+                -- override, configuration variable) — resolved in the context
+                -- of the profile this configure ran for — so the "turn caching
+                -- off" hint names the mechanism actually in effect.
+                local _, _, source = cc.resolve_for(project, cfg, scan_tool_data,
+                    config_unit:context_profile(result.profile))
+                compat.policy_source = cc.policy_source_record(source)
+            end
             local msg, severity = cc.compat_message(compat, project.key,
                 result.variant or config_unit._variant or "?")
             if msg then
