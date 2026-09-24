@@ -139,8 +139,8 @@ back what the unit's last configure recorded:
   (a launcher path, the sentinel `"none"`, or `nil` when never recorded).
 - `recorded_options` — core's resolved-option snapshot from that configure (the
   staleness fingerprint, §5.1): option name → resolved value. Lets a module
-  reconstruct what it passed for a unit configured before it began keeping its
-  own record.
+  recognise a unit configured before it began keeping its own record (which
+  then takes the full reconfigure, below).
 
 All three are additive optional fields (no `api_versions.module` bump). A
 module uses them to classify a reconfigure (§5.1 *Faithful reconfigure*): any
