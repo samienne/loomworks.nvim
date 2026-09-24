@@ -220,3 +220,61 @@ describe("meson compiler-cache reconfigure mechanism", function()
         assert.is_true(has_arg(cmd, "--buildtype=debug"))
     end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- Faithful reconfigure for a REMOVED option (meson §5a, core §5.1): meson keeps
+-- a no-longer-passed -D on --reconfigure and --wipe replays the stored command
+-- line, so core must clear meson-private/cmd_line.txt before a --wipe setup.
+-- ---------------------------------------------------------------------------
+describe("meson faithful reconfigure (removed option)", function()
+    local function configure_task(c)
+        for _, t in ipairs(meson.tasks(c, "Debug")) do
+            if t.loomworks.action == "configure" then return t end
+        end
+    end
+
+    it("records the -D options it passed", function()
+        local t = configure_task(ctx({
+            type_config = { options = { werror = "true" } },
+            recorded_cache_launcher = "none",
+        }))
+        assert.same({ werror = "true" }, t.loomworks.module_info.passed_options)
+    end)
+
+    it("a removed option resets the stored command line and wipes", function()
+        local dir = setup_build_dir()
+        local t = configure_task(ctx({
+            cached_build_dir = dir,
+            recorded_cache_launcher = "none",
+            recorded_module_info = { cache_launcher = "none", passed_options = { werror = "true" } },
+        }))
+        assert.same({ "meson-private/cmd_line.txt" }, t.loomworks.pre_configure_reset)
+        local cmd = t.builder().cmd
+        assert.is_true(has_arg(cmd, "--wipe"))
+        assert.is_false(has_arg(cmd, "--reconfigure"))
+    end)
+
+    it("an added or changed option is a plain --reconfigure (no reset)", function()
+        local dir = setup_build_dir()
+        local t = configure_task(ctx({
+            cached_build_dir = dir,
+            type_config = { options = { werror = "false", b_lto = "true" } },
+            recorded_cache_launcher = "none",
+            recorded_module_info = { cache_launcher = "none", passed_options = { werror = "true" } },
+        }))
+        assert.is_nil(t.loomworks.pre_configure_reset)
+        assert.is_true(has_arg(t.builder().cmd, "--reconfigure"))
+    end)
+
+    it("a legacy unit falls back to core's option snapshot", function()
+        local dir = setup_build_dir()
+        local t = configure_task(ctx({
+            cached_build_dir = dir,
+            recorded_cache_launcher = "none",
+            recorded_module_info = { cache_launcher = "none" },
+            recorded_options = { werror = "true" },
+        }))
+        assert.same({ "meson-private/cmd_line.txt" }, t.loomworks.pre_configure_reset)
+        assert.is_true(has_arg(t.builder().cmd, "--wipe"))
+    end)
+end)

@@ -139,6 +139,8 @@ local function collect_configuration_tasks(unit)
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
         recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
+        recorded_module_info = unit.module_info,
+        recorded_options = unit._cached_options,
     }
 
     local pt = mod.progress_parser
@@ -221,6 +223,8 @@ function M.build_spec_for(unit, target_id)
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
         recorded_cache_launcher = unit.module_info and unit.module_info.cache_launcher or nil,
+        recorded_module_info = unit.module_info,
+        recorded_options = unit._cached_options,
     }
 
     --- Validate spec types and coerce missing cwd to the workspace root.
@@ -333,6 +337,8 @@ local function collect_profile_tasks(profile)
             compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
             recorded_cache_launcher = pp._config_unit and pp._config_unit.module_info
                 and pp._config_unit.module_info.cache_launcher or nil,
+            recorded_module_info = pp._config_unit and pp._config_unit.module_info or nil,
+            recorded_options = pp._config_unit and pp._config_unit._cached_options or nil,
         }
 
         local pt = mod.progress_parser
@@ -507,6 +513,31 @@ local function start_one_task(overseer, task_def, on_complete)
                         reject(fl_err)
                         return
                     end
+                end
+            end
+
+            -- Full-reconfigure support (core §5.1 / §8.1 `pre_configure_reset`):
+            -- remove the module-named configure-state entries inside the build
+            -- dir now that the exclusive lock is held. Core performs (and
+            -- validates) the deletion, never the module. On refusal/failure
+            -- the configure is not started.
+            if lw_meta.action == "configure" and type(lw_meta.pre_configure_reset) == "table"
+                    and #lw_meta.pre_configure_reset > 0 then
+                local ws = unit._workspace
+                local ok_r, r_err = true, nil
+                if ws and ws._pre_configure_reset then
+                    ok_r, r_err = ws:_pre_configure_reset(lw_meta.build_dir, lw_meta.pre_configure_reset)
+                end
+                if not ok_r then
+                    if ws and lw_meta.build_dir then
+                        local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                        ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                        if ws._release_file_lock then ws:_release_file_lock(dir) end
+                    end
+                    local msg = "loomworks: " .. tostring(r_err)
+                    vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                    reject(msg)
+                    return
                 end
             end
 
@@ -821,7 +852,7 @@ end
 --- @param opts? table { for_test?: boolean } for_test drops the build step of
 ---   any unit whose native test runner self-rebuilds — configuration is still
 ---   planned for every unit.
---- @return table[]|nil steps list of { kind, name, unit, cmd, cwd, env }
+--- @return table[]|nil steps list of { kind, name, unit, build_dir, module_info, pre_configure_reset, cmd, cwd, env }
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
     local all_tasks = collect_profile_tasks(profile)
@@ -850,6 +881,13 @@ function M.plan_profile_build(profile, opts)
                         name = td.name,
                         unit = td.loomworks and td.loomworks.unit or nil,
                         build_dir = td.loomworks and td.loomworks.build_dir or nil,
+                        -- Module record merged onto the unit after a configure
+                        -- (cache_launcher, passed_options, …) and the
+                        -- full-reconfigure reset list (core §5.1 / §8.1); the
+                        -- headless runner records / performs them like the
+                        -- editor's task path does.
+                        module_info = td.loomworks and td.loomworks.module_info or nil,
+                        pre_configure_reset = td.loomworks and td.loomworks.pre_configure_reset or nil,
                         cmd = spec.cmd,
                         cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
                             and spec.cwd or nil,

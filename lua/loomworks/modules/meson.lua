@@ -858,9 +858,13 @@ function M.tasks(project, active_config)
         configure_cmd[#configure_cmd + 1] = "--native-file=" .. native_file
     end
 
-    -- User -D options (project-wide + config-specific)
+    -- User -D options (project-wide + config-specific). Also recorded
+    -- (name → value) so the next setup can tell an option was REMOVED (§5a).
+    local passed_options = {}
     for _, opt in ipairs(build_option_args(project, active_config)) do
         configure_cmd[#configure_cmd + 1] = opt
+        local k, v = opt:match("^%-D([^=]+)=(.*)$")
+        if k then passed_options[k] = v end
     end
 
     -- Reconfigure if the build dir already exists (idempotent setup).
@@ -887,6 +891,26 @@ function M.tasks(project, active_config)
     local resolved_marker = resolved_launcher or "none"
     local launcher_changed = recorded ~= nil and recorded ~= resolved_marker
 
+    -- A removed `-D` option (core §5.1 faithful reconfigure, meson §5a): meson
+    -- keeps it on `--reconfigure`, and `--wipe` REPLAYS the stored command line
+    -- (meson-private/cmd_line.txt) — so neither retracts it, and meson has no
+    -- unset flag. Full reconfigure instead: core removes the stored command
+    -- line (`pre_configure_reset`), then `--wipe` rebuilds the tree from
+    -- exactly the options passed now. The previous set is the module's own
+    -- `passed_options` record, else (legacy unit) core's option snapshot keys.
+    local prev_options
+    local rec = project.recorded_module_info
+    if type(rec) == "table" and type(rec.passed_options) == "table" then
+        prev_options = rec.passed_options
+    elseif type(project.recorded_options) == "table" then
+        prev_options = project.recorded_options
+    end
+    local option_removed = false
+    for k in pairs(prev_options or {}) do
+        if passed_options[k] == nil then option_removed = true break end
+    end
+    local pre_configure_reset = option_removed and { "meson-private/cmd_line.txt" } or nil
+
     local configuration_key = project.configuration_key or active_config
     local cached_tool_data = project.tool_data
 
@@ -901,7 +925,7 @@ function M.tasks(project, active_config)
             local uv2 = vim.uv or vim.loop
             local cmd
             if uv2.fs_stat(build_dir .. "/meson-info") then
-                cmd = launcher_changed and wipe_cmd or reconfigure_cmd
+                cmd = (launcher_changed or option_removed) and wipe_cmd or reconfigure_cmd
             else
                 cmd = configure_cmd
             end
@@ -925,6 +949,9 @@ function M.tasks(project, active_config)
             -- pinned CC/CXX is used regardless.
             stripped_compiler_keys = (#stripped_env > 0)
                 and { env = stripped_env } or nil,
+            -- Removed option → core clears the stored command line before the
+            -- `--wipe` setup, so the option is really dropped (§5a).
+            pre_configure_reset = pre_configure_reset,
             module_info = {
                 buildtype = buildtype,
                 source_dir = project.path,
@@ -934,6 +961,9 @@ function M.tasks(project, active_config)
                 -- feature-no-cache ("none", install-after-configure fires) from
                 -- a legacy/never-recorded unit (nil, not invalidated) (§11).
                 cache_launcher = resolved_launcher or "none",
+                -- The `-D` options this setup passed (name → value), so the
+                -- next setup can detect a removed one (§5a).
+                passed_options = passed_options,
             },
         },
     }
