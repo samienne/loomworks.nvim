@@ -645,7 +645,13 @@ build directory, so that build recompiles everything). The only change applied
 in place is a cmake compiler-launcher-only change, which CMake is known to apply
 faithfully. loomworks re-passes everything it owns, so nothing you configured
 through it is lost; a cache variable you set by hand outside loomworks does not
-survive a full reconfigure. The resolved values are also available headlessly via
+survive a full reconfigure. A build directory configured by an older `lw` whose
+record of that configure is incomplete takes exactly one full reconfigure on its
+first build with the newer `lw` (`lw build` prints `full reconfigure (--fresh):
+configure record from an older lw`) — this also clears configure state the
+older version left behind, such as a compiler launcher it no longer applies —
+and builds normally afterwards. `lw build --reconfigure` forces that full
+reconfigure whenever you no longer trust a build tree's configure state. The resolved values are also available headlessly via
 `lw profile query <profile> <project> variables` (or `variables.<name>`).
 
 **Configuration environment.** A configuration may set environment variables
@@ -976,7 +982,7 @@ command has detail under `lw help <command>`.
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
-| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles) |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)` |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |

@@ -94,6 +94,26 @@ resolves from live detection when available, otherwise from cached tool
 data (§1.5, §2.3); resolution MUST succeed from cache alone when detection
 has not run.
 
+**Why a configure runs.** Whenever a headless build (re)configures a unit it
+reports, on one line before the configure's output, why and how: the build
+gate's reason — `first configure`, `previous configure failed`, `forced
+(--reconfigure)`, a staleness reason (§5.1: `configure record from an older
+lw`, `options changed (<names> added|changed|removed)`, `module configuration
+changed`, `configuration environment changed`, `compiler launcher changed`),
+`project files changed`, or `build directory missing` — prefixed with the
+module's classification (§8.1 `reconfigure`): `configure: <reason>` for a
+first configure (or when the module does not say), `full reconfigure
+(<mechanism>): <reason>`, or `reconfigure (in place): <reason>`. For example
+`full reconfigure (--fresh): configure record from an older lw`. The editor
+logs the same line.
+
+**Forced full reconfigure.** `lw build --reconfigure` configures every unit of
+the profile before building, whether or not the gate would, forcing each
+module's **full** reconfigure (§5.1 *Forced full reconfigure*) — for a build
+tree whose configure state the user no longer trusts. Its reason reads
+`forced (--reconfigure)` (`first configure` for a never-configured unit). It
+is transient (nothing is recorded that makes a later build reconfigure again).
+
 A build is additionally gated by the output-artifact conflict rule (§16.28):
 a unit whose build would overwrite an artifact currently owned by another
 built unit is refused unless the caller forces it.

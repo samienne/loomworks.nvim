@@ -980,10 +980,11 @@ end
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], force?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], force?: boolean, reconfigure?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool; force overrides the
----   output-artifact conflict gate (§5.9).
+---   output-artifact conflict gate (§5.9); reconfigure forces a FULL
+---   reconfigure of every unit before building (§16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
@@ -1027,7 +1028,15 @@ local function run_build_steps(profile, ws, opts)
       if not ok_r then die(tostring(r_err)) end
     end
     log(string.format("==> [%s] %s", step.kind, step.name or "?"))
-    local code = run_spec(step, ws.root, quiet)
+    -- Say WHY a configure runs (§16.4): the gate's reason + the module's
+    -- full / in-place choice, e.g. "full reconfigure (--fresh): configure
+    -- record from an older lw".
+    if step.kind == "configure" then
+      local why = overseer.configure_reason_line(step)
+      if why then log("    " .. why) end
+    end
+    -- Through the module table so tests can stub the spawn.
+    local code = M._run_spec(step, ws.root, quiet)
     record_step(ws, step, code == 0)
     if code ~= 0 then
       die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?"), code)
@@ -1097,16 +1106,17 @@ end
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
-  local force = false
+  local force, reconfigure = false, false
   for i = 2, #args do
     if not seen_sep and args[i] == "--" then seen_sep = true
     elseif seen_sep then extra[#extra + 1] = args[i]
     elseif args[i] == "--force" then force = true
+    elseif args[i] == "--reconfigure" then reconfigure = true
     else pre[#pre + 1] = args[i] end
   end
   if pre[2] then
     die("unexpected argument '" .. tostring(pre[2]) ..
-      "' — usage: lw build [profile] [--force] [-- build-tool-args…]")
+      "' — usage: lw build [profile] [--force] [--reconfigure] [-- build-tool-args…]")
   end
   local profile
   profile, ws = resolve_build_target(ws, pre[1])
@@ -1115,6 +1125,7 @@ function M.cmd_build(ws, args)
     built = run_build_steps(profile, ws, {
       extra_args = (#extra > 0) and extra or nil,
       force = force,
+      reconfigure = reconfigure,
     })
   end)
   if built == 0 then
@@ -6241,7 +6252,7 @@ Probing compilers/vcvarsall is slow, so the result is cached
 refreshes that cache; other commands (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [-- <build-tool args>]
+  build = [[lw build [profile | config-set] [--force] [--reconfigure] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
 `lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI.
@@ -6261,8 +6272,18 @@ for a deterministic build (§16.9). The CI pattern is:
               pins resolve to the installed patch version)
   config-set  a set name; onboards a profile for it (interactive)
 
-Configures first if the build dir isn't configured, then builds. Non-zero
-exit on any failure. Artifacts land under
+  --force        build even if it overwrites an artifact another built profile
+                owns (that profile is marked stale).
+  --reconfigure  force a FULL reconfigure of every project before building
+                (cmake `--fresh`, below CMake 3.24 a reset of CMakeCache.txt +
+                CMakeFiles; meson `setup --wipe`) — for a build tree whose
+                configure state you no longer trust.
+
+Configures first if the build dir isn't configured — or when a configure input
+changed since the last configure (options, env, toolchain, compiler cache), or
+the build dir was configured by an older lw — then builds. Each configure
+prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO
+removed)`. Non-zero exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
   clean = [[lw clean [profile | config-set]
 
