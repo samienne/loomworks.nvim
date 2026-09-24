@@ -6336,7 +6336,8 @@ activates the profile, then builds — so a freshly-cloned project goes from
 In non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the
 active profile is NOT used and nothing is created — pass a profile explicitly
 for a deterministic build (§16.9). The CI pattern is:
-  lw profile create <set> <tool> --activate  &&  lw build
+  lw profile create <set> <tool>  &&  lw build <set>:<tool>
+(the profile key is `<set>:<tool>`, as `lw profile create` prints it).
 
   profile     e.g. Debug:ninja-clang-19  (a unique substring works too; major
               pins resolve to the installed patch version)
@@ -6525,7 +6526,7 @@ and exits 0 — not a failure.
 
 Profile resolution and onboarding match `lw build`: interactively it can create
 a profile from a configuration set; in --no-input / CI it needs an explicit
-profile (`lw profile create <set> <tool> --activate && lw test`).
+profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
 
   profile        e.g. Debug:ninja-clang-19  (unique substring works)
   config-set     a set name (interactive: onboards a profile, then tests)
@@ -7210,7 +7211,7 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
    Pin a toolchain COARSELY — by major version, or without an edition — and it
    resolves to the best installed match, so the job never names the exact patch
    or the runner image's VS edition:
-     lw --no-input profile create Debug ninja-clang-18 --activate
+     lw --no-input profile create Debug ninja-clang-18
    Key shapes differ per MODULE, so run `lw tools` on the runner to see the
    real keys before writing the matrix:
      cmake   generator + compiler:  ninja-clang-18 · ninja-gcc-12 ·
@@ -7246,19 +7247,30 @@ cache, or offline mode of its own. Fetched deps land inside the build dir
 both fetched sources and compiled objects.]],
 }
 
+--- Command aliases → their canonical help topic.
+local HELP_ALIASES = {
+  configuration = "config",
+  ["configuration-set"] = "configset",
+  cs = "configset",
+  cfg = "config",
+  profiles = "profile",
+  sccache = "cache",
+  ccache = "cache",
+  ["compiler-cache"] = "cache",
+  ws = "workspace",
+  mod = "module",
+}
+
+--- Whether `lw help <cmd>` has a topic (after alias normalization).
+--- @param cmd string|nil
+--- @return boolean
+function M.has_help_topic(cmd)
+  return cmd ~= nil and HELP[HELP_ALIASES[cmd] or cmd] ~= nil
+end
+
 function M.cmd_help(cmd)
   -- Normalize command aliases to their canonical help topic.
-  local alias = {
-    configuration = "config",
-    ["configuration-set"] = "configset",
-    cs = "configset",
-    cfg = "config",
-    profiles = "profile",
-    sccache = "cache",
-    ccache = "cache",
-    ["compiler-cache"] = "cache",
-  }
-  cmd = cmd and (alias[cmd] or cmd) or nil
+  cmd = cmd and (HELP_ALIASES[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
     out(HELP[cmd])
     return 0
@@ -7386,6 +7398,20 @@ local function main()
   -- Global commands — no workspace required.
   if command == "help" or command == "-h" or command == "--help" then
     finish(M.cmd_help(a[2]))
+  end
+  -- `lw <command> … --help` / `-h` (before any `--`, whose tail belongs to a
+  -- build tool / program) is `lw help <command>` for every command, checked
+  -- before any handler can read the flag as an operand (`lw build --help`
+  -- used to look for a profile named "--help"). A command without a topic of
+  -- its own gets the general usage. Exit 0 either way.
+  if command then
+    for i = 2, #a do
+      if a[i] == "--" then break end
+      if a[i] == "--help" or a[i] == "-h" then
+        M.cmd_help(M.has_help_topic(command) and command or nil)
+        finish(0)
+      end
+    end
   end
   -- `settings` edits lw's OWN user configuration (dev-lua, release-url, …). It
   -- is a global command (no workspace needed). NOTE: `config` no longer routes

@@ -989,7 +989,7 @@ cleanly if that release isn't fetchable) and refreshes the launcher scripts. See
 ### Commands
 
 `lw` with no command prints workspace status and the active profile. Every
-command has detail under `lw help <command>`.
+command has detail under `lw help <command>` (or `lw <command> --help`).
 
 | Command | Description |
 |---|---|

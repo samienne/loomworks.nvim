@@ -156,6 +156,11 @@ Success or failure is reported via process exit status; task output streams
 to standard output and standard error. No editor UI is required or
 produced.
 
+Every command documents itself: `lw help <command>` and, equivalently,
+`--help` / `-h` anywhere among a command's own arguments (never after the `--`
+that hands the rest to a build tool or program) print that command's help and
+exit 0 — the flag is never read as an operand such as a profile name.
+
 ### 16.8 Host-determined module availability
 
 The set of modules available to a host is determined by that host. A build
