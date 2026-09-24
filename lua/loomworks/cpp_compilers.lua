@@ -98,29 +98,70 @@ local function is_windows()
     return vim.fn.has("win32") == 1
 end
 
---- Strip a single trailing Windows executable extension (case-insensitive).
---- @param filename string
---- @return string
-local function strip_exe_ext(filename)
-    return (filename:gsub("%.[eE][xX][eE]$", "")
-        :gsub("%.[cC][mM][dD]$", "")
-        :gsub("%.[bB][aA][tT]$", "")
-        :gsub("%.[cC][oO][mM]$", ""))
+--- Default Windows `PATHEXT` when the env var is unset/empty.
+local DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+--- Parse a `PATHEXT` string into an ext (lower-cased, with dot) → rank map.
+--- Rank is the 1-based position, so a lower rank wins within one directory
+--- (mirroring the Windows command search order).
+--- @param pathext string|nil
+--- @return table<string, integer>
+local function parse_pathext(pathext)
+    if not pathext or pathext == "" then pathext = DEFAULT_PATHEXT end
+    local ranks, n = {}, 0
+    for ext in pathext:gmatch("[^;]+") do
+        ext = ext:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+        if ext ~= "" then
+            if ext:sub(1, 1) ~= "." then ext = "." .. ext end
+            if ranks[ext] == nil then
+                n = n + 1
+                ranks[ext] = n
+            end
+        end
+    end
+    return ranks
+end
+
+--- Normalize one lister entry to `(name, type)`. Entries are either a plain
+--- name string (type unknown) or a `{ name, type }` pair as produced by
+--- `uv.fs_scandir_next`.
+--- @param entry string|table
+--- @return string|nil name, string|nil type
+local function entry_parts(entry)
+    if type(entry) == "table" then return entry[1], entry[2] end
+    return entry, nil
 end
 
 --- Build the base-name → absolute-path index from a raw `$PATH` string.
 ---
---- Pure and side-effect-free apart from the injected `scandir_fn`, so it is
---- unit-testable without a real filesystem. Directories are scanned left to
---- right and the FIRST occurrence of a base name wins — matching PATH
---- precedence. On Windows the base key strips a trailing executable extension
---- (`.exe`/`.cmd`/`.bat`/`.com`) and is lower-cased for case-insensitive
---- matching; on Unix the filename is the key verbatim (case-sensitive).
+--- Pure and side-effect-free apart from the injected `scandir_fn` / `stat_fn`,
+--- so it is unit-testable without a real filesystem. Directories are scanned
+--- left to right and the FIRST occurrence of a base name wins — matching PATH
+--- precedence.
+---
+--- Only regular files are indexed: an entry whose scandir type is `"file"` is
+--- accepted directly; a `"link"` or unknown/nil type is resolved with
+--- `stat_fn` (which follows links) and kept only when it is a file. Anything
+--- else (directories, broken links, devices) is skipped, so a directory named
+--- like a tool (e.g. a `ccache` folder on PATH) can neither be returned nor
+--- shadow the real executable later on PATH.
+---
+--- On Windows only names whose extension is in `PATHEXT` are executables: the
+--- base key strips that extension and is lower-cased for case-insensitive
+--- matching, and within one directory the earlier PATHEXT extension wins.
+--- On Unix the filename is the key verbatim (case-sensitive).
 --- @param path_string string|nil raw `$PATH`
 --- @param is_win boolean
---- @param scandir_fn fun(dir: string): string[]|nil entry names in `dir` (nil = unreadable)
+--- @param scandir_fn fun(dir: string): (string|{ [1]: string, [2]: string|nil })[]|nil
+---   entries in `dir` — a name, or a `{ name, type }` pair (nil = unreadable)
+--- @param opts? { stat_fn?: fun(path: string): table|nil, pathext?: string }
+---   `stat_fn` defaults to `uv.fs_stat`; `pathext` (Windows) defaults to the
+---   built-in `.COM;.EXE;.BAT;.CMD` list
 --- @return table<string, string> index base name → `<dir>/<filename>` (forward slashes)
-function M._build_path_index(path_string, is_win, scandir_fn)
+function M._build_path_index(path_string, is_win, scandir_fn, opts)
+    opts = opts or {}
+    local stat_fn = opts.stat_fn or uv.fs_stat
+    local ext_rank = is_win and parse_pathext(opts.pathext) or nil
     local index = {}
     if not path_string or path_string == "" then return index end
     local sep = is_win and ";" or ":"
@@ -130,14 +171,41 @@ function M._build_path_index(path_string, is_win, scandir_fn)
         local dir = raw:gsub('^"(.*)"$', "%1"):gsub("[/\\]+$", "")
         if dir ~= "" then
             local dir_norm = dir:gsub("\\", "/")
-            local names = scandir_fn(dir)
-            if names then
-                for _, filename in ipairs(names) do
-                    local base = filename
-                    if is_win then base = strip_exe_ext(base):lower() end
-                    -- First occurrence wins (PATH precedence).
-                    if index[base] == nil then
-                        index[base] = dir_norm .. "/" .. filename
+            local entries = scandir_fn(dir)
+            if entries then
+                -- Base names claimed by THIS directory → PATHEXT rank, so a
+                -- better-ranked extension in the same dir can replace a worse one.
+                local claimed = {}
+                for _, entry in ipairs(entries) do
+                    local filename, etype = entry_parts(entry)
+                    local base, rank
+                    if filename then
+                        if is_win then
+                            local ext = filename:match("(%.[^.]+)$")
+                            rank = ext and ext_rank[ext:lower()]
+                            if rank then
+                                base = filename:sub(1, #filename - #ext):lower()
+                            end
+                        else
+                            base = filename
+                        end
+                    end
+                    local want = base and base ~= "" and (index[base] == nil
+                        or (claimed[base] and rank and rank < claimed[base]))
+                    if want then
+                        local full = dir_norm .. "/" .. filename
+                        local is_file = etype == "file"
+                        if not is_file and (etype == nil or etype == "link"
+                                or etype == "unknown") then
+                            -- Ambiguous type: stat (follows links) — only here,
+                            -- so the common case stays a plain directory read.
+                            local st = stat_fn(full)
+                            is_file = st ~= nil and st.type == "file"
+                        end
+                        if is_file then
+                            index[base] = full
+                            claimed[base] = rank or 0
+                        end
                     end
                 end
             end
@@ -146,20 +214,21 @@ function M._build_path_index(path_string, is_win, scandir_fn)
     return index
 end
 
---- List the entry names of a directory via libuv, or nil if it can't be read.
---- A bad/inaccessible PATH entry must not break the whole scan.
+--- List the entries of a directory via libuv as `{ name, type }` pairs, or nil
+--- if it can't be read. A bad/inaccessible PATH entry must not break the whole
+--- scan. Public (underscored) so tests can drive the real lister.
 --- @param dir string
---- @return string[]|nil
-local function scandir_names(dir)
+--- @return { [1]: string, [2]: string|nil }[]|nil
+function M._scandir_entries(dir)
     local h = uv.fs_scandir(dir)
     if not h then return nil end
-    local names = {}
+    local entries = {}
     while true do
-        local name = uv.fs_scandir_next(h)
+        local name, etype = uv.fs_scandir_next(h)
         if not name then break end
-        names[#names + 1] = name
+        entries[#entries + 1] = { name, etype }
     end
-    return names
+    return entries
 end
 
 --- Return the cached PATH executable index, building it on first use by
@@ -171,7 +240,8 @@ local function get_path_index()
     -- (which has no `vim.env`) and off the main loop, whereas `vim.env` is a
     -- main-loop-only API that throws in a fast-event context.
     local path_string = os.getenv("PATH") or ""
-    M._path_index = M._build_path_index(path_string, is_windows(), scandir_names)
+    M._path_index = M._build_path_index(path_string, is_windows(), M._scandir_entries,
+        { pathext = os.getenv("PATHEXT") })
     return M._path_index
 end
 
