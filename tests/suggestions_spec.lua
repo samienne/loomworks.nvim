@@ -133,6 +133,74 @@ describe("compiler-cache suggestion provider", function()
         assert.same({}, suggestions.compiler_cache_provider(ws))
     end)
 
+    -- MSVC-style active profile under `auto` (spec §1.3.2 / §16.31).
+    local MSVC_TOOL = {
+        compiler_id = "msvc-19.40", generator = "Ninja",
+        compiler_path = "C:/VS/VC/bin/cl.exe", vcvarsall = "C:/VS/vcvarsall.bat",
+    }
+    local function make_ws_with_profile(cfg_extra, tool_data)
+        local files = {
+            ["loomworks.json"] = h.make_config_json({
+                projects = { App = { cmake = cfg_extra or {} } },
+                configuration_sets = { debug = { App = "Debug" } },
+            }),
+            ["loomworks.user.json"] = h.make_user_json({
+                profiles = { debug = {
+                    configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-msvc", data = tool_data } },
+                } },
+            }),
+        }
+        local deps = h.make_test_deps(files, {
+            modules = { get = modules_get },
+            cache = { save = function() return true end },
+        })
+        local core = Core.new(deps)
+        core:setup({ root = "/root" })
+        core._workspace._tools_by_type = { cmake = { {
+            tool_key = "ninja-msvc", tool_data = tool_data, tool_label = "msvc",
+        } } }
+        core:remerge()
+        local ws = core:get_workspace()
+        ws._active_profile = ws._profiles[1]
+        return ws
+    end
+
+    it("MSVC under auto with a cache present: info 'available — not enabled automatically' with the opt-in command", function()
+        local ws = make_ws_with_profile(nil, MSVC_TOOL)
+        set_present({ sccache = true })
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("info", out[1].kind)
+        assert.matches("sccache available — not enabled automatically for MSVC%-style compilers",
+            out[1].title)
+        assert.is_nil(out[1].remedy)
+        assert.matches("lw config set App Debug variables.cache sccache", out[1].detail, 1, true)
+        assert.matches("overrides.clang.cache", out[1].detail, 1, true)
+        -- informational → not counted
+        assert.equals(0, suggestions.count_actionable(ws))
+    end)
+
+    it("MSVC with an explicit cache policy reports 'using <tool>'", function()
+        local ws = make_ws_with_profile({ configurations = { Debug = {
+            overrides = { msvc = { cache = "sccache" } },
+        } } }, MSVC_TOOL)
+        set_present({ sccache = true })
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.matches("using sccache", out[1].title)
+    end)
+
+    it("MSVC under auto with no cache: the install remedy says it must be enabled explicitly", function()
+        local ws = make_ws_with_profile(nil, MSVC_TOOL)
+        set_present({})
+        local out = suggestions.compiler_cache_provider(ws)
+        assert.equals(1, #out)
+        assert.equals("suggestion", out[1].kind)
+        assert.matches("enable it explicitly", out[1].remedy, 1, true)
+        assert.matches("variables.cache", out[1].remedy, 1, true)
+    end)
+
     it("recommends the platform-preferred tool", function()
         local tool = suggestions._preferred_install_tool()
         assert.is_true(tool == "sccache" or tool == "ccache")

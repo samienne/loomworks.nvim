@@ -615,8 +615,11 @@ end
 --- Resolution is anchored on the profile's first caching project — v1 shows a
 --- single profile-level row — and goes through `compiler_cache.resolve_for`,
 --- the same resolver the build context uses, so the reported tool is the one a
---- build applies (clang-cl → sccache-first). It never spawns the cache tool.
---- @return { policy: string, tool: string|nil, present: boolean, stale: boolean, text: string }|nil
+--- build applies. `auto` on an MSVC-style compiler (msvc, clang-cl) resolves to
+--- no launcher by design (spec §1.3.2) and is reported as
+--- `Cache: auto (off for MSVC)` with `msvc_auto_off = true`, distinct from
+--- `auto (none found)`. It never spawns the cache tool.
+--- @return { policy: string, tool: string|nil, path: string|nil, present: boolean, stale: boolean, msvc_auto_off: boolean, project: loomworks.Project, configuration: loomworks.Configuration|nil, text: string }|nil
 function Profile:compiler_cache_status()
     local cc = require("loomworks.compiler_cache")
 
@@ -633,9 +636,11 @@ function Profile:compiler_cache_status()
     local project = target._project
     local configuration = target:configuration()
     local tool = target:tool_object()
-    local resolved, policy = cc.resolve_for(
-        project, configuration, tool and tool.data or nil, self)
+    local tool_data = tool and tool.data or nil
+    local resolved, policy = cc.resolve_for(project, configuration, tool_data, self)
     policy = policy or "auto"
+    local msvc_auto_off = policy == "auto"
+        and require("loomworks.cpp_compilers").is_msvc_style(tool_data)
 
     -- Stale when any of the profile's configured caching units were built with
     -- a launcher different from the one that would resolve now.
@@ -653,6 +658,8 @@ function Profile:compiler_cache_status()
         text = "Cache: " .. resolved.tool
     elseif policy == "off" then
         text = "Cache: off"
+    elseif msvc_auto_off then
+        text = "Cache: auto (off for MSVC)"
     elseif policy == "auto" then
         text = "Cache: auto (none found)"
     else
@@ -665,6 +672,9 @@ function Profile:compiler_cache_status()
         path = resolved and resolved.path or nil,
         present = resolved ~= nil,
         stale = stale,
+        msvc_auto_off = msvc_auto_off,
+        project = project,
+        configuration = configuration,
         text = text,
     }
 end

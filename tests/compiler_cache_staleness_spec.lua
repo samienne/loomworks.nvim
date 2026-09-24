@@ -132,15 +132,31 @@ describe("ConfigUnit launcher staleness", function()
         end)
 
         it("non-preset unit whose recorded launcher differs is still stale", function()
-            local unit = with_cmake(make_configured("msvc", "none"))
-            set_present({ sccache = true })
+            local unit = with_cmake(make_configured("gcc", "none"))
+            set_present({ ccache = true })
             assert.is_true(unit:launcher_changed())
             assert.is_true(unit:is_stale())
         end)
 
         it("non-preset unit with a matching launcher is not stale", function()
+            local unit = with_cmake(make_configured("gcc", "/usr/bin/ccache"))
+            set_present({ ccache = true })
+            assert.is_false(unit:launcher_changed())
+        end)
+
+        -- Spec §1.3.2 / cmake §5d migration: `auto` no longer enables a
+        -- launcher for MSVC, so an MSVC unit configured under the old auto
+        -- rule (recorded sccache) is launcher-stale and reconfigures without it.
+        it("MSVC unit configured with sccache under the old auto rule is now stale", function()
             local unit = with_cmake(make_configured("msvc", "/usr/bin/sccache"))
             set_present({ sccache = true })
+            assert.is_true(unit:launcher_changed())
+            assert.is_true(unit:is_stale())
+        end)
+
+        it("MSVC unit under auto that recorded none is not stale with sccache present", function()
+            local unit = with_cmake(make_configured("msvc", "none"))
+            set_present({ sccache = true, ccache = true })
             assert.is_false(unit:launcher_changed())
         end)
     end)

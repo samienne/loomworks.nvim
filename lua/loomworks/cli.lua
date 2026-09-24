@@ -6110,7 +6110,8 @@ when the target list is incomplete.
 
 For a profile with a C/C++ project the overview shows a `Cache` line — the
 resolved compiler-cache launcher (ccache/sccache), or that caching is off /
-`auto (none found)`. A `[stale — reconfigure]` marker means the next build
+`auto (none found)` / `auto (off for MSVC)` (auto never enables a cache for
+MSVC or clang-cl; `lw health` shows how to opt in). A `[stale — reconfigure]` marker means the next build
 reconfigures to apply a launcher change.
 
 Diagnostics come from the same source the editor's Diagnostics page uses:
