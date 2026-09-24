@@ -954,9 +954,16 @@ local function record_step(ws, step, ok)
   if not step.unit then return end
   if step.build_dir then step.unit.build_dir_value = step.build_dir end
   pcall(function()
-    ws:record_task_result({ unit = step.unit, action = step.kind, success = ok })
+    -- Pass the module's configure record (cache_launcher, passed_options, …)
+    -- exactly like the editor's task path, so launcher staleness and the
+    -- faithful-reconfigure retraction (core §5.1) work for CLI configures too.
+    ws:record_task_result({
+      unit = step.unit, action = step.kind, success = ok,
+      module_info = step.module_info,
+    })
   end)
 end
+M._record_step = record_step
 
 --- Format the output-artifact conflict refusal (spec §5.9 / §16.28). `die`
 --- prepends "lw: " and exits 1. Names the conflicting profile and the shared
@@ -1010,6 +1017,14 @@ local function run_build_steps(profile, ws, opts)
     -- step would choke on them. Appended so they layer on top.
     if opts.extra_args and step.kind == "build" then
       step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
+    end
+    -- Full reconfigure (core §5.1 / §8.1): remove the module-named
+    -- configure-state entries first. Core validates + deletes; the build-dir
+    -- lock is already held for the whole run (with_build_locks).
+    if step.kind == "configure" and type(step.pre_configure_reset) == "table"
+        and #step.pre_configure_reset > 0 then
+      local ok_r, r_err = ws:_pre_configure_reset(step.build_dir, step.pre_configure_reset)
+      if not ok_r then die(tostring(r_err)) end
     end
     log(string.format("==> [%s] %s", step.kind, step.name or "?"))
     local code = run_spec(step, ws.root, quiet)

@@ -3248,6 +3248,74 @@ function Workspace:_validate_build_dir(build_dir, safe_prefix)
     return true
 end
 
+--- Remove the configure-state entries a module named for a **full reconfigure**
+--- (core §5.1 / §8.1 `pre_configure_reset`) from inside a build directory —
+--- e.g. cmake's `CMakeCache.txt` + `CMakeFiles` below CMake 3.24, or meson's
+--- stored command line. Core owns this deletion so the module never deletes.
+---
+--- Deletion safety (CLAUDE.md): the build dir must be non-empty and lie within
+--- the workspace root (`_validate_build_dir`: canonical paths + trailing-"/"
+--- boundary) — it can come from the cache, which is never trusted. Each entry
+--- must be a plain relative path (not absolute / drive-qualified, no empty,
+--- "." or ".." segment), and its canonical path (symlinks resolved) must lie
+--- strictly inside the canonical build dir, so a link pointing elsewhere is
+--- refused rather than followed. A missing entry is fine. Synchronous and
+--- scoped to configure state only: no cache entry changes (the unit stays
+--- stale until the configure succeeds, so an interrupted reset simply
+--- repeats on the next build). Callers hold the build dir's exclusive lock.
+--- @param build_dir string|nil absolute build directory
+--- @param entries string[]|nil build-dir-relative paths to remove
+--- @return boolean ok
+--- @return string|nil err
+function Workspace:_pre_configure_reset(build_dir, entries)
+    if type(entries) ~= "table" or #entries == 0 then return true, nil end
+    if type(build_dir) ~= "string" or build_dir == "" then
+        return false, "full reconfigure refused: no build directory to reset"
+    end
+    if not self:_validate_build_dir(build_dir, self.root) then
+        return false, "full reconfigure refused: build directory outside the workspace: "
+            .. build_dir
+    end
+    local uv = vim.uv or vim.loop
+    local base = (build_dir:gsub("\\", "/"):gsub("/+$", ""))
+    local canon_base = self:_canonicalize_boundary_path(base)
+    local io_dep = self._core._deps.io
+    local rm_rf = (io_dep and io_dep.rm_rf) or require("loomworks.io").rm_rf
+    for _, rel in ipairs(entries) do
+        if type(rel) ~= "string" or rel == "" then
+            return false, "full reconfigure refused: empty reset entry"
+        end
+        local r = rel:gsub("\\", "/")
+        if r:sub(1, 1) == "/" or r:match("^%a:") then
+            return false, "full reconfigure refused: absolute reset entry '" .. rel .. "'"
+        end
+        for seg in (r .. "/"):gmatch("([^/]*)/") do
+            if seg == "" or seg == "." or seg == ".." then
+                return false, "full reconfigure refused: unsafe reset entry '" .. rel .. "'"
+            end
+        end
+        local path = base .. "/" .. r
+        local canon = self:_canonicalize_boundary_path(path)
+        if canon:sub(1, #canon_base + 1) ~= canon_base .. "/" then
+            return false, "full reconfigure refused: '" .. rel
+                .. "' resolves outside the build directory " .. build_dir
+        end
+        local st = uv.fs_lstat(path)
+        if st then
+            local ok, err
+            if st.type == "directory" then
+                ok, err = rm_rf(path)
+            else
+                ok, err = uv.fs_unlink(path)
+            end
+            if not ok then
+                return false, "full reconfigure: could not remove " .. path .. ": " .. tostring(err)
+            end
+        end
+    end
+    return true, nil
+end
+
 --- Remove empty ancestor directories up to (but not including) the stop path.
 --- Synchronous — only removes genuinely empty directories.
 --- @param dir string normalized path of the deleted directory
