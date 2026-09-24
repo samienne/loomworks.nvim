@@ -259,6 +259,13 @@ each profile on each machine. Key properties:
 Precedence, end to end: `default → configuration inheritance → compiler
 override → (if still blank) active-profile fill value`.
 
+"The active profile" here means the profile the resolution is for: an operation
+on a named profile (building, showing or querying a profile that is not the
+active one) resolves with **that** profile's fill values; only an operation with
+no profile in play (a single configuration's action in the editor) uses the
+active profile's. Staleness is judged in the same context (§5.1 *Resolution
+context*).
+
 **Value expansion**: Variable values can reference built-in variables
 (`${workspace_root}`, `${build_dir}`, `${variant}`, `${config_set}`,
 `${project_path}`) but NOT other user-defined variables. This prevents

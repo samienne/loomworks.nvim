@@ -329,7 +329,8 @@ local function render_profile_details(tree, profile, lw)
                 -- Per-configuration compiler-cache mismatch (spec/ui.md): the
                 -- resolved launcher differs from the one this unit was built
                 -- with, so the next build reconfigures to apply the change.
-                if unit and unit.launcher_changed and unit:launcher_changed() then
+                -- Resolved for THIS profile (its `cache` fill), not the active one.
+                if unit and unit.launcher_changed and unit:launcher_changed(profile) then
                     row_chunks[#row_chunks + 1] = { " [stale — reconfigure]", "LoomworksStale" }
                 end
                 tree:node(row_chunks, {

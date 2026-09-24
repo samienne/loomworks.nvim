@@ -962,6 +962,8 @@ local function record_step(ws, step, ok)
     ws:record_task_result({
       unit = step.unit, action = step.kind, success = ok,
       module_info = step.module_info,
+      -- The profile being built: the snapshot is taken in its context.
+      profile = step.profile,
     })
   end)
 end

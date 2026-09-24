@@ -157,14 +157,16 @@ end
 
 --- The configuration environment (spec §1.3.3) for this unit's test runs,
 --- with `env` (the test's own declared environment, which is more specific)
---- layered on top. Returns a fresh table.
+--- layered on top. Returns a fresh table. `profile` is the profile whose
+--- fills the environment resolves with (nil = the active profile).
 --- @param config_unit loomworks.ConfigUnit|nil
 --- @param env table<string, string>|nil
+--- @param profile? loomworks.Profile
 --- @return table<string, string>
-local function with_configuration_env(config_unit, env)
+local function with_configuration_env(config_unit, env, profile)
     local out = {}
     if config_unit and type(config_unit.configuration_env) == "function" then
-        for k, v in pairs(config_unit:configuration_env()) do out[k] = v end
+        for k, v in pairs(config_unit:configuration_env(profile)) do out[k] = v end
     end
     for k, v in pairs(env or {}) do out[k] = v end
     return out
@@ -685,7 +687,7 @@ end
 
 --- Native meson test run: authoritative exit code, streaming output.
 --- `meson test -C <build_dir>` runs every declared test.
---- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile }
 --- @return table|nil { cmd, env, cwd, junit_out }
 function MesonTestUnit:run_command_all(opts)
     opts = opts or {}
@@ -710,7 +712,7 @@ function MesonTestUnit:run_command_all(opts)
     -- configuration environment (spec §1.3.3) is the base, as for a build.
     local ok_mod, meson_mod = pcall(require, "loomworks.modules.meson")
     local task_env = (ok_mod and meson_mod.compose_task_env)
-        and meson_mod.compose_task_env(with_configuration_env(self._config_unit, nil),
+        and meson_mod.compose_task_env(with_configuration_env(self._config_unit, nil, opts.profile),
             self._config_unit._tool_data) or nil
     return {
         cmd = cmd,

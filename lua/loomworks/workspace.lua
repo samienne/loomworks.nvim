@@ -2825,8 +2825,9 @@ function Workspace:record_task_result(result)
         -- configure ran with (spec §1.3.3, §8.1 `configure_env`): the env
         -- staleness fingerprint (`ConfigUnit:env_changed`) and what a module
         -- compares `configuration_env` against to choose a full reconfigure.
-        -- Nil when empty.
-        local configuration_env = config_unit:configuration_env()
+        -- Nil when empty. Resolved in the context of the profile the task ran
+        -- for (its blank-variable fills), not whichever profile is active.
+        local configuration_env = config_unit:configuration_env(result.profile)
         config_unit.module_info.configure_env =
             next(configuration_env) and configuration_env or nil
 
@@ -2901,8 +2902,10 @@ function Workspace:record_task_result(result)
     -- cmake §11): the fingerprint is the post-expansion `-D` values, so a
     -- later change to a variable default or compiler override that alters a
     -- resolved value is caught even when the raw `${…}` template is unchanged.
+    -- Resolved against the profile the configure ran for (result.profile —
+    -- its fills), the same context the build gate re-checks it in.
     if config_unit._configuration and not config_unit._configuration._removed then
-        bd.options_snapshot = config_unit:resolved_option_fingerprint()
+        bd.options_snapshot = config_unit:resolved_option_fingerprint(result.profile)
         bd.module_config_snapshot = config_unit._configuration.module_config
         config_unit._cached_options = bd.options_snapshot
         config_unit._cached_module_config = bd.module_config_snapshot

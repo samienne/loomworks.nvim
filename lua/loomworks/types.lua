@@ -295,6 +295,7 @@
 --- @field tool? loomworks.ToolRef bundled tool reference
 --- @field build_dir? string
 --- @field module_info? table opaque module-specific info (e.g. cmake generator/compiler)
+--- @field profile? loomworks.Profile the profile whose context the task resolved against (its blank-variable / `cache` fills); nil = the active profile
 --- @field success boolean
 
 --- Running task info for deletion conflict detection.

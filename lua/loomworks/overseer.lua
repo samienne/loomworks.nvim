@@ -188,6 +188,11 @@ local function collect_configuration_tasks(unit)
         local lw_meta = task_def.loomworks
         if lw_meta then
             lw_meta.unit = unit
+            -- The profile this context resolved against (its blank-variable
+            -- and `cache` fills): the active one for a unit-scoped action.
+            -- The build gate and the post-configure record use the same one
+            -- (core §5.1).
+            lw_meta.profile = ws._active_profile
             lw_meta.progress_tool = pt
             lw_meta.variant = variant
             lw_meta.tool = tool_ref
@@ -390,6 +395,11 @@ local function collect_profile_tasks(profile, opts)
             local lw_meta = task_def.loomworks
             if lw_meta then
                 lw_meta.unit = pp._config_unit
+                -- The profile being built: its fills resolved this context,
+                -- so the build gate's staleness check and the post-configure
+                -- record resolve against it too (core §5.1), never against
+                -- whichever profile happens to be active.
+                lw_meta.profile = profile
                 lw_meta.progress_tool = pt
                 lw_meta.variant = active_config
                 lw_meta.tool = project_tool
@@ -653,6 +663,7 @@ local function start_one_task(overseer, task_def, on_complete)
                         action = lw_meta.action,
                         variant = lw_meta.variant,
                         tool = lw_meta.tool,
+                        profile = lw_meta.profile,
                         build_dir = lw_meta.build_dir,
                         module_info = lw_meta.module_info,
                         success = status == "SUCCESS",
@@ -861,7 +872,7 @@ local function filter_unconfigured_tasks(all_tasks, forced)
         local lw_meta = task_def.loomworks
         if not lw_meta then goto next end
 
-        local reason = lw_meta.unit:configure_reason(forced)
+        local reason = lw_meta.unit:configure_reason(forced, lw_meta.profile)
         if reason then
             lw_meta.configure_reason = reason
             needs_configure[#needs_configure + 1] = task_def
@@ -930,7 +941,7 @@ end
 ---   drops the build step of any unit whose native test runner self-rebuilds —
 ---   configuration is still planned for every unit; reconfigure forces a FULL
 ---   reconfigure of every unit (`lw build --reconfigure`, §16.4).
---- @return table[]|nil steps list of { kind, name, unit, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, cmd, cwd, env }
+--- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, cmd, cwd, env }
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
     local all_tasks = collect_profile_tasks(profile,
@@ -959,6 +970,9 @@ function M.plan_profile_build(profile, opts)
                         kind = kind,
                         name = td.name,
                         unit = td.loomworks and td.loomworks.unit or nil,
+                        -- The profile being built (core §5.1): the headless
+                        -- runner records the configure against it.
+                        profile = td.loomworks and td.loomworks.profile or nil,
                         build_dir = td.loomworks and td.loomworks.build_dir or nil,
                         -- Module record that replaces the unit's record after a configure
                         -- (cache_launcher, passed_options, …) and the
@@ -1075,7 +1089,8 @@ function M.plan_profile_test(profile, opts)
     for _, r in ipairs(runnable) do
         local junit_dest = opts.junit and junit_dest_for(opts.junit, r.label, multi) or nil
         local ok, spec = pcall(function()
-            return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest })
+            return r.tu:run_command_all({ extra_args = opts.extra_args, junit = junit_dest,
+                profile = profile })
         end)
         if not ok then
             -- A throwing runner is a bug, not "no tests" — surface it

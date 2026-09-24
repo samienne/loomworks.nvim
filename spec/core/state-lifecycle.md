@@ -451,6 +451,20 @@ Because a profile fill value feeds a configuration's resolved options, changing
 one can make an already-configured unit stale (§5), triggering a reconfigure on
 the next build; the build directory identity is NOT keyed on fill values.
 
+**Resolution context (which profile's fills).** A build input that depends on
+profile fill values (resolved options, the configuration environment, the
+compiler-cache launcher via a `cache` fill) is resolved in the context of the
+**profile the operation is for** — the profile being built (e.g. `lw build
+<profile>`, which need not be the active one), or, for an operation on a single
+configuration with no profile in play, the active profile. The staleness check
+recomputes each input in that **same** profile's context, and the record a
+configure leaves behind (the options / environment snapshot) is taken in it
+too, so an unchanged input never reads as changed merely because the profile
+being built is not the active one. A ConfigUnit shared by several profiles
+(same project + configuration) is judged per profile: building a profile whose
+fills differ from the ones the unit was last configured with makes it stale for
+that build, and a profile's status reports staleness in its own context.
+
 The **resolved compiler-cache launcher** (§8.1 `compiler_cache`) is a build input
 of the same kind. Core resolves it from the effective `cache` policy (§1.3.2) and
 the active tool's compiler family and records it in the configure task's

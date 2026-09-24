@@ -661,11 +661,12 @@ function Profile:compiler_cache_status(pp)
         project._module and project._module.impl or nil, configuration, tool_data)
 
     -- Stale when any of the profile's configured caching units were built with
-    -- a launcher different from the one that would resolve now.
+    -- a launcher different from the one that would resolve now — resolved in
+    -- THIS profile's context (its `cache` fill), not the active profile's.
     local stale = false
     for _, p in ipairs(pp and { pp } or self:projects()) do
         local u = p._config_unit
-        if u and u.launcher_changed and u:launcher_changed() then
+        if u and u.launcher_changed and u:launcher_changed(self) then
             stale = true
             break
         end

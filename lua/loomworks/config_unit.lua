@@ -493,6 +493,22 @@ function ConfigUnit:active_compiler_family()
     return require("loomworks.cpp_compilers").family_from_tool_data(td)
 end
 
+--- The profile whose context (blank-variable fills, including a `cache` fill —
+--- core §1.3.1 / §1.3.2) a resolution of this unit uses: `profile` when the
+--- caller names one, else the workspace's active profile. A ConfigUnit can be
+--- shared by several profiles (same project + configuration), so "the" profile
+--- is the caller's call — the build gate and profile status pass the profile
+--- they are building / showing, so staleness is judged against the same
+--- context the configure ran with (§5.1). Unit-scoped callers with no profile
+--- in play (per-unit editor actions, test runners) fall back to the active
+--- profile, which is also what their task context resolves against.
+--- @param profile? loomworks.Profile
+--- @return loomworks.Profile|nil
+function ConfigUnit:context_profile(profile)
+    if profile then return profile end
+    return self._workspace and self._workspace._active_profile or nil
+end
+
 --- Compute the RESOLVED option values that would land on this unit's configure
 --- command: options merged across the inheritance chain (project-wide → bases
 --- → own) with every value expanded through the built-in + project-variable
@@ -500,9 +516,11 @@ end
 --- via the active tool's family. This is the fingerprint `is_stale` compares,
 --- so a change to a variable `default` or a compiler `override` that alters a
 --- `-D` value is caught even though the raw `${…}` template is unchanged
---- (cmake §11). Returns a name → expanded-string dict.
+--- (cmake §11). Returns a name → expanded-string dict. `profile` (default: the
+--- active profile, `context_profile`) supplies blank-variable fills.
+--- @param profile? loomworks.Profile the profile whose context to resolve in
 --- @return table<string, string>
-function ConfigUnit:resolved_option_fingerprint()
+function ConfigUnit:resolved_option_fingerprint(profile)
     local cfg = self._configuration
     if not cfg then return {} end
     local project = self._project
@@ -527,13 +545,13 @@ function ConfigUnit:resolved_option_fingerprint()
 
     -- 2. Expansion context: built-ins + resolved project variables (family-
     --    aware), shared with the configuration environment (config_env). The
-    --    active profile is included so a blank variable's fill value (§1.3.1)
+    --    context profile is included so a blank variable's fill value (§1.3.1)
     --    participates in the fingerprint — changing it makes the unit stale
     --    and forces a reconfigure. A still-blank value is skipped.
     local expand = require("loomworks.expand")
     local ctx = require("loomworks.config_env").expansion_context(
         project, cfg, self:active_compiler_family(),
-        self._workspace and self._workspace._active_profile,
+        self:context_profile(profile),
         self._workspace and self._workspace.root or nil)
 
     -- 3. Expand each merged option value.
@@ -610,16 +628,19 @@ end
 --- (`configure record from an older lw`, `options changed (FOO removed)`,
 --- `module configuration changed`, `configuration environment changed`,
 --- `compiler launcher changed`). The first applicable reason wins, in that
---- order. Returns nil for a never-configured unit.
+--- order. Returns nil for a never-configured unit. Every recompute resolves in
+--- `profile`'s context (default: the active profile) — pass the profile being
+--- built / shown, the one the configure ran with.
+--- @param profile? loomworks.Profile
 --- @return string|nil
-function ConfigUnit:stale_reason()
+function ConfigUnit:stale_reason(profile)
     if not self._configuration or self._configuration._removed then return nil end
     -- A configure record from an older lw (§5.1 *Configure record migration*):
     -- checked first — nothing else in the record can be trusted.
     if self:record_outdated() then return "configure record from an older lw" end
     -- No cached snapshot means never configured — not stale
     if not self._cached_options and not self._cached_module_config then return nil end
-    local fingerprint = self:resolved_option_fingerprint()
+    local fingerprint = self:resolved_option_fingerprint(profile)
     if not vim.deep_equal(self._cached_options or {}, fingerprint) then
         local what = describe_option_change(self._cached_options or {}, fingerprint)
         return what ~= "" and ("options changed (" .. what .. ")") or "options changed"
@@ -629,14 +650,14 @@ function ConfigUnit:stale_reason()
     end
     -- Configuration environment change (spec §1.3.3): a configure input like
     -- the options — the module takes a full reconfigure for it (§5.1).
-    if self:env_changed() then return "configuration environment changed" end
+    if self:env_changed(profile) then return "configuration environment changed" end
     -- Compiler-cache launcher change (§5.1 / module §11): recompute the launcher
     -- core would resolve now (current `cache` policy + compiler family + live
     -- toolchain-path presence) and compare to the one recorded at configure.
     -- A launcher that appears, disappears, or changes value marks the unit stale
     -- so the build gate reconfigures (cmake: in place when only the launcher
     -- moved, `--fresh`/reset when the MSVC /Z7 keys move too; meson: --wipe).
-    if self:launcher_changed() then return "compiler launcher changed" end
+    if self:launcher_changed(profile) then return "compiler launcher changed" end
     return nil
 end
 
@@ -648,13 +669,14 @@ end
 --- conditions the gate has always used; the string is what the headless
 --- runner prints (§16.4).
 --- @param forced? boolean a forced full reconfigure was requested
+--- @param profile? loomworks.Profile the profile being built (default: active)
 --- @return string|nil
-function ConfigUnit:configure_reason(forced)
+function ConfigUnit:configure_reason(forced, profile)
     local state = self:state()
     if state == "unconfigured" then return "first configure" end
     if forced then return "forced (--reconfigure)" end
     if state == "configure_failed" then return "previous configure failed" end
-    local stale = self:stale_reason()
+    local stale = self:stale_reason(profile)
     if stale then return stale end
     if self._project and self._project.needs_refresh then return "project files changed" end
     if self:missing_build_dir_needs_reconfigure() then return "build directory missing" end
@@ -669,24 +691,27 @@ end
 --- a variable `default` or a compiler `override` that changes a `-D` value
 --- makes the unit stale, while a change with no resolved effect does not.
 --- Returns false when the unit has never been configured. `stale_reason()`
---- says why.
+--- says why. `profile` as for `stale_reason`.
+--- @param profile? loomworks.Profile
 --- @return boolean
-function ConfigUnit:is_stale()
-    return self:stale_reason() ~= nil
+function ConfigUnit:is_stale(profile)
+    return self:stale_reason(profile) ~= nil
 end
 
 --- The resolved configuration environment (spec §1.3.3) for this unit: the
 --- configuration's `env` across its inheritance chain and matching
 --- compiler-family `overrides`, values expanded (built-ins + resolved project
---- variables incl. the active profile's fill), reserved compiler-driver names
---- stripped. Empty when there is none (or no configuration).
+--- variables incl. the context profile's fill — `profile`, default the active
+--- one), reserved compiler-driver names stripped. Empty when there is none (or
+--- no configuration).
+--- @param profile? loomworks.Profile
 --- @return table<string, string>
-function ConfigUnit:configuration_env()
+function ConfigUnit:configuration_env(profile)
     local cfg = self._configuration
     if not cfg or cfg._removed then return {} end
     local env = require("loomworks.config_env").resolve(
         self._project, cfg, self:active_compiler_family(),
-        self._workspace and self._workspace._active_profile,
+        self:context_profile(profile),
         self._workspace and self._workspace.root or nil)
     return env
 end
@@ -696,13 +721,14 @@ end
 --- absent record compares as empty: a configure before the record existed
 --- applied no configuration environment, so a unit that has none is not
 --- stale, and one that now has some reconfigures once. Never stale for a
---- never-configured unit.
+--- never-configured unit. `profile` as for `stale_reason`.
+--- @param profile? loomworks.Profile
 --- @return boolean
-function ConfigUnit:env_changed()
+function ConfigUnit:env_changed(profile)
     if not self._configuration or self._configuration._removed then return false end
     if not self._cached_options and not self._cached_module_config then return false end
     local recorded = self.module_info and self.module_info.configure_env or {}
-    return not vim.deep_equal(recorded, self:configuration_env())
+    return not vim.deep_equal(recorded, self:configuration_env(profile))
 end
 
 --- Whether the compiler-cache launcher that would be APPLIED now differs from
@@ -729,9 +755,16 @@ end
 --- A unit configured with no cache records `"none"`, so a later-installed
 --- cache (resolved `"/…"`) ≠ `"none"` fires (install-after-configure), and a
 --- removed cache (recorded `"/…"`, resolved `"none"`) fires too.
+---
+--- **Context**: the policy is resolved in `profile`'s context (default: the
+--- active profile). A profile's `cache` fill (`lw profile set <p> <proj> cache
+--- …`) is what configure applied when building that profile, so the build gate
+--- and the profile's status pass it; resolving against a different profile
+--- would report every build of a non-active profile as launcher-stale.
+--- @param profile? loomworks.Profile the profile being built / shown
 --- @param lookup? fun(name: string): string|nil executable resolver (default: PATH index)
 --- @return boolean
-function ConfigUnit:launcher_changed(lookup)
+function ConfigUnit:launcher_changed(profile, lookup)
     if not self._configuration or self._configuration._removed then return false end
     if not self._cached_options and not self._cached_module_config then return false end
     local recorded = self.module_info and self.module_info.cache_launcher or nil
@@ -743,7 +776,7 @@ function ConfigUnit:launcher_changed(lookup)
     if self:_cache_launcher_applicable(tool_data) then
         resolved = require("loomworks.compiler_cache").resolve_for(
             self._project, self._configuration, tool_data,
-            self._workspace and self._workspace._active_profile, lookup)
+            self:context_profile(profile), lookup)
     end
     -- Absent (or not-applicable) launcher compares as the same sentinel the
     -- module records.

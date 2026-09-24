@@ -346,14 +346,16 @@ end
 
 --- The configuration environment (spec §1.3.3) for this unit's test runs,
 --- with `env` (the test's own declared environment, which is more specific)
---- layered on top. Returns a fresh table.
+--- layered on top. Returns a fresh table. `profile` is the profile whose
+--- fills the environment resolves with (nil = the active profile).
 --- @param config_unit loomworks.ConfigUnit|nil
 --- @param env table<string, string>|nil
+--- @param profile? loomworks.Profile
 --- @return table<string, string>
-local function with_configuration_env(config_unit, env)
+local function with_configuration_env(config_unit, env, profile)
     local out = {}
     if config_unit and type(config_unit.configuration_env) == "function" then
-        for k, v in pairs(config_unit:configuration_env()) do out[k] = v end
+        for k, v in pairs(config_unit:configuration_env(profile)) do out[k] = v end
     end
     for k, v in pairs(env or {}) do out[k] = v end
     return out
@@ -486,7 +488,7 @@ end
 
 --- Native ctest run: authoritative exit code, streaming output.
 --- nil when the build dir has no configured test set (no CTestTestfile.cmake).
---- @param opts? table { filter?: string, extra_args?: string[], junit?: string }
+--- @param opts? table { filter?: string, extra_args?: string[], junit?: string, profile?: loomworks.Profile }
 --- @return table|nil { cmd, cwd, env, junit_out }
 function CTestUnit:run_command_all(opts)
     opts = opts or {}
@@ -515,7 +517,7 @@ function CTestUnit:run_command_all(opts)
     -- every configure/build/clean/test task.
     local env = self._config_unit:run_env()
     local cenv = type(self._config_unit.configuration_env) == "function"
-        and self._config_unit:configuration_env() or {}
+        and self._config_unit:configuration_env(opts.profile) or {}
     if next(cenv) then
         env = env or {}
         for k, v in pairs(cenv) do env[k] = v end
