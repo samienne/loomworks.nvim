@@ -680,3 +680,24 @@ trait/capability model makes backend-specific behavior capability-driven and
 extensible — a new compiler declares its traits and the cache logic works with no
 new `if family == X` branches — and keeps family-sniffing from metastasizing
 across modules/core. Polish, not urgent.
+
+## Comprehensive `lw health` environment inventory
+
+Make `lw health` a full "is this machine ready?" check (like `:checkhealth`).
+Outside a workspace: detect everything loomworks knows about — build systems
+(cmake + version, meson, ninja, make), compilers (gcc/clang/MSVC via
+vswhere/clang-cl), compiler caches, LSP servers (clangd, qmlls), debug adapters
+detectable headlessly (mason dir / PATH), installed module/SDK plugins, lw
+host/bundle/channel/update — and report found (with versions) vs missing.
+Inside a workspace: same inventory, but grouped **Required by this workspace**
+(derived from the projects' module types + the active profile's tools — nothing
+new to declare) vs **Other**; only a missing *required* item is actionable and
+counts toward `lw status`'s "N suggestions".
+
+Design: a generic optional hook per module/SDK/integration (e.g.
+`health_inventory(ctx)` → items with found/missing, version, required-by) so
+core only aggregates and renders (no module-specific logic in core). Runs only
+on explicit `lw health` (vswhere / `--version` probes are slow), fits the
+two-tier health cache (§16.31). `:checkhealth loomworks` can later render the
+same data. Spec: §16.31 + a module-interface hook. Planned as its own feature
+branch after v0.1.29 stable.

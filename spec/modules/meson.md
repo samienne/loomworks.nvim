@@ -71,10 +71,24 @@ scope (see core §15, invariant "The tool owns the compiler").
 Core resolves a compiler-cache launcher from the effective `cache` policy
 (core §1.3.2) and the active tool's compiler family and hands it to the module as
 `ctx.compiler_cache = { tool, path }` (or `nil`). For `auto`, the concrete
-launcher is `sccache` for an MSVC / clang-cl family tool and `ccache` for a
-gcc / clang family tool (`sccache` the cross-platform fallback); an explicit
-`ccache` / `sccache` policy uses that tool. The launcher is applied only when
-core actually resolved one (present on the toolchain search path).
+launcher is `ccache` for a gcc / clang family tool (`sccache` the fallback), and
+**none** for an MSVC-style tool (MSVC `cl`, clang-cl) — caching those requires an
+explicit `ccache` / `sccache` policy, for the reason given in
+[`cmake.md` §5d](cmake.md) (sccache fails a PDB-writing `/Zi` / `/ZI` compile;
+core §1.3.2). An explicit `ccache` / `sccache` policy uses that tool on any
+family. The launcher is applied only when core actually resolved one (present on
+the toolchain search path).
+
+**Post-configure PDB-flag scan (`cache_compat_scan`, core §8).** After a
+successful setup that applied a launcher to an MSVC-style tool, the module scans
+the per-target compile parameters of its target introspection data (§6) for the
+same PDB-writing flags as cmake (`/Zi`, `/ZI`, `-Zi`, `-ZI`) and reports findings
+per target with the same severities (`"error"` for sccache, `"warning"` for
+ccache) and remedies (switch those targets to `/Z7`, or `cache=off`). The module
+injects no debug-info-format adjustment of its own; a subproject or user option
+that requests `/Zi` is surfaced by the scan, never silently rewritten. When no
+introspection data exists for the build, the scan returns `scanned = false` and
+health reports it as skipped (core §16.31).
 
 **Explicit compiler pinning via a generated native file — and deliberate
 suppression of meson's auto-detect.** meson has its own implicit behavior: when
@@ -115,6 +129,27 @@ them from the wiped directory). This `--wipe` is the general mechanism for **any
 change on the same build directory; the compiler-cache toggle is simply its
 first routine case. This diverges from cmake, whose launcher is a mutable cache
 variable that a plain in-place reconfigure applies (see [`cmake.md` §5d](cmake.md)).
+
+**Removed options need a full reconfigure (core §5.1 *Faithful reconfigure*).**
+meson persists every `-D` option in the build directory: `--reconfigure` keeps an
+option that is no longer passed, and `--wipe` deliberately **replays** the
+previous command line (`meson-private/cmd_line.txt`) before applying the new one,
+so neither can retract an option, and meson has no flag to unset one. The module
+therefore records the `-D` options it passed (name → value) in
+`module_info.passed_options`, and on the next setup of an already-configured
+build directory compares that record (`recorded_module_info`, core §8.1; for a
+unit configured before the record existed, the keys of core's
+`recorded_options` snapshot) with what it passes now. An option **added or
+changed** is applied by the normal `--reconfigure` (or the `--wipe` above when
+the launcher also changed). An option loomworks passed before and **no longer
+passes** triggers a **full reconfigure**: the configure task names
+`meson-private/cmd_line.txt` in `pre_configure_reset` (core §8.1), so core
+removes the stored command line under the deletion-safety rules, and the module
+runs `meson setup --wipe` with the complete current option set — meson then
+rebuilds the tree from exactly the options loomworks passes, and the removed
+option returns to its `meson.options` default. Only options in loomworks' own
+record trigger this; an option the user set with `meson configure` by hand is
+not loomworks-passed and is left alone by a plain `--reconfigure`.
 
 ## 6. Target discovery (`parse_targets`)
 
@@ -201,3 +236,8 @@ preserving the `-D` options, so the caching change is applied without losing
 configuration. Because loomworks pins the driver explicitly rather than leaning
 on meson's PATH auto-detect (§5a), this recompute fully captures the caching
 state.
+
+Option-level staleness covers an option **added, changed or removed**; the
+resulting reconfigure is faithful (§5a *Removed options need a full
+reconfigure*): a removed option is dropped from the build directory by a
+`--wipe` setup after core clears the stored command line.

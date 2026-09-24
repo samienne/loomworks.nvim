@@ -97,22 +97,55 @@ for this profile/configuration — either `nil` or `{ tool, path }`, where `tool
 names the launcher and `path` is its resolved absolute executable. The split of
 responsibility is deliberate: **core owns resolution**, deriving the launcher
 from the effective cache **policy** (§1.3.1 — the reserved `cache` variable) and
-the active tool's compiler family, gated on the executable actually being present
+the active tool's compiler family (`auto` is family-aware and resolves to no
+launcher for an MSVC-style family, §1.3.2), gated on the executable actually being present
 in the toolchain search paths; **the module owns application**, deciding how to
 wrap its own compiler invocation with the launcher (see the per-module specs).
 The field is absent (`nil`) when the policy resolves to no launcher (policy
-`off`, or a policy whose launcher is not found). The resolved launcher is *not*
+`off`, `auto` on an MSVC-style family, or a policy whose launcher is not found). The resolved launcher is *not*
 stored in the workspace files — core recomputes it each time the context is
 built and records it into the configure task's `module_info` for staleness
 comparison (§5, module §11). Because it is an additive optional field with a
 `nil` default, adding it does **not** bump `api_versions.module` (§8.0): a module
 that ignores the field builds exactly as before.
 
+**Previous-configure record** (optional, all `nil` for a never-configured unit).
+To let a module reconfigure faithfully (§5.1 *Faithful reconfigure*), core hands
+back what the unit's last configure recorded:
+
+- `recorded_module_info` — the `module_info` table the module's last configure
+  task returned (as merged onto the unit), opaque to core except for the keys
+  core itself defines (`cache_launcher`). A module records whatever it needs to
+  retract later — e.g. the options it passed — and reads it back here.
+- `recorded_cache_launcher` — shorthand for `recorded_module_info.cache_launcher`
+  (a launcher path, the sentinel `"none"`, or `nil` when never recorded).
+- `recorded_options` — core's resolved-option snapshot from that configure (the
+  staleness fingerprint, §5.1): option name → resolved value. Lets a module
+  reconstruct what it passed for a unit configured before it began keeping its
+  own record.
+
+All three are additive optional fields (no `api_versions.module` bump).
+
 Each task_def has:
 - `name`: display name
 - `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
 - `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
-  `configuration_key`, `build_dir`, optional `tool_data` and `cmake` info
+  `configuration_key`, `build_dir`, optional `tool_data`, `module_info`
+  (module-owned record merged onto the unit after a configure, see above), and
+  optional `pre_configure_reset` (configure only, below)
+
+**`pre_configure_reset`** (optional, configure tasks only) is a list of paths
+**relative to `build_dir`** naming configure-state files or directories the
+module needs removed before this configure runs — the mechanism for a *full
+reconfigure* where the build system offers no flag for it (§5.1). Core performs
+the removal, never the module: after acquiring the build directory's exclusive
+lock and immediately before starting the task, core validates that `build_dir`
+lies within the workspace root (directory-boundary check) and that each entry
+is a plain relative path (not absolute, no `..` segment) resolving inside
+`build_dir`, then removes each entry (recursively for a directory; a missing
+entry is fine). If validation or removal fails, the configure is not started and
+fails with an error naming the path. Additive and optional: no
+`api_versions.module` bump.
 
 **`inspect(path, config, cached) → { needs_refresh, reasons[], notes[] }`**
 
@@ -431,6 +464,38 @@ them even though core resolved a launcher — returns `false` there, and core's
 launcher staleness (§5) then expects "none" rather than the resolved launcher.
 Absent hook = always applicable. Additive and optional: no
 `api_versions.module` bump (§8.0).
+
+**`cache_compat_scan(ctx) → { scanned, reason?, findings[] }`** *(optional)*
+
+Post-configure check that the configuration's compile commands are compatible
+with the compiler-cache launcher that configure **applied**. Core calls it after
+a **successful** configure whose recorded launcher is not "none" (§5.1); it is
+never called for an uncached configure, and never on a status render or health
+run. `ctx` carries `build_dir`, `configuration`, the configuration's
+`tool_data`, and `compiler_cache` (the applied `{ tool, path }`). The module
+reads its own post-configure build metadata — it spawns nothing and never
+decodes a monolithic compilation database it would otherwise stream.
+
+- `scanned = false` with a `reason` means the module had no compile-command
+  data to inspect (e.g. no compilation database for this build); core reports
+  that the check was **skipped** rather than treating it as clean.
+- Each finding is `{ severity, flag, group, units, sample }`: `severity` is
+  `"error"` when the applied launcher **fails** the affected compiles and
+  `"warning"` when it only fails to cache them; `flag` is the offending compile
+  option; `group` names where the units live (a target where the module knows
+  it, else a directory); `units` is the count; `sample` a few representative
+  source paths.
+
+Core records the result with the unit's configure record (replaced on every
+configure, dropped when a configure applies no launcher), prints it at the end
+of the configure (a warning, or an error-severity message for `"error"`
+findings), and surfaces it through health (§16.31). A finding is **advisory**:
+it never gates a build, never fails `--check`, and never changes the effective
+`cache` policy — the user's explicit choice stands, and the build itself reports
+any compile the launcher fails. Which options are incompatible with which
+launcher on which compiler family is module knowledge (see the per-module
+specs). Absent hook = no check. Additive and optional: no `api_versions.module`
+bump (§8.0).
 
 ### 8.5 Module implementations
 

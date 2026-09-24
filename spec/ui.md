@@ -219,8 +219,11 @@ scope (profile-level) benefits from the explicit pick.
   `Cache: <tool>` naming the resolved launcher (`ccache` / `sccache`), or
   `Cache: off` when the effective `cache` policy (core §1.3.2) resolves to
   no launcher, or `Cache: auto (none found)` when policy is `auto` but no
-  launcher is present on the toolchain path. The row is informational only
-  in v1 (no picker); the policy is edited through the variable
+  launcher is present on the toolchain path, or `Cache: auto (off for MSVC)`
+  when policy is `auto` on an MSVC-style compiler, which never enables a
+  launcher automatically (core §1.3.2) — `lw health` explains how to opt
+  in. The row is informational only in v1 (no picker); the policy is
+  edited through the variable
   system. When the launcher currently resolved differs from the one the
   profile's configured units were built with (§8.1 `compiler_cache`
   staleness, core §5.1), the row carries a `[stale — reconfigure]` hint
