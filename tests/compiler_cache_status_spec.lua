@@ -29,7 +29,10 @@ describe("Profile compiler-cache status", function()
     local real_modules = require("loomworks.modules")
     local function modules_get(id) return id and real_modules.get(id) or nil end
 
-    local function make_core(cfg_extra)
+    local GCC_TOOL = { compiler_id = "gcc-12", generator = "Ninja", compiler_path = "/usr/bin/g++" }
+
+    local function make_core(cfg_extra, tool_data)
+        tool_data = tool_data or GCC_TOOL
         local proj = { cmake = cfg_extra or {} }
         local files = {
             ["loomworks.json"] = h.make_config_json({
@@ -40,10 +43,7 @@ describe("Profile compiler-cache status", function()
                 profiles = {
                     debug = {
                         configuration_set = "debug",
-                        tools = { cmake = { key = "ninja-gcc-12", data = {
-                            compiler_id = "gcc-12", generator = "Ninja",
-                            compiler_path = "/usr/bin/g++",
-                        } } },
+                        tools = { cmake = { key = "ninja-gcc-12", data = tool_data } },
                     },
                 },
             }),
@@ -57,7 +57,7 @@ describe("Profile compiler-cache status", function()
         core._workspace._tools_by_type = {
             cmake = { {
                 tool_key = "ninja-gcc-12",
-                tool_data = { compiler_id = "gcc-12", generator = "Ninja", compiler_path = "/usr/bin/g++" },
+                tool_data = tool_data,
                 tool_label = "gcc 12",
             } },
         }
@@ -76,6 +76,29 @@ describe("Profile compiler-cache status", function()
             end
         end
     end
+
+    -- Regression: status resolved via family_from_tool_data (which folds
+    -- clang-cl → clang) and skipped the MSVC-ABI promotion the build uses, so a
+    -- clang-cl profile with both tools installed reported "ccache" while the
+    -- build actually used sccache. Status must route through the same resolver.
+    it("clang-cl profile with both tools reports sccache (what the build uses)", function()
+        local clang_cl = {
+            compiler_id = "clang-cl-17.0.0", generator = "Ninja",
+            compiler_path = "C:/Program Files/LLVM/bin/clang-cl.exe",
+        }
+        local core = make_core(nil, clang_cl)
+        set_present({ ccache = true, sccache = true })
+        local st = the_profile(core):compiler_cache_status()
+        assert.is_not_nil(st)
+        -- Must agree with the build-context resolution.
+        local unit = the_unit(core)
+        local built = require("loomworks.compiler_cache").resolve_for(
+            unit._project, unit._configuration, clang_cl, the_profile(core))
+        assert.equals("sccache", built.tool)
+        assert.equals("sccache", st.tool)
+        assert.equals("/usr/bin/sccache", st.path)
+        assert.equals("Cache: sccache", st.text)
+    end)
 
     it("reports the resolved launcher under auto", function()
         local core = make_core()
