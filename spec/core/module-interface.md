@@ -421,6 +421,17 @@ configuration's `tool_data`. This covers only the *toolchain* runtime; the
 build tree's own shared-library output directories are added generically by
 core (derived from `parse_targets`), so a module need not enumerate them.
 
+**`cache_launcher_applicable(ctx) → boolean`** *(optional)*
+
+Whether the module can apply a compiler-cache launcher (`compiler_cache`,
+§8.1) to a configuration at all. `ctx` carries `configuration` (the
+Configuration) and the configuration's `tool_data`. A module that cannot inject
+the launcher for some configurations — and so records the "none" sentinel for
+them even though core resolved a launcher — returns `false` there, and core's
+launcher staleness (§5) then expects "none" rather than the resolved launcher.
+Absent hook = always applicable. Additive and optional: no
+`api_versions.module` bump (§8.0).
+
 ### 8.5 Module implementations
 
 Each module that ships with loomworks documents its implementation of

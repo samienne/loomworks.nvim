@@ -580,11 +580,19 @@ function ConfigUnit:is_stale()
     return false
 end
 
---- Whether the compiler-cache launcher core would resolve NOW differs from the
---- one recorded at this unit's last configure (`module_info.cache_launcher`).
+--- Whether the compiler-cache launcher that would be APPLIED now differs from
+--- the one recorded at this unit's last configure (`module_info.cache_launcher`).
 --- The recompute rides the same resolution core uses to build the module
 --- context (policy → family → PATH gating); `lookup` is injectable so the
 --- unit suite stays deterministic regardless of the host's real PATH.
+---
+--- **Applicability**: a module may be unable to apply a launcher for some
+--- configurations (e.g. a configuration the build system configures from its
+--- own preset, where no launcher flags can be passed) and then records `"none"`
+--- even though core resolves one. The module's optional
+--- `cache_launcher_applicable(ctx)` hook says so; when it returns `false` the
+--- expected marker is `"none"`, so a resolvable-but-unapplicable launcher does
+--- not make the unit stale on every build. No hook = always applicable.
 ---
 --- **Legacy carve-out**: a `nil` recorded value means this unit was configured
 --- before the compiler-cache feature (or by a module that records none), so its
@@ -604,12 +612,33 @@ function ConfigUnit:launcher_changed(lookup)
     -- Never-recorded / legacy: unknown launcher state, never stale.
     if recorded == nil then return false end
     local tool_data = (self._tool and self._tool.data) or self._tool_data
-    local resolved = require("loomworks.compiler_cache").resolve_for(
-        self._project, self._configuration, tool_data,
-        self._workspace and self._workspace._active_profile, lookup)
-    -- Absent launcher compares as the same sentinel the module records.
-    local resolved_marker = resolved and resolved.path or "none"
-    return recorded ~= resolved_marker
+    local resolved
+    if self:_cache_launcher_applicable(tool_data) then
+        resolved = require("loomworks.compiler_cache").resolve_for(
+            self._project, self._configuration, tool_data,
+            self._workspace and self._workspace._active_profile, lookup)
+    end
+    -- Absent (or not-applicable) launcher compares as the same sentinel the
+    -- module records.
+    local expected_marker = resolved and resolved.path or "none"
+    return recorded ~= expected_marker
+end
+
+--- Whether this unit's module can apply a compiler-cache launcher to this
+--- configuration at all. Delegates to the module's optional
+--- `cache_launcher_applicable({ configuration, tool_data })` hook (module
+--- interface §8); absent hook, or a hook that errors, means applicable.
+--- @param tool_data table|nil resolved tool_data for this unit
+--- @return boolean
+function ConfigUnit:_cache_launcher_applicable(tool_data)
+    local impl = self:_module_impl()
+    if not impl or type(impl.cache_launcher_applicable) ~= "function" then return true end
+    local ok, applicable = pcall(impl.cache_launcher_applicable, {
+        configuration = self._configuration,
+        tool_data = tool_data,
+    })
+    if not ok then return true end
+    return applicable ~= false
 end
 
 --- Get the Project domain object for this unit.

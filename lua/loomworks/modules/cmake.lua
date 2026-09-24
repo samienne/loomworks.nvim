@@ -769,6 +769,23 @@ function M.resolve_build_dir(project_name, config_name, config_info, workspace_r
     return resolve_build_dir(project_name, config_name, config_info, workspace_root, multi_config, tool_data)
 end
 
+--- Whether a compiler-cache launcher can be applied to a configuration
+--- (module interface §8 optional hook; consulted by core's launcher staleness).
+--- A preset configuration is configured with `cmake --preset` and takes no
+--- `-D` flags from loomworks, so `M.tasks` never injects the launcher there and
+--- records `"none"` (§5d non-goal) — report it not applicable so core expects
+--- that marker instead of reconfiguring on every build. `ctx.tool_data` (with
+--- `ctx.configuration.module_config`) carries the generator, so a future
+--- generator-specific exclusion can be expressed here too.
+--- @param ctx { configuration: loomworks.Configuration|nil, tool_data: table|nil }
+--- @return boolean
+function M.cache_launcher_applicable(ctx)
+    local cfg = ctx and ctx.configuration
+    -- Must stay in step with the `from_preset` branch in `M.tasks`.
+    if cfg and cfg.from_preset then return false end
+    return true
+end
+
 --- Return overseer task templates for a project.
 --- @param project loomworks.ModuleContext
 --- @param active_config string active configuration name
@@ -866,7 +883,9 @@ function M.tasks(project, active_config)
         -- so the compiler-cache launcher cannot be injected here. Warn (once)
         -- and direct the user to set CMAKE_<LANG>_COMPILER_LAUNCHER in the
         -- preset's own cacheVariables. cache_launcher is left nil below so the
-        -- module records "no launcher applied" for this configuration.
+        -- module records "no launcher applied" ("none") for this configuration;
+        -- `M.cache_launcher_applicable` reports the same to core's staleness
+        -- check so the recorded "none" is not mistaken for a launcher change.
         if cache_launcher then
             warn_once("preset:" .. project.name .. ":" .. active_config,
                 "compiler cache not applied to preset configuration "

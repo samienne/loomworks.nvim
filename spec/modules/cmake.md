@@ -309,7 +309,9 @@ itself, which would collide with §5b:
   loomworks (§3), so the launcher cannot be injected. The module emits a
   non-blocking warning that the compiler cache is not applied to preset
   configurations, and directs the user to set `CMAKE_<LANG>_COMPILER_LAUNCHER`
-  in the preset's own `cacheVariables` if they want it.
+  in the preset's own `cacheVariables` if they want it. The module records "none"
+  for such a configuration and reports it via `cache_launcher_applicable` (core
+  §8), so the preset is not launcher-stale merely because a cache is installed.
 - **Staleness.** The resolved launcher path is recorded in the configure task's
   `module_info` and participates in `ConfigUnit:is_stale()` (§11) on the same
   footing as resolved option values — see §11.
