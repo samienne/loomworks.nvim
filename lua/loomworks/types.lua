@@ -245,7 +245,8 @@
 --- @field configurations table<string, loomworks.ConfigurationInfo> regular + preset configurations, keyed by canonical name (presets under `preset:<name>`)
 --- @field tool_data? table opaque module-specific tool data
 --- @field workspace_root string absolute path
---- @field env table<string, string>
+--- @field env table<string, string> task environment: the tool's `env` with `configuration_env` layered on top (core §8.1)
+--- @field configuration_env? table<string, string> the configuration's resolved `env` alone (chain + family overrides, expanded, reserved names stripped; core §1.3.3) — compared with `recorded_module_info.configure_env` to detect an env change
 --- @field cached_build_dir? string cached build directory, if known
 --- @field type_config? table raw type_config from loomworks.json
 --- @field resolved_variables? table<string, { value: string, type: string }> user-declared project variables resolved for the active configuration

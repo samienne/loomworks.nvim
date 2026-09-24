@@ -82,7 +82,11 @@ function Target:build(on_complete)
         project_ctx.configuration = unit:variant()
         project_ctx.configuration_key = unit:config_key()
         project_ctx.tool_data = unit._tool and unit._tool.data or unit:tool_data()
-        project_ctx.env = project_ctx.tool_data and project_ctx.tool_data.env or {}
+        -- Tool env with the configuration environment layered on top (spec
+        -- §1.3.3) — the same composition every overseer build context uses.
+        project_ctx.env, project_ctx.configuration_env =
+            require("loomworks.overseer")._resolve_task_env(unit._project,
+                unit._configuration, project_ctx.tool_data, ws._active_profile, ws.root)
 
         local task_def = mod.build_target_task(project_ctx, self.id)
         if task_def then

@@ -699,6 +699,45 @@ function M.pdb_scan_findings(acc, tool)
     return out
 end
 
+--- Environment variables the MSVC driver (cl, clang-cl) reads extra command
+--- line flags from: `CL` is prepended and `_CL_` appended to every compile.
+--- No compile-command listing shows them.
+local MSVC_FLAG_ENV_VARS = { "CL", "_CL_" }
+
+--- `cache_compat_scan` findings (module interface §8) for PDB-writing debug
+--- flags that reach every compile through the configuration environment's
+--- `CL` / `_CL_` (cmake §5d, meson §5a): one finding per offending variable,
+--- `group = "environment"`, no unit count (it applies to every compile),
+--- `sample` naming the variable. The lookup is case-insensitive (Windows
+--- environment names are). Severity as `pdb_scan_findings`.
+--- @param env table<string, string>|nil resolved configuration environment
+--- @param tool string|nil applied launcher name
+--- @return { severity: string, flag: string, group: string, sample: string[] }[]
+function M.pdb_env_findings(env, tool)
+    local out = {}
+    if type(env) ~= "table" then return out end
+    local severity = (tool == "sccache") and "error" or "warning"
+    local by_upper = {}
+    for k, v in pairs(env) do
+        if type(k) == "string" and type(v) == "string" then by_upper[k:upper()] = { k, v } end
+    end
+    for _, name in ipairs(MSVC_FLAG_ENV_VARS) do
+        local entry = by_upper[name]
+        if entry then
+            local tokens = {}
+            for tok in entry[2]:gmatch("%S+") do tokens[#tokens + 1] = tok end
+            local flag = M.pdb_debug_flag(tokens)
+            if flag then
+                out[#out + 1] = {
+                    severity = severity, flag = flag, group = "environment",
+                    sample = { entry[1] },
+                }
+            end
+        end
+    end
+    return out
+end
+
 --- Clear the detection cache. Called by modules' `invalidate_tools`. Also drops
 --- the PATH executable index so a rescan re-reads `$PATH`.
 function M.clear_cache()

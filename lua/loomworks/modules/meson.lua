@@ -1134,24 +1134,30 @@ end
 --- "warning" for ccache (compiles them uncached). The module injects no
 --- debug-format adjustment of its own; a subproject/user option requesting
 --- /Zi is surfaced here, never rewritten. A gcc/clang tool reports clean.
---- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string } }
+--- Also reports a /Zi-style token in the configuration environment's `CL` /
+--- `_CL_` (group "environment", §5a) — flags no introspection data shows.
+--- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, configuration_env?: table<string, string> }
 --- @return { scanned: boolean, reason?: string, findings: table[] }
 function M.cache_compat_scan(ctx)
     local cpp = require("loomworks.cpp_compilers")
     if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
         return { scanned = true, findings = {} }
     end
+    -- `CL` / `_CL_` in the configuration environment reach every compile but
+    -- no compile-command data shows them (§5d / §5a): checked separately.
+    local tool = ctx.compiler_cache and ctx.compiler_cache.tool
+    local env_findings = cpp.pdb_env_findings(ctx.configuration_env, tool)
     local path = ctx.build_dir and (ctx.build_dir .. "/meson-info/intro-targets.json") or nil
     local fh = path and io.open(path, "r")
     if not fh then
-        return { scanned = false, findings = {},
+        return { scanned = false, findings = env_findings,
             reason = "no meson introspection data (meson-info/intro-targets.json) for this build" }
     end
     local raw = fh:read("*a")
     fh:close()
     local ok, targets = pcall(vim.json.decode, raw)
     if not ok or type(targets) ~= "table" then
-        return { scanned = false, findings = {},
+        return { scanned = false, findings = env_findings,
             reason = "meson introspection data (intro-targets.json) could not be read" }
     end
     local acc = {}
@@ -1169,10 +1175,9 @@ function M.cache_compat_scan(ctx)
             end
         end
     end
-    return {
-        scanned = true,
-        findings = cpp.pdb_scan_findings(acc, ctx.compiler_cache and ctx.compiler_cache.tool),
-    }
+    local findings = cpp.pdb_scan_findings(acc, tool)
+    vim.list_extend(findings, env_findings)
+    return { scanned = true, findings = findings }
 end
 
 --- Async companion for parse_targets — yields to the event loop.

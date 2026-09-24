@@ -19,7 +19,7 @@
 --- @field build_dir_value string|nil
 --- @field last_configured string|nil ISO 8601 timestamp
 --- @field last_built string|nil ISO 8601 timestamp
---- @field module_info table|nil opaque module-specific cached data (e.g. cmake generator/compiler)
+--- @field module_info table|nil opaque module-specific cached data (e.g. cmake generator/compiler), plus core-owned keys `cache_launcher`, `configure_env`, `cache_compat` (spec §8.1)
 --- @field _config_key string|nil opaque cache key
 --- @field _variant string|nil configuration variant name
 --- @field _tool_key string|nil tool identifier
@@ -525,26 +525,16 @@ function ConfigUnit:resolved_option_fingerprint()
     end
     apply(cfg)
 
-    -- 2. Expansion context: built-ins + resolved project variables (family-aware).
+    -- 2. Expansion context: built-ins + resolved project variables (family-
+    --    aware), shared with the configuration environment (config_env). The
+    --    active profile is included so a blank variable's fill value (§1.3.1)
+    --    participates in the fingerprint — changing it makes the unit stale
+    --    and forces a reconfigure. A still-blank value is skipped.
     local expand = require("loomworks.expand")
-    local ctx = {
-        workspace_root = self._workspace and self._workspace.root or nil,
-        project_path = project and (project.path or project.key) or nil,
-    }
-    if project and project.variables and next(project.variables) then
-        local variables = require("loomworks.variables")
-        -- Include the active profile so a blank variable's fill value (§1.3.1)
-        -- participates in the resolved-option fingerprint — changing it makes
-        -- the unit stale and forces a reconfigure. Skip a still-blank value.
-        local active_profile = self._workspace and self._workspace._active_profile
-        local resolved = variables.resolve(
-            project, cfg, self:active_compiler_family(), active_profile)
-        for name, entry in pairs(resolved) do
-            if entry.value ~= nil then
-                ctx[name] = expand.expand_string(entry.value, ctx)
-            end
-        end
-    end
+    local ctx = require("loomworks.config_env").expansion_context(
+        project, cfg, self:active_compiler_family(),
+        self._workspace and self._workspace._active_profile,
+        self._workspace and self._workspace.root or nil)
 
     -- 3. Expand each merged option value.
     local out = {}
@@ -554,8 +544,9 @@ function ConfigUnit:resolved_option_fingerprint()
     return out
 end
 
---- Check if this unit is stale: the RESOLVED option values (post-expansion) or
---- the Configuration's module_config have changed since the last configure.
+--- Check if this unit is stale: the RESOLVED option values (post-expansion),
+--- the Configuration's module_config, the resolved configuration environment
+--- or the applied compiler-cache launcher have changed since the last configure.
 --- The fingerprint is taken over resolved values (§5c / cmake §11), so editing
 --- a variable `default` or a compiler `override` that changes a `-D` value
 --- makes the unit stale, while a change with no resolved effect does not.
@@ -571,6 +562,9 @@ function ConfigUnit:is_stale()
     if not vim.deep_equal(self._cached_module_config or {}, self._configuration.module_config or {}) then
         return true
     end
+    -- Configuration environment change (spec §1.3.3): a configure input like
+    -- the options — the module takes a full reconfigure for it (§5.1).
+    if self:env_changed() then return true end
     -- Compiler-cache launcher change (§5.1 / module §11): recompute the launcher
     -- core would resolve now (current `cache` policy + compiler family + live
     -- toolchain-path presence) and compare to the one recorded at configure.
@@ -578,6 +572,36 @@ function ConfigUnit:is_stale()
     -- so the build gate reconfigures (cmake in-place; meson --wipe).
     if self:launcher_changed() then return true end
     return false
+end
+
+--- The resolved configuration environment (spec §1.3.3) for this unit: the
+--- configuration's `env` across its inheritance chain and matching
+--- compiler-family `overrides`, values expanded (built-ins + resolved project
+--- variables incl. the active profile's fill), reserved compiler-driver names
+--- stripped. Empty when there is none (or no configuration).
+--- @return table<string, string>
+function ConfigUnit:configuration_env()
+    local cfg = self._configuration
+    if not cfg or cfg._removed then return {} end
+    local env = require("loomworks.config_env").resolve(
+        self._project, cfg, self:active_compiler_family(),
+        self._workspace and self._workspace._active_profile,
+        self._workspace and self._workspace.root or nil)
+    return env
+end
+
+--- Whether the resolved configuration environment differs from core's record
+--- of the one the last configure ran with (`module_info.configure_env`). An
+--- absent record compares as empty: a configure before the record existed
+--- applied no configuration environment, so a unit that has none is not
+--- stale, and one that now has some reconfigures once. Never stale for a
+--- never-configured unit.
+--- @return boolean
+function ConfigUnit:env_changed()
+    if not self._configuration or self._configuration._removed then return false end
+    if not self._cached_options and not self._cached_module_config then return false end
+    local recorded = self.module_info and self.module_info.configure_env or {}
+    return not vim.deep_equal(recorded, self:configuration_env())
 end
 
 --- Whether the compiler-cache launcher that would be APPLIED now differs from

@@ -344,6 +344,21 @@ function CTestUnit:_find_sources(entries)
     end
 end
 
+--- The configuration environment (spec §1.3.3) for this unit's test runs,
+--- with `env` (the test's own declared environment, which is more specific)
+--- layered on top. Returns a fresh table.
+--- @param config_unit loomworks.ConfigUnit|nil
+--- @param env table<string, string>|nil
+--- @return table<string, string>
+local function with_configuration_env(config_unit, env)
+    local out = {}
+    if config_unit and type(config_unit.configuration_env) == "function" then
+        for k, v in pairs(config_unit:configuration_env()) do out[k] = v end
+    end
+    for k, v in pairs(env or {}) do out[k] = v end
+    return out
+end
+
 --- Find the execution spec for a test entry's executable.
 --- @param test_id string
 --- @return table|nil exec_spec { cmd, cwd, env, timeout }
@@ -398,7 +413,7 @@ function CTestUnit:test_command(test_id, opts)
 
     -- Build command: original command + gtest flags
     local cmd = vim.deepcopy(spec.cmd)
-    local env = vim.deepcopy(spec.env)
+    local env = with_configuration_env(self._config_unit, spec.env)
 
     -- Determine gtest filter
     local is_target = test_id:match("^target:")
@@ -447,7 +462,7 @@ function CTestUnit:test_command_all(opts)
     if not spec then return nil end
 
     local cmd = vim.deepcopy(spec.cmd)
-    local env = vim.deepcopy(spec.env)
+    local env = with_configuration_env(self._config_unit, spec.env)
 
     -- Apply filter via GTEST_FILTER if specified
     if opts.filter then
@@ -496,7 +511,16 @@ function CTestUnit:run_command_all(opts)
     -- DLLs (shared libraries built into subfolders of the tree); ctest does not
     -- set this up itself, so we prepend the same run environment a target launch
     -- uses. Nil on POSIX / when nothing needs adding — inherit as-is.
-    return { cmd = cmd, cwd = self._build_dir, env = self._config_unit:run_env(), junit_out = junit_out }
+    -- The configuration environment (spec §1.3.3) is layered on top, as for
+    -- every configure/build/test task.
+    local env = self._config_unit:run_env()
+    local cenv = type(self._config_unit.configuration_env) == "function"
+        and self._config_unit:configuration_env() or {}
+    if next(cenv) then
+        env = env or {}
+        for k, v in pairs(cenv) do env[k] = v end
+    end
+    return { cmd = cmd, cwd = self._build_dir, env = env, junit_out = junit_out }
 end
 
 --- `ctest` does not build — it assumes an already-built tree — so a headless

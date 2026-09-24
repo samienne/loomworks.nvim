@@ -2226,6 +2226,28 @@ function Workspace:diagnostics()
                             end
                         end
                     end
+                    -- (c) Configuration `env` values (spec §1.3.3) expand
+                    -- exactly like option values, so the same check applies.
+                    if type(cfg.env) == "table" then
+                        local reported = {}
+                        for env_key, env_val in pairs(cfg.env) do
+                            for _, ref in ipairs(expand_mod.unresolved_vars(env_val, allowed)) do
+                                local dedup = env_key .. "=" .. ref
+                                if not reported[dedup] then
+                                    reported[dedup] = true
+                                    add({
+                                        severity = "warn",
+                                        source = "Project/" .. project.key .. "/" .. cfg.name,
+                                        message = "env '" .. env_key
+                                            .. "' references undeclared variable '"
+                                            .. ref .. "'",
+                                        target_fold_key = "config:" .. project.key
+                                            .. ":" .. cfg.name,
+                                    })
+                                end
+                            end
+                        end
+                    end
                 end
             end
         end
@@ -2788,6 +2810,16 @@ function Workspace:record_task_result(result)
         config_unit.module_info.cache_launcher =
             result.module_info and result.module_info.cache_launcher or nil
 
+        -- Core's record of the resolved configuration environment this
+        -- configure ran with (spec §1.3.3, §8.1 `configure_env`): the env
+        -- staleness fingerprint (`ConfigUnit:env_changed`) and what a module
+        -- compares `configuration_env` against to choose a full reconfigure.
+        -- Assigned explicitly (nil when empty) — the additive merge above can
+        -- never clear it.
+        local configuration_env = config_unit:configuration_env()
+        config_unit.module_info.configure_env =
+            next(configuration_env) and configuration_env or nil
+
         -- Post-configure compiler-cache compatibility scan (spec §5.1, §8
         -- `cache_compat_scan`): after a SUCCESSFUL configure that applied a
         -- launcher, ask the module whether the compile commands it produced
@@ -2808,6 +2840,9 @@ function Workspace:record_task_result(result)
                 tool_data = (result.tool and result.tool.data) or config_unit._tool_data,
                 config_name = result.variant or config_unit._variant,
                 variant = cfg and cfg.module_config and cfg.module_config.variant or nil,
+                -- A compiler may take flags from its environment (e.g. MSVC's
+                -- CL / _CL_), which compile commands do not show (§8).
+                configuration_env = configuration_env,
             }, config_unit.module_info.cache_launcher)
             local msg, severity = cc.compat_message(compat, project.key,
                 result.variant or config_unit._variant or "?")

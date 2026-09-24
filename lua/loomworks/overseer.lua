@@ -75,6 +75,26 @@ local function resolve_compiler_cache(project, configuration, tool_data, profile
         project, configuration, tool_data, profile)
 end
 
+--- Resolve the configuration environment (spec §1.3.3) for a build context and
+--- the composed task environment: the tool's `env` with the configuration's
+--- resolved `env` layered on top. Single-sourced so every context-assembly site
+--- (configure/build/clean, per-unit and per-profile) sets `env` and
+--- `configuration_env` identically. The compiler family (for
+--- `overrides.<family>.env`) comes from the tool, like variable resolution.
+--- @param project loomworks.Project|nil
+--- @param configuration loomworks.Configuration|nil
+--- @param tool_data table|nil active tool_data
+--- @param profile loomworks.Profile|nil active profile (blank-variable fill)
+--- @param root string|nil workspace root
+--- @return table<string, string> task_env, table<string, string> configuration_env
+local function resolve_task_env(project, configuration, tool_data, profile, root)
+    local config_env = require("loomworks.config_env")
+    local family = require("loomworks.cpp_compilers").family_from_tool_data(tool_data)
+    local cenv = config_env.resolve(project, configuration, family, profile, root)
+    return config_env.compose(tool_data and tool_data.env, cenv), cenv
+end
+M._resolve_task_env = resolve_task_env  -- exported for target.lua / tests
+
 --- Build the configuration map a module's task generator (`mod.tasks`) sees.
 --- Merges the module's regular configurations with its preset configurations,
 --- which arrive under a separate `preset_configurations` key but are keyed by
@@ -124,6 +144,8 @@ local function collect_configuration_tasks(unit)
         end
     end
 
+    local task_env, configuration_env = resolve_task_env(
+        project, unit._configuration, tool_data, ws._active_profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -134,7 +156,8 @@ local function collect_configuration_tasks(unit)
         type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
+        env = task_env,
+        configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
@@ -208,6 +231,8 @@ function M.build_spec_for(unit, target_id)
         if ok and result then mod_info = result end
     end
 
+    local task_env, configuration_env = resolve_task_env(
+        project, unit._configuration, tool_data, ws._active_profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -218,7 +243,8 @@ function M.build_spec_for(unit, target_id)
         type_config = tc_for_module,
         tool_data = tool_data,
         workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
+        env = task_env,
+        configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
@@ -321,6 +347,8 @@ local function collect_profile_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local task_env, configuration_env = resolve_task_env(
+            project, pp._configuration, tool_data, profile, ws.root)
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
@@ -331,7 +359,8 @@ local function collect_profile_tasks(profile)
             type_config = project:_type_config_for_module(),
             tool_data = tool_data,
             workspace_root = ws.root,
-            env = tool_data and tool_data.env or {},
+            env = task_env,
+            configuration_env = configuration_env,
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
             compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),
@@ -393,6 +422,8 @@ local function collect_configuration_clean_tasks(unit)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
             or { configurations = {} }
 
+    local task_env, configuration_env = resolve_task_env(
+        project, unit._configuration, tool_data, ws._active_profile, ws.root)
     local project_ctx = {
         name = project.key,
         path = project.path or project.key,
@@ -403,7 +434,8 @@ local function collect_configuration_clean_tasks(unit)
         tool_data = tool_data,
         type_config = project.type_config,
         workspace_root = ws.root,
-        env = tool_data and tool_data.env or {},
+        env = task_env,
+        configuration_env = configuration_env,
         cached_build_dir = unit:build_dir(),
         resolved_variables = resolve_project_variables(project, unit._configuration, tool_data, ws._active_profile),
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
@@ -439,6 +471,8 @@ local function collect_profile_clean_tasks(profile)
 
         local project_tool = profile:tool_for(project.type)
         local tool_data = project_tool and project_tool.data or nil
+        local task_env, configuration_env = resolve_task_env(
+            project, pp._configuration, tool_data, profile, ws.root)
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
@@ -449,7 +483,8 @@ local function collect_profile_clean_tasks(profile)
             tool_data = tool_data,
             type_config = project.type_config,
             workspace_root = ws.root,
-            env = tool_data and tool_data.env or {},
+            env = task_env,
+            configuration_env = configuration_env,
             cached_build_dir = pp:build_dir(),
             resolved_variables = resolve_project_variables(project, pp._configuration, tool_data, profile),
             compiler_cache = resolve_compiler_cache(project, pp._configuration, tool_data, profile),

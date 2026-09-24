@@ -155,6 +155,21 @@ local function compose_env(base_env, extra_paths, compiler_bin_dir)
     return require("loomworks.runenv").compose(prefix_parts, base_env)
 end
 
+--- The configuration environment (spec §1.3.3) for this unit's test runs,
+--- with `env` (the test's own declared environment, which is more specific)
+--- layered on top. Returns a fresh table.
+--- @param config_unit loomworks.ConfigUnit|nil
+--- @param env table<string, string>|nil
+--- @return table<string, string>
+local function with_configuration_env(config_unit, env)
+    local out = {}
+    if config_unit and type(config_unit.configuration_env) == "function" then
+        for k, v in pairs(config_unit:configuration_env()) do out[k] = v end
+    end
+    for k, v in pairs(env or {}) do out[k] = v end
+    return out
+end
+
 --- Parse `meson introspect --tests` JSON into test entries.
 --- The JSON shape is a flat array of test descriptors:
 ---   { name, suite: [], cmd: [], workdir, env: {}, timeout, ... }
@@ -361,7 +376,8 @@ end
 function MesonTestUnit:_probe_opts_for(exe)
     local spec = self._exec_specs[exe] or {}
     return {
-        env = compose_env(spec.env, spec.extra_paths, self:_compiler_bin_dir()),
+        env = compose_env(with_configuration_env(self._config_unit, spec.env),
+            spec.extra_paths, self:_compiler_bin_dir()),
         cwd = spec.cwd or self._build_dir,
     }
 end
@@ -543,7 +559,8 @@ function MesonTestUnit:_build_gtest_run(exe, filter)
     if not spec then return nil end
 
     local cmd = vim.deepcopy(spec.cmd)
-    local env = compose_env(spec.env, spec.extra_paths, self:_compiler_bin_dir())
+    local env = compose_env(with_configuration_env(self._config_unit, spec.env),
+        spec.extra_paths, self:_compiler_bin_dir())
     if filter then
         env.GTEST_FILTER = filter
     end
@@ -580,7 +597,8 @@ end
 function MesonTestUnit:_build_plain_run(exe)
     local spec = self._exec_specs[exe]
     if not spec then return nil end
-    local env = compose_env(spec.env, spec.extra_paths, self:_compiler_bin_dir())
+    local env = compose_env(with_configuration_env(self._config_unit, spec.env),
+        spec.extra_paths, self:_compiler_bin_dir())
     local result = {
         cmd = vim.deepcopy(spec.cmd),
         env = env,
@@ -688,10 +706,12 @@ function MesonTestUnit:run_command_all(opts)
     -- same toolchain environment a build gets. Composed by the module so both
     -- paths agree: without MSVC's vcvars env (INCLUDE / LIB / PATH-to-cl) the
     -- implicit ninja rebuild dies with "CreateProcess failed" — cl is not on
-    -- PATH — turning `lw test` on a stale tree into a false failure.
+    -- PATH — turning `lw test` on a stale tree into a false failure. The
+    -- configuration environment (spec §1.3.3) is the base, as for a build.
     local ok_mod, meson_mod = pcall(require, "loomworks.modules.meson")
     local task_env = (ok_mod and meson_mod.compose_task_env)
-        and meson_mod.compose_task_env({}, self._config_unit._tool_data) or nil
+        and meson_mod.compose_task_env(with_configuration_env(self._config_unit, nil),
+            self._config_unit._tool_data) or nil
     return {
         cmd = cmd,
         env = compose_env(task_env, nil, self:_compiler_bin_dir()),

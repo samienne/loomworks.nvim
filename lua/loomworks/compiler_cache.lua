@@ -188,14 +188,21 @@ function M.compat_severity(rec)
 end
 
 --- One-line-per-group summary of a compat record's findings, e.g.
---- `target zlib: 12 units (/Zi) — a.c, b.c`.
+--- `target zlib: 12 units (/Zi) — a.c, b.c`, or for an environment finding
+--- (no unit count) `environment: every compile (/Zi) — CL`.
 --- @param rec table
 --- @return string[]
 function M.compat_group_lines(rec)
     local lines = {}
     for _, f in ipairs(rec and rec.findings or {}) do
-        local line = string.format("%s: %d unit%s (%s)", tostring(f.group), f.units or 0,
-            (f.units or 0) == 1 and "" or "s", tostring(f.flag))
+        local line
+        if f.units == nil then
+            -- An environment finding (§8): the flag reaches every compile.
+            line = string.format("%s: every compile (%s)", tostring(f.group), tostring(f.flag))
+        else
+            line = string.format("%s: %d unit%s (%s)", tostring(f.group), f.units,
+                f.units == 1 and "" or "s", tostring(f.flag))
+        end
         if type(f.sample) == "table" and #f.sample > 0 then
             line = line .. " — " .. table.concat(f.sample, ", ")
         end

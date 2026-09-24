@@ -30,6 +30,15 @@ M.PREDECLARED_NAMES = {
     cache = true,
 }
 
+--- Names reserved as override NAMESPACES (spec §1.3.1 / §1.3.3). `env` inside
+--- a compiler-family `overrides` block is the environment sub-block
+--- (`overrides.<family>.env.<NAME>`), so a project variable may not be
+--- declared with that name — it would be ambiguous there. Not an expansion
+--- built-in (so `${env}` stays an ordinary undeclared reference).
+M.NAMESPACE_NAMES = {
+    env = true,
+}
+
 local VALID_TYPES = {
     string = true,
     path = true,
@@ -50,7 +59,7 @@ function M.validate_declarations(variables)
         if type(name) ~= "string" or name == "" then
             return false, "variable name must be a non-empty string"
         end
-        if M.RESERVED_NAMES[name] or M.PREDECLARED_NAMES[name] then
+        if M.RESERVED_NAMES[name] or M.PREDECLARED_NAMES[name] or M.NAMESPACE_NAMES[name] then
             return false, "variable '" .. name .. "' uses a reserved name"
         end
         if type(decl) ~= "table" then
@@ -104,7 +113,9 @@ M.KNOWN_FAMILIES = require("loomworks.cpp_compilers").KNOWN_FAMILIES
 
 --- Validate a configuration's compiler-family `overrides` block against the
 --- project's variable declarations (core §1.3.1). Shape is
---- `family → { name → value }`. Every overridden `name` MUST be declared in
+--- `family → { name → value, env? = { NAME → value } }` — the `env` key is
+--- the family's environment sub-block (core §1.3.3): a map of string values,
+--- exempt from the declared-name rule. Every overridden `name` MUST be declared in
 --- the project `variables` — this is enforced at edit time so a bad block
 --- never reaches the working copy. Unknown family keys are NOT rejected here;
 --- they surface later as a workspace diagnostic (see
@@ -127,6 +138,19 @@ function M.validate_compiler_overrides(overrides, declarations)
                 .. "'] must be a table of name → value"
         end
         for name, value in pairs(entries) do
+            if M.NAMESPACE_NAMES[name] then
+                if type(value) ~= "table" then
+                    return false, "overrides['" .. family .. "']." .. name
+                        .. " must be a table of NAME → value"
+                end
+                for ek, ev in pairs(value) do
+                    if type(ek) ~= "string" or ek == "" or type(ev) ~= "string" then
+                        return false, "overrides['" .. family .. "']." .. name
+                            .. " entries must be non-empty names with string values"
+                    end
+                end
+                goto continue
+            end
             if not declarations[name] and not M.PREDECLARED_NAMES[name] then
                 return false, "compiler override '" .. name .. "' (family '"
                     .. family .. "') is not declared in project variables"
@@ -140,6 +164,7 @@ function M.validate_compiler_overrides(overrides, declarations)
                 return false, "compiler override '" .. name .. "' (family '"
                     .. family .. "') must be a string value"
             end
+            ::continue::
         end
     end
     return true

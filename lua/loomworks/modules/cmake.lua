@@ -2725,22 +2725,28 @@ end
 --- (compiles them uncached). A gcc/clang kit's launchers never fail an
 --- uncacheable compile, so it reports clean without reading anything.
 --- Advisory; spawns nothing.
---- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, config_name?: string, variant?: string }
+--- Also reports a /Zi-style token in the configuration environment's `CL` /
+--- `_CL_` (group "environment", §5d) — flags no compile command shows.
+--- @param ctx { build_dir: string, tool_data?: table, compiler_cache?: { tool: string, path: string }, config_name?: string, variant?: string, configuration_env?: table<string, string> }
 --- @return { scanned: boolean, reason?: string, findings: table[] }
 function M.cache_compat_scan(ctx)
     local cpp = require("loomworks.cpp_compilers")
     if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then
         return { scanned = true, findings = {} }
     end
+    -- `CL` / `_CL_` in the configuration environment reach every compile but
+    -- no compile-command data shows them (§5d / §5a): checked separately.
+    local tool = ctx.compiler_cache and ctx.compiler_cache.tool
+    local env_findings = cpp.pdb_env_findings(ctx.configuration_env, tool)
     local build_dir = ctx.build_dir
     local codemodel = build_dir and find_file_api_reply(build_dir, "codemodel", 2) or nil
     if not codemodel or not codemodel.configurations then
-        return { scanned = false, findings = {},
+        return { scanned = false, findings = env_findings,
             reason = "no CMake file-api codemodel reply for this build" }
     end
     local cfg = select_codemodel_config(codemodel, ctx.variant or ctx.config_name)
     if not cfg or not cfg.targets then
-        return { scanned = false, findings = {},
+        return { scanned = false, findings = env_findings,
             reason = "the CMake codemodel reply lists no targets for this configuration" }
     end
 
@@ -2772,10 +2778,9 @@ function M.cache_compat_scan(ctx)
             end
         end
     end
-    return {
-        scanned = true,
-        findings = cpp.pdb_scan_findings(acc, ctx.compiler_cache and ctx.compiler_cache.tool),
-    }
+    local findings = cpp.pdb_scan_findings(acc, tool)
+    vim.list_extend(findings, env_findings)
+    return { scanned = true, findings = findings }
 end
 
 --- Iterate every compiled source of the selected configuration's targets,

@@ -551,8 +551,11 @@ function M.cache_compat_provider(workspace)
                     .. ". Reconfigure to run the check again.",
             }
         elseif severity then
-            local units = 0
-            for _, f in ipairs(rec.findings or {}) do units = units + (f.units or 0) end
+            -- An environment finding (units = nil, §8) reaches every compile.
+            local units, every = 0, false
+            for _, f in ipairs(rec.findings or {}) do
+                if f.units == nil then every = true else units = units + f.units end
+            end
             local flags = {}
             for _, f in ipairs(rec.findings or {}) do flags[f.flag] = true end
             local flag_list = {}
@@ -560,17 +563,21 @@ function M.cache_compat_provider(workspace)
             table.sort(flag_list)
             items[#items + 1] = {
                 kind = "suggestion",
-                title = string.format("%s %s %d compile%s in %s", tostring(rec.tool),
-                    severity == "error" and "will fail" or "cannot cache",
-                    units, units == 1 and "" or "s", label),
+                title = every
+                    and string.format("%s %s every compile in %s", tostring(rec.tool),
+                        severity == "error" and "will fail" or "cannot cache", label)
+                    or string.format("%s %s %d compile%s in %s", tostring(rec.tool),
+                        severity == "error" and "will fail" or "cannot cache",
+                        units, units == 1 and "" or "s", label),
                 detail = "These compiles use " .. table.concat(flag_list, ", ")
                     .. " (debug info in a shared .pdb), which " .. tostring(rec.tool)
                     .. (severity == "error" and " fails" or " cannot cache") .. ":\n  "
                     .. table.concat(cc.compat_group_lines(rec), "\n  "),
                 remedy = "Switch those targets to embedded debug info (/Z7 — e.g. set the "
                     .. "MSVC_DEBUG_INFORMATION_FORMAT target property to Embedded, or replace "
-                    .. "/Zi in their compile options), or turn caching off for the "
-                    .. "configuration: `lw config set " .. pkey .. " " .. cname
+                    .. "/Zi in their compile options; for an `environment` group, remove it "
+                    .. "from that variable of the configuration's `env`), or turn caching off "
+                    .. "for the configuration: `lw config set " .. pkey .. " " .. cname
                     .. " variables.cache off`.",
             }
         end
