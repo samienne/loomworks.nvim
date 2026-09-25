@@ -236,7 +236,8 @@ is not set, or `set` to the value it already has — writes nothing, says so
 profile fill value that is not set, or setting one to the value it already
 has. A reminder to publish is printed only after
 an edit that **changed** a configuration reaching the published snapshot
-(§2.4 effective intent). `get` returns the resolved string for the full path, or the
+(§2.4 effective intent) — and, likewise, after creating a configuration only
+when it would reach the published snapshot. `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and
 `overrides.<family>.env`. `show` lists the configuration's `env` alongside its
 `options`.
@@ -1208,7 +1209,11 @@ CLI), this provider resolves the newest release available on the **resolved
 update channel** (§16.29) and, when that is strictly newer than the running
 version, suggests updating. Its `title` is "Update available", its `detail` is
 `<current> → <newest> on the <channel> channel`, and its `remedy` points at the
-self-update command. Version comparison is the same semver-aware ordering used
+self-update command — except in a **pinned** context (a repository version pin,
+§16.21–16.24: the pinned launcher's sentinel is set, or the running bundle is the
+repo-local pinned copy), where the pin owns the version and self-update would not
+change it; there the remedy points at the pin-management update command (which
+moves the pin to the newest release). Version comparison is the same semver-aware ordering used
 for activation (§16.29), so a pre-release never reads as "newer" than the full
 release it precedes.
 

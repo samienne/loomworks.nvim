@@ -3087,6 +3087,25 @@ local function reject_variant_param(proj, value)
   }, "\n"))
 end
 
+--- Whether configuration `name` of `proj` would reach the shared
+--- loomworks.json on the next publish — its own intent is shared /
+--- local+shared, or a published configuration set pulls it in (§2.4 effective
+--- intent). Gates the "`lw publish` …" hints: a local-only configuration has
+--- nothing to publish. Errs on the side of the hint when the closure cannot be
+--- computed.
+--- @param ws table
+--- @param proj loomworks.Project
+--- @param name string
+--- @return boolean
+local function config_reaches_shared(ws, proj, name)
+  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
+  if not (ok_p and type(pub) == "table" and type(pub.configs) == "table") then return true end
+  for _, c in ipairs(proj._configurations or {}) do
+    if c.name == name and pub.configs[c] then return true end
+  end
+  return false
+end
+
 --- `lw config add <project> <name> [base...]`
 --- Trailing arguments are BASES to inherit (e.g. `variant:Release asan`),
 --- which is how a configuration becomes concrete — see `reject_variant_param`.
@@ -3147,7 +3166,13 @@ function M.cmd_configuration_add(root, proj_name, name, bases)
     out("  inherits one that provides a variant:")
     out("    lw config set " .. proj.key .. " " .. name .. " inherits <base>")
   end
-  out("  map it into a configuration set to build it; `lw publish` to share.")
+  -- Suggest publishing only when the new configuration would actually reach
+  -- the shared file (same effective-intent check as config set/unset).
+  if config_reaches_shared(ws, proj, name) then
+    out("  map it into a configuration set to build it; `lw publish` to share.")
+  else
+    out("  map it into a configuration set to build it.")
+  end
   return 0
 end
 
@@ -3255,18 +3280,10 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
     out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
   end
   -- Point at `lw publish` only when something changed (above) and this
-  -- configuration actually reaches the shared loomworks.json — its own intent is shared / local+shared, or a
-  -- published configuration set pulls it in (§2.4 effective intent). A
-  -- local-only configuration has nothing to publish.
-  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
-  local published = true
-  if ok_p and type(pub) == "table" and type(pub.configs) == "table" then
-    published = false
-    for _, c in ipairs(proj._configurations or {}) do
-      if c.name == cfg.name and pub.configs[c] then published = true; break end
-    end
+  -- configuration actually reaches the shared loomworks.json.
+  if config_reaches_shared(ws, proj, cfg.name) then
+    out("`lw publish` to update the shared loomworks.json.")
   end
-  if published then out("`lw publish` to update the shared loomworks.json.") end
   return 0
 end
 
