@@ -487,6 +487,83 @@ function M.detect_tools_async(callback)
     end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Environment inventory (meson §12, core §16.33)
+-- ---------------------------------------------------------------------------
+
+--- Declarations: meson (the same lookup the module runs it through — PATH,
+--- then the Python-module fallback), and the ids shared with cmake (ninja and
+--- the compiler scans), which are probed once. No spawn here.
+--- @param _ctx loomworks.InventoryContext
+--- @return loomworks.InventoryDeclaration[]
+function M.health_inventory(_ctx)
+    local inv = require("loomworks.inventory")
+    local decls = {
+        {
+            id = "exe:meson",
+            category = "build tools",
+            label = "meson",
+            probe = function(ctx, done)
+                find_meson_async(function(meson)
+                    if not meson then
+                        done({ id = "exe:meson", label = "meson", status = "missing",
+                            hint = "pip install meson" })
+                        return
+                    end
+                    ctx.run({ meson[1], "--version" }, function(res)
+                        done({ id = "exe:meson", label = "meson", status = "found",
+                            path = meson[1], version = inv.parse_version(res.stdout) })
+                    end)
+                end)
+            end,
+        },
+        -- `exe:ninja` — also declared by cmake with the same id (probed once).
+        inv.exe_declaration({
+            id = "exe:ninja", label = "ninja", names = { "ninja" },
+            hint = function(ctx)
+                return ctx.is_windows and "winget install Ninja-build.Ninja"
+                    or "install ninja (your package manager: ninja-build)"
+            end,
+        }),
+        require("loomworks.cpp_compilers").health_declaration(),
+    }
+    local msvc_decl = require("loomworks.msvc").health_declaration()
+    if msvc_decl then decls[#decls + 1] = msvc_decl end
+    return decls
+end
+
+--- What a project needs under a tool (meson §12) — pure, from the tool data:
+--- meson, ninja (its backend) and the tool's compiler.
+--- @param ctx { project: loomworks.Project, tool: loomworks.Tool|nil, configuration: loomworks.Configuration|nil }
+--- @return { id: string, label: string, hint?: string, via?: string }[]
+function M.health_requirements(ctx)
+    local inv = require("loomworks.inventory")
+    local reqs = {
+        { id = "exe:meson", label = "meson" },
+        { id = "exe:ninja", label = "ninja" },
+    }
+    local td = ctx.tool and ctx.tool.data or nil
+    if not td then return reqs end
+    local label = ctx.tool.label or td.compiler_display or "compiler"
+    local hint = "install it, or use another toolchain — lw help profile"
+    local family = td.compiler_family
+    if family == "msvc" and td.vcvarsall then
+        reqs[#reqs + 1] = { id = inv.path_id("msvc", td.vcvarsall), label = label,
+            via = "compilers:msvc", hint = hint }
+    elseif family == "clang-cl" and td.compiler_path then
+        reqs[#reqs + 1] = { id = inv.path_id("clang-cl", td.compiler_path), label = label,
+            via = "compilers:msvc", hint = hint }
+        if td.vcvarsall then
+            reqs[#reqs + 1] = { id = inv.path_id("msvc", td.vcvarsall), label = label,
+                via = "compilers:msvc", hint = hint }
+        end
+    elseif td.compiler_path then
+        reqs[#reqs + 1] = { id = inv.path_id("cxx", td.compiler_path), label = label,
+            via = "compilers:path", hint = hint }
+    end
+    return reqs
+end
+
 --- Clear the shared compiler detection cache so the next
 --- `detect_tools` call re-scans PATH. Called by core's rescan flow.
 function M.invalidate_tools()

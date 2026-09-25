@@ -25,6 +25,9 @@
 ---                                                               -- called when a managed client dies unexpectedly
 ---   @field reset? fun(root_dir: string)                          -- clear adaptive state for a root (UI "Reset" action)
 ---   @field reset_label? string                                  -- UI label for the reset action ("Reset clangd -j", …)
+---   @field health_inventory? fun(ctx: loomworks.InventoryContext): loomworks.InventoryDeclaration[]
+---                                                               -- re-export of the host-neutral companion
+---                                                               -- `integrations/inventory/<server>.lua` (§9.3, §16.33)
 ---
 --- @class loomworks.LspExitInfo
 --- @field server string

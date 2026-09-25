@@ -14,8 +14,6 @@ local M = {}
 --- @type loomworks.CmakeKit[]|nil
 M._cached = nil
 
-local uv = vim.uv or vim.loop
-
 --- Build the MSVC "Visual Studio <NN> <YYYY>" generator kit for one install.
 --- MSVC + clang-cl discovery is owned by the shared `loomworks.msvc` module;
 --- this only shapes an install descriptor into cmake's kit table.
@@ -68,20 +66,6 @@ local function clang_cl_kit(inst, cc)
         arch = inst.arch,
         env = {},
     }
-end
-
---- Try to find a clangd binary alongside a compiler path.
---- Looks for clangd in the same directory as the compiler.
---- @param compiler_path string
---- @return string|nil clangd_path
-local function find_sibling_clangd(compiler_path)
-    local dir = compiler_path:match("^(.+)/[^/]+$")
-    if not dir then return nil end
-    local candidate = dir .. "/clangd"
-    if vim.fn.executable(candidate) == 1 then return candidate end
-    candidate = dir .. "/clangd.exe"
-    if uv.fs_stat(candidate) then return candidate end
-    return nil
 end
 
 --- Detect C/C++ compilers in PATH. Delegates to the shared
@@ -157,113 +141,28 @@ function M.clear_cache()
     require("loomworks.msvc").clear_cache()
 end
 
---- Detect compilers asynchronously.
---- Resolves candidate names through the shared `cpp_compilers` PATH index
---- (an O(1) lookup per name, no per-candidate PATH search), then chains
---- async vim.system() calls for --version probes sequentially.
+--- Detect compilers asynchronously. Delegates to the shared
+--- `cpp_compilers.detect_async` (the same PATH-index scan, family-from-output
+--- identification, dedup and ordering as the sync `detect_compilers`), shaping
+--- the result into the `{path=...}` fields this adapter uses — so the async and
+--- sync kit lists agree and the environment inventory (headless §16.33, which
+--- reports that same scan) lists exactly the compilers a kit can be built from.
 --- @param callback fun(compilers: table[])
 local function detect_compilers_async(callback)
-    local candidates = {}
-    for _, base in ipairs({ "gcc", "g++", "clang", "clang++" }) do
-        candidates[#candidates + 1] = base
-        for v = 8, 25 do
-            candidates[#candidates + 1] = base .. "-" .. v
+    require("loomworks.cpp_compilers").detect_async(function(shared)
+        local out = {}
+        for _, c in ipairs(shared) do
+            out[#out + 1] = {
+                id = c.id,
+                display = c.display,
+                path = c.path,
+                version = c.version,
+                family = c.family,
+                clangd_path = c.clangd_path,
+            }
         end
-    end
-
-    local cpp = require("loomworks.cpp_compilers")
-    local executable_names = {}
-    for _, name in ipairs(candidates) do
-        local path = cpp.lookup_path(name)
-        if path then
-            executable_names[#executable_names + 1] = { name = name, path = path }
-        end
-    end
-
-    if #executable_names == 0 then
-        callback({})
-        return
-    end
-
-    -- Chain async --version probes
-    local compilers = {}
-    local seen = {}
-    local idx = 0
-
-    local function next_probe()
-        idx = idx + 1
-        if idx > #executable_names then
-            table.sort(compilers, function(a, b)
-                if a.family ~= b.family then return a.family < b.family end
-                return a.version > b.version
-            end)
-            callback(compilers)
-            return
-        end
-
-        local entry = executable_names[idx]
-        if seen[entry.path] then
-            next_probe()
-            return
-        end
-
-        vim.system({ entry.path, "--version" }, { text = true }, function(result)
-            vim.schedule(function()
-                local version
-                if result.code == 0 and result.stdout then
-                    version = result.stdout:match("(%d+%.%d+%.%d+)") or result.stdout:match("(%d+%.%d+)")
-                end
-                if not version then
-                    next_probe()
-                    return
-                end
-
-                local name = entry.name
-                local path = entry.path
-                local family
-                if name:match("^clang") then
-                    family = "clang"
-                elseif name:match("^g[c%+]") then
-                    family = "gcc"
-                end
-                if not family then
-                    next_probe()
-                    return
-                end
-
-                local compound_id = family .. "-" .. version
-                if seen[compound_id] then
-                    next_probe()
-                    return
-                end
-                seen[compound_id] = true
-                seen[path] = true
-
-                local is_cpp = name:match("%+%+")
-                local cpp_path = path
-                if not is_cpp then
-                    local cpp_name = name:gsub("^gcc", "g++"):gsub("^clang$", "clang++"):gsub("^clang%-(%d)", "clang++-%1")
-                    if vim.fn.executable(cpp_name) == 1 then
-                        local p = vim.fn.exepath(cpp_name)
-                        if p ~= "" then cpp_path = p end
-                    end
-                end
-
-                compilers[#compilers + 1] = {
-                    id = compound_id,
-                    display = family == "gcc" and ("GCC " .. version) or ("Clang " .. version),
-                    path = cpp_path,
-                    version = version,
-                    family = family,
-                    clangd_path = find_sibling_clangd(cpp_path),
-                }
-
-                next_probe()
-            end)
-        end)
-    end
-
-    next_probe()
+        callback(out)
+    end)
 end
 
 --- Detect all available cmake build kits asynchronously.

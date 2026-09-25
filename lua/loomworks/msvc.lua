@@ -66,6 +66,9 @@ local function build_install(install)
         vcvarsall = vcvarsall,
         arch = "x64",
         install_path = path,
+        -- Product version (e.g. "17.11.2") — display only (health inventory).
+        product_version = (install.catalog and install.catalog.productDisplayVersion)
+            or install.installationVersion,
     }
 end
 
@@ -342,6 +345,80 @@ function M.clang_cl_for_async(install, callback)
         end
         finish(standalone.path, sibling_clangd(standalone.path))
     end)
+end
+
+--- Environment-inventory declaration for the Visual Studio toolchains
+--- (headless §16.33, cmake §13 `compilers:msvc`), shared by every module that
+--- builds with cl.exe / clang-cl so it is probed once. Windows only (nil
+--- elsewhere). Enumerates the installs the locator finds — one result each,
+--- id `msvc:<normalized vcvarsall>` — plus every clang-cl paired to an install
+--- or on the search path (`clang-cl:<normalized path>`), reusing the same
+--- detection the kits run.
+--- @return loomworks.InventoryDeclaration|nil
+function M.health_declaration()
+    if vim.fn.has("win32") ~= 1 then return nil end
+    local inv = require("loomworks.inventory")
+    return {
+        id = "compilers:msvc",
+        category = "compilers",
+        label = "MSVC (Visual Studio)",
+        probe = function(_, done)
+            M.detect_async(function(installs)
+                local results, seen = {}, {}
+                for _, inst in ipairs(installs) do
+                    results[#results + 1] = {
+                        id = inv.path_id("msvc", inst.vcvarsall),
+                        label = inst.display,
+                        status = "found",
+                        version = inst.product_version,
+                        path = inst.install_path,
+                    }
+                end
+                if #installs == 0 then
+                    done({ {
+                        id = "compilers:msvc", label = "MSVC (Visual Studio)", status = "missing",
+                        hint = "install Visual Studio Build Tools (Desktop development with C++)",
+                    } })
+                    return
+                end
+                -- clang-cl: VS-bundled per install, else the one on PATH.
+                local function add_clang_cl(cc)
+                    if not (cc and cc.path) then return end
+                    local id = inv.path_id("clang-cl", cc.path)
+                    if seen[id] then return end
+                    seen[id] = true
+                    results[#results + 1] = {
+                        id = id, label = "clang-cl", status = "found",
+                        version = cc.version ~= "0" and cc.version or nil,
+                        path = cc.path,
+                    }
+                end
+                local idx = 0
+                local function next_install()
+                    idx = idx + 1
+                    if idx > #installs then
+                        -- A clang-cl on PATH not paired to any install above.
+                        M.clang_cl_async(function(cc)
+                            add_clang_cl(cc)
+                            if not next(seen) then
+                                results[#results + 1] = {
+                                    id = "clang-cl", label = "clang-cl", status = "missing",
+                                    hint = "VS Installer: C++ Clang tools for Windows",
+                                }
+                            end
+                            done(results)
+                        end)
+                        return
+                    end
+                    M.clang_cl_for_async(installs[idx], function(cc)
+                        add_clang_cl(cc)
+                        next_install()
+                    end)
+                end
+                next_install()
+            end)
+        end,
+    }
 end
 
 --- Clear cached detection + env snapshots (called from the module rescan flow).
