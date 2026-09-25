@@ -159,6 +159,55 @@ describe("io", function()
             assert.equals(42, result.count)
             assert.is_true(result.nested.a)
         end)
+
+        -- user.json / loomworks.json / the cache are rewritten on every
+        -- mutation; a hash-order key sequence made every rewrite a noisy diff.
+        it("writes object keys in sorted order at every depth (stable diffs)", function()
+            local dir = tmpdir()
+            local path = dir .. "/sorted.json"
+            local inner, outer = {}, {}
+            local names = {}
+            for i = 1, 40 do names[#names + 1] = string.format("k%02d_%s", i, string.char(122 - (i % 26))) end
+            -- insert in reverse order so insertion order != sorted order
+            for i = #names, 1, -1 do inner[names[i]] = i; outer[names[i]] = { v = i, [names[i]] = true } end
+            outer.nested = inner
+            assert.is_true(io_mod.write_json(path, outer))
+            local text = io_mod.read_file(path)
+            local function assert_sorted(block)
+                local keys = {}
+                for k in block:gmatch('\n%s*"([^"]+)":') do keys[#keys + 1] = k end
+                local sorted = vim.deepcopy(keys)
+                table.sort(sorted)
+                assert.same(sorted, keys)
+            end
+            -- top-level keys only: lines indented by exactly two spaces
+            local top = {}
+            for k in text:gmatch('\n  "([^"]+)":') do top[#top + 1] = k end
+            local sorted_top = vim.deepcopy(top); table.sort(sorted_top)
+            assert.same(sorted_top, top)
+            assert.equals(41, #top)
+            assert_sorted(text:match('"nested": (%b{})'))
+            -- identical content → byte-identical output
+            local path2 = dir .. "/sorted2.json"
+            assert.is_true(io_mod.write_json(path2, vim.deepcopy(outer)))
+            assert.equals(text, io_mod.read_file(path2))
+        end)
+
+        it("keeps arrays in order and the empty object/array distinction", function()
+            local dir = tmpdir()
+            local path = dir .. "/shapes.json"
+            local tbl = { list = { "b", "a", "c" }, empty_obj = vim.empty_dict(), empty_arr = {},
+                s = "q\"uote\n", n = 1.5, b = false }
+            assert.is_true(io_mod.write_json(path, tbl))
+            local text = io_mod.read_file(path)
+            assert.is_truthy(text:find('"empty_obj": {', 1, true), text)
+            assert.is_truthy(text:find('"empty_arr": [', 1, true), text)
+            local back = vim.json.decode(text)
+            assert.same({ "b", "a", "c" }, back.list)
+            assert.equals("q\"uote\n", back.s)
+            assert.equals(1.5, back.n)
+            assert.is_false(back.b)
+        end)
     end)
 
     describe("rm_rf", function()

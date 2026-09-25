@@ -551,8 +551,10 @@ otherwise stream.
 - `totals` *(optional)* — `{ units, targets }`, the number of compiled units
   and targets in the scanned build. With it, core reports a **pervasive**
   finding — unit findings in more than one group covering at least 90% of the
-  compiled units — as ONE line (`every target (N units) compiles with /Zi — …`,
-  or `nearly every target (U of N units, T of M targets) …`) instead of one line
+  compiled units — as ONE line (`every target (N units) compiles with /Zi — …`;
+  `every target, nearly every unit (U of N units) …` when every target but not
+  every unit is affected; else `nearly every target (U of N units, T of M
+  targets) …`) instead of one line
   per group: the flag then comes from a directory- or project-wide setting, and
   per-target advice would be wrong. Sample paths are shortened to their last two
   components.

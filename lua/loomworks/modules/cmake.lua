@@ -320,8 +320,186 @@ local function read_json_file(path)
     return data
 end
 
+--- CMake's `${hostSystemName}` for this host: `Windows`, `Darwin`, `Linux`,
+--- else the kernel name `uname` reports. A seam tests replace.
+--- @return string
+function M._host_system_name()
+    local sys = (uv.os_uname() or {}).sysname or ""
+    if sys:match("^Windows") or sys:match("^MINGW") or sys:match("^MSYS") then return "Windows" end
+    return sys
+end
+
+--- Translate a (simple) ECMAScript regex, as CMake presets' `matches` uses,
+--- into a Lua pattern — or nil when it uses anything this subset does not
+--- cover (alternation, groups, counted repetition, backreferences…), so the
+--- caller treats the condition as unknown rather than guessing. Supported:
+--- literals, `.`, `^`/`$` anchors, `*` `+` `?` on a single atom, `[…]`
+--- classes, `\d \w \s` (+ upper-case negations) and backslash-escaped literals.
+--- @param re string
+--- @return string|nil
+local function regex_to_lua_pattern(re)
+    if type(re) ~= "string" then return nil end
+    local out, i, n = {}, 1, #re
+    local class_esc = { d = "%d", D = "%D", w = "[%w_]", W = "[^%w_]", s = "%s", S = "%S" }
+    while i <= n do
+        local c = re:sub(i, i)
+        if c == "^" and i == 1 then
+            out[#out + 1] = "^"
+        elseif c == "$" and i == n then
+            out[#out + 1] = "$"
+        elseif c == "." then
+            out[#out + 1] = "."
+        elseif c == "\\" then
+            local e = re:sub(i + 1, i + 1)
+            if e == "" then return nil end
+            if class_esc[e] then
+                out[#out + 1] = class_esc[e]
+            elseif e:match("%w") then
+                return nil -- \b, \n, \1 … — not in this subset
+            else
+                out[#out + 1] = "%" .. e
+            end
+            i = i + 1
+        elseif c == "[" then
+            local close = re:find("]", i + 2, true)
+            if not close then return nil end
+            local body = re:sub(i + 1, close - 1)
+            if body:find("[%[\\]") then return nil end
+            out[#out + 1] = "[" .. body:gsub("%%", "%%%%") .. "]"
+            i = close
+        elseif c == "*" or c == "+" or c == "?" then
+            if #out == 0 or out[#out] == "^" then return nil end
+            local nxt = re:sub(i + 1, i + 1)
+            if nxt == "?" or nxt == "+" then return nil end -- lazy / possessive
+            out[#out] = out[#out] .. (c == "*" and "*" or c == "+" and "+" or "?")
+        elseif c:match("[%(%)%|{}]") or c == "^" or c == "$" then
+            return nil
+        elseif c:match("%p") then
+            out[#out + 1] = "%" .. c
+        else
+            out[#out + 1] = c
+        end
+        i = i + 1
+    end
+    return table.concat(out)
+end
+
+--- Expand the CMake preset macros a `condition` may use. Returns the expanded
+--- string, or nil when it contains a macro this evaluator does not know (the
+--- condition is then unknown — never guessed).
+--- @param s any
+--- @param ctx table see `M._preset_condition`
+--- @return string|nil
+local function expand_preset_macros(s, ctx)
+    if type(s) ~= "string" then return nil end
+    local unknown = false
+    local src = (ctx.source_dir or ""):gsub("\\", "/")
+    local macros = {
+        sourceDir = src,
+        sourceParentDir = src:match("^(.*)/[^/]*$") or "",
+        sourceDirName = src:match("([^/]*)$") or "",
+        presetName = ctx.preset_name or "",
+        hostSystemName = ctx.host or "",
+        dollar = "$",
+        pathListSep = (ctx.host == "Windows") and ";" or ":",
+    }
+    if ctx.generator then macros.generator = ctx.generator end
+    local function env_value(name, process_only)
+        local envt = ctx.environment
+        if not process_only and type(envt) == "table" and envt[name] ~= nil then
+            local v = envt[name]
+            if v == vim.NIL then return "" end -- null unsets it
+            if type(v) ~= "string" or v:find("$", 1, true) then unknown = true; return "" end
+            return v
+        end
+        return (ctx.getenv and ctx.getenv(name)) or ""
+    end
+    local out = s:gsub("%$(%a*){([^}]*)}", function(kind, name)
+        if kind == "" then
+            local v = macros[name]
+            if v == nil then unknown = true; return "" end
+            return v
+        elseif kind == "env" then
+            return env_value(name, false)
+        elseif kind == "penv" then
+            return env_value(name, true)
+        end
+        unknown = true -- $vendor{…} and anything newer
+        return ""
+    end)
+    if unknown then return nil end
+    return out
+end
+
+--- Evaluate a CMakePresets `condition` object (preset schema v3+) for this
+--- host. Three-valued: `true` / `false`, or `nil` when it cannot be decided
+--- here (an unknown type, macro or regex construct) — callers hide a preset
+--- only on a definite `false`, so an unsupported condition never hides one and
+--- never errors. A missing / null condition is `true`.
+--- @param cond any
+--- @param ctx { host: string, preset_name: string, source_dir: string, generator?: string, environment?: table, getenv?: fun(name: string): string|nil }
+--- @return boolean|nil
+function M._preset_condition(cond, ctx)
+    if cond == nil or cond == vim.NIL then return true end
+    if type(cond) == "boolean" then return cond end
+    if type(cond) ~= "table" then return nil end
+    local t = cond.type
+    local function str(v) return expand_preset_macros(v, ctx) end
+    if t == "const" then
+        if type(cond.value) == "boolean" then return cond.value end
+        return nil
+    elseif t == "equals" or t == "notEquals" then
+        local l, r = str(cond.lhs), str(cond.rhs)
+        if l == nil or r == nil then return nil end
+        if t == "equals" then return l == r end
+        return l ~= r
+    elseif t == "inList" or t == "notInList" then
+        local s = str(cond.string)
+        if s == nil or type(cond.list) ~= "table" then return nil end
+        local found = false
+        for _, item in ipairs(cond.list) do
+            local v = str(item)
+            if v == nil then return nil end
+            if v == s then found = true end
+        end
+        if t == "inList" then return found end
+        return not found
+    elseif t == "matches" or t == "notMatches" then
+        local s = str(cond.string)
+        local re = type(cond.regex) == "string" and expand_preset_macros(cond.regex, ctx) or nil
+        local pat = re and regex_to_lua_pattern(re)
+        if s == nil or pat == nil then return nil end
+        local ok, hit = pcall(string.find, s, pat)
+        if not ok then return nil end
+        if t == "matches" then return hit ~= nil end
+        return hit == nil
+    elseif t == "anyOf" or t == "allOf" then
+        if type(cond.conditions) ~= "table" then return nil end
+        local any_unknown = false
+        for _, sub in ipairs(cond.conditions) do
+            local v = M._preset_condition(sub, ctx)
+            if v == nil then
+                any_unknown = true
+            elseif t == "anyOf" and v then
+                return true
+            elseif t == "allOf" and not v then
+                return false
+            end
+        end
+        if any_unknown then return nil end
+        return t == "allOf"
+    elseif t == "not" then
+        local v = M._preset_condition(cond.condition, ctx)
+        if v == nil then return nil end
+        return not v
+    end
+    return nil
+end
+
 --- Parse CMakePresets.json and CMakeUserPresets.json with inheritance.
---- Returns a list of configure presets with resolved fields.
+--- Returns a list of configure presets with resolved fields. A preset whose
+--- (own or inherited) `condition` evaluates to false on this host is left
+--- out, as CMake itself would refuse it (spec/modules/cmake.md §3).
 --- @param project_path string absolute path to the project directory
 --- @return table|nil presets
 local function load_presets(project_path)
@@ -340,7 +518,8 @@ local function load_presets(project_path)
         if not data or not data.configurePresets then return end
         for _, preset in ipairs(data.configurePresets) do
             by_name[preset.name] = preset
-            -- Only include non-hidden presets without conditions
+            -- Hidden presets are bases only; conditions are applied after
+            -- inheritance is resolved (below).
             if not preset.hidden then
                 all_configure[#all_configure + 1] = preset
             end
@@ -384,12 +563,42 @@ local function load_presets(project_path)
             resolved[k] = v
         end
 
+        -- `condition` is inherited as a whole: the preset's own when it has
+        -- one, else the FIRST base (in `inherits` order) that has one — the
+        -- earlier base wins, as CMake resolves inherited fields.
+        if preset.condition == nil then
+            resolved.condition = nil
+            for _, parent_name in ipairs(parents) do
+                local parent = by_name[parent_name]
+                local pc = parent and resolve(parent).condition
+                if pc ~= nil then resolved.condition = pc; break end
+            end
+        end
+
         return resolved
     end
 
+    local ctx_base = {
+        host = M._host_system_name(),
+        source_dir = project_path,
+        getenv = os.getenv,
+    }
     local result = {}
     for _, preset in ipairs(all_configure) do
-        result[#result + 1] = resolve(preset)
+        local r = resolve(preset)
+        -- Hide only a DEFINITE false: an unknown macro / condition shape keeps
+        -- the preset (never hidden on a guess, never an error).
+        local ok, verdict = pcall(M._preset_condition, r.condition, {
+            host = ctx_base.host,
+            source_dir = ctx_base.source_dir,
+            getenv = ctx_base.getenv,
+            preset_name = r.name,
+            generator = type(r.generator) == "string" and r.generator or nil,
+            environment = type(r.environment) == "table" and r.environment or nil,
+        })
+        if not (ok and verdict == false) then
+            result[#result + 1] = r
+        end
     end
 
     return #result > 0 and result or nil

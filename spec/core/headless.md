@@ -35,9 +35,16 @@ reproducible; an explicit **management** operation MAY write it (§16.9).
 
 The active profile is working-copy state (§4.2) and is not assumed in a
 headless invocation. The profile to operate on MUST be selected explicitly
-by the caller. Absent an explicit selection, the invocation is an error
-unless exactly one published profile exists — the system never guesses a
-default.
+by the caller. Absent an explicit selection, a non-interactive build-shaped
+invocation (build, clean, test, run, reset, …) is **always** an error — even when
+the workspace has exactly one profile, and regardless of the working copy's
+active profile: it never uses the active profile and never infers one. The
+error lists the available profiles and points at the named form (a unique
+substring is accepted, below) and at read-only introspection (§16.18) for
+deterministic selection in scripts. An interactive invocation MAY fall back to
+the active profile, then to the sole profile; the read-only listing / show
+verbs and the profile fill-value management verbs keep their own no-argument
+defaults (below, §16.9, §16.18).
 
 A profile MAY be named by a **truncated tool selector** — a prefix of a tool
 key that omits trailing detail, such as a compiler family plus major version
@@ -123,7 +130,7 @@ that build step (§8 `cache_compat_stamp`): when the build tool re-ran the
 generator during the step and the compile data changed, the finding is re-scanned
 first — reported before the closing line — so a flag the build just introduced is
 named and one it just removed is not, e.g. `build failed — 1870 compiles use
-/Zi, which sccache cannot cache (see the scan finding above; lw health; lw help
+/Zi, which sccache will fail (see the scan finding above; lw health; lw help
 cache)`.
 
 A build is additionally gated by the output-artifact conflict rule (§16.28):
@@ -166,6 +173,11 @@ that hands the rest to a build tool or program) print that command's help and
 exit 0 — the flag is never read as an operand such as a profile name. This
 holds for the host-level commands too (version reporting, self-update,
 installation, pin management): asking for their help never performs them.
+A sub-command's help (`lw help <command> <sub-command>`, or `--help` after the
+sub-command) prints only that sub-command's part of the command's help, with a
+pointer to the whole; a sub-command the help does not document falls back to
+the whole command's help. User-facing help is self-contained: it never cites
+specification sections.
 
 ### 16.8 Host-determined module availability
 
@@ -189,6 +201,15 @@ writes follow the same working-copy model as the editor (§2.4): they land in
 the working copy (§2.2), and the published snapshot (§2.1) changes only on an
 explicit publish. A read-only / CI invocation runs no management operation.
 
+Selecting the **active profile** (§4.2) is such a management operation, and it
+needs no interactive terminal when the profile is named: the name resolves by
+the §16.3 named-selection procedure and the selection is written to the working
+copy. A companion form **clears** the selection (no active profile). Selecting
+the profile that is already active, or clearing when none is active, writes
+nothing and says so (`(unchanged)`). Only an *unnamed* selection — an
+interactive picker — requires a terminal; non-interactively it is an error that
+names the scriptable forms.
+
 Configuration editing addresses a configuration's fields by a **dotted param
 grammar** (`get`/`set`/`unset`): a bare field (`inherits`, `languages`, a
 module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`,
@@ -204,7 +225,11 @@ are bare names. A reserved compiler-driver name in `env.<NAME>` or
 §1.3.3) is **refused** by the same validation the editor applies: `set` exits 1
 and writes nothing (the runtime strip-with-warning applies only to a
 hand-edited file). Setting `env.PATH` (any case) succeeds but prints a warning
-on stderr that it replaces the tool's PATH (§1.3.3). `set` writes the value; an empty value or `unset` clears it,
+on stderr, naming the full param that was set, that it replaces the tool's
+PATH (§1.3.3). An env name that matches an existing entry ignoring case
+replaces that entry, keeping the new spelling, and says so (§1.3.3). A `cache`
+value (`variables.cache`, `overrides.<family>.cache`, or a profile fill) outside
+the valid policies is refused with the valid values listed (§1.3.2). `set` writes the value; an empty value or `unset` clears it,
 pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the
@@ -212,9 +237,11 @@ project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). A `set`/`unset` that changes nothing — `unset` of a param that
 is not set, or `set` to the value it already has — writes nothing, says so
 (`… is not set` / `(unchanged)`) and exits 0; the same holds for clearing a
-profile fill value that is not set. A reminder to publish is printed only after
+profile fill value that is not set, or setting one to the value it already
+has. A reminder to publish is printed only after
 an edit that **changed** a configuration reaching the published snapshot
-(§2.4 effective intent). `get` returns the resolved string for the full path, or the
+(§2.4 effective intent) — and, likewise, after creating a configuration only
+when it would reach the published snapshot. `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and
 `overrides.<family>.env`. `show` lists the configuration's `env` alongside its
 `options`.
@@ -1055,6 +1082,10 @@ shows (§16.18), so the health report never contradicts the status overview:
   "Compiler cache not applied (`<reason>`) — lw help cache", whether or not a
   launcher is installed (installing one would not help);
 - its launcher **resolved** → **informational** "Compiler cache: using `<tool>`";
+  when the recorded compatibility scan found compiles that launcher will FAIL
+  for the profile's units, the affirmation is qualified in the same line
+  ("… — but it will fail N compiles (lw help cache)") so it never reads as
+  contradicting the finding reported next to it;
 - its policy names a launcher explicitly (`cache=<tool>`) that is **not found**
   → **actionable** "`cache=<tool>` set but `<tool>` not found" (remedy: install
   it — `lw help cache`), never a "using" item for some other launcher;
@@ -1199,7 +1230,11 @@ CLI), this provider resolves the newest release available on the **resolved
 update channel** (§16.29) and, when that is strictly newer than the running
 version, suggests updating. Its `title` is "Update available", its `detail` is
 `<current> → <newest> on the <channel> channel`, and its `remedy` points at the
-self-update command. Version comparison is the same semver-aware ordering used
+self-update command — except in a **pinned** context (a repository version pin,
+§16.21–16.24: the pinned launcher's sentinel is set, or the running bundle is the
+repo-local pinned copy), where the pin owns the version and self-update would not
+change it; there the remedy points at the pin-management update command (which
+moves the pin to the newest release). Version comparison is the same semver-aware ordering used
 for activation (§16.29), so a pre-release never reads as "newer" than the full
 release it precedes.
 

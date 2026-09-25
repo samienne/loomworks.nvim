@@ -47,6 +47,36 @@ function M.normalize_policy(policy)
     return p
 end
 
+--- The compiler-cache launchers loomworks knows how to apply — the only
+--- concrete tool names a `cache` policy may name (core §1.3.2).
+--- @type string[]
+M.KNOWN_LAUNCHERS = { "ccache", "sccache" }
+
+--- The accepted `cache` policy values, for error messages and help.
+M.VALID_POLICIES = "auto | off | false | ccache | sccache"
+
+--- Validate a raw `cache` policy value (string or boolean) — what a user may
+--- set. Valid: anything `normalize_policy` maps to `auto` / `off` (so
+--- `auto`, `off`, `false`, `none`, `no`, empty, a boolean — case-insensitive),
+--- or a known launcher name (`KNOWN_LAUNCHERS`, case-insensitive). Anything
+--- else would resolve to a launcher loomworks cannot apply and silently build
+--- uncached, so edit paths reject it and a hand-edited file gets a diagnostic.
+--- @param policy any
+--- @return boolean ok, string|nil err
+function M.validate_policy(policy)
+    if policy == nil or type(policy) == "boolean" then return true end
+    if type(policy) ~= "string" then
+        return false, "cache policy must be a string (" .. M.VALID_POLICIES .. ")"
+    end
+    local p = M.normalize_policy(policy)
+    if p == "auto" or p == "off" then return true end
+    for _, t in ipairs(M.KNOWN_LAUNCHERS) do
+        if p == t then return true end
+    end
+    return false, "invalid cache policy '" .. policy .. "' — expected one of: "
+        .. M.VALID_POLICIES
+end
+
 --- Whether a raw family string names an MSVC-style compiler for the `auto`
 --- rule: `msvc`, or the MSVC-ABI clang-cl driver (which `normalize_family`
 --- folds to `clang`, so the signal is recovered from the raw string).
@@ -312,7 +342,9 @@ end
 --- finding (no unit count) `environment: every compile (/Zi) — CL`. A
 --- PERVASIVE record (`compat_pervasive`) collapses its unit findings into ONE
 --- line — `every target (1870 units) compiles with /Zi — <module cause>` (or
---- `nearly every target (… of … units, … of … targets)`) — keeping any
+--- `every target, nearly every unit (… of … units)` when every target but
+--- not every unit is affected, else `nearly every target (… of … units, … of
+--- … targets)`) — keeping any
 --- environment lines. Sample paths are shortened to their last two components.
 --- @param rec table
 --- @return string[]
@@ -324,8 +356,12 @@ function M.compat_group_lines(rec)
         local flag = tostring(list[1].flag)
         local total_targets = type(rec.totals) == "table" and tonumber(rec.totals.targets) or nil
         local scope
-        if units >= total and (not total_targets or #list >= total_targets) then
+        local all_targets = not total_targets or #list >= total_targets
+        if units >= total and all_targets then
             scope = string.format("every target (%d units)", units)
+        elseif all_targets then
+            -- Every target, but not every unit: only the UNIT count is "nearly".
+            scope = string.format("every target, nearly every unit (%d of %d units)", units, total)
         else
             scope = string.format("nearly every target (%d of %d units%s)", units, total,
                 total_targets and string.format(", %d of %d targets", #list, total_targets) or "")
@@ -449,7 +485,7 @@ function M.compat_failure_hint(rec)
     else
         what = "some compiles use " .. tostring(flag)
     end
-    return string.format("build failed — %s, which %s cannot cache (see the scan finding "
+    return string.format("build failed — %s, which %s will fail (see the scan finding "
         .. "above; lw health; lw help cache)", what, tostring(rec.tool))
 end
 

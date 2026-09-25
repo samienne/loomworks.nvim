@@ -301,7 +301,7 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `io.lua` | Atomic file read/write (sync and async), JSON encode/decode, rm_rf (sync fallback), rm_rf_async (subprocess), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
+| `io.lua` | Atomic file read/write (sync and async), JSON encode/decode (`write_json` pretty-prints with keys sorted at every depth via `encode_sorted` — stable diffs for user.json / loomworks.json / cache), rm_rf (sync fallback), rm_rf_async (subprocess), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction | Write files (config is read-only) |
 | `user.lua` | `loomworks.user.json` parse/save/defaults | Validate beyond structural correctness |
 | `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |

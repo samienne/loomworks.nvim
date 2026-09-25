@@ -790,9 +790,11 @@ local function resolve_profile(ws, name, opts)
     local keys = {}
     for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
     table.sort(keys)
-    die("no profile specified — non-interactive mode does not use the active profile.\n" ..
+    die("no profile specified — non-interactive mode never uses the active profile\n" ..
+      "  and never infers one (not even when only one profile exists).\n" ..
       "  pass one explicitly (a unique substring works): lw build <profile>\n" ..
-      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)"))
+      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
+      "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically")
   end
   local active = ws._active_profile_key
   if active then
@@ -2866,6 +2868,32 @@ local function set_or_clear(t, key, value)
   return next(t) and t or nil
 end
 
+--- Set (value) or clear (nil / "") environment variable `name` in `t`,
+--- treating names CASE-INSENSITIVELY for duplicates on every host (Windows
+--- environment names are case-insensitive and a configuration file is shared
+--- across hosts — the same rule as the reserved names): an existing entry
+--- spelled differently (`PATH` vs `Path`) is REPLACED — the new spelling is
+--- kept — and a clear removes every case variant. Returns the table (nil when
+--- emptied) and the differently-spelled names that were dropped.
+--- @param t table|nil
+--- @param name string
+--- @param value string|nil
+--- @return table|nil t, string[] replaced
+local function set_env_ci(t, name, value)
+  local replaced = {}
+  if type(t) == "table" then
+    local lname = name:lower()
+    for k in pairs(t) do
+      if k ~= name and type(k) == "string" and k:lower() == lname then
+        replaced[#replaced + 1] = k
+      end
+    end
+    table.sort(replaced)
+    for _, k in ipairs(replaced) do t[k] = nil end
+  end
+  return set_or_clear(t, name, value), replaced
+end
+
 --- Apply one `param`/`value` to a config data table (value nil clears). Param
 --- namespaces (§16.9): options.<KEY>, variables.<NAME>, env.<NAME> (the
 --- configuration environment, §1.3.3), overrides.<family>.<name> (a
@@ -2873,7 +2901,9 @@ end
 --- compiler-family environment variable), family ∈ clang|gcc|msvc; the bare
 --- fields inherits and languages (CSV); and any other BARE name → module
 --- field. Any other dotted param is rejected rather than stored as a literal
---- dotted module-field name.
+--- dotted module-field name. Returns the case-variant env names a set/unset
+--- replaced (`set_env_ci`) — empty for every other param.
+--- @return string[] replaced
 local function apply_param(data, param, value)
   if param == "options" or param == "variables" or param == "env" then
     die("specify a key: " .. param .. ".<KEY>")
@@ -2907,9 +2937,10 @@ local function apply_param(data, param, value)
       die("specify a variable: overrides." .. ov_family .. ".env.<NAME>")
     end
     local env_name = ov_name:match("^env%.(.+)$")
+    local replaced = {}
     if env_name then
       local env = type(fam.env) == "table" and fam.env or nil
-      fam.env = set_or_clear(env, env_name, value)
+      fam.env, replaced = set_env_ci(env, env_name, value)
     elseif ov_name:find(".", 1, true) then
       die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
     else
@@ -2918,7 +2949,7 @@ local function apply_param(data, param, value)
     end
     data.overrides[ov_family] = next(fam) and fam or nil
     if not next(data.overrides) then data.overrides = nil end
-    return
+    return replaced
   end
   local dictname, key = param:match("^(options)%.(.+)$")
   if not dictname then dictname, key = param:match("^(variables)%.(.+)$") end
@@ -2926,13 +2957,14 @@ local function apply_param(data, param, value)
     data[dictname] = data[dictname] or {}
     data[dictname][key] = value
     if not next(data[dictname]) then data[dictname] = nil end
-    return
+    return {}
   end
   local env_name = param:match("^env%.(.+)$")
   if env_name then
     -- Configuration environment (§1.3.3). An empty value clears, like unset.
-    data.env = set_or_clear(data.env, env_name, value)
-    return
+    local replaced
+    data.env, replaced = set_env_ci(data.env, env_name, value)
+    return replaced
   end
   if param == "inherits" then
     if not value or value == "" then
@@ -2950,6 +2982,7 @@ local function apply_param(data, param, value)
   else
     data[param] = value -- module field (variant, toolchain, generator, ...)
   end
+  return {}
 end
 
 --- Read one `param` off a Configuration. Returns a string, a dict, or nil.
@@ -3054,6 +3087,25 @@ local function reject_variant_param(proj, value)
   }, "\n"))
 end
 
+--- Whether configuration `name` of `proj` would reach the shared
+--- loomworks.json on the next publish — its own intent is shared /
+--- local+shared, or a published configuration set pulls it in (§2.4 effective
+--- intent). Gates the "`lw publish` …" hints: a local-only configuration has
+--- nothing to publish. Errs on the side of the hint when the closure cannot be
+--- computed.
+--- @param ws table
+--- @param proj loomworks.Project
+--- @param name string
+--- @return boolean
+local function config_reaches_shared(ws, proj, name)
+  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
+  if not (ok_p and type(pub) == "table" and type(pub.configs) == "table") then return true end
+  for _, c in ipairs(proj._configurations or {}) do
+    if c.name == name and pub.configs[c] then return true end
+  end
+  return false
+end
+
 --- `lw config add <project> <name> [base...]`
 --- Trailing arguments are BASES to inherit (e.g. `variant:Release asan`),
 --- which is how a configuration becomes concrete — see `reject_variant_param`.
@@ -3114,7 +3166,13 @@ function M.cmd_configuration_add(root, proj_name, name, bases)
     out("  inherits one that provides a variant:")
     out("    lw config set " .. proj.key .. " " .. name .. " inherits <base>")
   end
-  out("  map it into a configuration set to build it; `lw publish` to share.")
+  -- Suggest publishing only when the new configuration would actually reach
+  -- the shared file (same effective-intent check as config set/unset).
+  if config_reaches_shared(ws, proj, name) then
+    out("  map it into a configuration set to build it; `lw publish` to share.")
+  else
+    out("  map it into a configuration set to build it.")
+  end
   return 0
 end
 
@@ -3189,7 +3247,7 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   if param == "variant" then reject_variant_param(proj, value) end
   local data = config_to_data(cfg)
   local before = vim.deepcopy(data)
-  apply_param(data, param, value)
+  local replaced = apply_param(data, param, value) or {}
   -- Nothing changed (an unset of a param that was never set, or a set to the
   -- value it already has): say so, write nothing, and suggest no publish.
   -- Exit 0 — an idempotent edit is not an error (a script may re-run it).
@@ -3205,11 +3263,15 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   if not ok then die("could not " .. verb .. ": " .. tostring(err)) end
   if verb == "set" then
     out(string.format("%s/%s: set %s = %s", proj.key, cfg.name, param, value))
+    local prefix = param:match("^(.*%.)[^.]+$") or ""
+    for _, old in ipairs(replaced) do
+      out(string.format("  (replaces %s%s — environment names are case-insensitive)", prefix, old))
+    end
     -- `PATH` (any case) is allowed but replaces the tool's PATH wholesale
     -- (§1.3.3) — say so now, not only when a build later cannot find cl.exe.
     local env_name = param:match("^env%.(.+)$") or param:match("^overrides%.[^.]+%.env%.(.+)$")
     if env_name and require("loomworks.reserved_compiler").is_path_env(env_name) then
-      note("warning: env." .. env_name .. " replaces the PATH the tool sets up for every "
+      note("warning: " .. param .. " replaces the PATH the tool sets up for every "
         .. "configure/build/test task of " .. proj.key .. "/" .. cfg.name
         .. " (e.g. the MSVC developer environment — cl.exe / link.exe may then not be "
         .. "found). ${PATH} in the value expands to lw's own PATH, not the tool's.")
@@ -3218,18 +3280,10 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
     out(string.format("%s/%s: unset %s", proj.key, cfg.name, param))
   end
   -- Point at `lw publish` only when something changed (above) and this
-  -- configuration actually reaches the shared loomworks.json — its own intent is shared / local+shared, or a
-  -- published configuration set pulls it in (§2.4 effective intent). A
-  -- local-only configuration has nothing to publish.
-  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
-  local published = true
-  if ok_p and type(pub) == "table" and type(pub.configs) == "table" then
-    published = false
-    for _, c in ipairs(proj._configurations or {}) do
-      if c.name == cfg.name and pub.configs[c] then published = true; break end
-    end
+  -- configuration actually reaches the shared loomworks.json.
+  if config_reaches_shared(ws, proj, cfg.name) then
+    out("`lw publish` to update the shared loomworks.json.")
   end
-  if published then out("`lw publish` to update the shared loomworks.json.") end
   return 0
 end
 
@@ -3557,17 +3611,77 @@ function M.cmd_cset(sub, root, args)
     "' — use list|show|create|map|unmap|rename|remove|publish")
 end
 
---- `lw profile select` — interactive picker that sets the active profile.
---- Writes user.json (explicit management).
-function M.select_profile(ws)
+--- Clear the active profile (`lw profile select --none`). Idempotent: with no
+--- active profile it says so and writes nothing. A stale active key (naming a
+--- profile that no longer exists) is cleared too.
+--- @param ws table
+--- @return integer exit code
+local function clear_active_profile(ws)
+  local active = ws._active_profile_key
+  if not active then
+    out("no active profile (unchanged)")
+    return 0
+  end
+  local hit
+  for _, p in ipairs(ws._profiles or {}) do
+    if p.key == active then hit = p; break end
+  end
+  if hit then
+    hit:deactivate()
+  else
+    ws._active_profile = nil
+    ws._active_profile_key = nil
+    ws:_save_user()
+  end
+  out("active profile cleared (was " .. active .. ")")
+  return 0
+end
+
+--- `lw profile select [<profile> | --none]` — set (or clear) the active profile
+--- in the working copy (user.json). A named profile is resolved like every other
+--- profile operand (number, exact key, unique boundary substring) and needs no
+--- terminal, so scripts can drive it; `--none` clears the selection. Only the
+--- no-argument picker is interactive. Selecting the profile that is already
+--- active reports `(unchanged)` and writes nothing.
+--- @param ws table
+--- @param args string[]|nil full argv ({ "profile", "select", … })
+function M.select_profile(ws, args)
+  local name, none
+  for i = 3, #(args or {}) do
+    local a = args[i]
+    if a == "--none" then
+      none = true
+    elseif a:sub(1, 1) == "-" then
+      die("unknown option '" .. a .. "' — usage: lw profile select [<profile> | --none]")
+    elseif name then
+      die("unexpected argument '" .. a .. "' — usage: lw profile select [<profile> | --none]")
+    else
+      name = a
+    end
+  end
+  if none and name then
+    die("`--none` clears the active profile; it takes no profile name")
+  end
+  if none then return clear_active_profile(ws) end
   local profiles = ws._profiles or {}
+  if name then
+    local p = resolve_profile(ws, name)
+    if ws._active_profile_key == p.key then
+      out("active profile: " .. p.key .. " (unchanged)")
+      return 0
+    end
+    p:activate()
+    out("active profile: " .. p.key)
+    return 0
+  end
   if #profiles == 0 then die("no profiles to select — run `lw profile list`") end
   if not interactive() then
     local keys = {}
     for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
-    die("`lw profile select` needs an interactive terminal.\n" ..
-      "  set the active profile with `lw profile create <set> <tool> --activate`, or\n" ..
-      "  build a specific profile with `lw build <profile>`.\n" ..
+    table.sort(keys)
+    die("`lw profile select` without a profile is an interactive picker.\n" ..
+      "  name the profile (a unique substring works): lw profile select <profile>\n" ..
+      "  or clear the selection: lw profile select --none\n" ..
       "  profiles: " .. table.concat(keys, ", "))
   end
   local active = ws._active_profile_key
@@ -4211,6 +4325,16 @@ function M.cmd_profile_set(root, args)
     die("project '" .. proj.key .. "' declares no variable '" .. var_name ..
       "'. Declared: " .. (next(declared) and table.concat(declared, ", ") or "(none)"))
   end
+  if var_name == "cache" then
+    local ok, err = require("loomworks.compiler_cache").validate_policy(value)
+    if not ok then die(err) end
+  end
+  -- Same idempotence as `lw config set`: a value already set changes nothing,
+  -- so say so and leave user.json untouched.
+  if value ~= "" and profile:variable_value(proj.key, var_name) == value then
+    out(string.format("%s: %s/%s = %s (unchanged)", profile.key, proj.key, var_name, value))
+    return 0
+  end
   profile:set_variable_value(proj.key, var_name, value)
   out(string.format("%s: set %s/%s = %s", profile.key, proj.key, var_name, value))
   return 0
@@ -4250,7 +4374,7 @@ end
 
 function M.cmd_profile(sub, root, args)
   if sub == "select" then
-    return M.select_profile(load_workspace(root, false))
+    return M.select_profile(load_workspace(root, false), args)
   end
   if sub == "set" then
     return M.cmd_profile_set(root, args)
@@ -6170,6 +6294,9 @@ function M.cmd_complete(cword, words)
       end
     elseif (sub == "publish" or sub == "show") and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- <key>
+    elseif sub == "select" and n == 2 then
+      local list = comp_profile_names(comp_ws(root)); list[#list + 1] = "--none"
+      emit(list)                                               -- <profile> | --none
     elseif (sub == "set" or sub == "unset") then
       -- Grammar: [<profile>] <project> <variable> [<value>]. Position 2 may be
       -- either the optional profile or the project; offer both. Position 3
@@ -6335,7 +6462,7 @@ activates the profile, then builds — so a freshly-cloned project goes from
 
 In non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the
 active profile is NOT used and nothing is created — pass a profile explicitly
-for a deterministic build (§16.9). The CI pattern is:
+for a deterministic build. The CI pattern is:
   lw profile create <set> <tool>  &&  lw build <set>:<tool>
 (the profile key is `<set>:<tool>`, as `lw profile create` prints it).
 
@@ -6371,8 +6498,8 @@ just its artifacts — a hard reset to unconfigured — use `lw reset`.]],
 
 HARD-reset build state: remove the build directories (rm -rf, NOT the build
 system's artifact clean of `lw clean`) and drop the affected configurations back
-to `unconfigured`, so the next `lw build` reconfigures from scratch (spec
-§16.30). The profile, its configuration set, and its toolchain pins are KEPT —
+to `unconfigured`, so the next `lw build` reconfigures from scratch.
+The profile, its configuration set, and its toolchain pins are KEPT —
 this is the CLI equivalent of the status page's delete, minus removing the
 profile. Contrast `lw clean`, which keeps the configuration and only removes
 artifacts.
@@ -6391,14 +6518,14 @@ deleting unprompted. A profile with no build directories resets nothing and
 exits 0.
 
 Reset is exclusive (like clean/delete): it holds each build directory's lock
-(spec §16.6) so it cannot race a concurrent build. A build directory still
+so it cannot race a concurrent build. A build directory still
 referenced by another profile not being reset is kept on disk (its state cleared
 only for the reset). Non-zero exit on any failure.]],
   unlock = [[lw unlock <profile> | --all
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
-on a build dir across processes (editor + CLI) with an advisory lockfile
-(spec §16.6); a crashed process's lock is normally reclaimed automatically once
+on a build dir across processes (editor + CLI) with an advisory lockfile;
+a crashed process's lock is normally reclaimed automatically once
 its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
 
   <profile>   clear locks on that profile's build dirs
@@ -6408,8 +6535,8 @@ Warns (on stderr) before clearing a lock that still looks active — meaning a
 build may really be running elsewhere.]],
   run = [[lw run [<target>] [-- prog-args…]   |   lw run <profile> <target> [-- …]
 
-Resolve a profile and a launch target, then build -> deploy -> execute (spec
-§16.17). The target is EITHER a build target (its executable) OR a command
+Resolve a profile and a launch target, then build -> deploy -> execute.
+The target is EITHER a build target (its executable) OR a command
 launch configuration declared with `lw launch add`; variables are expanded in
 the profile's context. The launched process's exit code becomes lw's exit
 code; output streams through.
@@ -6474,7 +6601,7 @@ says so and names it — `lw build` to complete it.
   set [<profile>] <target>
                         Set the default target. One operand is a target on the
                         active profile (--no-input requires the explicit
-                        <profile>, §16.9); two operands name the profile.
+                        <profile>); two operands name the profile.
   clear [profile]       Clear the default target.
 
 Disambiguating a name present more than once (on `set`):
@@ -6520,8 +6647,8 @@ project is published (`lw project publish <project>`).]],
 
 Build a profile, then run its tests through each module's NATIVE runner (cmake
 -> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
-code: 0 iff the build succeeded and every runner passed, non-zero otherwise
-(spec §16.16). A profile whose modules expose no test runner reports "no tests"
+code: 0 iff the build succeeded and every runner passed, non-zero otherwise.
+A profile whose modules expose no test runner reports "no tests"
 and exits 0 — not a failure.
 
 Profile resolution and onboarding match `lw build`: interactively it can create
@@ -6605,6 +6732,8 @@ profile):
   off       never use a compiler cache.
   sccache | ccache   use exactly that tool (not found → builds run uncached,
             and `lw health` says so).
+  Values are case-insensitive (`false` = off). Anything else is refused when
+  set; one found in a hand-edited file is flagged in `lw status`.
 Set it:
   lw config set <project> <configuration> variables.cache sccache
   lw config set <project> <configuration> overrides.msvc.cache sccache
@@ -6783,7 +6912,7 @@ cache or build dirs.]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 
-Inspect or create the git worktrees of the current repository (spec §16.26/§16.27).
+Inspect or create the git worktrees of the current repository.
 
   list  (also bare `lw worktree`)
         List every worktree and whether loomworks is initialised in each (a
@@ -6802,7 +6931,7 @@ Inspect or create the git worktrees of the current repository (spec §16.26/§16
         <start-point>, else main's HEAD); an existing <branch> is checked out
         (git errors if it is already checked out elsewhere). Then, unless
         --no-pull, it folds the main checkout's working config into the new
-        worktree (`lw pull`, spec §16.25) so it is ready to build.
+        worktree (`lw pull`) so it is ready to build.
 
         Non-destructive: it never overwrites — a pre-existing target path is
         refused, and if the auto-pull fails after the worktree is created the
@@ -6845,7 +6974,7 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
   publish <name>
         Mark the project shared (local+shared) and regenerate loomworks.json.
 
-A declared variable feeds three surfaces (see core §1.3.1):
+A declared variable feeds three surfaces:
   lw project set <p> <var> [<default>] [--type …]   declare it here
   lw config set <p> <cfg> variables.<var> …         override per configuration
   lw profile set [<profile>] <p> <var> <value>       fill a blank per profile
@@ -6898,12 +7027,14 @@ Params for get/set/unset:
 Environment names: the compiler-driver variables (CC, CXX, FC, CUDACXX,
 CUDAHOSTCXX, OBJC, OBJCXX, ISPC — in any case) are refused: the profile's tool
 chooses the compiler. Setting PATH (any case) is allowed but REPLACES the PATH
-the tool sets up (e.g. the MSVC developer environment), so lw warns.
+the tool sets up (e.g. the MSVC developer environment), so lw warns. Names are
+one entry per name ignoring case: setting env.Path when env.PATH exists
+replaces it (keeping the new spelling), and lw says so.
 
 Compiler-family overrides (family ∈ clang|gcc|msvc, clang-cl counts as clang)
 override a project variable's value only when the active tool's compiler
 belongs to that family. The overridden name must already be declared in the
-project's `variables` (an empty default is allowed). See core §1.3.1.
+project's `variables` (an empty default is allowed).
 
 Examples:
   lw config set   App Debug options.CMAKE_CXX_FLAGS '${warn_flags}'
@@ -6942,7 +7073,11 @@ Examples:
             configuration, resolved toolchain and build state), the profile's
             toolchains, and its launchable targets. Diagnostics are scoped to
             the profile. <profile> defaults to the active profile. Read-only.
-  select    interactive picker; sets the active profile (writes user.json)
+  select [<profile> | --none]
+            Set the active profile (writes user.json). A named <profile> (a
+            unique substring works) needs no terminal, so your own scripts can
+            switch it; --none clears the active profile. With neither, an
+            interactive picker. Re-selecting the active profile changes nothing.
   create <config-set> [tool ...] [--activate]
             Create a profile (a config set + toolchains) in the working copy.
             If <config-set> doesn't exist but is auto-detectable, it's
@@ -7006,14 +7141,14 @@ configurations.
 
 Keys:
   dev-lua         a checked-out loomworks `lua/` directory to run from
-                  (the development source, spec §16.11).
+                  (the development source).
   default-source  `dev` or `release`. `dev` makes `lw` use dev-lua without
                   needing `--dev` each time; `release` (default) uses the
                   verified release bundle.
   release-url     override where releases are fetched from (a local directory
                   works as an offline mirror); LOOMWORKS_RELEASE_URL wins.
   channel         `stable` (default) or `unstable`. The update channel
-                  `lw self-update` follows (spec §16.29). `unstable` includes
+                  `lw self-update` follows. `unstable` includes
                   pre-releases; both are equally signature/hash-verified.
                   LOOMWORKS_CHANNEL, or `lw self-update --channel`, overrides.
 
@@ -7042,11 +7177,11 @@ bundle, the update channel, and which system-Lua source is active — one of:
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
 
-A host command, handled by the lw binary itself (spec §16.11).]],
+A host command, handled by the lw binary itself.]],
   install = [[lw install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
 
-Install the running lw binary for the current user and make it usable
-(spec §16.15). It copies itself to a per-user location, ensures that location
+Install the running lw binary for the current user and make it usable.
+It copies itself to a per-user location, ensures that location
 is on PATH, and fetches the first release bundle. No admin required.
 
   location   Windows: %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe (on PATH)
@@ -7068,15 +7203,15 @@ A host command (handled by lw itself).]],
   ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>] [--no-host]
 
 Download the current release, verify its signature and hashes, and activate
-it (spec §16.12–16.13). Fetches manifest.json + manifest.json.sig, checks the
+it. Fetches manifest.json + manifest.json.sig, checks the
 signature against the key built into lw, downloads the bundle, verifies its
 SHA-256 against the (trusted) manifest, then extracts it into a new
 lua-<version>/ under the data dir — never overwriting a running copy. Integrity
 rests on the signature, not the transport, so it is safe behind a proxy;
 set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
-Then it replaces the lw binary itself with the same release's host (spec
-§16.32), when that release is newer than the running host's (it never
+Then it replaces the lw binary itself with the same release's host,
+when that release is newer than the running host's (it never
 downgrades the binary, e.g. after a channel switch to stable): the release's
 SHA256SUMS signature is checked against the built-in key and the downloaded
 binary against its hash BEFORE the installed binary is touched (never relaxed,
@@ -7094,7 +7229,7 @@ first and self-update exits non-zero asking you to re-run it for the bundle.
   --channel <name>     `stable` (default) or `unstable` for this run only
   --no-host            update only the bundle; leave the lw binary as it is
 
-Update channel (spec §16.29): `stable` follows the newest full release;
+Update channel: `stable` follows the newest full release;
 `unstable` includes pre-releases, for testing ahead of a stable cut. Both are
 verified identically — `unstable` never means less checking. Precedence:
 --channel > LOOMWORKS_CHANNEL > the `channel` setting > stable. Persist a
@@ -7107,7 +7242,7 @@ Not applicable to a development source. A host command (handled by lw itself).]]
   bootstrap = [[lw bootstrap [--version <x.y.z>]
 
 Install a repo-local launcher + version pin so contributors and CI run a fixed,
-verified lw without a prior global install (spec §16.21–16.24). Writes three
+verified lw without a prior global install. Writes three
 committed files at the repo root — lw.sh, lw.cmd, and lw.pin — and adds
 `.nvim/cache/` to .gitignore (created if absent, appended idempotently).
 
@@ -7292,11 +7427,60 @@ function M.has_help_topic(cmd)
   return cmd ~= nil and HELP[HELP_ALIASES[cmd] or cmd] ~= nil
 end
 
-function M.cmd_help(cmd)
+--- The section of `HELP[cmd]` that documents sub-command `sub`, or nil when the
+--- topic has no entry for it. An entry is a line indented by exactly two
+--- spaces that starts with the sub-command's name, plus its deeper-indented
+--- continuation lines (up to the next entry or a blank line). Any unindented
+--- paragraph whose heading names the sub-command (e.g. `Params for
+--- get/set/unset:`) follows it, then a pointer to the full topic.
+--- @param cmd string canonical topic
+--- @param sub string
+--- @return string|nil
+function M.subcommand_help(cmd, sub)
+  local text = HELP[cmd]
+  if not text or type(sub) ~= "string" or not sub:match("^%a[%w_-]*$") then return nil end
+  local lines = vim.split(text, "\n", { plain = true })
+  local entry
+  for i, l in ipairs(lines) do
+    if l:match("^  %S") and (l:sub(3, 2 + #sub) == sub)
+        and (#l == 2 + #sub or l:sub(3 + #sub, 3 + #sub):match("%s")) then
+      entry = { "lw " .. cmd .. " " .. l:sub(3) }
+      for j = i + 1, #lines do
+        local c = lines[j]
+        if c:match("^%s*$") or not c:match("^   ") then break end
+        entry[#entry + 1] = c
+      end
+      break
+    end
+  end
+  if not entry then return nil end
+  -- Headed paragraphs naming the sub-command as a word (`get/set/unset:`).
+  local i = 1
+  while i <= #lines do
+    local l = lines[i]
+    if l:match("^%S.*:$") and (("/" .. l:gsub("%s", "/") .. "/"):find("[^%w_-]" .. sub:gsub("%-", "%%-") .. "[^%w_-]")) then
+      entry[#entry + 1] = ""
+      while i <= #lines and not lines[i]:match("^%s*$") do
+        entry[#entry + 1] = lines[i]
+        i = i + 1
+      end
+    else
+      i = i + 1
+    end
+  end
+  entry[#entry + 1] = ""
+  entry[#entry + 1] = "`lw help " .. cmd .. "` for the whole command."
+  return table.concat(entry, "\n")
+end
+
+--- `lw help [<command> [<sub-command>]]`.
+--- @param cmd string|nil
+--- @param sub string|nil sub-command: print only its section when it has one
+function M.cmd_help(cmd, sub)
   -- Normalize command aliases to their canonical help topic.
   cmd = cmd and (HELP_ALIASES[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
-    out(HELP[cmd])
+    out(M.subcommand_help(cmd, sub) or HELP[cmd])
     return 0
   end
   if cmd then io.stderr:write("lw: no help topic '" .. cmd .. "'\n") end
@@ -7358,7 +7542,8 @@ for custom variants.
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
-mode `lw build` also ignores the active profile — pass the profile explicitly.
+mode `lw build` also ignores the active profile (and never picks a sole profile)
+— pass the profile explicitly.
 
 Automation agent? See `lw help agent` — run with --no-input so you never block
 or change the user's settings. Driving CI? See `lw help ci`. Compiler cache
@@ -7421,18 +7606,20 @@ local function main()
 
   -- Global commands — no workspace required.
   if command == "help" or command == "-h" or command == "--help" then
-    finish(M.cmd_help(a[2]))
+    finish(M.cmd_help(a[2], a[3]))
   end
   -- `lw <command> … --help` / `-h` (before any `--`, whose tail belongs to a
   -- build tool / program) is `lw help <command>` for every command, checked
   -- before any handler can read the flag as an operand (`lw build --help`
   -- used to look for a profile named "--help"). A command without a topic of
-  -- its own gets the general usage. Exit 0 either way.
+  -- its own gets the general usage. A sub-command (`lw profile query --help`)
+  -- gets its own section of the parent topic when it has one. Exit 0 either way.
   if command then
     for i = 2, #a do
       if a[i] == "--" then break end
       if a[i] == "--help" or a[i] == "-h" then
-        M.cmd_help(M.has_help_topic(command) and command or nil)
+        local sub = (i > 2) and a[2] or nil
+        M.cmd_help(M.has_help_topic(command) and command or nil, sub)
         finish(0)
       end
     end
