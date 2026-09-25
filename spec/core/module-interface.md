@@ -625,7 +625,7 @@ shared across modules is declared through the shared helper core provides, so
 the declarations agree. Absent hook = the module contributes no inventory. Additive and optional: no
 `api_versions.module` bump (§8.0).
 
-**`health_requirements(ctx) → { id, label, hint?, via? }[]`** *(optional)*
+**`health_requirements(ctx) → { id, label, hint?, via?, alternatives? }[]`** *(optional)*
 
 The inventory ids a project needs to configure and build under a given tool
 (§16.33 "Required vs other"). `ctx` is `{ project, tool, configuration }`:
@@ -636,7 +636,10 @@ optional `hint`) is what to display when no declaration produced a result for
 that `id` (it then reads as missing). `via` names the enumerating declaration
 that would have produced the result (e.g. the compiler scan for a compiler
 path): when that declaration's probe was inconclusive, the requirement reads as
-unknown instead of missing. It must be **pure** — derived from the
+unknown instead of missing. `alternatives` lists other ids that satisfy the
+requirement equally — tried in order when `id` itself is not found (§16.33) —
+for an executable the build can also find somewhere the plain search path does
+not reach. It must be **pure** — derived from the
 project, the tool's data and the module's declarations, with no spawn or
 filesystem access — because a passive collect evaluates it on every
 recomputation of the count. Absent hook = the module's projects require nothing

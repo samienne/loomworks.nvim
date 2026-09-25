@@ -521,7 +521,8 @@ function M.health_inventory(_ctx)
         inv.exe_declaration({
             id = "exe:ninja", label = "ninja", names = { "ninja" },
             hint = function(ctx)
-                return ctx.is_windows and "winget install Ninja-build.Ninja"
+                return ctx.is_windows
+                    and "winget install Ninja-build.Ninja (VS's bundled ninja serves only MSVC/clang-cl tools)"
                     or "install ninja (your package manager: ninja-build)"
             end,
         }),
@@ -544,6 +545,12 @@ function M.health_requirements(ctx)
     }
     local td = ctx.tool and ctx.tool.data or nil
     if not td then return reqs end
+    if td.vcvarsall then
+        -- An MSVC-style tool's tasks run in the vcvarsall environment
+        -- (`compose_task_env`), whose PATH appends Visual Studio's bundled
+        -- ninja: that copy satisfies the backend too.
+        reqs[2].alternatives = { require("loomworks.msvc").bundled_id("ninja", td.vcvarsall) }
+    end
     local label = ctx.tool.label or td.compiler_display or "compiler"
     local hint = "install it, or use another toolchain — lw help profile"
     local family = td.compiler_family

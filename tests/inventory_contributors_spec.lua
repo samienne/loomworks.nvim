@@ -177,6 +177,45 @@ describe("inventory requirements", function()
         assert.equals(0, #inv.suggestions_for(entries))
     end)
 
+    it("a requirement satisfied by a found alternative binds to it, not to the missing primary", function()
+        -- An MSVC-style Ninja build runs cmake/ninja inside vcvarsall, whose PATH
+        -- carries Visual Studio's bundled copies (cmake §13): those satisfy it.
+        local VSC, VSN = "vs-cmake:c:/vs/v.bat", "vs-ninja:c:/vs/v.bat"
+        local tier = {
+            results = {
+                { id = "exe:cmake", label = "cmake", status = "missing", category = "build tools", hint = "get cmake" },
+                { id = "exe:ninja", label = "ninja", status = "missing", category = "build tools", hint = "get ninja" },
+                { id = VSC, label = "cmake (VS 2022 Community)", status = "found", category = "build tools", detail = "VS-bundled" },
+                { id = VSN, label = "ninja (VS 2022 Community)", status = "found", category = "build tools", detail = "VS-bundled" },
+            },
+            declared = { { id = "exe:cmake", category = "build tools" }, { id = "exe:ninja", category = "build tools" } },
+        }
+        local reqs = {
+            { id = "exe:cmake", label = "cmake", alternatives = { VSC }, required_by = { "msvc/App" } },
+            { id = "exe:ninja", label = "ninja", alternatives = { VSN }, required_by = { "msvc/App" } },
+            { id = "exe:cmake", label = "cmake", required_by = { "gcc/App" } }, -- no vcvars: PATH only
+        }
+        local e = {}
+        local entries = inv.classify(tier, reqs)
+        for _, x in ipairs(entries) do e[x.id] = x end
+        assert.is_true(e[VSC].required)
+        assert.same({ "msvc/App" }, e[VSC].required_by)
+        assert.is_true(e[VSN].required)
+        assert.is_false(e["exe:ninja"].required)            -- satisfied by the bundled copy
+        assert.is_true(e["exe:cmake"].required)
+        assert.same({ "gcc/App" }, e["exe:cmake"].required_by) -- only the profile that cannot use it
+        local sug = inv.suggestions_for(entries)
+        assert.equals(1, #sug)
+        assert.equals("cmake not found — needed by gcc/App", sug[1].title)
+
+        -- The primary wins when found (vcvars APPENDS its directories to PATH).
+        tier.results[1].status = "found"
+        local e2 = {}
+        for _, x in ipairs(inv.classify(tier, reqs)) do e2[x.id] = x end
+        assert.same({ "msvc/App", "gcc/App" }, e2["exe:cmake"].required_by)
+        assert.is_false(e2[VSC].required)
+    end)
+
     it("names_phrase caps the list", function()
         assert.equals("a, b, c +2 more", inv.names_phrase({ "a", "b", "c", "d", "e" }))
     end)
@@ -255,6 +294,40 @@ describe("inventory contributors", function()
         assert.equals("found", by["clang-cl:c:/vs/vc/tools/llvm/x64/bin/clang-cl.exe"].status)
     end)
 
+    it("the MSVC scan lists Visual Studio's bundled cmake + ninja when vcvarsall would add them", function()
+        local orig = { has = vim.fn.has, detect = msvc.detect_async, for_ = msvc.clang_cl_for_async, cl = msvc.clang_cl_async }
+        vim.fn.has = function(f) if f == "win32" then return 1 end return orig.has(f) end
+        local function inst(p, line, product)
+            return { display = "MSVC 17 " .. line .. " (" .. product .. ")", vcvarsall = p .. "/VC/Auxiliary/Build/vcvarsall.bat",
+                install_path = p, version_line = line, product = product, product_version = "17.14.37 (July 2026)" }
+        end
+        msvc.detect_async = function(cb) cb({ inst("C:/VS/Ent", "2022", "Enterprise"), inst("C:/VS/Old", "2022", "BuildTools") }) end
+        msvc.clang_cl_for_async = function(_, cb) cb(nil) end
+        msvc.clang_cl_async = function(cb) cb(nil) end
+        local ext = "/Common7/IDE/CommonExtensions/Microsoft/CMake"
+        local files = {
+            ["C:/VS/Ent" .. ext .. "/CMake/bin/cmake.exe"] = "", ["C:/VS/Ent" .. ext .. "/Ninja/ninja.exe"] = "",
+            -- Old: cmake only — vcvarsall adds neither directory then.
+            ["C:/VS/Old" .. ext .. "/CMake/bin/cmake.exe"] = "",
+        }
+        local ctx = fake_ctx({ platform = "windows", files = files, outputs = {
+            ["C:/VS/Ent" .. ext .. "/CMake/bin/cmake.exe"] = "cmake version 3.31.6-msvc6\n",
+            ["C:/VS/Ent" .. ext .. "/Ninja/ninja.exe"] = "1.12.1\n",
+        } })
+        local ok, by = pcall(probe, { msvc.health_declaration() }, ctx)
+        vim.fn.has, msvc.detect_async, msvc.clang_cl_for_async, msvc.clang_cl_async = orig.has, orig.detect, orig.for_, orig.cl
+        assert.is_true(ok, tostring(by))
+        local c = by[msvc.bundled_id("cmake", "C:/VS/Ent/VC/Auxiliary/Build/vcvarsall.bat")]
+        local n = by[msvc.bundled_id("ninja", "C:/VS/Ent/VC/Auxiliary/Build/vcvarsall.bat")]
+        assert.equals("found", c.status)
+        assert.equals("3.31.6", c.version)
+        assert.equals("build tools", c.category)
+        assert.equals("VS-bundled", c.detail)
+        assert.equals("cmake (VS 2022 Enterprise)", c.label)
+        assert.equals("1.12.1", n.version)
+        assert.is_nil(by[msvc.bundled_id("cmake", "C:/VS/Old/VC/Auxiliary/Build/vcvarsall.bat")])
+    end)
+
     describe("cmake requirements", function()
         local function reqs(tool_data, cfg, label)
             local tool = tool_data and { data = tool_data, label = label or "T" } or nil
@@ -282,6 +355,28 @@ describe("inventory contributors", function()
             local r = reqs({ generator = "Visual Studio 17 2022", vcvarsall = "C:/VS/vcvarsall.bat" })
             assert.is_not_nil(r[inv.path_id("msvc", "C:/VS/vcvarsall.bat")])
             assert.is_nil(r["exe:ninja"])
+        end)
+
+        it("an MSVC-style Ninja kit accepts Visual Studio's bundled cmake/ninja (run inside vcvarsall)", function()
+            local vc = "C:/VS/VC/Auxiliary/Build/vcvarsall.bat"
+            for _, td in ipairs({
+                { generator = "Ninja", vcvarsall = vc },
+                { generator = "Ninja", vcvarsall = vc, compiler_path = "C:/VS/VC/Tools/Llvm/x64/bin/clang-cl.exe" },
+            }) do
+                local r = reqs(td)
+                assert.same({ msvc.bundled_id("cmake", vc) }, r["exe:cmake"].alternatives)
+                assert.same({ msvc.bundled_id("ninja", vc) }, r["exe:ninja"].alternatives)
+            end
+            -- A preset on an MSVC kit that names Ninja is wrapped the same way.
+            local p = reqs({ generator = "Ninja", vcvarsall = vc },
+                { from_preset = true, module_config = { generator = "Ninja" } })
+            assert.same({ msvc.bundled_id("ninja", vc) }, p["exe:ninja"].alternatives)
+            -- The Visual Studio generator runs cmake from PATH (no vcvarsall
+            -- wrapper): the bundled copy does not count.
+            local vsgen = reqs({ generator = "Visual Studio 17 2022", vcvarsall = vc })
+            assert.is_nil(vsgen["exe:cmake"].alternatives)
+            -- A GNU kit has no vcvarsall either.
+            assert.is_nil(reqs({ generator = "Ninja", compiler_path = "/usr/bin/g++" })["exe:cmake"].alternatives)
         end)
 
         it("clang-cl kit requires the driver and its MSVC install", function()
@@ -342,6 +437,11 @@ describe("inventory contributors", function()
         local cl = r({ compiler_family = "msvc", vcvarsall = "C:/VS/v.bat", compiler_path = "C:/VS/v.bat" })
         assert.is_not_nil(cl[inv.path_id("msvc", "C:/VS/v.bat")])
         assert.is_nil(cl[inv.path_id("cxx", "C:/VS/v.bat")])
+        -- meson's MSVC-style tasks run in the vcvars environment (its PATH carries
+        -- VS's bundled ninja); a GNU tool's do not.
+        assert.same({ msvc.bundled_id("ninja", "C:/VS/v.bat") }, cl["exe:ninja"].alternatives)
+        assert.is_nil(cl["exe:meson"].alternatives)
+        assert.is_nil(gnu["exe:ninja"].alternatives)
         local ccl = r({ compiler_family = "clang-cl", compiler_path = "C:/L/clang-cl.exe", vcvarsall = "C:/VS/v.bat" })
         assert.is_not_nil(ccl[inv.path_id("clang-cl", "C:/L/clang-cl.exe")])
         assert.is_not_nil(ccl[inv.path_id("msvc", "C:/VS/v.bat")])

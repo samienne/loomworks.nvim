@@ -276,4 +276,7 @@ backend), and the tool's compiler from the tool data, with the same ids as cmake
 §13 — `cxx:<path>` for a GNU-driver tool, `msvc:<vcvarsall>` for a cl.exe tool,
 `clang-cl:<path>` plus `msvc:<vcvarsall>` for a clang-cl tool. Without a tool
 (no profile maps the project) only `exe:meson` and `exe:ninja`. A cross file
-that names its own compilers adds no requirement in this version.
+that names its own compilers adds no requirement in this version. An MSVC-style
+tool's tasks run in the vcvarsall environment (§ tools), whose search path ends
+with Visual Studio's bundled ninja, so for such a tool `exe:ninja` names the
+install's bundled copy (`vs-ninja:<vcvarsall>`, cmake §13) as an alternative.

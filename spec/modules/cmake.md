@@ -929,7 +929,7 @@ they are probed and listed once:
 | `exe:ninja` *(shared)* | build tools | search-path lookup, then `ninja --version` |
 | `exe:make` | build tools | search-path lookup (`make`, else `mingw32-make`), then `--version` |
 | `compilers:path` *(shared)* | compilers | the PATH-index compiler scan the kit detection uses (gcc/clang, versioned names included), one result per compiler with its `--version` version; id per result `cxx:<normalized path>` |
-| `compilers:msvc` *(shared)* | compilers | Windows only: the installation locator's installs (one result each, `msvc:<normalized vcvarsall path>`, version = the install's product version), plus clang-cl (`clang-cl:<normalized path>`, VS-bundled and on the search path) |
+| `compilers:msvc` *(shared)* | compilers | Windows only: the installation locator's installs (one result each, `msvc:<normalized vcvarsall path>`, version = the install's product version), plus clang-cl (`clang-cl:<normalized path>`, VS-bundled and on the search path), plus — in *build tools* — the cmake and ninja an install bundles (`vs-cmake:` / `vs-ninja:<normalized vcvarsall path>`, detail "VS-bundled", version from their version query), listed only when **both** exist, the condition under which vcvarsall adds their directories to the search path |
 
 A *normalized path* uses forward slashes and is lower-cased on Windows, so an id
 derived from a tool's recorded path matches the one the scan produced. The
@@ -946,6 +946,17 @@ mapped configuration, which the preset parse already filled):
 - the generator's executable — the configuration's generator, else the tool's:
   `exe:ninja` for a Ninja generator, `exe:make` for a Makefiles generator; the
   Visual Studio generator needs the tool's MSVC install instead (below);
+- **run inside vcvarsall** — an MSVC-style kit (it carries a vcvarsall: cl.exe
+  or clang-cl) with the `Ninja` generator (§1a): configure and build run in a
+  batch wrapper that calls the kit's vcvarsall first, and vcvarsall **appends**
+  the install's bundled cmake and ninja directories to the search path. So
+  `exe:cmake` and `exe:ninja` each name the install's bundled copy
+  (`vs-cmake:` / `vs-ninja:<vcvarsall>`) as an **alternative** (core §16.33): a
+  cmake / ninja on the plain search path wins (it comes first), else the
+  bundled copy satisfies the requirement. The Visual Studio generator is not
+  wrapped — its cmake comes from the plain search path, and the bundled copy
+  does not count (the Windows install hints say so). The same applies to a
+  preset that names `Ninja` on such a kit;
 - the tool's compiler: `cxx:<path>` (via `compilers:path`) for a GNU-driver
   kit; `msvc:<vcvarsall>` (via `compilers:msvc`) for an MSVC kit or the Visual
   Studio generator; `clang-cl:<path>` plus `msvc:<vcvarsall>` for a clang-cl

@@ -68,6 +68,8 @@ M.JSON_SCHEMA = 1
 --- @field label string display when no result carries `id`
 --- @field hint? string remedy when missing and no result carries one
 --- @field via? string id of the enumerating declaration that would produce `id`
+--- @field alternatives? string[] other ids that satisfy the requirement equally
+---   (tried in order when `id` is not found; the first found one is required instead)
 --- @field required_by string[] profile/project names needing it (filled by core)
 
 --- @class loomworks.InventoryContext
@@ -863,11 +865,17 @@ function M.requirements(workspace)
 
     local function add(req, who)
         if type(req) ~= "table" or type(req.id) ~= "string" then return end
-        local e = by_id[req.id]
+        -- Merged by id AND alternatives: the same executable required with a
+        -- fallback by one project and without by another stays two entries, so
+        -- each binds to what satisfies IT (`classify`).
+        local alts
+        if type(req.alternatives) == "table" and #req.alternatives > 0 then alts = req.alternatives end
+        local mkey = req.id .. (alts and ("|" .. table.concat(alts, "|")) or "")
+        local e = by_id[mkey]
         if not e then
             e = { id = req.id, label = req.label or req.id, hint = req.hint, via = req.via,
-                required_by = {}, _seen = {} }
-            by_id[req.id] = e
+                alternatives = alts, required_by = {}, _seen = {} }
+            by_id[mkey] = e
             out[#out + 1] = e
         end
         if who and not e._seen[who] then
@@ -935,7 +943,9 @@ end
 --- Split a tier's results into entries against the workspace's requirements.
 --- Every result becomes an entry (`required`, `required_by`); a requirement no
 --- result carries becomes a synthesized entry — `missing`, or `unknown` when
---- its enumerating declaration (`via`) was inconclusive or not probed.
+--- its enumerating declaration (`via`) was inconclusive or not probed. A
+--- requirement whose own id is not found but one of whose `alternatives` is
+--- binds to the first found alternative instead (that entry is the required one).
 --- @param tier table `{ results, declared }`
 --- @param reqs loomworks.InventoryRequirement[]
 --- @return table[] entries (results + category/required/required_by), in category order
@@ -956,6 +966,12 @@ function M.classify(tier, reqs)
     end
     for _, req in ipairs(reqs or {}) do
         local e = by_id[req.id]
+        if not (e and e.status == "found") then
+            for _, alt in ipairs(type(req.alternatives) == "table" and req.alternatives or {}) do
+                local a = by_id[alt]
+                if a and a.status == "found" then e = a break end
+            end
+        end
         if not e then
             local status, category = "missing", "other"
             if req.via then
@@ -975,7 +991,9 @@ function M.classify(tier, reqs)
         end
         e.required = true
         for _, who in ipairs(req.required_by or {}) do
-            e.required_by[#e.required_by + 1] = who
+            if not vim.tbl_contains(e.required_by, who) then
+                e.required_by[#e.required_by + 1] = who
+            end
         end
         if not e.hint then e.hint = req.hint end
     end

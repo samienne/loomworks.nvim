@@ -442,8 +442,13 @@ compilers        ✓ MSVC 17.11 (VS 2022 Community)
 
 Inside a workspace the list is split into **Required by this workspace** — what
 the active profile's projects and tools need (every profile's, when none is
-active) — and **Other**, compacted to one line per category. Only a *missing
-required* item is a suggestion and counts toward `lw status`'s `N suggestions`;
+active) — and **Other**, compacted to one line per category. A Ninja build with
+an MSVC / clang-cl tool runs inside `vcvarsall`, which appends the cmake and
+ninja Visual Studio bundles to `PATH`, so for such a profile those count: with
+none on your own `PATH` the requirement shows the VS-bundled copy as found
+(`✓ cmake (VS 2022 Enterprise) 3.31.6 … (VS-bundled)`). The Visual Studio
+generator and GCC/Clang tools run cmake and ninja from your `PATH` only. Only a
+*missing required* item is a suggestion and counts toward `lw status`'s `N suggestions`;
 everything else is information. Probing runs tool version queries and the Visual
 Studio locator, so it happens **only** on `lw health` (a second or two); the
 result is cached, and `lw status` — and the editor's status page — reuse it

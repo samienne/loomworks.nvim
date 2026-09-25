@@ -347,6 +347,42 @@ function M.clang_cl_for_async(install, callback)
     end)
 end
 
+--- The cmake / ninja executables a Visual Studio install bundles (the "C++ CMake
+--- tools for Windows" component), relative to the install path.
+local BUNDLED_TOOLS = {
+    cmake = "/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+    ninja = "/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
+}
+
+--- Inventory id of the cmake / ninja bundled with the install owning
+--- `vcvarsall` (`vs-<name>:<normalized vcvarsall>`). Keyed by vcvarsall — the
+--- install identity every MSVC-style tool records — so a module's requirement
+--- and this declaration agree without a filesystem access.
+--- @param name "cmake"|"ninja"
+--- @param vcvarsall string
+--- @return string
+function M.bundled_id(name, vcvarsall)
+    return require("loomworks.inventory").path_id("vs-" .. name, vcvarsall)
+end
+
+--- Paths of the cmake + ninja bundled with `install`, or nil unless BOTH exist:
+--- vcvarsall (VsDevCmd `ext/cmake.bat`) appends their two directories to PATH
+--- only when both are present — and appends, so a cmake / ninja already on PATH
+--- still wins.
+--- @param install table one entry from `M.detect()`
+--- @param exists fun(path: string): boolean
+--- @return { cmake: string, ninja: string }|nil
+function M.bundled_tools(install, exists)
+    if not (install and install.install_path) then return nil end
+    local out = {}
+    for name, rel in pairs(BUNDLED_TOOLS) do
+        local p = install.install_path .. rel
+        if not exists(p) then return nil end
+        out[name] = p
+    end
+    return out
+end
+
 --- Environment-inventory declaration for the Visual Studio toolchains
 --- (headless §16.33, cmake §13 `compilers:msvc`), shared by every module that
 --- builds with cl.exe / clang-cl so it is probed once. Windows only (nil
@@ -362,7 +398,7 @@ function M.health_declaration()
         id = "compilers:msvc",
         category = "compilers",
         label = "MSVC (Visual Studio)",
-        probe = function(_, done)
+        probe = function(ctx, done)
             M.detect_async(function(installs)
                 local results, seen = {}, {}
                 for _, inst in ipairs(installs) do
@@ -380,6 +416,36 @@ function M.health_declaration()
                         hint = "install Visual Studio Build Tools (Desktop development with C++)",
                     } })
                     return
+                end
+                -- The cmake + ninja each install bundles (build tools): an
+                -- MSVC-style build that runs inside vcvarsall finds them there
+                -- when PATH has none (cmake §13 / meson §12 requirements
+                -- accept them as alternatives). Last step: settles the probe.
+                local function add_bundled()
+                    local jobs = {}
+                    for _, inst in ipairs(installs) do
+                        local tools = M.bundled_tools(inst, ctx.exists)
+                        for _, name in ipairs(tools and { "cmake", "ninja" } or {}) do
+                            local r = {
+                                id = M.bundled_id(name, inst.vcvarsall),
+                                label = name .. " (VS " .. tostring(inst.version_line or inst.vs_major or "?")
+                                    .. " " .. tostring(inst.product or "?") .. ")",
+                                status = "found", path = tools[name], detail = "VS-bundled",
+                                category = "build tools",
+                            }
+                            results[#results + 1] = r
+                            jobs[#jobs + 1] = r
+                        end
+                    end
+                    local pending = #jobs
+                    if pending == 0 then return done(results) end
+                    for _, r in ipairs(jobs) do
+                        ctx.run({ r.path, "--version" }, function(res)
+                            r.version = inv.parse_version((res.stdout or "") .. "\n" .. (res.stderr or ""))
+                            pending = pending - 1
+                            if pending == 0 then done(results) end
+                        end)
+                    end
                 end
                 -- clang-cl: VS-bundled per install, else the one on PATH.
                 local function add_clang_cl(cc)
@@ -406,7 +472,7 @@ function M.health_declaration()
                                     hint = "VS Installer: C++ Clang tools for Windows",
                                 }
                             end
-                            done(results)
+                            add_bundled()
                         end)
                         return
                     end

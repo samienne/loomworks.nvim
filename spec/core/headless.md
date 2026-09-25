@@ -1453,7 +1453,12 @@ by this workspace** and **Other**, with nothing new for the user to declare:
   the profile maps, the inventory ids that project needs (§8.4
   `health_requirements`); a requirement may name the **enumerating declaration**
   that would have produced its result (`via`), so a requirement whose
-  enumeration was inconclusive reads as unknown, never as missing;
+  enumeration was inconclusive reads as unknown, never as missing; and it may
+  name **alternatives** — other ids that satisfy it equally (e.g. a copy of the
+  executable that the build's own environment provides): when its own id is not
+  found, the first alternative that is found is the required entry instead (the
+  report shows what the build will actually use), and only when none is found
+  does the requirement read as missing under its own id;
 - a profile that pins an SDK installation requires it (§10.4);
 - a project whose module type is not loaded (missing or rejected) requires that
   module — its plugin-registry entry.
