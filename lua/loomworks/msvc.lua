@@ -66,6 +66,9 @@ local function build_install(install)
         vcvarsall = vcvarsall,
         arch = "x64",
         install_path = path,
+        -- Product version (e.g. "17.11.2") — display only (health inventory detail).
+        product_version = (install.catalog and install.catalog.productDisplayVersion)
+            or install.installationVersion,
     }
 end
 
@@ -253,15 +256,21 @@ end
 
 --- Locate the clang-cl paired to a specific MSVC install. clang-cl is Clang's
 --- MSVC-compatible driver: it has no STL / Windows SDK / linker of its own and
---- reuses the paired install's via vcvarsall, so there is exactly one clang-cl
---- per install. Prefers the VS-bundled clang-cl (the "C++ Clang tools for
---- Windows" component), falling back to a standalone / PATH clang-cl.
---- Cached per install_path.
+--- reuses the paired install's via vcvarsall, so there is at most one clang-cl
+--- per install. The VS-bundled clang-cl (the "C++ Clang tools for Windows"
+--- component) always pairs with its own install. A standalone / PATH clang-cl
+--- is used only when `opts.standalone` is set — callers set it for exactly ONE
+--- install, the newest (`standalone_host`), so a PATH clang-cl yields one
+--- tool instead of one named after every install (an old VS without clang
+--- tools must not get a "clang-cl (VS 2017)" tool it never shipped).
+--- Cached per (install_path, standalone).
 --- @param install table one entry returned by `M.detect()`
+--- @param opts? { standalone?: boolean } allow the standalone/PATH fallback
 --- @return { path: string, version: string, clangd_path: string|nil }|nil
-function M.clang_cl_for(install)
+function M.clang_cl_for(install, opts)
     if not (install and install.install_path) then return nil end
-    local key = install.install_path
+    local standalone_ok = opts and opts.standalone and true or false
+    local key = install.install_path .. (standalone_ok and "|standalone" or "")
     if M._clang_cl_for[key] ~= nil then
         return M._clang_cl_for[key] or nil
     end
@@ -273,7 +282,7 @@ function M.clang_cl_for(install)
     if uv.fs_stat(bundled) then
         path = M.normalize_exe(bundled)
         clangd_path = sibling_clangd(bundled)
-    else
+    elseif standalone_ok then
         -- 2. Standalone / PATH clang-cl. It still borrows this install's SDK +
         --    libs through vcvarsall when the tool is used.
         local standalone = M.clang_cl()
@@ -294,19 +303,22 @@ function M.clang_cl_for(install)
     return result
 end
 
---- Async sibling of `M.clang_cl_for`. Same resolution (VS-bundled clang-cl
---- preferred, standalone/PATH fallback) and the same per-install cache, with
---- the `--version` probe run off the main loop via `vim.system`. The bundled
---- probe uses a fast sync `fs_stat`; the standalone branch defers to
---- `clang_cl_async`. Calls back immediately when already cached.
+--- Async sibling of `M.clang_cl_for`. Same resolution (VS-bundled clang-cl,
+--- else — with `opts.standalone` — the standalone/PATH one) and the same
+--- cache, with the `--version` probe run off the main loop via `vim.system`.
+--- The bundled probe uses a fast sync `fs_stat`; the standalone branch defers
+--- to `clang_cl_async`. Calls back immediately when already cached.
 --- @param install table one entry returned by `M.detect()`
+--- @param opts? { standalone?: boolean } allow the standalone/PATH fallback
 --- @param callback fun(info: { path: string, version: string, clangd_path: string|nil }|nil)
-function M.clang_cl_for_async(install, callback)
+function M.clang_cl_for_async(install, opts, callback)
+    if type(opts) == "function" then opts, callback = nil, opts end
     if not (install and install.install_path) then
         callback(nil)
         return
     end
-    local key = install.install_path
+    local standalone_ok = opts and opts.standalone and true or false
+    local key = install.install_path .. (standalone_ok and "|standalone" or "")
     if M._clang_cl_for[key] ~= nil then
         callback(M._clang_cl_for[key] or nil)
         return
@@ -331,6 +343,11 @@ function M.clang_cl_for_async(install, callback)
         finish(M.normalize_exe(bundled), sibling_clangd(bundled))
         return
     end
+    if not standalone_ok then
+        M._clang_cl_for[key] = false
+        callback(nil)
+        return
+    end
 
     -- 2. Standalone / PATH clang-cl (borrows this install's SDK + libs via
     --    vcvarsall when the tool is used).
@@ -342,6 +359,178 @@ function M.clang_cl_for_async(install, callback)
         end
         finish(standalone.path, sibling_clangd(standalone.path))
     end)
+end
+
+--- Whether `install` is the one a standalone / PATH clang-cl pairs with: the
+--- first of `installs` (the locator's order — newest version line first), the
+--- install most likely to carry an STL that a current clang-cl accepts.
+--- @param install table
+--- @param installs table[] the list `install` came from
+--- @return boolean
+function M.standalone_host(install, installs)
+    return installs[1] == install
+end
+
+--- The MSVC toolset version vcvarsall selects for `install` by default (e.g.
+--- "14.44.35207") — what builds depend on, unlike the VS product version. Read
+--- from `VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt`, the file
+--- vcvarsall itself reads: one small file read, no spawn. Nil when absent.
+--- @param install table one entry from `M.detect()`
+--- @param read_file fun(path: string): string|nil
+--- @return string|nil
+function M.toolset_version(install, read_file)
+    if not (install and install.install_path) then return nil end
+    local ok, content = pcall(read_file,
+        install.install_path .. "/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+    if not ok or type(content) ~= "string" then return nil end
+    return content:match("^%s*(%d+%.%d+[%d%.]*)")
+end
+
+--- The cmake / ninja executables a Visual Studio install bundles (the "C++ CMake
+--- tools for Windows" component), relative to the install path.
+local BUNDLED_TOOLS = {
+    cmake = "/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe",
+    ninja = "/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe",
+}
+
+--- Inventory id of the cmake / ninja bundled with the install owning
+--- `vcvarsall` (`vs-<name>:<normalized vcvarsall>`). Keyed by vcvarsall — the
+--- install identity every MSVC-style tool records — so a module's requirement
+--- and this declaration agree without a filesystem access.
+--- @param name "cmake"|"ninja"
+--- @param vcvarsall string
+--- @return string
+function M.bundled_id(name, vcvarsall)
+    return require("loomworks.inventory").path_id("vs-" .. name, vcvarsall)
+end
+
+--- Paths of the cmake + ninja bundled with `install`, or nil unless BOTH exist:
+--- vcvarsall (VsDevCmd `ext/cmake.bat`) appends their two directories to PATH
+--- only when both are present — and appends, so a cmake / ninja already on PATH
+--- still wins.
+--- @param install table one entry from `M.detect()`
+--- @param exists fun(path: string): boolean
+--- @return { cmake: string, ninja: string }|nil
+function M.bundled_tools(install, exists)
+    if not (install and install.install_path) then return nil end
+    local out = {}
+    for name, rel in pairs(BUNDLED_TOOLS) do
+        local p = install.install_path .. rel
+        if not exists(p) then return nil end
+        out[name] = p
+    end
+    return out
+end
+
+--- Environment-inventory declaration for the Visual Studio toolchains
+--- (headless §16.33, cmake §13 `compilers:msvc`), shared by every module that
+--- builds with cl.exe / clang-cl so it is probed once. Windows only (nil
+--- elsewhere). Enumerates the installs the locator finds — one result each,
+--- id `msvc:<normalized vcvarsall>`, version = the default toolset
+--- (`toolset_version`), detail = the VS product version — plus every clang-cl
+--- paired to an install or on the search path (`clang-cl:<normalized path>`),
+--- reusing the same detection the kits run, and each install's bundled cmake +
+--- ninja (`bundled_tools`, listed under build tools).
+--- @return loomworks.InventoryDeclaration|nil
+function M.health_declaration()
+    if vim.fn.has("win32") ~= 1 then return nil end
+    local inv = require("loomworks.inventory")
+    return {
+        id = "compilers:msvc",
+        category = "compilers",
+        label = "MSVC (Visual Studio)",
+        probe = function(ctx, done)
+            M.detect_async(function(installs)
+                local results, seen = {}, {}
+                for _, inst in ipairs(installs) do
+                    -- Version = the MSVC toolset a build gets (what vcvarsall
+                    -- selects), not the VS product version — that one, minus
+                    -- its release-date parenthetical, is the detail.
+                    local pv = inst.product_version and tostring(inst.product_version):match("^%s*([%d%.]+)")
+                    results[#results + 1] = {
+                        id = inv.path_id("msvc", inst.vcvarsall),
+                        label = inst.display,
+                        status = "found",
+                        version = M.toolset_version(inst, ctx.read_file),
+                        detail = pv and ("VS " .. pv) or nil,
+                        path = inst.install_path,
+                    }
+                end
+                if #installs == 0 then
+                    done({ {
+                        id = "compilers:msvc", label = "MSVC (Visual Studio)", status = "missing",
+                        hint = "install Visual Studio Build Tools (Desktop development with C++)",
+                    } })
+                    return
+                end
+                -- The cmake + ninja each install bundles (build tools): an
+                -- MSVC-style build that runs inside vcvarsall finds them there
+                -- when PATH has none (cmake §13 / meson §12 requirements
+                -- accept them as alternatives). Last step: settles the probe.
+                local function add_bundled()
+                    local jobs = {}
+                    for _, inst in ipairs(installs) do
+                        local tools = M.bundled_tools(inst, ctx.exists)
+                        for _, name in ipairs(tools and { "cmake", "ninja" } or {}) do
+                            local r = {
+                                id = M.bundled_id(name, inst.vcvarsall),
+                                label = name .. " (VS " .. tostring(inst.version_line or inst.vs_major or "?")
+                                    .. " " .. tostring(inst.product or "?") .. ")",
+                                status = "found", path = tools[name], detail = "VS-bundled",
+                                category = "build tools",
+                            }
+                            results[#results + 1] = r
+                            jobs[#jobs + 1] = r
+                        end
+                    end
+                    local pending = #jobs
+                    if pending == 0 then return done(results) end
+                    for _, r in ipairs(jobs) do
+                        ctx.run({ r.path, "--version" }, function(res)
+                            r.version = inv.parse_version((res.stdout or "") .. "\n" .. (res.stderr or ""))
+                            pending = pending - 1
+                            if pending == 0 then done(results) end
+                        end)
+                    end
+                end
+                -- clang-cl: VS-bundled per install, else the one on PATH.
+                local function add_clang_cl(cc)
+                    if not (cc and cc.path) then return end
+                    local id = inv.path_id("clang-cl", cc.path)
+                    if seen[id] then return end
+                    seen[id] = true
+                    results[#results + 1] = {
+                        id = id, label = "clang-cl", status = "found",
+                        version = cc.version ~= "0" and cc.version or nil,
+                        path = cc.path,
+                    }
+                end
+                local idx = 0
+                local function next_install()
+                    idx = idx + 1
+                    if idx > #installs then
+                        -- A clang-cl on PATH not paired to any install above.
+                        M.clang_cl_async(function(cc)
+                            add_clang_cl(cc)
+                            if not next(seen) then
+                                results[#results + 1] = {
+                                    id = "clang-cl", label = "clang-cl", status = "missing",
+                                    hint = "VS Installer: C++ Clang tools for Windows",
+                                }
+                            end
+                            add_bundled()
+                        end)
+                        return
+                    end
+                    M.clang_cl_for_async(installs[idx], function(cc)
+                        add_clang_cl(cc)
+                        next_install()
+                    end)
+                end
+                next_install()
+            end)
+        end,
+    }
 end
 
 --- Clear cached detection + env snapshots (called from the module rescan flow).

@@ -633,14 +633,20 @@ describe("cli.cmd_health", function()
     local cli = require("loomworks.cli")
 
     it("exits 0 with the worktree hint when no workspace is present", function()
-        assert.equals(0, cli.cmd_health(nil))
+        -- Never probe the host's tools from a test (inventory §16.33).
+        local orig = cli._probe_inventory
+        cli._probe_inventory = function() return { results = {}, declared = {}, key = "k" } end
+        local ok, rc = pcall(cli.cmd_health, nil)
+        cli._probe_inventory = orig
+        assert.is_true(ok)
+        assert.equals(0, rc)
     end)
 end)
 
 -- ---------------------------------------------------------------------------
 -- Cached two-tier model (§16.31): the local tier is lazily computed and
 -- invalidated on input change; the network tier is refreshed only on
--- `collect_health`, TTL-throttled; the passive `collect` NEVER hits the network.
+-- `collect_health`, re-fetched on every health run; the passive `collect` NEVER hits the network.
 -- ---------------------------------------------------------------------------
 describe("suggestion cache (two-tier)", function()
     local health_cache = require("loomworks.health_cache")
@@ -793,28 +799,47 @@ describe("suggestion cache (two-tier)", function()
         assert.equals("N", data.network_tier.items[1].title)
     end)
 
-    it("throttles the network tier by TTL across back-to-back health runs", function()
+    it("collect_health re-fetches the network tier even when a fresh one is cached", function()
+        -- `lw health` never READS the cache (§16.31): a network tier computed a
+        -- moment ago, for the running version, is still re-fetched every run.
         local io_dep = mem_io()
         local ws = fake_ws(io_dep)
+        health_cache.write(io_dep, "/root", {
+            local_tier = { items = {}, computed_at = 999, key = "k1" },
+            network_tier = { items = { { title = "stale N" } }, computed_at = 999, key = "n1" },
+        })
         local local_calls, net_calls = 0, 0
         suggestions._providers = { function() local_calls = local_calls + 1; return {} end }
         suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
         suggestions._local_key = function() return "k1" end
+        suggestions._clock = function() return 1000 end
 
-        local now = 1000
-        suggestions._clock = function() return now end
-
-        suggestions.collect_health(ws)             -- first: computes network
-        assert.equals(1, net_calls)
-
-        now = 1000 + 100                            -- within TTL: reuse
-        suggestions.collect_health(ws)
-        assert.equals(1, net_calls)
-        assert.equals(2, local_calls)               -- local ALWAYS recomputed
-
-        now = 1000 + suggestions.NETWORK_TTL + 1     -- past TTL: recompute
-        suggestions.collect_health(ws)
+        local out = suggestions.collect_health(ws)
+        assert.equals(1, net_calls)                 -- fresh cached tier NOT reused
+        assert.equals(1, #out)
+        assert.equals("N", out[1].title)            -- the fresh result, not the cached one
+        suggestions.collect_health(ws)              -- back-to-back: fetched again
         assert.equals(2, net_calls)
+        assert.equals(2, local_calls)
+        -- ...and the result is still written for the passive consumers.
+        local data = health_cache.read(io_dep, "/root")
+        assert.equals("N", data.network_tier.items[1].title)
+        assert.equals("n1", data.network_tier.key)
+    end)
+
+    it("collect_health outside a workspace runs every tier live and writes nothing", function()
+        local writes = 0
+        local orig_write = health_cache.write
+        health_cache.write = function(...) writes = writes + 1; return orig_write(...) end
+        local net_calls = 0
+        suggestions._providers = { function() return {} end }
+        suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
+        local ok, out = pcall(suggestions.collect_health, nil)
+        health_cache.write = orig_write
+        assert.is_true(ok, tostring(out))
+        assert.equals(1, net_calls)
+        assert.equals("N", out[1].title)
+        assert.equals(0, writes)
     end)
 
     it("collect drops cached network items recorded for another running version", function()
@@ -832,40 +857,6 @@ describe("suggestion cache (two-tier)", function()
         suggestions._local_key = function() return "seed" end
         suggestions._clock = function() return 1000 end
         assert.same({}, suggestions.collect(ws))
-    end)
-
-    it("collect_health recomputes the network tier within the TTL when the running version changed", function()
-        local io_dep = mem_io()
-        local ws = fake_ws(io_dep)
-        local net_calls = 0
-        suggestions._providers = { function() return {} end }
-        suggestions._health_providers = { function() net_calls = net_calls + 1; return {} end }
-        suggestions._local_key = function() return "k1" end
-        suggestions._clock = function() return 1000 end
-
-        suggestions.collect_health(ws)
-        assert.equals(1, net_calls)
-        assert.equals("n1", health_cache.read(io_dep, "/root").network_tier.key)
-        suggestions.collect_health(ws)                  -- same version, within TTL
-        assert.equals(1, net_calls)
-        suggestions._network_key = function() return "n2" end -- self-updated since
-        suggestions.collect_health(ws)
-        assert.equals(2, net_calls)
-    end)
-
-    it("--force refreshes the network tier within the TTL window", function()
-        local io_dep = mem_io()
-        local ws = fake_ws(io_dep)
-        local net_calls = 0
-        suggestions._providers = { function() return {} end }
-        suggestions._health_providers = { function() net_calls = net_calls + 1; return { { title = "N" } } end }
-        suggestions._local_key = function() return "k1" end
-        suggestions._clock = function() return 1000 end
-
-        suggestions.collect_health(ws)
-        assert.equals(1, net_calls)
-        suggestions.collect_health(ws, { force = true }) -- ignore the throttle
-        assert.equals(2, net_calls)
     end)
 
     it("recomputes (no error) when the cache file is corrupt", function()

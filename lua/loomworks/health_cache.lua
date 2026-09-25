@@ -9,12 +9,16 @@
 --- cache — never a project or build-system file — so health still "authors
 --- nothing" (§16.9).
 ---
---- Two tiers (§16.31):
+--- Three tiers (§16.31, §16.33):
 ---   * `local_tier`   — `{ items, computed_at, key }`, the passive providers'
 ---     results plus a cheap invalidation fingerprint of their inputs;
 ---   * `network_tier` — `{ items, computed_at, key }`, the on-demand providers'
----     results, governed by a TTL and keyed to the running version (bundle, host
----     binary, channel) they describe.
+---     results (written by every `lw health`, never reused by it), keyed to the
+---     running version (bundle, host binary, channel) they describe;
+---   * `inventory_tier` — `{ results, declared, computed_at, key }`, the
+---     environment inventory's raw probe results (written only by a health run)
+---     keyed to the environment they were probed in. Added without a schema
+---     bump: an older file simply has none, and an older reader drops it.
 ---
 --- The module is pure: it takes an injected `io` table (the same shape as
 --- `loomworks.io` — `read_json`/`read_file`/`write_json`/`ensure_dir`) so both
@@ -55,11 +59,32 @@ local function normalize_tier(tier)
     }
 end
 
+--- Coerce a decoded inventory tier into `{ results, declared, computed_at?, key? }`
+--- or nil (results/declared must be arrays of tables).
+--- @param tier any
+--- @return table|nil
+local function normalize_inventory_tier(tier)
+    if type(tier) ~= "table" or type(tier.results) ~= "table" then return nil end
+    local results, declared = {}, {}
+    for _, r in ipairs(tier.results) do
+        if type(r) == "table" and type(r.id) == "string" then results[#results + 1] = r end
+    end
+    for _, d in ipairs(type(tier.declared) == "table" and tier.declared or {}) do
+        if type(d) == "table" and type(d.id) == "string" then declared[#declared + 1] = d end
+    end
+    return {
+        results = results,
+        declared = declared,
+        computed_at = type(tier.computed_at) == "number" and tier.computed_at or nil,
+        key = type(tier.key) == "string" and tier.key or nil,
+    }
+end
+
 --- Read the health cache for `root`. Returns a well-formed table ALWAYS: a
 --- missing/corrupt/older-schema file yields `M.empty()`. Never raises.
 --- @param io_dep table io-like dependency (`read_json` and/or `read_file`)
 --- @param root string
---- @return table cache `{ _meta, local_tier?, network_tier? }`
+--- @return table cache `{ _meta, local_tier?, network_tier?, inventory_tier? }`
 function M.read(io_dep, root)
     local path = M.path(root)
     local data
@@ -86,6 +111,7 @@ function M.read(io_dep, root)
         _meta = { version = M.SCHEMA_VERSION },
         local_tier = normalize_tier(data.local_tier),
         network_tier = normalize_tier(data.network_tier),
+        inventory_tier = normalize_inventory_tier(data.inventory_tier),
     }
 end
 

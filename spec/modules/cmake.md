@@ -28,11 +28,14 @@ install, the following kits are produced:
 - **`Ninja - clang-cl (<install>)` kit** — when `ninja` is on PATH and a
   clang-cl paired to that install exists. clang-cl is Clang's
   MSVC-compatible driver: it has no STL / Windows SDK / linker of its own
-  and reuses the paired install's via `vcvarsall`, so there is **exactly
-  one clang-cl kit per install**. The driver is taken from the VS-bundled
-  clang-cl (`<install>/VC/Tools/Llvm/x64/bin/clang-cl.exe`, the "C++ Clang
-  tools for Windows" component) when present, otherwise a standalone /
-  PATH clang-cl. Kit id `ninja-clang-cl-<major>-<product>`; compiler id
+  and reuses the paired install's via `vcvarsall`, so there is **at most
+  one clang-cl kit per install**. An install that bundles clang-cl
+  (`<install>/VC/Tools/Llvm/x64/bin/clang-cl.exe`, the "C++ Clang tools for
+  Windows" component) is paired with its own. A standalone / PATH clang-cl
+  is paired with **only the newest install** (the first the locator lists),
+  and only when that install bundles none — so a PATH clang-cl yields one
+  kit, never a kit named after every install (an older Visual Studio that
+  ships no clang-cl gets no clang-cl kit). Kit id `ninja-clang-cl-<major>-<product>`; compiler id
   `clang-cl-<version>`. Any sibling `clangd.exe` is forwarded to clangd
   (§9). At configure time clang-cl is passed as **both**
   `-DCMAKE_C_COMPILER` and `-DCMAKE_CXX_COMPILER` (it is a single driver
@@ -917,3 +920,53 @@ claims — outside every target's source tree and not listed — yield `nil`
 `cg_argv_prefix` rendering unchanged, so its command output cannot drift from
 generated entries; the representative `source` is resolved from the borrowed
 group's first source index in the same index.
+
+## 13. Environment inventory (`health_inventory` / `health_requirements`)
+
+Declarations (core §16.33). Ids marked *shared* are also declared by meson, so
+they are probed and listed once:
+
+| id | category | probe |
+|--|--|--|
+| `exe:cmake` | build tools | search-path lookup, then `cmake --version` |
+| `exe:ninja` *(shared)* | build tools | search-path lookup, then `ninja --version` |
+| `exe:make` | build tools | search-path lookup (`make`, else `mingw32-make`), then `--version` |
+| `compilers:path` *(shared)* | compilers | the PATH-index compiler scan the kit detection uses (gcc/clang, versioned names included), one result per compiler with its `--version` version; id per result `cxx:<normalized path>` |
+| `compilers:msvc` *(shared)* | compilers | Windows only: the installation locator's installs (one result each, `msvc:<normalized vcvarsall path>`, version = the MSVC toolset version the install's vcvarsall selects by default — read from its `Microsoft.VCToolsVersion.default.txt`, no spawn — and detail = the install's product version, without its release-date parenthetical), plus clang-cl (`clang-cl:<normalized path>`, VS-bundled and on the search path), plus — in *build tools* — the cmake and ninja an install bundles (`vs-cmake:` / `vs-ninja:<normalized vcvarsall path>`, detail "VS-bundled", version from their version query), listed only when **both** exist, the condition under which vcvarsall adds their directories to the search path |
+
+A *normalized path* uses forward slashes and is lower-cased on Windows, so an id
+derived from a tool's recorded path matches the one the scan produced. The
+compiler declarations reuse the detection the kits already run (§1a) — the
+shared compiler scan and the shared Visual Studio locator — so a compiler the
+inventory reports is exactly one a kit could be built from.
+
+Requirements for a project under a tool (pure: read from the tool data and the
+mapped configuration, which the preset parse already filled):
+
+- `exe:cmake` — unless the tool's cmake comes from an SDK (a platform SDK kit
+  carrying its own cmake), in which case the profile's SDK pin (core §16.33)
+  is the requirement and `exe:cmake` is not required;
+- the generator's executable — the configuration's generator, else the tool's:
+  `exe:ninja` for a Ninja generator, `exe:make` for a Makefiles generator; the
+  Visual Studio generator needs the tool's MSVC install instead (below);
+- **run inside vcvarsall** — an MSVC-style kit (it carries a vcvarsall: cl.exe
+  or clang-cl) with the `Ninja` generator (§1a): configure and build run in a
+  batch wrapper that calls the kit's vcvarsall first, and vcvarsall **appends**
+  the install's bundled cmake and ninja directories to the search path. So
+  `exe:cmake` and `exe:ninja` each name the install's bundled copy
+  (`vs-cmake:` / `vs-ninja:<vcvarsall>`) as an **alternative** (core §16.33): a
+  cmake / ninja on the plain search path wins (it comes first), else the
+  bundled copy satisfies the requirement. The Visual Studio generator is not
+  wrapped — its cmake comes from the plain search path, and the bundled copy
+  does not count (the Windows install hints say so). The same applies to a
+  preset that names `Ninja` on such a kit;
+- the tool's compiler: `cxx:<path>` (via `compilers:path`) for a GNU-driver
+  kit; `msvc:<vcvarsall>` (via `compilers:msvc`) for an MSVC kit or the Visual
+  Studio generator; `clang-cl:<path>` plus `msvc:<vcvarsall>` for a clang-cl
+  kit (label: the tool's label). An SDK-derived kit adds no compiler
+  requirement — the profile's SDK pin covers it.
+
+A preset-configured project (the profile maps a `preset:` configuration)
+requires `exe:cmake` and the executable of the generator the preset names (read
+from the already-parsed preset) — nothing about the compiler: what the preset
+selects is the preset's business.

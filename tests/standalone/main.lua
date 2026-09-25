@@ -265,9 +265,18 @@ do
 
   -- dir_on_path
   local sep = paths.is_windows and ";" or ":"
+  -- Restore PATH afterwards: later tests spawn real programs (the vim.system
+  -- timeout test runs `sleep`), which a fake PATH would hide on Unix.
+  -- Read it via os_environ(): os_getenv() returns nil for a PATH longer than
+  -- luv's default buffer (common on Windows), which would lose it entirely.
+  local saved_path
+  for k, v in pairs(uv.os_environ()) do
+    if k:upper() == "PATH" then saved_path = v end
+  end
   uv.os_setenv("PATH", "/foo" .. sep .. "/bar/" .. sep .. "/baz")
   ok(install.dir_on_path("/bar"), "dir_on_path finds a member (trailing slash ok)")
   ok(not install.dir_on_path("/nope"), "dir_on_path rejects a non-member")
+  if saved_path then uv.os_setenv("PATH", saved_path) end
 
   -- append_path_line (idempotent)
   local rc = sb .. "/rcfile"
@@ -1265,6 +1274,52 @@ do
     eq(facts.dev_build, true, "bare luvi runtime is a dev build (shared predicate)")
     eq(facts.release_version, verify.RELEASE_VERSION, "release identity from boot.verify")
   end
+end
+
+print("environment inventory under the shim (§16.33)")
+do
+  -- The inventory's contributors must load in the standalone host: modules,
+  -- SDK providers and the host-neutral LSP / DAP companions (the editor-only
+  -- integration files are never required here).
+  require("loomworks.shim")
+  local saved_root = _G.__loomworks_luaroot
+  _G.__loomworks_luaroot = root .. "/lua"
+  local inv = require("loomworks.inventory")
+  inv._contributors = nil
+  local by = {}
+  for _, c in ipairs(inv.contributors()) do by[c.kind .. ":" .. c.id] = c end
+  for _, id in ipairs({ "clangd", "qmlls", "codelldb", "cppdbg", "pwa_node" }) do
+    local c = by["integration:" .. id]
+    ok(c ~= nil and c.rejected == nil, "companion " .. id .. " loads headlessly"
+      .. (c and c.rejected and (" — " .. c.rejected) or ""))
+  end
+  ok(by["module:cmake"] ~= nil and by["module:cmake"].api ~= nil, "cmake module contributes")
+  ok(package.loaded["loomworks.integrations.lsp.clangd"] == nil, "editor-only clangd integration not loaded")
+  inv._contributors = nil
+  _G.__loomworks_luaroot = saved_root
+
+  -- vim.system honours `timeout` (the per-probe ceiling): the child is killed
+  -- and reports 124, like nvim.
+  local is_win = package.config:sub(1, 1) == "\\"
+  local argv = is_win and { "ping", "-n", "30", "127.0.0.1" } or { "sleep", "30" }
+  local t0 = uv.hrtime()
+  local res = vim.system(argv, { text = true, timeout = 300 }):wait()
+  local ms = (uv.hrtime() - t0) / 1e6
+  eq(res.code, 124, "vim.system timeout kills the child (code 124)")
+
+  -- A stale loop clock (the loop idle for a while, as after a workspace load)
+  -- must not time every probe out at once.
+  local spin = os.clock() + 0.6
+  while os.clock() < spin do end
+  local results = inv.probe_all({ {
+    id = "slowish", category = "build tools", label = "slowish",
+    probe = function(_, done)
+      local t = uv.new_timer()
+      t:start(100, 0, function() t:close(); done({ status = "found" }) end)
+    end,
+  } }, inv.context(nil, { timeout_ms = 400 }))
+  eq(results[1] and results[1].status, "found", "probe timeout measured from now, not a stale loop clock")
+  ok(ms >= 250 and ms < 10000, string.format("…promptly (%.0f ms)", ms))
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

@@ -43,15 +43,15 @@ the right toolchain.
 
 On Windows, MSVC (`cl.exe`) and clang-cl tools are discovered from the
 shared **`loomworks.msvc` module** — the single source of truth for VS
-installs + clang-cl across all modules. One `cl.exe` tool and one
-clang-cl tool are emitted **per detected MSVC install** (previously a
-single clang-cl tool pinned to the newest install). clang-cl reuses the
-paired install's STL / Windows SDK / linker via `vcvarsall`, so each
-clang-cl tool carries that install's `vcvarsall`/`arch`; its driver is
-the VS-bundled clang-cl when present, otherwise a standalone / PATH
-clang-cl. The tool's `compiler_id` is per-install
-(`clang-cl-<version>-<major>-<product>`) so installs that fall back to
-the *same* standalone driver remain distinct tools — `tools_match`
+installs + clang-cl across all modules. One `cl.exe` tool is emitted
+**per detected MSVC install**, and at most one clang-cl tool per install,
+paired as cmake §1a pairs its clang-cl kits: an install's VS-bundled
+clang-cl with that install, a standalone / PATH clang-cl with only the
+newest install (when it bundles none). clang-cl reuses the paired
+install's STL / Windows SDK / linker via `vcvarsall`, so each clang-cl
+tool carries that install's `vcvarsall`/`arch`. The tool's `compiler_id`
+is per-install (`clang-cl-<version>-<major>-<product>`) so installs whose
+bundled drivers share a version remain distinct tools — `tools_match`
 disambiguates on `vcvarsall` for the same reason. Any sibling
 `clangd.exe` next to the clang-cl driver is carried as `clangd_path` and
 forwarded to clangd (§ LSP integration).
@@ -261,3 +261,22 @@ change of the configuration environment (core §1.3.3); the resulting reconfigur
 is the full one (§5a *Every changed configure input takes a full reconfigure*):
 a `--wipe` setup after core clears the stored command line, so a removed option
 is really dropped and a changed environment is really re-read.
+
+## 12. Environment inventory (`health_inventory` / `health_requirements`)
+
+Declarations (core §16.33):
+
+- `exe:meson` (build tools) — the same lookup the module uses to run meson (the
+  search path, then the Python-module fallback), then its version query;
+- `exe:ninja`, `compilers:path`, `compilers:msvc` — the ids shared with cmake
+  (cmake §13), probed once.
+
+Requirements for a project under a tool: `exe:meson`, `exe:ninja` (meson's
+backend), and the tool's compiler from the tool data, with the same ids as cmake
+§13 — `cxx:<path>` for a GNU-driver tool, `msvc:<vcvarsall>` for a cl.exe tool,
+`clang-cl:<path>` plus `msvc:<vcvarsall>` for a clang-cl tool. Without a tool
+(no profile maps the project) only `exe:meson` and `exe:ninja`. A cross file
+that names its own compilers adds no requirement in this version. An MSVC-style
+tool's tasks run in the vcvarsall environment (§ tools), whose search path ends
+with Visual Studio's bundled ninja, so for such a tool `exe:ninja` names the
+install's bundled copy (`vs-ninja:<vcvarsall>`, cmake §13) as an alternative.

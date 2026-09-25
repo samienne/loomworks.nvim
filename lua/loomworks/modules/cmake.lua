@@ -291,6 +291,21 @@ local function write_vcvarsall_bat(build_dir, vcvarsall, arch, cmd, tag)
     return bat_path
 end
 
+--- Whether cmake's configure/build commands for `kit` + `generator` run inside
+--- the kit's vcvarsall environment (the `.bat` wrapper below): an MSVC-style
+--- kit (cl.exe or clang-cl — it carries `vcvarsall`) with the Ninja generator.
+--- There `cmake` and `ninja` are resolved from vcvarsall's PATH, which appends
+--- Visual Studio's bundled copies; the Visual Studio generator is not wrapped
+--- (MSBuild sets up its own toolchain), so its cmake comes from the plain PATH.
+--- Shared with `health_requirements` so the inventory never disagrees with
+--- what a build actually runs.
+--- @param kit table|nil tool data
+--- @param generator string|nil cmake generator name
+--- @return boolean
+function M.runs_in_vcvars(kit, generator)
+    return (kit and kit.vcvarsall and generator == "Ninja") and true or false
+end
+
 --- Wrap a command for MSVC+Ninja builds on Windows.
 --- Uses a .bat file in the build dir to ensure clean cmd.exe environment
 --- regardless of Neovim's shell setting (e.g., Git Bash).
@@ -302,7 +317,7 @@ end
 --- @param tag string|nil short action label for the .bat filename
 --- @return string[]
 local function wrap_cmd(cmd, kit, generator, build_dir, tag)
-    if kit and kit.vcvarsall and generator == "Ninja" and build_dir then
+    if M.runs_in_vcvars(kit, generator) and build_dir then
         local bat_path = write_vcvarsall_bat(
             build_dir, kit.vcvarsall, kit.arch or "x64", cmd, tag)
         if bat_path then
@@ -1800,6 +1815,120 @@ function M.detect_tools_async(callback)
         end
         callback(tools)
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Environment inventory (cmake §13, core §16.33)
+-- ---------------------------------------------------------------------------
+
+--- `exe:ninja` — also declared by meson with the same id (probed once).
+local function ninja_declaration(inv)
+    return inv.exe_declaration({
+        id = "exe:ninja", label = "ninja", names = { "ninja" },
+        hint = function(ctx)
+            return ctx.is_windows
+                    and "winget install Ninja-build.Ninja — VS's bundled ninja serves only MSVC/clang-cl tools"
+                or "install ninja (your package manager: ninja-build)"
+        end,
+    })
+end
+
+--- Declarations: cmake, ninja, make and the shared compiler scans (the same
+--- detection the kits run, so an inventoried compiler is one a kit can use).
+--- Cheap: no spawn here — `probe` does the work, on an explicit health run.
+--- @param _ctx loomworks.InventoryContext
+--- @return loomworks.InventoryDeclaration[]
+function M.health_inventory(_ctx)
+    local inv = require("loomworks.inventory")
+    local decls = {
+        inv.exe_declaration({
+            id = "exe:cmake", label = "cmake", names = { "cmake" },
+            hint = function(ctx)
+                return ctx.is_windows
+                    and "winget install Kitware.CMake — VS's bundled cmake serves only Ninja + MSVC/clang-cl tools"
+                    or "install cmake (your package manager, or cmake.org/download)"
+            end,
+        }),
+        ninja_declaration(inv),
+        inv.exe_declaration({
+            id = "exe:make", label = "make", names = { "make", "mingw32-make" },
+            hint = "install make (your package manager)",
+        }),
+        require("loomworks.cpp_compilers").health_declaration(),
+    }
+    local msvc_decl = require("loomworks.msvc").health_declaration()
+    if msvc_decl then decls[#decls + 1] = msvc_decl end
+    return decls
+end
+
+--- The executable a CMake generator runs, as an inventory requirement, or nil.
+--- @param generator string|nil
+--- @return { id: string, label: string }|nil
+local function generator_requirement(generator)
+    if type(generator) ~= "string" then return nil end
+    if generator:match("^Ninja") then return { id = "exe:ninja", label = "ninja" } end
+    if generator:match("Makefiles$") and not generator:match("^NMake") then
+        return { id = "exe:make", label = "make" }
+    end
+    return nil
+end
+
+--- What a project needs under a tool (cmake §13) — pure: reads only the tool
+--- data and the mapped configuration (the preset parse already filled its
+--- generator); no spawn, no filesystem access.
+--- @param ctx { project: loomworks.Project, tool: loomworks.Tool|nil, configuration: loomworks.Configuration|nil }
+--- @return { id: string, label: string, hint?: string, via?: string }[]
+function M.health_requirements(ctx)
+    local inv = require("loomworks.inventory")
+    local reqs = {}
+    local td = ctx.tool and ctx.tool.data or nil
+    local cfg = ctx.configuration
+    local mc = cfg and cfg.module_config or {}
+    local generator = mc.generator or (td and td.generator)
+
+    -- Run inside vcvarsall (`runs_in_vcvars`, the same test the task wrapper
+    -- applies): cmake and ninja are then also found as the copies Visual Studio
+    -- bundles, which vcvarsall appends to PATH — accepted as alternatives.
+    local vcvars = M.runs_in_vcvars(td, generator)
+    local msvc = vcvars and require("loomworks.msvc") or nil
+    local function with_bundled(req, name)
+        if req and msvc then req.alternatives = { msvc.bundled_id(name, td.vcvarsall) } end
+        return req
+    end
+
+    -- cmake itself, unless the tool's SDK supplies its own cmake.
+    if not (td and td.cmake_path) then
+        reqs[#reqs + 1] = with_bundled({ id = "exe:cmake", label = "cmake" }, "cmake")
+    end
+
+    -- A preset owns its toolchain: cmake + the generator it names, nothing more.
+    if cfg and cfg.from_preset then
+        local g = generator_requirement(mc.generator)
+        if g then reqs[#reqs + 1] = with_bundled(g, "ninja") end
+        return reqs
+    end
+
+    local g = generator_requirement(generator)
+    if g then reqs[#reqs + 1] = with_bundled(g, "ninja") end
+    if not td or td.sdk_key then return reqs end -- no tool / SDK pin covers it
+
+    local label = ctx.tool.label or td.display or "compiler"
+    local msvc_req = td.vcvarsall and {
+        id = inv.path_id("msvc", td.vcvarsall), label = label, via = "compilers:msvc",
+        hint = "install it, or use another toolchain — lw help profile",
+    } or nil
+    if td.compiler_path and td.vcvarsall then
+        -- clang-cl: the driver plus the MSVC install it borrows the SDK from.
+        reqs[#reqs + 1] = { id = inv.path_id("clang-cl", td.compiler_path), label = label,
+            via = "compilers:msvc", hint = "install it, or use another toolchain — lw help profile" }
+        reqs[#reqs + 1] = msvc_req
+    elseif td.vcvarsall then
+        reqs[#reqs + 1] = msvc_req
+    elseif td.compiler_path then
+        reqs[#reqs + 1] = { id = inv.path_id("cxx", td.compiler_path), label = label,
+            via = "compilers:path", hint = "install it, or use another toolchain — lw help profile" }
+    end
+    return reqs
 end
 
 --- Map a semantic variant type to a configuration name from available configs.

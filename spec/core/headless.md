@@ -1059,7 +1059,10 @@ An **informational** item affirms a healthy state (for example, that a compiler
 cache is in use) and carries no remedy. Both appear in the full health report, but
 only actionable items contribute to the compact `N suggestions` count (§16.18,
 `spec/ui.md` §1.1) — an affirmative note never inflates the nag total. The report
-renders informational items distinctly (as positive status, not a warning).
+lists the actionable items first and then the informational ones, which it
+renders distinctly — a different bullet, as positive status rather than a
+warning — so the bullets a reader counts as suggestions match the count even
+without color.
 
 **Provider #1 — compiler cache.** When the workspace has one or more C/C++
 projects (a project whose module reports the caching-relevant language), the
@@ -1188,10 +1191,15 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
 - a **network tier** — the results of the on-demand (network-backed) providers —
   stored with the time they were computed and a **running-version key** (the
   running release bundle, the running host binary's release identity (§16.32) and
-  the effective update channel, all read locally), and governed by a
-  **time-to-live** (on the order of a day). Items recorded under a different
-  running-version key (e.g. before a self-update) describe a release that is no
-  longer running and are stale regardless of age.
+  the effective update channel, all read locally). It has **no time-to-live**:
+  it is only ever written by a health run and only ever read by a passive
+  collect, which shows it for information however old. Items recorded under a
+  different running-version key (e.g. before a self-update) describe a release
+  that is no longer running and are stale regardless of age.
+
+A third, **inventory** tier holds the environment inventory's probe results; it
+is written only by a health run and read, never recomputed, by a passive collect
+(§16.33).
 
 The two refresh tiers, over that one cache, are:
 
@@ -1207,21 +1215,24 @@ The two refresh tiers, over that one cache, are:
   no network I/O.
   This preserves the hard invariant that a passive render never touches the
   network.
-- **On-demand health** (`lw health`) is the full refresh. It **always** recomputes
-  the local tier, and recomputes the network tier when the cached network tier is
-  older than its TTL, was recorded under a different running-version key, or the
-  user forces a refresh; otherwise it reuses the
-  cached network tier, so back-to-back health runs do not repeatedly hit the
-  network. It rewrites the cache and reports every item.
+- **On-demand health** (`lw health`) is the full refresh and **never reads the
+  cache**: every run recomputes the local tier, re-runs the on-demand providers
+  (the network tier — back-to-back health runs each make the update check) and
+  re-probes the inventory (§16.33), and reports exactly what it just computed.
+  The cache is the health run's **output**, not its input: inside a workspace
+  it then writes all three tiers for the passive consumers. There is no flag to
+  force a refresh — every health run is one.
 
 **First run and resilience.** With no cache present, a passive collect computes
-only the local tier (never the network), and a health run computes both. The
+only the local tier (never the network); a health run computes everything, as
+always. The
 cache is advisory and self-healing: a missing, corrupt, or older-schema cache is
 treated as empty and recomputed — it never raises an error and never blocks a
 render or a health run. Writes are atomic. A passive collect outside a workspace
 (no `.nvim/` to key against) simply runs the passive providers directly without
 caching, and a health run outside a workspace runs its workspace-independent
-providers directly (the local tier has nothing to key or store). No background or
+providers directly and **persists nothing anywhere** — no workspace cache and no
+per-user cache; the next run checks again. No background or
 asynchronous network refresh is implied — the network tier is refreshed strictly
 on an explicit `lw health`.
 
@@ -1391,3 +1402,189 @@ explicit self-update, never as part of a build or any workspace operation.
 A host left stale — by an unwritable location, a no-host update, or because it
 predates host self-update — is reported by the health update check (§16.31),
 which applies these same replacement rules to decide whether to flag it.
+
+### 16.33 Environment inventory
+
+The health report (§16.31) also answers "is this machine ready?": an
+**environment inventory** of every external thing loomworks knows how to use,
+each reported **found** (with its version and location when known), **missing**,
+or **unknown** (the probe failed or timed out — never guessed either way). Like
+the rest of health it is read-only and authors nothing (§16.9): it installs
+nothing and changes no selection.
+
+**Contributors.** Core owns no knowledge of particular tools. The inventory is
+the union of **declarations** from:
+
+- **modules** — the build-system executables and toolchain installations they
+  use (§8.4 `health_inventory`);
+- **language-server integrations** (§9.3) and **debug-adapter integrations**
+  (§8.9.6) — the servers and adapters they can drive, located through the
+  filesystem and the executable search path only (never an editor-only registry
+  API), so the report is the same in both hosts. Because an editor integration
+  may need editor-only facilities at load, its declaration lives in a
+  host-neutral **inventory companion** (§9.3) that both hosts discover;
+- **SDK providers** — their detected installations (§10.1 `detect_all`) and any
+  extra items they declare (§10.1 `health_inventory`);
+- **core itself** — the running `lw` release (the facts the version report
+  shows, §16.32), the compiler-cache launchers it resolves (§1.3.2), and the
+  **plugin registry**: every module, SDK provider and integration found on the
+  runtime path with its interface version, including any **rejected** one
+  (interface-version mismatch or load failure, §8.0) with the reason.
+
+A **declaration** is `{ id, category, label, probe }`, built by a hook that
+receives a context carrying the host platform, an executable-search-path lookup,
+an asynchronous process runner, and the workspace when there is one (so an SDK
+declaration can enumerate the installations profiles pin). `id` is an opaque, stable
+string; declarations with the same `id` describe the same thing (two modules
+that use the same executable declare the same id) and are **probed once**.
+`category` is one of a fixed, core-owned set that also fixes the report order:
+*build tools*, *compilers*, *compiler caches*, *language servers*, *debug
+adapters*, *SDKs*, *plugins*, *lw*; an unrecognized category renders under
+*other*. `probe(ctx, done)` resolves to one or more **results** — an enumerating
+declaration (every installed toolchain, every SDK installation) yields one
+result per installation found, or a single `missing` result. A result is
+`{ id, label, status = "found"|"missing"|"unknown", version?, path?, detail?,
+hint? }`, where `hint` is a one-line, platform-appropriate install remedy or a
+help-topic pointer — never a paragraph. A probe may spawn a version query or an
+installation locator; probes run **concurrently**, each under a timeout, and a
+probe that errors or times out yields `unknown` and never fails the report.
+
+**Required vs other.** Inside a workspace the results are split into **Required
+by this workspace** and **Other**, with nothing new for the user to declare:
+
+- each module answers, for a project, its resolved tool and the configuration
+  the profile maps, the inventory ids that project needs (§8.4
+  `health_requirements`); a requirement may name the **enumerating declaration**
+  that would have produced its result (`via`), so a requirement whose
+  enumeration was inconclusive reads as unknown, never as missing; and it may
+  name **alternatives** — other ids that satisfy it equally (e.g. a copy of the
+  executable that the build's own environment provides): when its own id is not
+  found, the first alternative that is found is the required entry instead (the
+  report shows what the build will actually use), and only when none is found
+  does the requirement read as missing under its own id;
+- a profile that pins an SDK installation requires it (§10.4);
+- a project whose module type is not loaded (missing or rejected) requires that
+  module — its plugin-registry entry.
+
+A workspace with no profiles at all scopes its requirements to every project
+(with no tool), so a module's own executable is still required.
+
+The requirement scope follows the compiler-cache provider (§16.31): the **active
+profile's** projects and tools, or — with **no active profile** — the union over
+**every profile**, each requirement naming the profiles and projects that need
+it. Compiler-cache launchers are never listed as required here — whether a
+missing launcher is actionable is decided by the compiler-cache provider alone,
+so it is never reported twice. Language servers and debug adapters are never
+required either, in either host: no headless operation uses them, and an editor
+without them still builds.
+
+Only a **missing required** result is **actionable**: it becomes a suggestion
+whose `title` is "`<label>` not found — needed by `<profile/project>`" and whose
+`remedy` is the result's `hint`, and it counts toward `N suggestions` (§16.18,
+`spec/ui.md` §1.1). Every other result — found, missing but not required,
+unknown — is informational and never counted.
+
+**Cost and caching.** Probing is expensive, so it happens **only on an explicit
+health run**, which always re-probes (a health run never reads the cache back,
+§16.31). Its results are stored in the health cache (§16.31) as a third tier
+beside the local and network tiers:
+
+- an **inventory tier** — the raw results (status, version, path; *not* the
+  required split, which depends on the workspace), the declaration ids that
+  were probed, the time they were computed, and an **environment key**: a
+  digest of the normalized executable search path, the executable-extension
+  list (Windows), the platform, the registered contributors (every discovered
+  module, SDK provider and inventory companion, with its interface version or
+  rejection), core's plugin-interface versions and an inventory key version
+  (bumped when core's declaration ids or result recording change), plus the SDK
+  installations the workspace's profiles pin (the one workspace-dependent
+  declaration input). Computing the key spawns nothing and probes nothing: it
+  reads in-process values and the contributor listing a workspace load already
+  performs, plus at most one file-existence check.
+
+  The key is **host-neutral**: the editor and the CLI on the same machine, with
+  the same plugins, produce the same key, so the editor's count includes what an
+  `lw health` recorded. Nothing identifying the running host takes part — not
+  the location of the loomworks code nor its release version (an editor running
+  from a plugin checkout has no release version; the contributor listing and
+  interface versions stand in for it). The search path is normalized before
+  digesting: entries split on the platform separator, unquoted, separators
+  unified and case folded where the filesystem is case-insensitive, trailing
+  separators and empty entries dropped, duplicates collapsed to their **first**
+  occurrence — **order is kept**, since it decides which executable is found.
+  Directories the editor injects into its own search path are removed: the
+  editor-side package manager's executable directory under the editor's data
+  directory (the same install location the language-server and debug-adapter
+  declarations read, derived identically in both hosts), wherever it appears —
+  its installs are listed from their own install tree instead — and, on Windows, a **last** entry holding the
+  editor's executable (Neovim appends its own directory at startup; an entry
+  the user placed earlier is kept, and an appended duplicate of it is already
+  collapsed). A genuinely different search path — a directory added, removed or
+  reordered — yields a different key.
+
+The tier is added without a health-cache schema bump: a cache written before it
+existed simply has no inventory tier (the inventory then counts nothing until
+the next health run), and an older reader ignores it.
+
+A passive collect (§16.31) **never probes**. When the cached inventory tier's
+environment key matches, it derives the required split afresh from the current
+workspace — a pure evaluation of `health_requirements` and the profiles, no
+spawn — and adds the missing-required items to the count. When the key does not
+match, or no inventory tier exists yet, the inventory contributes **nothing** to
+the count: a result recorded for another environment is not trusted and is not
+recomputed. So installing a tool into a directory already on the search path is
+picked up by the next health run, not by the passive count — the same rule the
+compiler-cache provider follows (§16.31). There is **no time-to-live**: the
+nag names its own re-check (`lw health`), and a TTL would make the count change
+with nothing having changed. The cache is **per workspace** (the search path and
+the SDK declarations can differ per workspace shell); outside a workspace nothing
+is cached (as for the local tier, §16.31) and every health run probes live.
+
+**Budget.** A health run's inventory costs its slowest probe, not the sum
+(probes run concurrently): the target is a couple of seconds on a typical
+machine, with the per-probe timeout (a few seconds) as the ceiling. The passive
+path's added cost is one digest of in-process strings plus the pure requirement
+evaluation.
+
+**Rendering.** Terse, one line per result: a status mark — `✓` found, `✗`
+missing and required, `–` missing and not required, `?` unknown — the label,
+version, and location — or, for a missing result, its `hint`. Inside a workspace the
+actionable suggestions come first (§16.31), then **Required by this workspace**
+(one line per item, naming what needs it — compacted so the line never wraps:
+a single name as is, one profile's several projects as that profile with a
+project count, several profiles or projects as their count with as many names
+as fit a short budget and a "+N" for the rest; the verbose flag and the JSON
+carry every name), then **Other**, compacted to one line
+per category (found items with versions, missing ones marked), then one `lw`
+line. Outside a workspace there is no split: after the init hint (§16.31) every
+category is listed one line per item. A verbose flag expands **Other** to one
+line per item with locations.
+
+**Machine-readable output.** A JSON flag prints one document instead of the
+report: `{ schema, workspace?, suggestions[], inventory[], summary }` — `workspace` is
+`{ name, root }` when there is one, each suggestion is `{ kind, title, detail?,
+remedy? }` (the full health list, actionable and informational), and each
+inventory entry is a result plus `category`, `required` (boolean) and
+`required_by` (profile/project names, never compacted); `hint` is carried only by an entry that is
+not found (a found item's install remedy is noise). `summary` counts
+`{ required_missing, actionable, found, missing, unknown }` — the missing
+required entries, the actionable suggestions, and the inventory entries by
+status — so a script need not recount. Object keys are emitted in
+sorted order at every depth and arrays in their defined order (inventory: category
+order, then declaration order), so the same data prints byte-identically — stable
+for scripts and CI diffs. It carries the same data as the text report, is
+versioned by `schema`, and exits 0 like the report — health never fails. There
+is no check mode that exits non-zero on a missing required item in this version
+(suggestions are advisory, §16.31); CI can test `required && status ==
+"missing"` in the JSON (or `summary.required_missing`).
+
+**Editor.** The editor status page's count reads the same cache, so it reflects
+missing required items once a health run has recorded them. An editor-native
+health rendering of the inventory is deferred (the probes are host-neutral, so
+it can later render the same results).
+
+**Out of scope for this version:** minimum-version requirements (a found tool
+that is too old reads as found); installing or repairing anything; editor-only
+registry lookups; a per-user cross-workspace cache; a non-zero check mode; an
+editor-native health rendering; probing on any path other than an explicit
+health run.

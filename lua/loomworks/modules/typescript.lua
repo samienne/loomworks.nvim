@@ -229,6 +229,30 @@ function M.detect_tools_async(callback)
     callback({ { tool_data = {} } })
 end
 
+--- Environment inventory (typescript §7, core §16.33): node and npm, which a
+--- project's tasks run through. `exe:node` is also declared by the pwa-node
+--- adapter's inventory companion with the same id (probed once).
+--- @param _ctx loomworks.InventoryContext
+--- @return loomworks.InventoryDeclaration[]
+function M.health_inventory(_ctx)
+    local inv = require("loomworks.inventory")
+    local function node_hint(ctx)
+        return ctx.is_windows and "winget install OpenJS.NodeJS.LTS"
+            or "install Node.js (nodejs.org or your package manager)"
+    end
+    return {
+        inv.exe_declaration({ id = "exe:node", label = "node", names = { "node" }, hint = node_hint }),
+        inv.exe_declaration({ id = "exe:npm", label = "npm", names = { "npm" }, hint = node_hint }),
+    }
+end
+
+--- A project requires node and npm (pure).
+--- @param _ctx { project: loomworks.Project, tool: loomworks.Tool|nil, configuration: loomworks.Configuration|nil }
+--- @return { id: string, label: string }[]
+function M.health_requirements(_ctx)
+    return { { id = "exe:node", label = "node" }, { id = "exe:npm", label = "npm" } }
+end
+
 --- Compare two TypeScript tool_data objects. Always match (single tool).
 --- @param a table
 --- @param b table

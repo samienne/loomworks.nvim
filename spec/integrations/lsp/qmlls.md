@@ -143,3 +143,13 @@ the single build authority (§3). Opt-out is via `loomworks.setup` (see
 README): a whole-server `{ lsp = { qmlls = false } }`, or replacing the
 `cmd` / `filetypes` through `{ lsp = { qmlls = { … } } }` (a custom
 `cmd` can drop the flag if a user genuinely wants qmlls to call CMake).
+
+## 10. Environment inventory (`health_inventory`)
+
+Declares `lsp:qmlls` (category *language servers*) in its inventory companion
+(`integrations/inventory/qmlls.lua`, re-exported as the integration's
+`health_inventory`): a search-path lookup (version from `qmlls --version`) and
+Mason's `bin` directory (the clangd §14 `<data>` rule; no version — there is
+no receipt to read and nothing is spawned). Qt
+installations are not searched (qmlls ships inside a Qt kit's `bin`; finding
+Qt installs is out of scope). Never a workspace requirement (core §16.33).
