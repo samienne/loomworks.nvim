@@ -963,7 +963,10 @@ account security, not artifact verification.
 PATH) — ensures it is on PATH (prompting first; `-y` to apply non-interactively,
 `--no-modify-path` to skip), and runs `lw self-update` to fetch the verified
 release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
-fetch. No admin required. Then enable completion with `lw completion bash`
+fetch. No admin required. Installing over an `lw` that is currently running
+(a build in another terminal) works too: the new binary is swapped in the same
+way `lw self-update` replaces itself, rather than written over the running one.
+Then enable completion with `lw completion bash`
 (see [above](#standalone-lw-runner) / `lw help completion`).
 
 ### Repo-local launcher (`lw bootstrap`)

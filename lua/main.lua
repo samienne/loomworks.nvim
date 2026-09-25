@@ -44,8 +44,9 @@ end)
 local paths = require("boot.paths")
 local pin = require("boot.pin")
 
--- A Windows host self-update (spec §16.32) renames the running exe aside to
--- `<exe>.old`; the next invocation removes it. Best-effort and silent — the
+-- A Windows host self-update (spec §16.32) — or `lw install` / `make install`
+-- over a running lw (boot.install.copy_binary) — renames the running exe aside
+-- to `<exe>.old`; the next invocation removes it. Best-effort and silent — the
 -- file may still be in use by another lw process that started before the swap.
 if paths.is_windows then require("boot.host_update").cleanup_old() end
 
