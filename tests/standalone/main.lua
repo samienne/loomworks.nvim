@@ -237,6 +237,32 @@ do
   local g = io.open(dst, "rb"); local d = g:read("*a"); g:close()
   ok(d == "BIN\0ARY\0DATA", "copied bytes match exactly")
 
+  -- copy_binary over an existing target: staged + swapped, never written in
+  -- place (a running installed lw cannot be opened for writing on Windows).
+  local f2 = io.open(src, "wb"); f2:write("NEWER"); f2:close()
+  ok(install.copy_binary(src, dst) == true, "copy_binary replaces an existing target")
+  local g2 = io.open(dst, "rb"); local d2 = g2:read("*a"); g2:close()
+  ok(d2 == "NEWER", "replaced bytes match")
+  ok(uv.fs_stat(dst .. ".new") == nil, "no staged .new left behind")
+  -- A target that refuses in-place writes (as a running Windows exe does) is
+  -- still replaced: the swap renames it aside instead of opening it.
+  local renamed = {}
+  local fake_fs = {
+    rename = function(a, b)
+      renamed[#renamed + 1] = a .. " -> " .. b
+      return uv.fs_rename(a, b)
+    end,
+    exists = function(p) return uv.fs_stat(p) ~= nil end,
+    unlink = function(p) return uv.fs_unlink(p) end,
+  }
+  local f3 = io.open(src, "wb"); f3:write("NEWEST"); f3:close()
+  ok(install.copy_binary(src, dst, { fs = fake_fs, is_windows = true, sleep = function() end }) == true,
+     "windows-style replace succeeds")
+  ok(renamed[1] == dst .. " -> " .. dst .. ".old", "running target renamed aside to .old first")
+  local g3 = io.open(dst, "rb"); local d3 = g3:read("*a"); g3:close()
+  ok(d3 == "NEWEST", "new binary in place after rename-aside")
+  pcall(uv.fs_unlink, dst .. ".old")
+
   -- dir_on_path
   local sep = paths.is_windows and ";" or ":"
   uv.os_setenv("PATH", "/foo" .. sep .. "/bar/" .. sep .. "/baz")

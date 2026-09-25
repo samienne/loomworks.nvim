@@ -57,7 +57,20 @@ local function read_bin(p)
 end
 
 --- Copy `src` to `dest` (binary), creating parents and marking it executable.
-function M.copy_binary(src, dest)
+---
+--- The copy is staged as `<dest>.new` beside the target and then swapped in,
+--- never written over `dest` in place: an installed lw is often RUNNING (a build
+--- in another terminal, an editor-spawned task), and Windows refuses to open a
+--- running .exe for writing ("Permission denied") while Linux may refuse with
+--- "text file busy". The swap is host self-update's (`boot.host_update.swap`):
+--- an atomic rename over the target on Unix; on Windows the running exe is
+--- renamed aside to `<dest>.old` (with rollback) and removed at a later start.
+--- @param src string binary to install
+--- @param dest string install path
+--- @param opts? table passed to `host_update.swap` (fs / is_windows / sleep / attempts — tests)
+--- @return true|nil ok
+--- @return string|nil err
+function M.copy_binary(src, dest, opts)
   local data, e = read_bin(src)
   if not data then return nil, "read '" .. src .. "': " .. tostring(e) end
   local parent = dest:match("^(.*)/[^/]*$")
@@ -65,10 +78,22 @@ function M.copy_binary(src, dest)
     local ok, err = paths.mkdirp(parent)
     if not ok then return nil, err end
   end
-  local f, oe = io.open(dest, "wb")
-  if not f then return nil, "write '" .. dest .. "': " .. tostring(oe) end
+  local staged = dest .. ".new"
+  pcall(uv.fs_unlink, staged)
+  local f, oe = io.open(staged, "wb")
+  if not f then return nil, "write '" .. staged .. "': " .. tostring(oe) end
   f:write(data); f:close()
-  if not paths.is_windows then pcall(uv.fs_chmod, dest, tonumber("755", 8)) end
+  if not paths.is_windows then pcall(uv.fs_chmod, staged, tonumber("755", 8)) end
+  if not uv.fs_stat(dest) then
+    local ok, err = uv.fs_rename(staged, dest)
+    if not ok then pcall(uv.fs_unlink, staged); return nil, "install '" .. dest .. "': " .. tostring(err) end
+    return true
+  end
+  local ok, err = require("boot.host_update").swap(dest, staged, opts)
+  if not ok then
+    pcall(uv.fs_unlink, staged)
+    return nil, "replace '" .. dest .. "': " .. tostring(err)
+  end
   return true
 end
 
