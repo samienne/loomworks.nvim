@@ -681,6 +681,7 @@ local function compat_records(workspace)
     end
     return out
 end
+M._compat_records = compat_records -- also read by `failing_compiles_phrase`
 
 --- Provider: post-configure compiler-cache compatibility results (headless
 --- §16.31, core §8 `cache_compat_scan`) for the active profile's units (every
