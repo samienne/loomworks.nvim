@@ -286,9 +286,12 @@ end
 --- active profile's key, and every profile's identity + resolved tool keys +
 --- mapped configurations + per-project `cache` fill values (the compiler-cache
 --- provider follows the active profile's effective policy, or every profile's
---- when none is active). It intentionally does NOT
---- include any toolchain-PATH probe result: computing the key must stay cheap
---- (in-memory only), so a launcher appearing/disappearing on PATH without a
+--- when none is active), and the recorded post-configure compatibility
+--- results with each such unit's CURRENT module stamp of the scanned compile
+--- data (the one filesystem read: a stat / directory listing per
+--- cache-enabled unit, core §8 `cache_compat_stamp`). It intentionally does NOT
+--- include any toolchain-PATH probe result: computing the key must stay cheap,
+--- so a launcher appearing/disappearing on PATH without a
 --- config change is picked up by the next `lw health` (which always recomputes
 --- the local tier), not by an ever-changing passive key. Overridable so tests
 --- can drive invalidation deterministically.
