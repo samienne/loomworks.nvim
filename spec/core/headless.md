@@ -118,7 +118,11 @@ is transient (nothing is recorded that makes a later build reconfigure again).
 §8 `cache_compat_scan`) is advisory and never gates the build. When a build
 step then fails for a unit whose recorded scan has an `"error"` finding (the
 applied launcher fails those compiles), the runner's closing failure message
-gains one line pointing back at it, e.g. `build failed — 1870 compiles use
+gains one line pointing back at it. The recorded scan is the one refreshed after
+that build step (§8 `cache_compat_stamp`): when the build tool re-ran the
+generator during the step and the compile data changed, the finding is re-scanned
+first — reported before the closing line — so a flag the build just introduced is
+named and one it just removed is not, e.g. `build failed — 1870 compiles use
 /Zi, which sccache cannot cache (see the scan finding above; lw health; lw help
 cache)`.
 
@@ -1093,7 +1097,15 @@ a compiler-family override, `… variables.cache off` for a configuration
 variable, §8) — and the help topic. A scan that
 was **skipped** for lack of compile-command data yields an **informational**
 item saying the check was skipped for that configuration (detail: why), so a
-clean report is never mistaken for a verified one.
+clean report is never mistaken for a verified one. The findings reported are
+those of the build's **current** compile data, not merely of the last
+configure: the build tool may re-run the generator itself (e.g. after a
+build-system file edit) and add or remove the offending option without any
+configure, so before reporting, a recorded result whose module stamp of the
+scanned data changed is **re-scanned** (§8 `cache_compat_stamp`) — locally, from
+the existing post-configure metadata, spawning nothing. This refresh is in
+memory: health never writes the build-state cache (the next build's result
+recording persists the refreshed result).
 
 The provider is silent (neither affirms nor nags) when the workspace has no C/C++
 project, or when every C/C++ project has pinned `cache` to `off`, since the user
@@ -1107,7 +1119,10 @@ contributes nothing without one (below).
 
 **Passive vs on-demand providers.** A provider is one of two kinds. A **passive**
 provider is side-effect-free and cheap — it reads resolved state only, never
-spawns a tool and never touches the network — and so contributes to *both* the
+spawns a tool and never touches the network (the one local read beyond resolved
+state is the cache-compatibility re-scan above, of existing post-configure
+metadata, and only when its stamp changed — which also invalidates the cached
+tier, so it happens once per change) — and so contributes to *both* the
 frequently-rendered `N suggestions` count (§16.18, `spec/ui.md` §1.1) and the
 full health report. An **on-demand** provider is permitted a network call or
 other expensive/one-shot check; it runs **only** when health is explicitly
@@ -1128,9 +1143,15 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
 - a **local tier** — the results of the passive (workspace-scoped, local-detection)
   providers — stored with the time they were computed and an **invalidation key**:
   a cheap fingerprint of the inputs those providers read (the projects and their
-  cache policy, the resolved tool selection, the platform, and the recorded
-  post-configure cache-compatibility results). When the fingerprint
-  changes, the local tier is stale;
+  cache policy, the resolved tool selection, the platform, the recorded
+  post-configure cache-compatibility results, and — for each unit with such a
+  result — the module's **current** stamp of the data that scan read (§8
+  `cache_compat_stamp`; one stat or directory listing per cache-enabled unit,
+  never a decode), so a generator re-run by the build tool invalidates the tier
+  and the passive count never keeps a stale finding). The key is taken from the
+  results **as recorded** before the providers run, so an in-memory refresh a
+  provider makes (and does not persist) does not invalidate the tier again in
+  the next process. When the fingerprint changes, the local tier is stale;
 - a **network tier** — the results of the on-demand (network-backed) providers —
   stored with the time they were computed and a **running-version key** (the
   running release bundle, the running host binary's release identity (§16.32) and

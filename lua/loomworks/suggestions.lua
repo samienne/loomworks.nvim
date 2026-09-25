@@ -203,9 +203,14 @@ function M.collect_health(workspace, opts)
     local data = health_cache.read(env.io, env.root)
     local now = M._clock()
 
-    -- Local tier: always recomputed on an explicit health run.
+    -- Local tier: always recomputed on an explicit health run. The key is taken
+    -- BEFORE the providers run, like `collect`: a provider may refresh
+    -- in-memory state its inputs derive from (a re-scanned compatibility
+    -- record, not persisted here), and the key must match what the next
+    -- process — which reads the persisted state — computes.
+    local key = M._local_key(workspace)
     local local_items = run_local(workspace)
-    data.local_tier = { items = local_items, computed_at = now, key = M._local_key(workspace) }
+    data.local_tier = { items = local_items, computed_at = now, key = key }
 
     -- Network tier: refresh when forced, absent, past its TTL, or recorded for
     -- another running version (e.g. before a self-update); else reuse.
@@ -281,9 +286,12 @@ end
 --- active profile's key, and every profile's identity + resolved tool keys +
 --- mapped configurations + per-project `cache` fill values (the compiler-cache
 --- provider follows the active profile's effective policy, or every profile's
---- when none is active). It intentionally does NOT
---- include any toolchain-PATH probe result: computing the key must stay cheap
---- (in-memory only), so a launcher appearing/disappearing on PATH without a
+--- when none is active), and the recorded post-configure compatibility
+--- results with each such unit's CURRENT module stamp of the scanned compile
+--- data (the one filesystem read: a stat / directory listing per
+--- cache-enabled unit, core §8 `cache_compat_stamp`). It intentionally does NOT
+--- include any toolchain-PATH probe result: computing the key must stay cheap,
+--- so a launcher appearing/disappearing on PATH without a
 --- config change is picked up by the next `lw health` (which always recomputes
 --- the local tier), not by an ever-changing passive key. Overridable so tests
 --- can drive invalidation deterministically.
@@ -347,8 +355,14 @@ function M._local_key(workspace)
 
         -- Recorded post-configure cache-compatibility results (§16.31): a new
         -- configure that finds (or clears) /Zi compiles must refresh the
-        -- cached local tier. In-memory only — cheap.
-        for _, r in ipairs(M._compat_records(workspace)) do
+        -- cached local tier — and so must the build tool re-running the
+        -- generator by itself (no lw configure), which only the module's
+        -- CURRENT stamp of the compile data shows (core §8
+        -- `cache_compat_stamp`: one stat / directory listing per unit with a
+        -- record — only units that applied a compiler cache). The records are
+        -- read as recorded here, never re-scanned: the provider re-scans when
+        -- the tier is recomputed.
+        for _, r in ipairs(M._compat_units(workspace)) do
             local rec = r.compat
             local fparts = {}
             for _, f in ipairs(rec.findings or {}) do
@@ -359,6 +373,7 @@ function M._local_key(workspace)
             parts[#parts + 1] = table.concat({
                 "compat", tostring(r.unit.id or r.unit._config_key), tostring(rec.tool),
                 tostring(rec.scanned), tostring(rec.reason or ""), table.concat(fparts, ","),
+                tostring(r.unit.cache_compat_stamp and r.unit:cache_compat_stamp() or ""),
             }, "|")
         end
     end
@@ -575,13 +590,14 @@ end
 M.register(M.compiler_cache_provider)
 
 --- The configured units carrying a recorded post-configure compatibility result
---- (`module_info.cache_compat`): the active profile's units, in profile order —
---- or, with NO active profile (a CI / scripted checkout), every profile's units,
---- profiles sorted by key, like the other no-active-profile logic here. A unit
---- shared by several profiles (same project + configuration) is listed once.
+--- (`module_info.cache_compat`), AS RECORDED: the active profile's units, in
+--- profile order — or, with NO active profile (a CI / scripted checkout), every
+--- profile's units, profiles sorted by key, like the other no-active-profile
+--- logic here. A unit shared by several profiles (same project + configuration)
+--- is listed once.
 --- @param workspace loomworks.Workspace|nil
 --- @return { unit: loomworks.ConfigUnit, compat: table }[]
-local function compat_records(workspace)
+local function compat_units(workspace)
     local out = {}
     if type(workspace) ~= "table" then return out end
     local profiles
@@ -607,12 +623,35 @@ local function compat_records(workspace)
     end
     return out
 end
-M._compat_records = compat_records -- also read by `_local_key`
+M._compat_units = compat_units -- also read by `_local_key`
+
+--- `compat_units`, each record first brought up to date with the build's
+--- CURRENT compile data (`ConfigUnit:refresh_cache_compat`): the build tool
+--- can re-run the generator by itself (no lw configure) and add or remove the
+--- flags a recorded scan found, so a record whose module stamp changed is
+--- re-scanned — locally, from existing post-configure metadata, spawning
+--- nothing (§16.31 "always refreshes the local checks"). The refresh is
+--- in-memory only: health never writes the build cache; the next build's
+--- result recording persists it.
+--- @param workspace loomworks.Workspace|nil
+--- @return { unit: loomworks.ConfigUnit, compat: table }[]
+local function compat_records(workspace)
+    local out = {}
+    for _, r in ipairs(compat_units(workspace)) do
+        local rec = r.compat
+        if type(r.unit.refresh_cache_compat) == "function" then
+            rec = r.unit:refresh_cache_compat()
+        end
+        if type(rec) == "table" then out[#out + 1] = { unit = r.unit, compat = rec } end
+    end
+    return out
+end
 
 --- Provider: post-configure compiler-cache compatibility results (headless
 --- §16.31, core §8 `cache_compat_scan`) for the active profile's units (every
---- profile's, deduplicated per unit, when none is active) — read
---- from the record core stored at configure, never recomputed here:
+--- profile's, deduplicated per unit, when none is active) — read from the
+--- record core stored at configure, re-scanned first when the module's stamp
+--- of the compile data changed since (`compat_records`):
 ---   * findings → one ACTIONABLE item per configuration: the applied launcher
 ---     will fail (severity "error") / cannot cache ("warning") some compiles;
 ---     detail lists the groups (flag + unit counts); remedy is one short line

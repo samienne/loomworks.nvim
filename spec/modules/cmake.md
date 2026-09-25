@@ -360,6 +360,18 @@ itself, which would collide with §5b:
   module returns `scanned = false` with the reason, and health reports the check
   as skipped (core §16.31). The scan is not run for gcc / clang family kits,
   whose launchers never fail an uncacheable compile.
+  **Freshness (`cache_compat_stamp`, core §8).** The stamp is the name of the
+  current file-api reply index (`.cmake/api/v1/reply/index-*.json`, the newest by
+  name). The module's query files are client-stateless and stay in the build
+  directory, so CMake answers them on **every** (re)configure — including the
+  re-run the build tool itself triggers after a `CMakeLists.txt` / `.cmake`
+  edit (`ninja: Re-running CMake...`) — by writing a new, uniquely timestamped
+  index file and removing the previous reply's: a changed name means the
+  codemodel may have changed, and core re-scans (after the build, and in
+  health). Verified with CMake + Ninja: touching `CMakeLists.txt` and running
+  only `ninja` replaced `index-…T06-43-16-0773.json` with
+  `index-…T06-43-20-0380.json` and the target's new compile fragment. One
+  directory listing, no decode; a constant for a gcc / clang kit.
   The MSVC driver also reads flags from the **`CL` and `_CL_` environment
   variables** (prepended / appended to every command line), which neither the
   file-api nor any compilation database shows. So the scan also checks the

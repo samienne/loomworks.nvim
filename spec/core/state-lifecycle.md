@@ -578,6 +578,11 @@ After a **successful** configure that applied a launcher (recorded value not
 (`cache_compat_scan`, §8) and records its findings with the unit's configure
 record; they are reported at the end of the configure and in health (§16.31),
 and are advisory — they never gate the next build and never change the policy.
+The build tool may re-run the generator by itself (e.g. after a build-system
+file edit) and change the compile flags without a configure; the recorded
+findings then follow that change — core re-scans after a build, and health
+before reporting, whenever the module's stamp of the scanned data changed
+(§8 `cache_compat_stamp`).
 
 ### 5.2 Auto-configure before build
 
