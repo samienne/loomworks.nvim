@@ -265,9 +265,13 @@ do
 
   -- dir_on_path
   local sep = paths.is_windows and ";" or ":"
+  -- Restore PATH afterwards: later tests spawn real programs (the vim.system
+  -- timeout test runs `sleep`), which a fake PATH would hide on Unix.
+  local saved_path = uv.os_getenv("PATH")
   uv.os_setenv("PATH", "/foo" .. sep .. "/bar/" .. sep .. "/baz")
   ok(install.dir_on_path("/bar"), "dir_on_path finds a member (trailing slash ok)")
   ok(not install.dir_on_path("/nope"), "dir_on_path rejects a non-member")
+  if saved_path then uv.os_setenv("PATH", saved_path) else uv.os_unsetenv("PATH") end
 
   -- append_path_line (idempotent)
   local rc = sb .. "/rcfile"

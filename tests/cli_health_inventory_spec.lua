@@ -49,6 +49,9 @@ describe("lw health inventory output", function()
     local function make_ws()
         local root = (vim.fn.tempname():gsub("\\", "/"))
         vim.fn.mkdir(root .. "/App", "p")
+        -- Canonical (long) path: on Windows CI tempname() can return the 8.3
+        -- short form (RUNNER~1) while the workspace reports the resolved root.
+        root = ((vim.uv or vim.loop).fs_realpath(root) or root):gsub("\\", "/")
         local f = assert(io.open(root .. "/loomworks.json", "w"))
         f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } }))
         f:close()
