@@ -267,11 +267,16 @@ do
   local sep = paths.is_windows and ";" or ":"
   -- Restore PATH afterwards: later tests spawn real programs (the vim.system
   -- timeout test runs `sleep`), which a fake PATH would hide on Unix.
-  local saved_path = uv.os_getenv("PATH")
+  -- Read it via os_environ(): os_getenv() returns nil for a PATH longer than
+  -- luv's default buffer (common on Windows), which would lose it entirely.
+  local saved_path
+  for k, v in pairs(uv.os_environ()) do
+    if k:upper() == "PATH" then saved_path = v end
+  end
   uv.os_setenv("PATH", "/foo" .. sep .. "/bar/" .. sep .. "/baz")
   ok(install.dir_on_path("/bar"), "dir_on_path finds a member (trailing slash ok)")
   ok(not install.dir_on_path("/nope"), "dir_on_path rejects a non-member")
-  if saved_path then uv.os_setenv("PATH", saved_path) else uv.os_unsetenv("PATH") end
+  if saved_path then uv.os_setenv("PATH", saved_path) end
 
   -- append_path_line (idempotent)
   local rc = sb .. "/rcfile"
