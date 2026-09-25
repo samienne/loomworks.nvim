@@ -201,7 +201,7 @@ Each provider table exposes:
 | `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
 | `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
 | `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
-| `health_inventory(ctx) → Declaration[]` | *(optional)* Extra environment-inventory declarations (§16.33). Without it, core lists the provider's `detect_all()` installations plus every installation a profile pins, under category *SDKs*; a pinned installation that is unresolved is a missing **required** item for that profile |
+| `health_inventory(ctx) → Declaration[]` | *(optional)* Extra environment-inventory declarations (§16.33). Without it, core lists the provider's `detect_all()` installations plus every installation a profile pins (each validated once), under category *SDKs*; a pinned installation that no longer validates is a missing **required** item for that profile. A provider with nothing detected and nothing pinned contributes no line |
 
 **Declaring an installation.** An SDK is normally declared by supplying a path,
 which the provider validates — identifying the installation and deriving the

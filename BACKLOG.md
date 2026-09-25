@@ -702,7 +702,8 @@ two-tier health cache (§16.31). `:checkhealth loomworks` can later render the
 same data. Spec: §16.31 + a module-interface hook. Planned as its own feature
 branch after v0.1.29 stable.
 
-**Specified** on `feature/health-inventory`: core §16.33 (inventory,
+**Implemented** on `feature/health-inventory` (`inventory.lua`, module / companion
+/ SDK contributors, `lw health --verbose/--json`): core §16.33 (inventory,
 declarations/probes, required split, inventory cache tier keyed on the
 environment, `--json`), §8.4 `health_inventory` / `health_requirements`, §9.3 /
 §10.1 / §8.9.6 hooks (integration declarations in host-neutral inventory

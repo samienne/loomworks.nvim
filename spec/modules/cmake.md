@@ -927,7 +927,7 @@ they are probed and listed once:
 |--|--|--|
 | `exe:cmake` | build tools | search-path lookup, then `cmake --version` |
 | `exe:ninja` *(shared)* | build tools | search-path lookup, then `ninja --version` |
-| `exe:make` | build tools | search-path lookup, then `make --version` |
+| `exe:make` | build tools | search-path lookup (`make`, else `mingw32-make`), then `--version` |
 | `compilers:path` *(shared)* | compilers | the PATH-index compiler scan the kit detection uses (gcc/clang, versioned names included), one result per compiler with its `--version` version; id per result `cxx:<normalized path>` |
 | `compilers:msvc` *(shared)* | compilers | Windows only: the installation locator's installs (one result each, `msvc:<normalized vcvarsall path>`, version = the install's product version), plus clang-cl (`clang-cl:<normalized path>`, VS-bundled and on the search path) |
 

@@ -149,6 +149,7 @@ README): a whole-server `{ lsp = { qmlls = false } }`, or replacing the
 Declares `lsp:qmlls` (category *language servers*) in its inventory companion
 (`integrations/inventory/qmlls.lua`, re-exported as the integration's
 `health_inventory`): a search-path lookup (version from `qmlls --version`) and
-the Mason directory (clangd §14 rule, version from the receipt). Qt
+Mason's `bin` directory (the clangd §14 `<data>` rule; no version — there is
+no receipt to read and nothing is spawned). Qt
 installations are not searched (qmlls ships inside a Qt kit's `bin`; finding
 Qt installs is out of scope). Never a workspace requirement (core §16.33).
