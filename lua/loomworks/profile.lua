@@ -878,6 +878,8 @@ function Profile:set_variable_value(project_key, name, value)
         self:clear_variable_value(project_key, name)
         return
     end
+    -- The pre-declared `cache` policy is stored in its canonical spelling.
+    if name == "cache" then value = require("loomworks.compiler_cache").canonical_policy(value) end
     self._profile_variables = self._profile_variables or {}
     self._profile_variables[project_key] = self._profile_variables[project_key] or {}
     self._profile_variables[project_key][name] = value

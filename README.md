@@ -21,7 +21,8 @@ current version.
 - **Multi-project workspaces** — manage cmake, meson, shell, and
   typescript projects from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
-  `CMakeUserPresets.json` with full inheritance
+  `CMakeUserPresets.json` with full inheritance; presets whose `condition`
+  excludes this host (e.g. macOS-only presets on Windows) are not offered
 - **Automatic tool detection** — finds MSVC (via vswhere), GCC, Clang, and
   clang-cl (Clang's MSVC driver, one per MSVC install) compilers; generates
   profile combinations with Ninja/Visual Studio generators
@@ -312,6 +313,10 @@ project variable, `cache`, holding a **policy**:
   `overrides.clang.cache`).
 - `off` (or `false`) — no cache.
 
+Any other value is refused when you set it (`lw config set`, `lw profile set`)
+with the valid values listed; one that arrives through a hand-edited file shows
+up as a warning in `lw status` instead of silently building uncached.
+
 Because `cache` is an ordinary variable, it rides the same layers as everything
 else: set it per configuration, per compiler family via `overrides`
 (`{ "msvc": { "cache": "off" } }`), or per machine with `lw profile set <profile>
@@ -340,7 +345,10 @@ with /Zi") — that comes from a directory-wide `add_compile_options` /
 `CMAKE_<LANG>_FLAGS` overriding the `/Z7` loomworks asked for (cl warns D9025
 "overriding '/Z7' with '/Zi'"), so remove it there. The scan is advisory: the
 build still runs, and if it then fails, lw's last line points back at the
-finding. If you used MSVC caching via `auto` in an earlier beta, your next
+finding. The scan follows the build, not just `lw configure`: when the build
+re-runs CMake / meson by itself (e.g. after you edit a `CMakeLists.txt` to
+replace `/Zi`), the next build and `lw health` re-scan, so a fixed finding
+disappears and a newly added `/Zi` is reported. If you used MSVC caching via `auto` in an earlier beta, your next
 build reconfigures without the launcher; set `cache=sccache` to keep it. Under
 meson, loomworks pins the launcher+compiler explicitly through a generated
 native file (`--native-file`, rather than relying on meson's own ccache
@@ -1032,7 +1040,9 @@ cleanly if that release isn't fetchable) and refreshes the launcher scripts. See
 ### Commands
 
 `lw` with no command prints workspace status and the active profile. Every
-command has detail under `lw help <command>` (or `lw <command> --help`).
+command has detail under `lw help <command>` (or `lw <command> --help`); a
+sub-command's own section under `lw help <command> <sub>` (or
+`lw <command> <sub> --help`, e.g. `lw profile query --help`).
 
 | Command | Description |
 |---|---|
@@ -1041,7 +1051,7 @@ command has detail under `lw help <command>` (or `lw <command> --help`).
 | `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset`. `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
 | `lw config <sub>` | `add` \| `set` \| `get` \| `show` \| `rename` project configurations (aliases `configuration`, `cfg`). `rename <project> <old> <new>` (alias `mv`) renames a user configuration in place, updating every set mapping and profile that references it |
 | `lw configset <sub>` | `create` \| `map` \| `show` \| `rename` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
-| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
+| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)` |
@@ -1170,7 +1180,8 @@ don't use this — install the module plugin the usual way.)
   every cell runs the same reproducible `lw` with no separate install step.
 - Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
   instead of blocking on a prompt. In non-interactive mode `lw build` also
-  ignores the active profile — name the profile explicitly. A build that would
+  ignores the active profile and never picks a sole profile — name the profile
+  explicitly (`lw profile query` resolves keys for scripts). A build that would
   overwrite another built profile's output is refused (exit 1) rather than
   prompting; pass `--force` to override in an automated run (see
   [Output conflicts between profiles](#output-conflicts-between-profiles)).

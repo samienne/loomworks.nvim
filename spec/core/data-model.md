@@ -324,10 +324,20 @@ block, and as an active-profile fill value. In other words, `cache` rides the
 separate compiler-cache override mechanism.
 
 - **Type and values.** `cache` is a `string`-typed policy. Its value is one of
-  `auto`, `off` (equivalently `false`), or the name of a specific
-  compiler-cache launcher. The set of concrete launcher names is defined by the
-  modules that apply the cache (see the module specs); core treats any
-  non-`auto`, non-`off` value as "prefer this named launcher".
+  `auto`, `off` (equivalently `false`, `none`, `no`), or the name of a
+  compiler-cache launcher core knows how to resolve (v1: `ccache`, `sccache`),
+  compared case-insensitively. A named launcher means "use exactly this
+  launcher" (still gated on its presence); how it is applied is defined by the
+  modules (see the module specs). Any other value is **rejected at edit time**
+  wherever `cache` can be set — a configuration's `variables`, a
+  compiler-family `overrides` entry, a profile fill — with an error listing the
+  valid values, and nothing is written. A valid value is **stored in its
+  canonical form** — `auto`, `off` (for every off-synonym), or the lower-case
+  launcher name — so an edit that differs only in spelling (`SCCACHE` then
+  `sccache`, `none` then `off`) is reported unchanged and writes nothing. An
+  invalid value from a hand-edited
+  file is reported as a non-blocking workspace diagnostic (it would otherwise
+  resolve to no launcher and build uncached without a word).
 - **Default.** When unset at every layer the effective policy is `auto`. There
   is no separate workspace-level on/off switch in v1 — absence *is* `auto`.
 - **`auto` is compiler-family-aware.** `auto` enables a launcher only for a
@@ -424,6 +434,13 @@ and `variables`, and uses the same machinery:
   hand-edited file, stripped when the environment is composed, with a one-time
   warning and the non-blocking diagnostic. Everything else — `*FLAGS`,
   cache-tool settings such as a cache directory — is allowed.
+- **One entry per name, ignoring case.** Because names compare
+  case-insensitively on some hosts, a configuration environment (and each
+  compiler-family `env` sub-block) holds at most one entry per name ignoring
+  case, on **every** host. Setting a name through an edit path when a
+  differently-spelled entry exists (`Path` over `PATH`) **replaces** that entry
+  — the new spelling is kept — and the host says so; clearing a name clears
+  every case variant.
 - **`PATH`.** `PATH` (any case) is not reserved, but a value for it
   **replaces** the tool's PATH for every task of the configuration (e.g. the
   MSVC developer environment, so the compiler may no longer be found; a

@@ -47,6 +47,52 @@ function M.normalize_policy(policy)
     return p
 end
 
+--- The compiler-cache launchers loomworks knows how to apply — the only
+--- concrete tool names a `cache` policy may name (core §1.3.2).
+--- @type string[]
+M.KNOWN_LAUNCHERS = { "ccache", "sccache" }
+
+--- The accepted `cache` policy values, for error messages and help.
+M.VALID_POLICIES = "auto | off | false | ccache | sccache"
+
+--- Validate a raw `cache` policy value (string or boolean) — what a user may
+--- set. Valid: anything `normalize_policy` maps to `auto` / `off` (so
+--- `auto`, `off`, `false`, `none`, `no`, empty, a boolean — case-insensitive),
+--- or a known launcher name (`KNOWN_LAUNCHERS`, case-insensitive). Anything
+--- else would resolve to a launcher loomworks cannot apply and silently build
+--- uncached, so edit paths reject it and a hand-edited file gets a diagnostic.
+--- @param policy any
+--- @return boolean ok, string|nil err
+function M.validate_policy(policy)
+    if policy == nil or type(policy) == "boolean" then return true end
+    if type(policy) ~= "string" then
+        return false, "cache policy must be a string (" .. M.VALID_POLICIES .. ")"
+    end
+    local p = M.normalize_policy(policy)
+    if p == "auto" or p == "off" then return true end
+    for _, t in ipairs(M.KNOWN_LAUNCHERS) do
+        if p == t then return true end
+    end
+    return false, "invalid cache policy '" .. policy .. "' — expected one of: "
+        .. M.VALID_POLICIES
+end
+
+--- The canonical stored form of a user-set `cache` policy: a valid string
+--- policy is stored as its `normalize_policy` value — `auto`, `off` (every
+--- off-synonym: `false`/`none`/`no`, any case), or the lower-case launcher
+--- name — so `SCCACHE` and `sccache` are the same stored value and an edit
+--- that only changes spelling is "(unchanged)". Anything else is returned
+--- as-is: nil, booleans (already a canonical JSON form), a blank string (an
+--- edit path's "clear"), and an INVALID value (the caller's validation
+--- rejects or diagnoses it with the text the user typed).
+--- @param policy any
+--- @return any
+function M.canonical_policy(policy)
+    if type(policy) ~= "string" or policy:match("^%s*$") then return policy end
+    if not M.validate_policy(policy) then return policy end
+    return M.normalize_policy(policy)
+end
+
 --- Whether a raw family string names an MSVC-style compiler for the `auto`
 --- rule: `msvc`, or the MSVC-ABI clang-cl driver (which `normalize_family`
 --- folds to `clang`, so the signal is recovered from the raw string).
@@ -187,14 +233,32 @@ function M.tool_of_path(path)
     return (base:lower():gsub("%.exe$", ""))
 end
 
+--- The module's CURRENT freshness stamp of the compile data its compatibility
+--- scan reads (core §8 `cache_compat_stamp`) — an opaque string that changes
+--- whenever that data is rewritten (a configure, or the generator re-run the
+--- build tool triggers itself). nil when the module has no stamp hook, the
+--- hook errors, or there is no data yet. Cheap by contract (a stat or a
+--- directory listing), so health's passive key may call it.
+--- @param impl table|nil module implementation
+--- @param ctx table the scan context (`build_dir`, `tool_data`, …)
+--- @return string|nil
+function M.compat_stamp(impl, ctx)
+    if not impl or type(impl.cache_compat_stamp) ~= "function" then return nil end
+    local ok, stamp = pcall(impl.cache_compat_stamp, ctx or {})
+    return (ok and type(stamp) == "string") and stamp or nil
+end
+
 --- Run a module's optional post-configure compatibility scan (core §5.1, §8
 --- `cache_compat_scan`) for a configure that applied `launcher_path`. Returns
 --- the record core stores in `module_info.cache_compat` —
---- `{ tool, scanned, reason?, findings[], totals?, advice? }` (`totals` =
---- `{ units, targets }` compiled in the scanned build, `advice` = the module's
---- wording, both optional) — or nil when the module has no hook or no launcher
---- was applied. A throwing hook is recorded as skipped (advisory: never break
---- the configure). Core adds `policy_source` (which layer enabled the cache).
+--- `{ tool, scanned, reason?, findings[], totals?, advice?, source_stamp? }`
+--- (`totals` = `{ units, targets }` compiled in the scanned build, `advice` =
+--- the module's wording, both optional; `source_stamp` = the module's
+--- `cache_compat_stamp` of the data scanned, taken BEFORE the scan so a
+--- rewrite racing it reads as changed next time) — or nil when the module has
+--- no hook or no launcher was applied. A throwing hook is recorded as skipped
+--- (advisory: never break the configure). Core adds `policy_source` (which
+--- layer enabled the cache).
 --- @param impl table|nil module implementation
 --- @param ctx table `{ build_dir, configuration, tool_data, config_name, variant, configuration_env }` (`configuration_env`: the resolved configuration environment the configure ran with, core §1.3.3 — e.g. MSVC's `CL` / `_CL_`, which compile commands do not show)
 --- @param launcher_path string|nil recorded launcher ("none"/nil → no scan)
@@ -205,9 +269,10 @@ function M.run_compat_scan(impl, ctx, launcher_path)
     if not impl or type(impl.cache_compat_scan) ~= "function" then return nil end
     local scan_ctx = vim.tbl_extend("force", {}, ctx or {})
     scan_ctx.compiler_cache = { tool = tool, path = launcher_path }
+    local stamp = M.compat_stamp(impl, scan_ctx)
     local ok, res = pcall(impl.cache_compat_scan, scan_ctx)
     if not ok or type(res) ~= "table" then
-        return { tool = tool, scanned = false, findings = {},
+        return { tool = tool, scanned = false, findings = {}, source_stamp = stamp,
             reason = "the compatibility check failed: " .. tostring(res) }
     end
     local totals = type(res.totals) == "table" and res.totals or nil
@@ -225,6 +290,7 @@ function M.run_compat_scan(impl, ctx, launcher_path)
             cause_pervasive = type(advice.cause_pervasive) == "string" and advice.cause_pervasive or nil,
             fix_pervasive = type(advice.fix_pervasive) == "string" and advice.fix_pervasive or nil,
         } or nil,
+        source_stamp = stamp,
     }
 end
 
@@ -292,7 +358,9 @@ end
 --- finding (no unit count) `environment: every compile (/Zi) — CL`. A
 --- PERVASIVE record (`compat_pervasive`) collapses its unit findings into ONE
 --- line — `every target (1870 units) compiles with /Zi — <module cause>` (or
---- `nearly every target (… of … units, … of … targets)`) — keeping any
+--- `every target, nearly every unit (… of … units)` when every target but
+--- not every unit is affected, else `nearly every target (… of … units, … of
+--- … targets)`) — keeping any
 --- environment lines. Sample paths are shortened to their last two components.
 --- @param rec table
 --- @return string[]
@@ -304,8 +372,12 @@ function M.compat_group_lines(rec)
         local flag = tostring(list[1].flag)
         local total_targets = type(rec.totals) == "table" and tonumber(rec.totals.targets) or nil
         local scope
-        if units >= total and (not total_targets or #list >= total_targets) then
+        local all_targets = not total_targets or #list >= total_targets
+        if units >= total and all_targets then
             scope = string.format("every target (%d units)", units)
+        elseif all_targets then
+            -- Every target, but not every unit: only the UNIT count is "nearly".
+            scope = string.format("every target, nearly every unit (%d of %d units)", units, total)
         else
             scope = string.format("nearly every target (%d of %d units%s)", units, total,
                 total_targets and string.format(", %d of %d targets", #list, total_targets) or "")
@@ -429,7 +501,7 @@ function M.compat_failure_hint(rec)
     else
         what = "some compiles use " .. tostring(flag)
     end
-    return string.format("build failed — %s, which %s cannot cache (see the scan finding "
+    return string.format("build failed — %s, which %s will fail (see the scan finding "
         .. "above; lw health; lw help cache)", what, tostring(rec.tool))
 end
 

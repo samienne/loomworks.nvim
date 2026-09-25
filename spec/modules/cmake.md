@@ -55,7 +55,25 @@ configuration, it is returned for any variant type.
 The module reads `CMakePresets.json` + `CMakeUserPresets.json` with
 full preset inheritance:
 
-- Each non-hidden configure preset becomes a loomworks configuration.
+- Each non-hidden configure preset becomes a loomworks configuration —
+  unless its `condition` is **false on this host**. The module evaluates the
+  preset's `condition` (schema v3+) as CMake does — `const`, `equals`,
+  `notEquals`, `inList`, `notInList`, `matches`, `notMatches`, `anyOf`,
+  `allOf`, `not` — expanding the macros `${hostSystemName}` (`Windows` /
+  `Darwin` / `Linux` / the kernel name), `${sourceDir}`, `${sourceParentDir}`,
+  `${sourceDirName}`, `${presetName}`, `${generator}`, `${dollar}`,
+  `${pathListSep}`, `$env{NAME}` (the preset's `environment`, then the process
+  environment) and `$penv{NAME}`. A preset without its own `condition`
+  inherits the first base's (in `inherits` order), so a hidden
+  platform-specific base excludes every preset built on it. The evaluation is
+  three-valued: only a definite **false** hides a preset; an unknown macro
+  (`$vendor{…}`), condition type, or regex construct outside the supported
+  subset (literals, `.`, anchors, `* + ?`, `[…]` classes, `\d \w \s`) leaves the
+  preset listed and never errors. So `lw status` and the configuration lists
+  never offer a macOS-only preset on Windows. A preset hidden this way that a
+  configuration set still maps behaves like a preset removed from the file —
+  the mapping surfaces through the usual missing-configuration diagnostics,
+  never silently.
 - A directly mapped preset is configured with `cmake --preset <name>`
   using the bare preset name (not the internal `preset:<name>` key).
   cmake reads `CMakePresets.json` and applies the preset's generator,
@@ -360,6 +378,18 @@ itself, which would collide with §5b:
   module returns `scanned = false` with the reason, and health reports the check
   as skipped (core §16.31). The scan is not run for gcc / clang family kits,
   whose launchers never fail an uncacheable compile.
+  **Freshness (`cache_compat_stamp`, core §8).** The stamp is the name of the
+  current file-api reply index (`.cmake/api/v1/reply/index-*.json`, the newest by
+  name). The module's query files are client-stateless and stay in the build
+  directory, so CMake answers them on **every** (re)configure — including the
+  re-run the build tool itself triggers after a `CMakeLists.txt` / `.cmake`
+  edit (`ninja: Re-running CMake...`) — by writing a new, uniquely timestamped
+  index file and removing the previous reply's: a changed name means the
+  codemodel may have changed, and core re-scans (after the build, and in
+  health). Verified with CMake + Ninja: touching `CMakeLists.txt` and running
+  only `ninja` replaced `index-…T06-43-16-0773.json` with
+  `index-…T06-43-20-0380.json` and the target's new compile fragment. One
+  directory listing, no decode; a constant for a gcc / clang kit.
   The MSVC driver also reads flags from the **`CL` and `_CL_` environment
   variables** (prepended / appended to every command line), which neither the
   file-api nor any compilation database shows. So the scan also checks the

@@ -35,9 +35,16 @@ reproducible; an explicit **management** operation MAY write it (§16.9).
 
 The active profile is working-copy state (§4.2) and is not assumed in a
 headless invocation. The profile to operate on MUST be selected explicitly
-by the caller. Absent an explicit selection, the invocation is an error
-unless exactly one published profile exists — the system never guesses a
-default.
+by the caller. Absent an explicit selection, a non-interactive build-shaped
+invocation (build, clean, test, run, reset, …) is **always** an error — even when
+the workspace has exactly one profile, and regardless of the working copy's
+active profile: it never uses the active profile and never infers one. The
+error lists the available profiles and points at the invoked verb's named form
+(e.g. `lw test <profile>`; a unique substring is accepted, below) and at read-only introspection (§16.18) for
+deterministic selection in scripts. An interactive invocation MAY fall back to
+the active profile, then to the sole profile; the read-only listing / show
+verbs and the profile fill-value management verbs keep their own no-argument
+defaults (below, §16.9, §16.18).
 
 A profile MAY be named by a **truncated tool selector** — a prefix of a tool
 key that omits trailing detail, such as a compiler family plus major version
@@ -118,8 +125,12 @@ is transient (nothing is recorded that makes a later build reconfigure again).
 §8 `cache_compat_scan`) is advisory and never gates the build. When a build
 step then fails for a unit whose recorded scan has an `"error"` finding (the
 applied launcher fails those compiles), the runner's closing failure message
-gains one line pointing back at it, e.g. `build failed — 1870 compiles use
-/Zi, which sccache cannot cache (see the scan finding above; lw health; lw help
+gains one line pointing back at it. The recorded scan is the one refreshed after
+that build step (§8 `cache_compat_stamp`): when the build tool re-ran the
+generator during the step and the compile data changed, the finding is re-scanned
+first — reported before the closing line — so a flag the build just introduced is
+named and one it just removed is not, e.g. `build failed — 1870 compiles use
+/Zi, which sccache will fail (see the scan finding above; lw health; lw help
 cache)`.
 
 A build is additionally gated by the output-artifact conflict rule (§16.28):
@@ -162,6 +173,11 @@ that hands the rest to a build tool or program) print that command's help and
 exit 0 — the flag is never read as an operand such as a profile name. This
 holds for the host-level commands too (version reporting, self-update,
 installation, pin management): asking for their help never performs them.
+A sub-command's help (`lw help <command> <sub-command>`, or `--help` after the
+sub-command) prints only that sub-command's part of the command's help, with a
+pointer to the whole; a sub-command the help does not document falls back to
+the whole command's help. User-facing help is self-contained: it never cites
+specification sections.
 
 ### 16.8 Host-determined module availability
 
@@ -185,6 +201,15 @@ writes follow the same working-copy model as the editor (§2.4): they land in
 the working copy (§2.2), and the published snapshot (§2.1) changes only on an
 explicit publish. A read-only / CI invocation runs no management operation.
 
+Selecting the **active profile** (§4.2) is such a management operation, and it
+needs no interactive terminal when the profile is named: the name resolves by
+the §16.3 named-selection procedure and the selection is written to the working
+copy. A companion form **clears** the selection (no active profile). Selecting
+the profile that is already active, or clearing when none is active, writes
+nothing and says so (`(unchanged)`). Only an *unnamed* selection — an
+interactive picker — requires a terminal; non-interactively it is an error that
+names the scriptable forms.
+
 Configuration editing addresses a configuration's fields by a **dotted param
 grammar** (`get`/`set`/`unset`): a bare field (`inherits`, `languages`, a
 module field), a keyed namespace (`options.<KEY>`, `variables.<NAME>`,
@@ -200,7 +225,11 @@ are bare names. A reserved compiler-driver name in `env.<NAME>` or
 §1.3.3) is **refused** by the same validation the editor applies: `set` exits 1
 and writes nothing (the runtime strip-with-warning applies only to a
 hand-edited file). Setting `env.PATH` (any case) succeeds but prints a warning
-on stderr that it replaces the tool's PATH (§1.3.3). `set` writes the value; an empty value or `unset` clears it,
+on stderr, naming the full param that was set, that it replaces the tool's
+PATH (§1.3.3). An env name that matches an existing entry ignoring case
+replaces that entry, keeping the new spelling, and says so (§1.3.3). A `cache`
+value (`variables.cache`, `overrides.<family>.cache`, or a profile fill) outside
+the valid policies is refused with the valid values listed (§1.3.2). `set` writes the value; an empty value or `unset` clears it,
 pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the
@@ -208,9 +237,11 @@ project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). A `set`/`unset` that changes nothing — `unset` of a param that
 is not set, or `set` to the value it already has — writes nothing, says so
 (`… is not set` / `(unchanged)`) and exits 0; the same holds for clearing a
-profile fill value that is not set. A reminder to publish is printed only after
+profile fill value that is not set, or setting one to the value it already
+has. A reminder to publish is printed only after
 an edit that **changed** a configuration reaching the published snapshot
-(§2.4 effective intent). `get` returns the resolved string for the full path, or the
+(§2.4 effective intent) — and, likewise, after creating a configuration only
+when it would reach the published snapshot. `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and
 `overrides.<family>.env`. `show` lists the configuration's `env` alongside its
 `options`.
@@ -1051,6 +1082,10 @@ shows (§16.18), so the health report never contradicts the status overview:
   "Compiler cache not applied (`<reason>`) — lw help cache", whether or not a
   launcher is installed (installing one would not help);
 - its launcher **resolved** → **informational** "Compiler cache: using `<tool>`";
+  when the recorded compatibility scan found compiles that launcher will FAIL
+  for the profile's units, the affirmation is qualified in the same line
+  ("… — but it will fail N compiles (lw help cache)") so it never reads as
+  contradicting the finding reported next to it;
 - its policy names a launcher explicitly (`cache=<tool>`) that is **not found**
   → **actionable** "`cache=<tool>` set but `<tool>` not found" (remedy: install
   it — `lw help cache`), never a "using" item for some other launcher;
@@ -1067,7 +1102,9 @@ through the same resolver (its own `Cache` status):
 
 - every such profile resolves `off` → nothing;
 - some profile resolves a launcher → **informational** "Compiler cache: using
-  `<tool>` (`<profiles>`)", naming the profiles that would use it;
+  `<tool>` (`<profiles>`)", naming the profiles that would use it — qualified
+  the same way ("… — but it will fail N compiles (lw help cache)") when the
+  recorded scan found compiles that launcher will fail in those profiles' units;
 - otherwise, a profile's explicit `cache=<tool>` is not found → the
   **actionable** not-found item, naming the profile;
 - otherwise, a launcher is present on the toolchain path → **informational**
@@ -1093,7 +1130,15 @@ a compiler-family override, `… variables.cache off` for a configuration
 variable, §8) — and the help topic. A scan that
 was **skipped** for lack of compile-command data yields an **informational**
 item saying the check was skipped for that configuration (detail: why), so a
-clean report is never mistaken for a verified one.
+clean report is never mistaken for a verified one. The findings reported are
+those of the build's **current** compile data, not merely of the last
+configure: the build tool may re-run the generator itself (e.g. after a
+build-system file edit) and add or remove the offending option without any
+configure, so before reporting, a recorded result whose module stamp of the
+scanned data changed is **re-scanned** (§8 `cache_compat_stamp`) — locally, from
+the existing post-configure metadata, spawning nothing. This refresh is in
+memory: health never writes the build-state cache (the next build's result
+recording persists the refreshed result).
 
 The provider is silent (neither affirms nor nags) when the workspace has no C/C++
 project, or when every C/C++ project has pinned `cache` to `off`, since the user
@@ -1107,7 +1152,10 @@ contributes nothing without one (below).
 
 **Passive vs on-demand providers.** A provider is one of two kinds. A **passive**
 provider is side-effect-free and cheap — it reads resolved state only, never
-spawns a tool and never touches the network — and so contributes to *both* the
+spawns a tool and never touches the network (the one local read beyond resolved
+state is the cache-compatibility re-scan above, of existing post-configure
+metadata, and only when its stamp changed — which also invalidates the cached
+tier, so it happens once per change) — and so contributes to *both* the
 frequently-rendered `N suggestions` count (§16.18, `spec/ui.md` §1.1) and the
 full health report. An **on-demand** provider is permitted a network call or
 other expensive/one-shot check; it runs **only** when health is explicitly
@@ -1128,9 +1176,15 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
 - a **local tier** — the results of the passive (workspace-scoped, local-detection)
   providers — stored with the time they were computed and an **invalidation key**:
   a cheap fingerprint of the inputs those providers read (the projects and their
-  cache policy, the resolved tool selection, the platform, and the recorded
-  post-configure cache-compatibility results). When the fingerprint
-  changes, the local tier is stale;
+  cache policy, the resolved tool selection, the platform, the recorded
+  post-configure cache-compatibility results, and — for each unit with such a
+  result — the module's **current** stamp of the data that scan read (§8
+  `cache_compat_stamp`; one stat or directory listing per cache-enabled unit,
+  never a decode), so a generator re-run by the build tool invalidates the tier
+  and the passive count never keeps a stale finding). The key is taken from the
+  results **as recorded** before the providers run, so an in-memory refresh a
+  provider makes (and does not persist) does not invalidate the tier again in
+  the next process. When the fingerprint changes, the local tier is stale;
 - a **network tier** — the results of the on-demand (network-backed) providers —
   stored with the time they were computed and a **running-version key** (the
   running release bundle, the running host binary's release identity (§16.32) and
@@ -1178,7 +1232,11 @@ CLI), this provider resolves the newest release available on the **resolved
 update channel** (§16.29) and, when that is strictly newer than the running
 version, suggests updating. Its `title` is "Update available", its `detail` is
 `<current> → <newest> on the <channel> channel`, and its `remedy` points at the
-self-update command. Version comparison is the same semver-aware ordering used
+self-update command — except in a **pinned** context (a repository version pin,
+§16.21–16.24: the pinned launcher's sentinel is set, or the running bundle is the
+repo-local pinned copy), where the pin owns the version and self-update would not
+change it; there the remedy points at the pin-management update command (which
+moves the pin to the newest release). Version comparison is the same semver-aware ordering used
 for activation (§16.29), so a pre-release never reads as "newer" than the full
 release it precedes.
 

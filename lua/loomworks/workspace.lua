@@ -2226,6 +2226,36 @@ function Workspace:diagnostics()
                             end
                         end
                     end
+                    -- (d) An invalid `cache` policy (core §1.3.2) in a
+                    -- hand-edited file: edit paths reject it, but a file
+                    -- edited by hand would otherwise build silently uncached.
+                    local cc = require("loomworks.compiler_cache")
+                    local cache_vals = {}
+                    if type(cfg.variables) == "table" and cfg.variables.cache ~= nil then
+                        cache_vals[#cache_vals + 1] = { "variables.cache", cfg.variables.cache }
+                    end
+                    if type(cfg._overrides) == "table" then
+                        local fams = {}
+                        for fam in pairs(cfg._overrides) do fams[#fams + 1] = fam end
+                        table.sort(fams)
+                        for _, fam in ipairs(fams) do
+                            local block = cfg._overrides[fam]
+                            if type(block) == "table" and block.cache ~= nil then
+                                cache_vals[#cache_vals + 1] = { "overrides." .. fam .. ".cache", block.cache }
+                            end
+                        end
+                    end
+                    for _, cv in ipairs(cache_vals) do
+                        local ok_c, c_err = cc.validate_policy(cv[2])
+                        if not ok_c then
+                            add({
+                                severity = "warn",
+                                source = "Project/" .. project.key .. "/" .. cfg.name,
+                                message = cv[1] .. ": " .. c_err .. " — builds run uncached until it is fixed",
+                                target_fold_key = "config:" .. project.key .. ":" .. cfg.name,
+                            })
+                        end
+                    end
                     -- (c) Configuration `env` values (spec §1.3.3) expand
                     -- exactly like option values, so the same check applies.
                     if type(cfg.env) == "table" then
@@ -2271,6 +2301,33 @@ function Workspace:diagnostics()
                     .. blank.project_key .. " " .. blank.name .. " <value>`)",
                 target_fold_key = "profile:" .. active.key,
             })
+        end
+    end
+
+    -- Invalid `cache` policy in a profile's fill values (core §1.3.2) — a
+    -- hand-edited user.json; `lw profile set` rejects it at set time.
+    do
+        local cc = require("loomworks.compiler_cache")
+        for _, profile in pairs(self._profiles) do
+            if not profile._removed and type(profile._profile_variables) == "table" then
+                local pkeys = {}
+                for pk in pairs(profile._profile_variables) do pkeys[#pkeys + 1] = pk end
+                table.sort(pkeys)
+                for _, pk in ipairs(pkeys) do
+                    local vals = profile._profile_variables[pk]
+                    local v = type(vals) == "table" and vals.cache or nil
+                    local ok_c, c_err = cc.validate_policy(v)
+                    if not ok_c then
+                        add({
+                            severity = "warn",
+                            source = "Profile/" .. profile.key .. "/" .. pk,
+                            message = "cache fill: " .. c_err .. " — builds run uncached until it is fixed "
+                                .. "(`lw profile set " .. profile.key .. " " .. pk .. " cache <policy>`)",
+                            target_fold_key = "profile:" .. profile.key,
+                        })
+                    end
+                end
+            end
         end
     end
 
@@ -2846,8 +2903,10 @@ function Workspace:record_task_result(result)
         -- `cache_compat_scan`): after a SUCCESSFUL configure that applied a
         -- launcher, ask the module whether the compile commands it produced
         -- are compatible with that launcher (e.g. MSVC /Zi under sccache).
-        -- Recorded as `module_info.cache_compat`, REPLACED on every configure
-        -- and dropped (nil) when the configure failed or applied no launcher.
+        -- Recorded as `module_info.cache_compat` with the module's stamp of
+        -- the data scanned, REPLACED on every configure and dropped (nil) when
+        -- the configure failed or applied no launcher; a build re-scans when
+        -- that data changed since (below — the build tool re-ran the generator).
         -- Advisory only: printed here and surfaced by health (§16.31); it
         -- never gates a build or changes the policy.
         local compat
@@ -2875,14 +2934,21 @@ function Workspace:record_task_result(result)
                     config_unit:context_profile(result.profile))
                 compat.policy_source = cc.policy_source_record(source)
             end
-            local msg, severity = cc.compat_message(compat, project.key,
-                result.variant or config_unit._variant or "?")
-            if msg then
-                self._core._deps.notify("loomworks: " .. msg, severity == "error"
-                    and vim.log.levels.ERROR or vim.log.levels.WARN)
-            end
+            self:_notify_cache_compat(compat, project, result.variant or config_unit._variant)
         end
         config_unit.module_info.cache_compat = compat
+    elseif action == "build" and project then
+        -- The build tool may have re-run the generator by itself (Ninja after
+        -- a CMakeLists / meson.build edit — no lw configure), rewriting the
+        -- compile data the post-configure scan read (§5.1). Re-scan when the
+        -- module's stamp of that data changed, so the record — persisted with
+        -- this result below — and a failed build's closing line follow what
+        -- the build actually compiled; a new/changed finding is reported like
+        -- a configure's. Unchanged stamp: nothing is read.
+        local compat, changed = config_unit:refresh_cache_compat()
+        if changed then
+            self:_notify_cache_compat(compat, project, config_unit._variant)
+        end
     end
 
     -- Sync state to BuildDir domain object (create if needed)
@@ -2982,6 +3048,21 @@ function Workspace:record_task_result(result)
     end
 
     self._core._deps.events.emit("task_result", result)
+end
+
+--- Report a post-configure compatibility record's findings (spec §5.1): the
+--- end-of-configure message, ERROR for a launcher that fails those compiles,
+--- WARN for one that cannot cache them. Silent for a clean or skipped record.
+--- @param compat table|nil `module_info.cache_compat`
+--- @param project loomworks.Project
+--- @param config_name string|nil
+function Workspace:_notify_cache_compat(compat, project, config_name)
+    local cc = require("loomworks.compiler_cache")
+    local msg, severity = cc.compat_message(compat, project.key, config_name or "?")
+    if msg then
+        self._core._deps.notify("loomworks: " .. msg, severity == "error"
+            and vim.log.levels.ERROR or vim.log.levels.WARN)
+    end
 end
 
 --- Regenerate a module's owned LSP compilation database for a ConfigUnit and

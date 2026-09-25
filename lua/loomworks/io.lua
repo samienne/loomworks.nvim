@@ -140,12 +140,51 @@ function M._pretty_json(json)
     return table.concat(buf) .. "\n"
 end
 
---- Write table as JSON atomically.
+--- Encode `v` as compact JSON with object keys in SORTED order at every depth,
+--- so rewriting unchanged data yields byte-identical output (user.json and
+--- loomworks.json are rewritten on every mutation; hash-order keys made each
+--- rewrite a noisy diff). Scalars, empty tables (whose `{}` vs `[]` shape the
+--- host encoder decides via `vim.empty_dict()`), `vim.NIL`, and any table that
+--- is neither a contiguous list nor a key/value object are delegated to
+--- `vim.json.encode`, so shapes and escaping stay exactly the host's.
+--- @param v any
+--- @return string
+function M.encode_sorted(v)
+    if type(v) ~= "table" or next(v) == nil then
+        return vim.json.encode(v)
+    end
+    local n, all_int = 0, true
+    for k in pairs(v) do
+        n = n + 1
+        if type(k) ~= "number" then all_int = false end
+    end
+    if all_int then
+        for i = 1, n do
+            if v[i] == nil then return vim.json.encode(v) end -- sparse: host rules
+        end
+        local parts = {}
+        for i = 1, n do parts[i] = M.encode_sorted(v[i]) end
+        return "[" .. table.concat(parts, ",") .. "]"
+    end
+    local keys = {}
+    for k in pairs(v) do keys[#keys + 1] = tostring(k) end
+    table.sort(keys)
+    local by_str = {}
+    for k, val in pairs(v) do by_str[tostring(k)] = val end
+    local parts = {}
+    for i, k in ipairs(keys) do
+        parts[i] = vim.json.encode(k) .. ":" .. M.encode_sorted(by_str[k])
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+--- Write table as JSON atomically — pretty-printed, keys sorted
+--- (`encode_sorted`) for stable diffs.
 --- @param path string
 --- @param tbl table
 --- @return boolean ok, string|nil err
 function M.write_json(path, tbl)
-    local ok, encoded = pcall(vim.json.encode, tbl)
+    local ok, encoded = pcall(M.encode_sorted, tbl)
     if not ok then return false, "json encode: " .. tostring(encoded) end
     local pretty = M._pretty_json(encoded)
     return M.write_file_atomic(path, pretty)

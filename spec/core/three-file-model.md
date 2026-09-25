@@ -3,6 +3,10 @@
 
 ## 2. Three-File Model
 
+All three files are JSON written **deterministically**: object keys in sorted
+order at every depth (arrays keep their order), so rewriting unchanged data
+produces byte-identical output and an edit shows up as a minimal diff.
+
 ### 2.1 loomworks.json — Published Snapshot (optional)
 
 A pure publication artifact, regenerated on `:w` from the working copy.

@@ -203,9 +203,14 @@ function M.collect_health(workspace, opts)
     local data = health_cache.read(env.io, env.root)
     local now = M._clock()
 
-    -- Local tier: always recomputed on an explicit health run.
+    -- Local tier: always recomputed on an explicit health run. The key is taken
+    -- BEFORE the providers run, like `collect`: a provider may refresh
+    -- in-memory state its inputs derive from (a re-scanned compatibility
+    -- record, not persisted here), and the key must match what the next
+    -- process — which reads the persisted state — computes.
+    local key = M._local_key(workspace)
     local local_items = run_local(workspace)
-    data.local_tier = { items = local_items, computed_at = now, key = M._local_key(workspace) }
+    data.local_tier = { items = local_items, computed_at = now, key = key }
 
     -- Network tier: refresh when forced, absent, past its TTL, or recorded for
     -- another running version (e.g. before a self-update); else reuse.
@@ -281,9 +286,12 @@ end
 --- active profile's key, and every profile's identity + resolved tool keys +
 --- mapped configurations + per-project `cache` fill values (the compiler-cache
 --- provider follows the active profile's effective policy, or every profile's
---- when none is active). It intentionally does NOT
---- include any toolchain-PATH probe result: computing the key must stay cheap
---- (in-memory only), so a launcher appearing/disappearing on PATH without a
+--- when none is active), and the recorded post-configure compatibility
+--- results with each such unit's CURRENT module stamp of the scanned compile
+--- data (the one filesystem read: a stat / directory listing per
+--- cache-enabled unit, core §8 `cache_compat_stamp`). It intentionally does NOT
+--- include any toolchain-PATH probe result: computing the key must stay cheap,
+--- so a launcher appearing/disappearing on PATH without a
 --- config change is picked up by the next `lw health` (which always recomputes
 --- the local tier), not by an ever-changing passive key. Overridable so tests
 --- can drive invalidation deterministically.
@@ -347,8 +355,14 @@ function M._local_key(workspace)
 
         -- Recorded post-configure cache-compatibility results (§16.31): a new
         -- configure that finds (or clears) /Zi compiles must refresh the
-        -- cached local tier. In-memory only — cheap.
-        for _, r in ipairs(M._compat_records(workspace)) do
+        -- cached local tier — and so must the build tool re-running the
+        -- generator by itself (no lw configure), which only the module's
+        -- CURRENT stamp of the compile data shows (core §8
+        -- `cache_compat_stamp`: one stat / directory listing per unit with a
+        -- record — only units that applied a compiler cache). The records are
+        -- read as recorded here, never re-scanned: the provider re-scans when
+        -- the tier is recomputed.
+        for _, r in ipairs(M._compat_units(workspace)) do
             local rec = r.compat
             local fparts = {}
             for _, f in ipairs(rec.findings or {}) do
@@ -359,6 +373,7 @@ function M._local_key(workspace)
             parts[#parts + 1] = table.concat({
                 "compat", tostring(r.unit.id or r.unit._config_key), tostring(rec.tool),
                 tostring(rec.scanned), tostring(rec.reason or ""), table.concat(fparts, ","),
+                tostring(r.unit.cache_compat_stamp and r.unit:cache_compat_stamp() or ""),
             }, "|")
         end
     end
@@ -461,6 +476,47 @@ local function status_outcome(status)
     return nil
 end
 
+--- How many compiles the scan says the applied launcher will FAIL (error-
+--- severity compat findings), as a phrase — "3 compiles" / "every compile" —
+--- or nil when none. Used only to qualify the affirmative "using <tool>" line
+--- so it does not sit, unqualified, above the "<tool> will fail …" item. Reads
+--- the same records `cache_compat_provider` reports (`M._compat_records`,
+--- resolved at call time): the active profile's units, or — with no active
+--- profile — every profile's. `profiles`, when given, narrows the count to the
+--- units of those profiles (the ones a no-active-profile "using <tool>
+--- (<profiles>)" line names), so another profile's failures never qualify it.
+--- @param workspace loomworks.Workspace
+--- @param profiles? loomworks.Profile[]
+--- @return string|nil
+local function failing_compiles_phrase(workspace, profiles)
+    local cc = require("loomworks.compiler_cache")
+    local ok, records = pcall(M._compat_records, workspace)
+    if not ok or type(records) ~= "table" then return nil end
+    local only
+    if profiles then
+        only = {}
+        for _, p in ipairs(profiles) do
+            local ok_p, pps = pcall(function() return p:projects() end)
+            if ok_p and type(pps) == "table" then
+                for _, pp in ipairs(pps) do
+                    if pp._config_unit then only[pp._config_unit] = true end
+                end
+            end
+        end
+    end
+    local units, every = 0, false
+    for _, r in ipairs(records) do
+        if (not only or only[r.unit]) and cc.compat_severity(r.compat) == "error" then
+            for _, f in ipairs(r.compat.findings or {}) do
+                if f.units == nil then every = true else units = units + f.units end
+            end
+        end
+    end
+    if every then return "every compile" end
+    if units > 0 then return string.format("%d compile%s", units, units == 1 and "" or "s") end
+    return nil
+end
+
 --- Provider: report the workspace's compiler-cache state when it has C/C++
 --- projects (headless §16.31). Every item is ONE terse line; `lw help cache`
 --- holds the explanations. Gated on at least one non-orphaned C/C++-caching
@@ -471,7 +527,9 @@ end
 ---   * policy `off` → silent;
 ---   * not applicable (module hook, §8) → INFO "Compiler cache not applied
 ---     (<reason>) — lw help cache";
----   * launcher resolved → INFO "Compiler cache: using <tool>";
+---   * launcher resolved → INFO "Compiler cache: using <tool>" — qualified
+---     "— but it will fail N compiles (lw help cache)" when the scan recorded
+---     compiles the launcher fails (the finding itself follows below);
 ---   * explicit `cache=<tool>` not found → ACTIONABLE "cache=<tool> set but
 ---     <tool> not found" (remedy: install it — lw help cache);
 ---   * `auto` on an MSVC-style compiler with a launcher on PATH → INFO "<tool>
@@ -483,7 +541,9 @@ end
 --- would use it: every profile with a C/C++ project is evaluated through the
 --- same resolver:
 ---   * every such profile resolves `off` → silent;
----   * some resolve a launcher → INFO "Compiler cache: using <tool> (<profiles>)";
+---   * some resolve a launcher → INFO "Compiler cache: using <tool> (<profiles>)"
+---     — qualified "— but it will fail N compiles (lw help cache)" when the
+---     scan recorded compiles that launcher fails in THOSE profiles' units;
 ---   * else an explicit `cache=<tool>` not found → ACTIONABLE (names the profile);
 ---   * else a launcher on PATH → INFO "<tool> available — not enabled[ for
 ---     MSVC-style] (lw help cache)" (no profiles at all: "<tool> available");
@@ -519,6 +579,14 @@ function M.compiler_cache_provider(workspace)
     local status = active_cache_status(workspace)
     if status then
         local out = status_outcome(status)
+        if out and out[1] and out[1].kind == "info" and status.present and status.tool
+            and status.applicable ~= false then
+            local failing = failing_compiles_phrase(workspace)
+            if failing then
+                out[1].title = out[1].title .. " — but it will fail " .. failing
+                    .. " (lw help cache)"
+            end
+        end
         if out then return out end
         if present and status.msvc_auto_off then
             return info(present .. " available — not enabled for MSVC-style (lw help cache)")
@@ -543,16 +611,25 @@ function M.compiler_cache_provider(workspace)
         local st = e.status
         if st.applicable ~= false and st.present and st.tool then
             if not by_tool[st.tool] then by_tool[st.tool] = {}; tools[#tools + 1] = st.tool end
-            table.insert(by_tool[st.tool], e.profile.key)
+            table.insert(by_tool[st.tool], e.profile)
         end
     end
     if #tools > 0 then
         table.sort(tools)
-        local parts = {}
+        local parts, any_failing = {}, false
         for _, t in ipairs(tools) do
-            parts[#parts + 1] = t .. " (" .. table.concat(by_tool[t], ", ") .. ")"
+            local keys = {}
+            for _, p in ipairs(by_tool[t]) do keys[#keys + 1] = p.key end
+            local part = t .. " (" .. table.concat(keys, ", ") .. ")"
+            local failing = failing_compiles_phrase(workspace, by_tool[t])
+            if failing then
+                part = part .. " — but it will fail " .. failing
+                any_failing = true
+            end
+            parts[#parts + 1] = part
         end
-        return info("Compiler cache: using " .. table.concat(parts, "; "))
+        return info("Compiler cache: using " .. table.concat(parts, "; ")
+            .. (any_failing and " (lw help cache)" or ""))
     end
 
     -- An explicit policy naming a launcher that is not found.
@@ -575,13 +652,14 @@ end
 M.register(M.compiler_cache_provider)
 
 --- The configured units carrying a recorded post-configure compatibility result
---- (`module_info.cache_compat`): the active profile's units, in profile order —
---- or, with NO active profile (a CI / scripted checkout), every profile's units,
---- profiles sorted by key, like the other no-active-profile logic here. A unit
---- shared by several profiles (same project + configuration) is listed once.
+--- (`module_info.cache_compat`), AS RECORDED: the active profile's units, in
+--- profile order — or, with NO active profile (a CI / scripted checkout), every
+--- profile's units, profiles sorted by key, like the other no-active-profile
+--- logic here. A unit shared by several profiles (same project + configuration)
+--- is listed once.
 --- @param workspace loomworks.Workspace|nil
 --- @return { unit: loomworks.ConfigUnit, compat: table }[]
-local function compat_records(workspace)
+local function compat_units(workspace)
     local out = {}
     if type(workspace) ~= "table" then return out end
     local profiles
@@ -607,12 +685,36 @@ local function compat_records(workspace)
     end
     return out
 end
-M._compat_records = compat_records -- also read by `_local_key`
+M._compat_units = compat_units -- also read by `_local_key`
+
+--- `compat_units`, each record first brought up to date with the build's
+--- CURRENT compile data (`ConfigUnit:refresh_cache_compat`): the build tool
+--- can re-run the generator by itself (no lw configure) and add or remove the
+--- flags a recorded scan found, so a record whose module stamp changed is
+--- re-scanned — locally, from existing post-configure metadata, spawning
+--- nothing (§16.31 "always refreshes the local checks"). The refresh is
+--- in-memory only: health never writes the build cache; the next build's
+--- result recording persists it.
+--- @param workspace loomworks.Workspace|nil
+--- @return { unit: loomworks.ConfigUnit, compat: table }[]
+local function compat_records(workspace)
+    local out = {}
+    for _, r in ipairs(compat_units(workspace)) do
+        local rec = r.compat
+        if type(r.unit.refresh_cache_compat) == "function" then
+            rec = r.unit:refresh_cache_compat()
+        end
+        if type(rec) == "table" then out[#out + 1] = { unit = r.unit, compat = rec } end
+    end
+    return out
+end
+M._compat_records = compat_records -- also read by `failing_compiles_phrase`
 
 --- Provider: post-configure compiler-cache compatibility results (headless
 --- §16.31, core §8 `cache_compat_scan`) for the active profile's units (every
---- profile's, deduplicated per unit, when none is active) — read
---- from the record core stored at configure, never recomputed here:
+--- profile's, deduplicated per unit, when none is active) — read from the
+--- record core stored at configure, re-scanned first when the module's stamp
+--- of the compile data changed since (`compat_records`):
 ---   * findings → one ACTIONABLE item per configuration: the applied launcher
 ---     will fail (severity "error") / cannot cache ("warning") some compiles;
 ---     detail lists the groups (flag + unit counts); remedy is one short line
@@ -805,10 +907,19 @@ function M.update_check_provider(_workspace)
 
     local out = {}
     if paths.version_gt(newest, current) then
+        -- A pinned context (a repo's lw.pin — the launcher sets LOOMWORKS_PINNED
+        -- and runs the bundle from `.nvim/cache/lua-<ver>`) takes its version
+        -- from the pin, which `lw self-update` never changes: point at
+        -- `lw update`, which moves the pin.
+        local luaroot = (_G.__loomworks_luaroot or ""):gsub("\\", "/")
+        local pinned = (facts and facts.pinned) or luaroot:find("/%.nvim/cache/lua%-") ~= nil
         out[1] = {
             title = "Update available",
             detail = current .. " → " .. newest .. " on the " .. channel .. " channel",
-            remedy = "run `lw self-update`",
+            remedy = pinned
+                and ("run `lw update` to move this repo's lw.pin to " .. newest
+                    .. " (the pin sets the version here, not `lw self-update`)")
+                or "run `lw self-update`",
         }
         -- self-update replaces a self-updating host too; only a host it cannot
         -- replace needs its own item.

@@ -1143,6 +1143,22 @@ function M.parse_targets(ctx)
     return next(result) and result or nil
 end
 
+--- Freshness stamp of the compile data `cache_compat_scan` reads (core §8
+--- `cache_compat_stamp`, meson §5a): the modification time (with sub-second
+--- part) and size of `meson-info/intro-targets.json`, which meson rewrites on
+--- every setup — including the regeneration ninja triggers itself after a
+--- `meson.build` edit. One stat. An MSVC-style tool only: a gcc/clang tool's
+--- scan reads nothing, so its stamp is a constant. nil when the file is absent.
+--- @param ctx { build_dir: string, tool_data?: table }
+--- @return string|nil
+function M.cache_compat_stamp(ctx)
+    local cpp = require("loomworks.cpp_compilers")
+    if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then return "no-scan" end
+    local st = ctx.build_dir and uv.fs_stat(ctx.build_dir .. "/meson-info/intro-targets.json")
+    if not st or not st.mtime then return nil end
+    return string.format("%d.%09d:%d", st.mtime.sec, st.mtime.nsec or 0, st.size or 0)
+end
+
 --- Post-configure compiler-cache compatibility scan (core §8
 --- `cache_compat_scan`, meson §5a). After a setup that applied a launcher to
 --- an MSVC-style tool, scan each target's per-source compile `parameters` in

@@ -725,7 +725,12 @@ staleness record, `cache_launcher_applicable` answer and compatibility scan.
 Motivation: LumeEditor measured a hand-made `cl.exe` shim of this kind at
 12.2 → 4.3 min for its Visual Studio generator build.
 
-## Scriptable active-profile selection (`lw profile select <name>`)
+## ~~Scriptable active-profile selection (`lw profile select <name>`)~~
+
+**DONE** (v0.1.30, fix/v0.1.30-cli): `lw profile select <profile>` works without
+a terminal (same resolution as `lw build <profile>`; re-selecting the active
+profile is `(unchanged)`, no write) and `lw profile select --none` clears the
+active profile. Only the bare picker needs a TTY (headless §16.9).
 
 Tester feedback (v0.1.29 beta, non-interactive CLI). `lw profile select` is
 interactive-only (a picker on a terminal), and there is no way to CLEAR the
@@ -739,7 +744,13 @@ same resolution as `lw build <profile>`) and `lw profile select --none` (or
 never change the user's active profile unasked) — the command is for the user's
 own scripts, not something lw does implicitly.
 
-## `lw status` lists presets whose `condition` excludes this host
+## ~~`lw status` lists presets whose `condition` excludes this host~~
+
+**DONE** (v0.1.30): the cmake module evaluates preset `condition`s (all CMake
+types, inherited from bases, three-valued — unknown macros never hide) and
+leaves out presets false on this host (spec/modules/cmake.md §3). A set that
+still maps one gets the usual missing-configuration diagnostic.
+
 
 Tester feedback (v0.1.29 beta, Windows). `lw status` (and the configuration
 lists) show a project's macOS-only CMake presets on Windows: loomworks reads
@@ -758,7 +769,10 @@ than silently vanish.
 Tester feedback (LumeEditor, lw 0.1.29-beta.8, Windows/MSVC). Ordered by
 severity.
 
-- **MEDIUM — /Zi scan findings go stale when CMake re-configures itself.** The
+- ~~**MEDIUM — /Zi scan findings go stale when CMake re-configures itself.**~~
+  **DONE** (fix/zi-scan-staleness): the record carries the module's stamp of the
+  scanned data (core §8 `cache_compat_stamp`); builds and health re-scan when it
+  changed, and the passive health key includes it. The
   cache-compatibility scan (§5.1, §8 `cache_compat_scan`) only runs after an
   `lw configure`; when ninja re-runs CMake on its own (after a CMakeLists /
   `.cmake` edit) the recorded finding is not refreshed, and `lw health` shows
@@ -770,18 +784,29 @@ severity.
   that data is newer than the recorded snapshot (the reply mtime is already the
   freshness signal for the owned compile_commands); at minimum document
   `lw build --reconfigure` as the way to refresh the scan.
-- **LOW — `env.PATH` and `env.Path` can both be set.** Two entries appear in
+- ~~**LOW — `env.PATH` and `env.Path` can both be set.**~~ DONE (v0.1.30):
+  env names are one entry per name ignoring case on every host; setting a
+  case variant replaces the existing entry and says so. Two entries appear in
   `lw config show`; with case-insensitive environment layering on Windows one
   silently wins. Replace the existing case-variant on set (Windows), or warn.
-- **LOW — `lw profile set … cache sccache` when already `sccache`** prints "set"
+- ~~**LOW — `lw profile set … cache sccache` when already `sccache`**~~ DONE
+  (v0.1.30): prints `(unchanged)`, no write. Was: prints "set"
   and rewrites user.json; `lw config set` reports "(unchanged)" and does not
   write. Make profile set match.
-- **LOW — `lw profile set … cache bogus` is accepted**, then shows
+- ~~**LOW — `lw profile set … cache bogus` is accepted**~~ DONE (v0.1.30):
+  validated at every set path (profile set, config set variables.cache /
+  overrides.<family>.cache); a hand-edited invalid value is a diagnostic.
+  Was: accepted, then shows
   "bogus (not found)" and silently builds uncached. Validate the policy value
   (`auto` / `off` / a known launcher name) at set time.
-- **COSMETIC — user.json key order changes on rewrite**, producing noisy diffs.
+- ~~**COSMETIC — user.json key order changes on rewrite**~~ DONE (v0.1.30):
+  `io.write_json` sorts object keys at every depth (all three files). Was:
+  key order changed on rewrite, producing noisy diffs.
   Serialize with a stable (e.g. sorted, or original-order-preserving) key order.
-- **WORDING** —
+- ~~**WORDING**~~ DONE (v0.1.30) — all six items below: "every target, nearly
+  every unit"; "which sccache will fail"; health qualifies "using sccache — but
+  it will fail N compiles"; the PATH warning names the full param; sub-command
+  `--help` prints its own section; help cites no spec sections.
   - "nearly every target (… 77 of 77 targets)": only the *unit* count is
     "nearly"; say "every target" when all targets are affected.
   - The failed-build closing line says "which sccache cannot cache", underselling

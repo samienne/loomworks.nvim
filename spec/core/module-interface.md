@@ -526,9 +526,10 @@ optional: no `api_versions.module` bump (§8.0).
 
 Post-configure check that the configuration's compile commands are compatible
 with the compiler-cache launcher that configure **applied**. Core calls it after
-a **successful** configure whose recorded launcher is not "none" (§5.1); it is
-never called for an uncached configure, and never on a status render or health
-run. `ctx` carries `build_dir`, `configuration`, the configuration's
+a **successful** configure whose recorded launcher is not "none" (§5.1), and
+again — with the recorded context — when `cache_compat_stamp` (below) says the
+compile data it read has changed since; it is never called for an uncached
+configure. `ctx` carries `build_dir`, `configuration`, the configuration's
 `tool_data`, `compiler_cache` (the applied `{ tool, path }`), and
 `configuration_env` (the resolved configuration environment the configure ran
 with, §8.1 — a compiler may take flags from its environment, which compile
@@ -550,8 +551,10 @@ otherwise stream.
 - `totals` *(optional)* — `{ units, targets }`, the number of compiled units
   and targets in the scanned build. With it, core reports a **pervasive**
   finding — unit findings in more than one group covering at least 90% of the
-  compiled units — as ONE line (`every target (N units) compiles with /Zi — …`,
-  or `nearly every target (U of N units, T of M targets) …`) instead of one line
+  compiled units — as ONE line (`every target (N units) compiles with /Zi — …`;
+  `every target, nearly every unit (U of N units) …` when every target but not
+  every unit is affected; else `nearly every target (U of N units, T of M
+  targets) …`) instead of one line
   per group: the flag then comes from a directory- or project-wide setting, and
   per-target advice would be wrong. Sample paths are shortened to their last two
   components.
@@ -579,6 +582,31 @@ any compile the launcher fails. Which options are incompatible with which
 launcher on which compiler family is module knowledge (see the per-module
 specs). Absent hook = no check. Additive and optional: no `api_versions.module`
 bump (§8.0).
+
+**`cache_compat_stamp(ctx) → string | nil`** *(optional)*
+
+A **freshness stamp** of the post-configure data `cache_compat_scan` reads: an
+opaque string that changes whenever that data is rewritten — by a configure, and
+also by the generator re-run the **build tool** triggers on its own (e.g. after a
+build-system file edit), which no configure of loomworks' drives. `ctx` is the
+scan's context (`build_dir`, `tool_data`, …; `compiler_cache` may be absent).
+It must be **cheap** — a stat or a directory listing, never a decode or a spawn —
+because health's passive invalidation key reads it (§16.31). Return `nil` when
+there is no data yet; return a constant when the scan reads nothing for this
+`ctx` (a compiler family whose launchers never fail a compile).
+
+Core records the stamp taken just **before** the scan with the result
+(`source_stamp`), so a rewrite racing the scan reads as changed next time. The
+recorded result follows the build's current compile data rather than the last
+configure's: whenever the current stamp differs from the recorded one (or the
+record predates stamps) and is not `nil`, core **re-runs the scan** with the
+unit's recorded context (build directory, tool, launcher, configuration
+environment) and replaces the result, keeping its provenance — after **every
+build** of the unit (persisted with the build result; a changed result is
+reported like a configure's, and the failed-build closing line of §16.4 reads
+the refreshed result), and in **health** before reporting (§16.31, in memory
+only). An unchanged stamp reads nothing. Absent hook = the result is refreshed
+only by a configure. Additive and optional: no `api_versions.module` bump (§8.0).
 
 ### 8.5 Module implementations
 
