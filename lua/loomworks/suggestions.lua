@@ -476,21 +476,37 @@ local function status_outcome(status)
     return nil
 end
 
---- How many compiles the scan says the applied launcher will FAIL for the
---- active profile's units (error-severity compat findings), as a phrase —
---- "3 compiles" / "every compile" — or nil when none. Used only to qualify the
---- affirmative "using <tool>" line so it does not sit, unqualified, above the
---- "<tool> will fail …" item. Reads the same records `cache_compat_provider`
---- reports (`M._compat_records`, resolved at call time).
+--- How many compiles the scan says the applied launcher will FAIL (error-
+--- severity compat findings), as a phrase — "3 compiles" / "every compile" —
+--- or nil when none. Used only to qualify the affirmative "using <tool>" line
+--- so it does not sit, unqualified, above the "<tool> will fail …" item. Reads
+--- the same records `cache_compat_provider` reports (`M._compat_records`,
+--- resolved at call time): the active profile's units, or — with no active
+--- profile — every profile's. `profiles`, when given, narrows the count to the
+--- units of those profiles (the ones a no-active-profile "using <tool>
+--- (<profiles>)" line names), so another profile's failures never qualify it.
 --- @param workspace loomworks.Workspace
+--- @param profiles? loomworks.Profile[]
 --- @return string|nil
-local function failing_compiles_phrase(workspace)
+local function failing_compiles_phrase(workspace, profiles)
     local cc = require("loomworks.compiler_cache")
     local ok, records = pcall(M._compat_records, workspace)
     if not ok or type(records) ~= "table" then return nil end
+    local only
+    if profiles then
+        only = {}
+        for _, p in ipairs(profiles) do
+            local ok_p, pps = pcall(function() return p:projects() end)
+            if ok_p and type(pps) == "table" then
+                for _, pp in ipairs(pps) do
+                    if pp._config_unit then only[pp._config_unit] = true end
+                end
+            end
+        end
+    end
     local units, every = 0, false
     for _, r in ipairs(records) do
-        if cc.compat_severity(r.compat) == "error" then
+        if (not only or only[r.unit]) and cc.compat_severity(r.compat) == "error" then
             for _, f in ipairs(r.compat.findings or {}) do
                 if f.units == nil then every = true else units = units + f.units end
             end
@@ -525,7 +541,9 @@ end
 --- would use it: every profile with a C/C++ project is evaluated through the
 --- same resolver:
 ---   * every such profile resolves `off` → silent;
----   * some resolve a launcher → INFO "Compiler cache: using <tool> (<profiles>)";
+---   * some resolve a launcher → INFO "Compiler cache: using <tool> (<profiles>)"
+---     — qualified "— but it will fail N compiles (lw help cache)" when the
+---     scan recorded compiles that launcher fails in THOSE profiles' units;
 ---   * else an explicit `cache=<tool>` not found → ACTIONABLE (names the profile);
 ---   * else a launcher on PATH → INFO "<tool> available — not enabled[ for
 ---     MSVC-style] (lw help cache)" (no profiles at all: "<tool> available");
@@ -593,16 +611,25 @@ function M.compiler_cache_provider(workspace)
         local st = e.status
         if st.applicable ~= false and st.present and st.tool then
             if not by_tool[st.tool] then by_tool[st.tool] = {}; tools[#tools + 1] = st.tool end
-            table.insert(by_tool[st.tool], e.profile.key)
+            table.insert(by_tool[st.tool], e.profile)
         end
     end
     if #tools > 0 then
         table.sort(tools)
-        local parts = {}
+        local parts, any_failing = {}, false
         for _, t in ipairs(tools) do
-            parts[#parts + 1] = t .. " (" .. table.concat(by_tool[t], ", ") .. ")"
+            local keys = {}
+            for _, p in ipairs(by_tool[t]) do keys[#keys + 1] = p.key end
+            local part = t .. " (" .. table.concat(keys, ", ") .. ")"
+            local failing = failing_compiles_phrase(workspace, by_tool[t])
+            if failing then
+                part = part .. " — but it will fail " .. failing
+                any_failing = true
+            end
+            parts[#parts + 1] = part
         end
-        return info("Compiler cache: using " .. table.concat(parts, "; "))
+        return info("Compiler cache: using " .. table.concat(parts, "; ")
+            .. (any_failing and " (lw help cache)" or ""))
     end
 
     -- An explicit policy naming a launcher that is not found.

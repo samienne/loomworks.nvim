@@ -87,3 +87,54 @@ describe("health: `using <tool>` next to a failing finding", function()
         assert.equals("Compiler cache: using sccache", out[1].title)
     end)
 end)
+
+describe("health: `using <tool> (<profiles>)` with NO active profile", function()
+    local cpp = require("loomworks.cpp_compilers")
+    local orig_lookup
+    before_each(function()
+        orig_lookup = cpp.lookup_path
+        cpp.lookup_path = function(name) return name == "sccache" and "/bin/sccache" or nil end
+    end)
+    after_each(function() cpp.lookup_path = orig_lookup end)
+
+    --- Profiles `uses` resolve sccache; `other` resolves `off`. Each profile
+    --- owns its own unit carrying `compat` (nil → no recorded scan).
+    local function profile(key, policy, compat)
+        local unit = { _project = { key = "App" }, _configuration = { name = key },
+            module_info = { cache_compat = compat } }
+        return {
+            key = key,
+            compiler_cache_status = function()
+                if policy == "off" then return { policy = "off" } end
+                return { policy = policy, present = true, tool = "sccache", applicable = true }
+            end,
+            projects = function() return { { _config_unit = unit } } end,
+        }
+    end
+    local function ws(profiles)
+        return {
+            _projects = { { key = "App", _module = { caches_cpp = function() return true end },
+                _configurations = {} } },
+            _profiles = profiles,
+        }
+    end
+
+    it("qualifies the affirmation with the failing count of the profiles using it", function()
+        local out = suggestions.compiler_cache_provider(ws({
+            profile("A", "sccache", record(2, 10, 500, 40)),
+            profile("B", "auto", nil),
+        }))
+        assert.equals(1, #out)
+        assert.equals("info", out[1].kind)
+        assert.equals("Compiler cache: using sccache (A, B) — but it will fail 20 compiles (lw help cache)",
+            out[1].title)
+    end)
+
+    it("ignores failing records of a profile that does not use the launcher", function()
+        local out = suggestions.compiler_cache_provider(ws({
+            profile("A", "sccache", { tool = "sccache", scanned = true, findings = {} }),
+            profile("Z", "off", record(2, 10, 500, 40)),
+        }))
+        assert.equals("Compiler cache: using sccache (A)", out[1].title)
+    end)
+end)

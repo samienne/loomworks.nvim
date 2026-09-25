@@ -1102,7 +1102,9 @@ through the same resolver (its own `Cache` status):
 
 - every such profile resolves `off` → nothing;
 - some profile resolves a launcher → **informational** "Compiler cache: using
-  `<tool>` (`<profiles>`)", naming the profiles that would use it;
+  `<tool>` (`<profiles>`)", naming the profiles that would use it — qualified
+  the same way ("… — but it will fail N compiles (lw help cache)") when the
+  recorded scan found compiles that launcher will fail in those profiles' units;
 - otherwise, a profile's explicit `cache=<tool>` is not found → the
   **actionable** not-found item, naming the profile;
 - otherwise, a launcher is present on the toolchain path → **informational**
