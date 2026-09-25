@@ -5316,18 +5316,20 @@ end
 
 --- Render `entries` one line per item. Without `with_needed` a left category
 --- column names each category once; with it (the Required block) each line
---- ends with "· <who needs it>".
+--- ends with "· <who needs it>" — compacted (`names_phrase`), the full list
+--- with `full_names` (`--verbose`).
 --- @param pal table
 --- @param entries table[] classified entries (category order)
 --- @param indent string
 --- @param with_needed boolean
-local function render_inventory_lines(pal, entries, indent, with_needed)
+--- @param full_names? boolean
+local function render_inventory_lines(pal, entries, indent, with_needed, full_names)
   local inv = require("loomworks.inventory")
   local cat_w, name_w = 0, 0
   for _, e in ipairs(entries) do
     cat_w = math.max(cat_w, uwidth(e.category))
     local name = e.label .. (e.version and (" " .. e.version) or "")
-    name_w = math.min(36, math.max(name_w, uwidth(name)))
+    name_w = math.min(40, math.max(name_w, uwidth(name)))
   end
   local last_cat
   for _, e in ipairs(entries) do
@@ -5337,7 +5339,7 @@ local function render_inventory_lines(pal, entries, indent, with_needed)
     local line = indent .. (with_needed and "" or (pal.title(upad(cat, cat_w)) .. "  "))
       .. inv_paint_mark(pal, e) .. " " .. upad(name, name_w) .. "  " .. inv_tail(pal, e)
     if with_needed and #(e.required_by or {}) > 0 then
-      line = line .. pal.dim("  · " .. inv.names_phrase(e.required_by))
+      line = line .. pal.dim("  · " .. inv.names_phrase(e.required_by, { full = full_names }))
     end
     out((line:gsub("%s+$", "")))
   end
@@ -5376,8 +5378,10 @@ local function render_inventory_compact(pal, entries)
 end
 
 --- The `lw health --json` document (§16.33): `{ schema, workspace?,
---- suggestions[], inventory[] }`. An inventory entry carries `hint` only when it
---- is not found. `cmd_health` encodes it with sorted object keys.
+--- suggestions[], inventory[], summary }`. An inventory entry carries `hint`
+--- only when it is not found. `summary` counts the actionable suggestions and
+--- the inventory entries by status (plus the missing required ones).
+--- `cmd_health` encodes it with sorted object keys.
 --- @param ws loomworks.Workspace|nil
 --- @param suggestions loomworks.Suggestion[]
 --- @param entries table[]
@@ -5388,8 +5392,14 @@ local function health_json(ws, suggestions, entries)
   for _, s in ipairs(suggestions) do
     sugg[#sugg + 1] = { kind = s.kind or "suggestion", title = s.title, detail = s.detail, remedy = s.remedy }
   end
+  local summary = { actionable = 0, found = 0, missing = 0, unknown = 0, required_missing = 0 }
+  for _, s in ipairs(suggestions) do
+    if (s.kind or "suggestion") ~= "info" then summary.actionable = summary.actionable + 1 end
+  end
   local items = {}
   for _, e in ipairs(entries) do
+    if summary[e.status] then summary[e.status] = summary[e.status] + 1 end
+    if e.required and e.status == "missing" then summary.required_missing = summary.required_missing + 1 end
     items[#items + 1] = {
       id = e.id, label = e.label, category = e.category, status = e.status,
       version = e.version, path = e.path, detail = e.detail,
@@ -5405,6 +5415,7 @@ local function health_json(ws, suggestions, entries)
     workspace = ws and { name = ws.name, root = ws.root } or nil,
     suggestions = sugg,
     inventory = items,
+    summary = summary,
   }
 end
 M._health_json = health_json
@@ -5478,14 +5489,23 @@ function M.cmd_health(root, opts)
     out(pal.dim("No suggestions — nothing to flag."))
   end
 
+  -- Actionable items first ("•", the ones `lw status`'s N suggestions
+  -- counts), then informational notes with their own "·" bullet — so the
+  -- bullets a reader counts match that number, with or without color.
+  local actionable, notes = {}, {}
   for _, s in ipairs(suggestions) do
+    if s.kind == "info" then notes[#notes + 1] = s else actionable[#actionable + 1] = s end
+  end
+  for _, s in ipairs(actionable) do
+    out("")
+    out(pal.warn("• " .. s.title))
+    if s.detail then out("  " .. s.detail) end
+    if s.remedy then out("  " .. pal.dim(s.remedy)) end
+  end
+  for _, s in ipairs(notes) do
     out("")
     -- Informational items (affirmative status) read as positive, not a warning.
-    if s.kind == "info" then
-      out(pal.active("• " .. s.title))
-    else
-      out(pal.warn("• " .. s.title))
-    end
+    out(pal.active("· " .. s.title))
     if s.detail then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
@@ -5515,7 +5535,7 @@ function M.cmd_health(root, opts)
   if #required == 0 then
     out("  " .. pal.dim("nothing beyond lw itself"))
   else
-    render_inventory_lines(pal, required, "  ", true)
+    render_inventory_lines(pal, required, "  ", true, opts.verbose)
   end
 
   if #other > 0 then
@@ -7099,7 +7119,9 @@ no build and authors no project or build-system files, and it ALWAYS exits 0
 (a suggestion never gates an operation and is distinct from a diagnostic).
 
 Each suggestion prints a one-line title and, when there is something to do, a
-short remedy (some add a line of detail). Providers are advisory and
+short remedy (some add a line of detail). Actionable suggestions — the ones
+`lw status` counts as N suggestions — come first, marked "•"; informational
+notes (e.g. "using sccache") follow, marked "·". Providers are advisory and
 extensible; the compiler-cache one gives a one-line verdict for C/C++
 workspaces (using <tool> / available but not enabled / not found / not applied
 / /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
@@ -7121,7 +7143,8 @@ nothing is saved.
 
 ENVIRONMENT INVENTORY — health also lists what this machine has of everything
 loomworks knows how to use: build tools (cmake, ninja, make, meson, node, npm),
-compilers (gcc/clang on PATH, Visual Studio installs, clang-cl), compiler
+compilers (gcc/clang on PATH, Visual Studio installs with their default MSVC
+toolset version, clang-cl; VS's bundled cmake/ninja under build tools), compiler
 caches, language servers (clangd, qmlls) and debug adapters (codelldb, cppdbg,
 js-debug — on PATH or in Mason's install directory), SDKs, the module / SDK /
 integration plugins (a rejected one with the reason) and lw itself. Marks:
@@ -7129,8 +7152,9 @@ integration plugins (a rejected one with the reason) and lw itself. Marks:
   – missing, not required       ? unknown (the probe failed or timed out)
 Inside a workspace the list is split into "Required by this workspace" (what
 the active profile's projects and toolchains need — every profile's when none
-is active — each naming who needs it) and "Other", one line per category
-(`--verbose` lists every item with its location). Only a missing REQUIRED item
+is active — each naming who needs it, compacted to e.g. "2 profiles (dev,
+asan)") and "Other", one line per category (`--verbose` lists every item with
+its location and every profile/project that needs it). Only a missing REQUIRED item
 is a suggestion (and counts toward `lw status`'s N suggestions); the rest is
 information. Minimum versions are not checked, and nothing is installed.
 
@@ -7142,10 +7166,11 @@ until the next `lw health`. Outside a workspace nothing is
 cached.
 
 `--json` prints one JSON document instead of the report — `{schema,
-workspace?, suggestions[], inventory[]}`, each inventory entry carrying id,
-label, category, status (found | missing | unknown), version, path, detail,
-hint, required and required_by — and still exits 0 (CI can test
-`required && status == "missing"`).]],
+workspace?, suggestions[], inventory[], summary}`, each inventory entry
+carrying id, label, category, status (found | missing | unknown), version,
+path, detail, hint, required and required_by (the full list); `summary` is
+`{required_missing, actionable, found, missing, unknown}` — and still exits 0
+(CI can test `summary.required_missing > 0`).]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as

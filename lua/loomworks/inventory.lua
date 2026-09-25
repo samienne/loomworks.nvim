@@ -1008,15 +1008,44 @@ function M.classify(tier, reqs)
     return entries
 end
 
---- "a, b, c +2 more" — the names a requirement lists.
+--- Budget (characters) for the names a compact `names_phrase` lists.
+local NAMES_BUDGET = 40
+
+--- Who needs an item, compact enough for one report line (`required_by`
+--- entries are `<profile>/<project>`, or bare project keys without profiles):
+--- one name as is; one profile's projects as "dev (2 projects)"; several as
+--- "2 profiles (dev, asan)" / "3 projects (App, Lib, Core)" — listing as many
+--- names as fit a small budget, then "+N". `opts.full` returns every name
+--- (`--verbose`); `--json` carries the full `required_by` array regardless.
 --- @param names string[]
+--- @param opts? { full?: boolean }
 --- @return string
-function M.names_phrase(names)
-    local shown = {}
-    for i = 1, math.min(3, #names) do shown[i] = names[i] end
-    local s = table.concat(shown, ", ")
-    if #names > 3 then s = s .. " +" .. (#names - 3) .. " more" end
-    return s
+function M.names_phrase(names, opts)
+    if #names <= 1 or (opts and opts.full) then return table.concat(names, ", ") end
+    local profiles, seen, bare = {}, {}, false
+    for _, n in ipairs(names) do
+        local p = n:match("^(.-)/")
+        if not p then bare = true end
+        p = p or n
+        if not seen[p] then
+            seen[p] = true
+            profiles[#profiles + 1] = p
+        end
+    end
+    if not bare and #profiles == 1 then
+        return profiles[1] .. " (" .. #names .. " projects)"
+    end
+    local shown, len = {}, 0
+    for _, p in ipairs(profiles) do
+        local add = #p + (#shown > 0 and 2 or 0)
+        if len + add > NAMES_BUDGET then break end
+        shown[#shown + 1] = p
+        len = len + add
+    end
+    local head = #profiles .. (bare and " projects" or " profiles")
+    if #shown == 0 then return head end
+    local rest = #profiles - #shown
+    return head .. " (" .. table.concat(shown, ", ") .. (rest > 0 and (" +" .. rest) or "") .. ")"
 end
 
 --- The actionable suggestions for classified entries: one per MISSING REQUIRED

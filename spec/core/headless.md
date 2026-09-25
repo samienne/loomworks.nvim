@@ -1059,7 +1059,10 @@ An **informational** item affirms a healthy state (for example, that a compiler
 cache is in use) and carries no remedy. Both appear in the full health report, but
 only actionable items contribute to the compact `N suggestions` count (§16.18,
 `spec/ui.md` §1.1) — an affirmative note never inflates the nag total. The report
-renders informational items distinctly (as positive status, not a warning).
+lists the actionable items first and then the informational ones, which it
+renders distinctly — a different bullet, as positive status rather than a
+warning — so the bullets a reader counts as suggestions match the count even
+without color.
 
 **Provider #1 — compiler cache.** When the workspace has one or more C/C++
 projects (a project whose module reports the caching-relevant language), the
@@ -1547,26 +1550,33 @@ evaluation.
 missing and required, `–` missing and not required, `?` unknown — the label,
 version, and location — or, for a missing result, its `hint`. Inside a workspace the
 actionable suggestions come first (§16.31), then **Required by this workspace**
-(one line per item, naming what needs it), then **Other**, compacted to one line
+(one line per item, naming what needs it — compacted so the line never wraps:
+a single name as is, one profile's several projects as that profile with a
+project count, several profiles or projects as their count with as many names
+as fit a short budget and a "+N" for the rest; the verbose flag and the JSON
+carry every name), then **Other**, compacted to one line
 per category (found items with versions, missing ones marked), then one `lw`
 line. Outside a workspace there is no split: after the init hint (§16.31) every
 category is listed one line per item. A verbose flag expands **Other** to one
 line per item with locations.
 
 **Machine-readable output.** A JSON flag prints one document instead of the
-report: `{ schema, workspace?, suggestions[], inventory[] }` — `workspace` is
+report: `{ schema, workspace?, suggestions[], inventory[], summary }` — `workspace` is
 `{ name, root }` when there is one, each suggestion is `{ kind, title, detail?,
 remedy? }` (the full health list, actionable and informational), and each
 inventory entry is a result plus `category`, `required` (boolean) and
-`required_by` (profile/project names); `hint` is carried only by an entry that is
-not found (a found item's install remedy is noise). Object keys are emitted in
+`required_by` (profile/project names, never compacted); `hint` is carried only by an entry that is
+not found (a found item's install remedy is noise). `summary` counts
+`{ required_missing, actionable, found, missing, unknown }` — the missing
+required entries, the actionable suggestions, and the inventory entries by
+status — so a script need not recount. Object keys are emitted in
 sorted order at every depth and arrays in their defined order (inventory: category
 order, then declaration order), so the same data prints byte-identically — stable
 for scripts and CI diffs. It carries the same data as the text report, is
 versioned by `schema`, and exits 0 like the report — health never fails. There
 is no check mode that exits non-zero on a missing required item in this version
 (suggestions are advisory, §16.31); CI can test `required && status ==
-"missing"` in the JSON.
+"missing"` in the JSON (or `summary.required_missing`).
 
 **Editor.** The editor status page's count reads the same cache, so it reflects
 missing required items once a health run has recorded them. An editor-native

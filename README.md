@@ -434,7 +434,7 @@ Not a loomworks workspace — lw init to create one.
 build tools      ✓ cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
                  ✓ ninja 1.12.1   C:\tools\ninja.exe
                  – meson          not found (pip install meson)
-compilers        ✓ MSVC 17.11 (VS 2022 Community)
+compilers        ✓ MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/…/Community (VS 17.11.2)
                  ✓ clang-cl 18.1.8
                  – gcc / clang    none on PATH
 …
@@ -457,10 +457,16 @@ count simply stops including it until the next `lw health`. (Directories only
 Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory —
 do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
 item; `lw health --json` prints the same data for scripts and CI
-(`{schema, workspace, suggestions[], inventory[]}`; inventory entries carry
-`status`, `version`, `path`, `required`, `required_by`, and a `hint` when not
-found; object keys are sorted, so the output diffs cleanly) and, like the text
-report, always exits 0 — a CI gate can test `required && status == "missing"`.
+(`{schema, workspace, suggestions[], inventory[], summary}`; inventory entries
+carry `status`, `version`, `path`, `required`, the full `required_by`, and a
+`hint` when not found; `summary` counts `required_missing`, `actionable`,
+`found`, `missing` and `unknown`; object keys are sorted, so the output diffs
+cleanly) and, like the text report, always exits 0 — a CI gate can test
+`summary.required_missing > 0`. In the text report actionable suggestions are
+marked `•` and informational notes `·`; a Visual Studio install shows the MSVC
+toolset version its builds use (the VS product version is in its detail); who
+needs a required item is compacted (e.g. `2 profiles (dev, asan)` — `--verbose`
+lists them all).
 Nothing is ever installed or changed; minimum versions are not checked.
 
 ### Languages

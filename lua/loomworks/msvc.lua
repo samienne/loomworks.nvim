@@ -66,7 +66,7 @@ local function build_install(install)
         vcvarsall = vcvarsall,
         arch = "x64",
         install_path = path,
-        -- Product version (e.g. "17.11.2") — display only (health inventory).
+        -- Product version (e.g. "17.11.2") — display only (health inventory detail).
         product_version = (install.catalog and install.catalog.productDisplayVersion)
             or install.installationVersion,
     }
@@ -347,6 +347,21 @@ function M.clang_cl_for_async(install, callback)
     end)
 end
 
+--- The MSVC toolset version vcvarsall selects for `install` by default (e.g.
+--- "14.44.35207") — what builds depend on, unlike the VS product version. Read
+--- from `VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt`, the file
+--- vcvarsall itself reads: one small file read, no spawn. Nil when absent.
+--- @param install table one entry from `M.detect()`
+--- @param read_file fun(path: string): string|nil
+--- @return string|nil
+function M.toolset_version(install, read_file)
+    if not (install and install.install_path) then return nil end
+    local ok, content = pcall(read_file,
+        install.install_path .. "/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+    if not ok or type(content) ~= "string" then return nil end
+    return content:match("^%s*(%d+%.%d+[%d%.]*)")
+end
+
 --- The cmake / ninja executables a Visual Studio install bundles (the "C++ CMake
 --- tools for Windows" component), relative to the install path.
 local BUNDLED_TOOLS = {
@@ -387,9 +402,11 @@ end
 --- (headless §16.33, cmake §13 `compilers:msvc`), shared by every module that
 --- builds with cl.exe / clang-cl so it is probed once. Windows only (nil
 --- elsewhere). Enumerates the installs the locator finds — one result each,
---- id `msvc:<normalized vcvarsall>` — plus every clang-cl paired to an install
---- or on the search path (`clang-cl:<normalized path>`), reusing the same
---- detection the kits run.
+--- id `msvc:<normalized vcvarsall>`, version = the default toolset
+--- (`toolset_version`), detail = the VS product version — plus every clang-cl
+--- paired to an install or on the search path (`clang-cl:<normalized path>`),
+--- reusing the same detection the kits run, and each install's bundled cmake +
+--- ninja (`bundled_tools`, listed under build tools).
 --- @return loomworks.InventoryDeclaration|nil
 function M.health_declaration()
     if vim.fn.has("win32") ~= 1 then return nil end
@@ -402,11 +419,16 @@ function M.health_declaration()
             M.detect_async(function(installs)
                 local results, seen = {}, {}
                 for _, inst in ipairs(installs) do
+                    -- Version = the MSVC toolset a build gets (what vcvarsall
+                    -- selects), not the VS product version — that one, minus
+                    -- its release-date parenthetical, is the detail.
+                    local pv = inst.product_version and tostring(inst.product_version):match("^%s*([%d%.]+)")
                     results[#results + 1] = {
                         id = inv.path_id("msvc", inst.vcvarsall),
                         label = inst.display,
                         status = "found",
-                        version = inst.product_version,
+                        version = M.toolset_version(inst, ctx.read_file),
+                        detail = pv and ("VS " .. pv) or nil,
                         path = inst.install_path,
                     }
                 end

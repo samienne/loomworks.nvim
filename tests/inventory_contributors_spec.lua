@@ -216,8 +216,18 @@ describe("inventory requirements", function()
         assert.is_false(e2[VSC].required)
     end)
 
-    it("names_phrase caps the list", function()
-        assert.equals("a, b, c +2 more", inv.names_phrase({ "a", "b", "c", "d", "e" }))
+    it("names_phrase compacts who needs an item; full = the whole list", function()
+        assert.equals("App", inv.names_phrase({ "App" }))
+        assert.equals("dev/App", inv.names_phrase({ "dev/App" }))
+        assert.equals("dev (2 projects)", inv.names_phrase({ "dev/App", "dev/Lib" }))
+        assert.equals("2 profiles (dev, asan)", inv.names_phrase({ "dev/App", "asan/App", "asan/Lib" }))
+        assert.equals("3 projects (App, Lib, Core)", inv.names_phrase({ "App", "Lib", "Core" }))
+        -- Long names: as many as fit, then a count — never a wrapping list.
+        local long = {}
+        for i = 1, 5 do long[i] = "Debug:ninja-msvc-17-2022-enterprise-" .. i .. "/App" end
+        local p = inv.names_phrase(long)
+        assert.equals("5 profiles (Debug:ninja-msvc-17-2022-enterprise-1 +4)", p)
+        assert.equals(table.concat(long, ", "), inv.names_phrase(long, { full = true }))
     end)
 end)
 
@@ -285,12 +295,16 @@ describe("inventory contributors", function()
         end
         msvc.clang_cl_for_async = function(_, cb) cb({ path = "C:/VS/VC/Tools/Llvm/x64/bin/clang-cl.exe", version = "18.1.8" }) end
         msvc.clang_cl_async = function(cb) cb(nil) end
-        local ok, by = pcall(probe, { msvc.health_declaration() }, fake_ctx({ platform = "windows" }))
+        local ok, by = pcall(probe, { msvc.health_declaration() }, fake_ctx({ platform = "windows", files = {
+            ["C:/VS/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"] = "14.44.35207\r\n",
+        } }))
         vim.fn.has, msvc.detect_async, msvc.clang_cl_for_async, msvc.clang_cl_async = orig.has, orig.detect, orig.for_, orig.cl
         assert.is_true(ok, tostring(by))
         local vs = by["msvc:c:/vs/vc/auxiliary/build/vcvarsall.bat"]
         assert.equals("found", vs.status)
-        assert.equals("17.11.2", vs.version)
+        -- The toolset builds use (vcvarsall's default), not the VS product version.
+        assert.equals("14.44.35207", vs.version)
+        assert.equals("VS 17.11.2", vs.detail)
         assert.equals("found", by["clang-cl:c:/vs/vc/tools/llvm/x64/bin/clang-cl.exe"].status)
     end)
 

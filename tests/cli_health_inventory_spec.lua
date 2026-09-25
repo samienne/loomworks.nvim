@@ -138,6 +138,30 @@ describe("lw health inventory output", function()
         vim.fn.delete(root, "rf")
     end)
 
+    it("--json carries a summary of the counts", function()
+        local root = make_ws()
+        local doc = vim.json.decode(capture(function() cli.cmd_health(root, { json = true }) end))
+        -- node, clangd, lw found; npm missing and required (the one actionable item).
+        assert.same({ actionable = 1, found = 3, missing = 1, required_missing = 1, unknown = 0 }, doc.summary)
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("info items render with their own bullet, after the actionable ones", function()
+        local sug = require("loomworks.suggestions")
+        local orig = sug.collect_health
+        sug.collect_health = function()
+            return { { kind = "info", title = "sccache available — not enabled for MSVC-style (lw help cache)" },
+                { title = "No compiler cache found", remedy = "install sccache" } }
+        end
+        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        sug.collect_health = orig
+        assert.is_true(ok, tostring(text))
+        assert.is_truthy(text:find("• No compiler cache found", 1, true))
+        assert.is_truthy(text:find("· sccache available", 1, true))
+        assert.is_nil(text:find("• sccache available", 1, true))
+        assert.is_true(text:find("• No compiler cache found", 1, true) < text:find("· sccache available", 1, true))
+    end)
+
     it("--json outside a workspace has no workspace field", function()
         local doc = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true }) end))
         assert.is_nil(doc.workspace)
