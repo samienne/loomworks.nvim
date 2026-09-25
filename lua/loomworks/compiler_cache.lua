@@ -187,14 +187,32 @@ function M.tool_of_path(path)
     return (base:lower():gsub("%.exe$", ""))
 end
 
+--- The module's CURRENT freshness stamp of the compile data its compatibility
+--- scan reads (core §8 `cache_compat_stamp`) — an opaque string that changes
+--- whenever that data is rewritten (a configure, or the generator re-run the
+--- build tool triggers itself). nil when the module has no stamp hook, the
+--- hook errors, or there is no data yet. Cheap by contract (a stat or a
+--- directory listing), so health's passive key may call it.
+--- @param impl table|nil module implementation
+--- @param ctx table the scan context (`build_dir`, `tool_data`, …)
+--- @return string|nil
+function M.compat_stamp(impl, ctx)
+    if not impl or type(impl.cache_compat_stamp) ~= "function" then return nil end
+    local ok, stamp = pcall(impl.cache_compat_stamp, ctx or {})
+    return (ok and type(stamp) == "string") and stamp or nil
+end
+
 --- Run a module's optional post-configure compatibility scan (core §5.1, §8
 --- `cache_compat_scan`) for a configure that applied `launcher_path`. Returns
 --- the record core stores in `module_info.cache_compat` —
---- `{ tool, scanned, reason?, findings[], totals?, advice? }` (`totals` =
---- `{ units, targets }` compiled in the scanned build, `advice` = the module's
---- wording, both optional) — or nil when the module has no hook or no launcher
---- was applied. A throwing hook is recorded as skipped (advisory: never break
---- the configure). Core adds `policy_source` (which layer enabled the cache).
+--- `{ tool, scanned, reason?, findings[], totals?, advice?, source_stamp? }`
+--- (`totals` = `{ units, targets }` compiled in the scanned build, `advice` =
+--- the module's wording, both optional; `source_stamp` = the module's
+--- `cache_compat_stamp` of the data scanned, taken BEFORE the scan so a
+--- rewrite racing it reads as changed next time) — or nil when the module has
+--- no hook or no launcher was applied. A throwing hook is recorded as skipped
+--- (advisory: never break the configure). Core adds `policy_source` (which
+--- layer enabled the cache).
 --- @param impl table|nil module implementation
 --- @param ctx table `{ build_dir, configuration, tool_data, config_name, variant, configuration_env }` (`configuration_env`: the resolved configuration environment the configure ran with, core §1.3.3 — e.g. MSVC's `CL` / `_CL_`, which compile commands do not show)
 --- @param launcher_path string|nil recorded launcher ("none"/nil → no scan)
@@ -205,9 +223,10 @@ function M.run_compat_scan(impl, ctx, launcher_path)
     if not impl or type(impl.cache_compat_scan) ~= "function" then return nil end
     local scan_ctx = vim.tbl_extend("force", {}, ctx or {})
     scan_ctx.compiler_cache = { tool = tool, path = launcher_path }
+    local stamp = M.compat_stamp(impl, scan_ctx)
     local ok, res = pcall(impl.cache_compat_scan, scan_ctx)
     if not ok or type(res) ~= "table" then
-        return { tool = tool, scanned = false, findings = {},
+        return { tool = tool, scanned = false, findings = {}, source_stamp = stamp,
             reason = "the compatibility check failed: " .. tostring(res) }
     end
     local totals = type(res.totals) == "table" and res.totals or nil
@@ -225,6 +244,7 @@ function M.run_compat_scan(impl, ctx, launcher_path)
             cause_pervasive = type(advice.cause_pervasive) == "string" and advice.cause_pervasive or nil,
             fix_pervasive = type(advice.fix_pervasive) == "string" and advice.fix_pervasive or nil,
         } or nil,
+        source_stamp = stamp,
     }
 end
 

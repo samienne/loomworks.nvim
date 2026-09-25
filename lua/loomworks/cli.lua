@@ -6622,6 +6622,8 @@ single-config generator) loomworks asks for embedded per-object debug info
 (/Z7: CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded + policy CMP0141 NEW); under
 cmake and meson it then SCANS the configured compile commands (and the
 configuration's CL / _CL_ environment) for leftover /Zi.
+The scan follows the build: when the build re-runs CMake / meson by itself
+(e.g. after a CMakeLists edit), the next build or `lw health` re-scans.
 Findings show up at the end of the configure and in `lw health` (advisory —
 the build still runs; if it then fails, lw's last line points back here), one
 line per target:

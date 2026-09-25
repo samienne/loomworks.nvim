@@ -2793,6 +2793,36 @@ function M.resolve_artifacts(ctx)
     return next(artifacts) and artifacts or nil
 end
 
+--- Freshness stamp of the compile data `cache_compat_scan` reads (core §8
+--- `cache_compat_stamp`, cmake §5d): the name of the current file-api reply
+--- index. CMake writes a NEW, uniquely timestamped `index-*.json` (and removes
+--- the previous one) on EVERY (re)configure that finds a query — including the
+--- re-run the build tool triggers itself after a CMakeLists / `.cmake` edit,
+--- since loomworks' stateless query files persist in the build dir — so a
+--- changed name means the codemodel the scan read may have changed. One
+--- directory listing, no stat, no JSON decode. An MSVC-style kit only: a
+--- gcc/clang kit's scan reads nothing, so its stamp is a constant. nil when
+--- there is no reply index (nothing to scan yet).
+--- @param ctx { build_dir: string, tool_data?: table }
+--- @return string|nil
+function M.cache_compat_stamp(ctx)
+    local cpp = require("loomworks.cpp_compilers")
+    if not (ctx and cpp.is_msvc_style(ctx.tool_data)) then return "no-scan" end
+    local reply_dir = ctx.build_dir and (ctx.build_dir .. "/.cmake/api/v1/reply") or nil
+    local handle = reply_dir and uv.fs_scandir(reply_dir)
+    if not handle then return nil end
+    local latest
+    while true do
+        local name, ftype = uv.fs_scandir_next(handle)
+        if not name then break end
+        if (ftype == "file" or ftype == nil) and name:match("^index%-.*%.json$")
+            and (not latest or name > latest) then
+            latest = name
+        end
+    end
+    return latest
+end
+
 --- Post-configure compiler-cache compatibility scan (core §8
 --- `cache_compat_scan`, cmake §5d). After a configure that applied a launcher
 --- to an MSVC-style kit, scan every target's compile flags — the same file-api

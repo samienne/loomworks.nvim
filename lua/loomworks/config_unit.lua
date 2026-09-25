@@ -716,6 +716,67 @@ function ConfigUnit:configuration_env(profile)
     return env
 end
 
+--- The context the post-configure compatibility scan and its freshness stamp
+--- (core §8 `cache_compat_scan` / `cache_compat_stamp`) read for this unit,
+--- from its RECORDED state — the build dir, tool and configuration
+--- environment of the last configure — so a re-scan sees what a build of this
+--- unit compiles with.
+--- @return table
+function ConfigUnit:_compat_scan_ctx()
+    local cfg = self._configuration
+    local mi = self.module_info or {}
+    return {
+        build_dir = self.build_dir_value,
+        configuration = cfg,
+        tool_data = self._tool_data,
+        config_name = self._variant,
+        variant = cfg and cfg.module_config and cfg.module_config.variant or nil,
+        configuration_env = mi.configure_env,
+    }
+end
+
+--- The module's CURRENT stamp of the compile data behind this unit's recorded
+--- compatibility result (core §8 `cache_compat_stamp`), or nil when there is
+--- no record, the module declares no stamp hook, or there is no data. Cheap
+--- (a stat / one directory listing) — health's passive key reads it.
+--- @return string|nil
+function ConfigUnit:cache_compat_stamp()
+    local rec = self.module_info and self.module_info.cache_compat
+    if type(rec) ~= "table" then return nil end
+    return require("loomworks.compiler_cache").compat_stamp(self:_module_impl(),
+        self:_compat_scan_ctx())
+end
+
+--- Bring the recorded post-configure compatibility result
+--- (`module_info.cache_compat`, core §5.1) up to date with the build's CURRENT
+--- compile data. The build tool can re-run the generator on its own (Ninja
+--- after a CMakeLists / `meson.build` edit) and rewrite that data without an
+--- lw configure; when the module's current stamp differs from the recorded
+--- `source_stamp` (or the record predates stamps), the scan is re-run against
+--- the recorded launcher and the record REPLACED in memory, keeping its
+--- `policy_source` (the cache policy cannot change without a configure — a
+--- policy change makes the unit stale). No record, no stamp hook, no data now
+--- (stamp nil), or an unchanged stamp: the record is kept. Local and cheap
+--- when unchanged; a re-scan reads existing post-configure metadata and spawns
+--- nothing. The caller persists (a build's result recording does).
+--- @return table|nil record the (possibly refreshed) record
+--- @return boolean changed whether a re-scan replaced it
+function ConfigUnit:refresh_cache_compat()
+    local mi = self.module_info
+    local rec = mi and mi.cache_compat
+    if type(rec) ~= "table" then return rec, false end
+    local cc = require("loomworks.compiler_cache")
+    local impl = self:_module_impl()
+    local ctx = self:_compat_scan_ctx()
+    local current = cc.compat_stamp(impl, ctx)
+    if current == nil or current == rec.source_stamp then return rec, false end
+    local fresh = cc.run_compat_scan(impl, ctx, mi.cache_launcher)
+    if not fresh then return rec, false end
+    fresh.policy_source = rec.policy_source
+    mi.cache_compat = fresh
+    return fresh, true
+end
+
 --- Whether the resolved configuration environment differs from core's record
 --- of the one the last configure ran with (`module_info.configure_env`). An
 --- absent record compares as empty: a configure before the record existed

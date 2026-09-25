@@ -2846,8 +2846,10 @@ function Workspace:record_task_result(result)
         -- `cache_compat_scan`): after a SUCCESSFUL configure that applied a
         -- launcher, ask the module whether the compile commands it produced
         -- are compatible with that launcher (e.g. MSVC /Zi under sccache).
-        -- Recorded as `module_info.cache_compat`, REPLACED on every configure
-        -- and dropped (nil) when the configure failed or applied no launcher.
+        -- Recorded as `module_info.cache_compat` with the module's stamp of
+        -- the data scanned, REPLACED on every configure and dropped (nil) when
+        -- the configure failed or applied no launcher; a build re-scans when
+        -- that data changed since (below — the build tool re-ran the generator).
         -- Advisory only: printed here and surfaced by health (§16.31); it
         -- never gates a build or changes the policy.
         local compat
@@ -2875,14 +2877,21 @@ function Workspace:record_task_result(result)
                     config_unit:context_profile(result.profile))
                 compat.policy_source = cc.policy_source_record(source)
             end
-            local msg, severity = cc.compat_message(compat, project.key,
-                result.variant or config_unit._variant or "?")
-            if msg then
-                self._core._deps.notify("loomworks: " .. msg, severity == "error"
-                    and vim.log.levels.ERROR or vim.log.levels.WARN)
-            end
+            self:_notify_cache_compat(compat, project, result.variant or config_unit._variant)
         end
         config_unit.module_info.cache_compat = compat
+    elseif action == "build" and project then
+        -- The build tool may have re-run the generator by itself (Ninja after
+        -- a CMakeLists / meson.build edit — no lw configure), rewriting the
+        -- compile data the post-configure scan read (§5.1). Re-scan when the
+        -- module's stamp of that data changed, so the record — persisted with
+        -- this result below — and a failed build's closing line follow what
+        -- the build actually compiled; a new/changed finding is reported like
+        -- a configure's. Unchanged stamp: nothing is read.
+        local compat, changed = config_unit:refresh_cache_compat()
+        if changed then
+            self:_notify_cache_compat(compat, project, config_unit._variant)
+        end
     end
 
     -- Sync state to BuildDir domain object (create if needed)
@@ -2982,6 +2991,21 @@ function Workspace:record_task_result(result)
     end
 
     self._core._deps.events.emit("task_result", result)
+end
+
+--- Report a post-configure compatibility record's findings (spec §5.1): the
+--- end-of-configure message, ERROR for a launcher that fails those compiles,
+--- WARN for one that cannot cache them. Silent for a clean or skipped record.
+--- @param compat table|nil `module_info.cache_compat`
+--- @param project loomworks.Project
+--- @param config_name string|nil
+function Workspace:_notify_cache_compat(compat, project, config_name)
+    local cc = require("loomworks.compiler_cache")
+    local msg, severity = cc.compat_message(compat, project.key, config_name or "?")
+    if msg then
+        self._core._deps.notify("loomworks: " .. msg, severity == "error"
+            and vim.log.levels.ERROR or vim.log.levels.WARN)
+    end
 end
 
 --- Regenerate a module's owned LSP compilation database for a ConfigUnit and
