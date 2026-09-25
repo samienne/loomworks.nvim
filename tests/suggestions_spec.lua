@@ -633,7 +633,13 @@ describe("cli.cmd_health", function()
     local cli = require("loomworks.cli")
 
     it("exits 0 with the worktree hint when no workspace is present", function()
-        assert.equals(0, cli.cmd_health(nil))
+        -- Never probe the host's tools from a test (inventory §16.33).
+        local orig = cli._probe_inventory
+        cli._probe_inventory = function() return { results = {}, declared = {}, key = "k" } end
+        local ok, rc = pcall(cli.cmd_health, nil)
+        cli._probe_inventory = orig
+        assert.is_true(ok)
+        assert.equals(0, rc)
     end)
 end)
 
