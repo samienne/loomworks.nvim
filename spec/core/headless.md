@@ -1548,7 +1548,11 @@ report: `{ schema, workspace?, suggestions[], inventory[] }` — `workspace` is
 `{ name, root }` when there is one, each suggestion is `{ kind, title, detail?,
 remedy? }` (the full health list, actionable and informational), and each
 inventory entry is a result plus `category`, `required` (boolean) and
-`required_by` (profile/project names). It carries the same data as the text report, is
+`required_by` (profile/project names); `hint` is carried only by an entry that is
+not found (a found item's install remedy is noise). Object keys are emitted in
+sorted order at every depth and arrays in their defined order (inventory: category
+order, then declaration order), so the same data prints byte-identically — stable
+for scripts and CI diffs. It carries the same data as the text report, is
 versioned by `schema`, and exits 0 like the report — health never fails. There
 is no check mode that exits non-zero on a missing required item in this version
 (suggestions are advisory, §16.31); CI can test `required && status ==

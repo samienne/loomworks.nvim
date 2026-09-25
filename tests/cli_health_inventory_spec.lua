@@ -31,7 +31,7 @@ describe("lw health inventory output", function()
             declared = { { id = "exe:node", category = "build tools" }, { id = "exe:npm", category = "build tools" },
                 { id = "lsp:clangd", category = "language servers" }, { id = "lw", category = "lw" } },
             results = {
-                { id = "exe:node", label = "node", status = "found", version = "20.11.0", path = "/usr/bin/node", category = "build tools" },
+                { id = "exe:node", label = "node", status = "found", version = "20.11.0", path = "/usr/bin/node", hint = "install Node.js", category = "build tools" },
                 { id = "exe:npm", label = "npm", status = "missing", hint = "install Node.js", category = "build tools" },
                 { id = "lsp:clangd:path", label = "clangd", status = "found", version = "18.1.8", path = "/usr/bin/clangd", category = "language servers" },
                 { id = "lw", label = "lw", status = "found", version = "0.1.30", category = "lw" },
@@ -115,6 +115,26 @@ describe("lw health inventory output", function()
         end
         assert.is_not_nil(found)
         assert.equals("suggestion", found.kind)
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("--json is stable: object keys sorted, byte-identical across runs, hint only where actionable", function()
+        local root = make_ws()
+        local a = capture(function() cli.cmd_health(root, { json = true }) end)
+        local b = capture(function() cli.cmd_health(root, { json = true }) end)
+        assert.equals(a, b)
+        -- Re-encoding with the sorted encoder reproduces the output exactly:
+        -- every object's keys are in sorted order at every depth.
+        local doc = vim.json.decode(a)
+        assert.equals(a, require("loomworks.io").encode_sorted(doc) .. "\n")
+        assert.equals('{"inventory":', a:sub(1, 13))
+        -- Arrays keep their defined order (category, then declaration order).
+        local ids = {}
+        for _, e in ipairs(doc.inventory) do ids[#ids + 1] = e.id end
+        assert.same({ "exe:node", "exe:npm", "lsp:clangd:path", "lw" }, ids)
+        -- A found entry carries no install hint; a missing one keeps it.
+        assert.is_nil(doc.inventory[1].hint)
+        assert.equals("install Node.js", doc.inventory[2].hint)
         vim.fn.delete(root, "rf")
     end)
 

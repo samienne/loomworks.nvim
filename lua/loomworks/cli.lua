@@ -5376,7 +5376,8 @@ local function render_inventory_compact(pal, entries)
 end
 
 --- The `lw health --json` document (§16.33): `{ schema, workspace?,
---- suggestions[], inventory[] }`.
+--- suggestions[], inventory[] }`. An inventory entry carries `hint` only when it
+--- is not found. `cmd_health` encodes it with sorted object keys.
 --- @param ws loomworks.Workspace|nil
 --- @param suggestions loomworks.Suggestion[]
 --- @param entries table[]
@@ -5391,7 +5392,10 @@ local function health_json(ws, suggestions, entries)
   for _, e in ipairs(entries) do
     items[#items + 1] = {
       id = e.id, label = e.label, category = e.category, status = e.status,
-      version = e.version, path = e.path, detail = e.detail, hint = e.hint,
+      version = e.version, path = e.path, detail = e.detail,
+      -- The install remedy only where it is actionable: a found entry's hint
+      -- is noise to a reader or a diff.
+      hint = e.status ~= "found" and e.hint or nil,
       required = e.required and true or false,
       required_by = e.required_by or {},
     }
@@ -5451,7 +5455,9 @@ function M.cmd_health(root, opts)
   end
 
   if opts.json then
-    out(vim.json.encode(health_json(ws, suggestions, entries)))
+    -- Sorted object keys at every depth (arrays keep their defined order), so
+    -- the document is byte-stable for agents and CI diffs.
+    out(require("loomworks.io").encode_sorted(health_json(ws, suggestions, entries)))
     return 0
   end
 

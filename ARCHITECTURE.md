@@ -945,7 +945,8 @@ replaces it, which would drop `PATH`).
   workspace" (✗ for missing, "· <profile/project>" naming who needs it), "Other"
   compacted to one line per category (`--verbose` expands it) and one `lw` line.
   `--json` prints `cli._health_json` — `{schema, workspace?, suggestions[],
-  inventory[]}` — and exits 0. The passive `N suggestions` count gets the
+  inventory[]}`, `hint` only on not-found entries — through `io.encode_sorted`
+  (sorted keys, byte-stable) and exits 0. The passive `N suggestions` count gets the
   inventory's items from `suggestions.collect` → `inventory.cached_suggestions`
   (key match only; never probes). Contributors: cmake (`exe:cmake`, `exe:ninja`,
   `exe:make`, `cpp_compilers.health_declaration()` = `compilers:path` over the

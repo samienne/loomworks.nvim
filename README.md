@@ -453,7 +453,8 @@ Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory 
 do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
 item; `lw health --json` prints the same data for scripts and CI
 (`{schema, workspace, suggestions[], inventory[]}`; inventory entries carry
-`status`, `version`, `path`, `required`, `required_by`) and, like the text
+`status`, `version`, `path`, `required`, `required_by`, and a `hint` when not
+found; object keys are sorted, so the output diffs cleanly) and, like the text
 report, always exits 0 — a CI gate can test `required && status == "missing"`.
 Nothing is ever installed or changed; minimum versions are not checked.
 
