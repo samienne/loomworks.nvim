@@ -24,7 +24,8 @@ current version.
   `CMakeUserPresets.json` with full inheritance; presets whose `condition`
   excludes this host (e.g. macOS-only presets on Windows) are not offered
 - **Automatic tool detection** — finds MSVC (via vswhere), GCC, Clang, and
-  clang-cl (Clang's MSVC driver, one per MSVC install) compilers; generates
+  clang-cl (Clang's MSVC driver — each MSVC install's bundled one; a
+  standalone clang-cl on PATH pairs with the newest install) compilers; generates
   profile combinations with Ninja/Visual Studio generators
 - **Configuration sets** — group build variants across projects (e.g. "Debug"
   maps ProjectA to Debug and ProjectB to development)

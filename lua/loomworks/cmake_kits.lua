@@ -50,7 +50,9 @@ end
 
 --- Build the Ninja + clang-cl kit for one install. clang-cl is both the C and
 --- C++ driver and reuses the paired install's STL / Windows SDK / linker via
---- vcvarsall, so there is exactly one clang-cl kit per install.
+--- vcvarsall, so there is at most one clang-cl kit per install: its VS-bundled
+--- clang-cl, or — for the newest install only (`msvc.standalone_host`) — a
+--- standalone / PATH one.
 --- @param inst table
 --- @param cc { path: string, version: string, clangd_path: string|nil }
 --- @return loomworks.CmakeKit
@@ -121,10 +123,10 @@ function M.detect()
             kits[#kits + 1] = ninja_msvc_kit(inst)
         end
 
-        -- Ninja + clang-cl kits — one per install (VS-bundled clang-cl
-        -- preferred, standalone/PATH as fallback).
+        -- Ninja + clang-cl kits — one per install bundling clang-cl; a
+        -- standalone/PATH clang-cl only for the newest install.
         for _, inst in ipairs(installs) do
-            local cc = msvc.clang_cl_for(inst)
+            local cc = msvc.clang_cl_for(inst, { standalone = msvc.standalone_host(inst, installs) })
             if cc then kits[#kits + 1] = clang_cl_kit(inst, cc) end
         end
     end
@@ -207,8 +209,9 @@ function M.detect_async(callback)
                 kits[#kits + 1] = ninja_msvc_kit(inst)
             end
 
-            -- clang-cl kits — one per install, probed async (the last sync
-            -- `:wait()` on this path) so the whole scan stays off the main loop.
+            -- clang-cl kits — as the sync path (bundled per install, standalone
+            -- for the newest only), probed async (the last sync `:wait()` on
+            -- this path) so the whole scan stays off the main loop.
             local idx = 0
             local function next_install()
                 idx = idx + 1
@@ -218,7 +221,7 @@ function M.detect_async(callback)
                     return
                 end
                 local inst = installs[idx]
-                msvc.clang_cl_for_async(inst, function(cc)
+                msvc.clang_cl_for_async(inst, { standalone = msvc.standalone_host(inst, installs) }, function(cc)
                     if cc then kits[#kits + 1] = clang_cl_kit(inst, cc) end
                     next_install()
                 end)

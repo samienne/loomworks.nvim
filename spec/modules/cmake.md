@@ -28,11 +28,14 @@ install, the following kits are produced:
 - **`Ninja - clang-cl (<install>)` kit** — when `ninja` is on PATH and a
   clang-cl paired to that install exists. clang-cl is Clang's
   MSVC-compatible driver: it has no STL / Windows SDK / linker of its own
-  and reuses the paired install's via `vcvarsall`, so there is **exactly
-  one clang-cl kit per install**. The driver is taken from the VS-bundled
-  clang-cl (`<install>/VC/Tools/Llvm/x64/bin/clang-cl.exe`, the "C++ Clang
-  tools for Windows" component) when present, otherwise a standalone /
-  PATH clang-cl. Kit id `ninja-clang-cl-<major>-<product>`; compiler id
+  and reuses the paired install's via `vcvarsall`, so there is **at most
+  one clang-cl kit per install**. An install that bundles clang-cl
+  (`<install>/VC/Tools/Llvm/x64/bin/clang-cl.exe`, the "C++ Clang tools for
+  Windows" component) is paired with its own. A standalone / PATH clang-cl
+  is paired with **only the newest install** (the first the locator lists),
+  and only when that install bundles none — so a PATH clang-cl yields one
+  kit, never a kit named after every install (an older Visual Studio that
+  ships no clang-cl gets no clang-cl kit). Kit id `ninja-clang-cl-<major>-<product>`; compiler id
   `clang-cl-<version>`. Any sibling `clangd.exe` is forwarded to clangd
   (§9). At configure time clang-cl is passed as **both**
   `-DCMAKE_C_COMPILER` and `-DCMAKE_CXX_COMPILER` (it is a single driver

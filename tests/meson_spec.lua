@@ -524,12 +524,14 @@ describe("meson clang-cl (per MSVC install)", function()
             arch = "x64", install_path = "C:/VS/BuildTools",
         },
     }
-    -- Both installs fall back to the SAME standalone driver on purpose, to prove
-    -- the per-install identity keeps them distinct tools.
+    -- A standalone (PATH) driver. `msvc.clang_cl_for` hands it out only when
+    -- the caller allows the standalone fallback for that install.
     local CC = {
         path = "C:/LLVM/bin/clang-cl.exe", version = "18.1.7",
         clangd_path = "C:/LLVM/bin/clangd.exe",
     }
+    -- VS-bundled drivers per install (empty unless a test fills it).
+    local BUNDLED = {}
 
     local saved
     before_each(function()
@@ -542,9 +544,12 @@ describe("meson clang-cl (per MSVC install)", function()
         vim.fn.has = function(f) return f == "win32" and 1 or 0 end
         vim.fn.exepath = function(n) return n == "meson" and "C:/py/Scripts/meson.exe" or "" end
         msvc.detect = function() return INSTALLS end
-        msvc.clang_cl_for = function(_inst) return CC end
+        msvc.clang_cl_for = function(inst, opts)
+            return BUNDLED[inst.install_path] or (opts and opts.standalone and CC) or nil
+        end
         cpp.detect = function() return {} end
         ---@diagnostic enable: duplicate-set-field
+        BUNDLED = {}
     end)
     after_each(function()
         vim.fn.has = saved.has
@@ -562,29 +567,27 @@ describe("meson clang-cl (per MSVC install)", function()
         return out
     end
 
-    it("emits one clang-cl tool per install, distinct ids, carrying clangd_path", function()
+    it("pairs a standalone clang-cl with the newest install only, carrying clangd_path", function()
+        -- Neither install bundles clang-cl: the PATH driver becomes ONE tool,
+        -- on the first (newest) install — not one per install.
         local clang = clang_tools()
-        assert.equals(2, #clang)
-
-        local by_id = {}
-        for _, td in ipairs(clang) do by_id[td.compiler_id] = td end
-        local com = by_id["clang-cl-18.1.7-17-community"]
-        local bt = by_id["clang-cl-18.1.7-17-buildtools"]
-        assert.is_not_nil(com)
-        assert.is_not_nil(bt)
-
-        -- Same driver, different vcvars env.
+        assert.equals(1, #clang)
+        local com = clang[1]
+        assert.equals("clang-cl-18.1.7-17-community", com.compiler_id)
         assert.equals("C:/LLVM/bin/clang-cl.exe", com.compiler_path)
         assert.equals("C:/LLVM/bin/clang-cl.exe", com.cc)
         assert.equals("C:/LLVM/bin/clang-cl.exe", com.cxx)
         assert.equals("C:/LLVM/bin/clangd.exe", com.clangd_path)
         assert.equals("C:/VS/Community/VC/Auxiliary/Build/vcvarsall.bat", com.vcvarsall)
-        assert.equals("C:/VS/BuildTools/VC/Auxiliary/Build/vcvarsall.bat", bt.vcvarsall)
         assert.equals("clang-cl 18.1.7 (MSVC 17 2022 (Community))", com.compiler_display)
     end)
 
-    it("tools_match keeps same-driver clang-cl tools distinct via vcvarsall", function()
+    it("each install with a VS-bundled clang-cl gets its own tool; tools_match keeps them distinct", function()
+        BUNDLED["C:/VS/Community"] = { path = "C:/VS/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe", version = "19.1.1" }
+        BUNDLED["C:/VS/BuildTools"] = { path = "C:/VS/BuildTools/VC/Tools/Llvm/x64/bin/clang-cl.exe", version = "19.1.1" }
         local clang = clang_tools()
+        assert.equals(2, #clang)
+        assert.equals("C:/VS/BuildTools/VC/Auxiliary/Build/vcvarsall.bat", clang[2].vcvarsall)
         assert.is_false(meson.tools_match(clang[1], clang[2]))
         assert.is_true(meson.tools_match(clang[1], clang[1]))
     end)

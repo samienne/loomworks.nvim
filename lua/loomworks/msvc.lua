@@ -256,15 +256,21 @@ end
 
 --- Locate the clang-cl paired to a specific MSVC install. clang-cl is Clang's
 --- MSVC-compatible driver: it has no STL / Windows SDK / linker of its own and
---- reuses the paired install's via vcvarsall, so there is exactly one clang-cl
---- per install. Prefers the VS-bundled clang-cl (the "C++ Clang tools for
---- Windows" component), falling back to a standalone / PATH clang-cl.
---- Cached per install_path.
+--- reuses the paired install's via vcvarsall, so there is at most one clang-cl
+--- per install. The VS-bundled clang-cl (the "C++ Clang tools for Windows"
+--- component) always pairs with its own install. A standalone / PATH clang-cl
+--- is used only when `opts.standalone` is set — callers set it for exactly ONE
+--- install, the newest (`standalone_host`), so a PATH clang-cl yields one
+--- tool instead of one named after every install (an old VS without clang
+--- tools must not get a "clang-cl (VS 2017)" tool it never shipped).
+--- Cached per (install_path, standalone).
 --- @param install table one entry returned by `M.detect()`
+--- @param opts? { standalone?: boolean } allow the standalone/PATH fallback
 --- @return { path: string, version: string, clangd_path: string|nil }|nil
-function M.clang_cl_for(install)
+function M.clang_cl_for(install, opts)
     if not (install and install.install_path) then return nil end
-    local key = install.install_path
+    local standalone_ok = opts and opts.standalone and true or false
+    local key = install.install_path .. (standalone_ok and "|standalone" or "")
     if M._clang_cl_for[key] ~= nil then
         return M._clang_cl_for[key] or nil
     end
@@ -276,7 +282,7 @@ function M.clang_cl_for(install)
     if uv.fs_stat(bundled) then
         path = M.normalize_exe(bundled)
         clangd_path = sibling_clangd(bundled)
-    else
+    elseif standalone_ok then
         -- 2. Standalone / PATH clang-cl. It still borrows this install's SDK +
         --    libs through vcvarsall when the tool is used.
         local standalone = M.clang_cl()
@@ -297,19 +303,22 @@ function M.clang_cl_for(install)
     return result
 end
 
---- Async sibling of `M.clang_cl_for`. Same resolution (VS-bundled clang-cl
---- preferred, standalone/PATH fallback) and the same per-install cache, with
---- the `--version` probe run off the main loop via `vim.system`. The bundled
---- probe uses a fast sync `fs_stat`; the standalone branch defers to
---- `clang_cl_async`. Calls back immediately when already cached.
+--- Async sibling of `M.clang_cl_for`. Same resolution (VS-bundled clang-cl,
+--- else — with `opts.standalone` — the standalone/PATH one) and the same
+--- cache, with the `--version` probe run off the main loop via `vim.system`.
+--- The bundled probe uses a fast sync `fs_stat`; the standalone branch defers
+--- to `clang_cl_async`. Calls back immediately when already cached.
 --- @param install table one entry returned by `M.detect()`
+--- @param opts? { standalone?: boolean } allow the standalone/PATH fallback
 --- @param callback fun(info: { path: string, version: string, clangd_path: string|nil }|nil)
-function M.clang_cl_for_async(install, callback)
+function M.clang_cl_for_async(install, opts, callback)
+    if type(opts) == "function" then opts, callback = nil, opts end
     if not (install and install.install_path) then
         callback(nil)
         return
     end
-    local key = install.install_path
+    local standalone_ok = opts and opts.standalone and true or false
+    local key = install.install_path .. (standalone_ok and "|standalone" or "")
     if M._clang_cl_for[key] ~= nil then
         callback(M._clang_cl_for[key] or nil)
         return
@@ -334,6 +343,11 @@ function M.clang_cl_for_async(install, callback)
         finish(M.normalize_exe(bundled), sibling_clangd(bundled))
         return
     end
+    if not standalone_ok then
+        M._clang_cl_for[key] = false
+        callback(nil)
+        return
+    end
 
     -- 2. Standalone / PATH clang-cl (borrows this install's SDK + libs via
     --    vcvarsall when the tool is used).
@@ -345,6 +359,16 @@ function M.clang_cl_for_async(install, callback)
         end
         finish(standalone.path, sibling_clangd(standalone.path))
     end)
+end
+
+--- Whether `install` is the one a standalone / PATH clang-cl pairs with: the
+--- first of `installs` (the locator's order — newest version line first), the
+--- install most likely to carry an STL that a current clang-cl accepts.
+--- @param install table
+--- @param installs table[] the list `install` came from
+--- @return boolean
+function M.standalone_host(install, installs)
+    return installs[1] == install
 end
 
 --- The MSVC toolset version vcvarsall selects for `install` by default (e.g.

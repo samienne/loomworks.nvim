@@ -408,14 +408,14 @@ function M.detect_tools()
             for _, inst in ipairs(installs) do
                 tools[#tools + 1] = cl_tool(meson, inst)
             end
-            -- clang-cl needs an MSVC install for the SDK/libs, so there's one
-            -- clang-cl tool per install (VS-bundled clang-cl preferred,
-            -- standalone/PATH as fallback). Several installs may fall back to
-            -- the SAME standalone driver; the per-install compiler_id — and the
-            -- vcvarsall in tools_match — keep them distinct tools (same driver,
-            -- different vcvars env).
+            -- clang-cl needs an MSVC install for the SDK/libs: one clang-cl
+            -- tool per install that bundles clang-cl, and a standalone/PATH
+            -- clang-cl paired with the newest install only
+            -- (`msvc.standalone_host`). The per-install compiler_id — and the
+            -- vcvarsall in tools_match — keep tools of the same driver version
+            -- on different installs distinct.
             for _, inst in ipairs(installs) do
-                local clang_cl = msvc.clang_cl_for(inst)
+                local clang_cl = msvc.clang_cl_for(inst, { standalone = msvc.standalone_host(inst, installs) })
                 if clang_cl then
                     tools[#tools + 1] = clang_cl_tool(meson, inst, clang_cl)
                 end
@@ -474,7 +474,7 @@ function M.detect_tools_async(callback)
                         return
                     end
                     local inst = installs[idx]
-                    msvc.clang_cl_for_async(inst, function(clang_cl)
+                    msvc.clang_cl_for_async(inst, { standalone = msvc.standalone_host(inst, installs) }, function(clang_cl)
                         if clang_cl then
                             tools[#tools + 1] = clang_cl_tool(meson, inst, clang_cl)
                         end
