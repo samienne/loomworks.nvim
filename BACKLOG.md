@@ -717,6 +717,23 @@ Deferred from v1 (follow-ups):
 - a per-user (cross-workspace) inventory cache;
 - Qt-install discovery for qmlls (only PATH + Mason today).
 
+Follow-ups from tester feedback on v0.1.31-beta.1 (not done yet):
+- Mason qmlls shows no version (its receipt source id is `qmlls-workflow@0.7`,
+  not a qmlls version) and its path is the `mason/bin` `.cmd` shim rather than
+  the real binary it launches;
+- executable tools (`exe_declaration`: cmake, ninja, make, node, …) report only
+  the FIRST search-path hit — a second ninja further down PATH is not listed —
+  unlike compilers and language servers, which list every location;
+- the `lw` row has no path (the running binary's location is not shown);
+- JSON `id`s embed lower-cased absolute paths (`cxx:c:/…`, `msvc:c:/…`), so
+  ids are not portable across machines — CI diffs between hosts see them change;
+- inventory items carry only a free-text `hint`; no structured remedy (e.g. a
+  command + a doc pointer) a script or UI could act on;
+- SDKs appear only when a profile pins them or the provider's `detect_all`
+  finds them (by design) — say so in `lw help health` / README ("unpinned SDK
+  installs are not probed") so an empty SDKs line isn't read as "no SDK
+  installed".
+
 ## Compiler cache for Visual Studio generator builds
 
 CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` is honored only by the Ninja and
