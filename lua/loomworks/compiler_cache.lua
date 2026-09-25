@@ -77,6 +77,22 @@ function M.validate_policy(policy)
         .. M.VALID_POLICIES
 end
 
+--- The canonical stored form of a user-set `cache` policy: a valid string
+--- policy is stored as its `normalize_policy` value — `auto`, `off` (every
+--- off-synonym: `false`/`none`/`no`, any case), or the lower-case launcher
+--- name — so `SCCACHE` and `sccache` are the same stored value and an edit
+--- that only changes spelling is "(unchanged)". Anything else is returned
+--- as-is: nil, booleans (already a canonical JSON form), a blank string (an
+--- edit path's "clear"), and an INVALID value (the caller's validation
+--- rejects or diagnoses it with the text the user typed).
+--- @param policy any
+--- @return any
+function M.canonical_policy(policy)
+    if type(policy) ~= "string" or policy:match("^%s*$") then return policy end
+    if not M.validate_policy(policy) then return policy end
+    return M.normalize_policy(policy)
+end
+
 --- Whether a raw family string names an MSVC-style compiler for the `auto`
 --- rule: `msvc`, or the MSVC-ABI clang-cl driver (which `normalize_family`
 --- folds to `clang`, so the signal is recovered from the raw string).

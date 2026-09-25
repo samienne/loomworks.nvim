@@ -3255,13 +3255,25 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, true)
   if param == "variant" then reject_variant_param(proj, value) end
+  -- A `cache` policy (variables.cache / overrides.<family>.cache) is stored in
+  -- its canonical spelling (`SCCACHE` → `sccache`, `none` → `off`); an invalid
+  -- one passes through unchanged for save_configuration to reject.
+  local cc = require("loomworks.compiler_cache")
+  local is_cache_param = param == "variables.cache"
+    or param:match("^overrides%.[^.]+%.cache$") ~= nil
+  if is_cache_param then value = cc.canonical_policy(value) end
   local data = config_to_data(cfg)
   local before = vim.deepcopy(data)
   local replaced = apply_param(data, param, value) or {}
   -- Nothing changed (an unset of a param that was never set, or a set to the
-  -- value it already has): say so, write nothing, and suggest no publish.
+  -- value it already has — for a cache policy, the same canonical policy):
+  -- say so, write nothing, and suggest no publish.
   -- Exit 0 — an idempotent edit is not an error (a script may re-run it).
-  if vim.deep_equal(before, data) then
+  local unchanged = vim.deep_equal(before, data)
+  if not unchanged and is_cache_param and value ~= nil and value ~= "" then
+    unchanged = cc.canonical_policy(get_param(cfg, param)) == value
+  end
+  if unchanged then
     if verb == "set" then
       out(string.format("%s/%s: %s = %s (unchanged)", proj.key, cfg.name, param, value))
     else
@@ -4337,13 +4349,18 @@ function M.cmd_profile_set(root, args)
     die("project '" .. proj.key .. "' declares no variable '" .. var_name ..
       "'. Declared: " .. (next(declared) and table.concat(declared, ", ") or "(none)"))
   end
+  local current = profile:variable_value(proj.key, var_name)
   if var_name == "cache" then
-    local ok, err = require("loomworks.compiler_cache").validate_policy(value)
+    local cc = require("loomworks.compiler_cache")
+    local ok, err = cc.validate_policy(value)
     if not ok then die(err) end
+    -- Stored (and compared) canonically: `SCCACHE` → `sccache`, `none` → `off`.
+    value = cc.canonical_policy(value)
+    current = cc.canonical_policy(current)
   end
   -- Same idempotence as `lw config set`: a value already set changes nothing,
   -- so say so and leave user.json untouched.
-  if value ~= "" and profile:variable_value(proj.key, var_name) == value then
+  if value ~= "" and current == value then
     out(string.format("%s: %s/%s = %s (unchanged)", profile.key, proj.key, var_name, value))
     return 0
   end

@@ -331,7 +331,11 @@ separate compiler-cache override mechanism.
   modules (see the module specs). Any other value is **rejected at edit time**
   wherever `cache` can be set — a configuration's `variables`, a
   compiler-family `overrides` entry, a profile fill — with an error listing the
-  valid values, and nothing is written. An invalid value from a hand-edited
+  valid values, and nothing is written. A valid value is **stored in its
+  canonical form** — `auto`, `off` (for every off-synonym), or the lower-case
+  launcher name — so an edit that differs only in spelling (`SCCACHE` then
+  `sccache`, `none` then `off`) is reported unchanged and writes nothing. An
+  invalid value from a hand-edited
   file is reported as a non-blocking workspace diagnostic (it would otherwise
   resolve to no launcher and build uncached without a word).
 - **Default.** When unset at every layer the effective policy is `auto`. There
