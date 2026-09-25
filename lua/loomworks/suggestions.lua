@@ -19,18 +19,12 @@ local M = {}
 
 local health_cache = require("loomworks.health_cache")
 
---- Wall-clock epoch seconds. Injectable so tests drive the local-tier
---- `computed_at` and the network-tier TTL deterministically. Must be a
---- persist-across-process clock (NOT the monotonic `deps.clock`, which resets
---- each `lw` invocation) so a ~day-long TTL survives separate CLI runs.
+--- Wall-clock epoch seconds, stamped as each cached tier's `computed_at`.
+--- Injectable so tests drive it deterministically. A persist-across-process
+--- clock (NOT the monotonic `deps.clock`, which resets each `lw` invocation),
+--- so the stamp stays meaningful to a later process reading the cache.
 --- @type fun(): integer
 M._clock = function() return os.time() end
-
---- Time-to-live for the cached NETWORK tier (§16.31). Within this window,
---- back-to-back `lw health` runs reuse the cached update-availability result
---- instead of re-hitting the API. ~24h.
---- @type integer
-M.NETWORK_TTL = 24 * 60 * 60
 
 --- @class loomworks.Suggestion
 --- @field title string one-line summary
@@ -193,25 +187,27 @@ end
 --- network call) and return the flattened suggestions. Invoked ONLY by the
 --- explicit `lw health` report (§16.31), never by a passive render.
 ---
---- Full refresh over the cached two-tier model (§16.31): the LOCAL tier is
---- always recomputed; the NETWORK tier is recomputed when it is absent, older
---- than `NETWORK_TTL`, recorded for another running version (`_network_key`), or
---- `opts.force` is set, and otherwise reused (so back-to-back health runs don't
---- hammer the API). The cache is then rewritten.
+--- Full refresh (§16.31): an explicit health run never READS the cache — the
+--- LOCAL tier and the NETWORK tier (the update check) are recomputed every run,
+--- and the caller's fresh inventory probe replaces the inventory tier. With a
+--- workspace backing the results are then WRITTEN, so the passive `collect`
+--- (the `N suggestions` count, the editor status page) can reuse them without
+--- recomputing or touching the network.
 ---
 --- `workspace` may be nil: the workspace-INDEPENDENT health providers (update
 --- availability, channel override) ignore their argument and still run, so
 --- `lw health` outside a workspace reports them. Workspace-scoped providers
 --- guard nil themselves and simply contribute nothing (§16.31). Without a
---- workspace backing there is nowhere to key or store a cache, so both tiers run
---- live (no TTL throttle is possible).
+--- workspace backing there is nowhere to key or store a cache, so every tier
+--- runs live and nothing is written.
 ---
 --- `opts.inventory` is a freshly probed inventory tier (`inventory.probe_tier`,
 --- the caller's explicit health run): it replaces the cached inventory tier and
---- its missing-required items are reported. Without it, a cached tier whose
---- environment key matches is reported as `collect` would.
+--- its missing-required items are reported. Without it (a caller that skipped
+--- the probe), the inventory contributes nothing — health never reads a cached
+--- tier back.
 --- @param workspace loomworks.Workspace|nil
---- @param opts? { force?: boolean, inventory?: table } force a network-tier refresh (ignore TTL); a fresh inventory tier
+--- @param opts? { inventory?: table } a freshly probed inventory tier
 --- @return loomworks.Suggestion[]
 function M.collect_health(workspace, opts)
     opts = opts or {}
@@ -224,6 +220,9 @@ function M.collect_health(workspace, opts)
         return out
     end
 
+    -- The file is read only to carry forward what this run does not produce (an
+    -- inventory tier when the caller skipped the probe); none of its tiers is
+    -- reused for the report.
     local data = health_cache.read(env.io, env.root)
     local now = M._clock()
 
@@ -236,26 +235,20 @@ function M.collect_health(workspace, opts)
     local local_items = run_local(workspace)
     data.local_tier = { items = local_items, computed_at = now, key = key }
 
-    -- Network tier: refresh when forced, absent, past its TTL, or recorded for
-    -- another running version (e.g. before a self-update); else reuse.
-    local net = data.network_tier
-    local net_key = M._network_key()
-    local fresh = net and net.computed_at and (now - net.computed_at) < M.NETWORK_TTL
-        and net.key == net_key
-    if opts.force or not fresh then
-        net = { items = run_network(workspace), computed_at = now, key = net_key }
-        data.network_tier = net
-    end
+    -- Network tier: always re-fetched (no reuse, however recent), keyed to the
+    -- running version so the passive path can drop it after a self-update.
+    local net_items = run_network(workspace)
+    data.network_tier = { items = net_items, computed_at = now, key = M._network_key() }
 
-    -- Inventory tier: replaced by a fresh probe when the caller ran one.
+    -- Inventory tier: replaced by the fresh probe when the caller ran one.
     if opts.inventory then data.inventory_tier = opts.inventory end
 
     health_cache.write(env.io, env.root, data)
 
     local out = {}
     append(out, local_items)
-    append(out, net and net.items)
-    append(out, inventory_items(workspace, data.inventory_tier))
+    append(out, net_items)
+    append(out, inventory_items(workspace, opts.inventory))
     return out
 end
 

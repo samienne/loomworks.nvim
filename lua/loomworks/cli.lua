@@ -5425,7 +5425,7 @@ M._health_json = health_json
 --- `N suggestions` count can count missing required items without probing.
 --- `opts.json` prints the machine-readable document instead.
 --- @param root string|nil workspace root
---- @param opts? { force?: boolean, json?: boolean, verbose?: boolean }
+--- @param opts? { json?: boolean, verbose?: boolean }
 --- @return integer exit code (always 0)
 function M.cmd_health(root, opts)
   opts = opts or {}
@@ -5444,7 +5444,7 @@ function M.cmd_health(root, opts)
   -- providers run regardless, the workspace-scoped ones guard nil themselves.
   -- The fresh inventory tier is cached and its missing-required items reported.
   local ok_s, suggestions = pcall(function()
-    return require("loomworks.suggestions").collect_health(ws, { force = opts.force, inventory = tier })
+    return require("loomworks.suggestions").collect_health(ws, { inventory = tier })
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
 
@@ -7091,7 +7091,7 @@ applies a launcher-only change in place (the first build then rebuilds objects
 to fill the cache); when the MSVC /Z7 settings move too it runs `cmake
 --fresh`; meson always re-runs `setup --wipe`. A build dir configured by an
 older lw takes one full reconfigure. `lw build --reconfigure` forces one.]],
-  health = [[lw health [--force] [--verbose] [--json]
+  health = [[lw health [--verbose] [--json]
 
 List the workspace's advisory suggestions — the detail behind the compact
 `N suggestions` line the status overview shows. Health is read-only: it runs
@@ -7111,12 +7111,13 @@ when a release-url override is superseding a non-default channel; a failed/offli
 check is silent. Health never spawns a cache tool — usage statistics live behind
 `lw status --cache-stats`.
 
-Results are cached in `.nvim/loomworks.health.json` (an internal advisory cache,
-separate from the build cache) so the passive `N suggestions` count stays cheap.
-`lw health` always refreshes the local checks; the network update-availability
-check is refreshed at most once a day, or sooner once the running lw or its
-bundle changes. `--force` (alias `--refresh`) refreshes the network check now,
-ignoring that throttle.
+`lw health` never reuses an earlier result: every run re-checks everything —
+the local checks, the environment inventory and the network update check.
+Inside a workspace it then saves the results to `.nvim/loomworks.health.json`
+(an internal advisory cache, separate from the build cache) so the passive
+`N suggestions` count and the editor status page can show them without
+re-checking (they never probe and never touch the network). Outside a workspace
+nothing is saved.
 
 ENVIRONMENT INVENTORY — health also lists what this machine has of everything
 loomworks knows how to use: build tools (cmake, ninja, make, meson, node, npm),
@@ -7136,8 +7137,8 @@ information. Minimum versions are not checked, and nothing is installed.
 Probing runs version queries and the Visual Studio locator (a second or two),
 so it happens only here; the result is cached per workspace and the passive
 count reuses it without probing — until PATH, the platform, the installed
-plugins, the running lw or the profiles' pinned SDKs change, when the count
-stops including it until the next `lw health`. Outside a workspace nothing is
+plugins or the profiles' pinned SDKs change, when the count stops including it
+until the next `lw health`. Outside a workspace nothing is
 cached.
 
 `--json` prints one JSON document instead of the report — `{schema,
@@ -7997,13 +7998,14 @@ local function main()
   -- `health` lists advisory suggestions; like status it works outside a
   -- workspace (worktree hint) and never fails, so it runs before the guard.
   if command == "health" then
-    local force, json, verbose = false, false, false
+    -- (`--force`/`--refresh` from before health stopped reusing its cache are
+    -- ignored like any other unknown flag: every run already re-checks all.)
+    local json, verbose = false, false
     for _, v in ipairs(a) do
-      if v == "--force" or v == "--refresh" then force = true end
       if v == "--json" then json = true end
       if v == "--verbose" or v == "-v" then verbose = true end
     end
-    finish(M.cmd_health(root, { force = force, json = json, verbose = verbose }))
+    finish(M.cmd_health(root, { json = json, verbose = verbose }))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a

@@ -402,19 +402,19 @@ The update and channel-override checks concern the `lw` release itself, not the
 workspace, so `lw health` reports them **even outside a configured workspace** —
 run it in a plain directory and it still tells you an update is available.
 
-Health results are cached in `.nvim/loomworks.health.json` (an internal advisory
-cache, separate from the build cache) so the passive `N suggestions` count stays
-cheap and never repeats the detection on every render — the local checks are
-recomputed only when their configuration inputs change, and `lw status` never
-performs the network update check at all. That fingerprint deliberately leaves
-out what is on your `PATH` (probing it on every render would defeat the cache),
-so installing or removing ccache/sccache does not by itself refresh the passive
-`N suggestions` count — the next `lw health` (which always recomputes the local
-checks) does. `lw health` always refreshes the local checks and
-refreshes the network update check at most once a day (sooner once the running
-`lw` or its bundle changes, e.g. after `lw self-update` — a cached "update
-available" never outlives the version it was about); `lw health --force` (alias
-`--refresh`) refreshes it now, ignoring that throttle. The cache is self-healing:
+`lw health` never reuses an earlier result: every run re-checks everything —
+the local checks, the environment inventory and the network update check. Inside
+a workspace it then saves the results to `.nvim/loomworks.health.json` (an
+internal advisory cache, separate from the build cache) for the passive
+`N suggestions` count and the editor status page, which read it and never
+repeat the detection on every render — the local checks are recomputed only when
+their configuration inputs change, and `lw status` never performs the network
+update check at all (it shows the last `lw health`'s update result, dropped once
+the running `lw` or its bundle changes, e.g. after `lw self-update`). That
+fingerprint deliberately leaves out what is on your `PATH` (probing it on every
+render would defeat the cache), so installing or removing ccache/sccache does
+not by itself refresh the passive `N suggestions` count — the next `lw health`
+does. Outside a workspace nothing is saved anywhere. The cache is self-healing:
 if it is missing or corrupt it is simply recomputed.
 
 #### Environment inventory
@@ -1110,7 +1110,7 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
-| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Results are cached in `.nvim/loomworks.health.json`; the network update check is throttled to ~once a day (`lw health --force` refreshes it now). Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)) |
+| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |

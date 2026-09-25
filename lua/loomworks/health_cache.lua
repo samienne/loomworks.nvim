@@ -13,8 +13,8 @@
 ---   * `local_tier`   — `{ items, computed_at, key }`, the passive providers'
 ---     results plus a cheap invalidation fingerprint of their inputs;
 ---   * `network_tier` — `{ items, computed_at, key }`, the on-demand providers'
----     results, governed by a TTL and keyed to the running version (bundle, host
----     binary, channel) they describe;
+---     results (written by every `lw health`, never reused by it), keyed to the
+---     running version (bundle, host binary, channel) they describe;
 ---   * `inventory_tier` — `{ results, declared, computed_at, key }`, the
 ---     environment inventory's raw probe results (written only by a health run)
 ---     keyed to the environment they were probed in. Added without a schema

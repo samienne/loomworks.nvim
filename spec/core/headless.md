@@ -1188,10 +1188,11 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
 - a **network tier** — the results of the on-demand (network-backed) providers —
   stored with the time they were computed and a **running-version key** (the
   running release bundle, the running host binary's release identity (§16.32) and
-  the effective update channel, all read locally), and governed by a
-  **time-to-live** (on the order of a day). Items recorded under a different
-  running-version key (e.g. before a self-update) describe a release that is no
-  longer running and are stale regardless of age.
+  the effective update channel, all read locally). It has **no time-to-live**:
+  it is only ever written by a health run and only ever read by a passive
+  collect, which shows it for information however old. Items recorded under a
+  different running-version key (e.g. before a self-update) describe a release
+  that is no longer running and are stale regardless of age.
 
 A third, **inventory** tier holds the environment inventory's probe results; it
 is written only by a health run and read, never recomputed, by a passive collect
@@ -1211,21 +1212,24 @@ The two refresh tiers, over that one cache, are:
   no network I/O.
   This preserves the hard invariant that a passive render never touches the
   network.
-- **On-demand health** (`lw health`) is the full refresh. It **always** recomputes
-  the local tier, and recomputes the network tier when the cached network tier is
-  older than its TTL, was recorded under a different running-version key, or the
-  user forces a refresh; otherwise it reuses the
-  cached network tier, so back-to-back health runs do not repeatedly hit the
-  network. It rewrites the cache and reports every item.
+- **On-demand health** (`lw health`) is the full refresh and **never reads the
+  cache**: every run recomputes the local tier, re-runs the on-demand providers
+  (the network tier — back-to-back health runs each make the update check) and
+  re-probes the inventory (§16.33), and reports exactly what it just computed.
+  The cache is the health run's **output**, not its input: inside a workspace
+  it then writes all three tiers for the passive consumers. There is no flag to
+  force a refresh — every health run is one.
 
 **First run and resilience.** With no cache present, a passive collect computes
-only the local tier (never the network), and a health run computes both. The
+only the local tier (never the network); a health run computes everything, as
+always. The
 cache is advisory and self-healing: a missing, corrupt, or older-schema cache is
 treated as empty and recomputed — it never raises an error and never blocks a
 render or a health run. Writes are atomic. A passive collect outside a workspace
 (no `.nvim/` to key against) simply runs the passive providers directly without
 caching, and a health run outside a workspace runs its workspace-independent
-providers directly (the local tier has nothing to key or store). No background or
+providers directly and **persists nothing anywhere** — no workspace cache and no
+per-user cache; the next run checks again. No background or
 asynchronous network refresh is implied — the network tier is refreshed strictly
 on an explicit `lw health`.
 
@@ -1473,8 +1477,9 @@ whose `title` is "`<label>` not found — needed by `<profile/project>`" and who
 unknown — is informational and never counted.
 
 **Cost and caching.** Probing is expensive, so it happens **only on an explicit
-health run**, which always re-probes. Its results are stored in the health cache
-(§16.31) as a third tier beside the local and network tiers:
+health run**, which always re-probes (a health run never reads the cache back,
+§16.31). Its results are stored in the health cache (§16.31) as a third tier
+beside the local and network tiers:
 
 - an **inventory tier** — the raw results (status, version, path; *not* the
   required split, which depends on the workspace), the declaration ids that
