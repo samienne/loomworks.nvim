@@ -14,9 +14,15 @@ local API = require("loomworks.api_versions")
 
 --- Track modules whose load attempt failed (file present but
 --- contract-mismatched or version-mismatched) so we don't spam the
---- same warning every time M.get is called for that id.
---- @type table<string, true>
+--- same warning every time M.get is called for that id. Value = reason.
+--- @type table<string, string>
 local rejected = {}
+
+--- Load errors of module files that exist on the runtime path (recorded by
+--- `M.list`, which knows the file is there) — the environment inventory's
+--- plugin registry reports them as rejected (headless §16.33).
+--- @type table<string, string>
+local load_failed = {}
 
 --- Notify the user once that a module file failed the load check.
 --- Routed through vim.notify so it shows on the first nvim load
@@ -25,7 +31,7 @@ local rejected = {}
 --- @param reason string
 local function reject(id, reason)
     if rejected[id] then return end
-    rejected[id] = true
+    rejected[id] = reason
     vim.notify(
         "loomworks: module '" .. id .. "' will not load: " .. reason,
         vim.log.levels.ERROR)
@@ -41,9 +47,12 @@ function M.get(id)
     if not ok then
         -- File not present on rtp (or load-time error). Not a
         -- "rejection" we want to warn about — it just means no
-        -- plugin ships this module. Stay quiet.
+        -- plugin ships this module. Stay quiet. The error is kept for
+        -- `M.list`, which reports it when the file does exist.
+        load_failed[id] = tostring(mod)
         return nil
     end
+    load_failed[id] = nil
     if type(mod) ~= "table" then
         reject(id, "module did not return a table")
         return nil
@@ -92,11 +101,24 @@ function M.list()
             -- module table is missing the required `id` field.
             if M.get(id) then
                 ids[#ids + 1] = id
+            elseif load_failed[id] and not rejected[id] then
+                -- The file is on the runtime path but failed to load.
+                rejected[id] = "failed to load: " .. load_failed[id]
             end
         end
     end
     table.sort(ids)
     return ids
+end
+
+--- Modules found on the runtime path that will not load, with the reason
+--- (contract / interface-version mismatch, or a load error). Read by the
+--- environment inventory's plugin registry (headless §16.33, spec §8.0).
+--- @return table<string, string> id → reason
+function M.rejected()
+    local out = {}
+    for id, reason in pairs(rejected) do out[id] = reason end
+    return out
 end
 
 --- Detect ALL matching project types for a directory.

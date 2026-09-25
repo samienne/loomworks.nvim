@@ -317,6 +317,7 @@ function vim.system(cmd, opts, on_exit)
 
   local out, err = {}, {}
   local result, handle
+  local timed_out = false
   handle = uv.spawn(exe, {
     args = args,
     stdio = stdio,
@@ -329,7 +330,7 @@ function vim.system(cmd, opts, on_exit)
     end
     handle:close()
     result = {
-      code = code,
+      code = timed_out and 124 or code,
       stdout = inherit and "" or table.concat(out),
       stderr = inherit and "" or table.concat(err),
     }
@@ -342,6 +343,22 @@ function vim.system(cmd, opts, on_exit)
   elseif not inherit then
     uv.read_start(so, function(_, d) if d then out[#out + 1] = d end end)
     uv.read_start(se, function(_, d) if d then err[#err + 1] = d end end)
+  end
+  -- `opts.timeout` (ms), as nvim's vim.system: kill a child still running when
+  -- it elapses (its exit then reports code 124, like nvim).
+  if handle and opts.timeout then
+    -- Refresh the loop's cached "now" first: a timer is due relative to it, and
+    -- in this host the loop may not have run for seconds (a workspace load), so
+    -- a stale clock would fire the timeout at once.
+    uv.update_time()
+    local timer = uv.new_timer()
+    timer:start(opts.timeout, 0, function()
+      timer:stop(); timer:close()
+      if not result and not handle:is_closing() then
+        timed_out = true
+        pcall(uv.process_kill, handle, "sigterm")
+      end
+    end)
   end
   return {
     wait = function()

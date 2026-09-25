@@ -129,6 +129,21 @@ local function append(out, items)
     for _, s in ipairs(items or {}) do out[#out + 1] = s end
 end
 
+--- The environment inventory's actionable items (§16.33) for a cached
+--- inventory tier, re-derived against the CURRENT workspace — nothing when the
+--- tier is absent or was recorded for another environment. Never probes; a
+--- failure contributes nothing (advisory).
+--- @param workspace loomworks.Workspace|nil
+--- @param tier table|nil
+--- @return loomworks.Suggestion[]
+local function inventory_items(workspace, tier)
+    if not tier then return {} end
+    local ok, items = pcall(function()
+        return require("loomworks.inventory").cached_suggestions(workspace, tier)
+    end)
+    return ok and items or {}
+end
+
 --- Run the **passive** providers and return the flattened suggestions. This is
 --- what the compact `N suggestions` line (rendered frequently) reads, so it
 --- NEVER touches the network. `lw health` uses `collect_health` instead.
@@ -141,9 +156,11 @@ end
 --- are included informationally, however old — unless they were recorded for a
 --- different running version (`_network_key`: after a self-update they describe
 --- a bundle/host no longer running, so they are dropped) — but the network tier
---- is NEVER computed here. Without a workspace backing (nil workspace, or a future
---- workspace-independent passive provider), the passive providers run live and
---- nothing is cached.
+--- is NEVER computed here. The environment inventory's missing-required items
+--- are re-derived from the cached inventory tier when its environment key still
+--- matches (§16.33) — never probed here. Without a workspace backing (nil
+--- workspace, or a future workspace-independent passive provider), the passive
+--- providers run live and nothing is cached.
 --- @param workspace loomworks.Workspace|nil
 --- @return loomworks.Suggestion[]
 function M.collect(workspace)
@@ -168,6 +185,7 @@ function M.collect(workspace)
     -- refreshed only by `collect_health`, never here.
     local net = data.network_tier
     if net and net.key == M._network_key() then append(out, net.items) end
+    append(out, inventory_items(workspace, data.inventory_tier))
     return out
 end
 
@@ -187,8 +205,13 @@ end
 --- guard nil themselves and simply contribute nothing (§16.31). Without a
 --- workspace backing there is nowhere to key or store a cache, so both tiers run
 --- live (no TTL throttle is possible).
+---
+--- `opts.inventory` is a freshly probed inventory tier (`inventory.probe_tier`,
+--- the caller's explicit health run): it replaces the cached inventory tier and
+--- its missing-required items are reported. Without it, a cached tier whose
+--- environment key matches is reported as `collect` would.
 --- @param workspace loomworks.Workspace|nil
---- @param opts? { force?: boolean } force a network-tier refresh (ignore TTL)
+--- @param opts? { force?: boolean, inventory?: table } force a network-tier refresh (ignore TTL); a fresh inventory tier
 --- @return loomworks.Suggestion[]
 function M.collect_health(workspace, opts)
     opts = opts or {}
@@ -197,6 +220,7 @@ function M.collect_health(workspace, opts)
         local out = {}
         append(out, run_local(workspace))
         append(out, run_network(workspace))
+        append(out, inventory_items(workspace, opts.inventory))
         return out
     end
 
@@ -223,11 +247,15 @@ function M.collect_health(workspace, opts)
         data.network_tier = net
     end
 
+    -- Inventory tier: replaced by a fresh probe when the caller ran one.
+    if opts.inventory then data.inventory_tier = opts.inventory end
+
     health_cache.write(env.io, env.root, data)
 
     local out = {}
     append(out, local_items)
     append(out, net and net.items)
+    append(out, inventory_items(workspace, data.inventory_tier))
     return out
 end
 
