@@ -126,7 +126,7 @@ is transient (nothing is recorded that makes a later build reconfigure again).
 step then fails for a unit whose recorded scan has an `"error"` finding (the
 applied launcher fails those compiles), the runner's closing failure message
 gains one line pointing back at it, e.g. `build failed — 1870 compiles use
-/Zi, which sccache cannot cache (see the scan finding above; lw health; lw help
+/Zi, which sccache will fail (see the scan finding above; lw health; lw help
 cache)`.
 
 A build is additionally gated by the output-artifact conflict rule (§16.28):
@@ -169,6 +169,11 @@ that hands the rest to a build tool or program) print that command's help and
 exit 0 — the flag is never read as an operand such as a profile name. This
 holds for the host-level commands too (version reporting, self-update,
 installation, pin management): asking for their help never performs them.
+A sub-command's help (`lw help <command> <sub-command>`, or `--help` after the
+sub-command) prints only that sub-command's part of the command's help, with a
+pointer to the whole; a sub-command the help does not document falls back to
+the whole command's help. User-facing help is self-contained: it never cites
+specification sections.
 
 ### 16.8 Host-determined module availability
 
@@ -1072,6 +1077,10 @@ shows (§16.18), so the health report never contradicts the status overview:
   "Compiler cache not applied (`<reason>`) — lw help cache", whether or not a
   launcher is installed (installing one would not help);
 - its launcher **resolved** → **informational** "Compiler cache: using `<tool>`";
+  when the recorded compatibility scan found compiles that launcher will FAIL
+  for the profile's units, the affirmation is qualified in the same line
+  ("… — but it will fail N compiles (lw help cache)") so it never reads as
+  contradicting the finding reported next to it;
 - its policy names a launcher explicitly (`cache=<tool>`) that is **not found**
   → **actionable** "`cache=<tool>` set but `<tool>` not found" (remedy: install
   it — `lw help cache`), never a "using" item for some other launcher;

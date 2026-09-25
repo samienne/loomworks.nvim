@@ -56,7 +56,7 @@ describe("`lw <command> --help`", function()
 
   it("`-h` works too, after other operands, and for an aliased command", function()
     assert.equals(help_text("build"), run_main({ "build", "Debug", "-h" }, root).stdout)
-    assert.equals(help_text("config"), run_main({ "configuration", "set", "--help" }, root).stdout)
+    assert.equals(help_text("config"), run_main({ "configuration", "--help" }, root).stdout)
     assert.equals(help_text("workspace"), run_main({ "ws", "--help" }, root).stdout)
   end)
 
@@ -69,6 +69,45 @@ describe("`lw <command> --help`", function()
       assert.equals(help_text(cmd), r.stdout)
     end)
   end
+
+  -- A sub-command's `--help` shows ITS section of the parent help, not the
+  -- whole parent page.
+  it("`lw profile query --help` prints the query section only", function()
+    local r = run_main({ "profile", "query", "--help" }, root)
+    assert.equals(0, r.exit_code)
+    assert.is_truthy(r.stdout:find("lw profile query <profile> <project> <field>", 1, true), r.stdout)
+    assert.is_truthy(r.stdout:find("build-dir", 1, true), r.stdout)
+    assert.is_nil(r.stdout:find("interactive picker", 1, true), r.stdout) -- `select`'s text
+    assert.is_truthy(r.stdout:find("lw help profile", 1, true), r.stdout)
+    assert.is_true(#r.stdout < #help_text("profile"))
+  end)
+
+  it("`lw config unset --help` prints the unset entry plus the param list", function()
+    local r = run_main({ "config", "unset", "--help" }, root)
+    assert.equals(0, r.exit_code)
+    assert.is_truthy(r.stdout:find("lw config unset <project> <name> <param>", 1, true), r.stdout)
+    assert.is_truthy(r.stdout:find("Params for get/set/unset", 1, true), r.stdout)
+    assert.is_nil(r.stdout:find("rename <project> <old> <new>", 1, true), r.stdout)
+    -- `lw help config unset` is the same page
+    assert.equals(r.stdout, capture(function() cli.cmd_help("config", "unset") end).stdout)
+  end)
+
+  it("an unknown sub-command falls back to the parent's full help", function()
+    local r = run_main({ "profile", "frob", "--help" }, root)
+    assert.equals(0, r.exit_code)
+    assert.equals(help_text("profile"), r.stdout)
+  end)
+
+  it("user-facing help never cites spec sections", function()
+    for _, topic in ipairs({ "status", "build", "clean", "reset", "unlock", "run", "target",
+      "launch", "test", "init", "workspace", "migrate", "cache", "health", "module", "publish",
+      "pull", "worktree", "project", "config", "configset", "profile", "settings", "completion",
+      "version", "install", "self-update", "bootstrap", "update", "agent", "sdk", "ci", "tools" }) do
+      local t = help_text(topic)
+      assert.is_nil(t:find("§", 1, true), topic .. ": " .. (t:match("[^\n]*§[^\n]*") or ""))
+    end
+    assert.is_nil(help_text(nil):find("§", 1, true))
+  end)
 
   it("a command without a topic prints the general usage, exit 0", function()
     local r = run_main({ "frobnicate", "--help" }, root)

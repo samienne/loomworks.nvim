@@ -461,6 +461,31 @@ local function status_outcome(status)
     return nil
 end
 
+--- How many compiles the scan says the applied launcher will FAIL for the
+--- active profile's units (error-severity compat findings), as a phrase —
+--- "3 compiles" / "every compile" — or nil when none. Used only to qualify the
+--- affirmative "using <tool>" line so it does not sit, unqualified, above the
+--- "<tool> will fail …" item. Reads the same records `cache_compat_provider`
+--- reports (`M._compat_records`, resolved at call time).
+--- @param workspace loomworks.Workspace
+--- @return string|nil
+local function failing_compiles_phrase(workspace)
+    local cc = require("loomworks.compiler_cache")
+    local ok, records = pcall(M._compat_records, workspace)
+    if not ok or type(records) ~= "table" then return nil end
+    local units, every = 0, false
+    for _, r in ipairs(records) do
+        if cc.compat_severity(r.compat) == "error" then
+            for _, f in ipairs(r.compat.findings or {}) do
+                if f.units == nil then every = true else units = units + f.units end
+            end
+        end
+    end
+    if every then return "every compile" end
+    if units > 0 then return string.format("%d compile%s", units, units == 1 and "" or "s") end
+    return nil
+end
+
 --- Provider: report the workspace's compiler-cache state when it has C/C++
 --- projects (headless §16.31). Every item is ONE terse line; `lw help cache`
 --- holds the explanations. Gated on at least one non-orphaned C/C++-caching
@@ -471,7 +496,9 @@ end
 ---   * policy `off` → silent;
 ---   * not applicable (module hook, §8) → INFO "Compiler cache not applied
 ---     (<reason>) — lw help cache";
----   * launcher resolved → INFO "Compiler cache: using <tool>";
+---   * launcher resolved → INFO "Compiler cache: using <tool>" — qualified
+---     "— but it will fail N compiles (lw help cache)" when the scan recorded
+---     compiles the launcher fails (the finding itself follows below);
 ---   * explicit `cache=<tool>` not found → ACTIONABLE "cache=<tool> set but
 ---     <tool> not found" (remedy: install it — lw help cache);
 ---   * `auto` on an MSVC-style compiler with a launcher on PATH → INFO "<tool>
@@ -519,6 +546,14 @@ function M.compiler_cache_provider(workspace)
     local status = active_cache_status(workspace)
     if status then
         local out = status_outcome(status)
+        if out and out[1] and out[1].kind == "info" and status.present and status.tool
+            and status.applicable ~= false then
+            local failing = failing_compiles_phrase(workspace)
+            if failing then
+                out[1].title = out[1].title .. " — but it will fail " .. failing
+                    .. " (lw help cache)"
+            end
+        end
         if out then return out end
         if present and status.msvc_auto_off then
             return info(present .. " available — not enabled for MSVC-style (lw help cache)")

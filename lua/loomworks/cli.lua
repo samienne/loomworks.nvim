@@ -6445,7 +6445,7 @@ activates the profile, then builds — so a freshly-cloned project goes from
 
 In non-interactive mode (--no-input / LW_NO_INPUT / CI, or piped stdin) the
 active profile is NOT used and nothing is created — pass a profile explicitly
-for a deterministic build (§16.9). The CI pattern is:
+for a deterministic build. The CI pattern is:
   lw profile create <set> <tool>  &&  lw build <set>:<tool>
 (the profile key is `<set>:<tool>`, as `lw profile create` prints it).
 
@@ -6481,8 +6481,8 @@ just its artifacts — a hard reset to unconfigured — use `lw reset`.]],
 
 HARD-reset build state: remove the build directories (rm -rf, NOT the build
 system's artifact clean of `lw clean`) and drop the affected configurations back
-to `unconfigured`, so the next `lw build` reconfigures from scratch (spec
-§16.30). The profile, its configuration set, and its toolchain pins are KEPT —
+to `unconfigured`, so the next `lw build` reconfigures from scratch.
+The profile, its configuration set, and its toolchain pins are KEPT —
 this is the CLI equivalent of the status page's delete, minus removing the
 profile. Contrast `lw clean`, which keeps the configuration and only removes
 artifacts.
@@ -6501,14 +6501,14 @@ deleting unprompted. A profile with no build directories resets nothing and
 exits 0.
 
 Reset is exclusive (like clean/delete): it holds each build directory's lock
-(spec §16.6) so it cannot race a concurrent build. A build directory still
+so it cannot race a concurrent build. A build directory still
 referenced by another profile not being reset is kept on disk (its state cleared
 only for the reset). Non-zero exit on any failure.]],
   unlock = [[lw unlock <profile> | --all
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
-on a build dir across processes (editor + CLI) with an advisory lockfile
-(spec §16.6); a crashed process's lock is normally reclaimed automatically once
+on a build dir across processes (editor + CLI) with an advisory lockfile;
+a crashed process's lock is normally reclaimed automatically once
 its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
 
   <profile>   clear locks on that profile's build dirs
@@ -6518,8 +6518,8 @@ Warns (on stderr) before clearing a lock that still looks active — meaning a
 build may really be running elsewhere.]],
   run = [[lw run [<target>] [-- prog-args…]   |   lw run <profile> <target> [-- …]
 
-Resolve a profile and a launch target, then build -> deploy -> execute (spec
-§16.17). The target is EITHER a build target (its executable) OR a command
+Resolve a profile and a launch target, then build -> deploy -> execute.
+The target is EITHER a build target (its executable) OR a command
 launch configuration declared with `lw launch add`; variables are expanded in
 the profile's context. The launched process's exit code becomes lw's exit
 code; output streams through.
@@ -6584,7 +6584,7 @@ says so and names it — `lw build` to complete it.
   set [<profile>] <target>
                         Set the default target. One operand is a target on the
                         active profile (--no-input requires the explicit
-                        <profile>, §16.9); two operands name the profile.
+                        <profile>); two operands name the profile.
   clear [profile]       Clear the default target.
 
 Disambiguating a name present more than once (on `set`):
@@ -6630,8 +6630,8 @@ project is published (`lw project publish <project>`).]],
 
 Build a profile, then run its tests through each module's NATIVE runner (cmake
 -> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
-code: 0 iff the build succeeded and every runner passed, non-zero otherwise
-(spec §16.16). A profile whose modules expose no test runner reports "no tests"
+code: 0 iff the build succeeded and every runner passed, non-zero otherwise.
+A profile whose modules expose no test runner reports "no tests"
 and exits 0 — not a failure.
 
 Profile resolution and onboarding match `lw build`: interactively it can create
@@ -6893,7 +6893,7 @@ cache or build dirs.]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 
-Inspect or create the git worktrees of the current repository (spec §16.26/§16.27).
+Inspect or create the git worktrees of the current repository.
 
   list  (also bare `lw worktree`)
         List every worktree and whether loomworks is initialised in each (a
@@ -6912,7 +6912,7 @@ Inspect or create the git worktrees of the current repository (spec §16.26/§16
         <start-point>, else main's HEAD); an existing <branch> is checked out
         (git errors if it is already checked out elsewhere). Then, unless
         --no-pull, it folds the main checkout's working config into the new
-        worktree (`lw pull`, spec §16.25) so it is ready to build.
+        worktree (`lw pull`) so it is ready to build.
 
         Non-destructive: it never overwrites — a pre-existing target path is
         refused, and if the auto-pull fails after the worktree is created the
@@ -6955,7 +6955,7 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
   publish <name>
         Mark the project shared (local+shared) and regenerate loomworks.json.
 
-A declared variable feeds three surfaces (see core §1.3.1):
+A declared variable feeds three surfaces:
   lw project set <p> <var> [<default>] [--type …]   declare it here
   lw config set <p> <cfg> variables.<var> …         override per configuration
   lw profile set [<profile>] <p> <var> <value>       fill a blank per profile
@@ -7015,7 +7015,7 @@ replaces it (keeping the new spelling), and lw says so.
 Compiler-family overrides (family ∈ clang|gcc|msvc, clang-cl counts as clang)
 override a project variable's value only when the active tool's compiler
 belongs to that family. The overridden name must already be declared in the
-project's `variables` (an empty default is allowed). See core §1.3.1.
+project's `variables` (an empty default is allowed).
 
 Examples:
   lw config set   App Debug options.CMAKE_CXX_FLAGS '${warn_flags}'
@@ -7122,14 +7122,14 @@ configurations.
 
 Keys:
   dev-lua         a checked-out loomworks `lua/` directory to run from
-                  (the development source, spec §16.11).
+                  (the development source).
   default-source  `dev` or `release`. `dev` makes `lw` use dev-lua without
                   needing `--dev` each time; `release` (default) uses the
                   verified release bundle.
   release-url     override where releases are fetched from (a local directory
                   works as an offline mirror); LOOMWORKS_RELEASE_URL wins.
   channel         `stable` (default) or `unstable`. The update channel
-                  `lw self-update` follows (spec §16.29). `unstable` includes
+                  `lw self-update` follows. `unstable` includes
                   pre-releases; both are equally signature/hash-verified.
                   LOOMWORKS_CHANNEL, or `lw self-update --channel`, overrides.
 
@@ -7158,11 +7158,11 @@ bundle, the update channel, and which system-Lua source is active — one of:
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
 
-A host command, handled by the lw binary itself (spec §16.11).]],
+A host command, handled by the lw binary itself.]],
   install = [[lw install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
 
-Install the running lw binary for the current user and make it usable
-(spec §16.15). It copies itself to a per-user location, ensures that location
+Install the running lw binary for the current user and make it usable.
+It copies itself to a per-user location, ensures that location
 is on PATH, and fetches the first release bundle. No admin required.
 
   location   Windows: %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe (on PATH)
@@ -7184,15 +7184,15 @@ A host command (handled by lw itself).]],
   ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>] [--no-host]
 
 Download the current release, verify its signature and hashes, and activate
-it (spec §16.12–16.13). Fetches manifest.json + manifest.json.sig, checks the
+it. Fetches manifest.json + manifest.json.sig, checks the
 signature against the key built into lw, downloads the bundle, verifies its
 SHA-256 against the (trusted) manifest, then extracts it into a new
 lua-<version>/ under the data dir — never overwriting a running copy. Integrity
 rests on the signature, not the transport, so it is safe behind a proxy;
 set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
 
-Then it replaces the lw binary itself with the same release's host (spec
-§16.32), when that release is newer than the running host's (it never
+Then it replaces the lw binary itself with the same release's host,
+when that release is newer than the running host's (it never
 downgrades the binary, e.g. after a channel switch to stable): the release's
 SHA256SUMS signature is checked against the built-in key and the downloaded
 binary against its hash BEFORE the installed binary is touched (never relaxed,
@@ -7210,7 +7210,7 @@ first and self-update exits non-zero asking you to re-run it for the bundle.
   --channel <name>     `stable` (default) or `unstable` for this run only
   --no-host            update only the bundle; leave the lw binary as it is
 
-Update channel (spec §16.29): `stable` follows the newest full release;
+Update channel: `stable` follows the newest full release;
 `unstable` includes pre-releases, for testing ahead of a stable cut. Both are
 verified identically — `unstable` never means less checking. Precedence:
 --channel > LOOMWORKS_CHANNEL > the `channel` setting > stable. Persist a
@@ -7223,7 +7223,7 @@ Not applicable to a development source. A host command (handled by lw itself).]]
   bootstrap = [[lw bootstrap [--version <x.y.z>]
 
 Install a repo-local launcher + version pin so contributors and CI run a fixed,
-verified lw without a prior global install (spec §16.21–16.24). Writes three
+verified lw without a prior global install. Writes three
 committed files at the repo root — lw.sh, lw.cmd, and lw.pin — and adds
 `.nvim/cache/` to .gitignore (created if absent, appended idempotently).
 
@@ -7408,11 +7408,60 @@ function M.has_help_topic(cmd)
   return cmd ~= nil and HELP[HELP_ALIASES[cmd] or cmd] ~= nil
 end
 
-function M.cmd_help(cmd)
+--- The section of `HELP[cmd]` that documents sub-command `sub`, or nil when the
+--- topic has no entry for it. An entry is a line indented by exactly two
+--- spaces that starts with the sub-command's name, plus its deeper-indented
+--- continuation lines (up to the next entry or a blank line). Any unindented
+--- paragraph whose heading names the sub-command (e.g. `Params for
+--- get/set/unset:`) follows it, then a pointer to the full topic.
+--- @param cmd string canonical topic
+--- @param sub string
+--- @return string|nil
+function M.subcommand_help(cmd, sub)
+  local text = HELP[cmd]
+  if not text or type(sub) ~= "string" or not sub:match("^%a[%w_-]*$") then return nil end
+  local lines = vim.split(text, "\n", { plain = true })
+  local entry
+  for i, l in ipairs(lines) do
+    if l:match("^  %S") and (l:sub(3, 2 + #sub) == sub)
+        and (#l == 2 + #sub or l:sub(3 + #sub, 3 + #sub):match("%s")) then
+      entry = { "lw " .. cmd .. " " .. l:sub(3) }
+      for j = i + 1, #lines do
+        local c = lines[j]
+        if c:match("^%s*$") or not c:match("^   ") then break end
+        entry[#entry + 1] = c
+      end
+      break
+    end
+  end
+  if not entry then return nil end
+  -- Headed paragraphs naming the sub-command as a word (`get/set/unset:`).
+  local i = 1
+  while i <= #lines do
+    local l = lines[i]
+    if l:match("^%S.*:$") and (("/" .. l:gsub("%s", "/") .. "/"):find("[^%w_-]" .. sub:gsub("%-", "%%-") .. "[^%w_-]")) then
+      entry[#entry + 1] = ""
+      while i <= #lines and not lines[i]:match("^%s*$") do
+        entry[#entry + 1] = lines[i]
+        i = i + 1
+      end
+    else
+      i = i + 1
+    end
+  end
+  entry[#entry + 1] = ""
+  entry[#entry + 1] = "`lw help " .. cmd .. "` for the whole command."
+  return table.concat(entry, "\n")
+end
+
+--- `lw help [<command> [<sub-command>]]`.
+--- @param cmd string|nil
+--- @param sub string|nil sub-command: print only its section when it has one
+function M.cmd_help(cmd, sub)
   -- Normalize command aliases to their canonical help topic.
   cmd = cmd and (HELP_ALIASES[cmd] or cmd) or nil
   if cmd and HELP[cmd] then
-    out(HELP[cmd])
+    out(M.subcommand_help(cmd, sub) or HELP[cmd])
     return 0
   end
   if cmd then io.stderr:write("lw: no help topic '" .. cmd .. "'\n") end
@@ -7538,18 +7587,20 @@ local function main()
 
   -- Global commands — no workspace required.
   if command == "help" or command == "-h" or command == "--help" then
-    finish(M.cmd_help(a[2]))
+    finish(M.cmd_help(a[2], a[3]))
   end
   -- `lw <command> … --help` / `-h` (before any `--`, whose tail belongs to a
   -- build tool / program) is `lw help <command>` for every command, checked
   -- before any handler can read the flag as an operand (`lw build --help`
   -- used to look for a profile named "--help"). A command without a topic of
-  -- its own gets the general usage. Exit 0 either way.
+  -- its own gets the general usage. A sub-command (`lw profile query --help`)
+  -- gets its own section of the parent topic when it has one. Exit 0 either way.
   if command then
     for i = 2, #a do
       if a[i] == "--" then break end
       if a[i] == "--help" or a[i] == "-h" then
-        M.cmd_help(M.has_help_topic(command) and command or nil)
+        local sub = (i > 2) and a[2] or nil
+        M.cmd_help(M.has_help_topic(command) and command or nil, sub)
         finish(0)
       end
     end

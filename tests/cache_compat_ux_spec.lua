@@ -210,7 +210,7 @@ end)
 describe("a build failing after an error-severity finding", function()
     it("compat_failure_hint names the count and points back", function()
         local hint = cc.compat_failure_hint(record(2, 500, 40))
-        assert.equals("build failed — 20 compiles use /Zi, which sccache cannot cache "
+        assert.equals("build failed — 20 compiles use /Zi, which sccache will fail "
             .. "(see the scan finding above; lw health; lw help cache)", hint)
         local warn = record(1, 10, 1)
         warn.findings[1].severity = "warning"

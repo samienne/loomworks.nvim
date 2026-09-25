@@ -794,7 +794,10 @@ severity.
   `io.write_json` sorts object keys at every depth (all three files). Was:
   key order changed on rewrite, producing noisy diffs.
   Serialize with a stable (e.g. sorted, or original-order-preserving) key order.
-- **WORDING** —
+- ~~**WORDING**~~ DONE (v0.1.30) — all six items below: "every target, nearly
+  every unit"; "which sccache will fail"; health qualifies "using sccache — but
+  it will fail N compiles"; the PATH warning names the full param; sub-command
+  `--help` prints its own section; help cites no spec sections.
   - "nearly every target (… 77 of 77 targets)": only the *unit* count is
     "nearly"; say "every target" when all targets are affected.
   - The failed-build closing line says "which sccache cannot cache", underselling
