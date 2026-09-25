@@ -52,3 +52,13 @@ If codelldb is not registered in `dap.adapters`, `debug.run` shows a
 notification with the Mason install hint and returns `false`. Caller
 falls back to non-debug launch.
 
+## 6. Environment inventory
+
+Declares `dap:codelldb` (category *debug adapters*) in its inventory companion
+(`integrations/inventory/codelldb.lua`, core §9.3). Found when the Mason
+package's adapter binary exists (`<data>/mason/packages/codelldb/extension/adapter/codelldb[.exe]`,
+`<data>` per clangd §14) or `codelldb` is on the search path. Version: from the
+Mason install receipt when present, otherwise not shown (no spawn). The result
+reports presence on disk, not registration with the debugger plugin — that is
+still checked at debug time (§5).
+

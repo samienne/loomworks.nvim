@@ -261,3 +261,19 @@ change of the configuration environment (core §1.3.3); the resulting reconfigur
 is the full one (§5a *Every changed configure input takes a full reconfigure*):
 a `--wipe` setup after core clears the stored command line, so a removed option
 is really dropped and a changed environment is really re-read.
+
+## 12. Environment inventory (`health_inventory` / `health_requirements`)
+
+Declarations (core §16.33):
+
+- `exe:meson` (build tools) — the same lookup the module uses to run meson (the
+  search path, then the Python-module fallback), then its version query;
+- `exe:ninja`, `compilers:path`, `compilers:msvc` — the ids shared with cmake
+  (cmake §13), probed once.
+
+Requirements for a project under a tool: `exe:meson`, `exe:ninja` (meson's
+backend), and the tool's compiler from the tool data, with the same ids as cmake
+§13 — `cxx:<path>` for a GNU-driver tool, `msvc:<vcvarsall>` for a cl.exe tool,
+`clang-cl:<path>` plus `msvc:<vcvarsall>` for a clang-cl tool. Without a tool
+(no profile maps the project) only `exe:meson` and `exe:ninja`. A cross file
+that names its own compilers adds no requirement in this version.

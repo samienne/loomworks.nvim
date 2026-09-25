@@ -306,3 +306,28 @@ whitespace need hand-editing in user.json — same limitation as the
 project-side `cmd_array` editor. Every change calls
 `Workspace:set_lsp_option("clangd", key, value)` which persists
 user.json synchronously and restarts clients.
+
+## 14. Environment inventory (`health_inventory`)
+
+Declares `lsp:clangd` (category *language servers*) in its inventory companion
+(`integrations/inventory/clangd.lua`, core §9.3), which this integration
+re-exports as its `health_inventory`. The probe reports every clangd it finds,
+one result each:
+
+- on the executable search path, with the version from `clangd --version`;
+- in Mason's install directory — the package `<data>/mason/packages/clangd`,
+  located through its install receipt (`mason-receipt.json`: the binary its
+  `bin` link names, the version from its source id — no spawn), where `<data>`
+  is the editor's data directory (`stdpath("data")` in the editor; headless, the
+  same directory computed from the platform rules and `NVIM_APPNAME`:
+  `%LOCALAPPDATA%\<app>-data` on Windows, `$XDG_DATA_HOME/<app>` or
+  `~/.local/share/<app>` elsewhere, `<app>` defaulting to `nvim`). A search-path
+  hit inside `<data>/mason/` (an editor whose PATH carries Mason's `bin`) is the
+  same installation and is listed once, as the Mason one.
+
+The Mason directory rule is shared by every integration that looks there
+(qmlls, the debug adapters). The compiler-sibling clangd a kit records (§2
+`binary`) is a toolchain detail and is not listed separately. clangd is never a
+workspace requirement (core §16.33). The Mason directory is probed even though
+it is a Neovim-package-manager convention: it is a plain filesystem read, and it
+is where most users' clangd and debug adapters live.

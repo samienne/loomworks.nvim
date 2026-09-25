@@ -417,6 +417,44 @@ available" never outlives the version it was about); `lw health --force` (alias
 `--refresh`) refreshes it now, ignoring that throttle. The cache is self-healing:
 if it is missing or corrupt it is simply recomputed.
 
+#### Environment inventory
+
+`lw health` is also an "is this machine ready?" check. It lists everything
+loomworks knows how to use — build tools (cmake, ninja, make, meson, node/npm),
+compilers (gcc/clang incl. versioned names, Visual Studio installs, clang-cl),
+compiler caches, language servers (clangd, qmlls), debug adapters (codelldb,
+cppdbg, js-debug — found on `PATH` or in Mason's install directory), SDKs, the
+installed module/SDK plugins, and `lw` itself — each as found (version, path)
+or missing:
+
+```text
+$ lw health            # in a plain directory
+Not a loomworks workspace — lw init to create one.
+
+build tools      ✓ cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
+                 ✓ ninja 1.12.1   C:\tools\ninja.exe
+                 – meson          not found (pip install meson)
+compilers        ✓ MSVC 17.11 (VS 2022 Community)
+                 ✓ clang-cl 18.1.8
+                 – gcc / clang    none on PATH
+…
+```
+
+Inside a workspace the list is split into **Required by this workspace** — what
+the active profile's projects and tools need (every profile's, when none is
+active) — and **Other**, compacted to one line per category. Only a *missing
+required* item is a suggestion and counts toward `lw status`'s `N suggestions`;
+everything else is information. Probing runs tool version queries and the Visual
+Studio locator, so it happens **only** on `lw health` (a second or two); the
+result is cached, and `lw status` reuses it without probing — until your `PATH`
+or the installed plugins change, when the count simply stops including it until
+the next `lw health`. `lw health --verbose` expands **Other** to one line per
+item; `lw health --json` prints the same data for scripts and CI
+(`{schema, workspace, suggestions[], inventory[]}`; inventory entries carry
+`status`, `version`, `path`, `required`, `required_by`) and, like the text
+report, always exits 0 — a CI gate can test `required && status == "missing"`.
+Nothing is ever installed or changed; minimum versions are not checked.
+
 ### Languages
 
 Each cmake / meson configuration declares the languages it builds
@@ -1069,7 +1107,7 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
-| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Results are cached in `.nvim/loomworks.health.json`; the network update check is throttled to ~once a day (`lw health --force` refreshes it now). Runs outside a workspace too — the update / channel-override checks still report there |
+| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Results are cached in `.nvim/loomworks.health.json`; the network update check is throttled to ~once a day (`lw health --force` refreshes it now). Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |

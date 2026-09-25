@@ -702,6 +702,20 @@ two-tier health cache (§16.31). `:checkhealth loomworks` can later render the
 same data. Spec: §16.31 + a module-interface hook. Planned as its own feature
 branch after v0.1.29 stable.
 
+**Specified** on `feature/health-inventory`: core §16.33 (inventory,
+declarations/probes, required split, inventory cache tier keyed on the
+environment, `--json`), §8.4 `health_inventory` / `health_requirements`, §9.3 /
+§10.1 / §8.9.6 hooks (integration declarations in host-neutral inventory
+companions), per-module/integration/SDK declarations, README.
+
+Deferred from v1 (follow-ups):
+- `:checkhealth loomworks` / an editor-native rendering of the same results;
+- minimum-version checks (a too-old tool reads as found);
+- a `lw health --check` mode that exits non-zero on a missing required item
+  (CI can test the `--json` output meanwhile);
+- a per-user (cross-workspace) inventory cache;
+- Qt-install discovery for qmlls (only PATH + Mason today).
+
 ## Compiler cache for Visual Studio generator builds
 
 CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` is honored only by the Ninja and

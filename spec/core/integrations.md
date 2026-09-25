@@ -67,6 +67,7 @@ Each `integrations/lsp/<server>.lua` returns a table with these fields
 | `on_unexpected_exit(info) → decision` | Restart policy for an unexpected client death (see §9.6). `info` carries `{ server, root_dir, exit_code, signal, attempt, args }`. `decision` is `{ restart: boolean, args?: string[], reason?: string }` |
 | `reset(root_dir)` | Clear any adaptive state for a root (UI Reset action) |
 | `reset_label` | Display label for the UI Reset row |
+| `health_inventory(ctx) → Declaration[]` | Environment-inventory declaration for this server (§16.33, category *language servers*). The probe locates the server binary through the filesystem and executable search path only — never an editor API — so it runs in both hosts. Because the integration file itself may need editor-only facilities at load, the declaration lives in a host-neutral **inventory companion**, `integrations/inventory/<name>.lua` (a table with `health_inventory`), which core discovers on the runtime path in both hosts; the integration re-exports the companion's hook. A language server is never a workspace requirement (§16.33) |
 
 The integration's module body calls
 `require("loomworks.lsp").register(name, M)` as its last action, then
@@ -200,6 +201,7 @@ Each provider table exposes:
 | `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
 | `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
 | `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
+| `health_inventory(ctx) → Declaration[]` | *(optional)* Extra environment-inventory declarations (§16.33). Without it, core lists the provider's `detect_all()` installations plus every installation a profile pins, under category *SDKs*; a pinned installation that is unresolved is a missing **required** item for that profile |
 
 **Declaring an installation.** An SDK is normally declared by supplying a path,
 which the provider validates — identifying the installation and deriving the

@@ -66,3 +66,12 @@ process for the other.
 ## 6. Mason install
 
 Standard Mason check via `dap.adapters["pwa-node"]`.
+
+## 7. Environment inventory
+
+Declares `dap:pwa-node` (category *debug adapters*) in its inventory companion
+(`integrations/inventory/pwa_node.lua`, core §9.3): found when the Mason
+`js-debug-adapter` package's `js-debug/src/dapDebugServer.js` exists under
+`<data>/mason/packages` (`<data>` per clangd §14); version from the Mason
+install receipt. It also declares `exe:node` (shared with the typescript module),
+which the adapter runs on; a missing `node` is reported once, under build tools.

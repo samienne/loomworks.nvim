@@ -608,6 +608,41 @@ the refreshed result), and in **health** before reporting (§16.31, in memory
 only). An unchanged stamp reads nothing. Absent hook = the result is refreshed
 only by a configure. Additive and optional: no `api_versions.module` bump (§8.0).
 
+**`health_inventory(ctx) → Declaration[]`** *(optional)*
+
+Declare the external things this module uses — its build-system executables and
+the toolchain installations it can select — for the environment inventory
+(§16.33). Each declaration is `{ id, category, label, probe }` as §16.33 defines.
+Declaring must be **cheap** (no spawn, no filesystem scan): the cost belongs in
+`probe`, which core calls only on an explicit health run, at most once per `id`
+across all contributors. A module that uses an executable another module also
+uses declares the **same id** for it (the per-module specs name the ids), so it
+is probed once and listed once. A toolchain declaration typically enumerates
+the same installations `detect_tools` finds (§8.1), one result per installation.
+`ctx` carries the host platform, an executable-search-path lookup, an
+asynchronous process runner and a per-probe timeout (§16.33); an executable
+shared across modules is declared through the shared helper core provides, so
+the declarations agree. Absent hook = the module contributes no inventory. Additive and optional: no
+`api_versions.module` bump (§8.0).
+
+**`health_requirements(ctx) → { id, label, hint?, via? }[]`** *(optional)*
+
+The inventory ids a project needs to configure and build under a given tool
+(§16.33 "Required vs other"). `ctx` is `{ project, tool, configuration }`:
+`tool` is the profile's resolved Tool for this module (`nil` for a module
+without keyed tools, or when no profile maps the project) and `configuration`
+the Configuration the profile maps (`nil` without a profile). `label` (and the
+optional `hint`) is what to display when no declaration produced a result for
+that `id` (it then reads as missing). `via` names the enumerating declaration
+that would have produced the result (e.g. the compiler scan for a compiler
+path): when that declaration's probe was inconclusive, the requirement reads as
+unknown instead of missing. It must be **pure** — derived from the
+project, the tool's data and the module's declarations, with no spawn or
+filesystem access — because a passive collect evaluates it on every
+recomputation of the count. Absent hook = the module's projects require nothing
+beyond the module itself. Additive and optional: no `api_versions.module` bump
+(§8.0).
+
 ### 8.5 Module implementations
 
 Each module that ships with loomworks documents its implementation of
@@ -1305,6 +1340,15 @@ adapter-specific transforms in its own spec file:
 A pluggable backend registry mirroring the LSP design is on the
 BACKLOG; today `debug.lua` holds the dispatcher and adapter logic
 together.
+
+**Environment inventory.** Each known adapter also contributes an inventory
+declaration (§16.33, category *debug adapters*) whose probe locates the
+adapter's executable through the filesystem and the executable search path only
+— never through the debugger plugin's registered-adapter table or a package
+manager's editor API, which a headless host lacks. Like a language server's, the
+declaration lives in a host-neutral inventory companion (§9.3). Where the
+adapter is looked for is adapter-specific (its spec file). A debug adapter is
+never a workspace requirement (§16.33).
 
 ---
 

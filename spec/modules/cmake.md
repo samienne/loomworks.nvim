@@ -917,3 +917,42 @@ claims — outside every target's source tree and not listed — yield `nil`
 `cg_argv_prefix` rendering unchanged, so its command output cannot drift from
 generated entries; the representative `source` is resolved from the borrowed
 group's first source index in the same index.
+
+## 13. Environment inventory (`health_inventory` / `health_requirements`)
+
+Declarations (core §16.33). Ids marked *shared* are also declared by meson, so
+they are probed and listed once:
+
+| id | category | probe |
+|--|--|--|
+| `exe:cmake` | build tools | search-path lookup, then `cmake --version` |
+| `exe:ninja` *(shared)* | build tools | search-path lookup, then `ninja --version` |
+| `exe:make` | build tools | search-path lookup, then `make --version` |
+| `compilers:path` *(shared)* | compilers | the PATH-index compiler scan the kit detection uses (gcc/clang, versioned names included), one result per compiler with its `--version` version; id per result `cxx:<normalized path>` |
+| `compilers:msvc` *(shared)* | compilers | Windows only: the installation locator's installs (one result each, `msvc:<normalized vcvarsall path>`, version = the install's product version), plus clang-cl (`clang-cl:<normalized path>`, VS-bundled and on the search path) |
+
+A *normalized path* uses forward slashes and is lower-cased on Windows, so an id
+derived from a tool's recorded path matches the one the scan produced. The
+compiler declarations reuse the detection the kits already run (§1a) — the
+shared compiler scan and the shared Visual Studio locator — so a compiler the
+inventory reports is exactly one a kit could be built from.
+
+Requirements for a project under a tool (pure: read from the tool data and the
+mapped configuration, which the preset parse already filled):
+
+- `exe:cmake` — unless the tool's cmake comes from an SDK (a platform SDK kit
+  carrying its own cmake), in which case the profile's SDK pin (core §16.33)
+  is the requirement and `exe:cmake` is not required;
+- the generator's executable — the configuration's generator, else the tool's:
+  `exe:ninja` for a Ninja generator, `exe:make` for a Makefiles generator; the
+  Visual Studio generator needs the tool's MSVC install instead (below);
+- the tool's compiler: `cxx:<path>` (via `compilers:path`) for a GNU-driver
+  kit; `msvc:<vcvarsall>` (via `compilers:msvc`) for an MSVC kit or the Visual
+  Studio generator; `clang-cl:<path>` plus `msvc:<vcvarsall>` for a clang-cl
+  kit (label: the tool's label). An SDK-derived kit adds no compiler
+  requirement — the profile's SDK pin covers it.
+
+A preset-configured project (the profile maps a `preset:` configuration)
+requires `exe:cmake` and the executable of the generator the preset names (read
+from the already-parsed preset) — nothing about the compiler: what the preset
+selects is the preset's business.

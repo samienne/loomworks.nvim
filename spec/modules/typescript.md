@@ -58,3 +58,9 @@ integration with tsconfig switching per profile.
 Module language is `"typescript"`. Default adapter is `pwa-node`.
 See [`spec/integrations/debug/pwa-node.md`](../integrations/debug/pwa-node.md)
 for the command-to-runtimeExecutable transform.
+
+## 7. Environment inventory
+
+Declares `exe:node` and `exe:npm` (build tools; search-path lookup, then
+`--version`). `exe:node` is shared with the pwa-node adapter. A project requires
+both — its tasks run through them.
