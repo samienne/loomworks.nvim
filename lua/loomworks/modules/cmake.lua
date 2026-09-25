@@ -1827,7 +1827,7 @@ local function ninja_declaration(inv)
         id = "exe:ninja", label = "ninja", names = { "ninja" },
         hint = function(ctx)
             return ctx.is_windows
-                    and "winget install Ninja-build.Ninja (VS's bundled ninja serves only MSVC/clang-cl tools)"
+                    and "winget install Ninja-build.Ninja — VS's bundled ninja serves only MSVC/clang-cl tools"
                 or "install ninja (your package manager: ninja-build)"
         end,
     })
@@ -1845,7 +1845,7 @@ function M.health_inventory(_ctx)
             id = "exe:cmake", label = "cmake", names = { "cmake" },
             hint = function(ctx)
                 return ctx.is_windows
-                    and "winget install Kitware.CMake (VS's bundled cmake serves only Ninja + MSVC/clang-cl tools)"
+                    and "winget install Kitware.CMake — VS's bundled cmake serves only Ninja + MSVC/clang-cl tools"
                     or "install cmake (your package manager, or cmake.org/download)"
             end,
         }),
