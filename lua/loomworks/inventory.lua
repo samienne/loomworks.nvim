@@ -739,24 +739,77 @@ end
 -- Environment key + tier
 -- ---------------------------------------------------------------------------
 
---- The environment key (§16.33): a digest of the executable search path, the
---- platform, the contributors (with interface version or rejection), the
---- running bundle, and the SDK installations profiles pin. Spawns nothing.
+--- Version of the inventory's declaration/result shapes as the environment key
+--- sees them. The key identifies the environment, not the running loomworks
+--- build (the editor and the CLI must agree on it, §16.33), so a change to core
+--- declaration ids or to how results are recorded bumps this instead.
+M.KEY_VERSION = 1
+
+--- The executable search path as the environment key sees it (§16.33): the
+--- host-injected directories removed, so the editor and the CLI on the same
+--- machine produce the same list. Entries are split on the platform separator,
+--- unquoted (Windows), separator-normalized and lower-cased on Windows
+--- (`norm_path`), stripped of trailing separators; empty entries are dropped and
+--- duplicates keep their FIRST occurrence (order is kept — it decides which
+--- binary wins). Removed:
+---   * Mason's bin directory (`<data>/mason/bin`, wherever it appears) — Mason
+---     prepends it to the editor's search path; the inventory lists Mason
+---     installs separately (`tool_declaration`), so it carries no search-path
+---     information of its own;
+---   * on Windows, a LAST entry holding `nvim.exe` — Neovim appends its own
+---     executable's directory to its search path at startup. Only the last
+---     entry is considered (Neovim appends; an nvim dir the user placed earlier
+---     is the user's and stays), and after the dedup, so Neovim's duplicate of
+---     a directory already listed changes nothing.
+--- @param ctx loomworks.InventoryContext
+--- @return string[]
+function M.search_path_entries(ctx)
+    local win = ctx.is_windows
+    local raw = tostring(ctx.getenv("PATH") or "")
+    local mason = M.mason_root(ctx)
+    mason = mason and M.norm_path(mason .. "/bin", win) or nil
+    local out, seen = {}, {}
+    for entry in raw:gmatch(win and "[^;]+" or "[^:]+") do
+        if win then entry = entry:gsub('^%s*"(.*)"%s*$', "%1") end
+        entry = M.norm_path(entry, win):gsub("(.)/+$", "%1")
+        if entry ~= "" and entry ~= mason and not seen[entry] then
+            seen[entry] = true
+            out[#out + 1] = entry
+        end
+    end
+    if win and #out > 0 and ctx.exists(out[#out] .. "/nvim.exe") then
+        out[#out] = nil
+    end
+    return out
+end
+
+--- The environment key (§16.33): a digest of the executable search path (host-
+--- injected entries removed — `search_path_entries`), PATHEXT, the platform, the
+--- contributors (with interface version or rejection), the core plugin-interface
+--- versions and `KEY_VERSION`, and the SDK installations profiles pin. Nothing
+--- host-specific (the running bundle's location or version) takes part, so the
+--- editor and the CLI on the same machine agree. Spawns nothing.
 --- @param workspace loomworks.Workspace|nil
+--- @param opts? { ctx?: table } probe-context overrides (tests)
 --- @return string
-function M.environment_key(workspace)
+function M.environment_key(workspace, opts)
+    local ctx = M.context(workspace, opts and opts.ctx)
+    local win = ctx.is_windows
+    local api = require("loomworks.api_versions")
     local parts = {
-        "platform=" .. M.platform(),
-        "path=" .. tostring(os.getenv("PATH") or ""),
-        "pathext=" .. tostring(os.getenv("PATHEXT") or ""),
-        "bundle=" .. tostring(_G.__loomworks_luaroot or "-"),
+        "key=" .. M.KEY_VERSION,
+        "platform=" .. ctx.platform,
+        "path=" .. table.concat(M.search_path_entries(ctx), "\n  "),
+        "pathext=" .. (win and tostring(ctx.getenv("PATHEXT") or ""):upper() or ""),
+        "api=module:" .. tostring(api.module) .. ",sdk:" .. tostring(api.sdk),
     }
     for _, c in ipairs(M.contributors()) do
         parts[#parts + 1] = table.concat({ c.kind, c.id, tostring(c.api or "-"),
             c.rejected and "rejected" or "ok" }, "|")
     end
     for _, pin in ipairs(pinned_sdks(workspace)) do
-        parts[#parts + 1] = "sdk|" .. pin.key .. "|" .. tostring(pin.sdk and pin.sdk._path or "")
+        local path = pin.sdk and pin.sdk._path
+        parts[#parts + 1] = "sdk|" .. pin.key .. "|" .. (path and M.norm_path(path, win) or "")
     end
     return vim.fn.sha256(table.concat(parts, "\n")):sub(1, 16)
 end

@@ -244,6 +244,74 @@ describe("inventory environment key", function()
         inv._contributors = { { kind = "module", id = "cmake", api = 1 } }
         assert.are_not.equal(k1, inv.environment_key(ws))
     end)
+
+    -- The editor and the CLI must agree on the key for the same machine, or the
+    -- editor's `N suggestions` never counts the inventory (§16.33): Neovim's
+    -- search path carries Mason's bin dir (prepended by Mason) and — on Windows —
+    -- the nvim executable's own dir appended at the end, and the two hosts run
+    -- the loomworks Lua from different roots.
+    describe("host neutrality", function()
+        -- Long strings: Windows-style backslashes without Lua escaping.
+        local LOCAL = [[C:\Users\u\AppData\Local]]
+        local BASE = [[C:\Tools\Ninja;C:\Program Files\CMake\bin;C:\Windows\system32]]
+        local NVIM_DIR = [[C:\Program Files\Neovim\bin]]
+        local saved_root
+        before_each(function()
+            saved_root = _G.__loomworks_luaroot
+            inv._contributors = { { kind = "module", id = "cmake", api = 1 } }
+        end)
+        after_each(function() _G.__loomworks_luaroot = saved_root end)
+
+        local function exists(p)
+            return (p:gsub("\\", "/"):lower()) == "c:/program files/neovim/bin/nvim.exe"
+        end
+        local function host(path, opts)
+            opts = opts or {}
+            local env = { PATH = path, PATHEXT = ".COM;.EXE;.BAT;.CMD", LOCALAPPDATA = LOCAL }
+            return {
+                platform = "windows",
+                getenv = function(n) return env[n] end,
+                exists = exists,
+                stdpath_data = opts.stdpath_data or false,
+            }
+        end
+        local function cli_key(path)
+            _G.__loomworks_luaroot = "C:/Users/u/AppData/Local/loomworks/lua-0.1.30"
+            return inv.environment_key(nil, { ctx = host(path) })
+        end
+        local function editor_key(path)
+            _G.__loomworks_luaroot = nil
+            return inv.environment_key(nil, { ctx = host(path,
+                { stdpath_data = "C:/Users/u/AppData/Local/nvim-data" }) })
+        end
+
+        it("the editor host (Mason bin prepended, nvim dir appended, other bundle root) matches the CLI host", function()
+            local cli = cli_key(BASE)
+            local editor = editor_key(LOCAL .. [[\nvim-data\mason\bin;]] .. BASE .. ";" .. NVIM_DIR)
+            assert.equals(cli, editor)
+        end)
+
+        it("ignores separator style, case, trailing separators, empty entries and duplicates", function()
+            local cli = cli_key(BASE)
+            assert.equals(cli, cli_key([[c:/tools/ninja/;;C:\PROGRAM FILES\CMake\bin\;C:\Tools\Ninja;]]
+                .. [["C:\Windows\system32"]]))
+        end)
+
+        it("an nvim dir the user's own search path carries mid-list is kept", function()
+            local with = cli_key(NVIM_DIR .. ";" .. BASE)
+            assert.are_not.equal(cli_key(BASE), with)
+            -- ... and Neovim's appended duplicate of it changes nothing.
+            assert.equals(with, editor_key(NVIM_DIR .. ";" .. BASE .. ";" .. NVIM_DIR))
+        end)
+
+        it("a genuinely different search path yields a different key", function()
+            local cli = cli_key(BASE)
+            -- The ninja dir removed.
+            assert.are_not.equal(cli, cli_key([[C:\Program Files\CMake\bin;C:\Windows\system32]]))
+            -- Order decides which binary wins, so it is part of the key.
+            assert.are_not.equal(cli, cli_key([[C:\Program Files\CMake\bin;C:\Tools\Ninja;C:\Windows\system32]]))
+        end)
+    end)
 end)
 
 -- ---------------------------------------------------------------------------

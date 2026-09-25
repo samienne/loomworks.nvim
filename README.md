@@ -446,9 +446,11 @@ active) — and **Other**, compacted to one line per category. Only a *missing
 required* item is a suggestion and counts toward `lw status`'s `N suggestions`;
 everything else is information. Probing runs tool version queries and the Visual
 Studio locator, so it happens **only** on `lw health` (a second or two); the
-result is cached, and `lw status` reuses it without probing — until your `PATH`
-or the installed plugins change, when the count simply stops including it until
-the next `lw health`. `lw health --verbose` expands **Other** to one line per
+result is cached, and `lw status` — and the editor's status page — reuse it
+without probing, until your `PATH` or the installed plugins change, when the
+count simply stops including it until the next `lw health`. (Directories only
+Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory —
+do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
 item; `lw health --json` prints the same data for scripts and CI
 (`{schema, workspace, suggestions[], inventory[]}`; inventory entries carry
 `status`, `version`, `path`, `required`, `required_by`) and, like the text

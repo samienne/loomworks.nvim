@@ -1479,13 +1479,35 @@ health run**, which always re-probes. Its results are stored in the health cache
 - an **inventory tier** — the raw results (status, version, path; *not* the
   required split, which depends on the workspace), the declaration ids that
   were probed, the time they were computed, and an **environment key**: a
-  digest of the executable search-path value, the platform, the registered
-  contributors (every discovered module, SDK provider and inventory companion,
-  with its interface version or rejection) and the running bundle, plus the SDK
+  digest of the normalized executable search path, the executable-extension
+  list (Windows), the platform, the registered contributors (every discovered
+  module, SDK provider and inventory companion, with its interface version or
+  rejection), core's plugin-interface versions and an inventory key version
+  (bumped when core's declaration ids or result recording change), plus the SDK
   installations the workspace's profiles pin (the one workspace-dependent
   declaration input). Computing the key spawns nothing and probes nothing: it
   reads in-process values and the contributor listing a workspace load already
-  performs.
+  performs, plus at most one file-existence check.
+
+  The key is **host-neutral**: the editor and the CLI on the same machine, with
+  the same plugins, produce the same key, so the editor's count includes what an
+  `lw health` recorded. Nothing identifying the running host takes part — not
+  the location of the loomworks code nor its release version (an editor running
+  from a plugin checkout has no release version; the contributor listing and
+  interface versions stand in for it). The search path is normalized before
+  digesting: entries split on the platform separator, unquoted, separators
+  unified and case folded where the filesystem is case-insensitive, trailing
+  separators and empty entries dropped, duplicates collapsed to their **first**
+  occurrence — **order is kept**, since it decides which executable is found.
+  Directories the editor injects into its own search path are removed: the
+  editor-side package manager's executable directory under the editor's data
+  directory (the same install location the language-server and debug-adapter
+  declarations read, derived identically in both hosts), wherever it appears —
+  its installs are listed from their own install tree instead — and, on Windows, a **last** entry holding the
+  editor's executable (Neovim appends its own directory at startup; an entry
+  the user placed earlier is kept, and an appended duplicate of it is already
+  collapsed). A genuinely different search path — a directory added, removed or
+  reordered — yields a different key.
 
 The tier is added without a health-cache schema bump: a cache written before it
 existed simply has no inventory tier (the inventory then counts nothing until
