@@ -340,7 +340,10 @@ with /Zi") — that comes from a directory-wide `add_compile_options` /
 `CMAKE_<LANG>_FLAGS` overriding the `/Z7` loomworks asked for (cl warns D9025
 "overriding '/Z7' with '/Zi'"), so remove it there. The scan is advisory: the
 build still runs, and if it then fails, lw's last line points back at the
-finding. If you used MSVC caching via `auto` in an earlier beta, your next
+finding. The scan follows the build, not just `lw configure`: when the build
+re-runs CMake / meson by itself (e.g. after you edit a `CMakeLists.txt` to
+replace `/Zi`), the next build and `lw health` re-scan, so a fixed finding
+disappears and a newly added `/Zi` is reported. If you used MSVC caching via `auto` in an earlier beta, your next
 build reconfigures without the launcher; set `cache=sccache` to keep it. Under
 meson, loomworks pins the launcher+compiler explicitly through a generated
 native file (`--native-file`, rather than relying on meson's own ccache

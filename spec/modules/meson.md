@@ -92,7 +92,12 @@ every target collapses to one line naming a project-wide `c_args` / `cpp_args` /
 injects no debug-info-format adjustment of its own; a subproject or user option
 that requests `/Zi` is surfaced by the scan, never silently rewritten. When no
 introspection data exists for the build, the scan returns `scanned = false` and
-health reports it as skipped (core §16.31).
+health reports it as skipped (core §16.31). Its freshness stamp
+(`cache_compat_stamp`, core §8) is the modification time (sub-second) and size
+of `meson-info/intro-targets.json`, which meson rewrites on every setup —
+including the regeneration ninja triggers itself after a `meson.build` edit — so
+core re-scans after such a build and in health. One stat; a constant for a gcc /
+clang tool.
 
 **Explicit compiler pinning via a generated native file — and deliberate
 suppression of meson's auto-detect.** meson has its own implicit behavior: when

@@ -758,7 +758,10 @@ than silently vanish.
 Tester feedback (LumeEditor, lw 0.1.29-beta.8, Windows/MSVC). Ordered by
 severity.
 
-- **MEDIUM — /Zi scan findings go stale when CMake re-configures itself.** The
+- ~~**MEDIUM — /Zi scan findings go stale when CMake re-configures itself.**~~
+  **DONE** (fix/zi-scan-staleness): the record carries the module's stamp of the
+  scanned data (core §8 `cache_compat_stamp`); builds and health re-scan when it
+  changed, and the passive health key includes it. The
   cache-compatibility scan (§5.1, §8 `cache_compat_scan`) only runs after an
   `lw configure`; when ninja re-runs CMake on its own (after a CMakeLists /
   `.cmake` edit) the recorded finding is not refreshed, and `lw health` shows
