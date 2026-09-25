@@ -312,6 +312,10 @@ project variable, `cache`, holding a **policy**:
   `overrides.clang.cache`).
 - `off` (or `false`) — no cache.
 
+Any other value is refused when you set it (`lw config set`, `lw profile set`)
+with the valid values listed; one that arrives through a hand-edited file shows
+up as a warning in `lw status` instead of silently building uncached.
+
 Because `cache` is an ordinary variable, it rides the same layers as everything
 else: set it per configuration, per compiler family via `overrides`
 (`{ "msvc": { "cache": "off" } }`), or per machine with `lw profile set <profile>

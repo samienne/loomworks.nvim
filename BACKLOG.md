@@ -775,13 +775,19 @@ severity.
   that data is newer than the recorded snapshot (the reply mtime is already the
   freshness signal for the owned compile_commands); at minimum document
   `lw build --reconfigure` as the way to refresh the scan.
-- **LOW — `env.PATH` and `env.Path` can both be set.** Two entries appear in
+- ~~**LOW — `env.PATH` and `env.Path` can both be set.**~~ DONE (v0.1.30):
+  env names are one entry per name ignoring case on every host; setting a
+  case variant replaces the existing entry and says so. Two entries appear in
   `lw config show`; with case-insensitive environment layering on Windows one
   silently wins. Replace the existing case-variant on set (Windows), or warn.
-- **LOW — `lw profile set … cache sccache` when already `sccache`** prints "set"
+- ~~**LOW — `lw profile set … cache sccache` when already `sccache`**~~ DONE
+  (v0.1.30): prints `(unchanged)`, no write. Was: prints "set"
   and rewrites user.json; `lw config set` reports "(unchanged)" and does not
   write. Make profile set match.
-- **LOW — `lw profile set … cache bogus` is accepted**, then shows
+- ~~**LOW — `lw profile set … cache bogus` is accepted**~~ DONE (v0.1.30):
+  validated at every set path (profile set, config set variables.cache /
+  overrides.<family>.cache); a hand-edited invalid value is a diagnostic.
+  Was: accepted, then shows
   "bogus (not found)" and silently builds uncached. Validate the policy value
   (`auto` / `off` / a known launcher name) at set time.
 - **COSMETIC — user.json key order changes on rewrite**, producing noisy diffs.

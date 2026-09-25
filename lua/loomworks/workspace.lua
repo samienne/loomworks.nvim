@@ -2226,6 +2226,36 @@ function Workspace:diagnostics()
                             end
                         end
                     end
+                    -- (d) An invalid `cache` policy (core §1.3.2) in a
+                    -- hand-edited file: edit paths reject it, but a file
+                    -- edited by hand would otherwise build silently uncached.
+                    local cc = require("loomworks.compiler_cache")
+                    local cache_vals = {}
+                    if type(cfg.variables) == "table" and cfg.variables.cache ~= nil then
+                        cache_vals[#cache_vals + 1] = { "variables.cache", cfg.variables.cache }
+                    end
+                    if type(cfg._overrides) == "table" then
+                        local fams = {}
+                        for fam in pairs(cfg._overrides) do fams[#fams + 1] = fam end
+                        table.sort(fams)
+                        for _, fam in ipairs(fams) do
+                            local block = cfg._overrides[fam]
+                            if type(block) == "table" and block.cache ~= nil then
+                                cache_vals[#cache_vals + 1] = { "overrides." .. fam .. ".cache", block.cache }
+                            end
+                        end
+                    end
+                    for _, cv in ipairs(cache_vals) do
+                        local ok_c, c_err = cc.validate_policy(cv[2])
+                        if not ok_c then
+                            add({
+                                severity = "warn",
+                                source = "Project/" .. project.key .. "/" .. cfg.name,
+                                message = cv[1] .. ": " .. c_err .. " — builds run uncached until it is fixed",
+                                target_fold_key = "config:" .. project.key .. ":" .. cfg.name,
+                            })
+                        end
+                    end
                     -- (c) Configuration `env` values (spec §1.3.3) expand
                     -- exactly like option values, so the same check applies.
                     if type(cfg.env) == "table" then
@@ -2271,6 +2301,33 @@ function Workspace:diagnostics()
                     .. blank.project_key .. " " .. blank.name .. " <value>`)",
                 target_fold_key = "profile:" .. active.key,
             })
+        end
+    end
+
+    -- Invalid `cache` policy in a profile's fill values (core §1.3.2) — a
+    -- hand-edited user.json; `lw profile set` rejects it at set time.
+    do
+        local cc = require("loomworks.compiler_cache")
+        for _, profile in pairs(self._profiles) do
+            if not profile._removed and type(profile._profile_variables) == "table" then
+                local pkeys = {}
+                for pk in pairs(profile._profile_variables) do pkeys[#pkeys + 1] = pk end
+                table.sort(pkeys)
+                for _, pk in ipairs(pkeys) do
+                    local vals = profile._profile_variables[pk]
+                    local v = type(vals) == "table" and vals.cache or nil
+                    local ok_c, c_err = cc.validate_policy(v)
+                    if not ok_c then
+                        add({
+                            severity = "warn",
+                            source = "Profile/" .. profile.key .. "/" .. pk,
+                            message = "cache fill: " .. c_err .. " — builds run uncached until it is fixed "
+                                .. "(`lw profile set " .. profile.key .. " " .. pk .. " cache <policy>`)",
+                            target_fold_key = "profile:" .. profile.key,
+                        })
+                    end
+                end
+            end
         end
     end
 

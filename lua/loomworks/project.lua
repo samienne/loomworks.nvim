@@ -432,6 +432,26 @@ function Project:save_configuration(config_name, config_data)
         end
     end
 
+    -- The pre-declared `cache` policy (core §1.3.2) must name something
+    -- loomworks can apply — an unknown launcher would otherwise build
+    -- uncached without a word. Checked wherever a configuration carries it:
+    -- `variables.cache` and each `overrides.<family>.cache`.
+    local cc = require("loomworks.compiler_cache")
+    if type(config_data.variables) == "table" then
+        local ok_c, c_err = cc.validate_policy(config_data.variables.cache)
+        if not ok_c then return false, "variables.cache: " .. c_err end
+    end
+    if type(config_data.overrides) == "table" then
+        for family, fam in pairs(config_data.overrides) do
+            if type(fam) == "table" then
+                local ok_c, c_err = cc.validate_policy(fam.cache)
+                if not ok_c then
+                    return false, "overrides." .. tostring(family) .. ".cache: " .. c_err
+                end
+            end
+        end
+    end
+
     -- Build the data table for Configuration._update (user override format).
     -- Generic fields get their empty-aware handling; every other key is a
     -- module-specific field (cmake: variant/toolchain/generator; other

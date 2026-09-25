@@ -216,7 +216,11 @@ are bare names. A reserved compiler-driver name in `env.<NAME>` or
 §1.3.3) is **refused** by the same validation the editor applies: `set` exits 1
 and writes nothing (the runtime strip-with-warning applies only to a
 hand-edited file). Setting `env.PATH` (any case) succeeds but prints a warning
-on stderr that it replaces the tool's PATH (§1.3.3). `set` writes the value; an empty value or `unset` clears it,
+on stderr, naming the full param that was set, that it replaces the tool's
+PATH (§1.3.3). An env name that matches an existing entry ignoring case
+replaces that entry, keeping the new spelling, and says so (§1.3.3). A `cache`
+value (`variables.cache`, `overrides.<family>.cache`, or a profile fill) outside
+the valid policies is refused with the valid values listed (§1.3.2). `set` writes the value; an empty value or `unset` clears it,
 pruning an emptied family and an emptied override block. A malformed shape
 (`overrides` alone, or `overrides.<family>` without a name) and an unknown
 family are rejected at parse time; naming a variable not declared in the
@@ -224,7 +228,8 @@ project's `variables` is rejected by the same validation the editor applies
 (§1.3.1). A `set`/`unset` that changes nothing — `unset` of a param that
 is not set, or `set` to the value it already has — writes nothing, says so
 (`… is not set` / `(unchanged)`) and exits 0; the same holds for clearing a
-profile fill value that is not set. A reminder to publish is printed only after
+profile fill value that is not set, or setting one to the value it already
+has. A reminder to publish is printed only after
 an edit that **changed** a configuration reaching the published snapshot
 (§2.4 effective intent). `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and

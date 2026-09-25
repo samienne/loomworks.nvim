@@ -2868,6 +2868,32 @@ local function set_or_clear(t, key, value)
   return next(t) and t or nil
 end
 
+--- Set (value) or clear (nil / "") environment variable `name` in `t`,
+--- treating names CASE-INSENSITIVELY for duplicates on every host (Windows
+--- environment names are case-insensitive and a configuration file is shared
+--- across hosts — the same rule as the reserved names): an existing entry
+--- spelled differently (`PATH` vs `Path`) is REPLACED — the new spelling is
+--- kept — and a clear removes every case variant. Returns the table (nil when
+--- emptied) and the differently-spelled names that were dropped.
+--- @param t table|nil
+--- @param name string
+--- @param value string|nil
+--- @return table|nil t, string[] replaced
+local function set_env_ci(t, name, value)
+  local replaced = {}
+  if type(t) == "table" then
+    local lname = name:lower()
+    for k in pairs(t) do
+      if k ~= name and type(k) == "string" and k:lower() == lname then
+        replaced[#replaced + 1] = k
+      end
+    end
+    table.sort(replaced)
+    for _, k in ipairs(replaced) do t[k] = nil end
+  end
+  return set_or_clear(t, name, value), replaced
+end
+
 --- Apply one `param`/`value` to a config data table (value nil clears). Param
 --- namespaces (§16.9): options.<KEY>, variables.<NAME>, env.<NAME> (the
 --- configuration environment, §1.3.3), overrides.<family>.<name> (a
@@ -2875,7 +2901,9 @@ end
 --- compiler-family environment variable), family ∈ clang|gcc|msvc; the bare
 --- fields inherits and languages (CSV); and any other BARE name → module
 --- field. Any other dotted param is rejected rather than stored as a literal
---- dotted module-field name.
+--- dotted module-field name. Returns the case-variant env names a set/unset
+--- replaced (`set_env_ci`) — empty for every other param.
+--- @return string[] replaced
 local function apply_param(data, param, value)
   if param == "options" or param == "variables" or param == "env" then
     die("specify a key: " .. param .. ".<KEY>")
@@ -2909,9 +2937,10 @@ local function apply_param(data, param, value)
       die("specify a variable: overrides." .. ov_family .. ".env.<NAME>")
     end
     local env_name = ov_name:match("^env%.(.+)$")
+    local replaced = {}
     if env_name then
       local env = type(fam.env) == "table" and fam.env or nil
-      fam.env = set_or_clear(env, env_name, value)
+      fam.env, replaced = set_env_ci(env, env_name, value)
     elseif ov_name:find(".", 1, true) then
       die("unknown parameter '" .. param .. "' — expected one of: " .. CONFIG_PARAM_FORMS)
     else
@@ -2920,7 +2949,7 @@ local function apply_param(data, param, value)
     end
     data.overrides[ov_family] = next(fam) and fam or nil
     if not next(data.overrides) then data.overrides = nil end
-    return
+    return replaced
   end
   local dictname, key = param:match("^(options)%.(.+)$")
   if not dictname then dictname, key = param:match("^(variables)%.(.+)$") end
@@ -2928,13 +2957,14 @@ local function apply_param(data, param, value)
     data[dictname] = data[dictname] or {}
     data[dictname][key] = value
     if not next(data[dictname]) then data[dictname] = nil end
-    return
+    return {}
   end
   local env_name = param:match("^env%.(.+)$")
   if env_name then
     -- Configuration environment (§1.3.3). An empty value clears, like unset.
-    data.env = set_or_clear(data.env, env_name, value)
-    return
+    local replaced
+    data.env, replaced = set_env_ci(data.env, env_name, value)
+    return replaced
   end
   if param == "inherits" then
     if not value or value == "" then
@@ -2952,6 +2982,7 @@ local function apply_param(data, param, value)
   else
     data[param] = value -- module field (variant, toolchain, generator, ...)
   end
+  return {}
 end
 
 --- Read one `param` off a Configuration. Returns a string, a dict, or nil.
@@ -3191,7 +3222,7 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   if param == "variant" then reject_variant_param(proj, value) end
   local data = config_to_data(cfg)
   local before = vim.deepcopy(data)
-  apply_param(data, param, value)
+  local replaced = apply_param(data, param, value) or {}
   -- Nothing changed (an unset of a param that was never set, or a set to the
   -- value it already has): say so, write nothing, and suggest no publish.
   -- Exit 0 — an idempotent edit is not an error (a script may re-run it).
@@ -3207,11 +3238,15 @@ local function edit_configuration(root, proj_name, cfg_name, param, value, verb)
   if not ok then die("could not " .. verb .. ": " .. tostring(err)) end
   if verb == "set" then
     out(string.format("%s/%s: set %s = %s", proj.key, cfg.name, param, value))
+    local prefix = param:match("^(.*%.)[^.]+$") or ""
+    for _, old in ipairs(replaced) do
+      out(string.format("  (replaces %s%s — environment names are case-insensitive)", prefix, old))
+    end
     -- `PATH` (any case) is allowed but replaces the tool's PATH wholesale
     -- (§1.3.3) — say so now, not only when a build later cannot find cl.exe.
     local env_name = param:match("^env%.(.+)$") or param:match("^overrides%.[^.]+%.env%.(.+)$")
     if env_name and require("loomworks.reserved_compiler").is_path_env(env_name) then
-      note("warning: env." .. env_name .. " replaces the PATH the tool sets up for every "
+      note("warning: " .. param .. " replaces the PATH the tool sets up for every "
         .. "configure/build/test task of " .. proj.key .. "/" .. cfg.name
         .. " (e.g. the MSVC developer environment — cl.exe / link.exe may then not be "
         .. "found). ${PATH} in the value expands to lw's own PATH, not the tool's.")
@@ -4272,6 +4307,16 @@ function M.cmd_profile_set(root, args)
     table.sort(declared)
     die("project '" .. proj.key .. "' declares no variable '" .. var_name ..
       "'. Declared: " .. (next(declared) and table.concat(declared, ", ") or "(none)"))
+  end
+  if var_name == "cache" then
+    local ok, err = require("loomworks.compiler_cache").validate_policy(value)
+    if not ok then die(err) end
+  end
+  -- Same idempotence as `lw config set`: a value already set changes nothing,
+  -- so say so and leave user.json untouched.
+  if value ~= "" and profile:variable_value(proj.key, var_name) == value then
+    out(string.format("%s: %s/%s = %s (unchanged)", profile.key, proj.key, var_name, value))
+    return 0
   end
   profile:set_variable_value(proj.key, var_name, value)
   out(string.format("%s: set %s/%s = %s", profile.key, proj.key, var_name, value))
@@ -6670,6 +6715,8 @@ profile):
   off       never use a compiler cache.
   sccache | ccache   use exactly that tool (not found → builds run uncached,
             and `lw health` says so).
+  Values are case-insensitive (`false` = off). Anything else is refused when
+  set; one found in a hand-edited file is flagged in `lw status`.
 Set it:
   lw config set <project> <configuration> variables.cache sccache
   lw config set <project> <configuration> overrides.msvc.cache sccache
@@ -6961,7 +7008,9 @@ Params for get/set/unset:
 Environment names: the compiler-driver variables (CC, CXX, FC, CUDACXX,
 CUDAHOSTCXX, OBJC, OBJCXX, ISPC — in any case) are refused: the profile's tool
 chooses the compiler. Setting PATH (any case) is allowed but REPLACES the PATH
-the tool sets up (e.g. the MSVC developer environment), so lw warns.
+the tool sets up (e.g. the MSVC developer environment), so lw warns. Names are
+one entry per name ignoring case: setting env.Path when env.PATH exists
+replaces it (keeping the new spelling), and lw says so.
 
 Compiler-family overrides (family ∈ clang|gcc|msvc, clang-cl counts as clang)
 override a project variable's value only when the active tool's compiler

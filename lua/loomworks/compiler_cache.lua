@@ -47,6 +47,36 @@ function M.normalize_policy(policy)
     return p
 end
 
+--- The compiler-cache launchers loomworks knows how to apply — the only
+--- concrete tool names a `cache` policy may name (core §1.3.2).
+--- @type string[]
+M.KNOWN_LAUNCHERS = { "ccache", "sccache" }
+
+--- The accepted `cache` policy values, for error messages and help.
+M.VALID_POLICIES = "auto | off | false | ccache | sccache"
+
+--- Validate a raw `cache` policy value (string or boolean) — what a user may
+--- set. Valid: anything `normalize_policy` maps to `auto` / `off` (so
+--- `auto`, `off`, `false`, `none`, `no`, empty, a boolean — case-insensitive),
+--- or a known launcher name (`KNOWN_LAUNCHERS`, case-insensitive). Anything
+--- else would resolve to a launcher loomworks cannot apply and silently build
+--- uncached, so edit paths reject it and a hand-edited file gets a diagnostic.
+--- @param policy any
+--- @return boolean ok, string|nil err
+function M.validate_policy(policy)
+    if policy == nil or type(policy) == "boolean" then return true end
+    if type(policy) ~= "string" then
+        return false, "cache policy must be a string (" .. M.VALID_POLICIES .. ")"
+    end
+    local p = M.normalize_policy(policy)
+    if p == "auto" or p == "off" then return true end
+    for _, t in ipairs(M.KNOWN_LAUNCHERS) do
+        if p == t then return true end
+    end
+    return false, "invalid cache policy '" .. policy .. "' — expected one of: "
+        .. M.VALID_POLICIES
+end
+
 --- Whether a raw family string names an MSVC-style compiler for the `auto`
 --- rule: `msvc`, or the MSVC-ABI clang-cl driver (which `normalize_family`
 --- folds to `clang`, so the signal is recovered from the raw string).
