@@ -790,7 +790,9 @@ severity.
   Was: accepted, then shows
   "bogus (not found)" and silently builds uncached. Validate the policy value
   (`auto` / `off` / a known launcher name) at set time.
-- **COSMETIC — user.json key order changes on rewrite**, producing noisy diffs.
+- ~~**COSMETIC — user.json key order changes on rewrite**~~ DONE (v0.1.30):
+  `io.write_json` sorts object keys at every depth (all three files). Was:
+  key order changed on rewrite, producing noisy diffs.
   Serialize with a stable (e.g. sorted, or original-order-preserving) key order.
 - **WORDING** —
   - "nearly every target (… 77 of 77 targets)": only the *unit* count is
