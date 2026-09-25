@@ -770,9 +770,12 @@ M._match_profile_arg = match_profile_arg
 --- → user.json active → single → error.
 --- `opts.no_number` disables the numeric-index path (keys only) — used by
 --- `lw profile query`, the deterministic machine path.
+--- `opts.usage` is the invoked command's explicit form (e.g. `lw test <profile>`)
+--- quoted in the non-interactive "no profile specified" refusal, so the hint
+--- names the command the user actually ran rather than always `lw build`.
 --- @param ws table
 --- @param name string|nil
---- @param opts { no_number: boolean }|nil
+--- @param opts { no_number: boolean, usage: string }|nil
 --- @return table profile
 local function resolve_profile(ws, name, opts)
   local profiles = ws._profiles or {}
@@ -792,7 +795,8 @@ local function resolve_profile(ws, name, opts)
     table.sort(keys)
     die("no profile specified — non-interactive mode never uses the active profile\n" ..
       "  and never infers one (not even when only one profile exists).\n" ..
-      "  pass one explicitly (a unique substring works): lw build <profile>\n" ..
+      "  pass one explicitly (a unique substring works): " ..
+      (opts and opts.usage or "lw <command> <profile>") .. "\n" ..
       "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
       "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically")
   end
@@ -873,8 +877,12 @@ end
 --- (prompting for the tool), then build it. Non-interactive/CI never creates —
 --- it defers to resolve_profile's strict, explicit error (builds are read-only
 --- there). Returns (profile, ws); ws may be a fresh reload.
-local function resolve_build_target(ws, name)
+--- `usage` is the invoked command's explicit form for the refusal hints
+--- (default `lw build <profile>`; test/clean/reset/run pass their own).
+--- @param usage? string
+local function resolve_build_target(ws, name, usage)
   local profiles = ws._profiles or {}
+  usage = usage or "lw build <profile>"
 
   -- A concrete profile match (number index, exact key, or unambiguous
   -- boundary-anchored substring — the shared matcher) always wins. A miss
@@ -883,12 +891,12 @@ local function resolve_build_target(ws, name)
     local hit = match_profile_arg(ws, name)
     if hit then return hit, ws end
   else
-    if not interactive() then return resolve_profile(ws, nil), ws end
+    if not interactive() then return resolve_profile(ws, nil, { usage = usage }), ws end
     local active = ws._active_profile_key
     if active then for _, p in ipairs(profiles) do if p.key == active then return p, ws end end end
     if #profiles == 1 then return profiles[1], ws end
     if #profiles > 1 then
-      die("no profile specified and no active default — `lw profile select`, or `lw build <profile>`")
+      die("no profile specified and no active default — `lw profile select`, or `" .. usage .. "`")
     end
   end
 
@@ -903,7 +911,7 @@ local function resolve_build_target(ws, name)
         end
       end
     end
-    return resolve_profile(ws, name), ws
+    return resolve_profile(ws, name, { usage = usage }), ws
   end
 
   -- Onboard: build a config set by creating a profile for it.
@@ -1160,7 +1168,7 @@ end
 function M.cmd_clean(ws, profile_name)
   local overseer = require("loomworks.overseer")
   local profile
-  profile, ws = resolve_build_target(ws, profile_name)
+  profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
   local steps = overseer.plan_profile_clean(profile)
   if not steps or #steps == 0 then
     die("nothing to clean for profile '" .. profile.key ..
@@ -1253,7 +1261,7 @@ function M.cmd_reset(ws, args)
     run = function(on_done) ws:reset_all(on_done) end
   else
     local profile
-    profile, ws = resolve_build_target(ws, profile_name)
+    profile, ws = resolve_build_target(ws, profile_name, "lw reset <profile>")
     scope_label = "profile '" .. profile.key .. "'"
     -- plan_reset marks a unit shared with another profile as "keep" (its dir is
     -- retained); only non-keep items are physically removed.
@@ -1437,7 +1445,7 @@ function M.cmd_test(ws, args)
   if junit then junit = resolve_abs_out(junit, user_cwd()) end
 
   local profile
-  profile, ws = resolve_build_target(ws, profile_name)
+  profile, ws = resolve_build_target(ws, profile_name, "lw test <profile>")
   -- Hold the build-dir lock across build AND test: a native runner like
   -- `meson test` rebuilds, so the whole run must be exclusive of other
   -- processes touching the same build dir.
@@ -1601,17 +1609,19 @@ M._match_targets = match_targets
 function M._run_selection(ws, positionals, deps)
   deps = deps or {}
   local resolve = deps.resolve or resolve_build_target
+  -- A named profile needs the two-operand form (one operand is a target).
+  local usage = "lw run <profile> <target>"
   local profile
   if #positionals >= 2 then
-    profile, ws = resolve(ws, positionals[1])
+    profile, ws = resolve(ws, positionals[1], usage)
     return profile, positionals[2], ws
   elseif #positionals == 1 then
     -- One operand is always a target on the resolved profile (the same profile
     -- a bare `lw run` would pick), never a profile selector.
-    profile, ws = resolve(ws, nil)
+    profile, ws = resolve(ws, nil, usage)
     return profile, positionals[1], ws
   end
-  profile, ws = resolve(ws, nil)
+  profile, ws = resolve(ws, nil, usage)
   return profile, nil, ws
 end
 
@@ -3968,7 +3978,8 @@ local function target_set(root, args)
   else die("usage: lw target set [<profile>] <target>") end
 
   local ws = load_workspace(root, false)
-  local profile = resolve_profile(ws, profile_name) -- nil → active (interactive) / dies in CI
+  local profile = resolve_profile(ws, profile_name, -- nil → active (interactive) / dies in CI
+    { usage = "lw target set <profile> <target>" })
 
   -- Resolve <target> to a candidate (same rules as `lw run`).
   local bare = target_name
@@ -4017,7 +4028,8 @@ end
 --- `lw target clear [profile]` — clear a profile's default target.
 local function target_clear(root, args)
   local ws = load_workspace(root, false)
-  local profile = resolve_profile(ws, args[3]) -- nil → active (interactive) / dies in CI
+  local profile = resolve_profile(ws, args[3], -- nil → active (interactive) / dies in CI
+    { usage = "lw target clear <profile>" })
   profile:clear_default_target()
   out("cleared default target for profile '" .. profile.key .. "'")
   return 0

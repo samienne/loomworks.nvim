@@ -39,8 +39,8 @@ by the caller. Absent an explicit selection, a non-interactive build-shaped
 invocation (build, clean, test, run, reset, …) is **always** an error — even when
 the workspace has exactly one profile, and regardless of the working copy's
 active profile: it never uses the active profile and never infers one. The
-error lists the available profiles and points at the named form (a unique
-substring is accepted, below) and at read-only introspection (§16.18) for
+error lists the available profiles and points at the invoked verb's named form
+(e.g. `lw test <profile>`; a unique substring is accepted, below) and at read-only introspection (§16.18) for
 deterministic selection in scripts. An interactive invocation MAY fall back to
 the active profile, then to the sole profile; the read-only listing / show
 verbs and the profile fill-value management verbs keep their own no-argument
