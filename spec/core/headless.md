@@ -35,9 +35,16 @@ reproducible; an explicit **management** operation MAY write it (§16.9).
 
 The active profile is working-copy state (§4.2) and is not assumed in a
 headless invocation. The profile to operate on MUST be selected explicitly
-by the caller. Absent an explicit selection, the invocation is an error
-unless exactly one published profile exists — the system never guesses a
-default.
+by the caller. Absent an explicit selection, a non-interactive build-shaped
+invocation (build, clean, test, run, reset, …) is **always** an error — even when
+the workspace has exactly one profile, and regardless of the working copy's
+active profile: it never uses the active profile and never infers one. The
+error lists the available profiles and points at the named form (a unique
+substring is accepted, below) and at read-only introspection (§16.18) for
+deterministic selection in scripts. An interactive invocation MAY fall back to
+the active profile, then to the sole profile; the read-only listing / show
+verbs and the profile fill-value management verbs keep their own no-argument
+defaults (below, §16.9, §16.18).
 
 A profile MAY be named by a **truncated tool selector** — a prefix of a tool
 key that omits trailing detail, such as a compiler family plus major version
@@ -184,6 +191,15 @@ when the caller invokes it directly; it is never part of a build. Management
 writes follow the same working-copy model as the editor (§2.4): they land in
 the working copy (§2.2), and the published snapshot (§2.1) changes only on an
 explicit publish. A read-only / CI invocation runs no management operation.
+
+Selecting the **active profile** (§4.2) is such a management operation, and it
+needs no interactive terminal when the profile is named: the name resolves by
+the §16.3 named-selection procedure and the selection is written to the working
+copy. A companion form **clears** the selection (no active profile). Selecting
+the profile that is already active, or clearing when none is active, writes
+nothing and says so (`(unchanged)`). Only an *unnamed* selection — an
+interactive picker — requires a terminal; non-interactively it is an error that
+names the scriptable forms.
 
 Configuration editing addresses a configuration's fields by a **dotted param
 grammar** (`get`/`set`/`unset`): a bare field (`inherits`, `languages`, a

@@ -790,9 +790,11 @@ local function resolve_profile(ws, name, opts)
     local keys = {}
     for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
     table.sort(keys)
-    die("no profile specified — non-interactive mode does not use the active profile.\n" ..
+    die("no profile specified — non-interactive mode never uses the active profile\n" ..
+      "  and never infers one (not even when only one profile exists).\n" ..
       "  pass one explicitly (a unique substring works): lw build <profile>\n" ..
-      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)"))
+      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
+      "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically")
   end
   local active = ws._active_profile_key
   if active then
@@ -3557,17 +3559,77 @@ function M.cmd_cset(sub, root, args)
     "' — use list|show|create|map|unmap|rename|remove|publish")
 end
 
---- `lw profile select` — interactive picker that sets the active profile.
---- Writes user.json (explicit management).
-function M.select_profile(ws)
+--- Clear the active profile (`lw profile select --none`). Idempotent: with no
+--- active profile it says so and writes nothing. A stale active key (naming a
+--- profile that no longer exists) is cleared too.
+--- @param ws table
+--- @return integer exit code
+local function clear_active_profile(ws)
+  local active = ws._active_profile_key
+  if not active then
+    out("no active profile (unchanged)")
+    return 0
+  end
+  local hit
+  for _, p in ipairs(ws._profiles or {}) do
+    if p.key == active then hit = p; break end
+  end
+  if hit then
+    hit:deactivate()
+  else
+    ws._active_profile = nil
+    ws._active_profile_key = nil
+    ws:_save_user()
+  end
+  out("active profile cleared (was " .. active .. ")")
+  return 0
+end
+
+--- `lw profile select [<profile> | --none]` — set (or clear) the active profile
+--- in the working copy (user.json). A named profile is resolved like every other
+--- profile operand (number, exact key, unique boundary substring) and needs no
+--- terminal, so scripts can drive it; `--none` clears the selection. Only the
+--- no-argument picker is interactive. Selecting the profile that is already
+--- active reports `(unchanged)` and writes nothing.
+--- @param ws table
+--- @param args string[]|nil full argv ({ "profile", "select", … })
+function M.select_profile(ws, args)
+  local name, none
+  for i = 3, #(args or {}) do
+    local a = args[i]
+    if a == "--none" then
+      none = true
+    elseif a:sub(1, 1) == "-" then
+      die("unknown option '" .. a .. "' — usage: lw profile select [<profile> | --none]")
+    elseif name then
+      die("unexpected argument '" .. a .. "' — usage: lw profile select [<profile> | --none]")
+    else
+      name = a
+    end
+  end
+  if none and name then
+    die("`--none` clears the active profile; it takes no profile name")
+  end
+  if none then return clear_active_profile(ws) end
   local profiles = ws._profiles or {}
+  if name then
+    local p = resolve_profile(ws, name)
+    if ws._active_profile_key == p.key then
+      out("active profile: " .. p.key .. " (unchanged)")
+      return 0
+    end
+    p:activate()
+    out("active profile: " .. p.key)
+    return 0
+  end
   if #profiles == 0 then die("no profiles to select — run `lw profile list`") end
   if not interactive() then
     local keys = {}
     for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
-    die("`lw profile select` needs an interactive terminal.\n" ..
-      "  set the active profile with `lw profile create <set> <tool> --activate`, or\n" ..
-      "  build a specific profile with `lw build <profile>`.\n" ..
+    table.sort(keys)
+    die("`lw profile select` without a profile is an interactive picker.\n" ..
+      "  name the profile (a unique substring works): lw profile select <profile>\n" ..
+      "  or clear the selection: lw profile select --none\n" ..
       "  profiles: " .. table.concat(keys, ", "))
   end
   local active = ws._active_profile_key
@@ -4250,7 +4312,7 @@ end
 
 function M.cmd_profile(sub, root, args)
   if sub == "select" then
-    return M.select_profile(load_workspace(root, false))
+    return M.select_profile(load_workspace(root, false), args)
   end
   if sub == "set" then
     return M.cmd_profile_set(root, args)
@@ -6170,6 +6232,9 @@ function M.cmd_complete(cword, words)
       end
     elseif (sub == "publish" or sub == "show") and n == 2 then
       emit(comp_profile_names(comp_ws(root)))                  -- <key>
+    elseif sub == "select" and n == 2 then
+      local list = comp_profile_names(comp_ws(root)); list[#list + 1] = "--none"
+      emit(list)                                               -- <profile> | --none
     elseif (sub == "set" or sub == "unset") then
       -- Grammar: [<profile>] <project> <variable> [<value>]. Position 2 may be
       -- either the optional profile or the project; offer both. Position 3
@@ -6940,7 +7005,11 @@ Examples:
             configuration, resolved toolchain and build state), the profile's
             toolchains, and its launchable targets. Diagnostics are scoped to
             the profile. <profile> defaults to the active profile. Read-only.
-  select    interactive picker; sets the active profile (writes user.json)
+  select [<profile> | --none]
+            Set the active profile (writes user.json). A named <profile> (a
+            unique substring works) needs no terminal, so your own scripts can
+            switch it; --none clears the active profile. With neither, an
+            interactive picker. Re-selecting the active profile changes nothing.
   create <config-set> [tool ...] [--activate]
             Create a profile (a config set + toolchains) in the working copy.
             If <config-set> doesn't exist but is auto-detectable, it's
@@ -7356,7 +7425,8 @@ for custom variants.
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
-mode `lw build` also ignores the active profile — pass the profile explicitly.
+mode `lw build` also ignores the active profile (and never picks a sole profile)
+— pass the profile explicitly.
 
 Automation agent? See `lw help agent` — run with --no-input so you never block
 or change the user's settings. Driving CI? See `lw help ci`. Compiler cache

@@ -725,7 +725,12 @@ staleness record, `cache_launcher_applicable` answer and compatibility scan.
 Motivation: LumeEditor measured a hand-made `cl.exe` shim of this kind at
 12.2 → 4.3 min for its Visual Studio generator build.
 
-## Scriptable active-profile selection (`lw profile select <name>`)
+## ~~Scriptable active-profile selection (`lw profile select <name>`)~~
+
+**DONE** (v0.1.30, fix/v0.1.30-cli): `lw profile select <profile>` works without
+a terminal (same resolution as `lw build <profile>`; re-selecting the active
+profile is `(unchanged)`, no write) and `lw profile select --none` clears the
+active profile. Only the bare picker needs a TTY (headless §16.9).
 
 Tester feedback (v0.1.29 beta, non-interactive CLI). `lw profile select` is
 interactive-only (a picker on a terminal), and there is no way to CLEAR the
