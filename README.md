@@ -21,7 +21,8 @@ current version.
 - **Multi-project workspaces** — manage cmake, meson, shell, and
   typescript projects from a single `loomworks.json`
 - **CMake preset support** — reads `CMakePresets.json` and
-  `CMakeUserPresets.json` with full inheritance
+  `CMakeUserPresets.json` with full inheritance; presets whose `condition`
+  excludes this host (e.g. macOS-only presets on Windows) are not offered
 - **Automatic tool detection** — finds MSVC (via vswhere), GCC, Clang, and
   clang-cl (Clang's MSVC driver, one per MSVC install) compilers; generates
   profile combinations with Ninja/Visual Studio generators

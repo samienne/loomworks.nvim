@@ -744,7 +744,13 @@ same resolution as `lw build <profile>`) and `lw profile select --none` (or
 never change the user's active profile unasked) — the command is for the user's
 own scripts, not something lw does implicitly.
 
-## `lw status` lists presets whose `condition` excludes this host
+## ~~`lw status` lists presets whose `condition` excludes this host~~
+
+**DONE** (v0.1.30): the cmake module evaluates preset `condition`s (all CMake
+types, inherited from bases, three-valued — unknown macros never hide) and
+leaves out presets false on this host (spec/modules/cmake.md §3). A set that
+still maps one gets the usual missing-configuration diagnostic.
+
 
 Tester feedback (v0.1.29 beta, Windows). `lw status` (and the configuration
 lists) show a project's macOS-only CMake presets on Windows: loomworks reads

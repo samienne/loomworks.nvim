@@ -55,7 +55,25 @@ configuration, it is returned for any variant type.
 The module reads `CMakePresets.json` + `CMakeUserPresets.json` with
 full preset inheritance:
 
-- Each non-hidden configure preset becomes a loomworks configuration.
+- Each non-hidden configure preset becomes a loomworks configuration —
+  unless its `condition` is **false on this host**. The module evaluates the
+  preset's `condition` (schema v3+) as CMake does — `const`, `equals`,
+  `notEquals`, `inList`, `notInList`, `matches`, `notMatches`, `anyOf`,
+  `allOf`, `not` — expanding the macros `${hostSystemName}` (`Windows` /
+  `Darwin` / `Linux` / the kernel name), `${sourceDir}`, `${sourceParentDir}`,
+  `${sourceDirName}`, `${presetName}`, `${generator}`, `${dollar}`,
+  `${pathListSep}`, `$env{NAME}` (the preset's `environment`, then the process
+  environment) and `$penv{NAME}`. A preset without its own `condition`
+  inherits the first base's (in `inherits` order), so a hidden
+  platform-specific base excludes every preset built on it. The evaluation is
+  three-valued: only a definite **false** hides a preset; an unknown macro
+  (`$vendor{…}`), condition type, or regex construct outside the supported
+  subset (literals, `.`, anchors, `* + ?`, `[…]` classes, `\d \w \s`) leaves the
+  preset listed and never errors. So `lw status` and the configuration lists
+  never offer a macOS-only preset on Windows. A preset hidden this way that a
+  configuration set still maps behaves like a preset removed from the file —
+  the mapping surfaces through the usual missing-configuration diagnostics,
+  never silently.
 - A directly mapped preset is configured with `cmake --preset <name>`
   using the bare preset name (not the internal `preset:<name>` key).
   cmake reads `CMakePresets.json` and applies the preset's generator,
