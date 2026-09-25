@@ -2442,6 +2442,42 @@ local function publish_item(ws, item, label)
   return 0
 end
 
+--- Whether `item` — a project (`kind` "projects"), configuration ("configs",
+--- with its `proj`), configuration set ("config_sets") or profile ("profiles")
+--- — reaches the shared loomworks.json: it is in the effective-intent closure
+--- (§2.4: its own intent, or a published set/profile pulls it in), or a
+--- published copy of it already exists (so editing/removing it changes
+--- loomworks.json). Gates the "`lw publish` …" hint after a remove / rename /
+--- (un)map: a never-published LOCAL item has nothing to publish. Evaluate it
+--- BEFORE a remove (the item leaves the closure once gone). Errs on the side of
+--- the hint when the closure cannot be computed.
+--- @param ws table
+--- @param kind "projects"|"configs"|"config_sets"|"profiles"
+--- @param item table
+--- @param proj? loomworks.Project the configuration's project (kind "configs")
+--- @return boolean
+local function item_reaches_shared(ws, kind, item, proj)
+  local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
+  if not (ok_p and type(pub) == "table" and type(pub[kind]) == "table") then return true end
+  if pub[kind][item] then return true end
+  local base = ws._shared_baseline
+  if type(base) ~= "table" then return false end
+  local function has(t, k) return type(t) == "table" and k ~= nil and t[k] ~= nil end
+  if kind == "projects" then return has(base.projects, item.key) end
+  if kind == "config_sets" then return has(base.configuration_sets, item.name) end
+  if kind == "profiles" then return has(base.profiles, item.key) end
+  if kind == "configs" and proj then
+    local ok_b, in_base = pcall(function() return ws:is_config_in_baseline(proj, item) end)
+    return not ok_b or in_base == true
+  end
+  return false
+end
+
+--- Print the `lw publish` hint when `shared` (see `item_reaches_shared`).
+local function publish_hint(shared)
+  if shared then out("`lw publish` to update the shared loomworks.json.") end
+end
+
 -- ---------------------------------------------------------------------------
 -- Shared lookups + small formatting helpers
 -- ---------------------------------------------------------------------------
@@ -2634,10 +2670,11 @@ function M.cmd_project_remove(root, name_arg)
     die("no project named '" .. name_arg .. "'. Existing: " ..
       (next(names) and table.concat(names, ", ") or "(none)"))
   end
+  local shared = item_reaches_shared(ws, "projects", proj)
   local ok, err = ws:remove_project(proj)
   if not ok then die("could not remove project: " .. tostring(err)) end
   out("removed project '" .. proj.key .. "'")
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
@@ -2650,10 +2687,11 @@ function M.cmd_project_rename(root, old_name, new_name)
   if not old_name or not new_name then die("usage: lw project rename <old-name> <new-name>") end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, old_name)
+  local shared = item_reaches_shared(ws, "projects", proj)
   local ok, err = ws:rename_project(proj, new_name)
   if not ok then die("could not rename project: " .. tostring(err)) end
   out(string.format("renamed project '%s' -> '%s'", old_name, new_name))
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
@@ -3340,10 +3378,11 @@ function M.cmd_configuration_remove(root, proj_name, cfg_name)
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, true)
+  local shared = item_reaches_shared(ws, "configs", cfg, proj)
   local ok, err = proj:delete_configuration(cfg.name)
   if not ok then die("could not remove configuration: " .. tostring(err)) end
   out(string.format("removed configuration '%s' from project '%s'", cfg.name, proj.key))
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
@@ -3378,11 +3417,12 @@ function M.cmd_configuration_rename(root, proj_name, old_name, new_name)
     end
   end
   local config_data = config_to_data(cfg)
+  local shared = item_reaches_shared(ws, "configs", cfg, proj)
   local ok, err = proj:rename_configuration(from, new_name, config_data)
   if not ok then die("could not rename configuration: " .. tostring(err)) end
   out(string.format("renamed configuration '%s/%s' -> '%s/%s'",
     proj.key, from, proj.key, new_name))
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
@@ -3558,7 +3598,7 @@ function M.cmd_cset_map(root, name, pk, cfgname)
   local ok, err = cs:update_mapping(project, cfg)
   if not ok then die("could not map: " .. tostring(err)) end
   out(string.format("%s: %s -> %s", cs.name, project.key, cfg.name))
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(item_reaches_shared(ws, "config_sets", cs))
   return 0
 end
 
@@ -3572,7 +3612,7 @@ function M.cmd_cset_unmap(root, name, pk)
   local ok, err = cs:update_mapping(project, nil)
   if not ok then die("could not unmap: " .. tostring(err)) end
   out(cs.name .. ": removed mapping for " .. project.key)
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(item_reaches_shared(ws, "config_sets", cs))
   return 0
 end
 
@@ -3582,13 +3622,14 @@ function M.cmd_cset_remove(root, name)
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   local using = profiles_using_set(ws, cs)
+  local shared = item_reaches_shared(ws, "config_sets", cs)
   local ok, err = ws:remove_configuration_set(cs)
   if not ok then die("could not remove configuration set: " .. tostring(err)) end
   out("removed configuration set '" .. cs.name .. "'")
   if #using > 0 then
     out("  note: these profiles now reference a missing set: " .. table.concat(using, ", "))
   end
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
@@ -3603,10 +3644,11 @@ function M.cmd_cset_rename(root, old_name, new_name)
   end
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, old_name)
+  local shared = item_reaches_shared(ws, "config_sets", cs)
   local ok, err = ws:rename_configuration_set(cs, new_name)
   if not ok then die("could not rename configuration set: " .. tostring(err)) end
   out(string.format("renamed configuration set '%s' -> '%s'", old_name, new_name))
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
@@ -4176,11 +4218,12 @@ function M.cmd_profile_remove(root, args)
   local ws = load_workspace(root, false)
   local profile = resolve_profile(ws, name)
   local key = profile.key
+  local shared = item_reaches_shared(ws, "profiles", profile)
   local ok, err = ws:remove_profile(profile)
   if not ok then die("could not remove profile: " .. tostring(err)) end
   out("removed profile '" .. key .. "'")
   out("  build directories were left in place (`lw clean` removes artifacts).")
-  out("`lw publish` to update the shared loomworks.json.")
+  publish_hint(shared)
   return 0
 end
 
