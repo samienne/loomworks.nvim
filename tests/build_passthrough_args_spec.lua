@@ -3,7 +3,8 @@
 ---
 --- The bug: `lw build <profile> -- --target AppRunner` appended the forwarded
 --- args to the build step's FINAL command. For an MSVC-style kit with the Ninja
---- generator that command is `cmd /C <vcvarsall .bat>` — the real
+--- generator that command runs a vcvarsall batch through cmd.exe (named by the
+--- LOOMWORKS_VCVARS_BAT env var, cmake spec §14) — the real
 --- `cmake --build …` line lives inside the batch file — so the args became
 --- ignored batch parameters and the default target was built instead.
 --- Forwarded args (and `--target`) now reach the module, which puts them on its
@@ -144,9 +145,9 @@ describe("lw build: forwarded build-tool args reach the build tool", function()
         local b = build_step(spawned)
         assert.is_not_nil(b)
         assert.equals("cmd", b.cmd[1])
-        assert.equals(3, #b.cmd, "nothing may be appended after the wrapped batch: "
-            .. table.concat(b.cmd, " "))
-        local bat = read_all(b.cmd[3])
+        assert.same({ "cmd", "/d", "/v:on", "/c", "!LOOMWORKS_VCVARS_BAT!" }, b.cmd,
+            "nothing may be appended after the wrapped batch: " .. table.concat(b.cmd, " "))
+        local bat = read_all(b.env.LOOMWORKS_VCVARS_BAT)
         assert.is_not_nil(bat)
         assert.is_truthy(bat:find('"--build"', 1, true), bat)
         assert.is_truthy(bat:find('"--target" "AppRunner"', 1, true),
@@ -159,7 +160,7 @@ describe("lw build: forwarded build-tool args reach the build tool", function()
         root = r
         local spawned = run_build(ws, { "build", profile.key, "--target", "AppRunner",
             "--target", "Runtime" })
-        local bat = read_all(build_step(spawned).cmd[3])
+        local bat = read_all(build_step(spawned).env.LOOMWORKS_VCVARS_BAT)
         assert.is_truthy(bat:find('"--target" "AppRunner" "Runtime"', 1, true), bat)
         vim.fn.delete(vs, "rf")
     end)
@@ -168,7 +169,7 @@ describe("lw build: forwarded build-tool args reach the build tool", function()
         local ws, profile, r, vs = msvc_core()
         root = r
         local spawned = run_build(ws, { "build", profile.key, "--", "-DX=100%" })
-        local bat = read_all(build_step(spawned).cmd[3])
+        local bat = read_all(build_step(spawned).env.LOOMWORKS_VCVARS_BAT)
         assert.is_truthy(bat:find('"-DX=100%%"', 1, true), bat)
 
         local spawned2, code, stderr = run_build(ws, { "build", profile.key, "--", 'a"b' })
@@ -248,9 +249,9 @@ describe("module build_args / build_targets", function()
         }, "preset:dev"))
         assert.is_true(t.loomworks.applied_build_args)
         assert.is_true(t.loomworks.applied_build_targets)
-        local cmd = t.builder().cmd
-        assert.equals(3, #cmd)
-        local bat = read_all(cmd[3])
+        local spec = t.builder()
+        assert.same({ "cmd", "/d", "/v:on", "/c", "!LOOMWORKS_VCVARS_BAT!" }, spec.cmd)
+        local bat = read_all(spec.env.LOOMWORKS_VCVARS_BAT)
         assert.is_truthy(bat:find('"--target" "AppRunner" "-j" "2"', 1, true), bat)
     end)
 
@@ -349,6 +350,16 @@ describe("run_build_steps fallback for a module that does not apply build args",
     it("refuses to append to a batch-wrapped command", function()
         local spawned, code, err = run({ kind = "build", name = "x",
             cmd = { "cmd", "/C", "C:/b/loomworks_build_1.bat" } }, { extra_args = { "-k" } })
+        assert.equals(1, code)
+        assert.equals(0, #spawned)
+        assert.matches("cannot forward", err)
+    end)
+
+    it("refuses to append to the env-named vcvars wrapper (cmake spec §14)", function()
+        local spawned, code, err = run({ kind = "build", name = "x",
+            cmd = { "cmd", "/d", "/v:on", "/c", "!LOOMWORKS_VCVARS_BAT!" },
+            env = { LOOMWORKS_VCVARS_BAT = "C:/b/loomworks_build_1.bat" } },
+            { extra_args = { "-k" } })
         assert.equals(1, code)
         assert.equals(0, #spawned)
         assert.matches("cannot forward", err)
