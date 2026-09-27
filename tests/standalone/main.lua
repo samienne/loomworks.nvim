@@ -348,6 +348,27 @@ do
   ok(not download.is_transient(0, ""), "success is not a retry candidate")
 end
 
+print("boot.download — a fetch returns when curl exits, even with other live loop handles")
+do
+  -- Inside a workspace the CLI process keeps other handles alive (timers,
+  -- watchers). The runner must pump until ITS process is done, not until the
+  -- whole loop drains — or `lw health` hangs forever after the update check.
+  -- A repeating timer stands in for them; it gives up after 5 s (so a
+  -- regression fails here instead of hanging the suite).
+  local t0, hung = uv.now(), false
+  local t = uv.new_timer()
+  t:start(100, 100, function()
+    if uv.now() - t0 > 5000 then hung = true; t:stop(); t:close() end
+  end)
+  local code, out = download._run("curl", { "--version" })
+  local elapsed = uv.now() - t0
+  if not t:is_closing() then t:stop(); t:close() end
+  uv.run("nowait")
+  ok(not hung and elapsed < 5000, "runner returned while another handle was live (" .. elapsed .. " ms)")
+  ok(code == 0 and type(out) == "string" and out:find("curl", 1, true) ~= nil,
+    "the runner still collects curl's exit code and full stdout")
+end
+
 print("boot.download — per-call curl limits (the health update check's quick profile)")
 do
   local saved_run, saved_delay = download._run, download.RETRY_DELAY_MS

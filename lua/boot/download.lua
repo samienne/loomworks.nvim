@@ -54,7 +54,10 @@ local function run(cmd, args)
   stderr:read_start(function(e, data)
     if data then err[#err + 1] = data elseif not e and not stderr:is_closing() then stderr:close() end
   end)
-  uv.run()
+  -- Pump until THIS process exited — not `uv.run()` until the loop drains: in
+  -- a CLI process with a loaded workspace other handles (timers, watchers)
+  -- stay alive, and waiting for them to end would hang the caller forever.
+  while not done do uv.run("once") end
   handle:close()
   return code, table.concat(out), table.concat(err)
 end
