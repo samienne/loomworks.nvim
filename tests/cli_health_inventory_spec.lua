@@ -168,3 +168,73 @@ describe("lw health inventory output", function()
         assert.equals(4, #doc.inventory)
     end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- Column widths follow the content (tester: a long VS-cmake version and a long
+-- clang-cl tool key each pushed the next column 2 chars right)
+-- ---------------------------------------------------------------------------
+describe("health / tools column widths", function()
+    local cli = require("loomworks.cli")
+
+    local function capture(fn)
+        local out_buf = {}
+        local rw, rs = io.write, io.stderr
+        io.write = function(...) for _, s in ipairs({ ... }) do out_buf[#out_buf + 1] = s end end
+        io.stderr = { write = function() end }
+        local ok, err = pcall(fn)
+        io.write, io.stderr = rw, rs
+        if not ok then error(err, 0) end
+        return table.concat(out_buf)
+    end
+
+    it("inventory name column fits the longest row at a typical width, floors at 40", function()
+        assert.equals(42, cli._inventory_name_width(42, 16, 100))
+        assert.equals(12, cli._inventory_name_width(12, 16, 100))
+        -- Narrow terminal: never below the floor; a longer row overflows.
+        assert.equals(40, cli._inventory_name_width(60, 16, 60))
+    end)
+
+    it("a long version keeps every path column aligned (outside a workspace)", function()
+        local orig = cli._probe_inventory
+        cli._probe_inventory = function()
+            return {
+                key = "k", computed_at = 1, declared = {},
+                results = {
+                    { id = "exe:cmake:vs", label = "cmake (VS 2017 Professional)", status = "found",
+                        version = "3.12.18081601", path = "/vs/cmake.exe", category = "build tools" },
+                    { id = "exe:ninja", label = "ninja", status = "found", version = "1.12.1",
+                        path = "/usr/bin/ninja", category = "build tools" },
+                },
+            }
+        end
+        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        cli._probe_inventory = orig
+        assert.is_true(ok, tostring(text))
+        local cols = {}
+        for line in text:gmatch("[^\n]+") do
+            local a = line:find("/vs/cmake.exe", 1, true) or line:find("/usr/bin/ninja", 1, true)
+            -- byte offsets; both lines share the same multi-byte mark prefix width
+            if a then cols[#cols + 1] = a end
+        end
+        assert.equals(2, #cols)
+        assert.equals(cols[1], cols[2])
+    end)
+
+    it("lw tools sizes the key column to the longest key", function()
+        local rows = cli._tool_rows({
+            { key = "ninja-clang-cl-17-enterprise", label = "Ninja + clang-cl 17" },
+            { key = "ninja-msvc-17", label = "Ninja + MSVC 17" },
+        })
+        assert.equals(rows[1]:find("Ninja + clang-cl", 1, true), rows[2]:find("Ninja + MSVC", 1, true))
+        -- Short lists keep the familiar 26-wide key field.
+        local short = cli._tool_rows({ { key = "ninja-gcc-14", label = "GCC" } })
+        assert.equals("  " .. string.format("%-26s", "ninja-gcc-14") .. "   GCC", short[1])
+    end)
+
+    it("lw help tools names the real per-platform cache location", function()
+        local text = capture(function() cli.cmd_help("tools") end)
+        assert.is_truthy(text:find([[%LOCALAPPDATA%\loomworks\cache]], 1, true))
+        assert.is_truthy(text:find("$XDG_CACHE_HOME/loomworks", 1, true))
+        assert.is_nil(text:find("(~/.cache/loomworks/tools.json)", 1, true))
+    end)
+end)

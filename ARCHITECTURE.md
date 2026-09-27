@@ -1068,7 +1068,8 @@ expose. The verifier lives in `lua/boot/verify.lua`; see below.
   bin/lw[.exe]               the host binary (on PATH)
   lua-<ver>/                 verified, extracted release bundles (versioned)
   modules/<name>/lua/**      acquired modules (spec §16.20); .module.json record
-  cache/tools.json           machine-level tool cache
+  cache/tools.json           machine-level tool cache (Windows; elsewhere it is
+                             $XDG_CACHE_HOME/loomworks/tools.json, default ~/.cache)
 <config>/loomworks/config.json   dev source + default_source (spec §16.11)
 ```
 

@@ -447,8 +447,8 @@ local function write_config(cfg)
 end
 
 -- ---------------------------------------------------------------------------
--- Tool cache (machine-level: ~/.cache/loomworks/tools.json, %LOCALAPPDATA% on
--- Windows). Detecting toolchains probes compilers, vswhere, and vcvarsall —
+-- Tool cache (machine-level tools.json: %LOCALAPPDATA%/loomworks/cache on
+-- Windows, else $XDG_CACHE_HOME/loomworks or ~/.cache/loomworks). Detecting toolchains probes compilers, vswhere, and vcvarsall —
 -- seconds of work redone in every fresh process. We persist the last scan so
 -- the fast paths (profile create, profiles, later completion) reuse it.
 -- `lw tools` always does a real scan and rewrites the cache (deliberate = real
@@ -5314,6 +5314,27 @@ local function upad(s, w)
   return s .. string.rep(" ", math.max(0, w - uwidth(s)))
 end
 
+-- Columns the name column always leaves for the tail (location / hint) and the
+-- floor it never shrinks below, whatever the terminal width.
+local INV_TAIL_RESERVE = 30
+local INV_NAME_MIN = 40
+
+--- Width of the inventory "label version" column: sized to the longest row, but
+--- capped so the tail keeps `INV_TAIL_RESERVE` columns on a `tw`-wide terminal
+--- (never below `INV_NAME_MIN`, so a narrow terminal still lines up the common
+--- rows). `lead` is the visible width before the column (indent + category
+--- column); the 4 accounts for the status mark, its space, and the two-space
+--- gap. A row longer than the cap overflows (its name is never truncated —
+--- a clipped version would mislead). Pure; exported for tests.
+--- @param longest integer widest "label version" among the rows
+--- @param lead integer visible columns before the mark
+--- @param tw integer terminal width
+--- @return integer
+local function inventory_name_width(longest, lead, tw)
+  return math.min(longest, math.max(INV_NAME_MIN, tw - lead - 4 - INV_TAIL_RESERVE))
+end
+M._inventory_name_width = inventory_name_width
+
 --- Render `entries` one line per item. Without `with_needed` a left category
 --- column names each category once; with it (the Required block) each line
 --- ends with "· <who needs it>" — compacted (`names_phrase`), the full list
@@ -5325,12 +5346,13 @@ end
 --- @param full_names? boolean
 local function render_inventory_lines(pal, entries, indent, with_needed, full_names)
   local inv = require("loomworks.inventory")
-  local cat_w, name_w = 0, 0
+  local cat_w, longest = 0, 0
   for _, e in ipairs(entries) do
     cat_w = math.max(cat_w, uwidth(e.category))
     local name = e.label .. (e.version and (" " .. e.version) or "")
-    name_w = math.min(40, math.max(name_w, uwidth(name)))
+    longest = math.max(longest, uwidth(name))
   end
+  local name_w = inventory_name_width(longest, uwidth(indent) + (with_needed and 0 or (cat_w + 2)), term_width())
   local last_cat
   for _, e in ipairs(entries) do
     local cat = (e.category ~= last_cat) and e.category or ""
@@ -6355,6 +6377,26 @@ local function human_age(secs)
   return math.floor(secs / 86400) .. "d"
 end
 
+--- One `lw tools` line per tool: "  <key>   <label>  [langs]". The key column is
+--- sized to the longest key in the list (floor 26, so short lists keep their
+--- familiar layout); the label follows after a three-space gap, so a long key
+--- (e.g. ninja-clang-cl-17-enterprise) never runs into it. Pure; exported for tests.
+--- @param tools table[] Tool-like objects ({ key?, label?, languages? })
+--- @return string[]
+local function tool_rows(tools)
+  local key_w = 26
+  for _, t in ipairs(tools) do key_w = math.max(key_w, #(t.key or "(default)")) end
+  local rows = {}
+  for _, t in ipairs(tools) do
+    local langs = (t.languages and #t.languages > 0)
+        and ("  [" .. table.concat(t.languages, ", ") .. "]") or ""
+    local label = t.label and ("   " .. t.label) or ""
+    rows[#rows + 1] = string.format("  %-" .. key_w .. "s%s%s", t.key or "(default)", label, langs)
+  end
+  return rows
+end
+M._tool_rows = tool_rows
+
 --- `lw tools [--cached]` — list detected toolchains, grouped by module.
 --- Default: a full scan (and it refreshes the machine-level cache). --cached:
 --- read the cached result instantly (with its age) instead of probing.
@@ -6388,12 +6430,7 @@ function M.cmd_tools(root, args)
     if #tools == 0 then
       out("  (none detected)")
     else
-      for _, t in ipairs(tools) do
-        local langs = (t.languages and #t.languages > 0)
-            and ("  [" .. table.concat(t.languages, ", ") .. "]") or ""
-        local label = t.label and ("   " .. t.label) or ""
-        out(string.format("  %-26s%s%s", t.key or "(default)", label, langs))
-      end
+      for _, row in ipairs(tool_rows(tools)) do out(row) end
     end
     out("")
   end
@@ -6761,9 +6798,11 @@ Tools are scanned per workspace module, so a module only appears once a
 project uses it. Pin one in a profile with `lw profile create <set> <tool>`;
 version prefixes match (ninja-clang-19 -> ninja-clang-19.1.5).
 
-Probing compilers/vcvarsall is slow, so the result is cached
-(~/.cache/loomworks/tools.json). `lw tools` always does a real scan and
-refreshes that cache; other commands (profile create, profiles) read it.
+Probing compilers/vcvarsall is slow, so the result is cached in tools.json
+under the per-user cache dir: %LOCALAPPDATA%\loomworks\cache on Windows,
+$XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
+`lw tools` always does a real scan and refreshes that cache; other commands
+(profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
   build = [[lw build [profile | config-set] [--force] [--reconfigure] [-- <build-tool args>]
