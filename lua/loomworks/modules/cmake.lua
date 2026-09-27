@@ -59,7 +59,10 @@ local function cmake_version(cmake_cmd)
     end
     local out
     local ok, res = pcall(function()
-        return vim.fn.system({ cmake_cmd, "--version" })
+        -- Absolute path from PATH only (never the cwd); unresolvable => no probe.
+        local exe_path = require("loomworks.exe").resolve(cmake_cmd)
+        if not exe_path then return nil end
+        return vim.fn.system({ exe_path, "--version" })
     end)
     if ok and type(res) == "string" then out = res end
     local major, minor
@@ -260,34 +263,53 @@ end
 --- command ("could not load cache"). The content hash makes the name a
 --- pure function of the command, so distinct commands stay distinct even
 --- when their tags coincide.
+---
+--- Batch safety (loomworks.msvc): the vcvarsall path must be an absolute,
+--- existing `vcvarsall.bat` free of cmd metacharacters, `arch` must be a known
+--- vcvarsall architecture, every argv element is quoted for cmd
+--- (`msvc.bat_quote`: always quoted, `%` doubled; `"`/line breaks refused),
+--- the preamble disables delayed expansion and sets
+--- NoDefaultCurrentDirectoryInExePath (so cmd never runs a same-named program
+--- from the build dir), the file is created exclusively (a planted link at
+--- that name is removed, never written through), and the resulting path must
+--- be safe to hand to `cmd /C`. Any violation is an error — never a silently
+--- unwrapped command.
 --- @param build_dir string absolute path to the build directory
 --- @param vcvarsall string path to vcvarsall.bat
 --- @param arch string architecture (e.g., "x64")
 --- @param cmd string[] command to run after vcvarsall
 --- @param tag string|nil short action label for the filename (e.g. "build")
---- @return string bat_path
+--- @return string|nil bat_path, string|nil err
 local function write_vcvarsall_bat(build_dir, vcvarsall, arch, cmd, tag)
+    local msvc = require("loomworks.msvc")
+    local okv, verr = msvc.check_vcvarsall(vcvarsall)
+    if not okv then return nil, verr end
+    if not msvc.valid_arch(arch) then
+        return nil, "invalid vcvarsall architecture: " .. tostring(arch)
+    end
     -- Sanitize inline (sanitize_path_component is defined further down);
     -- tags are literals today, but keep the name filesystem-safe anyway.
     local safe_tag = (tag or "cmd"):gsub("[^%w_%-]", "_")
     local bat_path = build_dir
         .. "/loomworks_" .. safe_tag .. "_" .. hash_argv(cmd) .. ".bat"
-    local f = io.open(bat_path, "w")
-    if not f then return nil end
-    f:write("@echo off\r\n")
-    f:write('call "' .. vcvarsall:gsub("/", "\\") .. '" ' .. arch .. "\r\n")
-    f:write("if errorlevel 1 exit /b 1\r\n")
-    -- Quote each argument that contains spaces
+    -- `cmd /C <bat>` re-parses the path: characters cmd treats specially
+    -- would let the path add commands (cmd strips the quotes around a
+    -- quoted path that contains them).
+    if bat_path:find('[&<>()@^|%%!"\r\n]') then
+        return nil, "build directory path contains characters cmd.exe cannot run "
+            .. "a batch file from safely: " .. build_dir
+    end
     local parts = {}
     for _, c in ipairs(cmd) do
-        if c:find(" ") then
-            parts[#parts + 1] = '"' .. c .. '"'
-        else
-            parts[#parts + 1] = c
-        end
+        local q, qerr = msvc.bat_quote(c)
+        if not q then return nil, qerr end
+        parts[#parts + 1] = q
     end
-    f:write(table.concat(parts, " ") .. "\r\n")
-    f:close()
+    local okw, werr = msvc.write_bat_exclusive(bat_path, msvc.BAT_PREAMBLE
+        .. 'call "' .. vcvarsall:gsub("/", "\\") .. '" ' .. arch .. "\r\n"
+        .. "if errorlevel 1 exit /b 1\r\n"
+        .. table.concat(parts, " ") .. "\r\n")
+    if not okw then return nil, werr end
     return bat_path
 end
 
@@ -318,11 +340,14 @@ end
 --- @return string[]
 local function wrap_cmd(cmd, kit, generator, build_dir, tag)
     if M.runs_in_vcvars(kit, generator) and build_dir then
-        local bat_path = write_vcvarsall_bat(
+        local bat_path, err = write_vcvarsall_bat(
             build_dir, kit.vcvarsall, kit.arch or "x64", cmd, tag)
-        if bat_path then
-            return { "cmd", "/C", bat_path }
+        if not bat_path then
+            -- Never fall back to running the command outside vcvars (or with
+            -- an unsafe batch): the task fails with the reason.
+            error("loomworks.cmake: cannot prepare the vcvarsall wrapper: " .. tostring(err), 0)
         end
+        return { "cmd", "/C", bat_path }
     end
     return cmd
 end

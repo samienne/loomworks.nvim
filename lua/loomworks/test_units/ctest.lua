@@ -186,7 +186,7 @@ function CTestUnit:discover()
     local cmd = self:_base_cmd()
     cmd[#cmd + 1] = "--show-only=json-v1"
 
-    local result = vim.system(cmd, { text = true, timeout = 10000 }):wait()
+    local result = require("loomworks.exe").system(cmd, { text = true, timeout = 10000 }):wait()
     if result.code ~= 0 or not result.stdout then return nil end
 
     local entries, exec_specs = parse_ctest_json(result.stdout)
@@ -220,7 +220,7 @@ function CTestUnit:discover_async(callback)
     cmd[#cmd + 1] = "--show-only=json-v1"
     local self_ref = self
 
-    vim.system(cmd, { text = true, timeout = 10000 },
+    require("loomworks.exe").system(cmd, { text = true, timeout = 10000 },
         function(result)
             vim.schedule(function()
                 if result.code ~= 0 or not result.stdout then

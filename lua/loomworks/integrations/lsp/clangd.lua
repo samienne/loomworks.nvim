@@ -271,6 +271,11 @@ function M.cmd_factory(base_cmd)
             end
         end
 
+        -- A bare binary name (the default `clangd`) is resolved from absolute
+        -- PATH entries only: rpc.start spawns via libuv, which on Windows would
+        -- otherwise try the current directory (the workspace) first.
+        require("loomworks.exe").resolve_server_cmd(args, config.cmd_env, "loomworks.clangd")
+
         if config.root_dir then
             _resolved_cmd[normalize(config.root_dir)] = vim.list_extend({}, args)
         end

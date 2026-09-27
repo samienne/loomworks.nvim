@@ -114,7 +114,7 @@ describe("status_profile_rows (name column sizing)", function()
     local colored = cli._status_palette(true)
     local rows = cli._status_profile_rows(colored, plist, long, grouped(), 100)
     -- Painted (has escapes) but the raw name is still present un-truncated.
-    assert.is_truthy(rows[1]:find("\27%["))
+    assert.is_truthy(require("loomworks.term").render(rows[1]):find("\27%["))
     assert.is_truthy(rows[1]:find(long, 1, true))
     assert.is_nil(rows[1]:find("…", 1, true))
   end)

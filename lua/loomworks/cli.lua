@@ -40,6 +40,10 @@ end
 
 local M = {}
 
+-- Terminal-safe rendering of everything the CLI prints (control characters in
+-- data escaped; only our own palette markers become escape sequences).
+local term = require("loomworks.term")
+
 -- Cleanups run before any os.exit() (both finish() and die()), so a build-dir
 -- lock is always released even when a step fails and we bail out.
 local _exit_hooks = {}
@@ -60,12 +64,19 @@ end
 
 --- Write a line to real stdout. `print()` goes to stderr under `nvim -l`, so
 --- CLI output (the parseable part) must use io.write on both hosts.
-local function out(s) io.write((s or "") .. "\n") end
+--- Every line goes through `term.render`: control characters in DATA (names,
+--- paths, values read from workspace/cache/health files) are escaped; only the
+--- palette's own SGR markers become escape sequences (loomworks.term).
+local function out(s) io.write(term.render(s or "") .. "\n") end
 
 --- Write an informational line to stderr. Used when stdout must stay clean for a
 --- machine consumer — e.g. `lw run --print` streams its build/status chatter here
 --- so `valgrind $(lw run --print)` captures only the resolved command line.
-local function note(s) io.stderr:write((s or "") .. "\n") end
+local function note(s) io.stderr:write(term.render(s or "") .. "\n") end
+
+--- stderr counterpart of `out` for text that is not a whole line (same
+--- rendering). Raw tool output relayed from a child process does not use it.
+local function errw(s) io.stderr:write(term.render(s or "")) end
 
 -- ---------------------------------------------------------------------------
 -- Shell-word splitting and POSIX-sh quoting (for `lw run --prefix` / `--print`)
@@ -209,7 +220,7 @@ end
 local function die(msg, code)
   run_exit_hooks()
   io.stdout:flush()
-  io.stderr:write("lw: " .. tostring(msg) .. "\n")
+  io.stderr:write(term.render("lw: " .. tostring(msg)) .. "\n")
   os.exit(code or 1)
 end
 
@@ -400,8 +411,8 @@ end
 --- Prompt for a line. Blank input returns `default` (nil if none). Returns nil
 --- only on EOF. Trims surrounding whitespace.
 local function prompt_line(question, default)
-  io.write(question)
-  if default and default ~= "" then io.write(" [" .. default .. "]") end
+  io.write(term.render(question))
+  if default and default ~= "" then io.write(term.render(" [" .. default .. "]")) end
   io.write(": ")
   io.stdout:flush()
   local line = io.read("*l")
@@ -581,7 +592,7 @@ local function load_workspace(root, wait_tools)
   -- info chatter is noise on a CLI.
   core._deps.notify = function(msg, level)
     if not level or level >= vim.log.levels.WARN then
-      io.stderr:write(tostring(msg) .. "\n")
+      errw(tostring(msg) .. "\n")
     end
   end
   -- Skip the automatic background target scan — it can spawn a per-build-dir
@@ -822,6 +833,17 @@ M._resolve_profile = resolve_profile
 ---   stdout clean for a machine consumer — used by `lw run --print`'s build).
 --- @return integer code
 local function run_spec(step, root, to_stderr)
+  -- Resolve the program to an absolute path (never the cwd / a relative PATH
+  -- entry) and, on Windows, add NoDefaultCurrentDirectoryInExePath=1 to the
+  -- child env. An unresolvable program is reported, never spawned by name.
+  local hardened, herr = require("loomworks.exe").harden_spec({
+    cmd = step.cmd, env = step.env,
+  })
+  if not hardened then
+    errw("lw: cannot run step: " .. tostring(herr) .. "\n")
+    return 127
+  end
+  step = { cmd = hardened.cmd, cwd = step.cwd, env = hardened.env }
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
   if vim._loomworks_shim then
@@ -1010,7 +1032,8 @@ local function run_build_steps(profile, ws, opts)
     if not buildable then die(tostring(why)) end
   end
   local overseer = require("loomworks.overseer")
-  local steps = overseer.plan_profile_build(profile, opts)
+  local steps, plan_err = overseer.plan_profile_build(profile, opts)
+  if plan_err then die("cannot build: " .. tostring(plan_err)) end
   if not steps or #steps == 0 then return 0 end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.
@@ -1178,9 +1201,21 @@ function M.cmd_clean(ws, profile_name)
     out("cleaning profile: " .. profile.key)
     for _, step in ipairs(steps) do
       out(string.format("==> [clean] %s", step.name or "?"))
-      local code = run_spec(step, ws.root)
-      if code ~= 0 then
-        die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+      if step.wipe_build_dir then
+        -- Core-performed wipe (spec §8.1): validated against the workspace
+        -- root (never the root itself), removed in-process — no shell.
+        if not ws:_validate_build_dir(step.build_dir, ws.root) then
+          die("clean refused: unsafe build directory " .. tostring(step.build_dir))
+        end
+        local ok, err = require("loomworks.io").rm_rf(step.build_dir)
+        if not ok then
+          die("clean failed: " .. tostring(err) .. ": " .. (step.name or "?"))
+        end
+      else
+        local code = run_spec(step, ws.root)
+        if code ~= 0 then
+          die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+        end
       end
     end
   end)
@@ -1358,7 +1393,7 @@ function M.cmd_unlock(ws, args)
     local info = build_lock.read(bd)
     if not info then return false end
     if not info.stale then
-      io.stderr:write(string.format(
+      errw(string.format(
         "lw: forcing an ACTIVE lock (pid %s, %s, %ss ago): %s\n",
         tostring(info.pid), tostring(info.action), tostring(info.age), bd))
     end
@@ -1489,12 +1524,12 @@ function M.cmd_test(ws, args)
             uv.fs_copyfile(step.junit_out, step.junit_dest)
             wrote[#wrote + 1] = step.junit_dest
           else
-            io.stderr:write("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
+            errw("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
           end
         elseif uv.fs_stat(step.junit_dest) then
           wrote[#wrote + 1] = step.junit_dest
         else
-          io.stderr:write("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
+          errw("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
         end
       end
     end
@@ -2424,9 +2459,9 @@ function M.cmd_publish(root)
   out("published " .. ws.root .. "/loomworks.json")
   if empty then
     out("")
-    io.stderr:write("lw: note: loomworks.json is empty — nothing is marked shared.\n")
-    io.stderr:write("    Share items with `lw <project|profile|configset> publish <name>`,\n")
-    io.stderr:write("    or create them with --shared (the CLI default). See `lw help publish`.\n")
+    errw("lw: note: loomworks.json is empty — nothing is marked shared.\n")
+    errw("    Share items with `lw <project|profile|configset> publish <name>`,\n")
+    errw("    or create them with --shared (the CLI default). See `lw help publish`.\n")
   end
   return 0
 end
@@ -2596,7 +2631,7 @@ local function resolve_free_key(ws, key, mtype)
     local ans = prompt_line("project '" .. key .. "' exists; new name", suggestion)
     if not ans or ans == "" then out("cancelled"); finish(0) end
     if not taken(ans) then return ans end
-    io.stderr:write("lw: '" .. ans .. "' also exists\n")
+    errw("lw: '" .. ans .. "' also exists\n")
     suggestion = ans .. "-2"
   end
 end
@@ -2621,7 +2656,7 @@ function M.cmd_project_add(root, path_arg, type_arg, name_arg)
     local mod = modules.get(mtype)
     if not mod then die("unknown module type '" .. mtype .. "'") end
     if mod.detect and not mod.detect(abs) then
-      io.stderr:write("lw: warning: no " .. mtype .. " marker found in " .. rel .. "\n")
+      errw("lw: warning: no " .. mtype .. " marker found in " .. rel .. "\n")
     end
   elseif #detected == 1 then
     mtype = detected[1].type
@@ -4545,11 +4580,14 @@ end
 -- bold titles, dim secondary prose (counts, help, "+N more"), green for the
 -- active profile. ANSI would corrupt captured / piped / redirected output, so
 -- it is emitted only to a stdout tty (see status_palette / stdout_supports_color).
-local ANSI_CMD, ANSI_RESET = "\27[36m", "\27[0m"
-local ANSI_TITLE, ANSI_DIM, ANSI_ACTIVE = "\27[1m", "\27[2m", "\27[32m"
+-- The palette emits `term.sgr` MARKERS, not raw escapes: out/note render them
+-- into real SGR sequences while escaping any control characters that arrive
+-- with data (loomworks.term).
+local ANSI_CMD, ANSI_RESET = term.sgr("36"), term.sgr("0")
+local ANSI_TITLE, ANSI_DIM, ANSI_ACTIVE = term.sgr("1"), term.sgr("2"), term.sgr("32")
 -- Diagnostic severities: red for errors, yellow for warnings. Same tty-only
 -- gating as the rest of the palette — plain on a pipe/redirect.
-local ANSI_ERR, ANSI_WARN = "\27[31m", "\27[33m"
+local ANSI_ERR, ANSI_WARN = term.sgr("31"), term.sgr("33")
 
 --- A named set of painters for `lw status`. When `color` is false every field
 --- is the identity function, so the exact same rendering code produces plain
@@ -4707,7 +4745,7 @@ local function git_query(cwd, args)
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
-  local ok, proc = pcall(vim.system, cmd, { text = true }, function(r)
+  local ok, proc = pcall(require("loomworks.exe").system, cmd, { text = true }, function(r)
     res = r; done = true
   end)
   if not ok or not proc then return nil end
@@ -4740,7 +4778,7 @@ local function git_exec(cwd, args, timeout_ms)
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
-  local ok, proc = pcall(vim.system, cmd, { text = true }, function(r)
+  local ok, proc = pcall(require("loomworks.exe").system, cmd, { text = true }, function(r)
     res = r; done = true
   end)
   if not ok or not proc then return nil end
@@ -7656,8 +7694,9 @@ to this host's release version; pass --version to pin a different release.
 
 Run the launcher with `./lw.sh <cmd>` (or lw.cmd on Windows): it downloads the
 pinned host binary into .nvim/cache/, verifies its sha256 against the pin, and
-runs it — the host then provisions the pinned bundle, also repo-local. So a
-clean checkout goes from `./lw.sh build` to building, reproducibly.
+runs it — the host then provisions (downloads + verifies) the pinned bundle into
+your per-user data dir, never into the repository. So a clean checkout goes from
+`./lw.sh build` to building, reproducibly.
 
 Proxies: the launcher honors HTTPS_PROXY/HTTP_PROXY. `--insecure` (or
 LOOMWORKS_INSECURE=1) relaxes TLS for an intercepting proxy — safe only because
@@ -7884,7 +7923,7 @@ function M.cmd_help(cmd, sub)
     out(M.subcommand_help(cmd, sub) or HELP[cmd])
     return 0
   end
-  if cmd then io.stderr:write("lw: no help topic '" .. cmd .. "'\n") end
+  if cmd then errw("lw: no help topic '" .. cmd .. "'\n") end
   out([[lw — loomworks standalone runner
 
 Usage: lw [command] [args]
@@ -8048,7 +8087,7 @@ local function main()
   if command == "version" or command == "--version" or command == "-v"
       or command == "self-update" or command == "install"
       or command == "bootstrap" or command == "update" then
-    io.stderr:write("lw: `" .. command .. "` is provided by the standalone lw " ..
+    errw("lw: `" .. command .. "` is provided by the standalone lw " ..
       "binary; it is not available in the nvim-hosted fallback.\n")
     finish(1)
   end

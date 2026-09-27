@@ -1049,9 +1049,12 @@ git add lw.sh lw.cmd lw.pin  # commit the three files
 | `lw.cmd` | native Windows launcher (cmd/PowerShell) |
 
 The hashes come from that release's **signed** `SHA256SUMS` (its signature is
-verified against the key built into `lw` before any hash is trusted). Downloaded
-binaries and the provisioned bundle live under `.nvim/cache/`, which `bootstrap`
-appends to `.gitignore` idempotently.
+verified against the key built into `lw` before any hash is trusted). The
+launcher caches the host binary it downloads under `.nvim/cache/`, which
+`bootstrap` appends to `.gitignore` idempotently; the pinned bundle that host
+provisions lives in your per-user data directory (`<data>/loomworks/pinned/`),
+never in the repository — a cloned repository could otherwise ship a
+pre-"extracted" bundle.
 
 Then anyone with a checkout runs the launcher — no global `lw` needed:
 
@@ -1063,8 +1066,8 @@ lw.cmd build Debug:ninja-gcc-14       # Windows cmd/PowerShell
 
 The launcher selects the host binary for the platform, downloads it from the
 official release (**verifying its sha256 against the pin — always**), caches it
-under `.nvim/cache/`, and execs it; that host then provisions the pinned bundle,
-also into `.nvim/cache/`. So a clean checkout goes from `./lw.sh build` to
+under `.nvim/cache/`, and execs it; that host then provisions (downloads and
+verifies) the pinned bundle into the per-user pinned cache. So a clean checkout goes from `./lw.sh build` to
 building, **reproducibly** — host and bundle are the exact pinned release, and
 the machine-global install is left untouched.
 
@@ -1525,6 +1528,33 @@ workspace-root/
         │   └── Release/
         └── ProjectB/
 ```
+
+### Opening a repository you don't trust
+
+Workspace files can come with a clone. loomworks treats what is in them as
+data and does not let it redirect where code is loaded from:
+
+- Module / SDK ids named in the workspace are loaded only from plugins on
+  your runtime path (or modules `lw` installed) — never from a Lua file in the
+  current directory. An id that isn't a plain identifier is rejected.
+- Programs named by bare name (`cmake`, `git`, `npm`, `clangd`, …) are resolved
+  from absolute `PATH` entries only — never from the current directory or an
+  empty/relative `PATH` entry. `lw` also sets
+  `NoDefaultCurrentDirectoryInExePath` on Windows. A tool that used to be found
+  only because it sat in the current directory must now be on `PATH` (or be
+  named by an absolute path).
+- A pinned `lw` (`lw.pin`) runs only the release artifacts it downloaded and
+  verified itself, kept in your per-user data directory — never a bundle or
+  binary found inside the repository.
+- Build directories are deleted in-process (no shell command built from the
+  path), never the workspace root itself, and links inside them are not
+  followed.
+- `lw` output escapes control characters that arrive with data.
+
+Paths and commands the workspace configures on purpose — an SDK or clangd
+binary, cached toolchain paths, launch/deploy commands, environment — are
+still used as configured; gating those behind an explicit "trust this
+workspace" step is planned for a later release.
 
 ## API
 

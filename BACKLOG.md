@@ -5,6 +5,52 @@ they don't get lost.
 
 ---
 
+## Workspace trust (next release)
+
+The security hotfix (fix/security-hotfix) removed the plain bugs: plugin ids
+loaded only from the runtime path, bare program names resolved from absolute
+PATH entries only, pinned artifacts only from the per-user verified cache,
+in-process build-dir deletion, quoted vcvars batches, validated npm/tsconfig
+arguments, escaped CLI output. What remains is *configured* execution: a
+workspace (possibly an untrusted clone) can still name executables and
+commands on purpose. Plan: a per-user "trust this workspace" decision (keyed by
+root + content of the shared/working files), with untrusted workspaces
+refusing the items below until trusted (editor prompt; `lw trust` / a flag for
+the CLI; CI opt-in via env).
+
+- **K2 — SDK paths.** Profile-pinned SDK installation paths (user.json) feed
+  compilers/tools that get executed.
+- **F1 — clangd / qmlls binary overrides** (`type_config.clangd`/`qmlls`,
+  including from a committed loomworks.json, `${ENV}`-expanded) are started as
+  language servers.
+- **F2 — clangd `extra_args`** (`lsp_options.clangd.extra_args`) reach the
+  clangd command line (e.g. `--query-driver` globs make clangd execute
+  compilers).
+- **F3 — meson introspect on repo build dirs**: `meson introspect` against a
+  build dir that came with the clone.
+- **F4 — test discovery runs binaries from repo build dirs** (gtest
+  `--gtest_list_tests` probes, ctest `--show-only` reading repo CTest files).
+- **F7 — cached `tool_data` paths trusted** (compiler_path, cmake_path,
+  vcvarsall, env) from loomworks.cache.json. The hotfix validates vcvarsall
+  syntactically; matching it against vswhere-detected installs belongs here.
+- **F12 — launch / deploy**: launch configs (`command`, `program`, args, env)
+  and deploy steps are executed/copied as configured.
+- **F13 — env denylist**: configuration / tool `env` can set `PATH`,
+  `LD_PRELOAD`, `PYTHONPATH`, `NODE_OPTIONS`, `CMAKE_*` hooks, … for every
+  task; decide a denylist or trust-gate.
+- **F15 — git**: `lw` runs `git` inside the repository (worktree hints, `lw
+  worktree`), which honours repo-local config (`core.fsmonitor`, hooks for
+  mutating calls); pass `-c core.fsmonitor=` / safe options or gate on trust.
+
+Also noted during the hotfix: the loomtest runner (independent of loomworks)
+spawns its test commands through overseer without `loomworks.exe` resolution
+(the `ctest` it runs is still a bare name — safe on Neovim ≥ 0.12, whose
+jobstart no longer searches the cwd); the Linux `nice`/`ionice` wrapper
+passes bare names to execvp; and pinned-cache GC (`<data>/loomworks/pinned/`
+grows per pinned version/hash).
+
+---
+
 ## Standalone CLI — deferred pieces
 
 The standalone command-line runner ([specification.md §16](spec/core/headless.md),

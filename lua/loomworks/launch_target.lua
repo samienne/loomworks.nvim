@@ -1003,7 +1003,7 @@ function LaunchTarget:device_resolve_pid(device_serial, bundle_name, opts)
         local attempt = 0
         local function try_once()
             attempt = attempt + 1
-            vim.system(cmd, { text = true, timeout = 3000 }, function(result)
+            require("loomworks.exe").system(cmd, { text = true, timeout = 3000 }, function(result)
                 vim.schedule(function()
                     local pid
                     if result.code == 0 and result.stdout then

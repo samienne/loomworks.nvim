@@ -154,14 +154,9 @@ function M.find_pin_root(start)
   return nil
 end
 
---- The machine-local cache dir under a pin root.
-function M.cache_dir(root) return root .. "/.nvim/cache" end
-
---- The canonical cached path for a pinned host binary (version + asset), shared
---- by the launcher scripts and the redirect so both reuse one download.
-function M.binary_path(root, version, asset)
-  return M.cache_dir(root) .. "/lw-" .. version .. "-" .. asset
-end
+-- The pinned artifacts the HOST provisions (the redirect's host binary and the
+-- pinned bundle) live in the per-user data dir, never under the pin root — see
+-- boot.update.pinned_binary_path / pinned_bundle_dir (spec §16.22).
 
 --- Is `cmd` a workspace operation that honors a pin?
 function M.is_redirect_command(cmd)

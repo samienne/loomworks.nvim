@@ -28,6 +28,15 @@ tasks of its own. Launch configs of `command` type (core §8.7) are
 the primary way to run TypeScript entry points, typically via
 `node` with `${build_dir}` on `NODE_PATH`.
 
+The configure / build / clean tasks the module does return (`npm install`,
+`npm run <script>`, `npx tsc --build [<tsconfig>]`) run through the command
+interpreter on Windows (`cmd /c`), which re-parses its arguments. Every
+argument — in particular the npm script name (from `scripts` in the
+configuration) and the tsconfig path (from the configuration or a
+`tsconfig.<variant>.json` file in the project) — must consist only of
+letters, digits and `. _ : / \ @ -`; anything else fails the task with the
+offending argument named, rather than being passed to the interpreter.
+
 ## 4. Launch integration
 
 Typical TypeScript launch config:

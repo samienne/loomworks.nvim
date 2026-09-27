@@ -967,11 +967,14 @@ function M.update_check_provider(_workspace)
     local out = {}
     if paths.version_gt(newest, current) then
         -- A pinned context (a repo's lw.pin — the launcher sets LOOMWORKS_PINNED
-        -- and runs the bundle from `.nvim/cache/lua-<ver>`) takes its version
-        -- from the pin, which `lw self-update` never changes: point at
-        -- `lw update`, which moves the pin.
+        -- and runs the bundle from the pinned cache `<data>/pinned/<sha256>/
+        -- lua-<ver>`; hosts before v0.1.32 used the repo's `.nvim/cache/lua-<ver>`)
+        -- takes its version from the pin, which `lw self-update` never changes:
+        -- point at `lw update`, which moves the pin.
         local luaroot = (_G.__loomworks_luaroot or ""):gsub("\\", "/")
-        local pinned = (facts and facts.pinned) or luaroot:find("/%.nvim/cache/lua%-") ~= nil
+        local pinned = (facts and facts.pinned)
+            or luaroot:find("/%.nvim/cache/lua%-") ~= nil
+            or luaroot:find("/pinned/%x+/lua%-") ~= nil
         out[1] = {
             title = "Update available",
             detail = current .. " → " .. newest .. " on the " .. channel .. " channel",

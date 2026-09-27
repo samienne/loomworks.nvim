@@ -201,33 +201,51 @@ function M.ensure_dir(path)
     return true, nil
 end
 
---- Recursively remove a directory tree.
+--- Deletion never follows links and never goes through a shell: every entry
+--- is examined with `lstat`, a symlink / junction is removed as a link (its
+--- target is left alone), and a read-only file (e.g. git objects in a fetched
+--- dependency) is made writable and retried. Removing by path through
+--- `cmd /c rd` or `rm -rf` would hand the path to a command interpreter (on
+--- Windows `&`, `^`, `%` in a directory name change the command) and `rd`
+--- cannot delete read-only files.
+
+--- Remove a non-directory entry (file or link). Returns ok, err.
+local function unlink_entry(path, st)
+    local ok, err = uv.fs_unlink(path)
+    if ok then return true end
+    if st and st.type == "link" then
+        -- A directory symlink / junction on Windows may need rmdir.
+        local ok2 = uv.fs_rmdir(path)
+        if ok2 then return true end
+    elseif tostring(err):match("^EPERM") or tostring(err):match("^EACCES") then
+        pcall(uv.fs_chmod, path, 438) -- 0666: clear read-only
+        local ok3, err3 = uv.fs_unlink(path)
+        if ok3 then return true end
+        err = err3
+    end
+    return false, "unlink " .. path .. ": " .. tostring(err or "unknown")
+end
+
+--- Recursively remove a directory tree (synchronously). Links are removed,
+--- never followed; a missing path is success.
 --- @param dir string
 --- @return boolean ok, string|nil err
 function M.rm_rf(dir)
-    local stat = uv.fs_stat(dir)
+    local stat = uv.fs_lstat(dir)
     if not stat then return true, nil end
     if stat.type ~= "directory" then
-        local ok, err = uv.fs_unlink(dir)
-        if not ok then return false, "unlink " .. dir .. ": " .. (err or "unknown") end
+        local ok, err = unlink_entry(dir, stat)
+        if not ok then return false, err end
         return true, nil
     end
 
-    local handle = uv.fs_scandir(dir)
-    if not handle then return true, nil end
-
     local errors = {}
-    while true do
-        local name, ftype = uv.fs_scandir_next(handle)
+    local handle = uv.fs_scandir(dir)
+    while handle do
+        local name = uv.fs_scandir_next(handle)
         if not name then break end
-        local full = dir .. "/" .. name
-        if ftype == "directory" then
-            local ok, err = M.rm_rf(full)
-            if not ok then errors[#errors + 1] = err end
-        else
-            local ok, err = uv.fs_unlink(full)
-            if not ok then errors[#errors + 1] = "unlink " .. full .. ": " .. (err or "unknown") end
-        end
+        local ok, err = M.rm_rf(dir .. "/" .. name)
+        if not ok then errors[#errors + 1] = err end
     end
 
     local ok, err = uv.fs_rmdir(dir)
@@ -239,41 +257,69 @@ function M.rm_rf(dir)
     return true, nil
 end
 
---- Recursively remove a directory/file asynchronously via subprocess.
---- Uses rm -rf on Unix, cmd /c rd /s /q (or del) on Windows. Returns a Future.
+--- Asynchronous tree removal over libuv's threadpool (no subprocess, no
+--- shell). `done(err|nil)`; a missing path is success.
+--- @param path string
+--- @param done fun(err: string|nil)
+local function rm_tree_async(path, done)
+    uv.fs_lstat(path, function(lerr, st)
+        if not st then
+            if lerr and not tostring(lerr):match("^ENOENT") then
+                return done("lstat " .. path .. ": " .. tostring(lerr))
+            end
+            return done(nil)
+        end
+        if st.type ~= "directory" then
+            -- Unlink is quick; keep the retry logic in one (sync) place.
+            local ok, err = unlink_entry(path, st)
+            return done(ok and nil or err)
+        end
+        uv.fs_scandir(path, function(serr, req)
+            if serr or not req then
+                return done("scandir " .. path .. ": " .. tostring(serr))
+            end
+            local names = {}
+            while true do
+                local name = uv.fs_scandir_next(req)
+                if not name then break end
+                names[#names + 1] = name
+            end
+            local errors, pending = {}, #names
+            local function finish()
+                uv.fs_rmdir(path, function(rerr)
+                    if rerr then errors[#errors + 1] = "rmdir " .. path .. ": " .. tostring(rerr) end
+                    done(#errors > 0 and table.concat(errors, "; ") or nil)
+                end)
+            end
+            if pending == 0 then return finish() end
+            for _, name in ipairs(names) do
+                rm_tree_async(path .. "/" .. name, function(e)
+                    if e then errors[#errors + 1] = e end
+                    pending = pending - 1
+                    if pending == 0 then finish() end
+                end)
+            end
+        end)
+    end)
+end
+
+--- Recursively remove a directory/file asynchronously (libuv filesystem
+--- calls — never a shell command built from the path). Links are removed,
+--- not followed. Returns a Future.
 --- @param dir string
 --- @param callback? fun(ok: boolean, err: string|nil) legacy callback (deprecated)
 --- @return loomworks.Future
 function M.rm_rf_async(dir, callback)
     local future_mod = require("loomworks.future")
-    local stat = uv.fs_stat(dir)
-    if not stat then
+    if not uv.fs_lstat(dir) then
         if callback then callback(true, nil) end
         return future_mod.resolved(true)
     end
 
-    local cmd
-    if vim.fn.has("win32") == 1 then
-        local win_dir = dir:gsub("/", "\\")
-        if stat.type == "directory" then
-            cmd = { "cmd", "/c", "rd", "/s", "/q", win_dir }
-        else
-            cmd = { "cmd", "/c", "del", "/f", "/q", win_dir }
-        end
-    else
-        cmd = { "rm", "-rf", dir }
-    end
-
     local f = future_mod.create(function(resolve, reject)
-        vim.system(cmd, { text = true }, function(result)
+        rm_tree_async(dir, function(err)
             vim.schedule(function()
-                if result.code == 0 then
-                    resolve(true)
-                else
-                    local err = result.stderr or ""
-                    if err == "" then err = "exit code " .. result.code end
-                    reject(err)
-                end
+                if err then reject(err) else resolve(true) end
             end)
         end)
     end)

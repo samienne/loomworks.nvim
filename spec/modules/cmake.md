@@ -42,6 +42,21 @@ install, the following kits are produced:
   for C and C++), the build runs Ninja inside the paired `vcvarsall`
   environment, and `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON` is set.
 
+**vcvarsall wrapper safety.** Commands that must run inside a kit's
+`vcvarsall` environment are written into a batch file (in the build directory)
+that calls vcvarsall and then runs the command. Nothing in that file may add a
+command: the kit's vcvarsall path must be an absolute, existing
+`vcvarsall.bat` whose path contains no command-interpreter metacharacters, the
+architecture argument must be one vcvarsall accepts, every argument of the
+wrapped command is quoted (with `%` doubled; an argument containing a double
+quote or a line break is refused), delayed expansion is disabled and the
+current-directory command search is turned off inside the batch, the batch is
+created afresh (never written through a link at its name), and a build
+directory the command interpreter could not run a batch from safely is
+refused. Any violation fails the task with the reason — the command never runs
+unwrapped instead. The environment snapshot the meson module takes from
+vcvarsall uses the same rules and an unpredictable temporary file name.
+
 ## 2. Variant mapping
 
 | Variant type | Configuration name |

@@ -38,6 +38,12 @@ end
 --- Run `cmd args...`, draining stdout/stderr. Returns exit_code, stdout, stderr
 --- (or nil, err on spawn failure).
 local function run(cmd, args)
+  -- Resolve to an absolute path from absolute PATH entries only (boot.exe):
+  -- spawning the bare name would let Windows pick a same-named file from the
+  -- current directory.
+  local exe, rerr = require("boot.exe").resolve(cmd)
+  if not exe then return nil, "cannot run '" .. cmd .. "': " .. tostring(rerr) end
+  cmd = exe
   local stdout, stderr = uv.new_pipe(false), uv.new_pipe(false)
   local out, err = {}, {}
   local code, done

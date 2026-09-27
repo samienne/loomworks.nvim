@@ -245,5 +245,15 @@ belongs in the matching `spec/` file.
     loomworks does not own the start), are exempt — the latter falls
     back to attach-time reconciliation.
 
+17. **Nothing runs from the current directory by accident**: A bare
+    program name is resolved to an absolute path from absolute search-path
+    entries only — never the working directory or an empty/relative entry —
+    and is not spawned when it does not resolve (§5.10). Plugin code named
+    by workspace data (module / SDK provider / progress-parser ids) is loaded
+    only from the runtime path, never through a generic module search path
+    that includes the working directory (§8.0). A pinned run executes only
+    artifacts the host fetched and verified itself, never files found inside
+    the repository (§16.22).
+
 ---
 

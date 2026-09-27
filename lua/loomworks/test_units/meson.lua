@@ -24,7 +24,7 @@ MesonTestUnit.__index = MesonTestUnit
 --- discover_async runs before tool scan completes).
 --- @return string[]|nil command prefix array
 local function find_meson_prefix()
-    local p = vim.fn.exepath("meson")
+    local p = require("loomworks.exe").editor_exepath("meson")
     if p ~= "" then return { p } end
     local py_probe = [[
 import os,sys,sysconfig
@@ -40,7 +40,7 @@ for d in ds:
 sys.exit(1)
 ]]
     for _, py in ipairs({ "python", "python3", "py" }) do
-        local pp = vim.fn.exepath(py)
+        local pp = require("loomworks.exe").editor_exepath(py)
         if pp ~= "" then
             local out = vim.fn.system({ pp, "-c", py_probe })
             if vim.v.shell_error == 0 then

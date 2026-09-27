@@ -319,12 +319,22 @@ function M.clean_tasks(project, active_config)
     local shell = shell_block(project)
     local cmd = expand_cmd(shell.clean_cmd, ctx)
     if not cmd then
-        if vim.fn.has("win32") == 1 then
-            cmd = { "cmd", "/c", "if exist " .. build_dir
-                .. " rd /s /q " .. build_dir }
-        else
-            cmd = { "rm", "-rf", build_dir }
-        end
+        -- No clean_cmd: wipe the build dir. Core performs that deletion itself
+        -- (`wipe_build_dir`, spec §8.1): validated against the workspace root
+        -- and done with filesystem calls — never a shell command line built
+        -- from a (possibly cache-sourced) path.
+        return {
+            {
+                name = project.name .. ": clean " .. active_config,
+                loomworks = {
+                    project_key = project.name,
+                    action = "clean",
+                    configuration_key = configuration_key,
+                    build_dir = build_dir,
+                    wipe_build_dir = true,
+                },
+            },
+        }
     end
 
     local env = resolve_env(project, ctx)

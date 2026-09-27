@@ -187,7 +187,8 @@ describe("lw status hint color gating", function()
             }),
             stat = always_stat,
         }
-        local text = joined(cli._worktree_hint(opts))
+        -- Painters emit loomworks.term markers; the CLI's writer renders them.
+        local text = require("loomworks.term").render(joined(cli._worktree_hint(opts)))
         assert.is_truthy(has_escape(text))
         assert.is_truthy(text:find("\27[36mlw pull\27[0m", 1, true))
         assert.is_truthy(text:find("\27[36mlw init\27[0m", 1, true))
@@ -290,25 +291,30 @@ describe("lw status overview palette", function()
     end)
 
     it("wraps fields in their ANSI codes when color is on", function()
+        -- The palette emits loomworks.term markers; render() (what the CLI's
+        -- writers apply) turns them into the ANSI codes.
+        local R = require("loomworks.term").render
         local pal = cli._status_palette(true)
-        assert.equals("\27[1mHi\27[0m", pal.title("Hi"))
-        assert.equals("\27[2mHi\27[0m", pal.dim("Hi"))
-        assert.equals("\27[32mHi\27[0m", pal.active("Hi"))
-        assert.equals("\27[36mHi\27[0m", pal.cmd("Hi"))
+        assert.equals("\27[1mHi\27[0m", R(pal.title("Hi")))
+        assert.equals("\27[2mHi\27[0m", R(pal.dim("Hi")))
+        assert.equals("\27[32mHi\27[0m", R(pal.active("Hi")))
+        assert.equals("\27[36mHi\27[0m", R(pal.cmd("Hi")))
         -- inline is dim on a terminal (secondary guidance) — no backticks, the
         -- color carries the "this is a hint" cue instead.
-        assert.equals("\27[2mlw run\27[0m", pal.inline("lw run"))
+        assert.equals("\27[2mlw run\27[0m", R(pal.inline("lw run")))
     end)
 
     it("paint_help dims the whole help line (prose + command), color on", function()
         local pal = cli._status_palette(true)
-        local out = cli._paint_help(pal, "create a profile · lw profile create <set> <tool>")
+        local out = require("loomworks.term").render(
+            cli._paint_help(pal, "create a profile · lw profile create <set> <tool>"))
         assert.equals("\27[2mcreate a profile · lw profile create <set> <tool>\27[0m", out)
     end)
 
     it("paint_help dims a bare command hint (no ' · ') whole", function()
         local pal = cli._status_palette(true)
-        assert.equals("\27[2mlw profiles\27[0m", cli._paint_help(pal, "lw profiles"))
+        assert.equals("\27[2mlw profiles\27[0m",
+            require("loomworks.term").render(cli._paint_help(pal, "lw profiles")))
     end)
 
     it("paint_help is plain text when color is off", function()

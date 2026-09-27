@@ -17,6 +17,20 @@ local NICE_ACTIONS = { configure = true, build = true, clean = true }
 --- @param build_result table builder() output with optional `cmd`
 --- @param action string|nil loomworks action tag
 --- @return table the same build_result (mutated in place)
+--- Resolve a task's program before overseer spawns it (loomworks.exe): cmd[1]
+--- becomes an absolute path found in an absolute PATH entry of the task env
+--- (else the process PATH) — never the current directory — and on Windows the
+--- task env gains `NoDefaultCurrentDirectoryInExePath=1` so a cmd.exe / .bat
+--- the task runs does not search its cwd either. Applied BEFORE the nice
+--- wrapper so the real program is the one resolved. Returns the spec, or nil +
+--- err: an unresolvable program is reported, never spawned by its bare name.
+--- @param spec table
+--- @return table|nil spec, string|nil err
+local function harden(spec)
+    return require("loomworks.exe").harden_spec(spec)
+end
+M._harden = harden
+
 local function apply_nice(build_result, action)
     if not action or not NICE_ACTIONS[action] then return build_result end
     if type(build_result.cmd) ~= "table" then return build_result end
@@ -284,6 +298,8 @@ function M.build_spec_for(unit, target_id)
         if spec.env ~= nil and type(spec.env) ~= "table" then
             spec.env = nil
         end
+        local hardened, h_err = harden(spec)
+        if not hardened then return nil, h_err end
         spec.cmd = nice.wrap_cmd(spec.cmd)
         return spec, nil
     end
@@ -519,6 +535,29 @@ local function collect_profile_clean_tasks(profile)
     return #tasks > 0 and tasks or nil
 end
 
+--- Core-performed clean for a clean task that declares
+--- `loomworks.wipe_build_dir = true` (spec §8.1): the module asks core to
+--- remove the build directory instead of spawning a command. Deletion safety
+--- (CLAUDE.md): nil/empty build_dir => nothing to wipe; the path (possibly
+--- cache-sourced) must pass `_validate_build_dir` (canonical, trailing-"/"
+--- boundary, never the workspace root); removal is in-process
+--- (`io.rm_rf_async`: libuv calls, links not followed) — no shell. The caller
+--- has already marked the cache (crash safety) as for any clean.
+--- @param ws loomworks.Workspace|nil
+--- @param task_def table
+--- @return loomworks.Future
+local function wipe_build_dir(ws, task_def)
+    local future_mod = require("loomworks.future")
+    local bd = task_def.loomworks and task_def.loomworks.build_dir
+    if type(bd) ~= "string" or bd == "" then return future_mod.resolved(true) end
+    if not ws or not ws:_validate_build_dir(bd, ws.root) then
+        return future_mod.rejected("clean refused: unsafe build directory " .. tostring(bd))
+    end
+    local io_dep = (ws._core and ws._core._deps and ws._core._deps.io) or require("loomworks.io")
+    return io_dep.rm_rf_async(bd)
+end
+M._wipe_build_dir = wipe_build_dir
+
 --- Determine the lock type for a task action.
 --- @param action string "configure", "build", "clean", etc.
 --- @return "exclusive"|"shared"
@@ -603,7 +642,21 @@ local function start_one_task(overseer, task_def, on_complete)
                 end
             end
 
-            local build_result = task_def.builder()
+            local build_result, h_err = harden(task_def.builder())
+            if not build_result then
+                if lw_meta.build_dir then
+                    local ws = unit._workspace
+                    if ws then
+                        local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                        ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                        if ws._release_file_lock then ws:_release_file_lock(dir) end
+                    end
+                end
+                local msg = "loomworks: " .. (task_def.name or "task") .. ": " .. tostring(h_err)
+                vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                reject(msg)
+                return
+            end
             apply_nice(build_result, lw_meta.action)
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
@@ -942,6 +995,7 @@ end
 ---   configuration is still planned for every unit; reconfigure forces a FULL
 ---   reconfigure of every unit (`lw build --reconfigure`, §16.4).
 --- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, cmd, cwd, env }
+--- @return string|nil err a task builder that raised (the plan is refused, not partial)
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
     local all_tasks = collect_profile_tasks(profile,
@@ -961,10 +1015,17 @@ function M.plan_profile_build(profile, opts)
     end
 
     local steps = {}
+    -- A builder that raises (e.g. a refused unsafe vcvarsall / npm argument)
+    -- must fail the plan, not silently drop the step (the build would then
+    -- report success without having run it).
+    local plan_err
     local function add(task_defs, kind)
         for _, td in ipairs(task_defs or {}) do
             if td.builder then
                 local ok, spec = pcall(td.builder)
+                if not ok and not plan_err then
+                    plan_err = (td.name or kind) .. ": " .. tostring(spec)
+                end
                 if ok and type(spec) == "table" and type(spec.cmd) == "table" then
                     steps[#steps + 1] = {
                         kind = kind,
@@ -997,6 +1058,7 @@ function M.plan_profile_build(profile, opts)
     end
     add(needs_configure, "configure")
     add(build_tasks, "build")
+    if plan_err then return nil, plan_err end
     return steps
 end
 
@@ -1006,7 +1068,8 @@ end
 --- e.g. never configured). Intended for the headless runner. Each step
 --- carries a ready-to-spawn `{cmd, cwd, env}`.
 --- @param profile loomworks.Profile
---- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env }
+--- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env } — or
+---   { kind, name, build_dir, wipe_build_dir = true } for a core-performed wipe
 function M.plan_profile_clean(profile)
     local tasks = collect_profile_clean_tasks(profile)
     if not tasks then return nil end
@@ -1015,7 +1078,17 @@ function M.plan_profile_clean(profile)
     for _, td in ipairs(tasks) do
         local build_dir = td.loomworks and td.loomworks.build_dir or nil
         -- Nothing to clean if the build dir was never created.
-        if td.builder and (not build_dir or uv.fs_stat(build_dir)) then
+        if td.loomworks and td.loomworks.wipe_build_dir then
+            -- Core-performed wipe (no command): the runner validates + deletes.
+            if build_dir and uv.fs_stat(build_dir) then
+                steps[#steps + 1] = {
+                    kind = "clean",
+                    name = td.name,
+                    build_dir = build_dir,
+                    wipe_build_dir = true,
+                }
+            end
+        elseif td.builder and (not build_dir or uv.fs_stat(build_dir)) then
             local ok, spec = pcall(td.builder)
             if ok and type(spec) == "table" and type(spec.cmd) == "table" then
                 steps[#steps + 1] = {
@@ -1331,7 +1404,23 @@ function M.run_configuration_clean(unit, on_complete)
     local task_futures = {}
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
-            local build_result = task_def.builder()
+            if task_def.loomworks and task_def.loomworks.wipe_build_dir then
+                wipe_build_dir(unit._workspace, task_def)
+                    :next(function() resolve(true) end)
+                    :catch(function(e)
+                        local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(e)
+                        vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                        reject(msg)
+                    end)
+                return
+            end
+            local build_result, h_err = harden(task_def.builder())
+            if not build_result then
+                local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(h_err)
+                vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                reject(msg)
+                return
+            end
             apply_nice(build_result, "clean")
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
@@ -1385,7 +1474,23 @@ function M.run_profile_clean(profile, on_complete)
     local task_futures = {}
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
-            local build_result = task_def.builder()
+            if task_def.loomworks and task_def.loomworks.wipe_build_dir then
+                wipe_build_dir(profile._workspace or require("loomworks").get_workspace(), task_def)
+                    :next(function() resolve(true) end)
+                    :catch(function(e)
+                        local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(e)
+                        vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                        reject(msg)
+                    end)
+                return
+            end
+            local build_result, h_err = harden(task_def.builder())
+            if not build_result then
+                local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(h_err)
+                vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                reject(msg)
+                return
+            end
             apply_nice(build_result, "clean")
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
@@ -1437,11 +1542,16 @@ function M.launch_run_task(opts)
     if opts.args then
         cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
     end
+    local spec, h_err = harden({ cmd = cmd, cwd = opts.cwd, env = opts.env })
+    if not spec then
+        vim.notify("loomworks: " .. tostring(opts.name) .. ": " .. tostring(h_err), vim.log.levels.ERROR)
+        return nil
+    end
     local task = overseer.new_task({
         name = opts.name,
-        cmd = cmd,
+        cmd = spec.cmd,
         cwd = opts.cwd,
-        env = opts.env,
+        env = spec.env,
         components = { "default" },
     })
     task:start()
@@ -1471,13 +1581,18 @@ function M.run_cmd_task(opts)
         cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
     end
 
+    local spec, h_err = harden({ cmd = cmd, cwd = opts.cwd, env = opts.env })
+    if not spec then
+        return future_mod.rejected(tostring(opts.name) .. ": " .. tostring(h_err))
+    end
+
     return future_mod.create(function(resolve, reject)
         local output_lines = {}
         local task = overseer.new_task({
             name = opts.name,
-            cmd = cmd,
+            cmd = spec.cmd,
             cwd = opts.cwd,
-            env = opts.env,
+            env = spec.env,
             components = { "default" },
         })
         if opts.check_output then
@@ -1549,11 +1664,16 @@ function M.run_streaming_task(opts)
     -- lines routinely >200 chars — that turns every record into two or three
     -- fragments, none of which parse. A non-terminal jobstart uses
     -- a plain stdout pipe and gives us raw newline-separated output.
+    local spec, h_err = harden({ cmd = cmd, cwd = opts.cwd, env = opts.env })
+    if not spec then
+        vim.notify("loomworks: " .. tostring(opts.name) .. ": " .. tostring(h_err), vim.log.levels.ERROR)
+        return nil
+    end
     local task = overseer.new_task({
         name = opts.name,
-        cmd = cmd,
+        cmd = spec.cmd,
         cwd = opts.cwd,
-        env = opts.env,
+        env = spec.env,
         strategy = { "jobstart", use_terminal = false },
         components = { "on_output_summarize", "on_exit_set_status" },
     })

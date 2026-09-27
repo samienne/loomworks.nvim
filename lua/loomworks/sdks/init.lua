@@ -4,6 +4,7 @@
 --- can add providers by placing files in lua/loomworks/sdks/.
 
 local API = require("loomworks.api_versions")
+local loader = require("loomworks.plugin_loader")
 
 local M = {}
 
@@ -26,7 +27,7 @@ local function reject(id, reason)
     if _rejected[id] then return end
     _rejected[id] = reason
     vim.notify(
-        "loomworks: SDK provider '" .. id .. "' will not load: " .. reason,
+        "loomworks: SDK provider " .. loader.display_id(id) .. " will not load: " .. reason,
         vim.log.levels.ERROR)
 end
 
@@ -51,14 +52,23 @@ function M.list()
 end
 
 --- Get a provider by ID. Lazy-loads and caches.
+---
+--- Profile/SDK ids come from workspace files, so the provider is loaded via
+--- `loomworks.plugin_loader` (runtime path only, never `package.path`); an id
+--- that is not a plain identifier is rejected with a diagnostic.
 --- @param id string provider identifier (e.g., "cpp_compiler")
 --- @return table|nil provider module
 function M.get(id)
+    if type(id) ~= "string" then return nil end
     if _providers[id] then return _providers[id] end
     if _rejected[id] then return nil end
-    local ok, mod = pcall(require, "loomworks.sdks." .. id)
-    if not ok then
-        _load_failed[id] = tostring(mod)
+    local mod, err, status = loader.load("sdks", id)
+    if status == "invalid" then
+        reject(id, err)
+        return nil
+    end
+    if mod == nil then
+        _load_failed[id] = tostring(err)
         return nil
     end
     _load_failed[id] = nil

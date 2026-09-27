@@ -150,7 +150,9 @@ local function default_run(argv, timeout_ms, cb)
         cmd = { "cmd", "/d", "/c", (argv[1]:gsub("/", "\\")) }
         for i = 2, #argv do cmd[#cmd + 1] = argv[i] end
     end
-    local ok, err = pcall(vim.system, cmd, { text = true, timeout = timeout_ms }, function(res)
+    -- loomworks.exe: argv[1] (and the `cmd` wrapper) resolved to an absolute
+    -- path from PATH only, never the cwd; unresolvable => code 127, no spawn.
+    local ok, err = pcall(require("loomworks.exe").system, cmd, { text = true, timeout = timeout_ms }, function(res)
         cb({ code = res.code or -1, stdout = res.stdout or "", stderr = res.stderr or "" })
     end)
     if not ok then cb({ code = 127, stdout = "", stderr = tostring(err) }) end

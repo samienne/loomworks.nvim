@@ -50,7 +50,7 @@ local function clear_device_log(target, device_serial)
     if not spec or not spec.cmd then return end
     local cmd = vim.list_extend({ spec.cmd }, spec.args or {})
     pcall(function()
-        vim.system(cmd, { text = true, timeout = 3000 }):wait()
+        require("loomworks.exe").system(cmd, { text = true, timeout = 3000 }):wait()
     end)
 end
 

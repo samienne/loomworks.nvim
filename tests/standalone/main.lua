@@ -683,16 +683,18 @@ do
     "https://example.com/mirror", "custom http mirror stays flat")
 end
 
-print("boot.update — ensure_version (repo-local bundle, flat mirror)")
+print("boot.update — ensure_version (machine-local pinned bundle, flat mirror)")
 do
   local sb = root .. "/tests/.tmp-ensure"; paths.rm_rf(sb); paths.mkdirp(sb)
   local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
   local repo = sb .. "/repo"; paths.mkdirp(repo)
+  local data = (sb .. "/data"):gsub("\\", "/")
+  uv.os_setenv("LOOMWORKS_DATA_DIR", data)
   local ver = "7.7.7-test"
   local bundle = "loomworks-lua-" .. ver .. ".zip"
   do
     local w = miniz.new_writer()
-    w:add("loomworks/cli.lua", "return {}\n")
+    w:add("loomworks/cli.lua", "return 'verified'")
     local f = assert(io.open(mirror .. "/" .. bundle, "wb")); f:write(w:finalize()); f:close()
   end
   local bundle_sha = verify.sha256_hex(readfile(mirror .. "/" .. bundle))
@@ -700,10 +702,42 @@ do
 
   eq(update.versioned_base(ver), mirror, "versioned_base(mirror) is flat")
 
+  -- A repository-shipped "already provisioned" bundle (the old repo-local
+  -- location) must never be trusted because it exists.
+  paths.mkdirp(repo .. "/.nvim/cache/lua-" .. ver .. "/loomworks")
+  do
+    local f = assert(io.open(repo .. "/.nvim/cache/lua-" .. ver .. "/loomworks/cli.lua", "wb"))
+    f:write("return 'planted'"); f:close()
+  end
+
   local dir, err = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha })
   ok(dir ~= nil, "ensure_version provisions" .. (err and (" — " .. err) or ""))
-  eq(dir, repo .. "/.nvim/cache/lua-" .. ver, "extracted to repo-local .nvim/cache/lua-<ver>")
-  ok(slurp(dir .. "/loomworks/cli.lua") ~= nil, "bundle extracted (cli.lua present)")
+  eq(dir, data .. "/pinned/" .. bundle_sha .. "/lua-" .. ver,
+    "extracted to the machine-local <data>/pinned/<sha256>/lua-<ver>")
+  ok(dir ~= nil and not dir:find(repo, 1, true), "never the repo-local .nvim/cache location")
+  eq(slurp(dir .. "/loomworks/cli.lua"), "return 'verified'", "the verified bundle's content, not a planted one")
+  eq(update.pinned_bundle_dir(ver, bundle_sha:upper()), dir, "pinned_bundle_dir keys by lower-case hash")
+
+  -- Redirect guard for a pinned host that predates machine-local provisioning
+  -- (it would load <pin root>/.nvim/cache/lua-<ver> when present).
+  local legacy = repo .. "/.nvim/cache/lua-" .. ver
+  ok(select(1, update.check_legacy_pinned_bundle(legacy, dir)) == nil,
+    "legacy guard: a planted repo-local bundle is refused")
+  ok(update.check_legacy_pinned_bundle(sb .. "/nope", dir) == true,
+    "legacy guard: an absent repo-local bundle is fine")
+  do
+    local f = assert(io.open(legacy .. "/loomworks/cli.lua", "wb")); f:write("return 'verified'"); f:close()
+  end
+  ok(update.check_legacy_pinned_bundle(legacy, dir) == true,
+    "legacy guard: a byte-identical repo-local bundle is fine")
+  paths.mkdirp(legacy .. "/loomworks/modules")
+  do
+    local f = assert(io.open(legacy .. "/loomworks/modules/extra.lua", "wb")); f:write("return {}"); f:close()
+  end
+  ok(select(1, update.check_legacy_pinned_bundle(legacy, dir)) == nil,
+    "legacy guard: an extra file in the repo-local bundle is refused")
+  ok(uv.fs_stat(legacy .. "/loomworks/modules/extra.lua") ~= nil,
+    "legacy guard never deletes repository files")
 
   -- idempotent: a second call reuses without touching the mirror
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror .. "/gone")
@@ -711,13 +745,20 @@ do
   eq(dir2, dir, "ensure_version idempotent (no refetch)")
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
 
-  -- hash mismatch aborts and leaves nothing behind
-  local repo2 = sb .. "/repo2"; paths.mkdirp(repo2)
-  local bad, berr = update.ensure_version(ver, { root = repo2, bundle_sha256 = string.rep("0", 64) })
+  -- hash mismatch aborts and leaves nothing behind; a different pinned hash
+  -- never reuses the directory provisioned for another hash
+  local other = string.rep("0", 64)
+  local bad, berr = update.ensure_version(ver, { root = repo, bundle_sha256 = other })
   ok(bad == nil and type(berr) == "string", "bundle hash mismatch aborts")
-  ok(not uv.fs_stat(repo2 .. "/.nvim/cache/lua-" .. ver .. "/loomworks/cli.lua"),
-    "a rejected provision leaves nothing behind")
+  ok(not uv.fs_stat(update.pinned_bundle_dir(ver, other)), "a rejected provision leaves nothing behind")
+  ok(select(1, update.ensure_version(ver, { bundle_sha256 = "abc" })) == nil,
+    "refuses a pinned hash that is not a sha256")
 
+  -- the redirect's host binary is cached machine-locally too
+  local bp = update.pinned_binary_path("1.2.3", "lw-linux-x86_64")
+  eq(bp, data .. "/pinned/lw-1.2.3-lw-linux-x86_64", "pinned host binary path is machine-local")
+
+  uv.os_unsetenv("LOOMWORKS_DATA_DIR")
   paths.rm_rf(sb)
 end
 
@@ -1384,6 +1425,109 @@ do
   } }, inv.context(nil, { timeout_ms = 400 }))
   eq(results[1] and results[1].status, "found", "probe timeout measured from now, not a stale loop clock")
   ok(ms >= 250 and ms < 10000, string.format("…promptly (%.0f ms)", ms))
+end
+
+print("SECURITY — host Lua search paths never reach the current directory")
+do
+  local luapath = require("boot.luapath")
+  local win = luapath.sanitize(
+    [[.\?.lua;C:\bin\lua\?.lua;C:\sys\lua\?.lua;?.lua;lua\?\init.lua;\\srv\share\?.lua;!\lua\?.lua;\rooted\?.lua;;]],
+    { is_windows = true, exclude_dirs = { "C:\\bin" } })
+  eq(win, [[C:\sys\lua\?.lua;\\srv\share\?.lua]],
+    "windows: only absolute entries outside the exe dir survive")
+  local posix = luapath.sanitize("./?.lua;/usr/share/lua/5.1/?.lua;/opt/lw/lua/?.lua;lua/?.lua;;",
+    { is_windows = false, exclude_dirs = { "/opt/lw" } })
+  eq(posix, "/usr/share/lua/5.1/?.lua", "posix: only absolute entries outside the exe dir survive")
+  eq(luapath.sanitize(".\\?.dll;C:\\bin\\?.dll;C:\\bin\\loadall.dll",
+    { is_windows = true, exclude_dirs = { "C:/BIN/" } }), "",
+    "cpath: cwd and exe-dir entries removed (case/separator-insensitive)")
+
+  -- End to end: a source-run host (`luvi <repo>/lua -- …`, the fused-bundle
+  -- fallback path) started inside a directory that carries loomworks/cli.lua
+  -- and loomworks/shim.lua must run its own code, never those files.
+  local work = root .. "/tests/.tmp-cwdshadow"
+  local home = work .. "/home"
+  paths.rm_rf(work)
+  paths.mkdirp(work .. "/proj/loomworks")
+  paths.mkdirp(home)
+  local marker = work .. "/SHADOWED"
+  local shadow = ("local f = io.open(%q, 'w') f:write('x') f:close()\nreturn {}\n"):format(marker)
+  for _, name in ipairs({ "cli.lua", "shim.lua" }) do
+    local f = assert(io.open(work .. "/proj/loomworks/" .. name, "w")); f:write(shadow); f:close()
+  end
+  local env = {}
+  local override = { LOCALAPPDATA = home, XDG_DATA_HOME = home, APPDATA = home, XDG_CONFIG_HOME = home }
+  for k, v in pairs(uv.os_environ()) do
+    local drop = override[k] or k == "LOOMWORKS_LUA" or k == "LOOMWORKS_PINNED" or k == "LOOMWORKS_LW"
+    if not drop then env[#env + 1] = k .. "=" .. v end
+  end
+  for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+  -- Capture into a file (a libuv pipe does not reliably receive a luvi child's
+  -- C-stdio output on Windows).
+  local logf = work .. "/out.txt"
+  local fd = assert(uv.fs_open(logf, "w", 420))
+  local done, code = false, nil
+  local h = uv.spawn(uv.exepath(), {
+    -- luvi joins a bundle path onto its cwd, so name the source dir relatively.
+    args = { "../../../lua", "--", "help" }, cwd = work .. "/proj", env = env,
+    stdio = { nil, fd, fd },
+  }, function(c) code = c; done = true end)
+  ok(h ~= nil, "spawned a source-run host")
+  if h then
+    local t = uv.new_timer()
+    t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+    while not done do uv.run("once") end
+    t:stop(); t:close(); h:close()
+  end
+  uv.fs_close(fd)
+  local lf = io.open(logf, "rb")
+  local text = lf and lf:read("*a") or ""
+  if lf then lf:close() end
+  ok(not uv.fs_stat(marker), "cwd-relative loomworks/*.lua was not executed")
+  ok(text:find("Usage", 1, true) ~= nil and code == 0,
+    "the host's own CLI ran (exit " .. tostring(code) .. ")" ..
+    ((code ~= 0 or not text:find("Usage", 1, true)) and (" :: " .. text:sub(1, 400)) or ""))
+  paths.rm_rf(work)
+end
+
+print("SECURITY — bare program names never resolve from the current directory")
+do
+  -- Benign probe: a copy of a harmless system tool renamed `lwprobe`, placed
+  -- in a scratch dir that becomes the cwd.
+  local is_win = package.config:sub(1, 1) == "\\"
+  local probe = is_win and "lwprobe.exe" or "lwprobe"
+  local sb = root .. "/tests/.tmp-exe"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local src = is_win and ((os.getenv("SystemRoot") or "C:\\Windows") .. "\\System32\\whoami.exe")
+    or "/bin/true"
+  ok(uv.fs_copyfile(src, sb .. "/" .. probe) == true, "probe copied")
+  if not is_win then uv.fs_chmod(sb .. "/" .. probe, 493) end
+  local bexe = require("boot.exe")
+  local saved = uv.cwd()
+  uv.chdir(sb)
+  local sep = is_win and ";" or ":"
+  local saved_path = os.getenv("PATH")
+  local r1, e1 = bexe.resolve("lwprobe")
+  ok(r1 == nil and tostring(e1):find("not found on PATH", 1, true) ~= nil,
+    "boot.exe: a cwd-only program is not resolved")
+  eq(vim.fn.exepath("lwprobe"), "", "shim exepath: a cwd-only program is not resolved")
+  eq(vim.fn.executable("lwprobe"), 0, "shim executable: a cwd-only program is not executable")
+  local res = vim.system({ "lwprobe" }, { text = true }):wait()
+  eq(res.code, 127, "shim vim.system: a cwd-only program is not spawned")
+  ok(tostring(res.stderr):find("not found on PATH", 1, true) ~= nil, "…with a clear error")
+  -- Relative / empty PATH entries are ignored (they mean "the cwd").
+  uv.os_setenv("PATH", "." .. sep .. sep .. (saved_path or ""))
+  ok(bexe.resolve("lwprobe") == nil, "boot.exe: '.' and empty PATH entries ignored")
+  eq(vim.fn.exepath("lwprobe"), "", "shim: '.' and empty PATH entries ignored")
+  if saved_path then uv.os_setenv("PATH", saved_path) end
+  -- An absolute PATH entry does resolve, to an absolute path.
+  local p = vim.system({ "lwprobe" }, { text = true, env = { PATH = sb } }):wait()
+  eq(p.code, 0, "shim vim.system: resolved via the child's absolute PATH entry")
+  ok(bexe.resolve(sb .. "/lwprobe") ~= nil, "boot.exe: an existing absolute path is accepted")
+  -- A shell-style explicit relative path runs relative to the child's cwd only.
+  local q = vim.system({ "./lwprobe" }, { text = true, cwd = sb }):wait()
+  eq(q.code, 0, "shim vim.system: ./prog resolves against the child cwd")
+  uv.chdir(saved)
+  paths.rm_rf(sb)
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

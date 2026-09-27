@@ -17,6 +17,11 @@ local json = require("boot.json")
 
 local M = {}
 
+--- Is `h` a SHA-256 hex digest?
+local function is_sha256(h)
+  return type(h) == "string" and #h == 64 and h:match("^%x+$") ~= nil
+end
+
 -- Where releases are fetched from. Overridable via LOOMWORKS_RELEASE_URL or
 -- the `release-url` config key; a local directory works as an offline mirror.
 -- `/releases/latest/download` already resolves to the newest NON-prerelease on
@@ -189,7 +194,7 @@ function M.ensure_host_binary(version, asset, sha256, dest, opts)
   if not pin.valid_version(version) then
     return nil, "unsafe release version '" .. tostring(version) .. "'"
   end
-  if type(sha256) ~= "string" or not sha256:match("^%x+$") then
+  if not is_sha256(sha256) then
     return nil, "no pinned sha256 for '" .. tostring(asset) .. "'"
   end
   if uv.fs_stat(dest) and verify.verify_file_sha256(dest, sha256) then
@@ -214,34 +219,57 @@ function M.ensure_host_binary(version, asset, sha256, dest, opts)
   return true, dest
 end
 
---- Provision the pinned release bundle for `version` into a REPO-LOCAL cache at
---- `<opts.root>/.nvim/cache/lua-<version>/`, verified against the pinned
---- `opts.bundle_sha256`. Idempotent (an already-extracted bundle is reused);
---- a failed/partial provision leaves prior state intact. Repo-local so a pinned
---- run never pollutes the machine-global install. Returns the lua-root or nil, err.
+--- The machine-local directory for everything a pinned run provisions:
+--- `<data>/loomworks/pinned` (spec §16.22). Never inside a repository — a
+--- clone can ship any file under its own tree, so nothing there is trusted.
+function M.pinned_root() return paths.data_dir() .. "/pinned" end
+
+--- Where the pinned bundle for (`version`, pinned bundle `sha256`) lives:
+--- `<data>/pinned/<sha256>/lua-<version>`. Keyed by the pinned hash, so a pin
+--- naming a different hash never reuses a directory provisioned (verified)
+--- for another; the `lua-<version>` tail keeps the version derivable from the
+--- root like every other release root.
+function M.pinned_bundle_dir(version, sha256)
+  return M.pinned_root() .. "/" .. tostring(sha256):lower() .. "/lua-" .. version
+end
+
+--- Where the global host caches a pinned host binary it redirects to (§16.23):
+--- `<data>/pinned/lw-<version>-<asset>`. Re-verified against the pin on every use.
+function M.pinned_binary_path(version, asset)
+  return M.pinned_root() .. "/lw-" .. version .. "-" .. asset
+end
+
+--- Provision the pinned release bundle for `version` into the MACHINE-LOCAL
+--- pinned cache (`pinned_bundle_dir`), verified against the pinned
+--- `opts.bundle_sha256`. Idempotent (a bundle this function already extracted
+--- and verified is reused); a failed/partial provision leaves prior state
+--- intact. The directory is only ever populated here, after the download from
+--- the fixed origin matched the pinned hash, so reusing it by presence is
+--- sound. A repository's own `.nvim/cache` is never consulted: a clone can
+--- ship a pre-"extracted" bundle there. Returns the lua-root or nil, err.
+--- (`opts.root`, the pin root, is accepted for callers but no longer used.)
 function M.ensure_version(version, opts)
   opts = opts or {}
-  local root = opts.root
-  if not root then return nil, "ensure_version needs a repo root" end
   -- Trust boundary: `version` becomes an rm_rf'd path below, so refuse a
   -- traversal before touching the filesystem.
   if not pin.valid_version(version) then
     return nil, "unsafe release version '" .. tostring(version) .. "'"
   end
-  local dest = root .. "/.nvim/cache/lua-" .. version
-  -- Already provisioned? The CLI entry existing is the marker.
-  if uv.fs_stat(dest .. "/loomworks/cli.lua") then return dest end
-
   local bundle = "loomworks-lua-" .. version .. ".zip"
   local sha = opts.bundle_sha256
-  if type(sha) ~= "string" or not sha:match("^%x+$") then
+  if not is_sha256(sha) then
     return nil, "no pinned sha256 for '" .. bundle .. "'"
   end
-  local cache = root .. "/.nvim/cache"
-  local okm, em = paths.mkdirp(cache)
-  if not okm then return nil, "prepare cache dir: " .. tostring(em) end
+  sha = sha:lower()
+  local dest = M.pinned_bundle_dir(version, sha)
+  -- Already provisioned by us? The CLI entry existing is the marker.
+  if uv.fs_stat(dest .. "/loomworks/cli.lua") then return dest end
 
-  local tmpzip = cache .. "/.dl-" .. version .. ".zip"
+  local cache = M.pinned_root()
+  local okm, em = paths.mkdirp(cache .. "/" .. sha)
+  if not okm then return nil, "prepare pinned cache dir: " .. tostring(em) end
+
+  local tmpzip = cache .. "/.dl-" .. sha .. "-" .. version .. ".zip"
   paths.rm_rf(tmpzip)
   local url = M.versioned_base(version, opts) .. "/" .. bundle
   local okd, ed = download.fetch_to_file(url, tmpzip)
@@ -249,7 +277,7 @@ function M.ensure_version(version, opts)
   local okv, ev = verify.verify_file_sha256(tmpzip, sha)
   if not okv then paths.rm_rf(tmpzip); return nil, "bundle verify: " .. (ev or "mismatch") end
 
-  local stage = cache .. "/.stage-" .. version
+  local stage = cache .. "/.stage-" .. sha .. "-" .. version
   paths.rm_rf(stage)
   local okx, ex = M.extract_zip(tmpzip, stage)
   paths.rm_rf(tmpzip)
@@ -258,6 +286,69 @@ function M.ensure_version(version, opts)
   local okr, er = M.rename_with_retry(stage, dest)
   if not okr then paths.rm_rf(stage); return nil, "activate: " .. tostring(er) end
   return dest
+end
+
+--- List every regular file under `dir` as { [relative/path] = true }, or nil
+--- when `dir` is not a directory.
+local function list_tree(dir)
+  local st = uv.fs_stat(dir)
+  if not st or st.type ~= "directory" then return nil end
+  local out = {}
+  local function walk(rel)
+    local abs = rel == "" and dir or (dir .. "/" .. rel)
+    local req = uv.fs_scandir(abs)
+    while req do
+      local name, typ = uv.fs_scandir_next(req)
+      if not name then break end
+      local r = rel == "" and name or (rel .. "/" .. name)
+      typ = typ or ((uv.fs_stat(abs .. "/" .. name) or {}).type)
+      if typ == "directory" then walk(r) else out[r] = true end
+    end
+  end
+  walk("")
+  return out
+end
+
+local function read_bytes(p)
+  local f = io.open(p, "rb")
+  if not f then return nil end
+  local s = f:read("*a"); f:close()
+  return s
+end
+
+--- Guard for a redirect to a pinned release whose host predates machine-local
+--- provisioning: such a host still loads its bundle from the repository's
+--- `<pin root>/.nvim/cache/lua-<version>/` when that directory exists. Before
+--- exec'ing it, the redirecting host compares that directory with the bundle it
+--- verified itself (`verified_dir`): absent, or byte-for-byte the same file
+--- tree, is fine; anything else (a planted or modified bundle) is refused. It
+--- never deletes anything in the repository. Returns true or nil, err.
+--- @param legacy_dir string
+--- @param verified_dir string
+function M.check_legacy_pinned_bundle(legacy_dir, verified_dir)
+  local got = list_tree(legacy_dir)
+  if not got then
+    if uv.fs_stat(legacy_dir) then
+      return nil, legacy_dir .. " exists but is not a directory"
+    end
+    return true
+  end
+  local want = list_tree(verified_dir)
+  if not want then return nil, "verified bundle missing at " .. verified_dir end
+  local mismatch = function(rel, why)
+    return nil, legacy_dir .. " does not match the pinned release (" .. rel .. ": " .. why ..
+      "); it is a cache — delete it and re-run"
+  end
+  for rel in pairs(got) do
+    if not want[rel] then return mismatch(rel, "not part of the release") end
+  end
+  for rel in pairs(want) do
+    if not got[rel] then return mismatch(rel, "missing") end
+    if read_bytes(legacy_dir .. "/" .. rel) ~= read_bytes(verified_dir .. "/" .. rel) then
+      return mismatch(rel, "content differs")
+    end
+  end
+  return true
 end
 
 --- Extract the zip at `zip_path` into `dest_dir` (created). Rejects unsafe

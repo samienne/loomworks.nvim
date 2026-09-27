@@ -161,6 +161,10 @@ function M.cmd_factory(base_cmd)
             error("loomworks.qmlls: binary_required and not found: " .. entry.binary)
         end
 
+        -- A bare binary name (the default `qmlls`) is resolved from absolute
+        -- PATH entries only — never the current directory (libuv on Windows).
+        require("loomworks.exe").resolve_server_cmd(args, config.cmd_env, "loomworks.qmlls")
+
         if config.root_dir then
             _resolved_cmd[normalize(config.root_dir)] = vim.list_extend({}, args)
         end

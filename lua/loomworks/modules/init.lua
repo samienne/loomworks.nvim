@@ -11,6 +11,7 @@ function M.register(id, mod)
 end
 
 local API = require("loomworks.api_versions")
+local loader = require("loomworks.plugin_loader")
 
 --- Track modules whose load attempt failed (file present but
 --- contract-mismatched or version-mismatched) so we don't spam the
@@ -33,23 +34,35 @@ local function reject(id, reason)
     if rejected[id] then return end
     rejected[id] = reason
     vim.notify(
-        "loomworks: module '" .. id .. "' will not load: " .. reason,
+        "loomworks: module " .. loader.display_id(id) .. " will not load: " .. reason,
         vim.log.levels.ERROR)
 end
 
 --- Get the module handler for a project type, or nil.
+---
+--- The id usually comes from a workspace file, so it is loaded through
+--- `loomworks.plugin_loader` — runtime path only, never `package.path` (whose
+--- `./?.lua` entry would reach a file relative to the current directory). An
+--- id that is not a plain identifier is rejected with a diagnostic; the
+--- project that names it is preserved verbatim like any other unknown type
+--- (spec §8.0).
 --- @param id string
 --- @return table|nil
 function M.get(id)
+    if type(id) ~= "string" then return nil end
     if registry[id] then return registry[id] end
     if rejected[id] then return nil end
-    local ok, mod = pcall(require, "loomworks.modules." .. id)
-    if not ok then
-        -- File not present on rtp (or load-time error). Not a
+    local mod, err, status = loader.load("modules", id)
+    if status == "invalid" then
+        reject(id, err)
+        return nil
+    end
+    if mod == nil then
+        -- File not present on the runtime path (or load-time error). Not a
         -- "rejection" we want to warn about — it just means no
         -- plugin ships this module. Stay quiet. The error is kept for
         -- `M.list`, which reports it when the file does exist.
-        load_failed[id] = tostring(mod)
+        load_failed[id] = tostring(err)
         return nil
     end
     load_failed[id] = nil

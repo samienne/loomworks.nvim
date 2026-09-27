@@ -23,13 +23,16 @@ function M.register(tool, parser)
 end
 
 --- Get a progress parser by tool name.
---- Auto-loads from loomworks.progress.<tool> if not yet registered.
+--- Auto-loads from loomworks.progress.<tool> if not yet registered — through
+--- `loomworks.plugin_loader` (runtime path only, plain-identifier names only),
+--- since the name is chosen by a module from project/tool data.
 --- @param tool string
 --- @return loomworks.ProgressParser|nil
 function M.get(tool)
+    if type(tool) ~= "string" then return nil end
     if not parsers[tool] then
-        local ok, mod = pcall(require, "loomworks.progress." .. tool)
-        if ok and type(mod) == "function" then
+        local mod = require("loomworks.plugin_loader").load("progress", tool)
+        if type(mod) == "function" then
             parsers[tool] = mod
         end
     end
