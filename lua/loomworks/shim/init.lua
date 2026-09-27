@@ -430,7 +430,9 @@ end
 vim.log = { levels = { TRACE = 0, DEBUG = 1, INFO = 2, WARN = 3, ERROR = 4, OFF = 5 } }
 function vim.notify(msg, level)
   if not level or level >= vim.log.levels.WARN then
-    io.stderr:write("[loomworks] " .. tostring(msg) .. "\n")
+    -- Control characters in the message (which may carry workspace data) are
+    -- escaped before they reach the terminal (loomworks.term).
+    io.stderr:write(require("loomworks.term").render("[loomworks] " .. tostring(msg)) .. "\n")
   end
 end
 function vim.notify_once(msg, level) vim.notify(msg, level) end

@@ -167,6 +167,17 @@ Success or failure is reported via process exit status; task output streams
 to standard output and standard error. No editor UI is required or
 produced.
 
+Text the runner prints on its own behalf — status, health, profile,
+configuration and tool listings, diagnostics — routinely includes **data**
+read from the workspace files, the cache, the health cache or tool probes
+(names, paths, versions, option values), which a cloned repository controls.
+Such data MUST NOT reach the terminal as control sequences: every control
+character except tab and line feed is rendered visibly (e.g. escape as `^[`),
+so data can never move the cursor, rewrite the screen, set the window title or
+clipboard, or forge hyperlinks. The runner's own coloring (on a terminal only)
+is unaffected. Output relayed verbatim from a build tool or launched program is
+that program's own output and is passed through unchanged.
+
 Every command documents itself: `lw help <command>` and, equivalently,
 `--help` / `-h` anywhere among a command's own arguments (never after the `--`
 that hands the rest to a build tool or program) print that command's help and

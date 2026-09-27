@@ -28,8 +28,10 @@ describe("lw profiles active highlight", function()
     end
     assert.is_truthy(active_line)
     assert.is_truthy(other_line)
-    assert.is_truthy(active_line:find(ANSI_ACTIVE, 1, true)) -- active is green
-    assert.is_nil(other_line:find(ANSI_ACTIVE, 1, true)) -- inactive is plain
+    -- Rows carry loomworks.term markers; the CLI's writer renders them.
+    local R = require("loomworks.term").render
+    assert.is_truthy(R(active_line):find(ANSI_ACTIVE, 1, true)) -- active is green
+    assert.is_nil(R(other_line):find(ANSI_ACTIVE, 1, true)) -- inactive is plain
   end)
 
   it("emits no ANSI when color is off (pipe/redirect)", function()
