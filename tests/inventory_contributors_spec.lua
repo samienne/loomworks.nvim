@@ -26,6 +26,7 @@ local function fake_ctx(opts)
         end,
         read_file = function(p) return files[p] end,
         exists = function(p) return files[p] ~= nil end,
+        realpath = function(p) return (opts.realpath or {})[p] or p end,
         getenv = function(k) return (opts.env or {})[k] end,
         stdpath_data = opts.stdpath_data or false,
         timeout_ms = opts.timeout_ms or 2000,
@@ -459,6 +460,38 @@ describe("inventory contributors", function()
         local ccl = r({ compiler_family = "clang-cl", compiler_path = "C:/L/clang-cl.exe", vcvarsall = "C:/VS/v.bat" })
         assert.is_not_nil(ccl[inv.path_id("clang-cl", "C:/L/clang-cl.exe")])
         assert.is_not_nil(ccl[inv.path_id("msvc", "C:/VS/v.bat")])
+    end)
+
+    it("npm's version comes from its package.json next to npm (Windows layout), without spawning npm", function()
+        local d = ids(ts.health_inventory(fake_ctx()))
+        local ctx = fake_ctx({ platform = "windows",
+            path = { npm = "C:/Program Files/nodejs/npm.cmd" },
+            files = { ["C:/Program Files/nodejs/node_modules/npm/package.json"] = '{"name":"npm","version":"10.9.2"}' } })
+        local by = probe({ d["exe:npm"] }, ctx)
+        assert.equals("found", by["exe:npm"].status)
+        assert.equals("10.9.2", by["exe:npm"].version)
+        assert.equals(0, #ctx._ran)
+    end)
+
+    it("npm's version via the bin/npm symlink into lib/node_modules/npm (Unix layout)", function()
+        local d = ids(ts.health_inventory(fake_ctx()))
+        local ctx = fake_ctx({
+            path = { npm = "/usr/local/bin/npm" },
+            realpath = { ["/usr/local/bin/npm"] = "/usr/local/lib/node_modules/npm/bin/npm-cli.js" },
+            files = { ["/usr/local/lib/node_modules/npm/package.json"] = '{"name":"npm","version":"11.0.0"}' } })
+        local by = probe({ d["exe:npm"] }, ctx)
+        assert.equals("11.0.0", by["exe:npm"].version)
+        assert.equals(0, #ctx._ran)
+    end)
+
+    it("npm falls back to `npm --version` when no npm package.json is found", function()
+        local d = ids(ts.health_inventory(fake_ctx()))
+        local ctx = fake_ctx({ path = { npm = "/opt/x/npm" }, outputs = { ["/opt/x/npm"] = "9.8.1" },
+            -- a package.json that is not npm's must not be trusted
+            files = { ["/opt/x/node_modules/npm/package.json"] = '{"name":"other","version":"1.2.3"}' } })
+        local by = probe({ d["exe:npm"] }, ctx)
+        assert.equals("9.8.1", by["exe:npm"].version)
+        assert.equals(1, #ctx._ran)
     end)
 
     it("typescript declares and requires node + npm; shell declares nothing", function()

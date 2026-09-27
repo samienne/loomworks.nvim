@@ -79,6 +79,7 @@ M.JSON_SCHEMA = 1
 --- @field run fun(argv: string[], cb: fun(res: { code: integer, stdout: string, stderr: string }))
 --- @field read_file fun(path: string): string|nil
 --- @field exists fun(path: string): boolean
+--- @field realpath fun(path: string): string|nil symlinks resolved (nil when it cannot be)
 --- @field getenv fun(name: string): string|nil
 --- @field timeout_ms integer
 --- @field workspace loomworks.Workspace|nil
@@ -180,6 +181,7 @@ function M.context(workspace, overrides)
         run = function(argv, cb) default_run(argv, timeout, cb) end,
         read_file = default_read_file,
         exists = function(path) return uv.fs_stat(path) ~= nil end,
+        realpath = function(path) return uv.fs_realpath(path) end,
         getenv = os.getenv,
         timeout_ms = timeout,
         workspace = workspace,
@@ -202,8 +204,10 @@ end
 
 --- A declaration for an executable found on the search path, with its version
 --- from a version query. Modules that use the same executable build it through
---- this helper with the same `id`, so the declarations agree.
---- @param spec { id: string, category?: string, label: string, names?: string[], version_args?: string[], hint?: string|fun(ctx: loomworks.InventoryContext): string|nil }
+--- this helper with the same `id`, so the declarations agree. `version_from`
+--- (optional) reads the version without spawning the executable (e.g. from an
+--- installed package manifest); when it returns nil the version query runs.
+--- @param spec { id: string, category?: string, label: string, names?: string[], version_args?: string[], version_from?: fun(ctx: loomworks.InventoryContext, path: string): string|nil, hint?: string|fun(ctx: loomworks.InventoryContext): string|nil }
 --- @return loomworks.InventoryDeclaration
 function M.exe_declaration(spec)
     local names = spec.names or { spec.label }
@@ -222,6 +226,14 @@ function M.exe_declaration(spec)
             if not path then
                 done({ id = spec.id, label = spec.label, status = "missing", hint = hint })
                 return
+            end
+            if spec.version_from then
+                local ok, v = pcall(spec.version_from, ctx, path)
+                if ok and type(v) == "string" and v ~= "" then
+                    done({ id = spec.id, label = spec.label, status = "found", path = path,
+                        version = M.parse_version(v) or v, hint = hint })
+                    return
+                end
             end
             local argv = { path }
             for _, a in ipairs(spec.version_args or { "--version" }) do argv[#argv + 1] = a end
