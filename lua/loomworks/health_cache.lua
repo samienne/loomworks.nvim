@@ -89,7 +89,19 @@ function M.read(io_dep, root)
     local path = M.path(root)
     local data
     if type(io_dep) == "table" then
-        if type(io_dep.read_json) == "function" then
+        if type(io_dep.read_file) == "function" and io_dep.write_json_signed then
+            -- A real io module: read the raw text and use it only when it
+            -- carries this machine's signature (spec §17.4 — an unsigned or
+            -- foreign health cache is ignored and replaced on the next run).
+            local ok, content = pcall(io_dep.read_file, path)
+            if ok and type(content) == "string" then
+                local status, body = require("loomworks.trust").verify("health", content)
+                if status == "valid" then
+                    local dok, decoded = pcall(vim.json.decode, body)
+                    if dok and type(decoded) == "table" then data = decoded end
+                end
+            end
+        elseif type(io_dep.read_json) == "function" then
             local ok, decoded = pcall(io_dep.read_json, path)
             if ok and type(decoded) == "table" then data = decoded end
         elseif type(io_dep.read_file) == "function" then
@@ -132,7 +144,11 @@ function M.write(io_dep, root, data)
     if type(io_dep.ensure_dir) == "function" then
         pcall(io_dep.ensure_dir, root .. "/.nvim")
     end
-    local ok, err = io_dep.write_json(M.path(root), data)
+    -- Signed with the machine key (spec §17.3) when the io dependency can.
+    local writer = type(io_dep.write_json_signed) == "function"
+        and function(p, d) return io_dep.write_json_signed(p, "health", d) end
+        or io_dep.write_json
+    local ok, err = writer(M.path(root), data)
     return ok and true or false, err
 end
 

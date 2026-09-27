@@ -9,7 +9,7 @@
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
 --- @field _workspace loomworks.Workspace|nil
---- @field _setup_error { root: string, message: string }|nil set when setup fails
+--- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4)
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _pending_root string|nil root passed to setup(), known before async init resolves
 local Core = {}
@@ -25,6 +25,15 @@ local DEFAULT_DEPS = {
     user      = require("loomworks.user"),
     cache     = require("loomworks.cache"),
     config    = require("loomworks.config"),
+    --- Machine signatures on `.nvim` state (spec §17). Tests inject a stub.
+    trust     = require("loomworks.trust"),
+    --- How this host tells the user to resolve a refused `.nvim` file
+    --- (spec §17.10). The CLI replaces these with its commands.
+    trust_actions = {
+        trust = ":LoomworksTrust (or T on the status page)",
+        discard = "U on the status page",
+        nuke = "<C-n> on the status page",
+    },
     io        = require("loomworks.io"),
     read_file_async = require("loomworks.io").read_file_async,
     read_files_async = require("loomworks.io").read_files_async,
@@ -199,7 +208,17 @@ function Core:_on_files_read(root, paths, results)
     local ws_mod = self._deps.workspace
 
     local function fail(msg, setup_error)
-        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        -- A host that reports refused-trust errors itself (the CLI prints its
+        -- own actionable message) sets `quiet_trust_errors`.
+        if not (setup_error and setup_error.trust and self._deps.quiet_trust_errors) then
+            self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        end
+        -- A refused file (spec §17.4) unloads a live workspace too (a file
+        -- changed under it): nothing may keep running on the old state.
+        if setup_error and setup_error.trust and self._workspace then
+            self._workspace:teardown()
+            self._workspace = nil
+        end
         self._setup_error = setup_error
         self._state = "uninitialized"
         self._deps.events.emit("workspace_changed", nil)
@@ -219,9 +238,19 @@ function Core:_on_files_read(root, paths, results)
         return
     end
 
-    local data, err = ws_mod.assemble(root, config_content, user_content, cache_content)
+    local data, err = ws_mod.assemble(root, config_content, user_content, cache_content,
+        { trust = self._deps.trust, modules = self._deps.modules })
     if not data then
         fail(err)
+        return
+    end
+
+    -- Machine signatures (spec §17.4): a working copy that is not signed by
+    -- this machine, or a cache with a foreign/modified signature, refuses the
+    -- load. Nothing in the file was read, and nothing overwrites it.
+    local trust_err = self:_trust_error(root, data)
+    if trust_err then
+        fail(trust_err.message, trust_err)
         return
     end
 
@@ -268,11 +297,22 @@ function Core:_on_files_read(root, paths, results)
     end
 
     self._workspace = Workspace.new(self, data)
+    self._workspace._shared_ignored = data.shared_ignored or {}
 
     self._workspace:_cleanup_orphaned_skeletons(data.cache)
     self._workspace:remerge(data.config, data.cache, data.user)
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
+
+    -- Migration (spec §17.4): a cache written before signatures existed was
+    -- discarded unread; replace it with a signed one now so the notice shows
+    -- once.
+    if data.cache_trust == "unsigned" then
+        self._deps.notify("loomworks: discarded an unsigned build cache "
+            .. "(written by an earlier loomworks); build state is recreated on the next build",
+            vim.log.levels.WARN)
+        self._workspace:_save_cache()
+    end
 
     self._workspace:_start_tracking(paths)
 
@@ -294,6 +334,77 @@ function Core:_on_files_read(root, paths, results)
     self._deps.notify("loomworks: workspace '" .. self._workspace.name .. "' loaded (" .. self._workspace.root .. ")", vim.log.levels.INFO)
 
     self._workspace:_scan_tools_async()
+end
+
+-- ===========================================================================
+-- Trust (spec §17)
+-- ===========================================================================
+
+--- Build the setup error for a refused `.nvim` file, or nil when the loaded
+--- files are acceptable. `trust` = `{ kind = "user"|"cache", status, path }`.
+--- @param root string
+--- @param data table assembled workspace data
+--- @return table|nil setup_error
+function Core:_trust_error(root, data)
+    local a = self._deps.trust_actions or {}
+    local us = data.user_trust
+    if us == "unsigned" or us == "invalid" then
+        local why = (us == "unsigned")
+            and "is not signed by this machine (written by hand or by an earlier loomworks)"
+            or "was modified outside loomworks or copied from another machine (its signature does not match)"
+        local msg = ".nvim/loomworks.user.json " .. why .. " — it is not used until you review and trust it: "
+            .. (a.trust or "trust it") .. ", or discard it: " .. (a.discard or "discard it")
+        return {
+            root = root, message = msg,
+            trust = { kind = "user", status = us, path = self._deps.user.filepath(root) },
+            user_untrusted = us,
+        }
+    end
+    if data.cache_trust == "invalid" then
+        local msg = ".nvim/loomworks.cache.json was not written on this machine (its signature does not match)"
+            .. " — it is not used; reset the build cache: " .. (a.nuke or "reset it")
+        return {
+            root = root, message = msg,
+            trust = { kind = "cache", status = "invalid", path = self._deps.cache.filepath(root) },
+            cache_untrusted = true,
+        }
+    end
+    return nil
+end
+
+--- Read the working copy for review (spec §17.4 "trust"): its verification
+--- status, the exact content that trusting would sign, and the decoded data.
+--- @param root string
+--- @return table|nil review `{ path, status, content, data }`, string|nil err
+function Core:review_user_prefs(root)
+    local norm_root = self._deps.normalize(root)
+    local path = self._deps.user.filepath(norm_root)
+    local text = self._deps.io.read_file(path)
+    if not text then return nil, "no working copy at " .. path end
+    local status, content = self._deps.trust.verify("user", text)
+    local ok, decoded = pcall(vim.json.decode, content)
+    if not ok or type(decoded) ~= "table" then
+        return nil, path .. " is not valid JSON — fix or discard it"
+    end
+    return { path = path, status = status, content = content, data = decoded }
+end
+
+--- Trust the working copy: re-sign exactly the reviewed content, then reload.
+--- The caller confirmed with the user after showing `review_user_prefs`.
+--- @param root string
+--- @param reviewed_content? string content the user reviewed (refused if the file changed since)
+--- @return boolean ok, string|nil err
+function Core:trust_user_prefs(root, reviewed_content)
+    local norm_root = self._deps.normalize(root)
+    local path = self._deps.user.filepath(norm_root)
+    if not self:_safe_nvim_path(path, norm_root) then
+        return false, "refusing to sign a path outside .nvim/: " .. path
+    end
+    local ok, err = self._deps.trust.sign_file(path, "user", reviewed_content)
+    if not ok then return false, err end
+    self._setup_error = nil
+    self:setup({ root = norm_root })
+    return true
 end
 
 -- ===========================================================================
@@ -342,30 +453,48 @@ end
 --- Caller must confirm with the user before calling this.
 --- @param root string workspace root to nuke
 function Core:nuke_cache(root)
+    local norm_root = self:_nuke_files(root)
+    if norm_root then
+        self:setup({ root = norm_root })
+    end
+end
+
+--- The deletion half of `nuke_cache` (no reload): remove `.nvim/build/`, the
+--- build cache (+ backup) and the health cache (+ backup), each checked to be
+--- under `root/.nvim/`. Shared by the editor's nuke and `lw nuke` (spec §17.4).
+--- Returns the normalized root when it ran (a failed rm is reported, and the
+--- reload shows what is left), nil when refused.
+--- @param root string
+--- @return string|nil norm_root
+function Core:_nuke_files(root)
     -- Safety: root must be absolute (Unix /... or Windows C:/...)
     local norm_root = self._deps.normalize(root)
     if not norm_root:match("^/") and not norm_root:match("^%a:/") then
         self._deps.notify("loomworks: nuke_cache requires an absolute path, got: " .. root, vim.log.levels.ERROR)
-        return
+        return nil
     end
 
-    -- Safety: loomworks.json must exist at root (confirms this is a real workspace)
+    -- Safety: loomworks.json or the working copy must exist at root (confirms
+    -- this is a real workspace — a user.json-only workspace is one, §2.2).
     local config_path = norm_root .. "/loomworks.json"
-    if not self._deps.io.read_file(config_path) then
-        self._deps.notify("loomworks: no loomworks.json found at " .. norm_root .. ", aborting nuke", vim.log.levels.ERROR)
-        return
+    if not self._deps.io.read_file(config_path)
+            and not self._deps.io.read_file(self._deps.user.filepath(norm_root)) then
+        self._deps.notify("loomworks: no loomworks.json or .nvim/loomworks.user.json found at "
+            .. norm_root .. ", aborting nuke", vim.log.levels.ERROR)
+        return nil
     end
 
     local build_dir = norm_root .. "/.nvim/build"
     local cache_path = self._deps.cache.filepath(norm_root)
     local cache_bak = cache_path .. ".bak"
+    local health_path = norm_root .. "/.nvim/loomworks.health.json"
 
     -- Safety: verify all paths are under root/.nvim/
-    local paths_to_delete = { build_dir, cache_path, cache_bak }
+    local paths_to_delete = { build_dir, cache_path, cache_bak, health_path, health_path .. ".bak" }
     for _, p in ipairs(paths_to_delete) do
         if not self:_safe_nvim_path(p, norm_root) then
             self._deps.notify("loomworks: refusing to delete path outside .nvim/: " .. p, vim.log.levels.ERROR)
-            return
+            return nil
         end
     end
 
@@ -376,8 +505,9 @@ function Core:nuke_cache(root)
 
     self._deps.io.rm_rf(cache_path)
     self._deps.io.rm_rf(cache_bak)
-
-    self:setup({ root = norm_root })
+    self._deps.io.rm_rf(health_path)
+    self._deps.io.rm_rf(health_path .. ".bak")
+    return norm_root
 end
 
 --- Delete user.json and reload the workspace.
@@ -397,6 +527,8 @@ function Core:delete_user_prefs(root)
         self._deps.notify("loomworks: failed to delete user.json: " .. (err or "unknown"), vim.log.levels.ERROR)
         return
     end
+    -- The backup of a discarded working copy goes too (spec §17.4 discard).
+    self._deps.io.rm_rf(user_path .. ".bak")
 
     self._deps.notify("loomworks: user preferences deleted, reloading", vim.log.levels.INFO)
     self._setup_error = nil

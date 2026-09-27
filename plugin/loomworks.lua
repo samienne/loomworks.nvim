@@ -70,6 +70,13 @@ end, {
   force = true,
 })
 
+vim.api.nvim_create_user_command("LoomworksTrust", function()
+  require("loomworks").trust_user_prefs()
+end, {
+  desc = "loomworks: review the working copy and trust (re-sign) it for this machine",
+  force = true,
+})
+
 vim.api.nvim_create_user_command("LoomworksInfo", function()
   require("loomworks").open()
 end, {

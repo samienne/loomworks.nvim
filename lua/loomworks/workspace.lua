@@ -129,7 +129,10 @@ function M.init_workspace(root, name, write_json)
         data.name = name
     end
 
-    write_json = write_json or require("loomworks.io").write_json
+    -- The working copy is signed with the machine key (spec §17.3).
+    write_json = write_json or function(path, d)
+        return require("loomworks.io").write_json_signed(path, "user", d)
+    end
     return write_json(user_path, data)
 end
 
@@ -356,15 +359,41 @@ end
 --- @param config_content string|nil raw loomworks.json content
 --- @param user_content string|nil raw user.json content
 --- @param cache_content string|nil raw cache.json content
+--- @param opts? { trust?: table, modules?: table } `trust` verifies the
+---   signed `.nvim` files (spec §17.3; defaults to `loomworks.trust`),
+---   `modules` is the module registry whose `trust_fields` declarations name
+---   the program-bearing type_config keys stripped from the shared layer.
 --- @return loomworks.WorkspaceData|nil ws, string|nil err
-function M.assemble(root, config_content, user_content, cache_content)
+function M.assemble(root, config_content, user_content, cache_content, opts)
+    opts = opts or {}
+    local trust = opts.trust or require("loomworks.trust")
+
+    -- Machine signatures (spec §17.4). Only the signed bytes are ever parsed.
+    --   working copy: anything but valid → refused (nothing read);
+    --   cache: unsigned → discarded (migration), invalid → refused.
+    local user_trust, cache_trust = nil, nil
+    if user_content then
+        local status, body = trust.verify("user", user_content)
+        user_trust = status
+        user_content = (status == "valid") and body or nil
+    end
+    if cache_content then
+        local status, body = trust.verify("cache", cache_content)
+        cache_trust = status
+        cache_content = (status == "valid") and body or nil
+    end
+
     local config
+    local shared_ignored = {}
     if config_content then
         local config_err
         config, config_err = config_mod.parse(config_content, root)
         if not config then
             return nil, config_err
         end
+        -- The shared snapshot never names programs (spec §17.6): strip its
+        -- program-bearing fields before anything merges it.
+        shared_ignored = require("loomworks.program_fields").strip(config, opts.modules)
     else
         -- No loomworks.json — empty shared baseline. Workspace operates
         -- from user.json alone.
@@ -431,6 +460,12 @@ function M.assemble(root, config_content, user_content, cache_content)
         cache_inconsistent = not cache_consistent,
         user_version_mismatch = user_version_mismatch,
         user_projects_invalid = user_projects_invalid,
+        -- Trust status of the signed files: "valid" | "unsigned" | "invalid",
+        -- nil when the file is absent (spec §17.4).
+        user_trust = user_trust,
+        cache_trust = cache_trust,
+        -- Program-bearing fields removed from the shared layer (spec §17.6).
+        shared_ignored = shared_ignored,
     }, nil
 end
 
@@ -479,6 +514,8 @@ end
 --- @field _user_cs_names table<string, boolean> config_set names from user.json
 --- @field _user_provenance table<string, table> per-project sub-item provenance from merge
 --- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
+--- @field _shared_ignored table[] program-bearing fields stripped from loomworks.json (spec §17.6; program_fields.strip)
+--- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
 --- @field _event_handlers { event: string, handler: function }[]
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
@@ -887,6 +924,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     -- Two-layer merge: combine user overlay with shared config
     local config, user_project_keys, user_cs_names, user_provenance, user_profile_keys =
         M.merge_configs(user_overlay, shared_config)
+    -- Kept for the ignored-shared-field diagnostics (spec §17.6): a value the
+    -- merged config holds is supplied by the working copy.
+    self._merged_config = config
     self._user_project_keys = user_project_keys
     self._user_cs_names = user_cs_names
     self._user_provenance = user_provenance
@@ -2092,6 +2132,13 @@ function Workspace:diagnostics()
 
     local function add(d)
         if d then result[#result + 1] = d end
+    end
+
+    -- Program-bearing fields ignored in loomworks.json (spec §17.6), while the
+    -- working copy supplies nothing in their place.
+    for _, d in ipairs(require("loomworks.program_fields").diagnostics(
+            self._shared_ignored, self._merged_config)) do
+        add(d)
     end
 
     for _, profile in pairs(self._profiles) do
@@ -4747,6 +4794,8 @@ end
 --- @return boolean ok, string|nil err
 function Workspace:_save_config()
     local raw = self:_serialize_config()
+    -- Restore shared program-bearing values the model never held (spec §17.6).
+    require("loomworks.program_fields").regraft(raw, self._shared_ignored)
     local path = M.paths(self.root).config
     local ok, err = self._core._deps.io.write_json(path, raw)
     if ok and self._tracker then
@@ -4846,6 +4895,11 @@ function Workspace:publish_one(item)
         existing.projects = nil
     end
 
+    -- Program-bearing values the shared layer carried (ignored at load, spec
+    -- §17.6) are written back where the working copy supplies nothing, so
+    -- re-publishing an item never drops a teammate's committed value.
+    require("loomworks.program_fields").regraft(existing, self._shared_ignored)
+
     local ok, err = self._core._deps.io.write_json(path, existing)
     if not ok then return false, err end
     if self._tracker then
@@ -4853,8 +4907,14 @@ function Workspace:publish_one(item)
     end
 
     -- Update baseline for the named item only, so its `+` clears while
-    -- other items keep theirs.
-    self._shared_baseline = vim.deepcopy(existing)
+    -- other items keep theirs. The baseline is the parsed (internal) shape
+    -- with program-bearing fields stripped, exactly as at load — it is fed back
+    -- into merges, so it must never carry them (spec §17.6).
+    local parsed = config_mod.parse(vim.json.encode(existing), self.root)
+    if parsed then
+        self._shared_ignored = require("loomworks.program_fields").strip(parsed, self._core._deps.modules)
+        self._shared_baseline = parsed
+    end
 
     -- Item-level removed-upstream flag clears.
     if item._removed_upstream ~= nil then
@@ -5578,8 +5638,15 @@ function Workspace:_sync_sdks(config_sdks, user_sdks)
     -- Merge: config declares requirements, user provides paths
     local declarations = {}
     if config_sdks then
+        -- Shared declarations carry requirements only (type / version
+        -- constraints); an installation path is honored only from the signed
+        -- working copy (spec §17.6), so nothing else is copied.
         for key, decl in pairs(config_sdks) do
-            declarations[key] = vim.deepcopy(decl)
+            if type(decl) == "table" then
+                declarations[key] = {
+                    type = decl.type, version = decl.version, min_version = decl.min_version,
+                }
+            end
         end
     end
     if user_sdks then
@@ -6769,6 +6836,27 @@ end
 --- @param content string|nil new raw content
 function Workspace:_on_file_changed(path, content)
     local paths = M.paths(self.root)
+    local deps = self._core._deps
+
+    -- Machine signatures (spec §17.4): a working copy that is no longer signed
+    -- by this machine, or a cache with a foreign/modified signature, puts the
+    -- workspace back into the refused state (a full setup reports it) instead
+    -- of merging the change. An unsigned cache change is ignored — the
+    -- in-memory state is kept and the next save replaces the file.
+    local function refuse()
+        self._core:setup({ root = self.root })
+    end
+    if (path == paths.user or path == paths.cache) and content then
+        local kind = (path == paths.user) and "user" or "cache"
+        local status, body = deps.trust.verify(kind, content)
+        if status == "valid" then
+            content = body
+        elseif kind == "user" or status == "invalid" then
+            return refuse()
+        else
+            return
+        end
+    end
 
     if path == paths.config then
         -- loomworks.json changed: full reassemble
@@ -6776,8 +6864,17 @@ function Workspace:_on_file_changed(path, content)
             self.root,
             content,
             self._tracker:content(paths.user),
-            self._tracker:content(paths.cache)
+            self._tracker:content(paths.cache),
+            { trust = deps.trust, modules = deps.modules }
         )
+        if data and (data.user_trust == "unsigned" or data.user_trust == "invalid"
+                or data.cache_trust == "invalid") then
+            return refuse()
+        end
+        if data and data.cache_trust == "unsigned" then
+            -- Keep the in-memory build state (remerge serializes it).
+            data.cache = nil
+        end
         if data then
             local ok, val_err = self._core:_validate_projects(data.config, data.root)
             if ok then
@@ -6792,6 +6889,7 @@ function Workspace:_on_file_changed(path, content)
                 -- Update workspace data fields in place
                 self.root = data.root
                 self.name = data.name
+                self._shared_ignored = data.shared_ignored or {}
                 self:_scan_tools_async()
                 self:remerge(data.config, data.cache, data.user)
                 -- After remerge, _shared_baseline is the new baseline.

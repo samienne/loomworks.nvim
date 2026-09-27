@@ -150,7 +150,9 @@ local function make_ws(cfg_data, tool_env, project_vars)
             projects = { App = proj },
             configuration_sets = { debug = { App = "Debug" } },
         }),
-        ["loomworks.user.json"] = h.make_user_json({ profiles = { debug = {
+        -- The configuration (with its env) lives in the working copy: an env in
+        -- loomworks.json is ignored (spec §17.6).
+        ["loomworks.user.json"] = h.make_user_json({ projects = { App = proj }, profiles = { debug = {
             configuration_set = "debug",
             tools = { cmake = { key = "ninja-gcc-12", data = tool_data } },
         } } }),

@@ -140,7 +140,7 @@ local function make_ws(config_overrides, user_overrides, cache_overrides, opts)
     local user_json = user_overrides and h.make_user_json(user_overrides) or nil
     local cache_json = cache_overrides and h.make_cache_json(cache_overrides) or nil
 
-    local data = workspace.assemble("/root", config_json, user_json, cache_json)
+    local data = workspace.assemble("/root", config_json, user_json, cache_json, { trust = require("tests.helpers").trust_all })
     assert(data, "assemble failed")
 
     local events_log = {}
@@ -2699,7 +2699,8 @@ describe("launch config lifecycle", function()
     end)
 
     it("compute_edit_launch_context returns existing config data", function()
-        local ws = make_ws({
+        -- Launch commands are honored only from the working copy (spec §17.6).
+        local cfg = {
             projects = {
                 App = {
                     cmake = {},
@@ -2713,7 +2714,8 @@ describe("launch config lifecycle", function()
                     },
                 },
             },
-        })
+        }
+        local ws = make_ws(cfg, cfg)
 
         local ctx = wv.compute_edit_launch_context(h.find_project_in(ws:get_projects(), "App"), "debug")
         assert.equals("debug", ctx.name)
@@ -2742,7 +2744,8 @@ describe("launch config lifecycle", function()
     end)
 
     it("compute_edit_launch_context includes deploy data", function()
-        local ws = make_ws({
+        -- Launch commands are honored only from the working copy (spec §17.6).
+        local cfg = {
             projects = {
                 App = {
                     cmake = {},
@@ -2759,7 +2762,8 @@ describe("launch config lifecycle", function()
                     },
                 },
             },
-        })
+        }
+        local ws = make_ws(cfg, cfg)
 
         local ctx = wv.compute_edit_launch_context(
             h.find_project_in(ws:get_projects(), "App"), "debug")
@@ -2817,7 +2821,8 @@ describe("launch config lifecycle", function()
     end)
 
     it("get_launch_configs returns sorted entries", function()
-        local ws = make_ws({
+        -- Launch commands are honored only from the working copy (spec §17.6).
+        local cfg = {
             projects = {
                 App = {
                     cmake = {},
@@ -2827,7 +2832,8 @@ describe("launch config lifecycle", function()
                     },
                 },
             },
-        })
+        }
+        local ws = make_ws(cfg, cfg)
 
         local configs = wv.get_launch_configs(h.find_project_in(ws:get_projects(), "App"))
         assert.equals(2, #configs)

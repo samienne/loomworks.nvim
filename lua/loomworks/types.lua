@@ -403,3 +403,6 @@
 --- @field cache_inconsistent boolean
 --- @field user_version_mismatch boolean
 --- @field user_projects_invalid string|nil structural error message, if any
+--- @field user_trust "valid"|"unsigned"|"invalid"|nil working-copy signature status (spec §17.4; nil = absent)
+--- @field cache_trust "valid"|"unsigned"|"invalid"|nil build-cache signature status (nil = absent)
+--- @field shared_ignored table[] program-bearing fields stripped from loomworks.json (spec §17.6)

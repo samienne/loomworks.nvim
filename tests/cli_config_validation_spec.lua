@@ -161,6 +161,8 @@ describe("hand-edited invalid cache policy", function()
     u.profile_variables = { dev = { App = { cache = "sccashe" } } }
     local f = assert(io.open(user_path(root), "w"))
     f:write(vim.json.encode(u)); f:close()
+    -- A hand edit needs re-trusting (spec §17.4) — as `lw trust` would.
+    assert(require("loomworks.trust").sign_file(user_path(root), "user"))
     local ws = cli._load_workspace(root, false)
     local msgs = {}
     for _, d in ipairs(ws:diagnostics()) do msgs[#msgs + 1] = d.message end
