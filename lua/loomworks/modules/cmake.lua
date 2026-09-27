@@ -4316,7 +4316,8 @@ function M.lsp_configs(project)
             local active_profile = ws:get_active_profile()
             if active_profile and active_profile.tool_for then
                 local tref = active_profile:tool_for(project.type)
-                tool_data = tref and tref.data or tool_data
+                -- A kit's clangd path comes from detection only (core §17.7).
+                tool_data = (tref and tref.detected ~= false and tref.data) or tool_data
             end
         end
         if tool_data and tool_data.clangd_path then
