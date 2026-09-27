@@ -162,6 +162,32 @@ describe("lw health inventory output", function()
         assert.is_true(text:find("• No compiler cache found", 1, true) < text:find("· sccache available", 1, true))
     end)
 
+    it("a skipped update check: info bullet in text, update.status unknown in --json, not counted", function()
+        local sug = require("loomworks.suggestions")
+        local orig = sug.collect_health
+        sug.collect_health = function()
+            sug._update_check = { status = "unknown", channel = "stable", current = "0.1.30",
+                detail = "fetch manifest: curl failed (28)" }
+            return { { kind = "info", title = "update check skipped — offline or release server unreachable",
+                detail = "fetch manifest: curl failed (28)" } }
+        end
+        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        local ok2, js = pcall(capture, function() cli.cmd_health(nil, { json = true }) end)
+        sug.collect_health = orig
+        sug._update_check = nil
+        assert.is_true(ok, tostring(text)); assert.is_true(ok2, tostring(js))
+        assert.is_truthy(text:find("· update check skipped", 1, true))
+        local doc = vim.json.decode(js)
+        assert.same({ status = "unknown", channel = "stable", current = "0.1.30",
+            detail = "fetch manifest: curl failed (28)" }, doc.update)
+        assert.equals(0, doc.summary.actionable)
+    end)
+
+    it("--json has no update field when the check does not apply (dev source)", function()
+        local doc = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true }) end))
+        assert.is_nil(doc.update)
+    end)
+
     it("--json outside a workspace has no workspace field", function()
         local doc = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true }) end))
         assert.is_nil(doc.workspace)

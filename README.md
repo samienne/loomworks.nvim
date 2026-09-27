@@ -389,8 +389,13 @@ channel (`stable`/`unstable`, see [Standalone `lw` runner](#standalone-lw-runner
 and, if so, suggests
 `lw self-update` — showing `<current> → <newest> on the <channel> channel`. This
 check makes a network request, so it runs **only** when you invoke `lw health`,
-never on the passive `N suggestions` count; offline or on any API error it simply
-reports nothing. The same check covers the `lw` **binary**, which can lag the
+never on the passive `N suggestions` count. It is bounded — 5 s to connect,
+10 s in all, no retry — so a blackholed network (captive portal, half-up VPN)
+costs `lw health` seconds, not minutes; when the check fails (offline, server
+unreachable, API error) health prints an informational
+`update check skipped — offline or release server unreachable` note (not
+counted), so no update line means the check ran and found nothing newer (a
+development build skips the check). The same check covers the `lw` **binary**, which can lag the
 bundle (an unwritable install location, `lw self-update --no-host`, or a binary
 from before it could update itself): health then says
 `lw binary <version> is older than <newest>` (run `lw self-update`), or
@@ -458,10 +463,12 @@ count simply stops including it until the next `lw health`. (Directories only
 Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory —
 do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
 item; `lw health --json` prints the same data for scripts and CI
-(`{schema, workspace, suggestions[], inventory[], summary}`; inventory entries
+(`{schema, workspace, suggestions[], inventory[], summary, update}`; inventory entries
 carry `status`, `version`, `path`, `required`, the full `required_by`, and a
 `hint` when not found; `summary` counts `required_missing`, `actionable`,
-`found`, `missing` and `unknown`; object keys are sorted, so the output diffs
+`found`, `missing` and `unknown`; `update` is the update check's outcome —
+`status` `available`, `current` or `unknown` (with the failure reason in
+`detail`) — absent for a development build; object keys are sorted, so the output diffs
 cleanly) and, like the text report, always exits 0 — a CI gate can test
 `summary.required_missing > 0`. In the text report actionable suggestions are
 marked `•` and informational notes `·`; a Visual Studio install shows the MSVC

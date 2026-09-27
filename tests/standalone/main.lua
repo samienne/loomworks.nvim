@@ -348,6 +348,49 @@ do
   ok(not download.is_transient(0, ""), "success is not a retry candidate")
 end
 
+print("boot.download — per-call curl limits (the health update check's quick profile)")
+do
+  local saved_run, saved_delay = download._run, download.RETRY_DELAY_MS
+  download.RETRY_DELAY_MS = 0
+  local calls
+  download._run = function(cmd, args)
+    calls[#calls + 1] = table.concat(args, " ")
+    return 28, "", "curl: (28) Connection timed out"
+  end
+  local function has(s, sub) return s:find(sub, 1, true) ~= nil end
+
+  calls = {}
+  local body, err = download.fetch("https://example.invalid/m.json",
+    { connect_timeout = 5, max_time = 10, attempts = 1 })
+  ok(body == nil and type(err) == "string", "a failed quick fetch returns nil, err")
+  eq(#calls, 1, "quick fetch: a single attempt (no retry)")
+  ok(has(calls[1], "--connect-timeout 5") and has(calls[1], "--max-time 10"),
+    "quick fetch passes --connect-timeout/--max-time to curl")
+
+  calls = {}
+  download.fetch("https://example.invalid/m.json")
+  eq(#calls, download.MAX_ATTEMPTS, "default fetch keeps retrying transient failures")
+  ok(not has(calls[1], "--connect-timeout") and not has(calls[1], "--max-time"),
+    "default fetch (self-update/install) adds no time limits")
+
+  -- resolve_newest_version threads opts.fetch into the one fetch it makes, on
+  -- both the stable manifest peek and the unstable releases-API query.
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  local saved_origin = update.DEFAULT_RELEASE_URL
+  update.DEFAULT_RELEASE_URL = "https://example.invalid/releases/latest/download"
+  local quick = { connect_timeout = 5, max_time = 10, attempts = 1 }
+  calls = {}
+  local v, ve = update.resolve_newest_version({ channel = "stable", fetch = quick })
+  ok(v == nil and type(ve) == "string", "stable peek failure is nil, err")
+  ok(#calls == 1 and has(calls[1], "--max-time 10"), "stable peek uses the caller's fetch limits")
+  calls = {}
+  update.resolve_newest_version({ channel = "unstable", fetch = quick })
+  ok(#calls == 1 and has(calls[1], "--connect-timeout 5"), "unstable API query uses the caller's fetch limits")
+  update.DEFAULT_RELEASE_URL = saved_origin
+
+  download._run, download.RETRY_DELAY_MS = saved_run, saved_delay
+end
+
 print("boot.modules — acquisition (hermetic, local index + archive)")
 do
   -- Close every probe handle: a leaked read handle on Windows makes the file

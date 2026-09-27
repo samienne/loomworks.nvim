@@ -83,11 +83,16 @@ end
 --- pin.valid_version BEFORE it can reach any URL or path (defense in depth,
 --- §16.29 / §16.23). Transport is never trusted — the bundle it names is still
 --- signature/hash-verified downstream exactly as on stable.
+--- `fetch_limits` (optional) is passed to `download.fetch` — the health check's
+--- quick timeouts; self-update calls it without, keeping the default retries.
+--- @param fetch_limits? { connect_timeout?: integer, max_time?: integer, attempts?: integer }
 --- @return string|nil version, string|nil err
-function M.resolve_unstable_version()
-  local body, e = download.fetch(M.RELEASES_API_URL, {
+function M.resolve_unstable_version(fetch_limits)
+  local fopts = {
     headers = { "Accept: application/vnd.github+json", "User-Agent: loomworks-lw" },
-  })
+  }
+  for k, v in pairs(fetch_limits or {}) do fopts[k] = v end
+  local body, e = download.fetch(M.RELEASES_API_URL, fopts)
   if not body then return nil, "fetch releases: " .. tostring(e) end
   local releases, derr = json.decode(body)
   if type(releases) ~= "table" then
@@ -120,6 +125,10 @@ end
 --- SECURITY: the resolved version is network-derived, so it is validated with
 --- pin.valid_version before it is handed back (defense in depth, §16.29). It is
 --- only ever displayed/compared here — never interpolated into a URL or path.
+---
+--- `opts.fetch` (curl limits, see `download.fetch`) bounds the one fetch; the
+--- health check passes quick timeouts so an unreachable network cannot stall
+--- `lw health` (§16.31). A local/mirror base is a file read and ignores it.
 --- @return string|nil version, string|nil err
 function M.resolve_newest_version(opts)
   opts = opts or {}
@@ -128,12 +137,12 @@ function M.resolve_newest_version(opts)
   -- `unstable` on the default origin: newest incl. pre-releases via the API. A
   -- mirror/override supersedes the channel (§16.29) and is peeked like stable.
   if channel == "unstable" and not url_override(opts) then
-    return M.resolve_unstable_version()
+    return M.resolve_unstable_version(opts.fetch)
   end
   -- `stable`, or an override mirror: the version is whatever the base's
   -- manifest.json names — reachable without downloading the bundle.
   local base = release_base(opts)
-  local mbytes, e = download.fetch(base .. "/manifest.json")
+  local mbytes, e = download.fetch(base .. "/manifest.json", opts.fetch)
   if not mbytes then return nil, "fetch manifest: " .. tostring(e) end
   local manifest, de = json.decode(mbytes)
   if type(manifest) ~= "table" or type(manifest.version) ~= "string" then

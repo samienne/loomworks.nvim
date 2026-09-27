@@ -795,8 +795,9 @@ M.register(M.cache_compat_provider)
 --
 -- These providers make a NETWORK call (GitHub releases API / manifest peek), so
 -- they are registered with `register_health`, NOT `register`: they run only on
--- an explicit `lw health` and never on the passive `N suggestions` count. Any
--- offline / API failure yields nothing — a failed check is silent, not noise.
+-- an explicit `lw health` and never on the passive `N suggestions` count. The
+-- fetch is time-bounded (`UPDATE_CHECK_FETCH`); an offline / API failure yields
+-- one informational "update check skipped" item — never a nag, never an error.
 -- ---------------------------------------------------------------------------
 
 --- The version of the running `lw` release, or nil when there is no comparable
@@ -898,17 +899,41 @@ function M._network_key()
     return table.concat({ M._current_release_version() or "-", hostv, channel }, "|")
 end
 
+--- curl limits for the health update check (seconds / attempts): a 5 s connect
+--- budget, 10 s for the whole transfer, no retry. Self-update keeps download's
+--- defaults (no limits, `MAX_ATTEMPTS` retries) — it is the operation the user
+--- asked for; this check is a side note of a report.
+M.UPDATE_CHECK_FETCH = { connect_timeout = 5, max_time = 10, attempts = 1 }
+
+--- Outcome of this process's last update check (`update_check_provider`), or
+--- nil when the check did not apply (not a versioned release source / unknown
+--- channel) or has not run.
+--- @type { status: "available"|"current"|"unknown", channel: string, current: string, newest?: string, detail?: string }|nil
+M._update_check = nil
+
+--- The last update check's outcome, for `lw health --json` (`update`).
+--- @return table|nil
+function M.last_update_check()
+    return M._update_check
+end
+
 --- Health provider: a newer release is available on the resolved update channel
 --- — for the bundle ("Update available") and/or the lw binary itself (a host
 --- left stale by an unwritable install dir, `--no-host`, or a host from before
 --- self-update, §16.32). One item when both are stale: `lw self-update` updates
 --- both — except a pre-self-update host, which it cannot replace.
---- HEALTH-ONLY — it performs a network fetch (`resolve_newest_version`). Silent
---- (returns `{}`) when: this is not a versioned release source, the channel is
---- unknown, the check fails (offline / API error), or everything is up to date.
+--- HEALTH-ONLY — it performs a network fetch (`resolve_newest_version`) under
+--- `UPDATE_CHECK_FETCH`'s tight limits, so an unreachable network costs seconds,
+--- not curl's minutes-long default connect wait. Silent (returns `{}`) when this
+--- is not a versioned release source, the channel is unknown, or everything is
+--- up to date. A FAILED check (offline, server unreachable, API error) yields
+--- one informational item ("update check skipped …", never counted) so the
+--- report does not read as "up to date" when nothing was checked. The outcome
+--- is also recorded for `lw health --json` (`last_update_check`).
 --- @param _workspace loomworks.Workspace
 --- @return loomworks.Suggestion[]
 function M.update_check_provider(_workspace)
+    M._update_check = nil
     local ok, update = pcall(require, "boot.update")
     if not ok then return {} end
     local current = M._current_release_version()
@@ -917,8 +942,17 @@ function M.update_check_provider(_workspace)
     local channel = update.resolve_channel({})
     if not channel then return {} end -- unknown channel → stay silent
 
-    local newest, err = update.resolve_newest_version({})
-    if not newest or err then return {} end -- offline / API failure: silent
+    local newest, err = update.resolve_newest_version({ fetch = M.UPDATE_CHECK_FETCH })
+    if not newest or err then
+        local why = tostring(err or "no version"):match("^[^\n]*"):gsub("%s+$", "")
+        if #why > 160 then why = why:sub(1, 157) .. "..." end
+        M._update_check = { status = "unknown", channel = channel, current = current, detail = why }
+        return { {
+            kind = "info",
+            title = "update check skipped — offline or release server unreachable",
+            detail = why,
+        } }
+    end
 
     local paths = require("boot.paths")
     local okf, facts = pcall(M._host_facts)
@@ -926,6 +960,10 @@ function M.update_check_provider(_workspace)
     local okh, host = pcall(host_item, facts, newest)
     host = okh and host or nil
 
+    M._update_check = {
+        status = paths.version_gt(newest, current) and "available" or "current",
+        channel = channel, current = current, newest = newest,
+    }
     local out = {}
     if paths.version_gt(newest, current) then
         -- A pinned context (a repo's lw.pin — the launcher sets LOOMWORKS_PINNED

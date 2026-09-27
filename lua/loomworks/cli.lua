@@ -5400,9 +5400,11 @@ local function render_inventory_compact(pal, entries)
 end
 
 --- The `lw health --json` document (§16.33): `{ schema, workspace?,
---- suggestions[], inventory[], summary }`. An inventory entry carries `hint`
---- only when it is not found. `summary` counts the actionable suggestions and
---- the inventory entries by status (plus the missing required ones).
+--- suggestions[], inventory[], summary, update? }`. An inventory entry carries
+--- `hint` only when it is not found. `summary` counts the actionable suggestions
+--- and the inventory entries by status (plus the missing required ones).
+--- `update` is the update check's outcome (§16.31: `status` available / current
+--- / unknown, channel, current, newest?, detail?), absent when it does not apply.
 --- `cmd_health` encodes it with sorted object keys.
 --- @param ws loomworks.Workspace|nil
 --- @param suggestions loomworks.Suggestion[]
@@ -5438,6 +5440,8 @@ local function health_json(ws, suggestions, entries)
     suggestions = sugg,
     inventory = items,
     summary = summary,
+    -- The update check's outcome (§16.31); absent when it does not apply.
+    update = require("loomworks.suggestions").last_update_check(),
   }
 end
 M._health_json = health_json
@@ -5477,7 +5481,9 @@ function M.cmd_health(root, opts)
   -- providers run regardless, the workspace-scoped ones guard nil themselves.
   -- The fresh inventory tier is cached and its missing-required items reported.
   local ok_s, suggestions = pcall(function()
-    return require("loomworks.suggestions").collect_health(ws, { inventory = tier })
+    local sug = require("loomworks.suggestions")
+    sug._update_check = nil -- only this run's outcome reaches --json
+    return sug.collect_health(ws, { inventory = tier })
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
 
@@ -7168,8 +7174,11 @@ whether a newer `lw` release is available on your update channel — for the
 bundle and for the lw binary itself (a binary left behind, or one from before
 `lw self-update` could replace it) — (this makes a network request, so it runs
 only here — never on the passive count) and notes
-when a release-url override is superseding a non-default channel; a failed/offline
-check is silent. Health never spawns a cache tool — usage statistics live behind
+when a release-url override is superseding a non-default channel. The check is
+bounded (5 s to connect, 10 s in all, no retry), so an unreachable network
+costs seconds; a failed/offline check prints an informational "update check
+skipped — offline or release server unreachable" (not counted). Health never
+spawns a cache tool — usage statistics live behind
 `lw status --cache-stats`.
 
 `lw health` never reuses an earlier result: every run re-checks everything —
@@ -7205,10 +7214,12 @@ until the next `lw health`. Outside a workspace nothing is
 cached.
 
 `--json` prints one JSON document instead of the report — `{schema,
-workspace?, suggestions[], inventory[], summary}`, each inventory entry
+workspace?, suggestions[], inventory[], summary, update?}`, each inventory entry
 carrying id, label, category, status (found | missing | unknown), version,
 path, detail, hint, required and required_by (the full list); `summary` is
-`{required_missing, actionable, found, missing, unknown}` — and still exits 0
+`{required_missing, actionable, found, missing, unknown}`; `update` is the
+update check's outcome `{status (available | current | unknown), channel,
+current, newest?, detail?}`, absent for a development build — and still exits 0
 (CI can test `summary.required_missing > 0`).]],
   module = [[lw module <sub>   (alias: mod)
 

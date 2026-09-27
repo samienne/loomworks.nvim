@@ -369,11 +369,38 @@ describe("update-check suggestion provider", function()
         assert.same({}, suggestions.update_check_provider({}))
     end)
 
-    it("is silent (graceful) on a network / API failure", function()
+    it("a failed check is an info item (skipped), never a nag", function()
         _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
         update.resolve_channel = function() return "stable" end
-        update.resolve_newest_version = function() return nil, "fetch releases: offline" end
-        assert.same({}, suggestions.update_check_provider({}))
+        update.resolve_newest_version = function() return nil, "fetch manifest: curl failed (28)\nmore" end
+        local out = suggestions.update_check_provider({})
+        assert.equals(1, #out)
+        assert.equals("info", out[1].kind)
+        assert.equals("update check skipped — offline or release server unreachable", out[1].title)
+        assert.equals("fetch manifest: curl failed (28)", out[1].detail)
+        assert.is_nil(out[1].remedy)
+        assert.same({ status = "unknown", channel = "stable", current = "0.1.0",
+            detail = "fetch manifest: curl failed (28)" }, suggestions.last_update_check())
+    end)
+
+    it("uses the quick fetch limits (no long curl hang offline)", function()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        update.resolve_channel = function() return "stable" end
+        local seen
+        update.resolve_newest_version = function(o) seen = o; return "0.1.0" end
+        suggestions.update_check_provider({})
+        assert.same({ connect_timeout = 5, max_time = 10, attempts = 1 }, seen.fetch)
+        assert.same({ status = "current", channel = "stable", current = "0.1.0", newest = "0.1.0" },
+            suggestions.last_update_check())
+    end)
+
+    it("records an available update for --json", function()
+        _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
+        update.resolve_channel = function() return "stable" end
+        update.resolve_newest_version = function() return "0.2.0" end
+        suggestions.update_check_provider({})
+        assert.same({ status = "available", channel = "stable", current = "0.1.0", newest = "0.2.0" },
+            suggestions.last_update_check())
     end)
 
     it("is silent for a dev/fused source with no comparable version", function()
@@ -383,6 +410,7 @@ describe("update-check suggestion provider", function()
         update.resolve_channel = function() return "stable" end
         assert.same({}, suggestions.update_check_provider({}))
         assert.is_false(called) -- never even probes the network without a version
+        assert.is_nil(suggestions.last_update_check()) -- the check does not apply
     end)
 
     it("is silent for an unknown channel", function()

@@ -1281,10 +1281,24 @@ Resolving the newest version is a **network** operation (the releases API for
 the version it names — never a bundle download, and this availability probe
 applies no integrity verification; a real self-update still verifies signature +
 hash per §16.12). Because it is network-backed it is on-demand: it never runs on
-the passive `N suggestions` count. It degrades **silently** — an offline host, an
-HTTP/API error, an unknown channel, or an already-current version all yield *no*
-suggestion and no error output. The network-derived version is validated before
-it is displayed and is never interpolated into a URL or path.
+the passive `N suggestions` count. An unknown channel or an already-current
+version yields *no* suggestion and no error output. The network-derived version
+is validated before it is displayed and is never interpolated into a URL or path.
+
+**Time budget and offline behaviour.** The health check's fetch is bounded: a
+connect timeout of 5 s, 10 s for the whole transfer, and **no retry** — so a
+blackholed network (captive portal, half-up VPN, a dropping firewall) costs
+`lw health` at most ~10 s instead of the transport's minutes-long default wait.
+(Install and self-update keep the default transport behaviour — no time limit,
+transient failures retried, §16.12 — since there the download is the operation
+the user asked for.) A local-path / mirror source (§16.29) is a file read and is
+unaffected. When the check **fails** (offline, server unreachable, HTTP/API
+error, malformed answer), health emits one **informational** item "update check
+skipped — offline or release server unreachable", its `detail` the first line of
+the failure reason — never an error, never counted, so the report does not read
+as "up to date" when nothing was checked. Like every network-tier item it is
+written to the cache (the health run's fresh result replaces the previous one,
+successful or not); the passive count still excludes it (informational).
 
 **Channel override surfaced.** When a release-source location override (a mirror
 — `LOOMWORKS_RELEASE_URL` or the `release-url` setting) is in effect *and* a
@@ -1561,7 +1575,7 @@ category is listed one line per item. A verbose flag expands **Other** to one
 line per item with locations.
 
 **Machine-readable output.** A JSON flag prints one document instead of the
-report: `{ schema, workspace?, suggestions[], inventory[], summary }` — `workspace` is
+report: `{ schema, workspace?, suggestions[], inventory[], summary, update? }` — `workspace` is
 `{ name, root }` when there is one, each suggestion is `{ kind, title, detail?,
 remedy? }` (the full health list, actionable and informational), and each
 inventory entry is a result plus `category`, `required` (boolean) and
@@ -1569,7 +1583,11 @@ inventory entry is a result plus `category`, `required` (boolean) and
 not found (a found item's install remedy is noise). `summary` counts
 `{ required_missing, actionable, found, missing, unknown }` — the missing
 required entries, the actionable suggestions, and the inventory entries by
-status — so a script need not recount. Object keys are emitted in
+status — so a script need not recount. `update` is the update check's outcome
+(§16.31): `{ status, channel, current, newest?, detail? }` with `status`
+`available` (a newer release exists), `current` (up to date) or `unknown` (the
+check failed — `detail` says why); it is absent when the check does not apply
+(a development / fused source or an unknown channel). Object keys are emitted in
 sorted order at every depth and arrays in their defined order (inventory: category
 order, then declaration order), so the same data prints byte-identically — stable
 for scripts and CI diffs. It carries the same data as the text report, is
