@@ -231,6 +231,12 @@ M.has_options = true
 -- when they explicitly `project(... LANGUAGES CXX)`) still win.
 M.languages = { "c", "c++" }
 
+--- Program-bearing type_config keys (core §8.4 / §17.6): honored only from the
+--- signed working copy, ignored (with a diagnostic) in loomworks.json. Build
+--- inputs (options, toolchain, generator, presets) are the project's own build
+--- description and are not listed (core §17.8).
+M.trust_fields = { type_config = { "clangd", "qmlls", "qml_import_paths" } }
+
 local uv = vim.uv or vim.loop
 
 --- Deterministic 32-bit hash of a command's joined argv (pure Lua djb2).

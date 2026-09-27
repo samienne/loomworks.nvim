@@ -27,6 +27,15 @@ local function render_fn(tree)
             tree:leaf("Root: " .. err.root, "Comment")
             tree:blank()
             tree:leaf(err.message, "DiagnosticWarn")
+            if err.trust then
+                -- A refused .nvim file (spec §17.4): its actions.
+                tree:blank()
+                if err.trust.kind == "user" then
+                    tree:leaf("[T] review & trust  [U] discard working copy", "Comment")
+                else
+                    tree:leaf("[<C-n>] reset build cache", "Comment")
+                end
+            end
         else
             tree:leaf("No workspace loaded.", "Comment")
             tree:blank()
@@ -147,6 +156,7 @@ local view = View.new({
         ["L"]     = "load",
         ["<C-n>"] = "nuke",
         ["U"]     = "delete_user_prefs",
+        ["T"]     = "trust",
         ["?"]     = "help",
         ["K"]     = "hover",
     },

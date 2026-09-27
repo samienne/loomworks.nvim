@@ -15,6 +15,15 @@ M.has_options = false
 M.has_devices = false
 M.languages = { "c++" }
 
+--- Program-bearing type_config keys (core §8.4 / §17.6; shell spec §14): the
+--- module environment and the clangd binary / database argument. The
+--- configure/build/clean commands are the project's build description — run
+--- only on an explicit action — so they are listed for the trust review only.
+M.trust_fields = {
+    type_config = { "env", "clangd", "compile_commands" },
+    review = { "configure_cmd", "build_cmd", "clean_cmd" },
+}
+
 local uv = vim.uv or vim.loop
 local expand = require("loomworks.expand")
 

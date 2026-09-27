@@ -1530,5 +1530,42 @@ do
   paths.rm_rf(sb)
 end
 
+print("loomworks.trust — machine signatures under the standalone host (§17.3)")
+do
+  -- The editor host computes the same values (tests/workspace_trust_spec.lua):
+  -- the same key + content yields the same signature, so the CLI and the
+  -- editor on one machine read each other's `.nvim` files.
+  require("loomworks.shim")
+  local trust = require("loomworks.trust")
+  local ossl = require("openssl")
+  local dir = uv.os_tmpdir():gsub("\\", "/") .. "/lw-trust-" .. tostring(uv.hrtime())
+  uv.fs_mkdir(dir, 448)
+  local kf = io.open(dir .. "/trust.key", "wb")
+  kf:write("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n"); kf:close()
+  trust._set_key_path(dir .. "/trust.key")
+  local content = '{\n  "_meta": {\n    "version": 2\n  },\n  "name": "fixture"\n}\n'
+  local signed = trust.sign("user", content)
+  eq(trust.split(signed), "c127ba0466fe01f413302d041f7f58b60aabba5b43a5ff8ed3bfd214934415f1",
+    "trust.sign: same signature as the editor host")
+  eq((trust.verify("user", signed)), "valid", "trust.verify: valid under the standalone host")
+  -- The pure-Lua HMAC agrees with OpenSSL on binary keys and messages.
+  local key = ""
+  for i = 0, 63 do key = key .. string.char((i * 37 + 11) % 256) end
+  for _, msg in ipairs({ "", "abc", string.rep("\0\255\10", 50), ("x"):rep(1000) }) do
+    eq(trust.hmac_sha256_hex(key, msg), ossl.hmac.hmac("sha256", msg, key, false),
+      "trust.hmac_sha256_hex == OpenSSL HMAC (" .. #msg .. " bytes)")
+  end
+  -- A fresh key is created with owner-only permissions (non-Windows).
+  trust._set_key_path(dir .. "/new/trust.key")
+  ok(trust.key() ~= nil, "trust.key: created on first use")
+  if package.config:sub(1, 1) ~= "\\" then
+    local st = uv.fs_stat(dir .. "/new/trust.key")
+    eq(st.mode % 64, 0, "trust.key: no group/other permission bits")
+  end
+  trust._set_key_path(nil)
+  os.remove(dir .. "/new/trust.key"); uv.fs_rmdir(dir .. "/new")
+  os.remove(dir .. "/trust.key"); uv.fs_rmdir(dir)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

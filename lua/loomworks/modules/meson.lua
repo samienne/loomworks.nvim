@@ -39,6 +39,9 @@ M.has_keyed_tools = true
 M.has_options = true
 M.languages = { "c++", "c" }
 
+--- Program-bearing type_config keys (core §8.4 / §17.6; meson spec §13).
+M.trust_fields = { type_config = { "clangd" } }
+
 --- Map loomworks configuration name → meson buildtype.
 --- Users who want something else can set `buildtype` in the config override.
 local BUILDTYPE_BY_NAME = {

@@ -3162,9 +3162,10 @@ describe("Core", function()
             assert.is_not_nil(core:get_setup_error())
 
             core:delete_user_prefs("/test")
-            -- Should have deleted the user.json file
-            assert.equals(1, #deleted)
-            assert.matches("user.json", deleted[1])
+            -- Should have deleted the user.json file (and its backup, §17.4)
+            assert.equals(2, #deleted)
+            assert.matches("user.json$", deleted[1])
+            assert.matches("user.json.bak$", deleted[2])
             -- Should have reloaded successfully (no more setup error)
             assert.is_nil(core:get_setup_error())
             assert.is_not_nil(core:get_workspace())

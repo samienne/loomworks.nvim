@@ -213,6 +213,10 @@ function Tree:on_key(action, line)
         self:_confirm_delete_user_prefs()
         return {}
 
+    elseif action == "trust" then
+        require("loomworks").trust_user_prefs()
+        return { refresh = true }
+
     elseif action == "help" then
         self:_show_help()
         return {}
@@ -279,6 +283,7 @@ function Tree:_show_help()
         "  C       Clean (run module clean tasks)",
         "  D       Delete",
         "  U       Delete user preferences",
+        "  T       Review & trust the working copy",
         "  <C-n>   Nuke cache + build dirs",
         "",
         "  q       Close",

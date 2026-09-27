@@ -271,6 +271,61 @@ function M.delete_user_prefs(root)
     core:delete_user_prefs(root)
 end
 
+--- Review a working copy that is not signed by this machine and, on
+--- confirmation, trust it (re-sign exactly what was shown) — spec §17.4.
+--- Shows the program-bearing fields first in a confirmation prompt with
+--- Trust / Discard / Cancel choices. `opts.confirm` replaces `vim.fn.confirm`
+--- (tests).
+--- @param root? string workspace root (default: the refused/pending root, else cwd)
+--- @param opts? { confirm?: fun(msg: string, choices: string, default: integer): integer }
+--- @return "trusted"|"discarded"|"cancelled"|"valid"|"error" outcome
+function M.trust_user_prefs(root, opts)
+    opts = opts or {}
+    local err = core:get_setup_error()
+    root = root or (err and err.root) or core:workspace_root()
+        or require("loomworks.workspace").resolve_root()
+    local review, rerr = core:review_user_prefs(root)
+    if not review then
+        vim.notify("loomworks: " .. tostring(rerr), vim.log.levels.ERROR)
+        return "error"
+    end
+    if review.status == "valid" then
+        vim.notify("loomworks: .nvim/loomworks.user.json is already trusted (signed by this machine)",
+            vim.log.levels.INFO)
+        return "valid"
+    end
+    local prog, other = require("loomworks.program_fields").review(review.data, require("loomworks.modules"))
+    local lines = {
+        review.path,
+        review.status == "unsigned"
+            and "is not signed by this machine (written by hand, or by an earlier loomworks)."
+            or "was modified outside loomworks, or copied from another machine.",
+        "",
+        "Program settings — what loomworks may run on this file's word:",
+    }
+    if #prog == 0 then lines[#lines + 1] = "  (none)" end
+    for _, l in ipairs(prog) do lines[#lines + 1] = "  " .. l end
+    lines[#lines + 1] = "Other contents:"
+    for _, l in ipairs(other) do lines[#lines + 1] = "  " .. l end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "Trust this working copy?"
+    local confirm = opts.confirm or vim.fn.confirm
+    local choice = confirm(table.concat(lines, "\n"), "&Trust\n&Discard\n&Cancel", 3)
+    if choice == 1 then
+        local ok, serr = core:trust_user_prefs(root, review.content)
+        if not ok then
+            vim.notify("loomworks: " .. tostring(serr), vim.log.levels.ERROR)
+            return "error"
+        end
+        vim.notify("loomworks: working copy trusted (signed for this machine)", vim.log.levels.INFO)
+        return "trusted"
+    elseif choice == 2 then
+        core:delete_user_prefs(root)
+        return "discarded"
+    end
+    return "cancelled"
+end
+
 --- Get detected tools organized by module type.
 --- @return table<string, loomworks.DetectedTool[]>
 function M.get_tools_by_type()
