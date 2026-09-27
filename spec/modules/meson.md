@@ -281,3 +281,13 @@ that names its own compilers adds no requirement in this version. An MSVC-style
 tool's tasks run in the vcvarsall environment (§ tools), whose search path ends
 with Visual Studio's bundled ninja, so for such a tool `exe:ninja` names the
 install's bundled copy (`vs-ninja:<vcvarsall>`, cmake §13) as an alternative.
+
+## 13. Workspace trust (`trust_fields`)
+
+The meson module declares `trust_fields = { type_config = { "clangd" } }` (core
+§8.4, §17.6): the clangd binary override is honored only from the signed working
+copy. `machine_file` (cross/native files), `buildtype` and options are
+build-description inputs for the explicit configure (core §17.8). A kit's
+compiler paths and environment come from detection for its key (core §17.7).
+Target discovery and test discovery (`meson introspect`) run only against build
+directories the signed cache records as configured on this machine (core §17.8).
