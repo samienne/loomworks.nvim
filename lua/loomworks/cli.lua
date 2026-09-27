@@ -1019,9 +1019,13 @@ local function conflict_message(block)
     block.profile, block.path or "?", block.profile)
 end
 
---- Whether `cmd` runs a batch file through cmd.exe (`cmd /C <x.bat>`): the
---- program the build really runs is inside the batch, so arguments appended to
---- this argv become ignored batch parameters.
+--- Whether `cmd` runs a batch file through cmd.exe: the program the build
+--- really runs is inside the batch, so arguments appended to this argv never
+--- reach it. Recognizes a literal batch path (`cmd /C <x.bat>`) and a program
+--- named only by a variable reference cmd.exe expands (`!VAR!` / `%VAR%`) —
+--- the cmake vcvarsall wrapper's `cmd /d /v:on /c !LOOMWORKS_VCVARS_BAT!`
+--- form. An argv whose real program cmd.exe substitutes cannot be extended
+--- safely either way, so it is treated as a batch (refuse, never drop args).
 --- @param cmd string[]
 --- @return boolean
 local function runs_batch_file(cmd)
@@ -1031,6 +1035,7 @@ local function runs_batch_file(cmd)
   for i = 2, #cmd do
     local a = tostring(cmd[i]):lower()
     if a:match("%.bat$") or a:match("%.cmd$") then return true end
+    if a:match("^!.+!$") or a:match("^%%.+%%$") then return true end
   end
   return false
 end

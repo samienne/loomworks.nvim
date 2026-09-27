@@ -79,14 +79,16 @@ describe("cmake vcvarsall .bat filename (MSVC+Ninja)", function()
 
         -- Materialize BOTH builders before "executing" anything, in the
         -- order the orchestrator would. Each write happens here.
-        local configure_cmd = configure.builder().cmd
-        local build_cmd = build.builder().cmd
+        local configure_spec = configure.builder()
+        local build_spec = build.builder()
+        local configure_cmd = configure_spec.cmd
+        local build_cmd = build_spec.cmd
 
-        -- Both are wrapped: { "cmd", "/C", <bat_path> }
+        -- Both are wrapped: cmd.exe runs the .bat named by LOOMWORKS_VCVARS_BAT
         assert.equals("cmd", configure_cmd[1])
         assert.equals("cmd", build_cmd[1])
-        local configure_bat = configure_cmd[3]
-        local build_bat = build_cmd[3]
+        local configure_bat = configure_spec.env.LOOMWORKS_VCVARS_BAT
+        local build_bat = build_spec.env.LOOMWORKS_VCVARS_BAT
         assert.is_not_nil(configure_bat)
         assert.is_not_nil(build_bat)
 
@@ -109,13 +111,13 @@ describe("cmake vcvarsall .bat filename (MSVC+Ninja)", function()
         local build_tasks = cmake.tasks(ctx(), "my-debug")
         local configure = find_task(build_tasks, "configure")
         local build = find_task(build_tasks, "build")
-        local configure_bat = configure.builder().cmd[3]
-        local build_bat = build.builder().cmd[3]
+        local configure_bat = configure.builder().env.LOOMWORKS_VCVARS_BAT
+        local build_bat = build.builder().env.LOOMWORKS_VCVARS_BAT
 
         local clean_tasks = cmake.clean_tasks(ctx(), "my-debug")
         local clean = find_task(clean_tasks, "clean")
         assert.is_not_nil(clean)
-        local clean_bat = clean.builder().cmd[3]
+        local clean_bat = clean.builder().env.LOOMWORKS_VCVARS_BAT
         assert.is_not_nil(clean_bat)
 
         assert.are_not.equals(clean_bat, configure_bat)

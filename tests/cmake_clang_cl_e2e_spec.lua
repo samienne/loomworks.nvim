@@ -141,8 +141,11 @@ describe("cmake clang-cl end-to-end (real configure + build)", function()
             -- ---- Configure for real ----
             local configure = find_task(tasks, "configure")
             assert.is_not_nil(configure)
-            local cfg_cmd = configure.builder().cmd
-            local cfg = vim.system(cfg_cmd, { text = true }):wait()
+            -- The wrapped spec carries its env (the vcvars batch path travels in
+            -- LOOMWORKS_VCVARS_BAT, cmake spec §14) — run it as tasks do.
+            local cfg_spec = configure.builder()
+            local cfg_cmd = cfg_spec.cmd
+            local cfg = vim.system(cfg_cmd, { text = true, env = cfg_spec.env }):wait()
             assert.equals(0, cfg.code,
                 "clang-cl configure failed (exit " .. tostring(cfg.code) .. ")\n"
                 .. "cmd: " .. vim.inspect(cfg_cmd) .. "\n"
@@ -154,8 +157,9 @@ describe("cmake clang-cl end-to-end (real configure + build)", function()
             -- ---- Build for real ----
             local build = find_task(tasks, "build")
             assert.is_not_nil(build)
-            local build_cmd = build.builder().cmd
-            local b = vim.system(build_cmd, { text = true }):wait()
+            local build_spec = build.builder()
+            local build_cmd = build_spec.cmd
+            local b = vim.system(build_cmd, { text = true, env = build_spec.env }):wait()
             assert.equals(0, b.code,
                 "clang-cl build failed (exit " .. tostring(b.code) .. ")\n"
                 .. "cmd: " .. vim.inspect(build_cmd) .. "\n"
