@@ -81,7 +81,8 @@ function Target:build(on_complete)
         local project_ctx = unit._project:to_module_context(ws.root)
         project_ctx.configuration = unit:variant()
         project_ctx.configuration_key = unit:config_key()
-        project_ctx.tool_data = unit._tool and unit._tool.data or unit:tool_data()
+        -- Detected tool data only (spec §17.7).
+        project_ctx.tool_data = require("loomworks.overseer")._exec_tool_data(unit)
         -- Tool env with the configuration environment layered on top (spec
         -- §1.3.3) — the same composition every overseer build context uses.
         project_ctx.env, project_ctx.configuration_env =

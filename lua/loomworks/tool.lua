@@ -13,6 +13,9 @@
 ---        Defaults to the owning module's static `languages` when the
 ---        tool's source data doesn't override.
 --- @field _module loomworks.Module owning module domain object
+--- @field _detected boolean produced by detection on this machine (spec §17.7).
+---        false for a tool known only from cached tool data: its `data` is a
+---        record for display, never used to run anything (`exec_data`).
 --- @field mod_type string module type (from _module.id)
 --- @field _removed boolean
 local Tool = {}
@@ -59,7 +62,16 @@ function Tool.new(module, key, data, label)
     self.label = label
     self.languages = resolve_languages(module, data)
     self._removed = false
+    self._detected = true
     return self
+end
+
+--- The tool data to RUN with (spec §17.7): the data detection produced on
+--- this machine, or nil for a tool known only from the cache.
+--- @return table|nil
+function Tool:exec_data()
+    if self._detected == false then return nil end
+    return self.data
 end
 
 --- Update tool data in place (preserves table identity).
@@ -108,6 +120,7 @@ function Tool:to_ref()
         data = self.data,
         label = self.label,
         mod_type = self._module.id,
+        detected = self._detected ~= false,
     }
 end
 

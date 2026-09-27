@@ -130,6 +130,27 @@ local function task_configurations(mod_info)
 end
 M._task_configurations = task_configurations  -- exported for tests
 
+--- The tool data a unit's tasks RUN with (spec §17.7): the detected data for
+--- its tool key. A keyed tool known only from the cache yields nil + reason —
+--- cached tool data is a record, never a source of executable paths.
+--- @param unit loomworks.ConfigUnit
+--- @return table|nil tool_data, string|nil err
+local function exec_tool_data(unit)
+    local tool = unit._tool
+    local key = (tool and tool.key) or unit:tool_key()
+    if key == nil then return (tool and tool.data) or unit:tool_data() end
+    if tool and tool._detected ~= false then return tool.data end
+    return nil, "toolchain '" .. key .. "' is not detected on this machine — rescan tools "
+        .. "(cached tool data is never used to run programs)"
+end
+M._exec_tool_data = function(unit) return (exec_tool_data(unit)) end
+
+--- Refuse a task collection whose tool is not detected (notify once per call).
+local function refuse_undetected(err)
+    vim.notify("loomworks: " .. err, vim.log.levels.ERROR)
+    return nil
+end
+
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param unit loomworks.ConfigUnit
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
@@ -147,7 +168,8 @@ local function collect_configuration_tasks(unit)
 
     local variant = unit:variant()
     local tool = unit._tool
-    local tool_data = tool and tool.data or unit:tool_data()
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return refuse_undetected(terr) end
 
     -- Get module info (reconstruct type_config with configurations for module)
     local abs_path = ws.root .. "/" .. (project.path or project.key)
@@ -239,8 +261,8 @@ function M.build_spec_for(unit, target_id)
     local ws = unit._workspace
     if not ws then return nil end
     local variant = unit:variant()
-    local tool = unit._tool
-    local tool_data = tool and tool.data or unit:tool_data()
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return refuse_undetected(terr) end
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local tc_for_module = project._type_config_for_module
@@ -374,6 +396,12 @@ local function collect_profile_tasks(profile, opts)
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
+        -- Detected tool data only (spec §17.7): a cache-only tool runs nothing.
+        if project_tool and project_tool.detected == false then
+            return refuse_undetected("toolchain '" .. tostring(project_tool.key)
+                .. "' is not detected on this machine — rescan tools "
+                .. "(cached tool data is never used to run programs)")
+        end
         local tool_data = project_tool and project_tool.data or nil
         local task_env, configuration_env = resolve_task_env(
             project, pp._configuration, tool_data, profile, ws.root)
@@ -451,8 +479,8 @@ local function collect_configuration_clean_tasks(unit)
     if not mod or not mod.clean_tasks then return nil end
 
     local variant = unit:variant()
-    local tool = unit._tool
-    local tool_data = tool and tool.data or unit:tool_data()
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return refuse_undetected(terr) end
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
@@ -506,6 +534,12 @@ local function collect_profile_clean_tasks(profile)
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
+        -- Detected tool data only (spec §17.7): a cache-only tool runs nothing.
+        if project_tool and project_tool.detected == false then
+            return refuse_undetected("toolchain '" .. tostring(project_tool.key)
+                .. "' is not detected on this machine — rescan tools "
+                .. "(cached tool data is never used to run programs)")
+        end
         local tool_data = project_tool and project_tool.data or nil
         local task_env, configuration_env = resolve_task_env(
             project, pp._configuration, tool_data, profile, ws.root)

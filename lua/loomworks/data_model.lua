@@ -131,7 +131,7 @@ end
 --- @param tool_data table module-specific data
 --- @param tool_label string|nil display label
 --- @return loomworks.Tool
-local function get_or_create_tool(ctx, modules_arr, modules_registry, mod_type, tool_key, tool_data, tool_label)
+local function get_or_create_tool(ctx, modules_arr, modules_registry, mod_type, tool_key, tool_data, tool_label, detected)
     local mod = ctx.modules[mod_type]
     if not mod then
         local impl = modules_registry.get(mod_type)
@@ -139,7 +139,7 @@ local function get_or_create_tool(ctx, modules_arr, modules_registry, mod_type, 
         modules_arr[#modules_arr + 1] = mod
         ctx.modules[mod_type] = mod
     end
-    return mod:get_or_create_tool(tool_key, tool_data, tool_label)
+    return mod:get_or_create_tool(tool_key, tool_data, tool_label, detected)
 end
 
 --- Sync Tool objects from detected tools (from tools_by_type) and cache data.
@@ -162,14 +162,23 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
         end
     end
 
-    -- From cache: tool_data stored inline in build_dirs
+    -- From cache: tool_data stored inline in build_dirs. A record, never a
+    -- source of executable paths (spec §17.7): a key detection produced keeps
+    -- the DETECTED data (detection wins); a key only the cache knows becomes a
+    -- not-detected tool whose data is display-only (`Tool:exec_data()` = nil).
     if cache.build_dirs then
         for _, cc in pairs(cache.build_dirs) do
             if cc.tool_key and cc.type then
-                local tool = get_or_create_tool(
-                    ctx, modules_arr, modules_registry,
-                    cc.type, cc.tool_key, cc.tool_data or {}, nil)
-                seen[tool] = true
+                local mod = ctx.modules[cc.type]
+                local existing = mod and mod._tools[cc.tool_key] or nil
+                if existing and seen[existing] then
+                    -- detected in this pass: keep detection's data
+                else
+                    local tool = get_or_create_tool(
+                        ctx, modules_arr, modules_registry,
+                        cc.type, cc.tool_key, cc.tool_data or {}, nil, false)
+                    seen[tool] = true
+                end
             end
         end
     end

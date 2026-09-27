@@ -148,6 +148,8 @@
 --- @field data? table opaque module-specific tool data
 --- @field label? string display label (e.g. "Ninja + GCC 12")
 --- @field mod_type? string which module type owns this tool (e.g. "cmake")
+--- @field detected? boolean false when the tool is known only from the cache — its
+---        data is never used to run anything (spec §17.7)
 
 --- Detected tool from async tool scanning.
 --- @class loomworks.DetectedTool

@@ -284,6 +284,17 @@ end
 -- State
 -- ---------------------------------------------------------------------------
 
+--- Whether this machine recorded a successful configure of this unit's build
+--- directory — state from the signed cache (spec §17.8). Only such build
+--- directories are read or executed from passively (target introspection,
+--- test discovery); a directory that merely exists on disk (it came with a
+--- copy of the workspace) never is.
+--- @return boolean
+function ConfigUnit:configured_here()
+    local s = self.state_value
+    return s == "configured" or s == "built" or s == "failed_build"
+end
+
 --- Get the derived state for this unit.
 --- Priority: deleting > running > first-class field.
 --- @return loomworks.ConfigUnitState
@@ -1256,6 +1267,9 @@ end
 --- @return loomworks.TestUnit[]
 function ConfigUnit:test_units()
     if self._test_units then return self._test_units end
+    -- Discovery runs binaries from the build dir: only one this machine
+    -- configured (spec §17.8). Not cached, so it appears once configured.
+    if not self:configured_here() then return {} end
 
     local impl = self:_module_impl()
     if not impl or not impl.create_test_unit then

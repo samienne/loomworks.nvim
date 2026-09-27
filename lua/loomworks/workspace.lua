@@ -2303,6 +2303,36 @@ function Workspace:diagnostics()
                             })
                         end
                     end
+                    -- (e) Denylisted environment variables (spec §17.9):
+                    -- refused at edit time; a hand-edited file gets this
+                    -- diagnostic and the variable is dropped at build time.
+                    do
+                        local policy = require("loomworks.env_policy")
+                        local denied, seen_d = {}, {}
+                        local function scan(env)
+                            if type(env) ~= "table" then return end
+                            for k in pairs(env) do
+                                if policy.is_denied(k) and not seen_d[k] then
+                                    seen_d[k] = true
+                                    denied[#denied + 1] = k
+                                end
+                            end
+                        end
+                        scan(cfg.env)
+                        for _, fam in pairs(type(cfg._overrides) == "table" and cfg._overrides or {}) do
+                            if type(fam) == "table" then scan(fam.env) end
+                        end
+                        if #denied > 0 then
+                            table.sort(denied)
+                            add({
+                                severity = "warn",
+                                source = "Project/" .. project.key .. "/" .. cfg.name,
+                                message = "env sets " .. table.concat(denied, ", ")
+                                    .. " — refused (loader/interpreter hijack; see lw help trust)",
+                                target_fold_key = "config:" .. project.key .. ":" .. cfg.name,
+                            })
+                        end
+                    end
                     -- (c) Configuration `env` values (spec §1.3.3) expand
                     -- exactly like option values, so the same check applies.
                     if type(cfg.env) == "table" then
@@ -3963,6 +3993,9 @@ function Workspace:_scan_targets_async()
         local is_active = active_units[unit] == true
         local abs_path = self.root .. "/" .. (project.path or project.key)
         local build_dir = unit:build_dir()
+        -- Passive introspection reads/executes from the build dir: only one
+        -- this machine configured (signed cache state, spec §17.8).
+        if build_dir and not unit:configured_here() then goto continue end
         if build_dir then
             local entry = {
                 unit = unit, mod = mod,

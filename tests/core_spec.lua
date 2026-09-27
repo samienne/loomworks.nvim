@@ -2779,6 +2779,8 @@ describe("Core", function()
                 _project = { key = "App", path = "app", _module = mod },
                 _tool_data = nil,
                 build_dir = function() return opts.build_dir end,
+                -- A build dir this machine configured (signed cache, §17.8).
+                configured_here = function() return true end,
                 variant = function() return "Debug" end,
                 set_targets = function() end,
             }

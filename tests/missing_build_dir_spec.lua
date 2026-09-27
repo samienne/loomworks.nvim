@@ -136,12 +136,11 @@ local function build_core(cache_overrides, dir_exists)
     local deps = h.make_test_deps(files, opts)
     local core = Core.new(deps)
     core:setup({ root = "/root" })
-    if not cache_overrides then
-        -- Fresh workspace: inject detected tools and remerge (module detection
-        -- needs real modules the mock can't provide).
-        core._workspace._tools_by_type = TOOLS
-        core:remerge()
-    end
+    -- Inject detected tools and remerge (module detection needs real modules
+    -- the mock can't provide). A reload detects the toolchain again: a tool
+    -- known only from the cache runs nothing (spec §17.7).
+    core._workspace._tools_by_type = TOOLS
+    core:remerge()
     return core
 end
 

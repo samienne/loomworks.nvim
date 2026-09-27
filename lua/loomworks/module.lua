@@ -108,15 +108,19 @@ end
 --- @param tool_key string|nil opaque identifier
 --- @param tool_data table module-specific tool data
 --- @param tool_label string|nil display label
+--- @param detected? boolean false when the data comes only from the cache
+---        (spec §17.7); default true
 --- @return loomworks.Tool
-function Module:get_or_create_tool(tool_key, tool_data, tool_label)
+function Module:get_or_create_tool(tool_key, tool_data, tool_label, detected)
     local rk = tool_key or ""
     local existing = self._tools[rk]
     if existing then
         existing:_update(tool_data, tool_label)
+        existing._detected = detected ~= false
         return existing
     end
     local tool = Tool.new(self, tool_key, tool_data, tool_label)
+    tool._detected = detected ~= false
     self._tools[rk] = tool
     return tool
 end

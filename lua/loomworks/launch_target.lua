@@ -551,7 +551,9 @@ function LaunchTarget:resolve_command_spec()
     -- Env: for a target-backed config start from the run environment (a full
     -- env table) and layer declared vars over it; for a command config, just
     -- the declared vars (unchanged behavior).
-    local decl = expand.expand_dict(cfg.env, ctx)
+    -- Denylisted loader/interpreter variables are refused (spec §17.9).
+    local decl = require("loomworks.env_policy").filter(
+        expand.expand_dict(cfg.env, ctx), { label = "launch " .. tostring(self._launch_name or "?") })
     local env
     if base_env then
         env = base_env
@@ -723,7 +725,9 @@ function LaunchTarget:_resolve_debug_spec()
         cwd = ws.root .. "/" .. (self._project.path or self._project.key)
     end
 
-    local env = expand.expand_dict(cfg.env, ctx)
+    -- Denylisted loader/interpreter variables are refused (spec §17.9).
+    local env = require("loomworks.env_policy").filter(
+        expand.expand_dict(cfg.env, ctx), { label = "launch " .. tostring(self._launch_name or "?") })
     local lang = self._project._module and self._project._module:primary_language() or "c++"
     local adapter = debug_mod.resolve_adapter(ws, lang)
 

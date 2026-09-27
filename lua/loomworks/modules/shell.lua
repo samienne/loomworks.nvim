@@ -82,7 +82,10 @@ local function resolve_env(project, ctx)
     for k, v in pairs(project.env or {}) do env[k] = v end
     local tc = shell_block(project)
     if type(tc.env) == "table" then
-        for k, v in pairs(tc.env) do
+        -- Denylisted loader/interpreter variables are refused (core §17.9).
+        local allowed = require("loomworks.env_policy").filter(tc.env,
+            { label = (project.name or "shell") .. " env" })
+        for k, v in pairs(allowed) do
             if type(v) == "string" then
                 env[k] = expand.expand_string(v, ctx)
             end
