@@ -5,42 +5,47 @@ they don't get lost.
 
 ---
 
-## Workspace trust (next release)
+## Workspace trust
 
-The security hotfix (fix/security-hotfix) removed the plain bugs: plugin ids
-loaded only from the runtime path, bare program names resolved from absolute
-PATH entries only, pinned artifacts only from the per-user verified cache,
-in-process build-dir deletion, quoted vcvars batches, validated npm/tsconfig
-arguments, escaped CLI output. What remains is *configured* execution: a
-workspace (possibly an untrusted clone) can still name executables and
-commands on purpose. Plan: a per-user "trust this workspace" decision (keyed by
-root + content of the shared/working files), with untrusted workspaces
-refusing the items below until trusted (editor prompt; `lw trust` / a flag for
-the CLI; CI opt-in via env).
+~~Deferred from the security hotfix.~~ DONE on `feature/workspace-trust` (spec
+§17, `lw help trust`): a per-machine key signs every loomworks-written `.nvim`
+file; an unsigned/modified working copy is refused until `lw trust` /
+`:LoomworksTrust` (or discarded), an unsigned (pre-trust) cache is discarded and
+rebuilt, a foreign-signed cache refuses the load until `lw nuke`; program-bearing
+fields are honored only from the signed working copy.
 
-- **K2 — SDK paths.** Profile-pinned SDK installation paths (user.json) feed
-  compilers/tools that get executed.
-- **F1 — clangd / qmlls binary overrides** (`type_config.clangd`/`qmlls`,
-  including from a committed loomworks.json, `${ENV}`-expanded) are started as
-  language servers.
-- **F2 — clangd `extra_args`** (`lsp_options.clangd.extra_args`) reach the
-  clangd command line (e.g. `--query-driver` globs make clangd execute
-  compilers).
-- **F3 — meson introspect on repo build dirs**: `meson introspect` against a
-  build dir that came with the clone.
-- **F4 — test discovery runs binaries from repo build dirs** (gtest
-  `--gtest_list_tests` probes, ctest `--show-only` reading repo CTest files).
-- **F7 — cached `tool_data` paths trusted** (compiler_path, cmake_path,
-  vcvarsall, env) from loomworks.cache.json. The hotfix validates vcvarsall
-  syntactically; matching it against vswhere-detected installs belongs here.
-- **F12 — launch / deploy**: launch configs (`command`, `program`, args, env)
-  and deploy steps are executed/copied as configured.
-- **F13 — env denylist**: configuration / tool `env` can set `PATH`,
-  `LD_PRELOAD`, `PYTHONPATH`, `NODE_OPTIONS`, `CMAKE_*` hooks, … for every
-  task; decide a denylist or trust-gate.
-- **F15 — git**: `lw` runs `git` inside the repository (worktree hints, `lw
-  worktree`), which honours repo-local config (`core.fsmonitor`, hooks for
-  mutating calls); pass `-c core.fsmonitor=` / safe options or gate on trust.
+- ~~**K2 — SDK paths.**~~ Probed only from the signed working copy (an untrusted
+  working copy refuses the load before any SDK sync); shared SDK declarations
+  carry type/version constraints only.
+- ~~**F1 — clangd / qmlls binary overrides.**~~ Module `trust_fields`: ignored in
+  loomworks.json with a diagnostic; the kit's `clangd_path` comes from detection.
+- ~~**F2 — clangd `extra_args`.**~~ Working copy only (and it is signed).
+- ~~**F3 — meson introspect on repo build dirs.**~~ Passive target scans only on
+  build dirs the signed cache records as configured here.
+- ~~**F4 — test discovery runs binaries from repo build dirs.**~~ Same gate
+  (`ConfigUnit:configured_here`).
+- ~~**F7 — cached `tool_data` paths trusted.**~~ Detection wins per tool key; a
+  cache-only key is "not detected" and runs nothing.
+- ~~**F12 — launch / deploy.**~~ Launch configs naming command/args/env/cwd and
+  non-local deploy destinations are ignored in loomworks.json.
+- ~~**F13 — env denylist.**~~ Case-insensitive denylist on every env source.
+- ~~**F15 — git.**~~ `-c core.fsmonitor=false -c core.hooksPath=` on every call.
+
+Follow-ups (not done):
+
+- Matching a detected `vcvarsall` against vswhere-reported installs (the path
+  already comes from detection, never from the cache).
+- CMake options that name programs (`CMAKE_<LANG>_COMPILER_LAUNCHER`,
+  `CMAKE_MAKE_PROGRAM`, `CMAKE_PROJECT_INCLUDE`), `toolchain` / meson
+  `machine_file` and shell project commands in loomworks.json are treated as the
+  project's build description (explicit builds only, spec §17.8) — a stricter
+  mode could gate them too.
+- Deploy **sources** with an absolute `path` (a copy INTO the workspace) are not
+  gated.
+- A CI opt-in (`LW_TRUST=…`) was considered and not added: a fresh CI checkout
+  has no `.nvim` state, and `lw trust --yes` covers a restored cache.
+- Explicit `lw nuke` does not take build-directory locks (the cache it resets is
+  untrusted, so its directories are unknown); it deletes `.nvim/build/` wholesale.
 
 Also noted during the hotfix: the loomtest runner (independent of loomworks)
 spawns its test commands through overseer without `loomworks.exe` resolution

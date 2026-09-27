@@ -307,8 +307,11 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `io.lua` | Atomic file read/write (sync and async), JSON encode/decode (`write_json` pretty-prints with keys sorted at every depth via `encode_sorted` — stable diffs for user.json / loomworks.json / cache), rm_rf (sync) / rm_rf_async (libuv async fs ops — no subprocess, no shell; `lstat`-based so links/junctions are removed, never followed; read-only files chmod'ed and retried), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction | Write files (config is read-only) |
-| `user.lua` | `loomworks.user.json` parse/save/defaults | Validate beyond structural correctness |
-| `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
+| `user.lua` | `loomworks.user.json` parse/save/defaults; `save` signs (`io.write_json_signed`), `load` returns nil + status for a file not signed by this machine | Validate beyond structural correctness |
+| `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking; `save` signs | Business logic; auto-migration |
+| `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review) | Decide policy (callers decide what refusal means) |
+| `program_fields.lua` | Program-bearing fields (spec §17.6): `strip(config, modules)` removes them from the parsed shared config before any merge (generic: configuration/override `env`, launches naming command/args/env/working_dir, non-local deploy destinations, shared SDK paths; plus each module's `trust_fields.type_config`), `regraft(raw, ignored)` restores them on publish, `diagnostics(ignored, merged)`, `review(user_data, modules)` for the trust prompt | Know module names |
+| `env_policy.lua` | Environment denylist (spec §17.9): `is_denied(name)` (case-insensitive, prefix entries), `filter(env, opts)` with one-time warnings (silent for a captured tool env that repeats the process's own value) | Touch the process environment |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication; `watch_signal(path, cb)` adds a stat-change watch (no content read) for directories — used for the cmake file-api reply dir (owned-DB regen trigger) | Domain logic; know about merge or profiles |
 | `config_editor.lua` | **Legacy** — retained for backward compatibility but not used at runtime. Mutation methods (`add_project`, `remove_project`, `add_configuration_set`, etc.) have moved to Workspace. Only `create_workspace` remains as a standalone entry point (paralleled by `workspace.create_workspace_config`) | Domain logic; know about runtime model |
 | `api_versions.lua` | Strict-equality version constants (`module`, `sdk`) for the plugin-interface registries. Both `modules.get` and `sdks.get` refuse to load plugins whose declared `api_version` doesn't match. See specification.md §8.0 for the bump policy | Track an interface that already has a more direct registration path (LSP, debug) |
@@ -369,7 +372,11 @@ plugin/loomworks.lua
       → state = "initializing", emit "workspace_initializing"
       → read_files_async([config, user, cache])        ← libuv async I/O
         → vim.schedule → core._on_files_read()
-          → workspace.assemble(root, config, user, cache)  ← pure, returns data
+          → workspace.assemble(root, config, user, cache, { trust, modules })
+              ← verifies the .nvim signatures (only signed bytes are parsed) and
+                strips loomworks.json program-bearing fields (program_fields)
+          → core:_trust_error(): unsigned/invalid working copy or invalid cache
+              → refuse (setup_error.trust; status page T/U/<C-n>, `lw trust`/`lw nuke`)
           → cache version check (refuse if incompatible)
           → core._validate_projects()
           → Workspace.new(core, data)                  ← creates domain container
@@ -377,6 +384,7 @@ plugin/loomworks.lua
           → ws:_cleanup_orphaned_skeletons()
           → ws:remerge()                               ← merge + sync all registries
           → state = "initialized", emit "workspace_changed"
+          → unsigned (pre-trust) cache → notice + ws:_save_cache() (signed)
           → ws:_start_tracking(paths)                  ← file watcher owned by Workspace
           → ws:_scan_tools_async()
             → tool_state = "scanning", emit "tools_scanning"
@@ -435,12 +443,50 @@ Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 file_tracker (uv.fs_poll, 2s interval, owned by Workspace)
   → stat change detected → read content → compare to last known
   → ws:_on_file_changed(which_file, new_content)
+    → user/cache content verified first: unsigned/modified working copy or
+      invalid cache → core:setup() (enters the refused state); unsigned cache
+      change → ignored (next save replaces it)
     → config changed → reassemble + validate + update ws fields + remerge
     → user changed   → re-parse user data + remerge
     → cache changed  → re-parse cache data + remerge
   → ws:remerge() → events.emit("active_set_changed")
   → UI/integrations react to event
 ```
+
+### Workspace trust (spec §17)
+
+Where each gate sits — every one is on a single choke point so a new caller
+inherits it:
+
+- **Signatures.** Writers go through `io.write_json_signed` (`user.save`,
+  `cache.save`, `health_cache.write`, `init_workspace`, `lw pull`). Readers verify
+  before parsing: `workspace.assemble` (startup + loomworks.json change),
+  `Workspace:_on_file_changed` (user/cache change), `user.load` (pull),
+  `health_cache.read`. Refusal is a setup error carrying `trust = { kind,
+  status, path }`; the CLI (`load_workspace`) prints its own message
+  (`quiet_trust_errors`, `trust_actions`), the editor shows the status page's
+  T / U / `<C-n>` actions and `:LoomworksTrust` (`init.trust_user_prefs` →
+  `Core:review_user_prefs` / `Core:trust_user_prefs`). `Core:_nuke_files` is the
+  shared deletion half of the editor nuke and `lw nuke`.
+- **Shared program fields.** Stripped in `assemble` (and when `publish_one`
+  re-bases the baseline) so the merged model — and therefore the cascade into
+  user.json — never holds them; `_shared_ignored` feeds
+  `Workspace:diagnostics()` and `program_fields.regraft` in `_save_config` /
+  `publish_one`. `_sync_sdks` copies only type/version constraints from shared
+  declarations.
+- **Detected tool data.** `data_model.sync_tools` lets detection win per key and
+  marks cache-only tools `_detected = false`; `Tool:exec_data()`, the ToolRef
+  `detected` flag, `overseer.exec_tool_data` (every task collector refuses an
+  undetected keyed tool), `Profile:is_valid` (after a completed scan),
+  `Project:to_module_context` and the cmake clangd path honor it.
+- **Environment.** `env_policy.filter` in `config_env.resolve` / `compose`
+  (configuration + tool layers), the shell module's env block and launch
+  environments; edit-time refusal in `Project:save_configuration` /
+  `save_launch_config`; a configuration diagnostic.
+- **Passive execution.** `ConfigUnit:configured_here()` (signed-cache state)
+  gates `_scan_targets_async`, `ConfigUnit:test_units()` and the CLI's
+  `ensure_unit_targets`; every git call uses `git_base_cmd()`
+  (`-c core.fsmonitor=false -c core.hooksPath=`).
 
 ### Task Execution
 
@@ -1371,6 +1417,9 @@ loomworks.nvim/
 │   │   ├── compiler_cache.lua        Compiler-cache launcher resolution (policy→binary, PATH-gated)
 │   │   ├── suggestions.lua           Advisory suggestion framework (`lw health`, status count line)
 │   │   ├── health_cache.lua          Suggestion-result cache (`.nvim/loomworks.health.json`, local/network/inventory tiers)
+│   │   ├── trust.lua                 Machine key + HMAC signatures on .nvim state (spec §17)
+│   │   ├── program_fields.lua        Shared program-bearing fields: strip / regraft / diagnose / review
+│   │   ├── env_policy.lua            Environment denylist (loader/interpreter hijack variables)
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection (MSVC/VS; delegates gcc/clang)
 │   │   ├── cpp_compilers.lua          Shared C/C++ compiler detection + arbitrary-path probe

@@ -1123,6 +1123,8 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)` |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
+| `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
+| `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
@@ -1517,7 +1519,8 @@ workspace-root/
 └── .nvim/
     ├── loomworks.user.json      Always gitignored. Live working state and runtime
     │                            source of truth (projects, config sets, profiles,
-    │                            active selection, intent overrides).
+    │                            active selection, intent overrides). Signed for
+    │                            this machine — edit by hand, then `lw trust`.
     ├── loomworks.cache.json     Always gitignored (build state).
     ├── loomworks.health.json    Always gitignored. Advisory suggestion cache
     │                            (`lw health` / `N suggestions`); self-healing,
@@ -1551,10 +1554,47 @@ data and does not let it redirect where code is loaded from:
   followed.
 - `lw` output escapes control characters that arrive with data.
 
-Paths and commands the workspace configures on purpose — an SDK or clangd
-binary, cached toolchain paths, launch/deploy commands, environment — are
-still used as configured; gating those behind an explicit "trust this
-workspace" step is planned for a later release.
+What a workspace may make loomworks **run** depends on where the setting comes
+from (spec §17, `lw help trust`):
+
+- **`loomworks.json` never names programs.** Environment variables
+  (configuration `env`, compiler-family `overrides.<family>.env`, a shell
+  project's `env`), launch configurations with a `command` / `args` / `env` /
+  `working_dir`, deploy destinations outside the workspace, and module program
+  settings (a `clangd` / `qmlls` binary, qmlls import paths, a shell project's
+  clangd database argument) found in it are **ignored**, each with a diagnostic
+  (`lw status`, the status page). They stay in the file — publishing keeps a
+  teammate's values — and to use one you copy it into your working copy.
+- **`.nvim/loomworks.user.json` is honored only when this machine signed it.**
+  Every write by `lw` or the editor signs the `.nvim` files with a per-machine
+  key (`trust.key` in your per-user data directory, never in a repository). A
+  working copy written by hand, by an earlier loomworks, or copied from
+  elsewhere is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
+  / `T` on the status page) lists the program settings it contains and re-signs
+  it on confirmation; `lw trust --discard` (or `U`) deletes it instead. After
+  upgrading, each existing workspace asks for this once.
+- **Caches are regenerable.** An unsigned build cache (from an earlier
+  loomworks) is discarded and rebuilt automatically — units read as
+  unconfigured and reconfigure into their existing build directories. A cache
+  signed on another machine refuses the load until you reset it (`lw nuke`, or
+  `<C-n>` on the status page). An unsigned health cache is ignored.
+- **Tool paths come from detection on this machine**, never from the cache. A
+  profile whose toolchain isn't detected here is not buildable.
+- **Opening a workspace runs nothing it names**: language servers start only
+  with binaries/arguments from your signed working copy, detection, or `PATH`;
+  SDK paths are probed only from the signed working copy; targets and tests are
+  introspected only in build directories this machine configured; `git` runs
+  with the repository's fsmonitor and hooks disabled.
+- **Environment variables that hijack other programs are refused everywhere**
+  (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `NODE_OPTIONS`, `npm_config_*`,
+  `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `BASH_ENV`, `ENV`, `ComSpec`,
+  `PATHEXT`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `CMAKE_TOOLCHAIN_FILE`,
+  `CCACHE_PREFIX`) — even from a trusted working copy.
+
+Explicit `lw build` / `test` / `run` (and the editor's build actions) still run
+the project's own build system — cmake, meson, npm and the build files they
+read, a shell project's commands — because that is what you asked for; review a
+repository you don't trust before building it.
 
 ## API
 

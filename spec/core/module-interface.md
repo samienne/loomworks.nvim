@@ -671,14 +671,16 @@ beyond the module itself. Additive and optional: no `api_versions.module` bump
 
 **`trust_fields`** *(optional static property)*
 
-`{ type_config = string[] }` — the top-level keys of the module's `type_config`
+`{ type_config = string[], review? = string[] }` — `type_config` lists the top-level keys of the module's `type_config`
 that are **program-bearing** (§17.6): they name a program to run (e.g. a
 language-server binary override), add program arguments, or set a spawned
 environment. Core removes these keys from the shared snapshot's layer before the
 merge and reports each removal as a diagnostic; they are honored only from the
 signed working copy. Keys that are part of the project's own build description
 (build commands, toolchain or cross files, build options) are **not** listed —
-explicit builds run them (§17.8). Absent = none. Additive and optional: no
+explicit builds run them (§17.8). `review` optionally lists further keys
+(e.g. the module's own build commands) that the trust review (§17.4) shows
+but that are not stripped. Absent = none. Additive and optional: no
 `api_versions.module` bump (§8.0).
 
 ### 8.5 Module implementations
