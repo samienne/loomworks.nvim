@@ -6884,7 +6884,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "update", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -6967,6 +6967,12 @@ function M.cmd_complete(cword, words)
       names[#names + 1] = "--all"
       emit(sorted_unique(names))
     end
+    return 0
+  elseif cmd == "trust" then
+    emit({ "--discard", "--yes" })
+    return 0
+  elseif cmd == "nuke" then
+    emit({ "-y" })
     return 0
   elseif cmd == "unlock" then
     if n == 1 then
