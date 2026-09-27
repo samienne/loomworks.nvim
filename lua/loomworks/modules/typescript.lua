@@ -97,10 +97,34 @@ local function resolve_script(config, action)
     return action == "configure" and nil or action
 end
 
---- Wrap a command for Windows (prepend cmd /c for npm/npx).
+--- Characters allowed in any argument of an npm/npx/tsc command: npm script
+--- names (`build:prod`, `@scope/x`) and tsconfig paths (relative or absolute,
+--- either separator). On Windows these run through `cmd /c`, which re-parses
+--- its arguments — `&`, `|`, `<`, `>`, `^`, `%`, `!`, quotes or whitespace in a
+--- script name (type_config) or tsconfig file name (type_config, or a
+--- `tsconfig.<variant>.json` in the project) could otherwise add a command.
+local SAFE_ARG = "^[%w%._:/@\\%-]+$"
+
+--- Refuse (error) any argument outside SAFE_ARG; called when a task is built.
+--- @param cmd string[]
+--- @return string[] cmd
+local function check_args(cmd)
+    for _, a in ipairs(cmd) do
+        if type(a) ~= "string" or not a:match(SAFE_ARG) then
+            local shown = tostring(a):gsub("[%c\128-\255]", "?")
+            error("loomworks.typescript: refusing argument '" .. shown .. "' — npm script "
+                .. "names and tsconfig paths may contain only letters, digits and . _ : / \\ @ -", 0)
+        end
+    end
+    return cmd
+end
+
+--- Wrap a command for Windows (prepend cmd /c for npm/npx) after checking
+--- every argument (`check_args`).
 --- @param cmd string[] command array
 --- @return string[]
 local function wrap_cmd(cmd)
+    check_args(cmd)
     if vim.fn.has("win32") == 1 then
         return vim.list_extend({ "cmd", "/c" }, cmd)
     end

@@ -1021,7 +1021,8 @@ local function run_build_steps(profile, ws, opts)
     if not buildable then die(tostring(why)) end
   end
   local overseer = require("loomworks.overseer")
-  local steps = overseer.plan_profile_build(profile, opts)
+  local steps, plan_err = overseer.plan_profile_build(profile, opts)
+  if plan_err then die("cannot build: " .. tostring(plan_err)) end
   if not steps or #steps == 0 then return 0 end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.

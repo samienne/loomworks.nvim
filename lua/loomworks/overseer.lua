@@ -995,6 +995,7 @@ end
 ---   configuration is still planned for every unit; reconfigure forces a FULL
 ---   reconfigure of every unit (`lw build --reconfigure`, §16.4).
 --- @return table[]|nil steps list of { kind, name, unit, profile, build_dir, module_info, pre_configure_reset, configure_reason, reconfigure, reconfigure_detail, cmd, cwd, env }
+--- @return string|nil err a task builder that raised (the plan is refused, not partial)
 function M.plan_profile_build(profile, opts)
     opts = opts or {}
     local all_tasks = collect_profile_tasks(profile,
@@ -1014,10 +1015,17 @@ function M.plan_profile_build(profile, opts)
     end
 
     local steps = {}
+    -- A builder that raises (e.g. a refused unsafe vcvarsall / npm argument)
+    -- must fail the plan, not silently drop the step (the build would then
+    -- report success without having run it).
+    local plan_err
     local function add(task_defs, kind)
         for _, td in ipairs(task_defs or {}) do
             if td.builder then
                 local ok, spec = pcall(td.builder)
+                if not ok and not plan_err then
+                    plan_err = (td.name or kind) .. ": " .. tostring(spec)
+                end
                 if ok and type(spec) == "table" and type(spec.cmd) == "table" then
                     steps[#steps + 1] = {
                         kind = kind,
@@ -1050,6 +1058,7 @@ function M.plan_profile_build(profile, opts)
     end
     add(needs_configure, "configure")
     add(build_tasks, "build")
+    if plan_err then return nil, plan_err end
     return steps
 end
 
