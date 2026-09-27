@@ -65,9 +65,9 @@ project that names it is preserved like any other rejected-type project
 way.
 
 The SDK provider registry uses the same mechanism with the `sdk`
-field of `api_versions.lua` and the same id rule and load location. LSP and debug integrations do not yet
-have a versioned registry; they're wired more directly into core
-today.
+field of `api_versions.lua` and the same id rule and load location.
+LSP and debug integrations do not yet have a versioned registry;
+they're wired more directly into core today.
 
 ### 8.1 Required methods
 
@@ -214,6 +214,15 @@ is a plain relative path (not absolute, no `..` segment) resolving inside
 entry is fine). If validation or removal fails, the configure is not started and
 fails with an error naming the path. Additive and optional: no
 `api_versions.module` bump.
+
+**`wipe_build_dir`** (optional, clean tasks only): a clean task whose
+`loomworks.wipe_build_dir` is `true` has no `builder`; instead of spawning a
+command, core removes the task's `build_dir` itself — with the same safety as a
+build-directory deletion (§4.6: non-empty path, within the workspace root and
+never the root itself, links not followed, no command interpreter involved). A
+missing `build_dir` is nothing to clean. This is how a module expresses "clean
+= wipe the build directory" without composing a delete command from a path.
+Additive and optional: no `api_versions.module` bump.
 
 **`inspect(path, config, cached) → { needs_refresh, reasons[], notes[] }`**
 

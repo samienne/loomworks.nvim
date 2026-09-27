@@ -69,7 +69,7 @@ Fields inside the `shell:` block:
 | `build_dir` | yes | Resolved per-configuration. Determines the cache key path and is checked by deletion safety. |
 | `configure_cmd` | yes | First-build and explicit Configure invoke this. |
 | `build_cmd` | yes | Default Build keymap invokes this. |
-| `clean_cmd` | no | If omitted, Clean wipes the build dir directly (`rm -rf` equivalent). |
+| `clean_cmd` | no | If omitted, Clean wipes the build dir: the task declares `wipe_build_dir` and core removes it (validated, in-process — core §8.1), never a spawned `rm`/`rd`. |
 | `compile_commands` | no | Path to `compile_commands.json` or its containing directory. Forwarded to clangd via `lsp_configs`. |
 | `env` | no | Dict of env vars merged into the task environment. Values expanded. |
 | `clangd` | no | Override the clangd binary path. Otherwise pulled from the active profile's tool (`tool_data.clangd_path`) or PATH. |
@@ -92,7 +92,7 @@ user adds entries under `configurations`, the default is dropped.
 |--------|---------------|-------|
 | Configure | `shell.configure_cmd` after `${var}` expansion | Run in project directory. Auto-fires when state is `unconfigured` or unit is stale. |
 | Build | `shell.build_cmd` after `${var}` expansion | Run in project directory. |
-| Clean | `shell.clean_cmd` if declared, else direct `rm -rf <build_dir>` | Run in workspace root. |
+| Clean | `shell.clean_cmd` if declared, else a core-performed wipe of `<build_dir>` (`wipe_build_dir`, core §8.1) | Run in workspace root. |
 
 `cwd` defaults to `<workspace_root>/<project.path>`. Task env is the
 caller's env merged with `shell.env`.

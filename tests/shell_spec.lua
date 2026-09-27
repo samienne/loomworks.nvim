@@ -288,7 +288,7 @@ describe("shell module", function()
             assert.same({ "./script", "--clean", "/work/out" }, spec.cmd)
         end)
 
-        it("falls back to a platform-appropriate wipe when clean_cmd is absent", function()
+        it("falls back to a core-performed wipe of the build dir when clean_cmd is absent", function()
             local ctx = make_ctx({
                 type_config = {
                     build_dir = "${workspace_root}/out",
@@ -298,11 +298,11 @@ describe("shell module", function()
             })
             local tasks = shell.clean_tasks(ctx, "default")
             assert.equals(1, #tasks)
-            local cmd = tasks[1].builder().cmd
-            -- Build dir gets substituted into whichever portable wipe
-            -- form runs on this platform.
-            local joined = table.concat(cmd, " ")
-            assert.is_truthy(joined:find("/work/out", 1, true))
+            -- No command is spawned: core validates and removes the
+            -- (substituted) build dir itself (spec §8.1 `wipe_build_dir`).
+            assert.is_nil(tasks[1].builder)
+            assert.is_true(tasks[1].loomworks.wipe_build_dir)
+            assert.equals("/work/out", tasks[1].loomworks.build_dir)
         end)
     end)
 

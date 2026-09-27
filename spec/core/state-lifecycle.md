@@ -244,12 +244,13 @@ one branch but the configuration set that produced it no longer exists.
 6. **Crash-safe cache update**: set cache state to `"unknown"` for all
    affected items and save cache to disk. This ensures that if Neovim
    crashes mid-deletion, the cache still tracks the build directories.
-7. **Delete build directories asynchronously** via subprocess. Multiple
-   directories are deleted in parallel (one subprocess per directory).
+7. **Delete build directories asynchronously** (non-blocking filesystem
+   operations, §4.6 *Async build directory deletion*). Multiple directories
+   are deleted in parallel.
 8. On success: remove/reset cache entries per disposition, save cache,
    flush deletion waiters, remerge
 9. On failure: cache already has `"unknown"` state — notify user with
-   subprocess error output, unmark ConfigUnits, remerge
+   the removal error, unmark ConfigUnits, remerge
 10. On crash: cache has `"unknown"` entries on next startup, user can
     retry delete/clean
 
@@ -275,11 +276,15 @@ sequence above).
 5. No profiles are ever removed — profiles are only deleted via explicit
    profile deletion (`D` on the profile itself)
 
-**Async build directory deletion**: Build directories are deleted via
-`vim.system()` subprocess calls (`rm -rf` on Unix, `cmd /c rd /s /q` on
-Windows). This prevents blocking Neovim's event loop during deletion of
-large build directories. Subprocess stderr is captured and shown to the
-user on failure.
+**Async build directory deletion**: Build directories are deleted with
+asynchronous filesystem operations, so deleting a large build directory never
+blocks the editor's event loop; the error is shown to the user on failure.
+Deletion is performed **in-process, never by a command line composed from the
+path**: a path handed to a command interpreter could change the command
+(characters such as `&` or `%` in a directory name on Windows). Deletion never
+follows a symbolic link or junction — a link inside (or at) the directory is
+removed as a link and its target is left untouched — and read-only files
+(e.g. version-control objects of a fetched dependency) are removed too.
 
 **Build directory safety**: Build directories stored in the cache may reside
 anywhere under the workspace root (e.g., `<root>/build/`, `<root>/.nvim/build/`,
@@ -287,7 +292,10 @@ a preset's `binaryDir`). Before deleting a build directory, the system
 normalizes the path and verifies it is under the workspace root. Paths that
 resolve outside the workspace (e.g., via `../` traversal, absolute paths
 pointing elsewhere, or corrupted cache entries) are refused with an error
-notification and left untouched. This check lives in core (at the
+notification and left untouched. The workspace root **itself** is never
+deleted as a build directory (a cache entry naming it is refused the same
+way); only a removal of named configure-state entries *inside* an in-source
+build directory (§8.1 `pre_configure_reset`) may target the root. This check lives in core (at the
 `execute_deletion` / clean level), not in the io layer — the io layer is a
 general-purpose utility that deletes what it is told to.
 
@@ -326,8 +334,8 @@ remaining cache entries reference it after the current deletion batch.
 **Profile clean** (`C` key):
 1. For each project in the profile:
    - Set cache state to `"unknown"` and save to disk (crash-safe)
-   - Delete build directory asynchronously (same subprocess approach as
-     deletion)
+   - Delete build directory asynchronously (same approach and safety
+     checks as deletion)
    - On success: reset cache entry to unconfigured (clear state, build_dir,
      timestamps, cmake data), keep skeleton (variant, tool_key, tool_data)
    - On failure: cache already has `"unknown"` state, notify user

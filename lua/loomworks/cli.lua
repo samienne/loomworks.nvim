@@ -1189,9 +1189,21 @@ function M.cmd_clean(ws, profile_name)
     out("cleaning profile: " .. profile.key)
     for _, step in ipairs(steps) do
       out(string.format("==> [clean] %s", step.name or "?"))
-      local code = run_spec(step, ws.root)
-      if code ~= 0 then
-        die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+      if step.wipe_build_dir then
+        -- Core-performed wipe (spec §8.1): validated against the workspace
+        -- root (never the root itself), removed in-process — no shell.
+        if not ws:_validate_build_dir(step.build_dir, ws.root) then
+          die("clean refused: unsafe build directory " .. tostring(step.build_dir))
+        end
+        local ok, err = require("loomworks.io").rm_rf(step.build_dir)
+        if not ok then
+          die("clean failed: " .. tostring(err) .. ": " .. (step.name or "?"))
+        end
+      else
+        local code = run_spec(step, ws.root)
+        if code ~= 0 then
+          die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+        end
       end
     end
   end)

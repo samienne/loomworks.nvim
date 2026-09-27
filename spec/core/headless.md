@@ -1008,7 +1008,7 @@ reset refuses with a message naming the flag, rather than deleting unprompted.
 This is the destructive-management posture of §16.9: it authors nothing in the
 working copy, but it does discard cache and on-disk state, so it never proceeds
 silently. Reset reports success only after confirming the targeted directories
-are **actually gone from disk** — the removal subprocess exiting is not by itself
+are **actually gone from disk** — the removal completing is not by itself
 proof (a directory can briefly persist after deletion, or a removal can fail), so
 a directory that is still present once the removal settles is reported as a
 failure rather than reported as removed. On success the removed directories are

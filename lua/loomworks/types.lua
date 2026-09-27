@@ -258,13 +258,14 @@
 --- Loomworks metadata carried on a module task_def (`task_def.loomworks`).
 --- @class loomworks.TaskMeta
 --- @field project_key string
---- @field action "configure"|"build"
+--- @field action "configure"|"build"|"clean"
 --- @field configuration_key string
 --- @field build_dir? string
 --- @field tool_data? table
 --- @field module_info? table module-owned record that replaces the unit's `module_info` after a configure (core-owned keys re-added by core)
 --- @field pre_configure_reset? string[] configure only: build-dir-relative paths core removes (validated, under the exclusive lock) before the configure runs — a full reconfigure the build system has no flag for (core §5.1, §8.1)
 --- @field stripped_compiler_keys? { options?: string[], env?: string[] }
+--- @field wipe_build_dir? boolean clean only: no builder — core removes `build_dir` itself (validated, never the workspace root, in-process; core §8.1)
 
 --- Module info() return value.
 --- @class loomworks.ModuleInfo

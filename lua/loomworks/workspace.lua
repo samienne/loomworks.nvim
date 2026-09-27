@@ -3408,16 +3408,26 @@ end
 --- Both paths are canonicalized (8.3 short<->long + case reconciled, symlinks
 --- resolved) and compared with a directory boundary check (trailing "/") to
 --- prevent prefix collisions (e.g., "/root" must not match "/roots/...").
+--- The workspace root ITSELF is refused: a build dir is deleted wholesale, and
+--- a cache entry (never trusted) naming the root must not wipe the workspace.
+--- Only a caller that deletes named entries INSIDE the dir (the in-source
+--- configure-state reset, `_pre_configure_reset`) passes `opts.allow_root`.
 --- @param build_dir string path (normalized or raw) to the build dir
 --- @param safe_prefix string path (normalized or raw) to the workspace root
+--- @param opts? { allow_root?: boolean }
 --- @return boolean safe
-function Workspace:_validate_build_dir(build_dir, safe_prefix)
+function Workspace:_validate_build_dir(build_dir, safe_prefix, opts)
     if not build_dir or build_dir == "" then
         self._core._deps.notify("loomworks: refusing to delete empty build dir path", vim.log.levels.ERROR)
         return false
     end
     local abs = self:_canonicalize_boundary_path(build_dir)
     local root = self:_canonicalize_boundary_path(safe_prefix)
+    if abs == root and not (opts and opts.allow_root) then
+        self._core._deps.notify("loomworks: refusing to delete the workspace root as a build dir: " .. abs,
+            vim.log.levels.ERROR)
+        return false
+    end
     local is_under = abs == root
         or abs:sub(1, #root + 1) == root .. "/"
     if not is_under then
@@ -3451,12 +3461,13 @@ function Workspace:_pre_configure_reset(build_dir, entries)
     if type(build_dir) ~= "string" or build_dir == "" then
         return false, "full reconfigure refused: no build directory to reset"
     end
-    -- Deliberate: `_validate_build_dir` also accepts build_dir == workspace
-    -- root. That is an in-source build, and resetting it (e.g. removing
-    -- <root>/CMakeCache.txt + <root>/CMakeFiles) is exactly the configure-state
-    -- cleanup the full reconfigure needs there; the per-entry checks below
-    -- still confine every removal to those named entries inside build_dir.
-    if not self:_validate_build_dir(build_dir, self.root) then
+    -- Deliberate: `allow_root` — build_dir == workspace root is an in-source
+    -- build, and resetting it (e.g. removing <root>/CMakeCache.txt +
+    -- <root>/CMakeFiles) is exactly the configure-state cleanup the full
+    -- reconfigure needs there; the per-entry checks below still confine every
+    -- removal to those named entries inside build_dir. (Wholesale deletion of
+    -- a build dir refuses the root.)
+    if not self:_validate_build_dir(build_dir, self.root, { allow_root = true }) then
         return false, "full reconfigure refused: build directory outside the workspace: "
             .. build_dir
     end
