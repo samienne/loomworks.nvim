@@ -38,12 +38,17 @@ local function read_all(path)
 end
 
 describe("cmake vcvarsall .bat filename (MSVC+Ninja)", function()
-    local root, build_dir
+    local root, build_dir, vcvarsall
 
     before_each(function()
         root = vim.fn.tempname()
         build_dir = root .. "/build"
         vim.fn.mkdir(build_dir, "p")
+        -- The wrapper requires an existing vcvarsall.bat (msvc.check_vcvarsall);
+        -- an empty stand-in suffices — nothing runs it here.
+        vim.fn.mkdir(root .. "/VS", "p")
+        vcvarsall = (root .. "/VS/vcvarsall.bat"):gsub("\\", "/")
+        vim.fn.writefile({ "@echo off" }, vcvarsall)
     end)
 
     --- Project ctx driving the single-config Ninja + MSVC repro path.
@@ -58,7 +63,7 @@ describe("cmake vcvarsall .bat filename (MSVC+Ninja)", function()
             -- vcvarsall present → wrap_cmd wraps into a .bat; ninja-msvc kit.
             tool_data = {
                 generator = "Ninja",
-                vcvarsall = "C:/VS/vcvarsall.bat",
+                vcvarsall = vcvarsall,
                 arch = "x64",
             },
             cached_build_dir = build_dir,

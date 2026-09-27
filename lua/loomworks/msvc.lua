@@ -27,6 +27,116 @@ M._clang_cl_for = {}
 local VSWHERE = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
 local VSWHERE_ARGS = { "-all", "-format", "json", "-products", "*" }
 
+-- ---------------------------------------------------------------------------
+-- Batch-file safety. vcvarsall has to run inside cmd.exe, so loomworks writes
+-- small .bat files. Everything written into one comes from tool data (which
+-- can come from the cache) or from the build command, so each piece is
+-- validated or quoted for cmd's parser — a path or argument must never be
+-- able to add a command.
+-- ---------------------------------------------------------------------------
+
+--- The architecture arguments vcvarsall.bat accepts (host[_target]).
+M.VCVARS_ARCHES = {
+    x86 = true, x64 = true, amd64 = true, arm = true, arm64 = true,
+    x86_amd64 = true, x86_x64 = true, x86_arm = true, x86_arm64 = true,
+    amd64_x86 = true, amd64_arm = true, amd64_arm64 = true,
+    x64_x86 = true, x64_arm = true, x64_arm64 = true,
+    arm64_amd64 = true, arm64_x64 = true, arm64_x86 = true, arm64_arm = true,
+}
+
+--- Characters cmd.exe treats specially (or that end a line) — never allowed in
+--- the vcvarsall path, which is written into a `call "<path>"` line.
+local BAT_UNSAFE_PATH = '["%%^&|<>!\r\n%z]'
+
+--- Is `arch` a vcvarsall architecture argument?
+--- @param arch any
+--- @return boolean
+function M.valid_arch(arch)
+    return type(arch) == "string" and M.VCVARS_ARCHES[arch:lower()] == true
+end
+
+--- Validate a vcvarsall.bat path before it is written into a batch file: an
+--- absolute path to an existing file named `vcvarsall.bat`, free of cmd.exe
+--- metacharacters (`"` `%` `^` `&` `|` `<` `>` `!`, line breaks).
+--- @param path any
+--- @return boolean ok, string|nil err
+function M.check_vcvarsall(path)
+    if type(path) ~= "string" or path == "" then return false, "no vcvarsall.bat path" end
+    if path:find(BAT_UNSAFE_PATH) then
+        return false, "refusing vcvarsall path with shell metacharacters: " .. path
+    end
+    if not (path:match("^%a:[/\\]") or path:match("^[/\\][/\\][^/\\]")) then
+        return false, "vcvarsall path is not absolute: " .. path
+    end
+    local base = path:match("([^/\\]+)$") or ""
+    if base:lower() ~= "vcvarsall.bat" then
+        return false, "not a vcvarsall.bat: " .. path
+    end
+    local st = uv.fs_stat(path)
+    if not st or st.type ~= "file" then
+        return false, "vcvarsall.bat not found: " .. path
+    end
+    return true, nil
+end
+
+--- Quote one argv element for a command line inside a .bat file, so cmd.exe
+--- passes it through literally and the program's (MSVC CRT) argument parser
+--- receives exactly `arg`: always double-quoted (cmd leaves `& | < > ^ ( )`
+--- alone inside quotes), `%` doubled (a batch file expands `%...%` even in
+--- quotes), backslashes before the closing quote doubled (CRT rule). An
+--- argument containing `"`, a line break or NUL cannot be carried safely and
+--- is refused (nil + err). Delayed expansion (`!`) is disabled by the batch
+--- preamble (`setlocal DisableDelayedExpansion`).
+--- @param arg string
+--- @return string|nil quoted, string|nil err
+function M.bat_quote(arg)
+    arg = tostring(arg)
+    if arg:find('["\r\n%z]') then
+        return nil, "cannot pass an argument containing a quote or line break through a batch file: " .. arg
+    end
+    local q = arg:gsub("%%", "%%%%")
+    q = q:gsub("(\\+)$", "%1%1")
+    return '"' .. q .. '"'
+end
+
+--- The fixed preamble of every generated batch file: no echo, no delayed
+--- expansion, and no current-directory search for bare command names (cmd.exe
+--- honours NoDefaultCurrentDirectoryInExePath for the commands it runs).
+M.BAT_PREAMBLE = "@echo off\r\nsetlocal DisableDelayedExpansion\r\n"
+    .. "set \"NoDefaultCurrentDirectoryInExePath=1\"\r\n"
+
+--- Create `path` exclusively (after removing whatever is there, without
+--- following a link) and write `content`. Refuses to write through a
+--- pre-existing symlink / junction planted at that name.
+--- @param path string
+--- @param content string
+--- @return boolean ok, string|nil err
+function M.write_bat_exclusive(path, content)
+    local st = uv.fs_lstat(path)
+    if st then
+        local ok_rm, err_rm = uv.fs_unlink(path)
+        if not ok_rm then return false, "cannot replace " .. path .. ": " .. tostring(err_rm) end
+    end
+    local fd, oerr = uv.fs_open(path, "wx", 420)
+    if not fd then return false, "cannot create " .. path .. ": " .. tostring(oerr) end
+    local ok_w, werr = uv.fs_write(fd, content, 0)
+    uv.fs_close(fd)
+    if not ok_w then return false, "cannot write " .. path .. ": " .. tostring(werr) end
+    return true, nil
+end
+
+--- A random hex token for temp file names (unpredictable per run).
+--- @return string
+local function random_token()
+    local ok, bytes = pcall(uv.random, 8)
+    if ok and type(bytes) == "string" and #bytes == 8 then
+        return (bytes:gsub(".", function(c) return ("%02x"):format(c:byte()) end))
+    end
+    math.randomseed(uv.hrtime() % 2147483647)
+    return ("%08x%08x"):format(math.random(0, 0x7fffffff), math.random(0, 0x7fffffff))
+end
+M._random_token = random_token
+
 --- Run a command synchronously, returning trimmed stdout or nil on failure.
 --- Callers pass an ABSOLUTE program path (vswhere, a found clang-cl).
 --- @param cmd string[]
@@ -146,17 +256,24 @@ end
 --- @return table<string, string>|nil env, string|nil err
 function M.vcvars_env(vcvarsall, arch)
     arch = arch or "x64"
+    if not M.valid_arch(arch) then
+        return nil, "invalid vcvarsall architecture: " .. tostring(arch)
+    end
+    local okv, verr = M.check_vcvarsall(vcvarsall)
+    if not okv then return nil, verr end
     local key = vcvarsall .. "|" .. arch
     if M._env[key] then return M._env[key] end
 
-    local tmp = (os.getenv("TEMP") or os.getenv("TMP") or "."):gsub("\\", "/")
-    local bat = tmp .. "/lw_vcvars_" .. arch .. ".bat"
-    local f, ferr = io.open(bat, "w")
-    if not f then return nil, "could not write temp batch: " .. tostring(ferr) end
-    f:write("@echo off\r\n")
-    f:write('call "' .. vcvarsall:gsub("/", "\\") .. '" ' .. arch .. "\r\n")
-    f:write("set\r\n")
-    f:close()
+    -- An unpredictable name in the per-user temp dir, created exclusively.
+    local tmp = (os.getenv("TEMP") or os.getenv("TMP") or ""):gsub("\\", "/")
+    if not tmp:match("^%a:/") and not tmp:match("^/") then
+        return nil, "no absolute TEMP directory for the vcvars batch"
+    end
+    local bat = tmp .. "/lw_vcvars_" .. arch .. "_" .. random_token() .. ".bat"
+    local okw, werr = M.write_bat_exclusive(bat, M.BAT_PREAMBLE
+        .. 'call "' .. vcvarsall:gsub("/", "\\") .. '" ' .. arch .. "\r\n"
+        .. "set\r\n")
+    if not okw then return nil, "could not write temp batch: " .. tostring(werr) end
 
     local res = require("loomworks.exe").system({ "cmd.exe", "/d", "/c", bat }, { text = true }):wait()
     pcall(os.remove, bat)

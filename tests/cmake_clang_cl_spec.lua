@@ -155,12 +155,16 @@ describe("cmake_kits clang-cl kits (at most one per MSVC install)", function()
 end)
 
 describe("cmake clang-cl configure command", function()
-    local root, build_dir
+    local root, build_dir, vcvarsall
 
     before_each(function()
         root = vim.fn.tempname()
         build_dir = root .. "/build"
         vim.fn.mkdir(build_dir, "p")
+        -- An existing vcvarsall.bat stand-in (msvc.check_vcvarsall).
+        vim.fn.mkdir(root .. "/VS/Community/VC/Auxiliary/Build", "p")
+        vcvarsall = (root .. "/VS/Community/VC/Auxiliary/Build/vcvarsall.bat"):gsub("\\", "/")
+        vim.fn.writefile({ "@echo off" }, vcvarsall)
     end)
 
     local CLANG_CL = "C:/VS/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe"
@@ -176,7 +180,7 @@ describe("cmake clang-cl configure command", function()
             tool_data = {
                 generator = "Ninja",
                 compiler_path = CLANG_CL,
-                vcvarsall = "C:/VS/Community/VC/Auxiliary/Build/vcvarsall.bat",
+                vcvarsall = vcvarsall,
                 arch = "x64",
             },
             cached_build_dir = build_dir,
