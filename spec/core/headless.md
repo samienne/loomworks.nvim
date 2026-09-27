@@ -1274,7 +1274,7 @@ self-update it points at replaces a self-updating host too — except for a host
 from before host self-update, whose item is still reported. Reading the host's
 release identity is local and network-free; only the newest-release resolution
 above touches the network, so the host check shares this provider's on-demand
-tier and silent degradation.
+tier and its failure handling (below).
 
 Resolving the newest version is a **network** operation (the releases API for
 `unstable`, otherwise a lightweight read of the channel base's manifest to learn
