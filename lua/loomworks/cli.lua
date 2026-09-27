@@ -595,6 +595,10 @@ local function load_workspace(root, wait_tools)
       errw(tostring(msg) .. "\n")
     end
   end
+  -- A refused `.nvim` file (spec §17.4) is reported by the CLI itself, with
+  -- its own commands (spec §17.10).
+  core._deps.quiet_trust_errors = true
+  core._deps.trust_actions = { trust = "lw trust", discard = "lw trust --discard", nuke = "lw nuke" }
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
@@ -623,6 +627,7 @@ local function load_workspace(root, wait_tools)
   if not ws then
     if completion_mode then return nil end
     local e = core.get_setup_error and core:get_setup_error()
+    if e and e.trust then die(M._trust_refusal_message(e.trust)) end
     die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
   end
   -- Await tool detection (needed for cold builds + accurate buildability).
@@ -1500,6 +1505,161 @@ function M.cmd_reset(ws, args)
   end
 
   out("RESET OK: " .. scope_label)
+  return 0
+end
+
+-- ---------------------------------------------------------------------------
+-- Workspace trust (spec §17)
+-- ---------------------------------------------------------------------------
+
+--- The message for a refused `.nvim` file (spec §17.10). `t` is the setup
+--- error's `trust` table `{ kind = "user"|"cache", status }`.
+--- @param t table
+--- @return string
+function M._trust_refusal_message(t)
+  if t.kind == "cache" then
+    return ".nvim/loomworks.cache.json was not written on this machine (its signature does not match).\n"
+      .. "  It is not used. Reset the build cache (deletes .nvim/build and the cache): lw nuke"
+  end
+  local why = (t.status == "unsigned")
+    and "is not signed by this machine (written by hand, or by an earlier lw)"
+    or "was modified outside loomworks (its signature does not match this machine)"
+  return ".nvim/loomworks.user.json " .. why .. ".\n"
+    .. "  It is not used until you review it.\n"
+    .. "  Review and trust it:  lw trust\n"
+    .. "  Or discard it:        lw trust --discard\n"
+    .. "  (`lw help trust` explains why.)"
+end
+
+--- `lw trust [--yes] [--discard]` — review the working copy and re-sign it
+--- for this machine, or discard it (spec §17.4, §17.10). Works on a refused
+--- workspace: it never loads the workspace.
+--- @param root string
+--- @param args string[]
+--- @return integer
+function M.cmd_trust(root, args)
+  local yes, discard = false, false
+  for i = 2, #args do
+    local v = args[i]
+    if v == "-y" or v == "--yes" then yes = true
+    elseif v == "--discard" then discard = true
+    else die("unknown argument '" .. v .. "' — usage: lw trust [--yes] [--discard]") end
+  end
+  local trust = require("loomworks.trust")
+  local io_mod = require("loomworks.io")
+  local user = require("loomworks.user")
+  local path = user.filepath(root)
+
+  -- The build cache's state, reported alongside (its only remedy is a reset).
+  local function cache_note()
+    local ctext = io_mod.read_file(require("loomworks.cache").filepath(root))
+    if ctext and trust.verify("cache", ctext) == "invalid" then
+      out("note: .nvim/loomworks.cache.json was not written on this machine — reset it with `lw nuke`.")
+    end
+  end
+
+  local text = io_mod.read_file(path)
+  if not text then
+    out("no working copy (.nvim/loomworks.user.json) — nothing to trust.")
+    cache_note()
+    return 0
+  end
+  local status, content = trust.verify("user", text)
+
+  if discard then
+    out("Will delete " .. path .. " (the working copy: profiles, local configuration, settings).")
+    if not yes then
+      if not interactive() then
+        die("refusing to discard the working copy without confirmation.\n  Re-run with --yes.")
+      end
+      local answer = (prompt_line("Discard it? [y/N]") or ""):lower()
+      if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+    end
+    for _, p in ipairs({ path, path .. ".bak" }) do
+      local ok, err = io_mod.rm_rf(p)
+      if not ok then die("could not delete " .. p .. ": " .. tostring(err)) end
+    end
+    out("DISCARDED: " .. path)
+    return 0
+  end
+
+  if status == "valid" then
+    out(".nvim/loomworks.user.json is trusted (signed by this machine) — nothing to do.")
+    cache_note()
+    return 0
+  end
+
+  local ok, decoded = pcall(vim.json.decode, content)
+  if not ok or type(decoded) ~= "table" then
+    die(path .. " is not valid JSON — fix it, or discard it with `lw trust --discard`")
+  end
+  out(path)
+  out(status == "unsigned"
+    and "  is not signed by this machine (written by hand, or by an earlier lw)."
+    or "  was modified outside loomworks, or copied from another machine.")
+  out("")
+  local prog, other = require("loomworks.program_fields").review(decoded, require("loomworks.modules"))
+  out("Program settings — what loomworks may run on this file's word:")
+  if #prog == 0 then out("  (none)") end
+  for _, l in ipairs(prog) do out("  " .. l) end
+  out("Other contents:")
+  for _, l in ipairs(other) do out("  " .. l) end
+  out("")
+  if not yes then
+    if not interactive() then
+      die("refusing to trust without confirmation.\n"
+        .. "  Review the summary above, then re-run with --yes.")
+    end
+    local answer = (prompt_line("Trust this working copy? [y/N]") or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then die("aborted — the working copy stays untrusted") end
+  end
+  local sok, serr = trust.sign_file(path, "user", content)
+  if not sok then die("could not sign " .. path .. ": " .. tostring(serr)) end
+  out("TRUSTED: .nvim/loomworks.user.json (signed for this machine)")
+  cache_note()
+  return 0
+end
+
+--- `lw nuke [-y]` — reset the build cache: delete `.nvim/build/`, the cache
+--- and the health cache (spec §17.4). The remedy for a cache this machine did
+--- not write; destructive, so it confirms (and `-y` is mandatory when
+--- non-interactive, like `lw reset`).
+--- @param root string
+--- @param args string[]
+--- @return integer
+function M.cmd_nuke(root, args)
+  local yes = false
+  for i = 2, #args do
+    local v = args[i]
+    if v == "-y" or v == "--yes" then yes = true
+    else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]") end
+  end
+  local targets = {
+    root .. "/.nvim/build/",
+    require("loomworks.cache").filepath(root),
+    root .. "/.nvim/loomworks.health.json",
+  }
+  out("Will delete (build state only; your configuration is kept):")
+  for _, p in ipairs(targets) do out("  " .. p) end
+  if not yes then
+    if not interactive() then
+      die("refusing to delete build state without confirmation.\n  Re-run with -y.")
+    end
+    local answer = (prompt_line("Reset the build cache? [y/N]") or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+  end
+  local core = require("loomworks")._core()
+  local errors = {}
+  local saved_notify = core._deps.notify
+  core._deps.notify = function(msg, level)
+    if level and level >= vim.log.levels.ERROR then errors[#errors + 1] = tostring(msg) end
+  end
+  local done = core:_nuke_files(root)
+  core._deps.notify = saved_notify
+  if not done or #errors > 0 then
+    die("nuke failed" .. (#errors > 0 and (":\n  " .. table.concat(errors, "\n  ")) or ""))
+  end
+  out("NUKED: build state removed — the next build reconfigures from scratch.")
   return 0
 end
 
@@ -6192,10 +6352,24 @@ function M._plan_pull(opts)
     return nil, "nothing to pull from " .. source_root ..
       " (no .nvim/loomworks.user.json)"
   end
-  local src_data = user.load(source_root)
+  -- Only a working copy signed by this machine is read, on either side
+  -- (spec §16.25, §17.5): a pull must never turn an untrusted file into a
+  -- signed one.
+  local function untrusted(root_dir, status)
+    return "the working copy in " .. root_dir .. " is " ..
+      (status == "unsigned" and "not signed by this machine" or "modified outside loomworks") ..
+      " — review it there first:  lw trust   (run in " .. root_dir .. ")"
+  end
+  local src_data, src_status = user.load(source_root)
+  if not src_data then return nil, untrusted(source_root, src_status) end
 
   local tgt_user_path = user.filepath(target_root)
-  local tgt_data = uv.fs_stat(tgt_user_path) and user.load(target_root) or {}
+  local tgt_data = {}
+  if uv.fs_stat(tgt_user_path) then
+    local d, st = user.load(target_root)
+    if not d then return nil, untrusted(target_root, st) end
+    tgt_data = d
+  end
 
   local merged = M._pull_merge(tgt_data, src_data)
 
@@ -7077,6 +7251,50 @@ Reset is exclusive (like clean/delete): it holds each build directory's lock
 so it cannot race a concurrent build. A build directory still
 referenced by another profile not being reset is kept on disk (its state cleared
 only for the reset). Non-zero exit on any failure.]],
+  trust = [[lw trust [--yes] [--discard]
+
+Workspace trust. A repository can come from anywhere, so loomworks decides what
+it may run by where a setting comes from:
+
+  loomworks.json (committed, shared)   never names programs. Environment
+      variables, launch commands/arguments/working directories, deploy
+      destinations outside the workspace, and module program settings (e.g. a
+      clangd/qmlls binary) found there are IGNORED, with a diagnostic in
+      `lw status`. They stay in the file (publishing keeps them); to use one,
+      copy it into your working copy.
+  .nvim/loomworks.user.json (yours)    honored — when it is signed by this
+      machine. Every lw/editor write signs it with a per-machine key
+      (<data dir>/trust.key, never in a repository). A file written by hand,
+      by an earlier lw, or copied from elsewhere is REFUSED until you review it.
+  .nvim/loomworks.cache.json            build state; used only when signed here.
+      An unsigned one (earlier lw) is discarded and rebuilt automatically; one
+      signed elsewhere refuses the load until `lw nuke`.
+  Tool paths                            always from detection on this machine,
+      never from the cache.
+
+Opening a workspace (`lw status`, the editor) never runs anything the shared or
+an unsigned file names. `lw build` / `lw test` / `lw run` still run the
+project's own build system (cmake/meson/npm and the build files they read) —
+that is what you asked for.
+
+  lw trust            show what the working copy would let loomworks run
+                      (program settings first), then ask to trust (re-sign) it
+  lw trust --yes      trust without asking (non-interactive: required)
+  lw trust --discard  delete the working copy instead (asks; --yes skips)
+
+Editing .nvim/loomworks.user.json by hand is fine: run `lw trust` afterwards.
+Environment variables that hijack loaders or interpreters (LD_PRELOAD,
+DYLD_*, NODE_OPTIONS, PYTHONPATH, ComSpec, PATHEXT, GIT_SSH_COMMAND, …) are
+refused from every configuration, even a trusted one.]],
+  nuke = [[lw nuke [-y]
+
+Delete the workspace's build state: .nvim/build/, .nvim/loomworks.cache.json
+and .nvim/loomworks.health.json. Your configuration (loomworks.json and the
+working copy) is kept; the next `lw build` reconfigures from scratch.
+
+This is the remedy when the build cache was not written on this machine (it is
+refused — see `lw help trust`). Confirms first; -y skips the prompt and is
+required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
   unlock = [[lw unlock <profile> | --all
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
@@ -8096,6 +8314,8 @@ Usage: lw [command] [args]
   build [profile]   build a profile (configure if needed, then build)
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
+  trust             review + re-sign the working copy (see `lw help trust`)
+  nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
   run [target]      build, then execute a target on the active profile
   run <profile> <target>  same, on a named profile
@@ -8293,6 +8513,15 @@ local function main()
 
   -- Workspace commands.
   if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
+
+  -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
+  -- load the workspace (it would be refused).
+  if command == "trust" then
+    finish(M.cmd_trust(root, a))
+  end
+  if command == "nuke" then
+    finish(M.cmd_nuke(root, a))
+  end
 
   -- `profile` manages its own workspace load (select skips tool detection).
   if command == "profile" then

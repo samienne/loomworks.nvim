@@ -48,7 +48,7 @@ end
 local function make_ws(config_overrides, user_overrides)
     local config_json = h.make_config_json(config_overrides)
     local user_json = user_overrides and h.make_user_json(user_overrides) or nil
-    local data = workspace.assemble("/root", config_json, user_json, nil)
+    local data = workspace.assemble("/root", config_json, user_json, nil, { trust = require("tests.helpers").trust_all })
     assert(data, "assemble failed")
 
     local mock_core = {

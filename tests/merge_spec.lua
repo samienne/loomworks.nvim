@@ -25,7 +25,8 @@ local function make_ws(config_overrides, user_overrides, cache_overrides)
         "/root",
         h.make_config_json(merged),
         user_overrides and h.make_user_json(user_overrides) or nil,
-        cache_overrides and h.make_cache_json(cache_overrides) or nil
+        cache_overrides and h.make_cache_json(cache_overrides) or nil,
+        { trust = h.trust_all }
     )
     assert(ws, err)
     return ws
