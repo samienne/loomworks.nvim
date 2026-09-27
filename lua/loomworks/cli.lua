@@ -1719,6 +1719,8 @@ ensure_unit_targets = function(ws, unit)
   local mod = project and project._module and project._module.impl
   local build_dir = unit.build_dir and unit:build_dir()
   if not (mod and mod.parse_targets and build_dir) then return end
+  -- Only a build dir this machine configured (signed cache, spec §17.8).
+  if unit.configured_here and not unit:configured_here() then return end
   -- config_name is the module build type (e.g. "Debug"); matters for
   -- multi-config generators, ignored by single-config ones.
   local cfg = unit.configuration and unit:configuration()
@@ -5020,13 +5022,23 @@ local function check_exit_code(check, diags)
 end
 M._check_exit_code = check_exit_code
 
+--- The git argv prefix every lw git call uses (spec §17.8): repository-local
+--- configuration must not be able to run commands on lw's behalf, so the
+--- file-system monitor hook and the hooks directory are disabled on every
+--- invocation (`git` itself is resolved to an absolute path by exe.system).
+--- @return string[]
+local function git_base_cmd()
+  return { "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" }
+end
+M._git_base_cmd = git_base_cmd
+
 --- Best-effort, time-bounded git query for the no-workspace status hint. Never
 --- throws and never hangs status: a missing binary, non-zero exit, or a git
 --- that runs long past the timeout all collapse to nil. Returns trimmed stdout
 --- only on a clean (code 0) run. `cwd` nil runs git unanchored (for `--version`).
 local GIT_HINT_TIMEOUT_MS = 1500
 local function git_query(cwd, args)
-  local cmd = { "git" }
+  local cmd = git_base_cmd()
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
@@ -5059,7 +5071,7 @@ local GIT_MUTATE_TIMEOUT_MS = 60000
 --- @param timeout_ms? number
 --- @return table|nil result
 local function git_exec(cwd, args, timeout_ms)
-  local cmd = { "git" }
+  local cmd = git_base_cmd()
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil

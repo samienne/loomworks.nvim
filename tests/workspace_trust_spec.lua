@@ -460,5 +460,163 @@ describe("program-bearing fields only from the signed working copy (§17.6)", fu
     end)
 end)
 
+-- ===========================================================================
+describe("executable paths come from detection (§17.7)", function()
+    local real_modules = require("loomworks.modules")
+    local DETECTED = { compiler_id = "gcc-13", generator = "Ninja", cmake_path = "C:/detected/cmake.exe" }
+    local CACHED = { compiler_id = "gcc-13", generator = "Ninja", cmake_path = "C:/benign/cached/cmake.exe" }
+
+    local function load(detect)
+        local deps = h.make_test_deps({
+            ["loomworks.json"] = h.make_config_json({
+                projects = { App = { cmake = vim.empty_dict() } },
+                configuration_sets = { debug = { App = "Debug" } },
+            }),
+            ["loomworks.user.json"] = h.make_user_json({
+                active_profile = "debug:ninja-gcc-13",
+                profiles = { debug = { configuration_set = "debug",
+                    tools = { cmake = { key = "ninja-gcc-13" } } } },
+            }),
+            ["loomworks.cache.json"] = h.make_cache_json({ build_dirs = {
+                ["build/App/ninja-gcc-13/Debug"] = {
+                    project_key = "App", config_key = "Debug:ninja-gcc-13", type = "cmake",
+                    variant = "Debug", state = "built", tool_key = "ninja-gcc-13", tool_data = CACHED,
+                    build_dir = "/root/.nvim/build/App/ninja-gcc-13/Debug",
+                },
+            } }),
+        }, {
+            modules = real_modules,
+            detect_tools_async = function(_, _, cb)
+                cb(detect and { cmake = { { tool_key = "ninja-gcc-13", tool_data = DETECTED,
+                    tool_label = "gcc" } } } or {})
+            end,
+        })
+        local core = Core.new(deps)
+        core:setup({ root = "/root" })
+        return assert(core:get_workspace())
+    end
+
+    it("detection wins over cached tool data for the same key", function()
+        local ws = load(true)
+        local tool = ws:find_module("cmake"):find_tool("ninja-gcc-13")
+        assert.is_true(tool._detected)
+        assert.equals("C:/detected/cmake.exe", tool.data.cmake_path)
+    end)
+
+    it("a key only the cache knows is not available: nothing runs with its data", function()
+        local ws = load(false)
+        local tool = ws:find_module("cmake"):find_tool("ninja-gcc-13")
+        assert.is_false(tool._detected)
+        assert.is_nil(tool:exec_data())
+        local profile = ws._profiles[1]
+        local ok, reasons = profile:is_valid()
+        assert.is_false(ok)
+        assert.matches("not detected on this machine", table.concat(reasons, "\n"), 1, true)
+        local unit = profile:projects()[1]._config_unit
+        local ov = require("loomworks.overseer")
+        assert.is_nil(ov._exec_tool_data(unit))
+        local notify = vim.notify
+        vim.notify = function() end
+        local spec = ov.build_spec_for(unit)
+        vim.notify = notify
+        assert.is_nil(spec, "no build spec from cached tool data")
+    end)
+end)
+
+-- ===========================================================================
+describe("environment denylist (§17.9)", function()
+    local policy = require("loomworks.env_policy")
+
+    it("matches loader / interpreter hijack variables case-insensitively", function()
+        for _, n in ipairs({ "LD_PRELOAD", "ld_preload", "LD_LIBRARY_PATH", "LD_AUDIT",
+                "DYLD_INSERT_LIBRARIES", "NODE_OPTIONS", "npm_config_script_shell",
+                "PYTHONPATH", "PythonHome", "PYTHONSTARTUP", "BASH_ENV", "ENV", "ComSpec",
+                "PATHEXT", "GIT_SSH_COMMAND", "GIT_CONFIG_COUNT", "CMAKE_TOOLCHAIN_FILE",
+                "CCACHE_PREFIX" }) do
+            assert.is_true(policy.is_denied(n), n)
+        end
+        for _, n in ipairs({ "PATH", "Path", "SCCACHE_DIR", "CFLAGS", "ENVIRONMENT", "MY_ENV" }) do
+            assert.is_false(policy.is_denied(n), n)
+        end
+    end)
+
+    it("drops denied names from every composed layer", function()
+        local ce = require("loomworks.config_env")
+        local out = ce.compose({ TOOL = "t", LD_PRELOAD = "x.so" },
+            { SCCACHE_DIR = "d", NODE_OPTIONS = "--require=x" }, false)
+        assert.same({ TOOL = "t", SCCACHE_DIR = "d" }, out)
+    end)
+
+    it("a configuration env drops them at resolution, with a diagnostic", function()
+        local Configuration = require("loomworks.configuration")
+        local cfg = setmetatable({ name = "Debug", env = { PYTHONPATH = "C:/benign", KEEP = "1" },
+            _inherits = {} }, Configuration)
+        local env = require("loomworks.config_env").resolve(nil, cfg, nil, nil, "/root")
+        assert.same({ KEEP = "1" }, env)
+    end)
+
+    it("a compiler-cache policy never names a program: an unknown value resolves nothing", function()
+        local cc = require("loomworks.compiler_cache")
+        local looked_up = {}
+        local lookup = function(name) looked_up[#looked_up + 1] = name; return "C:/found/" .. name end
+        assert.is_nil(cc.resolve("C:/benign/launcher.exe", "gcc", lookup))
+        assert.is_nil(cc.resolve("benign-launcher", "gcc", lookup))
+        assert.same({}, looked_up)
+        assert.same({ tool = "ccache", path = "C:/found/ccache" }, cc.resolve("ccache", "gcc", lookup))
+    end)
+
+    it("edit paths refuse to set one", function()
+        local ws = h.make_mock_workspace()
+        local Project = require("loomworks.project")
+        local ok, err = Project.save_launch_config(setmetatable({ key = "App", _workspace = ws }, Project),
+            "run", { command = "app", env = { NODE_OPTIONS = "x" } })
+        assert.is_false(ok)
+        assert.matches("NODE_OPTIONS cannot be set", err, 1, true)
+    end)
+end)
+
+-- ===========================================================================
+describe("passive scans only on build dirs configured here (§17.8)", function()
+    local ConfigUnit = require("loomworks.config_unit")
+
+    it("test discovery never builds a test unit for a build dir this machine did not configure", function()
+        local created = 0
+        local unit = setmetatable({
+            _project = { _module = { impl = { create_test_unit = function()
+                created = created + 1
+                return { discover = function() error("must not run discovery") end }
+            end } } },
+            state_value = nil,
+        }, ConfigUnit)
+        assert.same({}, unit:test_units())
+        assert.is_nil(unit:discover_tests())
+        assert.equals(0, created)
+        unit.state_value = "built"
+        assert.equals(1, #unit:test_units())
+    end)
+
+    it("the background target scan skips unconfigured build dirs", function()
+        local scanned = {}
+        local mod = { parse_targets_async = function(ctx) scanned[#scanned + 1] = ctx.build_dir end }
+        local ws = setmetatable({
+            root = "/root", _config_units = {}, _active_profile = nil,
+            _core = { _deps = { scan_targets = true, events = { emit = function() end } } },
+        }, { __index = require("loomworks.workspace").Workspace })
+        local proj = { key = "App", path = "App", _module = { impl = mod } }
+        ws._config_units = {
+            setmetatable({ _project = proj, build_dir_value = "/root/.nvim/build/a" }, ConfigUnit),
+        }
+        pcall(ws._scan_targets_async, ws)
+        assert.same({}, scanned)
+    end)
+end)
+
+-- ===========================================================================
+describe("version-control queries disable repository hooks (§17.8)", function()
+    it("every git call carries core.fsmonitor/core.hooksPath overrides", function()
+        local cmd = require("loomworks.cli")._git_base_cmd()
+        assert.same({ "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" }, cmd)
+    end)
+end)
 
 end)
