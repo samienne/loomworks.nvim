@@ -488,7 +488,7 @@ describe("executable paths come from detection (§17.7)", function()
             modules = real_modules,
             detect_tools_async = function(_, _, cb)
                 cb(detect and { cmake = { { tool_key = "ninja-gcc-13", tool_data = DETECTED,
-                    tool_label = "gcc" } } } or {})
+                    tool_label = "gcc" } } } or { cmake = {} }) -- scanned, nothing found
             end,
         })
         local core = Core.new(deps)
@@ -501,6 +501,18 @@ describe("executable paths come from detection (§17.7)", function()
         local tool = ws:find_module("cmake"):find_tool("ninja-gcc-13")
         assert.is_true(tool._detected)
         assert.equals("C:/detected/cmake.exe", tool.data.cmake_path)
+    end)
+
+    it("a host that detected nothing for the module does not call the tool 'not detected'", function()
+        -- `lw status` with no machine tool cache serves no tool list at all.
+        local ws = load(false)
+        ws._tools_by_type = {}
+        local ok, reasons = ws._profiles[1]:is_valid()
+        assert.is_nil(table.concat(reasons or {}, "\n"):find("not detected", 1, true))
+        -- ...yet running is still refused.
+        local unit = ws._profiles[1]:projects()[1]._config_unit
+        assert.is_nil(require("loomworks.overseer")._exec_tool_data(unit))
+        local _ = ok
     end)
 
     it("a key only the cache knows is not available: nothing runs with its data", function()
