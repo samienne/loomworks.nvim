@@ -1292,13 +1292,19 @@ function Profile:is_valid()
     end
 
     -- A tool known only from the cache is not available (spec §17.7): its
-    -- recorded data is never run. Judged once detection has finished.
+    -- recorded data is never run. Judged once detection has finished AND
+    -- produced results for the tool's module type — a host that served no
+    -- tool list at all (a CLI read with no machine tool cache) did not
+    -- detect anything, so it cannot say "not detected". Running is gated
+    -- regardless (overseer refuses an undetected keyed tool).
     local ws = self._workspace
     if ws and ws._tool_state == "scanned" then
         local undetected, seen_t = {}, {}
         for _, pp in ipairs(self:projects()) do
             local tool = pp.tool_object and pp:tool_object() or nil
-            if tool and tool.key and tool._detected == false and not seen_t[tool] then
+            local scanned_type = tool and type(ws._tools_by_type) == "table"
+                and ws._tools_by_type[tool.mod_type] ~= nil
+            if tool and tool.key and tool._detected == false and scanned_type and not seen_t[tool] then
                 seen_t[tool] = true
                 undetected[#undetected + 1] = tool.key
             end
