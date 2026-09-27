@@ -51,6 +51,15 @@ describe("update-available hint in a pinned context", function()
     assert.is_nil(out[1].remedy:find("run `lw self-update`", 1, true))
   end)
 
+  it("a bundle in the machine-local pinned cache suggests `lw update`", function()
+    _G.__loomworks_luaroot = "C:/Users/u/AppData/Local/loomworks/pinned/"
+        .. string.rep("ab", 32) .. "/lua-0.1.0"
+    suggestions._host_facts = function() return nil end
+    local out = suggestions.update_check_provider({})
+    assert.equals(1, #out)
+    assert.matches("run `lw update`", out[1].remedy, 1, true)
+  end)
+
   it("a pinned host (LOOMWORKS_PINNED) suggests `lw update` too", function()
     _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
     suggestions._host_facts = function()

@@ -168,6 +168,27 @@ printf 'local M = {}\nM.RELEASE_VERSION = "shadowed"\nM.HOST_VERSION = 1\nreturn
 out="$("$T/shadow/$exe_name" version 2>&1)"; echo "$out"
 case "$out" in *"host: $ver "*) ok "fused boot.verify wins over lua/ beside the exe" ;; *) bad "boot module shadowed: $out" ;; esac
 
+# A pinned host provisions its bundle into the machine-local pinned cache
+# (spec §16.22) and never loads one a repository ships under .nvim/cache.
+echo "=== pinned context: a repo-shipped .nvim/cache bundle is never loaded ==="
+mp() { if [ "$os" = windows ]; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+export LOOMWORKS_RELEASE_URL="$(mp "$T/mirror")"
+pr="$T/pinrepo"
+mkdir -p "$pr/.nvim/cache/lua-$ver/loomworks" "$T/pinhost"
+cp "$T/new-copy" "$T/pinhost/$exe_name"
+bsha="$(sha_of "$T/mirror/loomworks-lua-$ver.zip")"
+printf 'version = %s\nsha256_loomworks-lua-%s.zip = %s\n' "$ver" "$ver" "$bsha" > "$pr/lw.pin"
+marker="$T/PLANTED_BUNDLE_RAN"
+for f in shim.lua cli.lua; do
+  printf 'local f = io.open([[%s]], "w") f:write("x") f:close()\nreturn {}\n' "$(mp "$marker")" \
+    > "$pr/.nvim/cache/lua-$ver/loomworks/$f"
+done
+out="$(cd "$pr" && LOOMWORKS_PINNED="$ver" LW_ROOT="$(mp "$pr")" "$T/pinhost/$exe_name" status 2>&1)"; echo "$out" | head -3
+[ ! -e "$marker" ] && ok "repo-local planted bundle was not executed" || bad "planted .nvim/cache bundle ran"
+[ -f "$T/home/loomworks/pinned/$bsha/lua-$ver/loomworks/_release_marker.lua" ] \
+  && ok "pinned bundle provisioned machine-local (<data>/pinned/<sha256>/lua-<ver>)" \
+  || bad "no machine-local pinned bundle"
+
 echo
 echo "host self-update e2e: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

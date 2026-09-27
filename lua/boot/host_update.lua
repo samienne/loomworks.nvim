@@ -108,6 +108,9 @@ function M.decide(o)
   if exe:find("/.nvim/cache/", 1, true) then
     return "skip", "running from a repo-local pinned launcher cache (lw.pin owns this host)"
   end
+  if exe:find("/loomworks/pinned/", 1, true) then
+    return "skip", "running from the pinned-release cache (lw.pin owns this host)"
+  end
   local dev_reason = M.dev_build(o)
   if dev_reason then return "skip", dev_reason end
   if o.dev then return "skip", "running a development source" end

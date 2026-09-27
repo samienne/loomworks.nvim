@@ -1049,9 +1049,12 @@ git add lw.sh lw.cmd lw.pin  # commit the three files
 | `lw.cmd` | native Windows launcher (cmd/PowerShell) |
 
 The hashes come from that release's **signed** `SHA256SUMS` (its signature is
-verified against the key built into `lw` before any hash is trusted). Downloaded
-binaries and the provisioned bundle live under `.nvim/cache/`, which `bootstrap`
-appends to `.gitignore` idempotently.
+verified against the key built into `lw` before any hash is trusted). The
+launcher caches the host binary it downloads under `.nvim/cache/`, which
+`bootstrap` appends to `.gitignore` idempotently; the pinned bundle that host
+provisions lives in your per-user data directory (`<data>/loomworks/pinned/`),
+never in the repository — a cloned repository could otherwise ship a
+pre-"extracted" bundle.
 
 Then anyone with a checkout runs the launcher — no global `lw` needed:
 
@@ -1063,8 +1066,8 @@ lw.cmd build Debug:ninja-gcc-14       # Windows cmd/PowerShell
 
 The launcher selects the host binary for the platform, downloads it from the
 official release (**verifying its sha256 against the pin — always**), caches it
-under `.nvim/cache/`, and execs it; that host then provisions the pinned bundle,
-also into `.nvim/cache/`. So a clean checkout goes from `./lw.sh build` to
+under `.nvim/cache/`, and execs it; that host then provisions (downloads and
+verifies) the pinned bundle into the per-user pinned cache. So a clean checkout goes from `./lw.sh build` to
 building, **reproducibly** — host and bundle are the exact pinned release, and
 the machine-global install is left untouched.
 

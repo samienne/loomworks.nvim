@@ -1226,20 +1226,31 @@ with no prior install (spec §16.21–16.24). Layers:
   live here as the single source of truth), and append `.nvim/cache/` to
   `.gitignore` idempotently (append-only — never rewrites existing content).
 - **`boot/update.lua`** — `ensure_host_binary` (fetch + pinned-hash-verify a
-  host binary into `.nvim/cache/`) and `ensure_version` (fetch + verify + extract
-  the bundle into **repo-local** `.nvim/cache/lua-<ver>/`). Both reuse
+  host binary; the redirect caches it at `pinned_binary_path` =
+  `<data>/pinned/lw-<ver>-<asset>`, re-verified on every use) and
+  `ensure_version` (fetch + verify + extract the bundle into the **machine-local**
+  `pinned_bundle_dir` = `<data>/pinned/<sha256>/lua-<ver>/`, keyed by the pinned
+  bundle hash). Nothing the host executes is read from the repository: a clone
+  can ship files under its own `.nvim/cache/`, so a repo-local "already
+  extracted" bundle or cached binary is never trusted by presence. Both reuse
   `download` + `verify.verify_file_sha256` + `extract_zip` + `rename_with_retry`;
   the pinned committed hash is the trust anchor (no manifest needed at runtime).
+  `check_legacy_pinned_bundle` is the redirect's guard for pinned hosts that
+  predate machine-local provisioning (they still load
+  `<pin root>/.nvim/cache/lua-<ver>/` when present): that directory must be
+  absent or byte-identical to the verified bundle, else the redirect is refused
+  (nothing in the repository is deleted).
 
 `main.lua` wires two entry points around the existing source resolution:
 
 - **Pinned context** — when the `LOOMWORKS_PINNED=<ver>` sentinel is set (by a
   launcher script or the redirect), the host provisions the pinned bundle via
-  `ensure_version` and points `luaroot` at the repo-local `lua-<ver>/`, then runs
-  normally. The sentinel also blocks any further redirect (anti-recursion).
+  `ensure_version` and points `luaroot` at the machine-local pinned
+  `lua-<ver>/`, then runs normally. The sentinel also blocks any further redirect (anti-recursion).
 - **Redirect** — a global host on a workspace op (`build`/`run`/`test`/`clean`/
   `configure`) consults `pin.decide`; on `redirect` it `ensure_host_binary`s the
-  pinned binary, sets the sentinel + `LW_ROOT`, and `uv.spawn`s it with inherited
+  pinned binary (machine-local), provisions + verifies the pinned bundle and runs
+  `check_legacy_pinned_bundle`, sets the sentinel + `LW_ROOT`, and `uv.spawn`s it with inherited
   stdio, propagating the child's exit code. `--no-pin`, `LOOMWORKS_LW`, and a dev
   source bypass; `version`/`self-update`/`install`/`bootstrap`/`update` are host
   commands handled before the redirect, so they never redirect.

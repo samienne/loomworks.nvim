@@ -640,9 +640,11 @@ there.
 A repository MAY commit a **launcher and version pin** so that contributors and
 CI run a fixed, verified host without a prior global install. Three files at the
 repository root carry this: a POSIX launcher, a Windows launcher, and a **pin**.
-Downloaded host binaries and the provisioned bundle (§16.22) live under a
-machine-local cache directory that is ignored by version control, so nothing
-fetched is ever committed.
+A launcher caches the host binary it downloads under a cache directory inside
+the repository that is ignored by version control, so nothing fetched is ever
+committed. Everything the **host** provisions or caches for a pinned run — the
+pinned bundle (§16.22) and the host binary a redirect runs (§16.23) — lives in
+the **per-user data directory**, never inside the repository (§16.22).
 
 The pin declares a release **version** and, for every host binary and for the
 release bundle, the **content hash** of that artifact. It is a trivially
@@ -673,16 +675,27 @@ system Lua (§16.11), a host running in **pinned context** — launched by the r
 launcher, or re-exec'd by the redirect (§16.23) — MUST **provision** the pinned
 release's bundle before it resolves system Lua: acquire the bundle for the pinned
 version, verify it against the pinned bundle hash, and extract it to a
-**repo-local** location under the machine-local cache directory, then resolve
-system Lua from there rather than from any machine-global install. Provisioning
-is idempotent: an already-extracted, matching bundle is reused without
+**pinned-release cache in the per-user data directory**, keyed by the pinned
+version **and** the pinned bundle hash, then resolve system Lua from there rather
+than from the newest machine-global install. Provisioning is idempotent: a bundle
+the host itself extracted there after verification is reused without
 re-downloading, and a failed or partial provision leaves any prior state intact
-(§16.13). Keeping the bundle repo-local makes a pinned run reproducible — host
-and bundle are the same pinned version — and leaves the machine-global
-installation (§16.13) untouched. The trust anchor for provisioning is the
-**committed pin hash**: the pin reached the runner through the repository, a
-trusted channel, consistent with §16.15/§16.20 anchoring integrity to something
-other than the served artifact.
+(§16.13). Pinning keeps a run reproducible — host and bundle are the same pinned
+version — and leaves the machine-global installation (§16.13) untouched. The
+trust anchor for provisioning is the **committed pin hash** checked against an
+artifact the host fetched from the fixed origin (§16.23), consistent with
+§16.15/§16.20 anchoring integrity to something other than the served artifact.
+
+A pinned host MUST NOT execute or load anything it did not fetch and verify
+itself: in particular it never trusts a bundle or binary found **inside the
+repository** (such as an "already extracted" bundle under the repository's cache
+directory) because it exists — a cloned repository can ship arbitrary files
+there. That is why the provisioned artifacts live outside the repository. The
+repository-local location used by earlier hosts is never read; when a redirect
+(§16.23) targets a pinned release whose host still reads that location, the
+redirecting host first verifies that the location is absent or byte-for-byte
+identical to the bundle it verified, and otherwise refuses the redirect (it
+never deletes repository content).
 
 A launcher never downloads or extracts the bundle itself — it fetches and execs
 only the host binary, and the exec'd host self-provisions the bundle as above,
@@ -730,6 +743,10 @@ The following invariants are normative:
   repository-provided launcher script. It resolves the pin **declaratively** and
   runs the official binary it fetched and verified itself; auto-running a
   repo-provided script would be an arbitrary-code-execution vector.
+- **Nothing executed from the repository tree.** The host binary a redirect runs
+  and the bundle it loads are the artifacts the host fetched and verified into
+  the per-user pinned cache (§16.22) — never a same-named file shipped inside
+  the repository, whatever its hash.
 - **Bounded residual risk.** A malicious pin can at worst force acquisition of an
   authentic but **older / downgraded** official release; it cannot introduce
   unofficial code, because every fetched artifact must match a hash the host

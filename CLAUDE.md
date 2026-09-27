@@ -409,7 +409,9 @@ These are implementation-specific details not covered by the spec or architectur
   selection via `HOST_ASSETS`, `decide{}` redirect action); `boot/bootstrap.lua`
   authors the pin from a release's SIGNED `SHA256SUMS` and holds the launcher
   templates; `boot/update.lua` adds `ensure_host_binary` + `ensure_version`
-  (bundle → repo-local `.nvim/cache/lua-<ver>/`). `main.lua` provisions on the
+  (bundle → machine-local `<data>/pinned/<sha256>/lua-<ver>/`, never a
+  repo-local dir — a clone can ship one; the redirect also refuses when a
+  legacy `.nvim/cache/lua-<ver>/` differs from the verified bundle). `main.lua` provisions on the
   `LOOMWORKS_PINNED` sentinel and redirects workspace ops (build/run/test/clean/
   configure) to the pinned release. Invariants: fixed origin (user-overridable
   only via `LOOMWORKS_RELEASE_URL`), version+hash pin never a URL, mandatory

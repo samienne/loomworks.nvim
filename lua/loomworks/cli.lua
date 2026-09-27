@@ -7656,8 +7656,9 @@ to this host's release version; pass --version to pin a different release.
 
 Run the launcher with `./lw.sh <cmd>` (or lw.cmd on Windows): it downloads the
 pinned host binary into .nvim/cache/, verifies its sha256 against the pin, and
-runs it — the host then provisions the pinned bundle, also repo-local. So a
-clean checkout goes from `./lw.sh build` to building, reproducibly.
+runs it — the host then provisions (downloads + verifies) the pinned bundle into
+your per-user data dir, never into the repository. So a clean checkout goes from
+`./lw.sh build` to building, reproducibly.
 
 Proxies: the launcher honors HTTPS_PROXY/HTTP_PROXY. `--insecure` (or
 LOOMWORKS_INSECURE=1) relaxes TLS for an intercepting proxy — safe only because

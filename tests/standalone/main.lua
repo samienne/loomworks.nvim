@@ -683,16 +683,18 @@ do
     "https://example.com/mirror", "custom http mirror stays flat")
 end
 
-print("boot.update — ensure_version (repo-local bundle, flat mirror)")
+print("boot.update — ensure_version (machine-local pinned bundle, flat mirror)")
 do
   local sb = root .. "/tests/.tmp-ensure"; paths.rm_rf(sb); paths.mkdirp(sb)
   local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
   local repo = sb .. "/repo"; paths.mkdirp(repo)
+  local data = (sb .. "/data"):gsub("\\", "/")
+  uv.os_setenv("LOOMWORKS_DATA_DIR", data)
   local ver = "7.7.7-test"
   local bundle = "loomworks-lua-" .. ver .. ".zip"
   do
     local w = miniz.new_writer()
-    w:add("loomworks/cli.lua", "return {}\n")
+    w:add("loomworks/cli.lua", "return 'verified'")
     local f = assert(io.open(mirror .. "/" .. bundle, "wb")); f:write(w:finalize()); f:close()
   end
   local bundle_sha = verify.sha256_hex(readfile(mirror .. "/" .. bundle))
@@ -700,10 +702,42 @@ do
 
   eq(update.versioned_base(ver), mirror, "versioned_base(mirror) is flat")
 
+  -- A repository-shipped "already provisioned" bundle (the old repo-local
+  -- location) must never be trusted because it exists.
+  paths.mkdirp(repo .. "/.nvim/cache/lua-" .. ver .. "/loomworks")
+  do
+    local f = assert(io.open(repo .. "/.nvim/cache/lua-" .. ver .. "/loomworks/cli.lua", "wb"))
+    f:write("return 'planted'"); f:close()
+  end
+
   local dir, err = update.ensure_version(ver, { root = repo, bundle_sha256 = bundle_sha })
   ok(dir ~= nil, "ensure_version provisions" .. (err and (" — " .. err) or ""))
-  eq(dir, repo .. "/.nvim/cache/lua-" .. ver, "extracted to repo-local .nvim/cache/lua-<ver>")
-  ok(slurp(dir .. "/loomworks/cli.lua") ~= nil, "bundle extracted (cli.lua present)")
+  eq(dir, data .. "/pinned/" .. bundle_sha .. "/lua-" .. ver,
+    "extracted to the machine-local <data>/pinned/<sha256>/lua-<ver>")
+  ok(dir ~= nil and not dir:find(repo, 1, true), "never the repo-local .nvim/cache location")
+  eq(slurp(dir .. "/loomworks/cli.lua"), "return 'verified'", "the verified bundle's content, not a planted one")
+  eq(update.pinned_bundle_dir(ver, bundle_sha:upper()), dir, "pinned_bundle_dir keys by lower-case hash")
+
+  -- Redirect guard for a pinned host that predates machine-local provisioning
+  -- (it would load <pin root>/.nvim/cache/lua-<ver> when present).
+  local legacy = repo .. "/.nvim/cache/lua-" .. ver
+  ok(select(1, update.check_legacy_pinned_bundle(legacy, dir)) == nil,
+    "legacy guard: a planted repo-local bundle is refused")
+  ok(update.check_legacy_pinned_bundle(sb .. "/nope", dir) == true,
+    "legacy guard: an absent repo-local bundle is fine")
+  do
+    local f = assert(io.open(legacy .. "/loomworks/cli.lua", "wb")); f:write("return 'verified'"); f:close()
+  end
+  ok(update.check_legacy_pinned_bundle(legacy, dir) == true,
+    "legacy guard: a byte-identical repo-local bundle is fine")
+  paths.mkdirp(legacy .. "/loomworks/modules")
+  do
+    local f = assert(io.open(legacy .. "/loomworks/modules/extra.lua", "wb")); f:write("return {}"); f:close()
+  end
+  ok(select(1, update.check_legacy_pinned_bundle(legacy, dir)) == nil,
+    "legacy guard: an extra file in the repo-local bundle is refused")
+  ok(uv.fs_stat(legacy .. "/loomworks/modules/extra.lua") ~= nil,
+    "legacy guard never deletes repository files")
 
   -- idempotent: a second call reuses without touching the mirror
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror .. "/gone")
@@ -711,13 +745,20 @@ do
   eq(dir2, dir, "ensure_version idempotent (no refetch)")
   uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
 
-  -- hash mismatch aborts and leaves nothing behind
-  local repo2 = sb .. "/repo2"; paths.mkdirp(repo2)
-  local bad, berr = update.ensure_version(ver, { root = repo2, bundle_sha256 = string.rep("0", 64) })
+  -- hash mismatch aborts and leaves nothing behind; a different pinned hash
+  -- never reuses the directory provisioned for another hash
+  local other = string.rep("0", 64)
+  local bad, berr = update.ensure_version(ver, { root = repo, bundle_sha256 = other })
   ok(bad == nil and type(berr) == "string", "bundle hash mismatch aborts")
-  ok(not uv.fs_stat(repo2 .. "/.nvim/cache/lua-" .. ver .. "/loomworks/cli.lua"),
-    "a rejected provision leaves nothing behind")
+  ok(not uv.fs_stat(update.pinned_bundle_dir(ver, other)), "a rejected provision leaves nothing behind")
+  ok(select(1, update.ensure_version(ver, { bundle_sha256 = "abc" })) == nil,
+    "refuses a pinned hash that is not a sha256")
 
+  -- the redirect's host binary is cached machine-locally too
+  local bp = update.pinned_binary_path("1.2.3", "lw-linux-x86_64")
+  eq(bp, data .. "/pinned/lw-1.2.3-lw-linux-x86_64", "pinned host binary path is machine-local")
+
+  uv.os_unsetenv("LOOMWORKS_DATA_DIR")
   paths.rm_rf(sb)
 end
 

@@ -151,10 +151,12 @@ local lw_override = getenv("LOOMWORKS_LW") ~= nil
 -- launcher passes the user's cwd.
 local pin_root = pin.find_pin_root(paths.norm(getenv("LW_ROOT")) or uv.cwd())
 
--- ---- pinned context: provision the pinned bundle repo-local -----------------
+-- ---- pinned context: provision the pinned bundle ----------------------------
 -- Set by the launcher script or the redirect below. We are the pinned host;
--- load system Lua from the repo-local bundle rather than any machine-global
--- install, and never redirect again (the sentinel is our guard).
+-- load system Lua from the pinned bundle — provisioned and verified into the
+-- machine-local pinned cache (<data>/pinned/<sha256>/lua-<ver>), never read
+-- from the repository — rather than the newest global install, and never
+-- redirect again (the sentinel is our guard).
 if pinned_sentinel and not dev_opt_in then
   local p = pin_root and pin.read(pin_root)
   if p and p.version == pinned_sentinel then
@@ -375,7 +377,9 @@ do
       io.stderr:write("lw: cannot honor lw.pin: " .. tostring(aerr) .. "\n")
       exit(1)
     end
-    local bin = pin.binary_path(pin_root, p.version, asset)
+    -- Machine-local (never the repo's .nvim/cache): a clone could ship a
+    -- binary there together with a pin naming its hash (spec §16.22/§16.23).
+    local bin = require("boot.update").pinned_binary_path(p.version, asset)
     io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it…\n")
     io.stdout:flush()
     local ok, err = require("boot.update").ensure_host_binary(
@@ -383,6 +387,26 @@ do
     if not ok then
       io.stderr:write("lw: could not fetch pinned lw " .. p.version .. ": " ..
         tostring(err) .. "\n")
+      exit(1)
+    end
+    -- Provision + verify the pinned bundle here too (machine-local), then make
+    -- sure a pinned host that predates machine-local provisioning — it would
+    -- load `<pin root>/.nvim/cache/lua-<ver>/` if present — can only find the
+    -- verified bundle there, never a repository-shipped one (spec §16.23).
+    local upd = require("boot.update")
+    local vdir, verr = upd.ensure_version(p.version, {
+      bundle_sha256 = p.hashes[pin.bundle_asset(p.version)],
+    })
+    if not vdir then
+      io.stderr:write("lw: could not provision pinned bundle " .. p.version ..
+        ": " .. tostring(verr) .. "\n")
+      exit(1)
+    end
+    local okl, lerr = upd.check_legacy_pinned_bundle(
+      pin_root .. "/.nvim/cache/lua-" .. p.version, vdir)
+    if not okl then
+      io.stderr:write("lw: refusing to run pinned lw " .. p.version .. ": " ..
+        tostring(lerr) .. "\n")
       exit(1)
     end
     -- Carry the sentinel + workspace root across the exec; the child inherits
