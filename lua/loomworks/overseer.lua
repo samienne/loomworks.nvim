@@ -17,6 +17,20 @@ local NICE_ACTIONS = { configure = true, build = true, clean = true }
 --- @param build_result table builder() output with optional `cmd`
 --- @param action string|nil loomworks action tag
 --- @return table the same build_result (mutated in place)
+--- Resolve a task's program before overseer spawns it (loomworks.exe): cmd[1]
+--- becomes an absolute path found in an absolute PATH entry of the task env
+--- (else the process PATH) — never the current directory — and on Windows the
+--- task env gains `NoDefaultCurrentDirectoryInExePath=1` so a cmd.exe / .bat
+--- the task runs does not search its cwd either. Applied BEFORE the nice
+--- wrapper so the real program is the one resolved. Returns the spec, or nil +
+--- err: an unresolvable program is reported, never spawned by its bare name.
+--- @param spec table
+--- @return table|nil spec, string|nil err
+local function harden(spec)
+    return require("loomworks.exe").harden_spec(spec)
+end
+M._harden = harden
+
 local function apply_nice(build_result, action)
     if not action or not NICE_ACTIONS[action] then return build_result end
     if type(build_result.cmd) ~= "table" then return build_result end
@@ -284,6 +298,8 @@ function M.build_spec_for(unit, target_id)
         if spec.env ~= nil and type(spec.env) ~= "table" then
             spec.env = nil
         end
+        local hardened, h_err = harden(spec)
+        if not hardened then return nil, h_err end
         spec.cmd = nice.wrap_cmd(spec.cmd)
         return spec, nil
     end
@@ -603,7 +619,21 @@ local function start_one_task(overseer, task_def, on_complete)
                 end
             end
 
-            local build_result = task_def.builder()
+            local build_result, h_err = harden(task_def.builder())
+            if not build_result then
+                if lw_meta.build_dir then
+                    local ws = unit._workspace
+                    if ws then
+                        local dir = ws._core._deps.normalize(lw_meta.build_dir)
+                        ws:release_build_dir_lock(dir, lock_type_for_action(lw_meta.action))
+                        if ws._release_file_lock then ws:_release_file_lock(dir) end
+                    end
+                end
+                local msg = "loomworks: " .. (task_def.name or "task") .. ": " .. tostring(h_err)
+                vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                reject(msg)
+                return
+            end
             apply_nice(build_result, lw_meta.action)
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
@@ -1331,7 +1361,13 @@ function M.run_configuration_clean(unit, on_complete)
     local task_futures = {}
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
-            local build_result = task_def.builder()
+            local build_result, h_err = harden(task_def.builder())
+            if not build_result then
+                local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(h_err)
+                vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                reject(msg)
+                return
+            end
             apply_nice(build_result, "clean")
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
@@ -1385,7 +1421,13 @@ function M.run_profile_clean(profile, on_complete)
     local task_futures = {}
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
-            local build_result = task_def.builder()
+            local build_result, h_err = harden(task_def.builder())
+            if not build_result then
+                local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(h_err)
+                vim.schedule(function() vim.notify(msg, vim.log.levels.ERROR) end)
+                reject(msg)
+                return
+            end
             apply_nice(build_result, "clean")
             build_result.components = build_result.components or { "default" }
             build_result.name = task_def.name
@@ -1437,11 +1479,16 @@ function M.launch_run_task(opts)
     if opts.args then
         cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
     end
+    local spec, h_err = harden({ cmd = cmd, cwd = opts.cwd, env = opts.env })
+    if not spec then
+        vim.notify("loomworks: " .. tostring(opts.name) .. ": " .. tostring(h_err), vim.log.levels.ERROR)
+        return nil
+    end
     local task = overseer.new_task({
         name = opts.name,
-        cmd = cmd,
+        cmd = spec.cmd,
         cwd = opts.cwd,
-        env = opts.env,
+        env = spec.env,
         components = { "default" },
     })
     task:start()
@@ -1471,13 +1518,18 @@ function M.run_cmd_task(opts)
         cmd = vim.list_extend(vim.deepcopy(cmd), opts.args)
     end
 
+    local spec, h_err = harden({ cmd = cmd, cwd = opts.cwd, env = opts.env })
+    if not spec then
+        return future_mod.rejected(tostring(opts.name) .. ": " .. tostring(h_err))
+    end
+
     return future_mod.create(function(resolve, reject)
         local output_lines = {}
         local task = overseer.new_task({
             name = opts.name,
-            cmd = cmd,
+            cmd = spec.cmd,
             cwd = opts.cwd,
-            env = opts.env,
+            env = spec.env,
             components = { "default" },
         })
         if opts.check_output then
@@ -1549,11 +1601,16 @@ function M.run_streaming_task(opts)
     -- lines routinely >200 chars — that turns every record into two or three
     -- fragments, none of which parse. A non-terminal jobstart uses
     -- a plain stdout pipe and gives us raw newline-separated output.
+    local spec, h_err = harden({ cmd = cmd, cwd = opts.cwd, env = opts.env })
+    if not spec then
+        vim.notify("loomworks: " .. tostring(opts.name) .. ": " .. tostring(h_err), vim.log.levels.ERROR)
+        return nil
+    end
     local task = overseer.new_task({
         name = opts.name,
-        cmd = cmd,
+        cmd = spec.cmd,
         cwd = opts.cwd,
-        env = opts.env,
+        env = spec.env,
         strategy = { "jobstart", use_terminal = false },
         components = { "on_output_summarize", "on_exit_set_status" },
     })

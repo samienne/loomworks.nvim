@@ -1,6 +1,8 @@
 -- CLI step spawning (cli.lua run_spec): output handling per host. The
 -- standalone shim host streams (child inherits the terminal); the real Neovim
 -- host has no stdio option, so run_spec captures and writes the tool output.
+-- (Steps name an existing absolute program — nvim itself — because run_spec
+-- resolves argv[1] before spawning and refuses an unresolvable one.)
 
 -- Require the CLI module without running its main() entry point.
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
@@ -28,7 +30,7 @@ describe("cli step spawning", function()
         before_each(function() vim._loomworks_shim = true end)
 
         it("attaches the child to the terminal, capturing nothing", function()
-            cli._run_spec({ cmd = { "ninja" } }, "/root")
+            cli._run_spec({ cmd = { vim.v.progpath } }, "/root")
             assert.is_truthy(captured)
             assert.equals("inherit", captured.opts.stdio)
             assert.is_nil(captured.opts.text)
@@ -51,7 +53,7 @@ describe("cli step spawning", function()
             local real_stderr = io.stderr
             io.write = function(s) wrote_out[#wrote_out + 1] = s end
             io.stderr = { write = function(_, s) wrote_err[#wrote_err + 1] = s end }
-            local ok, err = pcall(cli._run_spec, { cmd = { "ninja" } }, "/root")
+            local ok, err = pcall(cli._run_spec, { cmd = { vim.v.progpath } }, "/root")
             io.write = real_write
             io.stderr = real_stderr
             assert.is_true(ok, err)
@@ -65,9 +67,9 @@ describe("cli step spawning", function()
 
     it("uses the step cwd, falling back to root", function()
         vim._loomworks_shim = true
-        cli._run_spec({ cmd = { "make" }, cwd = "/proj" }, "/root")
+        cli._run_spec({ cmd = { vim.v.progpath }, cwd = "/proj" }, "/root")
         assert.equals("/proj", captured.opts.cwd)
-        cli._run_spec({ cmd = { "make" } }, "/root")
+        cli._run_spec({ cmd = { vim.v.progpath } }, "/root")
         assert.equals("/root", captured.opts.cwd)
     end)
 
@@ -76,8 +78,8 @@ describe("cli step spawning", function()
             return { wait = function() return { code = 3, stdout = "", stderr = "" } end }
         end
         vim._loomworks_shim = true
-        assert.equals(3, cli._run_spec({ cmd = { "false" } }, "/root"))
+        assert.equals(3, cli._run_spec({ cmd = { vim.v.progpath } }, "/root"))
         vim._loomworks_shim = nil
-        assert.equals(3, cli._run_spec({ cmd = { "false" } }, "/root"))
+        assert.equals(3, cli._run_spec({ cmd = { vim.v.progpath } }, "/root"))
     end)
 end)

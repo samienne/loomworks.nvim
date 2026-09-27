@@ -299,6 +299,22 @@ describe("cpp_compilers PATH executable index", function()
         end
     end
 
+    it("skips empty and relative PATH entries (never the current directory)", function()
+        local win = cpp._build_path_index(
+            [[.;bin;;C:\tools\bin]], true,
+            lister({ ["."] = { "gcc.exe" }, ["bin"] = { "clang.exe" },
+                ["C:\\tools\\bin"] = { "cl.exe" } }))
+        assert.is_nil(win["gcc"])
+        assert.is_nil(win["clang"])
+        assert.is_truthy(win["cl"])
+        local posix = cpp._build_path_index(
+            ".:bin::/usr/bin", false,
+            lister({ ["."] = { "gcc" }, ["bin"] = { "clang" }, ["/usr/bin"] = { "cc" } }))
+        assert.is_nil(posix["gcc"])
+        assert.is_nil(posix["clang"])
+        assert.is_truthy(posix["cc"])
+    end)
+
     it("strips exe extensions and matches case-insensitively on Windows", function()
         local index = cpp._build_path_index(
             [[C:\tools\bin]], true,

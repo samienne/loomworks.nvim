@@ -168,8 +168,19 @@ function M._build_path_index(path_string, is_win, scandir_fn, opts)
     -- Append a trailing separator so the final entry is captured too.
     for raw in (path_string .. sep):gmatch("([^" .. sep .. "]*)" .. sep) do
         -- Strip surrounding quotes and trailing slashes from the dir entry.
-        local dir = raw:gsub('^"(.*)"$', "%1"):gsub("[/\\]+$", "")
-        if dir ~= "" then
+        local unquoted = raw:gsub('^"(.*)"$', "%1")
+        local dir = unquoted:gsub("[/\\]+$", "")
+        -- Only absolute entries: an empty or relative entry (".", "bin") means
+        -- "relative to the current directory", and a tool found there would be
+        -- whatever the workspace (a cloned repository) ships.
+        local absolute
+        if is_win then
+            absolute = unquoted:match("^%a:[/\\]") ~= nil
+                or unquoted:match("^[/\\][/\\][^/\\]") ~= nil
+        else
+            absolute = unquoted:sub(1, 1) == "/"
+        end
+        if dir ~= "" and absolute then
             local dir_norm = dir:gsub("\\", "/")
             local entries = scandir_fn(dir)
             if entries then

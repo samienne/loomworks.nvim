@@ -1490,5 +1490,45 @@ do
   paths.rm_rf(work)
 end
 
+print("SECURITY — bare program names never resolve from the current directory")
+do
+  -- Benign probe: a copy of a harmless system tool renamed `lwprobe`, placed
+  -- in a scratch dir that becomes the cwd.
+  local is_win = package.config:sub(1, 1) == "\\"
+  local probe = is_win and "lwprobe.exe" or "lwprobe"
+  local sb = root .. "/tests/.tmp-exe"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local src = is_win and ((os.getenv("SystemRoot") or "C:\\Windows") .. "\\System32\\whoami.exe")
+    or "/bin/true"
+  ok(uv.fs_copyfile(src, sb .. "/" .. probe) == true, "probe copied")
+  if not is_win then uv.fs_chmod(sb .. "/" .. probe, 493) end
+  local bexe = require("boot.exe")
+  local saved = uv.cwd()
+  uv.chdir(sb)
+  local sep = is_win and ";" or ":"
+  local saved_path = os.getenv("PATH")
+  local r1, e1 = bexe.resolve("lwprobe")
+  ok(r1 == nil and tostring(e1):find("not found on PATH", 1, true) ~= nil,
+    "boot.exe: a cwd-only program is not resolved")
+  eq(vim.fn.exepath("lwprobe"), "", "shim exepath: a cwd-only program is not resolved")
+  eq(vim.fn.executable("lwprobe"), 0, "shim executable: a cwd-only program is not executable")
+  local res = vim.system({ "lwprobe" }, { text = true }):wait()
+  eq(res.code, 127, "shim vim.system: a cwd-only program is not spawned")
+  ok(tostring(res.stderr):find("not found on PATH", 1, true) ~= nil, "…with a clear error")
+  -- Relative / empty PATH entries are ignored (they mean "the cwd").
+  uv.os_setenv("PATH", "." .. sep .. sep .. (saved_path or ""))
+  ok(bexe.resolve("lwprobe") == nil, "boot.exe: '.' and empty PATH entries ignored")
+  eq(vim.fn.exepath("lwprobe"), "", "shim: '.' and empty PATH entries ignored")
+  if saved_path then uv.os_setenv("PATH", saved_path) end
+  -- An absolute PATH entry does resolve, to an absolute path.
+  local p = vim.system({ "lwprobe" }, { text = true, env = { PATH = sb } }):wait()
+  eq(p.code, 0, "shim vim.system: resolved via the child's absolute PATH entry")
+  ok(bexe.resolve(sb .. "/lwprobe") ~= nil, "boot.exe: an existing absolute path is accepted")
+  -- A shell-style explicit relative path runs relative to the child's cwd only.
+  local q = vim.system({ "./lwprobe" }, { text = true, cwd = sb }):wait()
+  eq(q.code, 0, "shim vim.system: ./prog resolves against the child cwd")
+  uv.chdir(saved)
+  paths.rm_rf(sb)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

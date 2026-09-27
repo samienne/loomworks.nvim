@@ -142,25 +142,15 @@ end
 
 local IS_WINDOWS = package.config:sub(1, 1) == "\\"
 
-local function which(exe)
-  if exe:find("[/\\]") then return exe end
-  -- Platform-specific PATH search: Windows splits PATH on ";" and tries PATHEXT
-  -- extensions; POSIX splits on ":" and uses the bare name. Splitting a POSIX
-  -- PATH on ";" would collapse it into one bogus entry, so no binary resolves.
-  local sep = IS_WINDOWS and ";" or ":"
-  local exts = { "" }
-  if IS_WINDOWS then
-    local pe = os.getenv("PATHEXT")
-    if pe then for e in pe:gmatch("[^;]+") do exts[#exts + 1] = e:lower() end end
-  end
-  for dir in (os.getenv("PATH") or ""):gmatch("[^" .. sep .. "]+") do
-    for _, ext in ipairs(exts) do
-      local p = dir .. "/" .. exe .. ext
-      local st = uv.fs_stat(p)
-      if st and st.type == "file" then return (p:gsub("\\", "/")) end
-    end
-  end
-  return nil
+--- Resolve a program name to an absolute path (forward slashes), or nil + err.
+--- Delegates to loomworks.exe: absolute PATH entries only — never the current
+--- directory or an empty/relative PATH entry — with PATHEXT on Windows; a
+--- relative path containing a separator is refused. `env` (a task env dict)
+--- supplies the PATH to search when it carries one.
+local function which(exe, env, cwd)
+  local p, err = require("loomworks.exe").resolve(exe, env, cwd)
+  if not p then return nil, err end
+  return (p:gsub("\\", "/"))
 end
 
 --- Spawning a program via a FORWARD-slash path breaks cmd.exe: it reads the
@@ -212,9 +202,12 @@ function vim.fn.fnamemodify(p, m)
 end
 function vim.fn.system(cmd)
   -- Synchronous run; sets vim.v.shell_error. Accepts list or string.
+  -- A program that does not resolve (see `which`) is never spawned by name.
   local argv = cmd
   if type(cmd) == "string" then argv = { cmd } end
-  local exe = win_exe(which(argv[1]) or argv[1])
+  local resolved = which(argv[1])
+  if not resolved then vim.v.shell_error = 1; return "" end
+  local exe = win_exe(resolved)
   local args = {}
   for i = 2, #argv do args[#args + 1] = argv[i] end
   local out = {}
@@ -290,7 +283,16 @@ end
 --- console windows). `opts.hide` overrides the default hide behavior.
 function vim.system(cmd, opts, on_exit)
   opts = opts or {}
-  local exe = win_exe(which(cmd[1]) or cmd[1])
+  -- Resolve against the child's PATH when the caller sets one (as libuv
+  -- would), else ours. Unresolvable => nothing is spawned; the result reports
+  -- 127 like a failed spawn below.
+  local resolved, rerr = which(cmd[1], opts.env, opts.cwd)
+  if not resolved then
+    local res = { code = 127, stdout = "", stderr = tostring(rerr) }
+    if on_exit then on_exit(res) end
+    return { wait = function() return res end }
+  end
+  local exe = win_exe(resolved)
   local args = {}
   for i = 2, #cmd do args[#args + 1] = cmd[i] end
   local inherit = opts.stdio == "inherit"

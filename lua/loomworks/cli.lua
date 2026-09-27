@@ -822,6 +822,17 @@ M._resolve_profile = resolve_profile
 ---   stdout clean for a machine consumer — used by `lw run --print`'s build).
 --- @return integer code
 local function run_spec(step, root, to_stderr)
+  -- Resolve the program to an absolute path (never the cwd / a relative PATH
+  -- entry) and, on Windows, add NoDefaultCurrentDirectoryInExePath=1 to the
+  -- child env. An unresolvable program is reported, never spawned by name.
+  local hardened, herr = require("loomworks.exe").harden_spec({
+    cmd = step.cmd, env = step.env,
+  })
+  if not hardened then
+    io.stderr:write("lw: cannot run step: " .. tostring(herr) .. "\n")
+    return 127
+  end
+  step = { cmd = hardened.cmd, cwd = step.cwd, env = hardened.env }
   -- An empty env table would wipe PATH; inherit the parent env instead.
   local env = (step.env and next(step.env)) and step.env or nil
   if vim._loomworks_shim then
@@ -4707,7 +4718,7 @@ local function git_query(cwd, args)
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
-  local ok, proc = pcall(vim.system, cmd, { text = true }, function(r)
+  local ok, proc = pcall(require("loomworks.exe").system, cmd, { text = true }, function(r)
     res = r; done = true
   end)
   if not ok or not proc then return nil end
@@ -4740,7 +4751,7 @@ local function git_exec(cwd, args, timeout_ms)
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
-  local ok, proc = pcall(vim.system, cmd, { text = true }, function(r)
+  local ok, proc = pcall(require("loomworks.exe").system, cmd, { text = true }, function(r)
     res = r; done = true
   end)
   if not ok or not proc then return nil end

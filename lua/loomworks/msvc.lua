@@ -28,6 +28,7 @@ local VSWHERE = "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswher
 local VSWHERE_ARGS = { "-all", "-format", "json", "-products", "*" }
 
 --- Run a command synchronously, returning trimmed stdout or nil on failure.
+--- Callers pass an ABSOLUTE program path (vswhere, a found clang-cl).
 --- @param cmd string[]
 --- @return string|nil
 local function run(cmd)
@@ -157,7 +158,7 @@ function M.vcvars_env(vcvarsall, arch)
     f:write("set\r\n")
     f:close()
 
-    local res = vim.system({ "cmd.exe", "/c", bat }, { text = true }):wait()
+    local res = require("loomworks.exe").system({ "cmd.exe", "/d", "/c", bat }, { text = true }):wait()
     pcall(os.remove, bat)
     if res.code ~= 0 or not res.stdout or res.stdout == "" then
         return nil, "vcvarsall failed (exit " .. tostring(res.code) .. ")"
@@ -215,7 +216,7 @@ function M.clang_cl()
     if M._clang_cl ~= nil then
         return M._clang_cl or nil
     end
-    local path = vim.fn.exepath("clang-cl")
+    local path = require("loomworks.exe").editor_exepath("clang-cl")
     if not path or path == "" then
         M._clang_cl = false
         return nil
@@ -237,7 +238,7 @@ function M.clang_cl_async(callback)
         callback(M._clang_cl or nil)
         return
     end
-    local path = vim.fn.exepath("clang-cl")
+    local path = require("loomworks.exe").editor_exepath("clang-cl")
     if not path or path == "" then
         M._clang_cl = false
         callback(nil)

@@ -59,7 +59,10 @@ local function cmake_version(cmake_cmd)
     end
     local out
     local ok, res = pcall(function()
-        return vim.fn.system({ cmake_cmd, "--version" })
+        -- Absolute path from PATH only (never the cwd); unresolvable => no probe.
+        local exe_path = require("loomworks.exe").resolve(cmake_cmd)
+        if not exe_path then return nil end
+        return vim.fn.system({ exe_path, "--version" })
     end)
     if ok and type(res) == "string" then out = res end
     local major, minor

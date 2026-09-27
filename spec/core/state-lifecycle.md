@@ -803,6 +803,32 @@ truth).
 
 ---
 
+### 5.10 Program resolution
+
+Every process loomworks spawns names its program either by an explicit path
+or by a **bare name** (`cmake`, `git`, `npm`, a language server). A bare name
+MUST be resolved, before spawning, to an absolute path found in an **absolute**
+entry of the search path in effect for that child (the task environment's
+search path when it sets one, else the process's), honouring the platform's
+executable-extension list. The current working directory, and empty or
+relative search-path entries (which denote it), are **never** searched: the
+working directory is usually inside the workspace — possibly a cloned,
+untrusted repository — and a same-named file there must never run in place of
+the intended tool. A bare name that does not resolve is reported ("<name> not
+found on PATH") and nothing is spawned. The platform shell used to run a
+wrapper script is always the system copy (on Windows
+`%SystemRoot%\System32\cmd.exe`), never one found by search.
+
+An explicit relative path in a task's argv (e.g. a shell-module step
+`./build.sh`) is not a search: it is interpreted relative to that task's own
+working directory, exactly as the spawn would, and nowhere else.
+
+As defense in depth on Windows, the standalone host sets
+`NoDefaultCurrentDirectoryInExePath` in its own environment, and every task
+environment carries it, so that neither the process-spawning layer nor a
+command interpreter a task runs searches the current directory for bare
+command names.
+
 ## 6. UI
 
 User-facing UI behavior — the status page, highlight groups, and

@@ -251,11 +251,11 @@ sys.exit(1)
 --- rather than guess further.
 --- @return string[]|nil
 local function find_meson()
-    local p = vim.fn.exepath("meson")
+    local p = require("loomworks.exe").editor_exepath("meson")
     if p ~= "" then return { p } end
 
     for _, py in ipairs({ "python", "python3", "py" }) do
-        local pp = vim.fn.exepath(py)
+        local pp = require("loomworks.exe").editor_exepath(py)
         if pp ~= "" then
             local out = vim.fn.system({ pp, "-c", PY_FIND_MESON })
             if vim.v.shell_error == 0 then
@@ -275,7 +275,7 @@ end
 --- `{ meson_path }` shape as `find_meson`, or nil.
 --- @param callback fun(meson: string[]|nil)
 local function find_meson_async(callback)
-    local p = vim.fn.exepath("meson")
+    local p = require("loomworks.exe").editor_exepath("meson")
     if p ~= "" then
         callback({ p })
         return
@@ -289,7 +289,7 @@ local function find_meson_async(callback)
             callback(nil)
             return
         end
-        local pp = vim.fn.exepath(pys[idx])
+        local pp = require("loomworks.exe").editor_exepath(pys[idx])
         if pp == "" then
             try_next()
             return

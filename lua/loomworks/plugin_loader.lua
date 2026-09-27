@@ -19,7 +19,8 @@
 ---      module name, so a later static `require` of it yields the same table.
 ---
 --- A module already in `package.loaded` (loaded by a static `require` from our
---- own code, or seeded by a test) is returned as is.
+--- own code, or seeded by a test) is returned as is; a `package.preload`
+--- registration (in-process code, not a file) is honored like `require` would.
 
 local M = {}
 
@@ -85,6 +86,17 @@ function M.load(kind, id)
     local modname = "loomworks." .. kind .. "." .. id
     local loaded = package.loaded[modname]
     if loaded ~= nil then return loaded end
+
+    -- An in-process registration (package.preload) is code already running in
+    -- this Lua state, not a file lookup — honor it like `require` would.
+    local pre = package.preload[modname]
+    if pre then
+        local ok, mod = pcall(pre, modname)
+        if not ok then return nil, tostring(mod), "error" end
+        if mod == nil then mod = true end
+        package.loaded[modname] = mod
+        return mod
+    end
 
     local files = vim.api.nvim_get_runtime_file("lua/loomworks/" .. kind .. "/" .. id .. ".lua", false)
     local path = files and files[1]
