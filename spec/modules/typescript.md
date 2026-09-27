@@ -58,3 +58,16 @@ integration with tsconfig switching per profile.
 Module language is `"typescript"`. Default adapter is `pwa-node`.
 See [`spec/integrations/debug/pwa-node.md`](../integrations/debug/pwa-node.md)
 for the command-to-runtimeExecutable transform.
+
+## 7. Environment inventory
+
+Declares `exe:node` and `exe:npm` (build tools; search-path lookup, then
+`--version`). `exe:node` is shared with the pwa-node adapter. A project requires
+both — its tasks run through them.
+
+npm's version is read from the `package.json` (name `npm`) of the installation
+the found `npm` launches — `<dir>/node_modules/npm/` next to `npm.cmd` on
+Windows; the package containing the `bin/npm` symlink's target (or the sibling
+`../lib/node_modules/npm/`) on Unix — so a health run does not spawn npm (on
+Windows `npm.cmd` starts node twice, and npm may write a debug log per run).
+Only when no such manifest is found does the probe run `npm --version`.

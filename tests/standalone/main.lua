@@ -265,9 +265,18 @@ do
 
   -- dir_on_path
   local sep = paths.is_windows and ";" or ":"
+  -- Restore PATH afterwards: later tests spawn real programs (the vim.system
+  -- timeout test runs `sleep`), which a fake PATH would hide on Unix.
+  -- Read it via os_environ(): os_getenv() returns nil for a PATH longer than
+  -- luv's default buffer (common on Windows), which would lose it entirely.
+  local saved_path
+  for k, v in pairs(uv.os_environ()) do
+    if k:upper() == "PATH" then saved_path = v end
+  end
   uv.os_setenv("PATH", "/foo" .. sep .. "/bar/" .. sep .. "/baz")
   ok(install.dir_on_path("/bar"), "dir_on_path finds a member (trailing slash ok)")
   ok(not install.dir_on_path("/nope"), "dir_on_path rejects a non-member")
+  if saved_path then uv.os_setenv("PATH", saved_path) end
 
   -- append_path_line (idempotent)
   local rc = sb .. "/rcfile"
@@ -337,6 +346,70 @@ do
   ok(not download.is_transient(22, "The requested URL returned error: 403"),
     "403 is permanent")
   ok(not download.is_transient(0, ""), "success is not a retry candidate")
+end
+
+print("boot.download — a fetch returns when curl exits, even with other live loop handles")
+do
+  -- Inside a workspace the CLI process keeps other handles alive (timers,
+  -- watchers). The runner must pump until ITS process is done, not until the
+  -- whole loop drains — or `lw health` hangs forever after the update check.
+  -- A repeating timer stands in for them; it gives up after 5 s (so a
+  -- regression fails here instead of hanging the suite).
+  local t0, hung = uv.now(), false
+  local t = uv.new_timer()
+  t:start(100, 100, function()
+    if uv.now() - t0 > 5000 then hung = true; t:stop(); t:close() end
+  end)
+  local code, out = download._run("curl", { "--version" })
+  local elapsed = uv.now() - t0
+  if not t:is_closing() then t:stop(); t:close() end
+  uv.run("nowait")
+  ok(not hung and elapsed < 5000, "runner returned while another handle was live (" .. elapsed .. " ms)")
+  ok(code == 0 and type(out) == "string" and out:find("curl", 1, true) ~= nil,
+    "the runner still collects curl's exit code and full stdout")
+end
+
+print("boot.download — per-call curl limits (the health update check's quick profile)")
+do
+  local saved_run, saved_delay = download._run, download.RETRY_DELAY_MS
+  download.RETRY_DELAY_MS = 0
+  local calls
+  download._run = function(cmd, args)
+    calls[#calls + 1] = table.concat(args, " ")
+    return 28, "", "curl: (28) Connection timed out"
+  end
+  local function has(s, sub) return s:find(sub, 1, true) ~= nil end
+
+  calls = {}
+  local body, err = download.fetch("https://example.invalid/m.json",
+    { connect_timeout = 5, max_time = 10, attempts = 1 })
+  ok(body == nil and type(err) == "string", "a failed quick fetch returns nil, err")
+  eq(#calls, 1, "quick fetch: a single attempt (no retry)")
+  ok(has(calls[1], "--connect-timeout 5") and has(calls[1], "--max-time 10"),
+    "quick fetch passes --connect-timeout/--max-time to curl")
+
+  calls = {}
+  download.fetch("https://example.invalid/m.json")
+  eq(#calls, download.MAX_ATTEMPTS, "default fetch keeps retrying transient failures")
+  ok(not has(calls[1], "--connect-timeout") and not has(calls[1], "--max-time"),
+    "default fetch (self-update/install) adds no time limits")
+
+  -- resolve_newest_version threads opts.fetch into the one fetch it makes, on
+  -- both the stable manifest peek and the unstable releases-API query.
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "")
+  local saved_origin = update.DEFAULT_RELEASE_URL
+  update.DEFAULT_RELEASE_URL = "https://example.invalid/releases/latest/download"
+  local quick = { connect_timeout = 5, max_time = 10, attempts = 1 }
+  calls = {}
+  local v, ve = update.resolve_newest_version({ channel = "stable", fetch = quick })
+  ok(v == nil and type(ve) == "string", "stable peek failure is nil, err")
+  ok(#calls == 1 and has(calls[1], "--max-time 10"), "stable peek uses the caller's fetch limits")
+  calls = {}
+  update.resolve_newest_version({ channel = "unstable", fetch = quick })
+  ok(#calls == 1 and has(calls[1], "--connect-timeout 5"), "unstable API query uses the caller's fetch limits")
+  update.DEFAULT_RELEASE_URL = saved_origin
+
+  download._run, download.RETRY_DELAY_MS = saved_run, saved_delay
 end
 
 print("boot.modules — acquisition (hermetic, local index + archive)")
@@ -1265,6 +1338,52 @@ do
     eq(facts.dev_build, true, "bare luvi runtime is a dev build (shared predicate)")
     eq(facts.release_version, verify.RELEASE_VERSION, "release identity from boot.verify")
   end
+end
+
+print("environment inventory under the shim (§16.33)")
+do
+  -- The inventory's contributors must load in the standalone host: modules,
+  -- SDK providers and the host-neutral LSP / DAP companions (the editor-only
+  -- integration files are never required here).
+  require("loomworks.shim")
+  local saved_root = _G.__loomworks_luaroot
+  _G.__loomworks_luaroot = root .. "/lua"
+  local inv = require("loomworks.inventory")
+  inv._contributors = nil
+  local by = {}
+  for _, c in ipairs(inv.contributors()) do by[c.kind .. ":" .. c.id] = c end
+  for _, id in ipairs({ "clangd", "qmlls", "codelldb", "cppdbg", "pwa_node" }) do
+    local c = by["integration:" .. id]
+    ok(c ~= nil and c.rejected == nil, "companion " .. id .. " loads headlessly"
+      .. (c and c.rejected and (" — " .. c.rejected) or ""))
+  end
+  ok(by["module:cmake"] ~= nil and by["module:cmake"].api ~= nil, "cmake module contributes")
+  ok(package.loaded["loomworks.integrations.lsp.clangd"] == nil, "editor-only clangd integration not loaded")
+  inv._contributors = nil
+  _G.__loomworks_luaroot = saved_root
+
+  -- vim.system honours `timeout` (the per-probe ceiling): the child is killed
+  -- and reports 124, like nvim.
+  local is_win = package.config:sub(1, 1) == "\\"
+  local argv = is_win and { "ping", "-n", "30", "127.0.0.1" } or { "sleep", "30" }
+  local t0 = uv.hrtime()
+  local res = vim.system(argv, { text = true, timeout = 300 }):wait()
+  local ms = (uv.hrtime() - t0) / 1e6
+  eq(res.code, 124, "vim.system timeout kills the child (code 124)")
+
+  -- A stale loop clock (the loop idle for a while, as after a workspace load)
+  -- must not time every probe out at once.
+  local spin = os.clock() + 0.6
+  while os.clock() < spin do end
+  local results = inv.probe_all({ {
+    id = "slowish", category = "build tools", label = "slowish",
+    probe = function(_, done)
+      local t = uv.new_timer()
+      t:start(100, 0, function() t:close(); done({ status = "found" }) end)
+    end,
+  } }, inv.context(nil, { timeout_ms = 400 }))
+  eq(results[1] and results[1].status, "found", "probe timeout measured from now, not a stale loop clock")
+  ok(ms >= 250 and ms < 10000, string.format("…promptly (%.0f ms)", ms))
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

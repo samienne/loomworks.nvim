@@ -54,14 +54,28 @@ local function run(cmd, args)
   stderr:read_start(function(e, data)
     if data then err[#err + 1] = data elseif not e and not stderr:is_closing() then stderr:close() end
   end)
-  uv.run()
+  -- Pump until THIS process exited — not `uv.run()` until the loop drains: in
+  -- a CLI process with a loaded workspace other handles (timers, watchers)
+  -- stay alive, and waiting for them to end would hang the caller forever.
+  while not done do uv.run("once") end
   handle:close()
   return code, table.concat(out), table.concat(err)
 end
+-- Test seam: the process runner curl goes through.
+M._run = run
 
-local function curl_args(url, extra)
+--- curl's argv for `url`. `limits.connect_timeout` / `limits.max_time`
+--- (seconds) bound the transfer — without them curl's own defaults apply (a
+--- connect can wait minutes on a blackholed network).
+local function curl_args(url, extra, limits)
   local args = { "-fsSL" }
   if env_truthy("LOOMWORKS_INSECURE_TLS") then args[#args + 1] = "-k" end
+  if limits and limits.connect_timeout then
+    args[#args + 1] = "--connect-timeout"; args[#args + 1] = tostring(limits.connect_timeout)
+  end
+  if limits and limits.max_time then
+    args[#args + 1] = "--max-time"; args[#args + 1] = tostring(limits.max_time)
+  end
   for _, a in ipairs(extra or {}) do args[#args + 1] = a end
   args[#args + 1] = url
   return args
@@ -99,16 +113,18 @@ function M.is_transient(code, stderr)
   return not (status >= 400 and status < 500)
 end
 
---- Run curl, retrying transient failures. Returns code, stdout, stderr, or
---- nil, err when curl cannot be spawned at all (retrying that is pointless —
---- a missing curl will still be missing a second later).
-local function curl_with_retry(args)
+--- Run curl, retrying transient failures up to `attempts` times (default
+--- `M.MAX_ATTEMPTS`). Returns code, stdout, stderr, or nil, err when curl cannot
+--- be spawned at all (retrying that is pointless — a missing curl will still be
+--- missing a second later).
+local function curl_with_retry(args, attempts)
+  attempts = attempts or M.MAX_ATTEMPTS
   local code, out, err
-  for attempt = 1, M.MAX_ATTEMPTS do
-    code, out, err = run("curl", args)
+  for attempt = 1, attempts do
+    code, out, err = M._run("curl", args)
     if code == nil then return nil, out end
     if code == 0 or not M.is_transient(code, err) then break end
-    if attempt < M.MAX_ATTEMPTS and uv.sleep then
+    if attempt < attempts and uv.sleep then
       uv.sleep(M.RETRY_DELAY_MS * attempt)
     end
   end
@@ -127,11 +143,15 @@ local function header_args(opts)
 end
 
 --- Fetch `url` and return its bytes, or nil, err. `opts.headers` adds request
---- headers (ignored for a local-path/file:// read).
+--- headers (ignored for a local-path/file:// read). `opts.connect_timeout` /
+--- `opts.max_time` (seconds) and `opts.attempts` bound a quick, best-effort
+--- fetch (the health update check); without them the transfer uses curl's
+--- defaults and retries `M.MAX_ATTEMPTS` times (install / self-update).
 function M.fetch(url, opts)
   local lp = local_path(url)
   if lp then return read_file(lp) end
-  local code, out, err = curl_with_retry(curl_args(url, header_args(opts)))
+  local code, out, err = curl_with_retry(curl_args(url, header_args(opts), opts),
+    opts and opts.attempts)
   if code == nil then return nil, out end
   if code ~= 0 then
     return nil, "curl failed (" .. tostring(code) .. ") for " .. url ..

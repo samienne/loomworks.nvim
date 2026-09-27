@@ -408,14 +408,14 @@ function M.detect_tools()
             for _, inst in ipairs(installs) do
                 tools[#tools + 1] = cl_tool(meson, inst)
             end
-            -- clang-cl needs an MSVC install for the SDK/libs, so there's one
-            -- clang-cl tool per install (VS-bundled clang-cl preferred,
-            -- standalone/PATH as fallback). Several installs may fall back to
-            -- the SAME standalone driver; the per-install compiler_id — and the
-            -- vcvarsall in tools_match — keep them distinct tools (same driver,
-            -- different vcvars env).
+            -- clang-cl needs an MSVC install for the SDK/libs: one clang-cl
+            -- tool per install that bundles clang-cl, and a standalone/PATH
+            -- clang-cl paired with the newest install only
+            -- (`msvc.standalone_host`). The per-install compiler_id — and the
+            -- vcvarsall in tools_match — keep tools of the same driver version
+            -- on different installs distinct.
             for _, inst in ipairs(installs) do
-                local clang_cl = msvc.clang_cl_for(inst)
+                local clang_cl = msvc.clang_cl_for(inst, { standalone = msvc.standalone_host(inst, installs) })
                 if clang_cl then
                     tools[#tools + 1] = clang_cl_tool(meson, inst, clang_cl)
                 end
@@ -474,7 +474,7 @@ function M.detect_tools_async(callback)
                         return
                     end
                     local inst = installs[idx]
-                    msvc.clang_cl_for_async(inst, function(clang_cl)
+                    msvc.clang_cl_for_async(inst, { standalone = msvc.standalone_host(inst, installs) }, function(clang_cl)
                         if clang_cl then
                             tools[#tools + 1] = clang_cl_tool(meson, inst, clang_cl)
                         end
@@ -485,6 +485,90 @@ function M.detect_tools_async(callback)
             end)
         end)
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Environment inventory (meson §12, core §16.33)
+-- ---------------------------------------------------------------------------
+
+--- Declarations: meson (the same lookup the module runs it through — PATH,
+--- then the Python-module fallback), and the ids shared with cmake (ninja and
+--- the compiler scans), which are probed once. No spawn here.
+--- @param _ctx loomworks.InventoryContext
+--- @return loomworks.InventoryDeclaration[]
+function M.health_inventory(_ctx)
+    local inv = require("loomworks.inventory")
+    local decls = {
+        {
+            id = "exe:meson",
+            category = "build tools",
+            label = "meson",
+            probe = function(ctx, done)
+                find_meson_async(function(meson)
+                    if not meson then
+                        done({ id = "exe:meson", label = "meson", status = "missing",
+                            hint = "pip install meson" })
+                        return
+                    end
+                    ctx.run({ meson[1], "--version" }, function(res)
+                        done({ id = "exe:meson", label = "meson", status = "found",
+                            path = meson[1], version = inv.parse_version(res.stdout) })
+                    end)
+                end)
+            end,
+        },
+        -- `exe:ninja` — also declared by cmake with the same id (probed once).
+        inv.exe_declaration({
+            id = "exe:ninja", label = "ninja", names = { "ninja" },
+            hint = function(ctx)
+                return ctx.is_windows
+                    and "winget install Ninja-build.Ninja — VS's bundled ninja serves only MSVC/clang-cl tools"
+                    or "install ninja (your package manager: ninja-build)"
+            end,
+        }),
+        require("loomworks.cpp_compilers").health_declaration(),
+    }
+    local msvc_decl = require("loomworks.msvc").health_declaration()
+    if msvc_decl then decls[#decls + 1] = msvc_decl end
+    return decls
+end
+
+--- What a project needs under a tool (meson §12) — pure, from the tool data:
+--- meson, ninja (its backend) and the tool's compiler.
+--- @param ctx { project: loomworks.Project, tool: loomworks.Tool|nil, configuration: loomworks.Configuration|nil }
+--- @return { id: string, label: string, hint?: string, via?: string }[]
+function M.health_requirements(ctx)
+    local inv = require("loomworks.inventory")
+    local reqs = {
+        { id = "exe:meson", label = "meson" },
+        { id = "exe:ninja", label = "ninja" },
+    }
+    local td = ctx.tool and ctx.tool.data or nil
+    if not td then return reqs end
+    if td.vcvarsall then
+        -- An MSVC-style tool's tasks run in the vcvarsall environment
+        -- (`compose_task_env`), whose PATH appends Visual Studio's bundled
+        -- ninja: that copy satisfies the backend too.
+        reqs[2].alternatives = { require("loomworks.msvc").bundled_id("ninja", td.vcvarsall) }
+    end
+    local label = ctx.tool.label or td.compiler_display or "compiler"
+    local hint = "install it, or use another toolchain — lw help profile"
+    local family = td.compiler_family
+    if family == "msvc" and td.vcvarsall then
+        reqs[#reqs + 1] = { id = inv.path_id("msvc", td.vcvarsall), label = label,
+            via = "compilers:msvc", hint = hint }
+    elseif family == "clang-cl" and td.compiler_path then
+        reqs[#reqs + 1] = { id = inv.path_id("clang-cl", td.compiler_path), label = label,
+            via = "compilers:msvc", hint = hint }
+        if td.vcvarsall then
+            reqs[#reqs + 1] = { id = inv.path_id("msvc", td.vcvarsall), label = label,
+                via = "compilers:msvc", hint = hint }
+        end
+    elseif td.compiler_path then
+        reqs[#reqs + 1] = { id = inv.path_id("cxx", td.compiler_path), label = label,
+            via = "compilers:path", hint = hint }
+    end
+    return reqs
 end
 
 --- Clear the shared compiler detection cache so the next

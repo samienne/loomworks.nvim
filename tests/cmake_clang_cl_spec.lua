@@ -37,22 +37,41 @@ local INSTALLS = {
     },
 }
 
--- Community has a VS-bundled clang-cl (with sibling clangd); BuildTools falls
--- back to a standalone clang-cl (no clangd).
-local CC_BY_INSTALL = {
+-- VS-bundled clang-cl per install (Community has one, with sibling clangd),
+-- and a standalone clang-cl on PATH (no clangd). The stub mirrors
+-- `msvc.clang_cl_for`: bundled first, the standalone one only when the caller
+-- allows the fallback for that install.
+local BUNDLED = {
     ["C:/VS/Community"] = {
         path = "C:/VS/Community/VC/Tools/Llvm/x64/bin/clang-cl.exe",
         version = "18.1.7",
         clangd_path = "C:/VS/Community/VC/Tools/Llvm/x64/bin/clangd.exe",
     },
-    ["C:/VS/BuildTools"] = {
-        path = "C:/LLVM/bin/clang-cl.exe",
-        version = "17.0.6",
-        clangd_path = nil,
-    },
+}
+local STANDALONE = {
+    path = "C:/LLVM/bin/clang-cl.exe",
+    version = "17.0.6",
+    clangd_path = nil,
+}
+local function stub_clang_cl_for(bundled)
+    return function(inst, opts)
+        return bundled[inst.install_path] or (opts and opts.standalone and STANDALONE) or nil
+    end
+end
+
+-- An old install listed after the newest one (the locator sorts newest first).
+local VS2017 = {
+    id = "msvc-15-2017-professional",
+    display = "MSVC 15 2017 (Professional)",
+    vs_major = "15",
+    version_line = "2017",
+    product = "Professional",
+    vcvarsall = "C:/VS/2017/VC/Auxiliary/Build/vcvarsall.bat",
+    arch = "x64",
+    install_path = "C:/VS/2017",
 }
 
-describe("cmake_kits clang-cl kits (one per MSVC install)", function()
+describe("cmake_kits clang-cl kits (at most one per MSVC install)", function()
     local saved
 
     before_each(function()
@@ -65,7 +84,7 @@ describe("cmake_kits clang-cl kits (one per MSVC install)", function()
         ---@diagnostic disable: duplicate-set-field
         vim.fn.executable = function(n) return n == "ninja" and 1 or 0 end
         msvc.detect = function() return INSTALLS end
-        msvc.clang_cl_for = function(inst) return CC_BY_INSTALL[inst.install_path] end
+        msvc.clang_cl_for = stub_clang_cl_for(BUNDLED)
         cpp.detect = function() return {} end
         ---@diagnostic enable: duplicate-set-field
         cmake_kits.clear_cache()
@@ -79,33 +98,46 @@ describe("cmake_kits clang-cl kits (one per MSVC install)", function()
         cmake_kits.clear_cache()
     end)
 
-    it("emits a distinct clang-cl kit per install with paired vcvarsall/clangd", function()
-        local kits = cmake_kits.detect()
-        local clang = {}
-        for _, k in ipairs(kits) do
-            if k.id:match("^ninja%-clang%-cl%-") then clang[#clang + 1] = k end
+    local function clang_kits()
+        local by_id, n = {}, 0
+        for _, k in ipairs(cmake_kits.detect()) do
+            if k.id:match("^ninja%-clang%-cl%-") then by_id[k.id] = k; n = n + 1 end
         end
-        assert.equals(2, #clang)
+        return by_id, n
+    end
 
-        local by_id = {}
-        for _, k in ipairs(clang) do by_id[k.id] = k end
-
+    it("emits a clang-cl kit for an install with a VS-bundled clang-cl, paired vcvarsall/clangd", function()
+        local by_id = clang_kits()
         local com = by_id["ninja-clang-cl-17-community"]
-        local bt = by_id["ninja-clang-cl-17-buildtools"]
         assert.is_not_nil(com)
-        assert.is_not_nil(bt)
-
-        -- Bundled clang-cl (Community): compiler_path + sibling clangd + vcvars.
         assert.equals("Ninja", com.generator)
         assert.equals("clang-cl-18.1.7", com.compiler_id)
-        assert.equals(CC_BY_INSTALL["C:/VS/Community"].path, com.compiler_path)
-        assert.equals(CC_BY_INSTALL["C:/VS/Community"].clangd_path, com.clangd_path)
+        assert.equals(BUNDLED["C:/VS/Community"].path, com.compiler_path)
+        assert.equals(BUNDLED["C:/VS/Community"].clangd_path, com.clangd_path)
         assert.equals(INSTALLS[1].vcvarsall, com.vcvarsall)
         assert.equals("x64", com.arch)
         assert.equals("Ninja - clang-cl (MSVC 17 2022 (Community))", com.display)
+        -- BuildTools bundles none, and the standalone clang-cl pairs only with
+        -- the newest install: no kit named after BuildTools.
+        assert.is_nil(by_id["ninja-clang-cl-17-buildtools"])
+    end)
 
-        -- Standalone clang-cl (BuildTools): distinct id/version, no clangd,
-        -- different vcvars env even though the driver may be shared.
+    it("never names a clang-cl kit after an older install without a bundled clang-cl", function()
+        -- Tester report: VS 2017 (no bundled clang-cl) got ninja-clang-cl-15-professional.
+        msvc.detect = function() return { INSTALLS[1], VS2017 } end
+        cmake_kits.clear_cache()
+        local by_id, n = clang_kits()
+        assert.equals(1, n)
+        assert.is_not_nil(by_id["ninja-clang-cl-17-community"])
+        assert.is_nil(by_id["ninja-clang-cl-15-professional"])
+    end)
+
+    it("a standalone clang-cl pairs with the newest install when that one bundles none", function()
+        msvc.detect = function() return { INSTALLS[2], VS2017 } end -- BuildTools 2022, then 2017
+        cmake_kits.clear_cache()
+        local by_id, n = clang_kits()
+        assert.equals(1, n)
+        local bt = by_id["ninja-clang-cl-17-buildtools"]
         assert.equals("clang-cl-17.0.6", bt.compiler_id)
         assert.equals("C:/LLVM/bin/clang-cl.exe", bt.compiler_path)
         assert.is_nil(bt.clangd_path)

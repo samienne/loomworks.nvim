@@ -107,3 +107,13 @@ this file. The probe module is the single home for that knowledge,
 shared with the PATH-scan detection. Adding a new compiler family
 (Intel, IBM XL, vendor-specific) is one regex addition inside
 `cpp_compilers.lua` and propagates here unchanged.
+
+## 8. Environment inventory
+
+No `health_inventory` hook. Because `detect_all` returns `{}` (§2), the
+inventory lists only the installations profiles pin (core §10.1 default), each
+probed once with the same `validate` / probe path (§3) — one version query per
+installation, not one per capability or label lookup. A pinned installation that
+no longer validates is a missing **required** item for the profiles that pin it
+(core §16.33). System compilers on the search path are reported by the
+modules' shared `compilers:path` declaration (cmake §13), not here.

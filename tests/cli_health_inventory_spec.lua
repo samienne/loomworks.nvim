@@ -1,0 +1,266 @@
+--- Tests for `lw health`'s environment-inventory rendering (headless §16.33):
+--- outside a workspace (no split), inside (suggestion → Required → Other → lw),
+--- `--verbose`, `--json`, and the passive `lw status` count reusing the cached
+--- tier without probing. The probe is stubbed (`cli._probe_inventory`).
+
+_G.LOOMWORKS_CLI_NO_AUTORUN = true
+
+local inv = require("loomworks.inventory")
+
+
+-- ---------------------------------------------------------------------------
+-- lw health rendering + --json
+-- ---------------------------------------------------------------------------
+describe("lw health inventory output", function()
+    local cli = require("loomworks.cli")
+
+    local function capture(fn)
+        local out_buf = {}
+        local rw, rs = io.write, io.stderr
+        io.write = function(...) for _, s in ipairs({ ... }) do out_buf[#out_buf + 1] = s end end
+        io.stderr = { write = function() end }
+        local ok, err = pcall(fn)
+        io.write, io.stderr = rw, rs
+        if not ok then error(err, 0) end
+        return table.concat(out_buf)
+    end
+
+    local function tier_for(ws)
+        return {
+            key = inv.environment_key(ws), computed_at = 1,
+            declared = { { id = "exe:node", category = "build tools" }, { id = "exe:npm", category = "build tools" },
+                { id = "lsp:clangd", category = "language servers" }, { id = "lw", category = "lw" } },
+            results = {
+                { id = "exe:node", label = "node", status = "found", version = "20.11.0", path = "/usr/bin/node", hint = "install Node.js", category = "build tools" },
+                { id = "exe:npm", label = "npm", status = "missing", hint = "install Node.js", category = "build tools" },
+                { id = "lsp:clangd:path", label = "clangd", status = "found", version = "18.1.8", path = "/usr/bin/clangd", category = "language servers" },
+                { id = "lw", label = "lw", status = "found", version = "0.1.30", category = "lw" },
+            },
+        }
+    end
+
+    local orig
+    before_each(function()
+        orig = cli._probe_inventory
+        cli._probe_inventory = function(ws) return tier_for(ws) end
+    end)
+    after_each(function() cli._probe_inventory = orig end)
+
+    local function make_ws()
+        local root = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(root .. "/App", "p")
+        -- Canonical (long) path: on Windows CI tempname() can return the 8.3
+        -- short form (RUNNER~1) while the workspace reports the resolved root.
+        root = ((vim.uv or vim.loop).fs_realpath(root) or root):gsub("\\", "/")
+        local f = assert(io.open(root .. "/loomworks.json", "w"))
+        f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } }))
+        f:close()
+        return root
+    end
+
+    it("outside a workspace lists every category, one line per item", function()
+        local text = capture(function() assert.equals(0, cli.cmd_health(nil)) end)
+        assert.is_truthy(text:find("build tools", 1, true))
+        assert.is_truthy(text:find("✓ node 20.11.0", 1, true))
+        assert.is_truthy(text:find("– npm", 1, true))
+        assert.is_truthy(text:find("not found (install Node.js)", 1, true))
+        assert.is_nil(text:find("Required by this workspace", 1, true))
+    end)
+
+    it("inside a workspace: the missing required item is a suggestion, then Required / Other / lw", function()
+        local root = make_ws()
+        local text = capture(function() assert.equals(0, cli.cmd_health(root)) end)
+        assert.is_truthy(text:find("• npm not found — needed by App", 1, true))
+        assert.is_truthy(text:find("Required by this workspace", 1, true))
+        assert.is_truthy(text:find("✗ npm", 1, true))
+        assert.is_truthy(text:find("✓ node 20.11.0", 1, true))
+        assert.is_truthy(text:find("Other", 1, true))
+        assert.is_truthy(text:find("✓ clangd 18.1.8", 1, true))
+        assert.is_truthy(text:find("\nlw  0.1.30", 1, true))
+        -- Required comes before Other.
+        assert.is_true(text:find("Required by this workspace", 1, true) < text:find("\nOther", 1, true))
+
+        -- The passive status count now includes it — without probing.
+        cli._probe_inventory = function() error("status must not probe") end
+        local status = capture(function() cli.cmd_status(root, {}) end)
+        assert.is_truthy(status:find("1 suggestion", 1, true))
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("--verbose expands Other to one line per item with locations", function()
+        local root = make_ws()
+        local text = capture(function() cli.cmd_health(root, { verbose = true }) end)
+        assert.is_truthy(text:find("/usr/bin/clangd", 1, true))
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("--json prints {schema, workspace, suggestions, inventory} and exits 0", function()
+        local root = make_ws()
+        local rc
+        local text = capture(function() rc = cli.cmd_health(root, { json = true }) end)
+        assert.equals(0, rc)
+        local doc = vim.json.decode(text)
+        assert.equals(1, doc.schema)
+        assert.equals(root, doc.workspace.root)
+        local by = {}
+        for _, e in ipairs(doc.inventory) do by[e.id] = e end
+        assert.is_true(by["exe:npm"].required)
+        assert.equals("missing", by["exe:npm"].status)
+        assert.same({ "App" }, by["exe:npm"].required_by)
+        assert.is_false(by["lsp:clangd:path"].required)
+        assert.equals("build tools", by["exe:node"].category)
+        local found
+        for _, s in ipairs(doc.suggestions) do
+            if s.title == "npm not found — needed by App" then found = s end
+        end
+        assert.is_not_nil(found)
+        assert.equals("suggestion", found.kind)
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("--json is stable: object keys sorted, byte-identical across runs, hint only where actionable", function()
+        local root = make_ws()
+        local a = capture(function() cli.cmd_health(root, { json = true }) end)
+        local b = capture(function() cli.cmd_health(root, { json = true }) end)
+        assert.equals(a, b)
+        -- Re-encoding with the sorted encoder reproduces the output exactly:
+        -- every object's keys are in sorted order at every depth.
+        local doc = vim.json.decode(a)
+        assert.equals(a, require("loomworks.io").encode_sorted(doc) .. "\n")
+        assert.equals('{"inventory":', a:sub(1, 13))
+        -- Arrays keep their defined order (category, then declaration order).
+        local ids = {}
+        for _, e in ipairs(doc.inventory) do ids[#ids + 1] = e.id end
+        assert.same({ "exe:node", "exe:npm", "lsp:clangd:path", "lw" }, ids)
+        -- A found entry carries no install hint; a missing one keeps it.
+        assert.is_nil(doc.inventory[1].hint)
+        assert.equals("install Node.js", doc.inventory[2].hint)
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("--json carries a summary of the counts", function()
+        local root = make_ws()
+        local doc = vim.json.decode(capture(function() cli.cmd_health(root, { json = true }) end))
+        -- node, clangd, lw found; npm missing and required (the one actionable item).
+        assert.same({ actionable = 1, found = 3, missing = 1, required_missing = 1, unknown = 0 }, doc.summary)
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("info items render with their own bullet, after the actionable ones", function()
+        local sug = require("loomworks.suggestions")
+        local orig = sug.collect_health
+        sug.collect_health = function()
+            return { { kind = "info", title = "sccache available — not enabled for MSVC-style (lw help cache)" },
+                { title = "No compiler cache found", remedy = "install sccache" } }
+        end
+        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        sug.collect_health = orig
+        assert.is_true(ok, tostring(text))
+        assert.is_truthy(text:find("• No compiler cache found", 1, true))
+        assert.is_truthy(text:find("· sccache available", 1, true))
+        assert.is_nil(text:find("• sccache available", 1, true))
+        assert.is_true(text:find("• No compiler cache found", 1, true) < text:find("· sccache available", 1, true))
+    end)
+
+    it("a skipped update check: info bullet in text, update.status unknown in --json, not counted", function()
+        local sug = require("loomworks.suggestions")
+        local orig = sug.collect_health
+        sug.collect_health = function()
+            sug._update_check = { status = "unknown", channel = "stable", current = "0.1.30",
+                detail = "fetch manifest: curl failed (28)" }
+            return { { kind = "info", title = "update check skipped — offline or release server unreachable",
+                detail = "fetch manifest: curl failed (28)" } }
+        end
+        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        local ok2, js = pcall(capture, function() cli.cmd_health(nil, { json = true }) end)
+        sug.collect_health = orig
+        sug._update_check = nil
+        assert.is_true(ok, tostring(text)); assert.is_true(ok2, tostring(js))
+        assert.is_truthy(text:find("· update check skipped", 1, true))
+        local doc = vim.json.decode(js)
+        assert.same({ status = "unknown", channel = "stable", current = "0.1.30",
+            detail = "fetch manifest: curl failed (28)" }, doc.update)
+        assert.equals(0, doc.summary.actionable)
+    end)
+
+    it("--json has no update field when the check does not apply (dev source)", function()
+        local doc = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true }) end))
+        assert.is_nil(doc.update)
+    end)
+
+    it("--json outside a workspace has no workspace field", function()
+        local doc = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true }) end))
+        assert.is_nil(doc.workspace)
+        assert.equals(4, #doc.inventory)
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- Column widths follow the content (tester: a long VS-cmake version and a long
+-- clang-cl tool key each pushed the next column 2 chars right)
+-- ---------------------------------------------------------------------------
+describe("health / tools column widths", function()
+    local cli = require("loomworks.cli")
+
+    local function capture(fn)
+        local out_buf = {}
+        local rw, rs = io.write, io.stderr
+        io.write = function(...) for _, s in ipairs({ ... }) do out_buf[#out_buf + 1] = s end end
+        io.stderr = { write = function() end }
+        local ok, err = pcall(fn)
+        io.write, io.stderr = rw, rs
+        if not ok then error(err, 0) end
+        return table.concat(out_buf)
+    end
+
+    it("inventory name column fits the longest row at a typical width, floors at 40", function()
+        assert.equals(42, cli._inventory_name_width(42, 16, 100))
+        assert.equals(12, cli._inventory_name_width(12, 16, 100))
+        -- Narrow terminal: never below the floor; a longer row overflows.
+        assert.equals(40, cli._inventory_name_width(60, 16, 60))
+    end)
+
+    it("a long version keeps every path column aligned (outside a workspace)", function()
+        local orig = cli._probe_inventory
+        cli._probe_inventory = function()
+            return {
+                key = "k", computed_at = 1, declared = {},
+                results = {
+                    { id = "exe:cmake:vs", label = "cmake (VS 2017 Professional)", status = "found",
+                        version = "3.12.18081601", path = "/vs/cmake.exe", category = "build tools" },
+                    { id = "exe:ninja", label = "ninja", status = "found", version = "1.12.1",
+                        path = "/usr/bin/ninja", category = "build tools" },
+                },
+            }
+        end
+        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        cli._probe_inventory = orig
+        assert.is_true(ok, tostring(text))
+        local cols = {}
+        for line in text:gmatch("[^\n]+") do
+            local a = line:find("/vs/cmake.exe", 1, true) or line:find("/usr/bin/ninja", 1, true)
+            -- byte offsets; both lines share the same multi-byte mark prefix width
+            if a then cols[#cols + 1] = a end
+        end
+        assert.equals(2, #cols)
+        assert.equals(cols[1], cols[2])
+    end)
+
+    it("lw tools sizes the key column to the longest key", function()
+        local rows = cli._tool_rows({
+            { key = "ninja-clang-cl-17-enterprise", label = "Ninja + clang-cl 17" },
+            { key = "ninja-msvc-17", label = "Ninja + MSVC 17" },
+        })
+        assert.equals(rows[1]:find("Ninja + clang-cl", 1, true), rows[2]:find("Ninja + MSVC", 1, true))
+        -- Short lists keep the familiar 26-wide key field.
+        local short = cli._tool_rows({ { key = "ninja-gcc-14", label = "GCC" } })
+        assert.equals("  " .. string.format("%-26s", "ninja-gcc-14") .. "   GCC", short[1])
+    end)
+
+    it("lw help tools names the real per-platform cache location", function()
+        local text = capture(function() cli.cmd_help("tools") end)
+        assert.is_truthy(text:find([[%LOCALAPPDATA%\loomworks\cache]], 1, true))
+        assert.is_truthy(text:find("$XDG_CACHE_HOME/loomworks", 1, true))
+        assert.is_nil(text:find("(~/.cache/loomworks/tools.json)", 1, true))
+    end)
+end)

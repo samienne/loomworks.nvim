@@ -738,6 +738,45 @@ function M.pdb_env_findings(env, tool)
     return out
 end
 
+--- Environment-inventory declaration for the GNU-driver compilers on PATH
+--- (headless §16.33, cmake §13 `compilers:path`), shared by every module that
+--- builds C/C++ so the scan is probed once. It IS the kit detection
+--- (`detect_async`), so a compiler it reports is exactly one a kit could be
+--- built from: one result per compiler, id `cxx:<normalized C++ driver path>`,
+--- or a single missing result.
+--- @return loomworks.InventoryDeclaration
+function M.health_declaration()
+    local inv = require("loomworks.inventory")
+    return {
+        id = "compilers:path",
+        category = "compilers",
+        label = "gcc / clang",
+        probe = function(_, done)
+            M.detect_async(function(compilers)
+                local results = {}
+                for _, c in ipairs(compilers) do
+                    results[#results + 1] = {
+                        id = inv.path_id("cxx", c.path),
+                        label = c.family == "gcc" and "GCC" or "Clang",
+                        status = "found",
+                        version = c.version,
+                        path = c.path,
+                    }
+                end
+                if #results == 0 then
+                    results[1] = {
+                        id = "compilers:path", label = "gcc / clang", status = "missing",
+                        detail = "none on PATH",
+                        hint = is_windows() and "install LLVM or MinGW-w64 and put it on PATH"
+                            or "install gcc or clang (your package manager)",
+                    }
+                end
+                done(results)
+            end)
+        end,
+    }
+end
+
 --- Clear the detection cache. Called by modules' `invalidate_tools`. Also drops
 --- the PATH executable index so a rescan re-reads `$PATH`.
 function M.clear_cache()

@@ -358,6 +358,12 @@ function M.on_active_set_changed()
     _client_state = new_state
 end
 
+--- Environment-inventory declaration (qmlls §10, core §9.3 / §16.33).
+--- Lives in the host-neutral companion so the standalone host can load it
+--- without this file's editor-only dependencies; re-exported here so the
+--- integration table carries the hook the contract names.
+M.health_inventory = require("loomworks.integrations.inventory.qmlls").health_inventory
+
 -- Self-register with the core LSP registry.
 require("loomworks.lsp").register("qmlls", M)
 

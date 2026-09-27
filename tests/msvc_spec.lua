@@ -165,6 +165,21 @@ describe("msvc.clang_cl_for", function()
         msvc.clear_cache()
     end)
 
+    it("without the standalone fallback, an install bundling no clang-cl gets none", function()
+        msvc.clear_cache()
+        with({
+            ["vim.uv.fs_stat"] = function() return nil end,
+            ["vim.fn.exepath"] = function() return "C:/LLVM/bin/clang-cl.exe" end,
+            ["vim.system"] = system_returning("clang version 17.0.6\n"),
+        }, function()
+            assert.is_nil(msvc.clang_cl_for(INSTALL))
+            assert.is_nil(msvc.clang_cl_for(INSTALL, { standalone = false }))
+            -- ...while the same install with the fallback allowed gets the PATH one.
+            assert.equals("C:/LLVM/bin/clang-cl.exe", msvc.clang_cl_for(INSTALL, { standalone = true }).path)
+        end)
+        msvc.clear_cache()
+    end)
+
     it("falls back to standalone/PATH clang-cl when no bundled one exists", function()
         msvc.clear_cache()
         with({
@@ -175,7 +190,7 @@ describe("msvc.clang_cl_for", function()
             ["vim.fn.exepath"] = function() return "C:/LLVM/bin/clang-cl.exe" end,
             ["vim.system"] = system_returning("clang version 17.0.6\n"),
         }, function()
-            local cc = msvc.clang_cl_for(INSTALL)
+            local cc = msvc.clang_cl_for(INSTALL, { standalone = true })
             assert.is_not_nil(cc)
             assert.equals("C:/LLVM/bin/clang-cl.exe", cc.path)
             assert.equals("17.0.6", cc.version)
@@ -191,7 +206,7 @@ describe("msvc.clang_cl_for", function()
             ["vim.fn.exepath"] = function() return "C:/LLVM/bin/clang-cl.exe" end,
             ["vim.system"] = system_returning("clang version 17.0.6\n"),
         }, function()
-            local cc = msvc.clang_cl_for(INSTALL)
+            local cc = msvc.clang_cl_for(INSTALL, { standalone = true })
             assert.is_not_nil(cc)
             assert.equals("C:/LLVM/bin/clang-cl.exe", cc.path)
             assert.is_nil(cc.clangd_path)
@@ -205,7 +220,7 @@ describe("msvc.clang_cl_for", function()
             ["vim.uv.fs_stat"] = function() return nil end,
             ["vim.fn.exepath"] = function() return "" end,
         }, function()
-            assert.is_nil(msvc.clang_cl_for(INSTALL))
+            assert.is_nil(msvc.clang_cl_for(INSTALL, { standalone = true }))
         end)
         msvc.clear_cache()
     end)

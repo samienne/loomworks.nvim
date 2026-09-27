@@ -662,6 +662,12 @@ end
 --- UI label for the reset action.
 M.reset_label = "Reset clangd -j"
 
+--- Environment-inventory declaration (clangd §14, core §9.3 / §16.33).
+--- Lives in the host-neutral companion so the standalone host can load it
+--- without this file's editor-only dependencies; re-exported here so the
+--- integration table carries the hook the contract names.
+M.health_inventory = require("loomworks.integrations.inventory.clangd").health_inventory
+
 -- Self-register with the core LSP registry.
 require("loomworks.lsp").register("clangd", M)
 

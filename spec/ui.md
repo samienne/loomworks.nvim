@@ -26,7 +26,9 @@ directly to `Snacks.win`. The page contains these sections in order:
    (hint-level, like the `[stale — reconfigure]` hints: advisory, not a
    warning). It is advisory, not a diagnostic: unlike the
    Diagnostics section, suggestions never gate an operation and never fail
-   `--check`. The line's detail lives in `lw health` (core §16.31); the
+   `--check`. A **missing required** environment-inventory item recorded by a
+   prior `lw health` (core §16.33) counts like any actionable item; the page
+   never probes the environment itself. The line's detail lives in `lw health` (core §16.31); the
    status page keeps only the count so the page stays uncluttered. The
    first-shipping provider flags a workspace that has C/C++ projects but no
    compiler cache on the toolchain path (see §16.31).

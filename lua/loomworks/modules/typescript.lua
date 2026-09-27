@@ -229,6 +229,66 @@ function M.detect_tools_async(callback)
     callback({ { tool_data = {} } })
 end
 
+--- npm's version from the package.json of the npm installation `npm_path`
+--- launches, or nil. Reading it avoids spawning npm: on Windows `npm.cmd` runs
+--- node twice (npm-prefix.js, then npm-cli.js) and npm may write a debug log per
+--- run. Layouts: Windows `<dir>/npm.cmd` + `<dir>/node_modules/npm/`; Unix
+--- `bin/npm` -> `../lib/node_modules/npm/bin/npm-cli.js` (the symlink target's
+--- parent is the package; an unresolvable link falls back to the
+--- `../lib/node_modules/npm/` sibling). Only a manifest named "npm" counts.
+--- @param ctx loomworks.InventoryContext
+--- @param npm_path string
+--- @return string|nil
+function M.npm_version_from_layout(ctx, npm_path)
+    local p = tostring(npm_path):gsub("\\", "/")
+    local dir = p:match("^(.*)/[^/]*$") or "."
+    local candidates = { dir .. "/node_modules/npm/package.json" }
+    local real = ctx.realpath and ctx.realpath(p)
+    if real then
+        real = tostring(real):gsub("\\", "/")
+        local rdir = real:match("^(.*)/[^/]*$")
+        if rdir then candidates[#candidates + 1] = (rdir:match("^(.*)/bin$") or rdir) .. "/package.json" end
+    end
+    candidates[#candidates + 1] = dir .. "/../lib/node_modules/npm/package.json"
+    for _, c in ipairs(candidates) do
+        local text = ctx.read_file(c)
+        if text then
+            local ok, doc = pcall(vim.json.decode, text)
+            if ok and type(doc) == "table" and doc.name == "npm" and type(doc.version) == "string" then
+                return doc.version
+            end
+        end
+    end
+    return nil
+end
+
+--- Environment inventory (typescript §7, core §16.33): node and npm, which a
+--- project's tasks run through. `exe:node` is also declared by the pwa-node
+--- adapter's inventory companion with the same id (probed once). npm's version
+--- is read from its installed package.json (`npm_version_from_layout`); only
+--- when that is not found does the probe spawn `npm --version`.
+--- @param _ctx loomworks.InventoryContext
+--- @return loomworks.InventoryDeclaration[]
+function M.health_inventory(_ctx)
+    local inv = require("loomworks.inventory")
+    local function node_hint(ctx)
+        return ctx.is_windows and "winget install OpenJS.NodeJS.LTS"
+            or "install Node.js (nodejs.org or your package manager)"
+    end
+    return {
+        inv.exe_declaration({ id = "exe:node", label = "node", names = { "node" }, hint = node_hint }),
+        inv.exe_declaration({ id = "exe:npm", label = "npm", names = { "npm" }, hint = node_hint,
+            version_from = M.npm_version_from_layout }),
+    }
+end
+
+--- A project requires node and npm (pure).
+--- @param _ctx { project: loomworks.Project, tool: loomworks.Tool|nil, configuration: loomworks.Configuration|nil }
+--- @return { id: string, label: string }[]
+function M.health_requirements(_ctx)
+    return { { id = "exe:node", label = "node" }, { id = "exe:npm", label = "npm" } }
+end
+
 --- Compare two TypeScript tool_data objects. Always match (single tool).
 --- @param a table
 --- @param b table

@@ -188,3 +188,9 @@ Project-level `variables` and per-configuration variable overrides
 use the existing variable editor (`ui/variable_editor.lua`) and
 configuration dialog (`ui/config_editor_dialog.lua`) — shell projects
 inherit those flows from the generic projects section.
+
+## 13. Environment inventory
+
+None. The module declares no inventory and its projects require nothing: their
+commands are arbitrary user strings whose executables loomworks does not guess
+— the user's script picks its own toolchain (§1).
