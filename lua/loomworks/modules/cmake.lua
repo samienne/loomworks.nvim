@@ -298,12 +298,15 @@ local function write_vcvarsall_bat(build_dir, vcvarsall, arch, cmd, tag)
     local safe_tag = (tag or "cmd"):gsub("[^%w_%-]", "_")
     local bat_path = build_dir
         .. "/loomworks_" .. safe_tag .. "_" .. hash_argv(cmd) .. ".bat"
-    -- `cmd /C <bat>` re-parses the path: characters cmd treats specially
-    -- would let the path add commands (cmd strips the quotes around a
-    -- quoted path that contains them).
-    if bat_path:find('[&<>()@^|%%!"\r\n]') then
-        return nil, "build directory path contains characters cmd.exe cannot run "
-            .. "a batch file from safely: " .. build_dir
+    -- The batch path never appears on cmd's command line (it is passed in
+    -- LOOMWORKS_VCVARS_BAT and substituted by delayed expansion, see
+    -- `wrap_cmd`), so spaces and `( ) & ^ | < >` are fine. Refused: what is
+    -- unsafe even inside a quoted batch argument — `%` (expanded inside
+    -- quotes), `!` (delayed expansion), `"` (ends the quoting) and line
+    -- breaks / NUL.
+    if bat_path:find('[%%!"\r\n%z]') then
+        return nil, "build directory path contains a character (%, !, \" or a line break) "
+            .. "that cannot be passed safely through cmd.exe: " .. build_dir
     end
     local parts = {}
     for _, c in ipairs(cmd) do
@@ -343,8 +346,9 @@ end
 --- @param generator string|nil cmake generator name
 --- @param build_dir string|nil build directory for .bat file placement
 --- @param tag string|nil short action label for the .bat filename
---- @return string[]
-local function wrap_cmd(cmd, kit, generator, build_dir, tag)
+--- @param env table|nil the task environment
+--- @return string[] cmd, table|nil env
+local function wrap_cmd(cmd, kit, generator, build_dir, tag, env)
     if M.runs_in_vcvars(kit, generator) and build_dir then
         local bat_path, err = write_vcvarsall_bat(
             build_dir, kit.vcvarsall, kit.arch or "x64", cmd, tag)
@@ -353,10 +357,23 @@ local function wrap_cmd(cmd, kit, generator, build_dir, tag)
             -- an unsafe batch): the task fails with the reason.
             error("loomworks.cmake: cannot prepare the vcvarsall wrapper: " .. tostring(err), 0)
         end
-        return { "cmd", "/C", bat_path }
+        -- The batch path travels in an environment variable and is substituted
+        -- by delayed expansion (`/v:on`, `!VAR!`) AFTER cmd has parsed its
+        -- command line, so none of its characters is ever interpreted, and the
+        -- argv is identical under both spawning conventions (the editor's job
+        -- runner hands cmd.exe its arguments verbatim; the standalone host
+        -- quotes them). cmake spec §14.
+        local out_env = {}
+        for k, v in pairs(env or {}) do out_env[k] = v end
+        out_env[M.VCVARS_BAT_ENV] = (bat_path:gsub("/", "\\"))
+        return { "cmd", "/d", "/v:on", "/c", "!" .. M.VCVARS_BAT_ENV .. "!" }, out_env
     end
-    return cmd
+    return cmd, env
 end
+M._wrap_cmd = wrap_cmd
+
+--- The environment variable carrying the vcvarsall batch path to `cmd.exe`.
+M.VCVARS_BAT_ENV = "LOOMWORKS_VCVARS_BAT"
 
 --- Read and parse a JSON file, returning nil on failure.
 --- @param path string
@@ -1525,7 +1542,7 @@ function M.tasks(project, active_config)
     -- `tag` labels the generated .bat (configure/build) so the two builders
     -- write distinct files instead of clobbering a shared name.
     local function wrap(cmd, tag)
-        return wrap_cmd(cmd, kit, generator, build_dir, tag)
+        return wrap_cmd(cmd, kit, generator, build_dir, tag, env)
     end
 
     -- Build the configuration key for cache tracking
@@ -1550,10 +1567,11 @@ function M.tasks(project, active_config)
                     if fd then uv.fs_close(fd) end
                 end
             end
+            local wcmd, wenv = wrap(configure_cmd, "configure")
             return {
-                cmd = wrap(configure_cmd, "configure"),
+                cmd = wcmd,
                 cwd = abs_path,
-                env = env,
+                env = wenv,
             }
         end,
         loomworks = {
@@ -1615,10 +1633,11 @@ function M.tasks(project, active_config)
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
+                local wcmd, wenv = wrap(build_cmd, "build")
                 return {
-                    cmd = wrap(build_cmd, "build"),
+                    cmd = wcmd,
                     cwd = abs_path,
-                    env = env,
+                    env = wenv,
                 }
             end,
             loomworks = {
@@ -1633,10 +1652,11 @@ function M.tasks(project, active_config)
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
+                local wcmd, wenv = wrap({ cmake_cmd, "--build", build_dir }, "build")
                 return {
-                    cmd = wrap({ cmake_cmd, "--build", build_dir }, "build"),
+                    cmd = wcmd,
                     cwd = abs_path,
-                    env = env,
+                    env = wenv,
                 }
             end,
             loomworks = {
@@ -1674,7 +1694,7 @@ function M.clean_tasks(project, active_config)
     local configuration_key = project.configuration_key or active_config
 
     local function wrap(cmd, tag)
-        return wrap_cmd(cmd, kit, generator, build_dir, tag)
+        return wrap_cmd(cmd, kit, generator, build_dir, tag, env)
     end
 
     local cmake_cmd = (kit and kit.cmake_path) or "cmake"
@@ -1694,10 +1714,11 @@ function M.clean_tasks(project, active_config)
         {
             name = project.name .. ": clean " .. active_config,
             builder = function()
+                local wcmd, wenv = wrap(clean_cmd, "clean")
                 return {
-                    cmd = wrap(clean_cmd, "clean"),
+                    cmd = wcmd,
                     cwd = abs_path,
-                    env = env,
+                    env = wenv,
                 }
             end,
             loomworks = {
@@ -1745,10 +1766,11 @@ function M.build_target_task(project, target_id)
     return {
         name = project.name .. ": build " .. target_id,
         builder = function()
+            local wcmd, wenv = wrap_cmd(cmd, kit, generator, build_dir, "build", env)
             return {
-                cmd = wrap_cmd(cmd, kit, generator, build_dir, "build"),
+                cmd = wcmd,
                 cwd = abs_path,
-                env = env,
+                env = wenv,
             }
         end,
         loomworks = {

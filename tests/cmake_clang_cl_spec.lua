@@ -199,10 +199,12 @@ describe("cmake clang-cl configure command", function()
         local configure = find_task(tasks, "configure")
         assert.is_not_nil(configure)
 
-        local cmd = configure.builder().cmd
-        -- Wrapped into a vcvars .bat: { "cmd", "/C", <bat> }.
+        local spec = configure.builder()
+        local cmd = spec.cmd
+        -- Wrapped into a vcvars .bat: cmd.exe runs it via delayed expansion of
+        -- LOOMWORKS_VCVARS_BAT (cmake spec §14).
         assert.equals("cmd", cmd[1])
-        local bat = cmd[3]
+        local bat = spec.env.LOOMWORKS_VCVARS_BAT
         local f = assert(io.open(bat, "r"))
         local contents = f:read("*a")
         f:close()

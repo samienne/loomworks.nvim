@@ -1,8 +1,9 @@
 --- The generated vcvarsall batch files never let a path or argument add a
 --- command: the vcvarsall path and arch are validated, every argv element is
 --- quoted for cmd.exe, and the batch disables delayed expansion and the
---- current-directory command search. Nothing here runs cmd.exe; the tests read
---- the generated file.
+--- current-directory command search. The tests read the generated file; one
+--- benign end-to-end test runs cmd.exe on a batch in a build dir whose path has
+--- spaces, `(`, `)` and `&` (the path reaches cmd via delayed expansion).
 
 local cmake = require("loomworks.modules.cmake")
 local msvc = require("loomworks.msvc")
@@ -102,7 +103,7 @@ describe("cmake vcvarsall .bat content", function()
         vim.fn.mkdir(bd, "p")
         local configure = find_task(cmake.tasks(
             ctx(bd, nil, { options = { LW_PROBE = "a&b|c %PATH% !x!" } }), "my-debug"), "configure")
-        local bat = configure.builder().cmd[3]
+        local bat = configure.builder().env.LOOMWORKS_VCVARS_BAT
         local text = read_all(bat)
         assert.is_truthy(text:find("setlocal DisableDelayedExpansion", 1, true))
         assert.is_truthy(text:find('set "NoDefaultCurrentDirectoryInExePath=1"', 1, true))
@@ -114,13 +115,58 @@ describe("cmake vcvarsall .bat content", function()
         assert.is_nil(last:gsub('"[^"]*"', ""):find("[^%s]"), "unquoted token on the command line: " .. last)
     end)
 
-    it("refuses a build dir that cmd /C could not run a batch from safely", function()
-        local bd = root .. "/a&b"
+    it("accepts a build dir with spaces, ( ) and & — the batch path travels in an env var", function()
+        local bd = root .. "/Projects (old) & x"
         vim.fn.mkdir(bd, "p")
         local configure = find_task(cmake.tasks(ctx(bd), "my-debug"), "configure")
-        local ok, err = pcall(configure.builder)
-        assert.is_false(ok)
-        assert.matches("cannot run", tostring(err), 1, true)
+        local spec = configure.builder()
+        -- cmd.exe substitutes the path by delayed expansion after parsing its
+        -- command line; the path itself is never on the command line.
+        assert.same({ "cmd", "/d", "/v:on", "/c", "!LOOMWORKS_VCVARS_BAT!" }, spec.cmd)
+        local bat = spec.env.LOOMWORKS_VCVARS_BAT
+        assert.is_truthy(bat:find("Projects (old) & x", 1, true))
+        assert.is_truthy(read_all(bat), "the batch file is written")
+    end)
+
+    it("refuses a build dir containing %, ! or a quote", function()
+        for _, name in ipairs({ "a%PATH%b", "a!b" }) do
+            local bd = root .. "/" .. name
+            vim.fn.mkdir(bd, "p")
+            local configure = find_task(cmake.tasks(ctx(bd), "my-debug"), "configure")
+            local ok, err = pcall(configure.builder)
+            assert.is_false(ok, name)
+            assert.matches("cannot be passed safely", tostring(err), 1, true)
+        end
+    end)
+
+    it("runs the generated batch from a build dir with ( ) & and spaces under both spawn conventions", function()
+        -- Benign end-to-end: the fake vcvarsall.bat only echoes off; the
+        -- wrapped command is cmd.exe echoing a marker with an argument that
+        -- contains ( ) and &. Run through the editor's job runner (Neovim hands
+        -- cmd.exe its arguments verbatim) and through vim.system (arguments
+        -- quoted), after the same hardening production applies.
+        local bd = root .. "/Projects (old) & x"
+        vim.fn.mkdir(bd, "p")
+        local comspec = (vim.fn.exepath("cmd.exe"))
+        local inner = { comspec, "/d", "/c", "echo", "LW_MARKER a(b)&c" }
+        local argv, env = cmake._wrap_cmd(inner, { vcvarsall = vcvarsall, arch = "x64" },
+            "Ninja", bd, "probe", {})
+        local hardened = assert(require("loomworks.exe").harden_spec({ cmd = argv, env = env }))
+
+        local out = {}
+        local job = vim.fn.jobstart(hardened.cmd, {
+            env = hardened.env, stdout_buffered = true,
+            on_stdout = function(_, d) out[#out + 1] = table.concat(d, " ") end,
+        })
+        assert.is_true(job > 0)
+        assert.same({ 0 }, vim.fn.jobwait({ job }, 10000))
+        local job_out = table.concat(out, " ")
+        assert.is_truthy(job_out:find("LW_MARKER a(b)&c", 1, true), "jobstart output: " .. job_out)
+
+        local res = vim.system(hardened.cmd, { env = hardened.env, text = true }):wait(10000)
+        assert.equals(0, res.code)
+        assert.is_truthy((res.stdout or ""):find("LW_MARKER a(b)&c", 1, true),
+            "vim.system output: " .. tostring(res.stdout) .. tostring(res.stderr))
     end)
 
     it("refuses an unsafe vcvarsall path or arch (no unwrapped fallback)", function()
@@ -136,7 +182,7 @@ describe("cmake vcvarsall .bat content", function()
         local bd = root .. "/build"
         vim.fn.mkdir(bd, "p")
         local configure = find_task(cmake.tasks(ctx(bd), "my-debug"), "configure")
-        local bat = configure.builder().cmd[3]
+        local bat = configure.builder().env.LOOMWORKS_VCVARS_BAT
         -- Replace the batch with a link to a victim file, then regenerate.
         local victim = root .. "/victim.txt"
         vim.fn.writefile({ "keep" }, victim)
