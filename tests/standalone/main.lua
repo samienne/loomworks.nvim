@@ -1386,5 +1386,68 @@ do
   ok(ms >= 250 and ms < 10000, string.format("…promptly (%.0f ms)", ms))
 end
 
+print("SECURITY — host Lua search paths never reach the current directory")
+do
+  local luapath = require("boot.luapath")
+  local win = luapath.sanitize(
+    [[.\?.lua;C:\bin\lua\?.lua;C:\sys\lua\?.lua;?.lua;lua\?\init.lua;\\srv\share\?.lua;!\lua\?.lua;\rooted\?.lua;;]],
+    { is_windows = true, exclude_dirs = { "C:\\bin" } })
+  eq(win, [[C:\sys\lua\?.lua;\\srv\share\?.lua]],
+    "windows: only absolute entries outside the exe dir survive")
+  local posix = luapath.sanitize("./?.lua;/usr/share/lua/5.1/?.lua;/opt/lw/lua/?.lua;lua/?.lua;;",
+    { is_windows = false, exclude_dirs = { "/opt/lw" } })
+  eq(posix, "/usr/share/lua/5.1/?.lua", "posix: only absolute entries outside the exe dir survive")
+  eq(luapath.sanitize(".\\?.dll;C:\\bin\\?.dll;C:\\bin\\loadall.dll",
+    { is_windows = true, exclude_dirs = { "C:/BIN/" } }), "",
+    "cpath: cwd and exe-dir entries removed (case/separator-insensitive)")
+
+  -- End to end: a source-run host (`luvi <repo>/lua -- …`, the fused-bundle
+  -- fallback path) started inside a directory that carries loomworks/cli.lua
+  -- and loomworks/shim.lua must run its own code, never those files.
+  local work = root .. "/tests/.tmp-cwdshadow"
+  local home = work .. "/home"
+  paths.rm_rf(work)
+  paths.mkdirp(work .. "/proj/loomworks")
+  paths.mkdirp(home)
+  local marker = work .. "/SHADOWED"
+  local shadow = ("local f = io.open(%q, 'w') f:write('x') f:close()\nreturn {}\n"):format(marker)
+  for _, name in ipairs({ "cli.lua", "shim.lua" }) do
+    local f = assert(io.open(work .. "/proj/loomworks/" .. name, "w")); f:write(shadow); f:close()
+  end
+  local env = {}
+  local override = { LOCALAPPDATA = home, XDG_DATA_HOME = home, APPDATA = home, XDG_CONFIG_HOME = home }
+  for k, v in pairs(uv.os_environ()) do
+    local drop = override[k] or k == "LOOMWORKS_LUA" or k == "LOOMWORKS_PINNED" or k == "LOOMWORKS_LW"
+    if not drop then env[#env + 1] = k .. "=" .. v end
+  end
+  for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+  -- Capture into a file (a libuv pipe does not reliably receive a luvi child's
+  -- C-stdio output on Windows).
+  local logf = work .. "/out.txt"
+  local fd = assert(uv.fs_open(logf, "w", 420))
+  local done, code = false, nil
+  local h = uv.spawn(uv.exepath(), {
+    -- luvi joins a bundle path onto its cwd, so name the source dir relatively.
+    args = { "../../../lua", "--", "help" }, cwd = work .. "/proj", env = env,
+    stdio = { nil, fd, fd },
+  }, function(c) code = c; done = true end)
+  ok(h ~= nil, "spawned a source-run host")
+  if h then
+    local t = uv.new_timer()
+    t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+    while not done do uv.run("once") end
+    t:stop(); t:close(); h:close()
+  end
+  uv.fs_close(fd)
+  local lf = io.open(logf, "rb")
+  local text = lf and lf:read("*a") or ""
+  if lf then lf:close() end
+  ok(not uv.fs_stat(marker), "cwd-relative loomworks/*.lua was not executed")
+  ok(text:find("Usage", 1, true) ~= nil and code == 0,
+    "the host's own CLI ran (exit " .. tostring(code) .. ")" ..
+    ((code ~= 0 or not text:find("Usage", 1, true)) and (" :: " .. text:sub(1, 400)) or ""))
+  paths.rm_rf(work)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

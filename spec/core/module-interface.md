@@ -50,8 +50,22 @@ rejected-type project. Build, launch, and configure operations
 on it are simply unavailable until the version mismatch is
 resolved.
 
+**Where a module is loaded from.** A module id is data from the
+workspace files, which may come from an untrusted clone. The registry
+therefore resolves an id **only** to a file named
+`lua/loomworks/modules/<id>.lua` on the runtime path (in the standalone
+host: the system-Lua source, its fused bundle, and acquired-module
+roots) and loads exactly that file. It never resolves an id through the
+host language's generic module search path, whose defaults include the
+current directory. An id that is not a plain identifier (letters,
+digits, underscore — no dots, separators, or other path syntax) is
+**rejected** without any lookup, with a diagnostic naming the id; the
+project that names it is preserved like any other rejected-type project
+(above). Progress-parser names that modules return are resolved the same
+way.
+
 The SDK provider registry uses the same mechanism with the `sdk`
-field of `api_versions.lua`. LSP and debug integrations do not yet
+field of `api_versions.lua` and the same id rule and load location. LSP and debug integrations do not yet
 have a versioned registry; they're wired more directly into core
 today.
 

@@ -22,13 +22,23 @@ if not uv_ok then uv = require("luv") end
 local loaders = package.loaders or package.searchers
 local bundle = require("luvi").bundle
 
+-- ---- searcher order: ours first, right after preload ------------------------
+-- Every loomworks searcher (boot, system Lua, fused-bundle fallback, acquired
+-- modules) is inserted directly after the preload searcher, AHEAD of the
+-- package.path / package.cpath searchers, in the order added. The path
+-- searchers then only ever see names nothing of ours provides.
+local next_slot = 2
+local function add_searcher(fn)
+  table.insert(loaders, next_slot, fn)
+  next_slot = next_slot + 1
+end
+
 -- ---- boot searcher: always resolve boot.* from the fused/source bundle ------
--- Inserted right after the preload searcher (position 2), AHEAD of the path
--- searchers: LuaJIT's Windows default package.path includes `!\lua\?.lua`
--- (the executable's own directory), so an appended searcher would let a `lua/`
--- directory beside lw.exe shadow the fused boot modules — including
--- boot.verify, which carries the release public key.
-table.insert(loaders, 2, function(modname)
+-- First of ours: LuaJIT's Windows default package.path includes `!\lua\?.lua`
+-- (the executable's own directory), so a searcher behind the path searchers
+-- would let a `lua/` directory beside lw.exe shadow the fused boot modules —
+-- including boot.verify, which carries the release public key.
+add_searcher(function(modname)
   if modname ~= "boot" and modname:sub(1, 5) ~= "boot." then return nil end
   local base = modname:gsub("%.", "/")
   for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do
@@ -40,6 +50,30 @@ table.insert(loaders, 2, function(modname)
   end
   return "\n\tno bundle file for '" .. modname .. "'"
 end)
+
+-- ---- process hygiene (before anything else loads or spawns) -----------------
+-- 1. Strip package.path / package.cpath down to absolute entries outside the
+--    executable's directory: LuaJIT's defaults begin with `./?.lua` (a file
+--    relative to the current directory — i.e. a cloned repository) and, on
+--    Windows, `<exe dir>\lua\?.lua`. Our own code never resolves through them
+--    (our searchers come first); what remains serves third-party names only,
+--    and those must never come from the cwd or from beside the executable.
+-- 2. Windows: set NoDefaultCurrentDirectoryInExePath=1 in our environment.
+--    libuv (every spawn this process makes) and cmd.exe (every child, which
+--    inherits it) then no longer search the current directory for a bare
+--    program name. Defense in depth: bare names are also resolved to absolute
+--    PATH entries before spawning (boot.exe / loomworks.exe).
+do
+  local luapath = require("boot.luapath")
+  local is_windows = package.config:sub(1, 1) == "\\"
+  local exe_dir
+  local ok_e, exe = pcall(uv.exepath)
+  if ok_e and type(exe) == "string" then exe_dir = exe:match("^(.*)[/\\][^/\\]*$") end
+  local sopts = { is_windows = is_windows, exclude_dirs = { exe_dir } }
+  package.path = luapath.sanitize(package.path, sopts)
+  package.cpath = luapath.sanitize(package.cpath, sopts)
+  if is_windows then uv.os_setenv("NoDefaultCurrentDirectoryInExePath", "1") end
+end
 
 local paths = require("boot.paths")
 local pin = require("boot.pin")
@@ -373,7 +407,7 @@ if luaroot then
   -- On-disk root (dev or release) is authoritative; no bundle fallback, so a
   -- partial tree fails loudly instead of silently mixing in bundled code.
   _G.__loomworks_luaroot = luaroot
-  table.insert(loaders, 1, function(modname)
+  add_searcher(function(modname)
     local base = luaroot .. "/" .. modname:gsub("%.", "/")
     for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do
       local fh = io.open(cand, "r")
@@ -395,7 +429,7 @@ else
       "    Run `lw self-update` to download and verify the current release.\n")
     exit(1)
   end
-  table.insert(loaders, function(modname)
+  add_searcher(function(modname)
     local base = modname:gsub("%.", "/")
     for _, cand in ipairs({ base .. ".lua", base .. "/init.lua" }) do
       local src = bundle.readfile(cand)
@@ -413,12 +447,13 @@ end
 -- <name>/lua, separate from the release source so a self-update never disturbs
 -- them. Expose their roots to both resolvers — the require searcher below and
 -- the vim shim's `nvim_get_runtime_file` glob (module/SDK discovery) — via a
--- global, so the two stay in lockstep. Appended (not inserted at 1) so core
--- always wins a name; module packages only ever add new namespaces
--- (loomworks.modules.<id>, loomworks.sdks.<id>, loomworks.progress.<id>).
+-- global, so the two stay in lockstep. Added after the system-Lua searcher so
+-- core always wins a name (module packages only ever add new namespaces:
+-- loomworks.modules.<id>, loomworks.sdks.<id>, loomworks.progress.<id>), yet
+-- still ahead of the path searchers.
 _G.__loomworks_module_roots = paths.module_lua_roots()
 if #_G.__loomworks_module_roots > 0 then
-  table.insert(loaders, function(modname)
+  add_searcher(function(modname)
     local rel = modname:gsub("%.", "/")
     for _, root in ipairs(_G.__loomworks_module_roots) do
       for _, cand in ipairs({ root .. "/" .. rel .. ".lua", root .. "/" .. rel .. "/init.lua" }) do
