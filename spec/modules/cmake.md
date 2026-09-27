@@ -993,3 +993,29 @@ A preset-configured project (the profile maps a `preset:` configuration)
 requires `exe:cmake` and the executable of the generator the preset names (read
 from the already-parsed preset) — nothing about the compiler: what the preset
 selects is the preset's business.
+
+## 14. Workspace trust (`trust_fields`)
+
+The cmake module declares `trust_fields = { type_config = { "clangd", "qmlls",
+"qml_import_paths" } }` (core §8.4, §17.6): the language-server binary
+overrides and the qmlls import-path arguments are honored only from the signed
+working copy, never from `loomworks.json`. Build-description inputs — a
+configuration's `options`, `toolchain`, `generator`, presets, `binary_dir` — are
+not program-bearing: they feed the explicit configure, which runs the project's
+own CMake code anyway (core §17.8).
+
+A kit's executable paths (`cmake_path`, `compiler_path`, the vcvarsall script,
+`clangd_path`, the kit `env`) come from detection on this machine for the kit's
+key, never from `tool_data` recorded in the cache (core §17.7).
+
+The vcvarsall wrapper (§1a) runs its generated batch file as
+`cmd.exe /d /v:on /c !LOOMWORKS_VCVARS_BAT!` with the batch path passed in that
+environment variable: delayed expansion substitutes the path **after** cmd has
+parsed the command line, so the path's characters are never interpreted — the
+same argv works under both process-spawning conventions (the editor's job
+runner, which hands cmd.exe its arguments verbatim, and the standalone host's,
+which quotes them). A build directory may therefore contain spaces, `(`, `)`,
+`&`, `^`, `|`, `<` and `>`; only characters unsafe even inside a quoted batch
+argument — `%`, `!`, `"` and line breaks — are refused, with an error naming the
+directory. Inside the batch file every argument is double-quoted (`%` doubled)
+and delayed expansion is disabled.

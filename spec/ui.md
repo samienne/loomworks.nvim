@@ -89,6 +89,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
 | `U`     | delete_user | Delete user.json and reload (with confirmation) |
+| `T`     | trust       | Refused working copy (core §17.4): review its summary and trust (re-sign) it |
 | `:w`    | (write)     | Publish: regenerate loomworks.json from working copy |
 | `:e`    | (edit)      | Reload from published baseline (refused if any divergence) |
 | `:e!`   | (force edit)| Force-revert workspace to baseline (preserves data, drops publication wishes for unmatched items) |

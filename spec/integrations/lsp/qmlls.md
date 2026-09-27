@@ -34,6 +34,10 @@ directory — the same directory clangd receives as
 `compile_commands_dir`. By the time the entry reaches this integration all
 paths are fully resolved.
 
+**Trust (core §17).** The `binary` override and the import-path arguments a
+module forwards come only from the signed working copy (core §17.6); in
+`loomworks.json` they are ignored with a diagnostic.
+
 ## 3. Per-buffer cmd resolution
 
 The `cmd` function the integration installs into `vim.lsp.config` resolves

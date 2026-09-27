@@ -17,6 +17,7 @@
   - [`spec/core/module-interface.md`](spec/core/module-interface.md) — §8 Module Interface
   - [`spec/core/integrations.md`](spec/core/integrations.md) — §9–§14 LSP, SDK, device, overseer, auto-load, commands
   - [`spec/core/headless.md`](spec/core/headless.md) — §16 Headless / Standalone
+  - [`spec/core/trust.md`](spec/core/trust.md) — §17 Workspace Trust
 - **[spec/](spec/)** — Per-implementation specs that fulfil the core
   contracts:
   - [`spec/ui.md`](spec/ui.md) — status page, highlights, winbar
