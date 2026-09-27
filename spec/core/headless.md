@@ -799,7 +799,10 @@ re-authoring it.
 
 Pull is a management write (§16.9): it authors the current working copy only,
 never the published snapshot (§2.4) and never any build or cache state (§2.3).
-It is never part of a build.
+It is never part of a build. It reads the source's working copy only when that
+file carries a valid machine signature, and merges only into a target working
+copy that is valid or absent; the result is signed (§17.5) — a pull never turns
+an untrusted file into a signed one.
 
 **Source resolution.** The source is another checkout directory. Absent an
 explicit source, the operation resolves the **main worktree** of the current git

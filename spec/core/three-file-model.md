@@ -22,6 +22,8 @@ Contains the items the user has chosen to share with collaborators.
   user's local changes (see §2.4).
 - Paths are relative to workspace root.
 - Absolute paths are **forbidden** (breaks portability).
+- Never trusted to name programs: program-bearing fields (§17.6) in it are
+  ignored with a diagnostic, and preserved when the user publishes.
 - `${ENV_VAR}` expansion for toolchain paths.
 
 The runtime never reads loomworks.json directly to drive behavior —
@@ -97,6 +99,10 @@ specific schema and how options map to cmd flags.
 
 - Always gitignored.
 - Written on every UI mutation (add/edit/remove project, config, profile, etc.).
+- Signed with the machine key (§17.3); used only when the signature is valid —
+  an unsigned or modified working copy is refused until the user trusts or
+  discards it (§17.4). It is the only file whose program-bearing fields
+  (§17.6) are honored.
 - **Self-contained**: every reference inside the file resolves to data
   inside the file. The only outward references allowed are to
   module-provided defaults (e.g., `variant:debug` for module-generated
@@ -426,6 +432,10 @@ Sparse record of what has actually been configured and built.
 ```
 
 - Always gitignored.
+- Signed with the machine key (§17.3). An unsigned cache (an earlier loomworks)
+  is discarded and replaced; one with an invalid signature refuses the load
+  until reset (§17.4). Its `tool_data` is a record only — executable paths come
+  from detection (§17.7).
 - Never auto-removes entries — survives git branch switches intact.
 - Grows as builds happen; shrinks only on explicit delete/clean.
 - Flat `build_dirs` dict keyed by the config unit's **relative build-dir

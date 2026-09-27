@@ -669,6 +669,18 @@ recomputation of the count. Absent hook = the module's projects require nothing
 beyond the module itself. Additive and optional: no `api_versions.module` bump
 (§8.0).
 
+**`trust_fields`** *(optional static property)*
+
+`{ type_config = string[] }` — the top-level keys of the module's `type_config`
+that are **program-bearing** (§17.6): they name a program to run (e.g. a
+language-server binary override), add program arguments, or set a spawned
+environment. Core removes these keys from the shared snapshot's layer before the
+merge and reports each removal as a diagnostic; they are honored only from the
+signed working copy. Keys that are part of the project's own build description
+(build commands, toolchain or cross files, build options) are **not** listed —
+explicit builds run them (§17.8). Absent = none. Additive and optional: no
+`api_versions.module` bump (§8.0).
+
 ### 8.5 Module implementations
 
 Each module that ships with loomworks documents its implementation of

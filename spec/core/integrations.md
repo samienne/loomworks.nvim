@@ -633,6 +633,7 @@ when the user explicitly publishes (`:w`).
 | `:LoomworksInit [path]` | Optional directory | Initialize workspace (default: cwd) |
 | `:LoomworksInfo` | None | Open/focus status page |
 | `:LoomworksCompileCommand [file]` | Optional file (default: current buffer) | Show the compile command loomworks' owned LSP database uses for the file, under the active profile |
+| `:LoomworksTrust` | None | Review a refused working copy (§17.4): show its summary, then trust (re-sign), discard, or cancel |
 
 `:LoomworksCompileCommand` resolves the active profile, finds the module
 ConfigUnit whose project source tree is the nearest ancestor of the file, and

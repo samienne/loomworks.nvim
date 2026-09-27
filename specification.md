@@ -28,6 +28,7 @@ never renumbered, and no top-level `§N` is ever split across two files.
 | §9–§14 | Integrations (LSP, SDK, device, overseer, auto-load, commands) | [`spec/core/integrations.md`](spec/core/integrations.md) |
 | §15 | Invariants | this file (`specification.md`) |
 | §16 | Headless / Standalone Execution | [`spec/core/headless.md`](spec/core/headless.md) |
+| §17 | Workspace Trust | [`spec/core/trust.md`](spec/core/trust.md) |
 
 Implementation-specific specs live in sibling files under `spec/`:
 
@@ -62,6 +63,7 @@ local to each file and restart at §1.
 | Adding a new module, LSP server, DAP adapter, or SDK provider | a new file under the corresponding `spec/` subdirectory; touch core only if the contract itself needs a new field or hook |
 | A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
 | How the system behaves when run outside the editor (headless / standalone) | `specification.md` §16 |
+| What a workspace's files may cause to execute; machine signatures on `.nvim/` state | `specification.md` §17 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
@@ -90,8 +92,9 @@ belongs in the matching `spec/` file.
 3. **Deletion safety**: All build directory deletions (config delete, clean,
    nuke) verify that the target path is under the workspace root before
    proceeding. Paths resolving outside the workspace are refused with an
-   error notification. The nuke operation (`<C-n>`) is further restricted
-   to `root/.nvim/` and requires that `loomworks.json` exists at the root.
+   error notification. The nuke operation (`<C-n>`, `lw nuke`) is further
+   restricted to `root/.nvim/` and requires that `loomworks.json` or the
+   working copy (`.nvim/loomworks.user.json`) exists at the root.
 
 4. **Atomic writes**: All file writes (cache, user) use temp + fsync + rename
    with .bak recovery on read failure.
@@ -254,6 +257,17 @@ belongs in the matching `spec/` file.
     that includes the working directory (§8.0). A pinned run executes only
     artifacts the host fetched and verified itself, never files found inside
     the repository (§16.22).
+
+18. **Only signed local state names programs**: A workspace's shared snapshot
+    (`loomworks.json`) never names a program, adds arguments, sets a spawned
+    environment or working directory, or places a deploy outside the
+    workspace — such fields are ignored with a diagnostic and preserved on
+    publish (§17.6). The working copy and the caches under `.nvim/` are used
+    only when they carry this machine's signature (§17.3–§17.4); cached tool
+    data is never the source of an executable path (§17.7); opening a
+    workspace executes nothing that unsigned or shared data names (§17.8); and
+    loader/interpreter-hijack environment variables are refused from every
+    environment source (§17.9).
 
 ---
 
