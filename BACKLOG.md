@@ -734,6 +734,21 @@ Follow-ups from tester feedback on v0.1.31-beta.1 (not done yet):
   installs are not probed") so an empty SDKs line isn't read as "no SDK
   installed".
 
+Follow-ups from tester feedback on v0.1.31-beta.2 (next release):
+- **Kits require ninja on the plain PATH.** `cmake_kits` offers Ninja + MSVC /
+  clang-cl kits only when `ninja` is on the plain PATH, although those builds
+  run inside vcvars, which appends VS's bundled ninja (health already accepts
+  the bundled one for a required ninja). A machine whose only ninja is the
+  VS-bundled one gets no Ninja + MSVC kits.
+- **No way to pick a newer standalone clang-cl.** A standalone LLVM clang-cl on
+  PATH (e.g. 22.1) is paired only with the newest VS install, and only when
+  that install has no bundled clang-cl of its own; when the newest VS bundles
+  one (e.g. 19.1), the standalone never becomes a kit. Offer it as its own kit
+  (paired with the newest VS's toolset/vcvars).
+- **Attribution layout varies by context** (cosmetic): a single requirer reads
+  `profile/project`, several read `N profiles (…)`; make the two shapes line
+  up.
+
 ## Compiler cache for Visual Studio generator builds
 
 CMake's `CMAKE_<LANG>_COMPILER_LAUNCHER` is honored only by the Ninja and
