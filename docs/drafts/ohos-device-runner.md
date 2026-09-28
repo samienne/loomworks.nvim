@@ -159,11 +159,13 @@ project's local or shared config:
 
 ```json
 "LumeScene": {
-    "cmake": { … },
-    "device": {
-        "stage":   [ "test/unittest/api_unit_test/*.so",
-                     "test/unittest/api_unit_test/plugins/*.so" ],
-        "archive": [ "test/assets/**" ]
+    "cmake": {
+        …,
+        "device": {
+            "stage":   [ "test/unittest/api_unit_test/*.so",
+                         "test/unittest/api_unit_test/plugins/*.so" ],
+            "archive": [ "test/assets/**" ]
+        }
     }
 }
 ```

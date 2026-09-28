@@ -8128,9 +8128,12 @@ Device choice for `lw run` / `lw test --target`: --device, else the profile's
 persisted serial, else the only online device — never guessed otherwise.
 
 What is staged: the program, the project shared libraries it links, the
-platform runtime the runner names, plus the project's `device` block:
+platform runtime the runner names, plus the project's `device` block, kept in
+the project's module section (e.g. projects.App.cmake.device):
   "device": { "stage": ["bin/*.so"], "archive": ["assets/**"],
               "env": { "K": "V" }, "working_dir": "bin" }
+(An older project-level "device" block is still read and moves into the module
+section on the next save.)
 `stage`/`archive` are globs relative to the build directory (layout kept);
 `archive` sets travel as one tar. Only changed files are re-sent. Runs save
 output.log (and device.log, pulled results, crash reports) under

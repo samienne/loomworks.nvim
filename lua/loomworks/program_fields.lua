@@ -252,15 +252,18 @@ function M.strip(config, modules)
             end
             -- (5) Project-level device block: env / working_dir are
             -- program-bearing; stage / archive patterns are not (spec §18.9).
+            -- Parsed onto the project; it lives in the module section of the
+            -- raw file (`projects.<p>.<type>.device`), where it is regrafted.
             if type(proj.device) == "table" then
+                local mtype = proj.type or "?"
                 for _, f in ipairs(M.DEVICE_KEYS) do
                     if proj.device[f] ~= nil then
                         add({
                             kind = "device", value = proj.device[f],
                             path = { "projects", pkey, "device", f },
-                            raw_path = { "projects", pkey, "device", f },
+                            raw_path = { "projects", pkey, mtype, "device", f },
                             anchor = 2,
-                            label = "projects." .. pkey .. ".device." .. f,
+                            label = "projects." .. pkey .. "." .. mtype .. ".device." .. f,
                             detail = short(proj.device[f]),
                         })
                         proj.device[f] = nil
@@ -353,6 +356,7 @@ end
 --- @return string[] program lines, string[] other lines
 function M.review(user_data, modules)
     local prog, other = {}, {}
+    local device_other = {}  -- device stage / archive sets (what is copied to a device)
     if type(user_data) ~= "table" then return prog, other end
     local function p(s) prog[#prog + 1] = s end
 
@@ -420,6 +424,12 @@ function M.review(user_data, modules)
                                     hits[#hits + 1] = "device." .. f .. " = " .. short(l.device[f], 50)
                                 end
                             end
+                            for _, f in ipairs({ "stage", "archive" }) do
+                                if l.device[f] ~= nil then
+                                    device_other[#device_other + 1] = "projects." .. pkey .. ".launch." .. lname
+                                        .. ".device." .. f .. " = " .. short(l.device[f], 90)
+                                end
+                            end
                         end
                         if #hits > 0 then
                             p("projects." .. pkey .. ".launch." .. lname .. ": " .. table.concat(hits, ", "))
@@ -432,11 +442,22 @@ function M.review(user_data, modules)
                     p("projects." .. pkey .. ".deploy → " .. dest)
                 end
             end
-            if type(proj.device) == "table" then
+            -- The device block (spec §18.9): in the module section, or at the
+            -- former project-level location. env / working_dir are program
+            -- settings; stage / archive (what is copied to a device) are listed
+            -- with the other contents.
+            local dev, dev_label = nil, nil
+            if type(tc) == "table" and type(tc.device) == "table" then
+                dev, dev_label = tc.device, "projects." .. pkey .. "." .. mtype .. ".device."
+            elseif type(proj.device) == "table" then
+                dev, dev_label = proj.device, "projects." .. pkey .. ".device."
+            end
+            if dev then
                 for _, f in ipairs(M.DEVICE_KEYS) do
-                    if proj.device[f] ~= nil then
-                        p("projects." .. pkey .. ".device." .. f .. " = " .. short(proj.device[f], 90))
-                    end
+                    if dev[f] ~= nil then p(dev_label .. f .. " = " .. short(dev[f], 90)) end
+                end
+                for _, f in ipairs({ "stage", "archive" }) do
+                    if dev[f] ~= nil then device_other[#device_other + 1] = dev_label .. f .. " = " .. short(dev[f], 90) end
                 end
             end
         end
@@ -474,6 +495,7 @@ function M.review(user_data, modules)
     end
 
     local function count(t) local n = 0; for _ in pairs(type(t) == "table" and t or {}) do n = n + 1 end; return n end
+    for _, l in ipairs(device_other) do other[#other + 1] = l end
     other[#other + 1] = string.format("%d project(s), %d configuration set(s), %d profile(s)",
         count(user_data.projects), count(user_data.configuration_sets), count(user_data.profiles))
     if type(user_data.active_profile) == "string" then

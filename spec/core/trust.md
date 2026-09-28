@@ -88,7 +88,9 @@ A file is, on read:
 - **Working copy refused.** The workspace does not load (the same posture as a
   version mismatch, §15 invariant 11): nothing in the file is read, and nothing
   overwrites it. The host offers two actions: **trust** — show a summary of what
-  the file contains, with every program-bearing field (§17.6) listed, and on
+  the file contains, with every program-bearing field (§17.6) listed — and,
+  among the other contents, the `device` blocks' stage and archive sets
+  (§18.9), since they choose what is copied to a device — and on
   confirmation re-sign it exactly as reviewed — or **discard** it (delete it;
   the workspace then loads from `loomworks.json` alone, §2.2). The message says
   whether the file is unsigned or modified outside loomworks. Because every
@@ -155,7 +157,7 @@ the generic ones:
   workspace-root built-in variable — with no other variable reference;
 - a working-copy-only SDK installation path (§10.4) appearing in shared data;
 - a `device` block's device-side environment (`env`) or working directory
-  (`working_dir`) (§18.9). Its `stage` / `archive` patterns are not
+  (`working_dir`) (§18.9; the project's block lives in its module section). Its `stage` / `archive` patterns are not
   program-bearing: they are statically confined to the build directory and
   select what an explicit remote run transfers, not what runs. A launch
   configuration's `device_log` options (§18.13) are not program-bearing either:

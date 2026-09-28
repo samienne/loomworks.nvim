@@ -20,7 +20,7 @@ local NON_TYPE_KEYS = {
     launch = true,
     variables = true,
     deploy = true,  -- project-level deploy dict, not a module-type key
-    device = true,  -- remote-execution block (spec §18.9)
+    device = true,  -- former location of the remote-execution block (spec §18.9)
 }
 
 --- Extract project type from the project definition table.
@@ -48,6 +48,42 @@ function M._extract_type(project_def)
     return found_type, found_config, nil
 end
 
+--- Lift a project's `device` block (spec §18.9) out of its module section.
+--- The block lives at `projects.<p>.<type>.device` — an older lw preserves an
+--- unknown module field, but reads an unknown project-level key as a second
+--- module type and refuses the file. The former project-level location is
+--- still read (with a one-line deprecation note; the next save writes the new
+--- location); when both are present the module-section block wins.
+--- Returns the block and a copy of `type_config` without it (the raw table is
+--- never mutated).
+--- @param key string project key (messages)
+--- @param def table raw project definition
+--- @param ptype string module type key
+--- @param type_config table module section
+--- @return table|nil device, table type_config
+function M._extract_device(key, def, ptype, type_config)
+    local device = nil
+    if type(type_config) == "table" and type_config.device ~= nil then
+        device = type_config.device
+        local copy = {}
+        for k, v in pairs(type_config) do copy[k] = v end
+        copy.device = nil
+        type_config = copy
+    end
+    if def.device ~= nil then
+        if device ~= nil then
+            vim.notify("loomworks: project '" .. key .. "': ignoring the old project-level \"device\" block — \""
+                .. ptype .. ".device\" is set", vim.log.levels.WARN)
+        else
+            device = def.device
+            vim.notify("loomworks: project '" .. key .. "': the \"device\" block moved into \"" .. ptype
+                .. "\" (projects." .. key .. "." .. ptype .. ".device); it is rewritten there on the next save",
+                vim.log.levels.WARN)
+        end
+    end
+    return device, type_config
+end
+
 --- Normalize raw project definitions into internal format.
 --- Extracts type from the inner key (e.g. { cmake = {} } -> type = "cmake").
 --- Does NOT validate path existence on disk.
@@ -69,6 +105,8 @@ function M.normalize_projects(raw_projects)
         if not is_known_type(ptype) then
             vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
+        local device
+        device, type_config = M._extract_device(key, def, ptype, type_config)
         projects[key] = {
             path = def.path or key,
             type = ptype,
@@ -77,7 +115,7 @@ function M.normalize_projects(raw_projects)
             launch = def.launch,
             variables = def.variables,
             deploy = def.deploy,
-            device = def.device,
+            device = device,
         }
     end
     return projects, nil
@@ -107,6 +145,9 @@ function M.validate(raw, root)
             vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
 
+        local device
+        device, type_config = M._extract_device(key, def, ptype, type_config)
+
         local project_path = def.path or key
         local abs_path = root .. "/" .. project_path
         local stat = (vim.uv or vim.loop).fs_stat(abs_path)
@@ -130,7 +171,7 @@ function M.validate(raw, root)
         -- Device blocks (spec §18.9) and launch-level device_log options (§18.13).
         do
             local man = require("loomworks.remote.manifest")
-            local ok, derr = man.validate_block(def.device, "project '" .. key .. "'")
+            local ok, derr = man.validate_block(device, "project '" .. key .. "'")
             if not ok then return nil, derr end
             for launch_name, launch_def in pairs(type(def.launch) == "table" and def.launch or {}) do
                 if type(launch_def) == "table" then
@@ -221,7 +262,7 @@ function M.validate(raw, root)
             launch = def.launch,
             variables = project_variables,
             deploy = def.deploy,
-            device = def.device,
+            device = device,
         }
     end
 

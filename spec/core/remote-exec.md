@@ -316,16 +316,32 @@ Staged files are kept.
 ### 18.9 The `device` block
 
 A project MAY declare, and a launch configuration MAY override, a `device`
-block that shapes remote execution of its build targets:
+block that shapes remote execution of its build targets. The project's block
+lives in its **module section** (`projects.<project>.<type>.device`):
 
 ```json
-"device": {
-    "stage":   [ "test/unittest/api_unit_test/**" ],
-    "archive": [ "test/assets/**" ],
-    "env":     { "SCENE_LOG_LEVEL": "debug" },
-    "working_dir": "test/unittest/api_unit_test"
+"LumeScene": {
+    "cmake": {
+        "device": {
+            "stage":   [ "test/unittest/api_unit_test/**" ],
+            "archive": [ "test/assets/**" ],
+            "env":     { "SCENE_LOG_LEVEL": "debug" },
+            "working_dir": "test/unittest/api_unit_test"
+        }
+    }
 }
 ```
+
+The module section is the location because it is backward compatible: a
+release that does not know the block preserves an unknown field of a module
+section (it passes the section to the module and writes it back unchanged), but
+reads an unknown project-level key as a second module type and refuses the
+file. The block is nonetheless core's, not the module's: core lifts it out of
+the section before the module sees its configuration. The former project-level
+location (`projects.<project>.device`) is still read, with a one-line
+deprecation note, and is written to the module section on the next save; when
+both are present the module-section block wins and the other is ignored with a
+note. A launch configuration's block stays in the launch configuration.
 
 | Field | Meaning | Trust (§17.6) |
 |-------|---------|---------------|

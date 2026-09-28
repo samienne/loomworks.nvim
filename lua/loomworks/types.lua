@@ -67,8 +67,9 @@
 --- @class loomworks.ConfigProject
 --- @field path string relative path from workspace root
 --- @field type string module type ("cmake", "typescript")
---- @field type_config table module-specific configuration from loomworks.json
+--- @field type_config table module-specific configuration from loomworks.json (without `device`)
 --- @field depends_on? string[]
+--- @field device? table remote-execution block (spec §18.9), lifted out of the module section
 
 --- Explicit profile definition in loomworks.json.
 --- @class loomworks.ConfigProfileDef
@@ -204,6 +205,7 @@
 --- @field type string module type
 --- @field path? string relative path
 --- @field type_config? table module-specific configuration
+--- @field device? table remote-execution block (spec §18.9)
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool_key? string cache key suffix

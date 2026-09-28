@@ -697,16 +697,22 @@ directory:
 
 ```json
 "LumeScene": {
-    "cmake": { },
-    "device": {
-        "stage":   [ "test/unittest/api_unit_test/*.so",
-                     "test/unittest/api_unit_test/plugins/*.so" ],
-        "archive": [ "test/assets/**" ],
-        "env":     { "SCENE_LOG_LEVEL": "debug" },
-        "working_dir": "test/unittest/api_unit_test"
+    "cmake": {
+        "device": {
+            "stage":   [ "test/unittest/api_unit_test/*.so",
+                         "test/unittest/api_unit_test/plugins/*.so" ],
+            "archive": [ "test/assets/**" ],
+            "env":     { "SCENE_LOG_LEVEL": "debug" },
+            "working_dir": "test/unittest/api_unit_test"
+        }
     }
 }
 ```
+
+The block sits inside the project's module section (`cmake` here), where an
+older `lw` that does not know it still loads the file. A `device` block written
+directly under the project by an earlier version is still read and moves into
+the module section the next time loomworks saves the file.
 
 Files keep their build-tree layout on the device, so a program that loads
 `plugins/*.so` beside itself or reads `../../assets` finds them. `archive` sets
