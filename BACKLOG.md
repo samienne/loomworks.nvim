@@ -52,6 +52,15 @@ provider's device runner. Deferred:
   headless only; the editor refuses a foreign target via `foreign.check_local`.
 - **Debugging and test-explorer integration** for foreign targets (§18.11).
 - **stdin forwarding** to device programs (§18.5).
+- **hiview faultlogger reports for lw-launched runs** — hiview doesn't write
+  faultlogger/cppcrash-*.log for lw-launched runs (only
+  faultlog/temp/cppcrash-<pid>-*.json, which lw collects). Manual runs with the
+  same `./<exe>` name DID get a faultlogger report, so the exec name isn't the
+  cause. Remaining differences: lw's `$$`+exec wrapper vs a plain
+  `cd … && LD_LIBRARY_PATH=… ./exe … > out.txt 2>&1` in one hdc shell string,
+  and stdout/stderr streamed over hdc vs redirected to a file on the device.
+  Needs a controlled phone experiment varying one factor at a time. Low
+  priority: the collected temp json has the full stack.
 
 ---
 
