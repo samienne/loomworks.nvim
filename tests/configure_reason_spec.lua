@@ -223,6 +223,29 @@ describe("forced full reconfigure (--reconfigure)", function()
             overseer.configure_reason_line(step))
     end)
 
+    it("the task-result log line names the unit's configuration, never '?'", function()
+        local ws, profile, _, r = make_core()
+        root = r
+        local lines = {}
+        local real = ws._core._deps.log
+        ws._core._deps.log = setmetatable({
+            debug = function(_, fmt, ...) lines[#lines + 1] = string.format(fmt, ...) end,
+        }, { __index = function(_, k)
+            local v = real[k]
+            if type(v) == "function" then return function(_, ...) return v(real, ...) end end
+            return v
+        end })
+        local ok, err = pcall(function()
+            require("loomworks.cli")._record_step(ws, configure_step(plan(ws, profile)), true)
+        end)
+        ws._core._deps.log = real
+        assert.is_true(ok, err)
+        local found
+        for _, l in ipairs(lines) do if l:find("record_task_result:", 1, true) then found = l end end
+        assert.is_not_nil(found)
+        assert.truthy(found:find("App/Debug configure success", 1, true), found)
+    end)
+
     it("modules report existing configure state by a stat of their own marker", function()
         local d = (vim.fn.tempname():gsub("\\", "/"))
         vim.fn.mkdir(d .. "/meson-private", "p")
