@@ -1959,7 +1959,7 @@ function M._device_clean(ws, args, deps)
   on_exit(function() device_lock.release(h) end)
   local transport = require("loomworks.remote.transport").new({
     runner = runner, serial = serial, backend = deps and deps.backend, timeouts = opts.timeouts })
-  local ok, err = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
+  local ok, err, base_removed = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
   device_lock.release(h)
   if not ok then die(err) end
   -- Drop the sync records of every staging root under this workspace prefix.
@@ -1972,6 +1972,8 @@ function M._device_clean(ws, args, deps)
     if ws._save_cache then ws:_save_cache() end
   end
   out("removed " .. ws_prefix .. " from " .. serial)
+  if base_removed then out("removed empty " .. runner.staging_base:gsub("/+$", "") .. " from " .. serial) end
+  out("cleared host sync record")
   return 0
 end
 
@@ -8123,7 +8125,9 @@ build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
   select <serial> [profile]       persist the profile's device (working copy)
   select --clear [profile]        forget it
   clean [--device <serial>]       remove this workspace's staging tree from
-                                  the device and its sync record
+                                  the device (and the staging base if that
+                                  leaves it empty) and clear the host's sync
+                                  record
 
 Device choice for `lw run` / `lw test --target`: --device, else the profile's
 persisted serial, else the only online device — never guessed otherwise.

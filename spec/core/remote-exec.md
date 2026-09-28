@@ -394,9 +394,12 @@ this version. Test-explorer integration for remote tests is deferred.
 ### 18.12 Remote deletion safety
 
 Core only ever asks a device to remove paths under
-`<staging_base>/<workspace name>/`, checked with a separator boundary
-(`path == prefix` or `path` starts with `prefix .. "/"`) after normalization,
-never a path assembled from unchecked cache content.
+`<staging_base>/<workspace segment>/` (§18.4), checked with a separator
+boundary (`path == prefix` or `path` starts with `prefix .. "/"`) after
+normalization, never a path assembled from unchecked cache content. The one
+exception is the staging base itself, which `lw device clean` removes only with
+an empty-directory removal (never recursively), and only when it is an absolute
+path of plain segments.
 
 ### 18.13 Program output and the runner log stream
 

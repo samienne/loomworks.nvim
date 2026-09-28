@@ -167,6 +167,35 @@ describe("lw device list / select", function()
         assert.is_nil(ws._device_sync.S1["/data/stage/myws/u"])
         assert.is_not_nil(ws._device_sync.S1["/data/stage/other/v"])
         assert.equals(1, saves)
+        assert.truthy(res.stdout:find("cleared host sync record", 1, true), res.stdout)
+        -- The staging base still holds another workspace: rmdir leaves it.
+        assert.is_nil(dev.boards.S1.removed_dirs)
+        assert.is_nil(res.stdout:find("removed empty", 1, true))
+    end)
+
+    it("device clean removes the staging base too once it is empty (rmdir only, never rm -rf)", function()
+        local saved = vim.env.LOOMWORKS_DEVICE_LOCK_DIR
+        local lockroot = fx.mkroot()
+        vim.env.LOOMWORKS_DEVICE_LOCK_DIR = lockroot
+        local dev = fx.device({ serials = { S1 = "One" } })
+        dev.boards.S1.files["/data/stage/myws/u/a"] = { data = "x" }
+        local sdk = fx.fake_sdk(fx.fake_runner_table())
+        local ws = mock_ws(sdk)
+        ws.name = "myws"
+        ws._device_sync = { S1 = { ["/data/stage/myws/u"] = { files = {} } } }
+        ws._save_cache = function() end
+        local res = capture(function() return cli._device_clean(ws, {}, { backend = dev:backend() }) end)
+        vim.env.LOOMWORKS_DEVICE_LOCK_DIR = saved
+        require("loomworks.io").rm_rf(lockroot)
+        assert.is_true(res.ok, res.stderr)
+        assert.same({ "/data/stage" }, dev.boards.S1.removed_dirs)
+        assert.truthy(res.stdout:find("removed empty /data/stage from S1", 1, true), res.stdout)
+        assert.is_nil(ws._device_sync.S1)
+        for _, c in ipairs(dev.calls) do
+            if c.req and c.req.argv[1] == "rm" then
+                for k = 3, #c.req.argv do assert.are_not.equal("/data/stage", c.req.argv[k]) end
+            end
+        end
     end)
 
     it("select without a profile under non-interactive mode refuses", function()

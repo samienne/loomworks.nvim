@@ -388,18 +388,31 @@ function M.summary(serial, r)
     return "staging on " .. serial .. ": " .. table.concat(parts, ", ")
 end
 
---- Remove a workspace's whole staging tree from a device (`lw device clean`).
+--- Remove a workspace's whole staging tree from a device (`lw device clean`),
+--- then — best-effort — the staging base itself when that left it empty.
+--- The base is only ever removed with `rmdir` (which refuses a non-empty
+--- directory), never recursively; a base that is not an absolute path of
+--- plain segments is left alone.
 --- @param transport table
 --- @param ws_prefix string `<staging_base>/<workspace>`
 --- @param staging_base string runner staging base
---- @return boolean|nil ok, string|nil err
+--- @return boolean|nil ok, string|nil err, boolean|nil base_removed
 function M.clean(transport, ws_prefix, staging_base)
     local base = staging_base:gsub("/+$", "")
     -- The prefix must be exactly one segment below the staging base.
     if not manifest_mod.device_path_under(ws_prefix, base) or ws_prefix:gsub("/+$", "") == base then
         return nil, "refusing to remove " .. tostring(ws_prefix) .. ": not a workspace staging root under " .. base
     end
-    return device_remove(transport, { ws_prefix }, ws_prefix, true)
+    local ok, err = device_remove(transport, { ws_prefix }, ws_prefix, true)
+    if not ok then return nil, err end
+    local removed = false
+    -- device_path_under(base, base) checks: absolute, no "." / ".." segment,
+    -- no control characters. "/" itself is never a candidate.
+    if base ~= "" and base:match("^/[^/]") and manifest_mod.device_path_under(base, base) then
+        local status = transport:shell({ "rmdir", base })
+        removed = status == 0
+    end
+    return true, nil, removed
 end
 
 return M

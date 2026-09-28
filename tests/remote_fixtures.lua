@@ -324,6 +324,23 @@ function FakeDevice:run_program(serial, req, nonce)
     local plan = { out = {}, err = {}, exit = 0 }
     if prog == "mkdir" then
         for i = 3, #argv do b.dirs[argv[i]] = true end
+    elseif prog == "rmdir" then
+        -- rmdir semantics: only an empty directory is removed.
+        for i = 2, #argv do
+            local p = argv[i]
+            local busy = false
+            for fp in pairs(b.files) do
+                if fp:sub(1, #p + 1) == p .. "/" then busy = true end
+            end
+            if busy then
+                plan.err[#plan.err + 1] = "rmdir: " .. p .. ": Directory not empty"
+                plan.exit = 1
+            else
+                b.dirs[p] = nil
+                b.removed_dirs = b.removed_dirs or {}
+                b.removed_dirs[#b.removed_dirs + 1] = p
+            end
+        end
     elseif prog == "chmod" then
         for i = 3, #argv do
             if b.files[argv[i]] then b.files[argv[i]].mode = argv[2] end
