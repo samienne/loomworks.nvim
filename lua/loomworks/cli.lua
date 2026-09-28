@@ -2666,7 +2666,8 @@ function M._test_targets(ws, profile, names, opts, deps)
       local xml
       if fw == "gtest" then
         results_requested = true
-        xml = vim.fn.tempname() .. ".xml"
+        -- (no vim.fn.tempname in the standalone host)
+        xml = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-test-" .. require("loomworks.remote.transport").nonce() .. ".xml"
         spec.args[#spec.args + 1] = "--gtest_output=xml:" .. xml
       end
       local argv = { spec.cmd }

@@ -1829,5 +1829,44 @@ do
   eq(vim.fn.jobstart({}, {}), 0, "jobstart: 0 for an empty argv")
 end
 
+print("remote execution under the shim (spec §18)")
+do
+  -- The executor, transport and sentinel protocol rely on vim.schedule /
+  -- vim.wait / uv pipes; run them under the real shim (luvi host).
+  local vim = require("loomworks.shim")
+  package.path = root .. "/?.lua;" .. package.path
+  local se = require("loomworks.remote.spec_exec")
+  local is_win = package.config:sub(1, 1) == "\\"
+  local sh = is_win and ((os.getenv("SystemRoot") or "C:/Windows"):gsub("\\", "/") .. "/System32/cmd.exe") or "/bin/sh"
+  local args = is_win and { "/d", "/c", "echo one& (echo two)1>&2& exit 3" }
+    or { "-c", "echo one; echo two 1>&2; exit 3" }
+  local job, fail = se.run({ cmd = sh, args = args }, { label = "probe" })
+  eq(job.lines[1], "one", "spec_exec: stdout line, CRLF normalised")
+  eq(job.err_lines[1], "two", "spec_exec: stderr line")
+  eq(job.code, 3, "spec_exec: exit status")
+  ok(fail and fail:find("probe failed (exit 3)", 1, true) ~= nil, "spec_exec: failure names the step")
+  local long = is_win and { "/d", "/c", "ping -n 30 127.0.0.1 >nul" } or { "-c", "sleep 30" }
+  local tjob, tfail = se.run({ cmd = sh, args = long }, { label = "hang", timeout = 0.5 })
+  ok(tjob.timed_out and tfail:find("timed out", 1, true) ~= nil, "spec_exec: hard timeout kills the step")
+  local rel = se.run({ cmd = "sh", args = {} }, { label = "rel" })
+  ok(rel.spawn_error ~= nil, "spec_exec: a bare program name is refused")
+
+  local fx = require("tests.remote_fixtures")
+  local dev = fx.device()
+  local runner = fx.fake_runner_table()
+  local t = require("loomworks.remote.transport").new({ runner = runner, serial = "SER1", backend = dev:backend() })
+  dev.boards.SER1.files["/x/prog"] = { data = "p" }
+  dev.behaviors.prog = function() return { out = { "hello" }, exit = 7 } end
+  local req = { argv = { "/x/prog", "a b" }, cwd = "/x", env = { K = "v" }, library_dirs = { "/x" },
+    nonce = require("loomworks.remote.transport").nonce() }
+  local seen = {}
+  local ejob, st = t:start_exec(req, { on_output = function(_, l) seen[#seen + 1] = l end })
+  ejob:wait()
+  eq(st.status, 7, "transport: status comes from the nonce sentinel")
+  eq(table.concat(seen, "|"), "hello", "transport: sentinel / pid lines are not program output")
+  local refused = t:start_exec({ argv = { "/x/prog" }, cwd = "/x", env = { ["A-B"] = "1" }, nonce = "n1" })
+  eq(refused, nil, "transport: a non-portable env name is refused before any spec")
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
