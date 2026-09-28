@@ -114,6 +114,7 @@ function M.fake_unit(o)
         tool_object = function() return tool end,
         build_dir = function() return o.build_dir end,
         configured_here = function() return true end,
+        run_env = function() return nil end,
     }
     return unit
 end

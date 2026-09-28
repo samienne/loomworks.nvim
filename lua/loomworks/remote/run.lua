@@ -356,6 +356,43 @@ function M.execute(o)
     if o.ws._save_cache then pcall(o.ws._save_cache, o.ws) end
     note(staging.summary(serial, report))
 
+    -- Optional pre-execution step (spec §18.6 framework detection): the
+    -- caller may probe the staged program (same cwd / env / loader path) and
+    -- remove stale device files, then declare the result files to pull.
+    if o.before_exec then
+        local function probe(extra)
+            local argv = { plan.program }
+            for _, a in ipairs(extra or {}) do argv[#argv + 1] = a end
+            local job, pstate = t:start_exec({ argv = argv, cwd = plan.cwd, env = plan.env,
+                library_dirs = plan.library_dirs, nonce = transport_mod.nonce() },
+                { label = "probe " .. plan.name }, t.timeouts.query)
+            if not job then return nil, pstate end
+            job:wait()
+            local pf = t:exec_failure(job, pstate)
+            if pf then return nil, pf end
+            return pstate.status, pstate.output
+        end
+        local function remove(rels)
+            local paths = {}
+            for _, rel in ipairs(rels) do
+                if not manifest_mod.clean_rel(rel) then return nil, "invalid device path " .. tostring(rel) end
+                paths[#paths + 1] = plan.root .. "/" .. rel
+            end
+            local status, lines = t:shell({ "rm", "-f", unpack(paths) })
+            if status == nil then return nil, lines end
+            return status == 0
+        end
+        local function mkdir(rel)
+            if not manifest_mod.clean_rel(rel) then return nil, "invalid device path " .. tostring(rel) end
+            local status, lines = t:shell({ "mkdir", "-p", plan.root .. "/" .. rel })
+            if status == nil then return nil, lines end
+            return status == 0
+        end
+        local ok, results_or_err = pcall(o.before_exec, plan, { probe = probe, remove = remove, mkdir = mkdir })
+        if not ok then return fail_setup(tostring(results_or_err)) end
+        if type(results_or_err) == "table" then o.results = results_or_err end
+    end
+
     -- Run folder + output files.
     local run_dir, rerr = M.make_run_dir(o.manifest.root, serial)
     if not run_dir then return fail_setup(rerr) end
