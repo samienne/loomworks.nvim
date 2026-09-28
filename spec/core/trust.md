@@ -219,7 +219,8 @@ or a file was viewed — run only what trusted state names:
   configured on this machine; a build directory that merely exists on disk (it
   came with the copy) is never introspected and its binaries are never
   executed passively.
-- **Version-control queries** (§16.25–§16.27, status hints) disable
+- **Version-control queries** (§16.25–§16.27, status hints, the `lw health`
+  submodule report §16.31) disable
   repository-configured command hooks (file-system monitor, hooks path) on
   every invocation and run the resolved absolute program (§5.10).
 
