@@ -232,7 +232,7 @@ function M.fake_runner_table(o)
                     return line
                 end,
                 display = function(line)
-                    if options.level == "E" and not line:match(" E ") then return nil end
+                    if options.level == "E" and not line:match("^E ") then return nil end
                     return "LOG " .. line
                 end,
                 show = show,
