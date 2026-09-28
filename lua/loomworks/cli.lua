@@ -8213,10 +8213,16 @@ is on PATH, and fetches the first release bundle. No admin required.
   location   Windows: %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe (on PATH)
              Unix:    ~/.local/bin/lw
 
-  -y                 apply PATH changes without prompting (needed with --no-input)
+  -y, --yes          replace an existing lw and apply PATH changes without
+                     prompting (needed with --no-input / in CI)
   --no-modify-path   install the binary but never touch PATH / shell rc
   --no-bundle        skip fetching the release bundle (do `lw self-update` later)
   --dry-run          print what would happen, change nothing
+
+If a different lw is already installed at that location, install says what it
+is (a development build or its release, size, date) and asks before replacing
+it; without a terminal (--no-input, LW_NO_INPUT, CI) it refuses unless -y is
+given. An identical binary is reported as already installed.
 
 Typical bootstrap (download, verify by hash, then let the verified binary
 install itself) — from the release page for your platform, e.g.:

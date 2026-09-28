@@ -1063,7 +1063,13 @@ account security, not artifact verification.
 PATH) — ensures it is on PATH (prompting first; `-y` to apply non-interactively,
 `--no-modify-path` to skip), and runs `lw self-update` to fetch the verified
 release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
-fetch. No admin required. Installing over an `lw` that is currently running
+fetch. No admin required. If a *different* `lw` is already installed there
+(say, a development build, or another release), `lw install` shows what it is —
+development build or release version, size, and date — and asks before
+replacing it; `-y` replaces without asking, and without a terminal
+(`--no-input`, `LW_NO_INPUT`, CI) it refuses unless `-y` is given. An identical
+binary is simply reported as already installed. Installing over an `lw` that
+is currently running
 (a build in another terminal) works too: the new binary is swapped in the same
 way `lw self-update` replaces itself, rather than written over the running one.
 Then enable completion with `lw completion bash`

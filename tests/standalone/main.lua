@@ -328,6 +328,111 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.install — replacing an existing installed binary asks first")
+do
+  -- A downloaded (e.g. pre-release) lw run with `install` used to overwrite the
+  -- installed one silently — here a dev build — with no word about what it
+  -- replaced. It must describe what is there and ask; -y skips the question;
+  -- non-interactive without -y refuses; identical content is "already installed".
+  local sb = (root .. "/tests/.tmp-install-replace"):gsub("\\", "/")
+  paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb)
+  uv.os_setenv("HOME", sb)
+  local dest = install.target_path()
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+  local function fused(files)  -- a fake fused host: junk "exe" + appended zip
+    local w = miniz.new_writer()
+    for name, body in pairs(files) do w:add(name, body) end
+    return "MZ-not-really-an-exe" .. w:finalize()
+  end
+  local dev_bytes = fused({ ["loomworks/cli.lua"] = "return {}", ["boot/verify.lua"] = "M.RELEASE_VERSION = nil\n" })
+  local new_bytes = fused({ ["boot/verify.lua"] = 'M.RELEASE_VERSION = "0.1.33-beta.3"\n' })
+  local src = sb .. "/download/lw-new"
+  put(src, new_bytes)
+  local base = { exe_path = src, no_bundle = true, no_modify_path = true }
+  local function with(extra)
+    local o = {}
+    for k, v in pairs(base) do o[k] = v end
+    for k, v in pairs(extra) do o[k] = v end
+    return o
+  end
+
+  -- describe_binary: cheap, never executes the file
+  local d = install.describe_binary and install.describe_binary(dest) or nil
+  ok(d == nil, "describe_binary: nil for a missing file")
+  put(dest, dev_bytes)
+  d = install.describe_binary and install.describe_binary(dest)
+  ok(type(d) == "string" and d:find(#dev_bytes .. " bytes", 1, true) ~= nil
+    and d:find("modified ", 1, true) ~= nil,
+    "describe_binary: size + mtime  (got " .. tostring(d) .. ")")
+  ok(type(d) == "string" and d:find("development build", 1, true) ~= nil,
+    "describe_binary: recognises a dev build (fused system Lua)  (got " .. tostring(d) .. ")")
+  local d2 = install.describe_binary and install.describe_binary(src)
+  ok(type(d2) == "string" and d2:find("lw 0.1.33-beta.3", 1, true) ~= nil,
+    "describe_binary: reads a release host's embedded version  (got " .. tostring(d2) .. ")")
+
+  -- non-interactive without -y: refuse, leave the installed binary alone
+  local asked = 0
+  local function ask(answer) return function() asked = asked + 1; return answer end end
+  local r, e = install.install(with({ no_input = true }))
+  ok(r == nil and type(e) == "string" and e:find(dest, 1, true) ~= nil
+    and e:find("-y", 1, true) ~= nil,
+    "non-interactive replace without -y is refused, naming the target and -y  (got " .. tostring(e) .. ")")
+  ok(readfile(dest) == dev_bytes, "refused install left the existing binary untouched")
+
+  -- interactive: the question describes what is there; "no" cancels
+  local question
+  r, e = install.install(with({ ask = function(q) question = q; asked = asked + 1; return false end }))
+  ok(asked == 1 and type(question) == "string" and question:find(dest, 1, true) ~= nil
+    and question:find("development build", 1, true) ~= nil
+    and question:find(#dev_bytes .. " bytes", 1, true) ~= nil,
+    "asks before replacing, describing the existing binary  (got " .. tostring(question) .. ")")
+  ok(r == nil and type(e) == "string" and e:find("cancelled", 1, true) ~= nil,
+    "declining cancels the install  (got " .. tostring(e) .. ")")
+  ok(readfile(dest) == dev_bytes, "declined install left the existing binary untouched")
+
+  -- --dry-run describes, never asks, changes nothing
+  asked = 0
+  r = install.install(with({ dry_run = true, ask = ask(true) }))
+  local joined = table.concat(r or {}, "\n")
+  ok(asked == 0 and joined:find("would replace existing " .. dest, 1, true) ~= nil,
+    "--dry-run reports the replacement without asking  (got " .. joined .. ")")
+  ok(readfile(dest) == dev_bytes, "--dry-run changed nothing")
+
+  -- "yes" replaces, and the report says what was replaced
+  r, e = install.install(with({ ask = ask(true) }))
+  joined = table.concat(r or {}, "\n")
+  ok(e == nil and joined:find("replaced", 1, true) ~= nil,
+    "confirmed install replaces and says so  (got " .. joined .. tostring(e) .. ")")
+  ok(readfile(dest) == new_bytes, "confirmed install placed the new binary")
+
+  -- identical content: already installed, no question even non-interactively
+  asked = 0
+  r, e = install.install(with({ no_input = true, ask = ask(false) }))
+  joined = table.concat(r or {}, "\n")
+  ok(e == nil and asked == 0 and joined:find("already installed", 1, true) ~= nil,
+    "identical binary: already installed, nothing asked  (got " .. joined .. tostring(e) .. ")")
+
+  -- -y skips the question, even non-interactively
+  put(dest, dev_bytes)
+  asked = 0
+  r, e = install.install(with({ assume_yes = true, no_input = true, ask = ask(false) }))
+  ok(e == nil and asked == 0, "-y replaces without asking  (got " .. tostring(e) .. ")")
+  ok(readfile(dest) == new_bytes, "-y placed the new binary")
+
+  -- fresh target: nothing to confirm
+  paths.rm_rf(sb .. "/Microsoft"); paths.rm_rf(sb .. "/.local")
+  asked = 0
+  r, e = install.install(with({ no_input = true, ask = ask(false) }))
+  ok(e == nil and asked == 0 and uv.fs_stat(dest) ~= nil,
+    "a fresh install needs no confirmation  (got " .. tostring(e) .. ")")
+
+  paths.rm_rf(sb)
+end
+
 print("boot.download — transient failures are retried, permanent ones are not")
 do
   -- curl -f exits 22 for every HTTP status >= 400, so the classifier has to
