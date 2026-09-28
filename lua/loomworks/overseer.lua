@@ -1048,12 +1048,16 @@ end
 --- `run_command_all_rebuilds()`. When true, a headless test run can skip its
 --- separate build of the unit as redundant. Runners without a native batch
 --- command (no `run_command_all`) don't run headlessly and so don't count
---- toward "self-rebuilding".
+--- toward "self-rebuilding". Asked through `batch_runner_test_units()`, not the
+--- discovery-gated `test_units()`: the plan is made before configure runs, so
+--- on a fresh clone the unit is not yet configured here (spec §17.8).
 --- @param unit loomworks.ConfigUnit
 --- @return boolean
 function M._unit_tests_self_rebuild(unit)
-    if not unit or type(unit.test_units) ~= "function" then return false end
-    local ok, tus = pcall(function() return unit:test_units() end)
+    if not unit then return false end
+    local list_fn = unit.batch_runner_test_units or unit.test_units
+    if type(list_fn) ~= "function" then return false end
+    local ok, tus = pcall(list_fn, unit)
     if not ok or type(tus) ~= "table" or #tus == 0 then return false end
     local any_runner = false
     for _, tu in ipairs(tus) do

@@ -487,7 +487,10 @@ inherits it:
   `save_launch_config`; a configuration diagnostic.
 - **Passive execution.** `ConfigUnit:configured_here()` (signed-cache state)
   gates `_scan_targets_async`, `ConfigUnit:test_units()` and the CLI's
-  `ensure_unit_targets`; every git call uses `git_base_cmd()`
+  `ensure_unit_targets` (the headless test planner instead asks
+  `ConfigUnit:batch_runner_test_units()`, which constructs TestUnits passively
+  and uncached for an unconfigured unit — it only reads whether the native
+  runner self-rebuilds, §16.16); every git call uses `git_base_cmd()`
   (`-c core.fsmonitor=false -c core.hooksPath=`).
 
 ### Task Execution
