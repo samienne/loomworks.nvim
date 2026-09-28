@@ -765,6 +765,9 @@ do
   ok(env.PATH ~= nil or env.Path ~= nil, "vim.fn.environ() includes PATH")
   ok(type(vim.fn.exepath) == "function" and type(vim.fn.getcwd) == "function",
     "vim.fn.exepath / getcwd present")
+  -- Plugin code (device runners, modules) runs under this shim too.
+  eq(vim.pesc("a.b%c-d*e+f?g[h]^$(x)"), "a%.b%%c%-d%*e%+f%?g%[h%]%^%$%(x%)", "vim.pesc escapes pattern magic")
+  eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
 local function slurp(p)

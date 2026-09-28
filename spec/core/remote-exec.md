@@ -101,7 +101,7 @@ interpreter.
 | `push(serial, local, remote)` | spec | One file host → device. `local` is an absolute host path; the runner renders it in whatever form the connector requires |
 | `pull(serial, remote, local)` | spec | One file device → host |
 | `exec(serial, request)` | spec | Run one program on the device (below) |
-| `parse_exit(line, nonce)` | `integer\|nil` | Recognise the exit-status sentinel line for `nonce` |
+| `parse_exit(line, nonce)` | `integer\|nil`, `string\|nil` | Recognise the exit-status sentinel line for `nonce`. When the program's last output did not end in a line break, the connector delivers it on the sentinel's line; the runner returns that preceding text as the second value and core treats it as program output |
 | `parse_pid(line, nonce)` | `integer\|nil` | *(optional)* Recognise the line announcing the device-side process id of the program started with `nonce` |
 | `terminate(serial, nonce, pid?)` | spec | *(optional)* Stop the device-side program started by `exec` with `nonce` (`pid` when `parse_pid` reported one) |
 | `crash_snapshot(serial)` | spec, `parse(lines) → set` | *(optional)* Identify the device's current crash reports |

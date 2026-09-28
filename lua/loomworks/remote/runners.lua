@@ -30,7 +30,7 @@ local M = {}
 --- @field push fun(serial: string, local_path: string, remote: string): table
 --- @field pull fun(serial: string, remote: string, local_path: string): table
 --- @field exec fun(serial: string, request: table): table
---- @field parse_exit fun(line: string, nonce: string): integer|nil
+--- @field parse_exit fun(line: string, nonce: string): integer|nil, string|nil status, preceding program text on the same line
 --- @field parse_pid? fun(line: string, nonce: string): integer|nil
 --- @field terminate? fun(serial: string, nonce: string, pid?: integer): table
 --- @field crash_snapshot? fun(serial: string): table, fun(lines: string[]): table
