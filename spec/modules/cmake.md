@@ -57,6 +57,14 @@ refused. Any violation fails the task with the reason — the command never runs
 unwrapped instead. The environment snapshot the meson module takes from
 vcvarsall uses the same rules and an unpredictable temporary file name.
 
+**Build request.** The build task applies core's build request (core §8.1,
+headless `lw build --target <t> -- <args>`) to the native command before it is
+wrapped: `cmake --build <build_dir> [--config <variant>] [--target <t>…]
+[<args>…]` — one `--target` followed by every requested name (CMake ≥ 3.15),
+then the raw args. Inside the vcvarsall batch file they are quoted like every
+other argument (above), so a refused argument fails the build instead of being
+dropped. A preset configuration builds the same way (`--build <binaryDir>`).
+
 ## 2. Variant mapping
 
 | Variant type | Configuration name |

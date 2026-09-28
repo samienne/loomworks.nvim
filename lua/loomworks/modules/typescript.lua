@@ -391,6 +391,15 @@ function M.tasks(project, active_config)
         end
         build_cmd[#build_cmd + 1] = "--force"
     end
+    -- The caller's build args (core §8.1 `build_args`) go on the native
+    -- command BEFORE the Windows `cmd /c` wrap, so they pass the same
+    -- argument check as every other npm/tsc argument. `npm run` needs `--` to
+    -- hand them to the script. `build_targets` is not supported.
+    local build_args = project.build_args
+    if type(build_args) == "table" and #build_args > 0 then
+        if build_cmd[1] == "npm" then build_cmd[#build_cmd + 1] = "--" end
+        for _, a in ipairs(build_args) do build_cmd[#build_cmd + 1] = a end
+    end
 
     return {
         {
@@ -419,6 +428,7 @@ function M.tasks(project, active_config)
                 project_key = project.name,
                 action = "build",
                 configuration_key = configuration_key,
+                applied_build_args = true,
             },
         },
     }

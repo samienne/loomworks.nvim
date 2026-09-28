@@ -91,7 +91,7 @@ user adds entries under `configurations`, the default is dropped.
 | Action | Command source | Notes |
 |--------|---------------|-------|
 | Configure | `shell.configure_cmd` after `${var}` expansion | Run in project directory. Auto-fires when state is `unconfigured` or unit is stale. |
-| Build | `shell.build_cmd` after `${var}` expansion | Run in project directory. |
+| Build | `shell.build_cmd` after `${var}` expansion | Run in project directory. The build request's raw args (core §8.1 `build_args`) are appended; target selection (`build_targets`) is not supported. |
 | Clean | `shell.clean_cmd` if declared, else a core-performed wipe of `<build_dir>` (`wipe_build_dir`, core §8.1) | Run in workspace root. |
 
 `cwd` defaults to `<workspace_root>/<project.path>`. Task env is the

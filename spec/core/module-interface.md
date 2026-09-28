@@ -188,6 +188,29 @@ when the caller forced a full reconfigure (§5.1, headless `--reconfigure`
 its record says (or a plain first configure where the build tree was never
 configured). Additive: no `api_versions.module` bump.
 
+**Build request** (optional context fields, both `nil` unless a caller asked;
+headless `lw build --target <t> -- <args>`, §16.4):
+
+- `build_targets` — a non-empty list of target names the build should build
+  instead of the build system's default set.
+- `build_args` — a list of raw arguments for the build tool.
+
+They concern **build** tasks only (never configure or clean). A module that
+honors them puts them on its **native** build invocation — targets as the build
+tool's target selection, then the raw args — **before** any wrapping of that
+command (an environment-setup batch file, a command interpreter), under the
+same argument checks and quoting as the rest of the command: an argument the
+wrapper cannot carry faithfully is refused (the builder raises, which refuses
+the plan), never silently dropped. It declares that on each build task_def it
+produced: `loomworks.applied_build_args = true` and/or
+`loomworks.applied_build_targets = true`. Core relies on the declaration,
+never on the module's identity: for a build task that does not declare
+`applied_build_targets`, a `build_targets` request is an error naming the
+project; for one that does not declare `applied_build_args`, core appends
+`build_args` to the task's final command itself — unless that command runs a
+batch file through the command interpreter (where appended arguments would be
+ignored), which is an error. Additive: no `api_versions.module` bump.
+
 Each task_def has:
 - `name`: display name
 - `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
@@ -200,7 +223,8 @@ Each task_def has:
   or `"in_place"` — how this configure runs, §5.1) with an optional short
   `reconfigure_detail` naming the full path's mechanism (e.g. the build
   system's flag). Core reports these alongside its reason for configuring
-  (§16.4); they never change what runs
+  (§16.4); they never change what runs. Build tasks may declare
+  `applied_build_args` / `applied_build_targets` (the build request, above)
 
 **`pre_configure_reset`** (optional, configure tasks only) is a list of paths
 **relative to `build_dir`** naming configure-state files or directories the

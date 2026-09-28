@@ -29,7 +29,8 @@ meson `buildtype` value. Generated when no user configs are declared.
 ## 4. Tasks
 
 - **Setup**: `meson setup <build_dir> --buildtype <variant> [--cross-file <machine>]`
-- **Compile**: `meson compile -C <build_dir>`
+- **Compile**: `meson compile -C <build_dir> [<target>…] [<args>…]` — the
+  targets and raw args of core's build request (core §8.1), when given
 - **Clean**: `meson compile -C <build_dir> --clean`
 
 Machine file paths are resolved from the tool selection and prepended

@@ -254,6 +254,9 @@
 --- @field recorded_cache_launcher? string launcher path this build dir was last configured with (from cached module_info), or the sentinel `"none"` when that configure applied no launcher (nil = never recorded) — lets a module detect a launcher change (§11)
 --- @field recorded_module_info? table the unit's `module_info` as recorded by its last configure (module-owned, e.g. cmake/meson `passed_options`; plus core-owned keys such as `configure_env`) — lets a module classify a reconfigure as full or in-place (core §5.1 faithful reconfigure, §8.1)
 --- @field recorded_options? table<string, any> core's resolved-option snapshot from the last configure (the staleness fingerprint); its presence also marks a unit as configured-before (a unit with no module record takes the full reconfigure, §8.1)
+--- @field force_full_reconfigure? boolean the caller forced a full reconfigure (`lw build --reconfigure`, §8.1)
+--- @field build_args? string[] build request: raw build-tool args (`lw build -- <args>`); a module puts them on its native build command before wrapping and sets `applied_build_args` on the build task (§8.1)
+--- @field build_targets? string[] build request: targets to build instead of the default set (`lw build --target <t>`); honored by a module that sets `applied_build_targets` on the build task (§8.1)
 
 --- Loomworks metadata carried on a module task_def (`task_def.loomworks`).
 --- @class loomworks.TaskMeta
@@ -266,6 +269,8 @@
 --- @field pre_configure_reset? string[] configure only: build-dir-relative paths core removes (validated, under the exclusive lock) before the configure runs — a full reconfigure the build system has no flag for (core §5.1, §8.1)
 --- @field stripped_compiler_keys? { options?: string[], env?: string[] }
 --- @field wipe_build_dir? boolean clean only: no builder — core removes `build_dir` itself (validated, never the workspace root, in-process; core §8.1)
+--- @field applied_build_args? boolean build only: the module put the context's `build_args` on its native command (else core appends them, or refuses for a batch-wrapped command; core §8.1)
+--- @field applied_build_targets? boolean build only: the module applied the context's `build_targets` (else a target request is refused; core §8.1)
 
 --- Module info() return value.
 --- @class loomworks.ModuleInfo

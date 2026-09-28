@@ -1075,6 +1075,10 @@ function M.tasks(project, active_config)
             cmd[#cmd + 1] = "compile"
             cmd[#cmd + 1] = "-C"
             cmd[#cmd + 1] = build_dir
+            -- The caller's build request (core §8.1): target names are
+            -- `meson compile` positionals, raw build args follow them.
+            for _, t in ipairs(project.build_targets or {}) do cmd[#cmd + 1] = t end
+            for _, a in ipairs(project.build_args or {}) do cmd[#cmd + 1] = a end
             return { cmd = cmd, cwd = abs_path, env = env }
         end,
         loomworks = {
@@ -1083,6 +1087,8 @@ function M.tasks(project, active_config)
             configuration_key = configuration_key,
             build_dir = build_dir,
             tool_data = cached_tool_data,
+            applied_build_args = true,
+            applied_build_targets = true,
         },
     }
 

@@ -290,6 +290,11 @@ function M.tasks(project, active_config)
     end
 
     if build_cmd then
+        -- The caller's build args (core §8.1 `build_args`) append to the
+        -- user's build command. `build_targets` is not supported: a shell
+        -- build command has no generic notion of a target, so the build task
+        -- does not claim it and core refuses `--target`.
+        for _, a in ipairs(project.build_args or {}) do build_cmd[#build_cmd + 1] = a end
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
@@ -301,6 +306,7 @@ function M.tasks(project, active_config)
                 configuration_key = configuration_key,
                 build_dir = build_dir,
                 tool_data = project.tool_data,
+                applied_build_args = true,
             },
         }
     end
