@@ -343,6 +343,19 @@ multiple configurations.
 
 ### 8.4 Optional methods
 
+**`has_configure_state(build_dir) → boolean`** *(optional)*
+
+Whether `build_dir` already holds this module's configure state (e.g. the
+build system's own cache file), judged by a cheap file check — never by
+running anything. Core asks it only for a ConfigUnit that has **no configure
+record** (it is unconfigured, e.g. after the build cache was discarded or reset
+while the build tree was kept): a `true` makes that configure a **full
+reconfigure** (`force_full_reconfigure`, §8.1) with the reason `configure record
+missing (existing build directory)` (§5.1) instead of a first configure, since
+nothing records what the existing tree was configured with. A module without
+the hook keeps the plain first configure. Additive: no `api_versions.module`
+bump.
+
 **`progress_parser(project?, active_config?) → string|nil`**
 
 Return the name of a registered progress parser (e.g., `"ninja"`), or `nil`

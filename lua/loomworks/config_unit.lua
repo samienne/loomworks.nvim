@@ -672,6 +672,28 @@ function ConfigUnit:stale_reason(profile)
     return nil
 end
 
+--- The configure reason of an unconfigured unit whose build directory already
+--- holds configure state (spec §5.1 *Configure record missing*).
+ConfigUnit.ORPHAN_STATE_REASON = "configure record missing (existing build directory)"
+
+--- Whether this unit has no configure record (it is `unconfigured`) while its
+--- build directory already holds the module's configure state — e.g. the
+--- cache was discarded or rebuilt (an unsigned cache, `lw nuke`) but the build
+--- tree was not. Such a configure cannot be classified against a record, so
+--- it takes the module's FULL reconfigure (spec §5.1). Asks the module's
+--- optional `has_configure_state(build_dir)` (§8.4); false without one.
+--- @param build_dir? string the unit's build directory (default: its own)
+--- @return boolean
+function ConfigUnit:has_orphan_configure_state(build_dir)
+    if self:state() ~= "unconfigured" then return false end
+    local bd = build_dir or self:build_dir()
+    if type(bd) ~= "string" or bd == "" then return false end
+    local mod = self:_module_impl()
+    if not mod or type(mod.has_configure_state) ~= "function" then return false end
+    local ok, res = pcall(mod.has_configure_state, bd)
+    return ok and res == true
+end
+
 --- Why the build gate (§5.2) must configure this unit, or nil when it need
 --- not: `first configure`, `previous configure failed`, `forced
 --- (--reconfigure)` (when `forced` and the unit was configured before), the
@@ -679,12 +701,19 @@ end
 --- the project), or `build directory missing` (§3.1 rule 7). The same
 --- conditions the gate has always used; the string is what the headless
 --- runner prints (§16.4).
+--- An unconfigured unit whose build directory nevertheless holds configure
+--- state (`orphan_state`, see `has_orphan_configure_state`) reports
+--- `configure record missing (existing build directory)` instead of a first
+--- configure — it takes the module's full reconfigure.
 --- @param forced? boolean a forced full reconfigure was requested
 --- @param profile? loomworks.Profile the profile being built (default: active)
+--- @param orphan_state? boolean the build directory already holds configure state
 --- @return string|nil
-function ConfigUnit:configure_reason(forced, profile)
+function ConfigUnit:configure_reason(forced, profile, orphan_state)
     local state = self:state()
-    if state == "unconfigured" then return "first configure" end
+    if state == "unconfigured" then
+        return orphan_state and ConfigUnit.ORPHAN_STATE_REASON or "first configure"
+    end
     if forced then return "forced (--reconfigure)" end
     if state == "configure_failed" then return "previous configure failed" end
     local stale = self:stale_reason(profile)

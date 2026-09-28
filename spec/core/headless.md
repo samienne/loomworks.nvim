@@ -103,7 +103,8 @@ has not run.
 
 **Why a configure runs.** Whenever a headless build (re)configures a unit it
 reports, on one line before the configure's output, why and how: the build
-gate's reason — `first configure`, `previous configure failed`, `forced
+gate's reason — `first configure`, `configure record missing (existing build
+directory)` (§5.1), `previous configure failed`, `forced
 (--reconfigure)`, a staleness reason (§5.1: `configure record from an older
 lw`, `options changed (<names> added|changed|removed)`, `module configuration
 changed`, `configuration environment changed`, `compiler launcher changed`),
