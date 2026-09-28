@@ -538,11 +538,30 @@ function M.execute(o)
     if dev_f then dev_f:close() end
 
     -- (6) Collect: result files, then new crash reports.
+    local pulled_results = {}
     for _, r in ipairs(o.results or {}) do
         local remote = plan.root .. "/" .. r.device_rel
         local local_path = run_dir .. "/" .. r.name
         local ok = t:pull(remote, local_path)
-        if ok then result.results[r.name] = local_path else result.missing_results[#result.missing_results + 1] = r.name end
+        if ok then
+            result.results[r.name] = local_path
+            -- Cleared from the device once pulled (§18.5 step 6); only a clean
+            -- staging-root-relative path under the workspace prefix (§18.12).
+            if manifest_mod.clean_rel(r.device_rel) and manifest_mod.device_path_under(remote, plan.ws_prefix) then
+                pulled_results[#pulled_results + 1] = remote
+            end
+        else
+            result.missing_results[#result.missing_results + 1] = r.name
+        end
+    end
+    if #pulled_results > 0 and not result.transport_error then
+        local argv = { "rm", "-f" }
+        for _, p in ipairs(pulled_results) do argv[#argv + 1] = p end
+        local status, lines = t:shell(argv)
+        if status ~= 0 then
+            result.warnings[#result.warnings + 1] = "could not clear pulled result files from the device: "
+                .. (status == nil and tostring(lines) or table.concat(lines or {}, " "))
+        end
     end
     if crash_before and runner.crash_collect and not result.transport_error then
         local ok, spec = pcall(runner.crash_snapshot, serial)

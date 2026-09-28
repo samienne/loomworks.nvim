@@ -818,7 +818,7 @@ lw run / lw test --target
 | `remote/devices.lua` | Device listing through a runner, registry merge (`Device.provider` = runner id), selection per §18.3 |
 | `remote/device_lock.lua` | Per-serial lockfile under the per-user data dir (`LOOMWORKS_DEVICE_LOCK_DIR`), built on `build_lock`'s path-level API; waits by default |
 | `remote/manifest.lua` | The `device` block (validation, launch-over-project merge; the project block is read from the module section `projects.<p>.<type>.device` — or the former project-level key — by `config._extract_device` and written back there by the project serializers), glob matching (`**` / `*` / `?`), the manifest (build-relative mirror), device roots `<staging_base>/<ws>/<unit>` (short deterministic segments: `workspace_segment` / `unit_segment` = readable prefix + hash) and the §18.12 boundary check |
-| `remote/staging.lua` | Incremental sync (record per serial + root in `Workspace._device_sync` → cache `device_sync`), digest verification, removal of dropped files, archive sets, `lw device clean` |
+| `remote/staging.lua` | Incremental sync (record per serial + root in `Workspace._device_sync` → cache `device_sync`), digest verification, removal of dropped files, archive sets (tar pushed, unpacked, deleted; a `.ok` completion marker + a member sample verified later), `lw device clean` |
 | `remote/tar.lua` | ustar writer (pax `path` records, directory entries, streamed file bodies) |
 | `remote/run.lua` | Remote run orchestration, run folders (`make_run_dir`, `prune_runs` — the 10 newest per build dir, pattern-named entries of the canonical `.device-runs` only), `--print` rendering, the post-run report |
 | `remote/test_run.lua` | Named test executables: device results hook, outcome judgement, JUnit rendering |

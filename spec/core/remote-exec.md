@@ -228,10 +228,16 @@ argument vectors: `mkdir -p` (directories before transfer), `chmod 755` (the
 program), `rm -f` / `rm -rf` (files that left the manifest; `lw device clean`),
 `tar -xf <archive> -C <staging root>` (an archive set) and the runner's `digest`
 prefix. A runner's device therefore provides these utilities. Every file is
-transferred with `push`, one file per spec. An archive set's archive is kept
-under `<staging root>/.loomworks/` after unpacking, so that `digest`
-verification detects a wiped device for archive sets too; the archive is
-removed with its set.
+transferred with `push`, one file per spec. An archive set's archive is pushed
+under `<staging root>/.loomworks/`, unpacked, and then **deleted** (keeping it
+would double the set's space on the device). After a successful unpack core
+pushes a small **completion marker** beside it, holding the set's digest; with
+a runner `digest`, a later run verifies the set by the marker plus a
+deterministic sample of its unpacked members (up to eight, spread over the
+sorted member list), so a wiped device or an interrupted unpack re-sends the
+set. The marker is removed with its set. A staging root left by the earlier
+scheme (the archive kept, no marker) has its archive removed and the set
+re-sent once.
 
 ### 18.5 Remote execution
 
@@ -256,7 +262,8 @@ A remote run holds the device lock (§18.7) for its whole duration and performs:
    report a status: that is a device/transport failure, reported as such
    (never as the program's exit 0 or 127). After the sentinel, the log stream
    is drained briefly and stopped.
-6. **Collect** — pull declared result files (§18.6), then crash reports new
+6. **Collect** — pull declared result files (§18.6) and then remove them from
+   the device (best-effort; a failure is a warning), then crash reports new
    since the snapshot, into the **run folder**
    `<build dir>/.device-runs/<UTC timestamp>-<serial>/`, beside the saved
    program output and runner log (§18.13). The folder is reported whenever it
