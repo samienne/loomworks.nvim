@@ -203,8 +203,19 @@ describe("remote.staging (fake device)", function()
         assert.is_nil(b.files[droot .. "/CMakeFiles/x.o"])
         assert.equals(4, rep.sent)
         assert.equals(1, rep.archives_sent)
-        -- one push per file + one for the archive; never a directory push
-        assert.equals(5, #dev:ops("push"))
+        -- one push per file + the archive + its completion marker; never a
+        -- directory push
+        assert.equals(6, #dev:ops("push"))
+        -- The archive is deleted after unpacking (it doubled the space); only a
+        -- small marker stays, recording the set's digest.
+        local markers = {}
+        for p, f in pairs(b.files) do
+            assert.is_nil(p:match("%.tar$"), "archive left on the device: " .. p)
+            if p:find(droot .. "/.loomworks/", 1, true) then markers[#markers + 1] = { p = p, f = f } end
+        end
+        assert.equals(1, #markers)
+        assert.truthy(markers[1].p:match("/%.loomworks/archive%-%x+%.ok$"), markers[1].p)
+        assert.equals(rec.archives["test/assets/**"].digest, markers[1].f.data)
         assert.truthy(staging.summary("SER1", rep):find("staging on SER1: 4 changed files", 1, true))
     end)
 
@@ -237,6 +248,43 @@ describe("remote.staging (fake device)", function()
         assert.equals(4, rep.sent)
         assert.equals(1, rep.archives_sent)
         assert.is_not_nil(dev.boards.SER1.files[droot .. "/test/unit/Runner"])
+    end)
+
+    it("an archive set is re-sent when its marker or a sampled member is gone or changed on the device", function()
+        local rec = assert(stage(nil, false))
+        local b = dev.boards.SER1
+        local marker
+        for p in pairs(b.files) do if p:match("%.ok$") then marker = p end end
+        assert.is_not_nil(marker)
+        -- Marker gone (an interrupted unpack never writes it; a partial wipe).
+        b.files[marker] = nil
+        local rec2, rep = stage(rec, false)
+        assert.equals(1, rep.archives_sent)
+        assert.equals(0, rep.sent)
+        -- A sampled member changed on the device.
+        b.files[droot .. "/test/assets/data/a.bin"].data = "tampered"
+        local _, rep3 = stage(rec2, false)
+        assert.equals(1, rep3.archives_sent)
+        assert.equals("AAAA", b.files[droot .. "/test/assets/data/a.bin"].data)
+    end)
+
+    it("a record from the tar-keeping scheme re-sends the set once and removes the old archive", function()
+        local rec = assert(stage(nil, false))
+        local b = dev.boards.SER1
+        local a = rec.archives["test/assets/**"]
+        -- The earlier record shape: the tar kept on the device, no marker.
+        local old_tar = ".loomworks/archive-0123456789ab.tar"
+        b.files[droot .. "/" .. old_tar] = { data = "old tar" }
+        rec.archives["test/assets/**"] = { digest = a.digest, tar = old_tar,
+            remote = vim.fn.sha256("old tar"), locals = a.locals }
+        local rec2, rep = stage(rec, false)
+        assert.is_table(rec2, rep)
+        assert.equals(1, rep.archives_sent)
+        assert.is_nil(b.files[droot .. "/" .. old_tar])
+        assert.is_nil(rec2.archives["test/assets/**"].tar)
+        local _, rep3 = stage(rec2, false)
+        assert.equals(0, rep3.archives_sent)
+        assert.equals(1, rep3.archives_unchanged)
     end)
 
     it("without a runner digest the record is trusted; fresh forces a full re-stage", function()

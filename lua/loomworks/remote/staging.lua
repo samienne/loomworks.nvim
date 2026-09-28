@@ -9,6 +9,8 @@
 --- re-sent when the digest of its member list changes. When the runner
 --- declares `digest`, recorded files are verified against the device first
 --- (a wiped / re-flashed device is re-staged). `fresh` ignores the record.
+--- An archive set's tar is deleted after unpacking; a completion marker (the
+--- set digest) plus a sample of the unpacked members stand in for it.
 --- Files that left the manifest are removed from the device staging root.
 ---
 --- Remote deletion safety (§18.12): every path core asks a device to remove is
@@ -104,6 +106,26 @@ local function device_mkdirs(transport, dirs)
     return true
 end
 
+--- Unpacked members of an archive set verified on later runs (with its marker).
+M.ARCHIVE_SAMPLE = 8
+
+--- A deterministic, evenly spread sample of an archive set's members (sorted
+--- by path; first and last always included).
+--- @param members { rel: string }[]
+--- @return string[] rels
+function M.sample_members(members)
+    local rels = {}
+    for _, m in ipairs(members or {}) do rels[#rels + 1] = m.rel end
+    table.sort(rels)
+    local n = math.min(M.ARCHIVE_SAMPLE, #rels)
+    local out, seen = {}, {}
+    for k = 0, n - 1 do
+        local idx = (n == 1) and 1 or (1 + math.floor(k * (#rels - 1) / (n - 1)))
+        if not seen[idx] then seen[idx] = true; out[#out + 1] = rels[idx] end
+    end
+    return out
+end
+
 --- @class loomworks.StageReport
 --- @field sent integer files transferred
 --- @field sent_bytes integer
@@ -138,14 +160,31 @@ function M.stage(o)
         archives_sent = 0, archives_unchanged = 0, archive_bytes = 0, verified = false }
     local function remote(rel) return root .. "/" .. rel end
 
-    -- (1) Verify the record against the device when the runner can digest.
+    -- (0) Archives kept on the device by the earlier scheme (the whole tar
+    -- under `.loomworks/`, no marker): removed below; their sets re-sent once.
+    local legacy_tars = {}
+    for key, a in pairs(prev.archives) do
+        if type(a) ~= "table" or type(a.marker) ~= "string" then
+            if type(a) == "table" and type(a.tar) == "string" and manifest_mod.clean_rel(a.tar) then
+                legacy_tars[#legacy_tars + 1] = a.tar
+            end
+            prev.archives[key] = nil
+        end
+    end
+
+    -- (1) Verify the record against the device when the runner can digest: a
+    -- staged file by its digest; an archive set by its completion marker plus
+    -- a sample of its unpacked members.
     if t.runner.digest and (next(prev.files) or next(prev.archives)) then
         local paths = {}
         for rel, e in pairs(prev.files) do
             if manifest_mod.clean_rel(rel) and e.remote then paths[#paths + 1] = remote(rel) end
         end
         for _, a in pairs(prev.archives) do
-            if type(a.tar) == "string" and manifest_mod.clean_rel(a.tar) then paths[#paths + 1] = remote(a.tar) end
+            if manifest_mod.clean_rel(a.marker) then paths[#paths + 1] = remote(a.marker) end
+            for rel in pairs(type(a.sample) == "table" and a.sample or {}) do
+                if manifest_mod.clean_rel(rel) then paths[#paths + 1] = remote(rel) end
+            end
         end
         table.sort(paths)
         local got, err = device_digests(t, paths)
@@ -154,7 +193,11 @@ function M.stage(o)
             if got[remote(rel)] ~= e.remote then prev.files[rel] = nil end
         end
         for key, a in pairs(prev.archives) do
-            if type(a.tar) ~= "string" or got[remote(a.tar)] ~= a.remote then prev.archives[key] = nil end
+            local ok = manifest_mod.clean_rel(a.marker) and got[remote(a.marker)] == a.remote
+            for rel, hex in pairs(type(a.sample) == "table" and a.sample or {}) do
+                if got[remote(rel)] ~= hex then ok = false end
+            end
+            if not ok then prev.archives[key] = nil end
         end
         report.verified = true
     end
@@ -192,14 +235,14 @@ function M.stage(o)
         end
         local set_digest = vim.fn.sha256(table.concat(parts, "\n"))
         local old = prev.archives[a.key]
-        local tar_rel = ".loomworks/archive-" .. vim.fn.sha256(a.key):sub(1, 12) .. ".tar"
+        local stem = ".loomworks/archive-" .. vim.fn.sha256(a.key):sub(1, 12)
         if old and old.digest == set_digest and old.remote then
-            new.archives[a.key] = { digest = set_digest, tar = old.tar, remote = old.remote,
-                locals = members }
+            new.archives[a.key] = { digest = set_digest, marker = old.marker, remote = old.remote,
+                sample = old.sample, locals = members }
             report.archives_unchanged = report.archives_unchanged + 1
         else
-            archive_plan[#archive_plan + 1] = { idx = i, set = a, digest = set_digest, tar = tar_rel,
-                locals = members, old = old }
+            archive_plan[#archive_plan + 1] = { idx = i, set = a, digest = set_digest,
+                tar = stem .. ".tar", marker = stem .. ".ok", locals = members, old = old }
         end
     end
 
@@ -218,12 +261,13 @@ function M.stage(o)
                 removals[#removals + 1] = remote(rel)
             end
         end
-        if not still and type(a.tar) == "string" and manifest_mod.clean_rel(a.tar) then
+        if not still and manifest_mod.clean_rel(a.marker) then
             local kept = false
-            for _, pl in ipairs(archive_plan) do if pl.tar == a.tar then kept = true end end
-            if not kept then removals[#removals + 1] = remote(a.tar) end
+            for _, pl in ipairs(archive_plan) do if pl.marker == a.marker then kept = true end end
+            if not kept then removals[#removals + 1] = remote(a.marker) end
         end
     end
+    for _, rel in ipairs(legacy_tars) do removals[#removals + 1] = remote(rel) end
     table.sort(removals)
     if #removals > 0 then
         local ok, err = device_remove(t, removals, o.ws_prefix, false)
@@ -261,8 +305,10 @@ function M.stage(o)
         if status ~= 0 then return nil, "marking the program executable failed: " .. table.concat(lines, " ") end
     end
 
-    -- (5) Archive sets: one tar each, unpacked on the device, kept for
-    -- verification.
+    -- (5) Archive sets: one tar each, unpacked on the device, then deleted
+    -- (keeping it doubled the space). A small completion marker holding the
+    -- set's digest is written after a successful unpack; the marker plus a
+    -- sample of the unpacked members is what later runs verify.
     for _, pl in ipairs(archive_plan) do
         local tmp = o.tmp_dir .. "/archive-" .. pl.idx .. ".tar"
         vim.fn.mkdir(o.tmp_dir, "p")
@@ -279,9 +325,20 @@ function M.stage(o)
             return nil, "unpacking archive set '" .. pl.set.key .. "' failed (status " .. status .. "): "
                 .. table.concat(lines, " ")
         end
+        local rok, rerr = device_remove(t, { remote(pl.tar) }, o.ws_prefix, false)
+        if not rok then return nil, rerr end
+        local mtmp = o.tmp_dir .. "/archive-" .. pl.idx .. ".ok"
+        local mf = io.open(mtmp, "wb")
+        if not mf then return nil, "cannot write " .. mtmp end
+        mf:write(pl.digest)
+        mf:close()
+        local mpushed, merr = t:push(mtmp, remote(pl.marker))
+        os.remove(mtmp)
+        if not mpushed then return nil, merr end
         report.archives_sent = report.archives_sent + 1
         report.sent_bytes = report.sent_bytes + (st and st.size or 0)
-        new.archives[pl.set.key] = { digest = pl.digest, tar = pl.tar, remote = pl.digest, locals = pl.locals }
+        new.archives[pl.set.key] = { digest = pl.digest, marker = pl.marker, remote = pl.digest,
+            sample = {}, locals = pl.locals }
     end
 
     -- (6) Record the device-side digests of what was just sent.
@@ -291,7 +348,10 @@ function M.stage(o)
             local p = remote(s.f.rel); paths[#paths + 1] = p; map[p] = { kind = "file", rel = s.f.rel }
         end
         for _, pl in ipairs(archive_plan) do
-            local p = remote(pl.tar); paths[#paths + 1] = p; map[p] = { kind = "archive", key = pl.set.key }
+            local p = remote(pl.marker); paths[#paths + 1] = p; map[p] = { kind = "marker", key = pl.set.key }
+            for _, rel in ipairs(M.sample_members(pl.set.members)) do
+                p = remote(rel); paths[#paths + 1] = p; map[p] = { kind = "sample", key = pl.set.key, rel = rel }
+            end
         end
         if #paths > 0 then
             local got, err = device_digests(t, paths)
@@ -300,7 +360,8 @@ function M.stage(o)
                 local hex = got[p]
                 if not hex then return nil, "staged file missing on the device after transfer: " .. p end
                 if what.kind == "file" then new.files[what.rel].remote = hex
-                else new.archives[what.key].remote = hex end
+                elseif what.kind == "marker" then new.archives[what.key].remote = hex
+                else new.archives[what.key].sample[what.rel] = hex end
             end
         end
     end

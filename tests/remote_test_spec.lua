@@ -122,6 +122,10 @@ describe("lw test --target on a device", function()
         local j = fx.read(junit)
         assert.truthy(j:find('<testcase classname="Suite" name="a"', 1, true))
         assert.truthy(j:find('tests="2" failures="0"', 1, true))
+        -- Pulled result files are cleared from the device afterwards.
+        for p in pairs(dev.boards.SER1.files) do
+            assert.is_nil(p:find("/.loomworks/results/", 1, true), "left on the device: " .. p)
+        end
     end)
 
     it("a failure in the XML fails the run even with exit status 0", function()
