@@ -56,7 +56,8 @@ All specs use `cmd = <hdc>` and never go through a host shell.
 | `parse_pid(line, n)` | — | matches `^__LW_PID_<n>=(%d+)$` after CR strip |
 | `terminate(s, n, pid)` | `-t s shell kill <pid>; sleep 1; kill -9 <pid>` (one element) | `pid` is an integer from `parse_pid`; without it nothing is sent |
 | `crash_snapshot(s)` | `-t s shell ls /data/log/faultlog/faultlogger/` | set of names matching `^cppcrash%-` |
-| `crash_collect(b, a)` | — | `/data/log/faultlog/faultlogger/<name>` for names in `a` not in `b` |
+| `crash_collect(b, a, ctx?)` | — | `/data/log/faultlog/faultlogger/<name>` for names in `a` not in `b` (`ctx.pid`, when known, selects this run's reports) |
+| `describe_device(serial)` | `param get` model / market name | `{ display_name, properties = { market_name, model, product_name } }` (optional, `lw device list`) |
 | `runtime_files(tool)` | — | `libc++_shared.so` from the kit's native sysroot, **always** staged beside the artifact (0.9 MB; harmless when the program links the static STL — the runner sees only the tool, not the configuration's `OHOS_STL`) |
 | `log_session(s, opts, program)` | — | §5 |
 
