@@ -49,6 +49,10 @@ current version.
   profile or configuration rows includes `Cancel running task(s)`. A Tasks
   section at the bottom surfaces active tasks and held build-dir locks with
   per-row cancel/force-release actions for recovering from stuck state
+- **Run and test on a device** — `lw run` / `lw test --target` send a
+  cross-built program to an attached device through its SDK plugin's device
+  runner and run it there (output, exit code, crash reports); see
+  [Running on a device](#running-on-a-device)
 - **Workspace trust** — a cloned `loomworks.json` never names programs to run,
   and your working copy is honored only when this machine signed it (`lw trust`
   / `:LoomworksTrust` to review one that isn't); see
@@ -784,6 +788,9 @@ run re-sends everything.
 **Trust.** `stage` / `archive` and `device_log` may come from the committed
 `loomworks.json`; a `device` block's `env` and `working_dir` only from your
 local config (`lw help trust`).
+
+`lw help device` (and the device options in `lw help run` / `lw help test`)
+lists every command and option.
 
 **Limits (v1).** No standard input for device programs, no debugging on a
 device, no test-explorer integration for device tests, and ctest-registered
@@ -1750,9 +1757,10 @@ from (spec §17, `lw help trust`):
 - **`loomworks.json` never names programs.** Environment variables
   (configuration `env`, compiler-family `overrides.<family>.env`, a shell
   project's `env`), launch configurations with a `command` / `args` / `env` /
-  `working_dir`, deploy destinations outside the workspace, SDK installation
-  paths (a shared SDK declaration keeps only its type and version
-  requirements), and module program settings (a `clangd` / `qmlls` binary,
+  `working_dir`, a project or launch `device` block's `env` / `working_dir`,
+  deploy destinations outside the workspace, SDK installation paths (a shared
+  SDK declaration keeps only its type and version requirements), and module
+  program settings (a `clangd` / `qmlls` binary,
   qmlls import paths, a shell project's clangd database argument) found in it
   are **ignored**, each with a diagnostic
   (`lw status`, the status page). They stay in the file — publishing keeps a

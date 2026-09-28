@@ -741,7 +741,8 @@ reconnections and emulator restarts.
 - Devices are **workspace-level** — they are physical hardware, shared
   across all profiles.
 - Devices are **runtime-only** — discovered on demand via the module's
-  `list_devices()` method (§11). Not persisted to cache or user.json.
+  `list_devices()` method (§11) or a device runner's `list_devices`
+  (§18.2). Not persisted to cache or user.json.
 - Discovery is triggered by: (1) opening the device picker in UI,
   (2) attempting to launch a device-requiring target with no device
   selected, (3) explicit `scan_devices()` API call.
@@ -759,7 +760,9 @@ build targets (§18.3).
 
 Only modules with `has_devices = true` produce device-requiring targets.
 Profiles in workspaces with no device-capable modules never show device
-UI or store device selections.
+UI or store device selections. Independently of modules, a profile also
+persists a device serial when its SDK supplies a device runner (§18.2), set
+via `lw device select` (§18.3).
 
 ### 1.9 loomworks.json Schema
 

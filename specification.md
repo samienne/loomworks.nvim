@@ -45,7 +45,7 @@ Implementation-specific specs live in sibling files under `spec/`:
 
 Section numbering differs by subtree. The `spec/core/*.md` files are a
 physical partition of the single global core §-namespace: they keep their
-**original** section numbers (§1, §2, …, §16) and do **not** restart at §1.
+**original** section numbers (§1, §2, …, §18) and do **not** restart at §1.
 By contrast, section numbers inside the other `spec/` subtrees
 (`spec/modules/`, `spec/integrations/`, `spec/sdks/`, `spec/ui.md`) are
 local to each file and restart at §1.

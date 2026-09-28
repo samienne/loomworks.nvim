@@ -91,6 +91,7 @@
 --- @field _meta loomworks.CacheMeta
 --- @field configurations table<string, loomworks.CachedConfig> flat dict keyed by "project_key/config_key"
 --- @field profiles? table<string, loomworks.CachedProfile>
+--- @field device_sync? table<string, table<string, table>> serial -> device staging root -> incremental-sync record (spec §18.4; compacted on load)
 
 --- Cache metadata.
 --- @class loomworks.CacheMeta

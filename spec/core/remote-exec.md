@@ -163,8 +163,8 @@ The device for an operation is resolved in this order, first match wins:
 A persisted or explicit serial that the runner does not list online is an
 error naming it — core never substitutes another device. No device, or more
 than one with nothing selected, is an error listing what was found. A
-non-interactive host never prompts; the editor prompts on ambiguity and
-persists the choice to the profile. An explicit command-line selection applies
+non-interactive host never prompts; the editor, once it runs remote targets
+(§18.11), prompts on ambiguity and persists the choice to the profile. An explicit command-line selection applies
 to that invocation only; persisting is a separate management operation (§16.34).
 
 ### 18.4 Deploy manifest and staging
@@ -404,12 +404,10 @@ remote run uses.
 
 ### 18.11 Remote execution in the editor
 
-Launching a foreign module target from the editor follows §18.5 instead of a
-local launch: the launch chain becomes build → deploy → stage → execute, program
-output streams into the launch output view, the runner log stream (when shown,
-§18.13) into the device log view (§11.3), stop cancels (§18.8), and the run
-folder is announced on completion. Debugging a foreign target is refused in
-this version. Test-explorer integration for remote tests is deferred.
+In this version the editor does not execute foreign targets: launch and debug
+refuse through §18.1 with the platform message, and test discovery never probes
+a foreign executable (§18.1). Remote execution is headless only (§16.17,
+§16.34); the editor launch chain is deferred (BACKLOG).
 
 ### 18.12 Remote deletion safety
 

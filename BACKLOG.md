@@ -110,8 +110,8 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   resolution. v1 is system-wide (per-user, on PATH) only.
 - **`lw run` device targets.** Non-debug launch is DONE — `lw run <profile>
   [target]` builds then executes a launch target, and `lw launch` manages the
-  configs (spec §16.17). Still deferred: debug launch (DAP) and device install
-  / launch, which stay editor-only.
+  configs (spec §16.17). Plain cross-built executables now run on a device
+  headlessly (§18, #62); §11 package install/launch and DAP stay editor-only.
 - ~~**Keyless signing / provenance.**~~ DONE (v0.1.2) — and not with minisign:
   the host verifies with **ECDSA P-256 + SHA-256** because luvi's bundled
   lua-openssl cannot do Ed25519's one-shot verify, and minisign isn't a

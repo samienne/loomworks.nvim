@@ -121,7 +121,9 @@ log at info level; asked to (`lw build -v` / `--verbose`), the runner also
 prints them under the step's header. A step whose command is a wrapper shows
 the command the wrapper runs (§8.1 `display_cmd`), not the wrapper. Arguments
 are quoted for readability, and data in them is rendered like any other
-(§16.7).
+(§16.7). The workspace log (`.nvim/loomworks.log`) is appended to by every host
+and never truncated; past 1 MB it is rotated to `loomworks.log.1`, keeping one
+old file.
 
 **Forced full reconfigure.** `lw build --reconfigure` configures every unit of
 the profile before building, whether or not the gate would, forcing each

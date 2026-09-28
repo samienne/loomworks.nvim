@@ -8189,8 +8189,9 @@ Disambiguating a name present more than once:
   --target | --launch    force the kind when a build target and a launch
                          config share a name in one project
 
-Deploy steps declared on the target run before launch. Debug (DAP) and device
-launches are editor-only.
+Deploy steps declared on the target run before launch. Debug (DAP) and module
+device-package launches are editor-only; a cross-built build target runs on a
+device (below).
 
 Foreign targets (built by a cross-compiling kit): never run on this host. They
 run on an attached DEVICE through the device runner of the kit's SDK — build ->
@@ -8213,7 +8214,7 @@ Output: build output goes to stdout like `lw build`, but to stderr under
 --print / --print=json so stdout carries only the report.]],
   device = [[lw device <list|select|clean>
 
-Devices for running cross-built programs (spec §18). An SDK plugin whose kits
+Devices for running cross-built programs. An SDK plugin whose kits
 build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
 ("stage") a program onto an attached device and run it there.
 
