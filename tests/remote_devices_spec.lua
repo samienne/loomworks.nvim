@@ -96,6 +96,30 @@ describe("remote.devices.list + merge", function()
         local empty = assert(devices.list(r, { backend = dev:backend() }))
         assert.equals(0, #empty) -- "[Empty]" is not a device
     end)
+
+    it("describe_device names online devices for display; a failure keeps the listed name", function()
+        local dev = fx.device({ serials = { S1 = "S1", S2 = "S2", S3 = "S3" } })
+        dev.boards.S1.describe = { market_name = "Mate 60 Pro", model = "ALN-AL00" }
+        dev.boards.S2.describe_fails = true
+        dev.boards.S3.state = "Offline"
+        dev.boards.S3.describe = { market_name = "never asked" }
+        local r = fx.fake_runner_table({ describe = true })
+        local l = assert(devices.list(r, { backend = dev:backend(), describe = true }))
+        local by = {}
+        for _, d in ipairs(l) do by[d.serial] = d end
+        assert.equals("Mate 60 Pro", by.S1.display_name)
+        assert.equals("ALN-AL00", by.S1.properties.model)
+        assert.equals("S2", by.S2.display_name)
+        assert.equals("S3", by.S3.display_name)
+        local asked = {}
+        for _, c in ipairs(dev.calls) do if c.op == "describe" then asked[#asked + 1] = c.serial end end
+        table.sort(asked)
+        assert.same({ "S1", "S2" }, asked)
+        -- Not asked unless the caller wants display names.
+        dev.calls = {}
+        assert(devices.list(r, { backend = dev:backend() }))
+        for _, c in ipairs(dev.calls) do assert.are_not.equal("describe", c.op) end
+    end)
 end)
 
 describe("lw device list / select", function()
@@ -111,6 +135,17 @@ describe("lw device list / select", function()
         assert.truthy(res.stdout:find("SERIAL", 1, true))
         assert.truthy(res.stdout:find("S1%s+online%s+fake%s+Board One%s+%(device for Debug:kit%)"))
         assert.equals("online", ws._devices.S1.state)
+    end)
+
+    it("the NAME column uses the runner's device description when it offers one", function()
+        local dev = fx.device({ serials = { S1 = "S1" } })
+        dev.boards.S1.describe = { market_name = "Mate 60 Pro" }
+        local sdk = fx.fake_sdk(fx.fake_runner_table({ describe = true }))
+        local ws = mock_ws(sdk, {})
+        local res = capture(function() return cli._device_list(ws, {}, { backend = dev:backend() }) end)
+        assert.is_true(res.ok, res.stderr)
+        assert.truthy(res.stdout:find("S1%s+online%s+fake%s+Mate 60 Pro"), res.stdout)
+        assert.equals("Mate 60 Pro", ws._devices.S1.display_name)
     end)
 
     it("--json emits a machine-readable list; empty list exits 0", function()

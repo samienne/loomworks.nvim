@@ -13,7 +13,7 @@
 ---   timeouts { query?, transfer? }|nil (seconds)
 --- Required builders: list_devices, parse_devices, push, pull, exec,
 --- parse_exit. Optional: parse_pid, terminate, crash_snapshot, crash_collect,
---- runtime_files, log_session.
+--- runtime_files, log_session, describe_device.
 
 local M = {}
 
@@ -34,13 +34,14 @@ local M = {}
 --- @field parse_pid? fun(line: string, nonce: string): integer|nil
 --- @field terminate? fun(serial: string, nonce: string, pid?: integer): table
 --- @field crash_snapshot? fun(serial: string): table, fun(lines: string[]): table
---- @field crash_collect? fun(before: table, after: table): string[]
+--- @field crash_collect? fun(before: table, after: table, ctx?: { pid?: integer }): string[]
 --- @field runtime_files? fun(tool: loomworks.Tool): { local: string, relative: string }[]
 --- @field log_session? fun(serial: string, options: table, program: { path: string, name: string }): table|nil, string|nil
+--- @field describe_device? fun(serial: string): table, fun(lines: string[]): { display_name?: string, properties?: table<string, string> }|nil
 
 local REQUIRED = { "list_devices", "parse_devices", "push", "pull", "exec", "parse_exit" }
 local OPTIONAL = { "parse_pid", "terminate", "crash_snapshot", "crash_collect",
-    "runtime_files", "log_session" }
+    "runtime_files", "log_session", "describe_device" }
 
 --- Validate a runner table's shape. Returns true or (false, reason).
 --- @param r any
