@@ -1772,6 +1772,42 @@ function DEV.persisted_serials(ws)
   return map
 end
 
+--- Fresh per-invocation device options for `run` / `test` (spec §16.34).
+function DEV.new_device_opts()
+  return { timeouts = {}, log_options = nil }
+end
+
+--- Consume one device option at `argv[i]` into `o` (setting `o._next`).
+--- Returns false when `argv[i]` is not a device option. Options: `--device
+--- <serial>`, `--fresh`, `--timeout <s>`, `--query-timeout <s>`,
+--- `--transfer-timeout <s>`, `--log <key>=<value>` (repeatable; CLI wins per
+--- key), `--no-wait`.
+--- @return boolean
+function DEV.parse_device_opt(argv, i, o)
+  local v = argv[i]
+  if v == "--device" then
+    o.device = argv[i + 1]
+    if not o.device or o.device == "" then die("--device requires a serial") end
+    o._next = i + 2
+  elseif v == "--fresh" then o.fresh = true; o._next = i + 1
+  elseif v == "--no-wait" then o.no_wait = true; o._next = i + 1
+  elseif v == "--timeout" then o.timeout = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
+  elseif v == "--query-timeout" then o.timeouts.query = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
+  elseif v == "--transfer-timeout" then o.timeouts.transfer = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
+  elseif v == "--log" then
+    local k, val = require("loomworks.remote.run").parse_log_arg(argv[i + 1] or "")
+    if not k then die(val) end
+    o.log_options = o.log_options or {}
+    o.log_options[k] = val
+    o._next = i + 2
+  else
+    return false
+  end
+  return true
+end
+M._parse_device_opt = DEV.parse_device_opt
+M._new_device_opts = DEV.new_device_opts
+
 --- `lw device list [--json]` body (spec §16.34): the attached devices each
 --- runner in scope reports. Read-only. `deps.backend` (tests) is the process
 --- backend. Returns the exit code.
@@ -2238,6 +2274,7 @@ function M.cmd_run(ws, args)
   -- the forwarded (post-`--`) args.
   local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
   local prefix_tokens, print_mode, no_build = {}, nil, false
+  local dev_opts = DEV.new_device_opts()
   local i = 1
   while pre[i] do
     if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
@@ -2260,6 +2297,7 @@ function M.cmd_run(ws, args)
       end
       print_mode = fmt; i = i + 1
     elseif pre[i] == "--no-build" then no_build = true; i = i + 1
+    elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     else positionals[#positionals + 1] = pre[i]; i = i + 1 end
   end
 
@@ -2333,6 +2371,8 @@ function M.cmd_run(ws, args)
     no_build = no_build,
     extra_args = extra_args,
     cwd_override = cwd_override,
+    device = dev_opts.device, fresh = dev_opts.fresh, timeout = dev_opts.timeout,
+    timeouts = dev_opts.timeouts, log_options = dev_opts.log_options, no_wait = dev_opts.no_wait,
   })
 end
 
@@ -2352,6 +2392,127 @@ end
 --- @param deps? { run_spec?: function }
 --- @return integer
 function M._run_launch_target(lt, ws, opts, deps)
+  if not M._foreign_of(lt) then
+    if opts.log_options and next(opts.log_options) then opts.log = true end
+    for _, k in ipairs({ "device", "fresh", "timeout", "no_wait", "log" }) do
+      if opts[k] then
+        die("--" .. k:gsub("_", "-") .. " applies only to a build target that runs on a device "
+          .. "(one built by a cross-compiling kit)")
+      end
+    end
+  end
+  return M._run_launch_target_impl(lt, ws, opts, deps)
+end
+
+--- The foreign-artifact classification of a launch target's build-target
+--- artifact (spec §18.1), or nil: a module target or a target-backed launch
+--- configuration whose artifact is foreign. Command launches are never probed.
+--- @param lt loomworks.LaunchTarget
+--- @return loomworks.ForeignArtifact|nil
+function M._foreign_of(lt)
+  local target = lt._launch_config and lt._config_target or lt._target
+  if lt._launch_config and not lt._launch_config.target then return nil end
+  if not (target and target.artifact) then return nil end
+  local unit = target._config_unit or lt._config_unit
+  local bd = unit and unit.build_dir and unit:build_dir()
+  if not bd then return nil end
+  local artifact = require("loomworks.paths").artifact_path(bd, target.artifact)
+  local f = require("loomworks.remote.foreign").classify(unit, artifact)
+  if f then f.target = target end
+  return f
+end
+
+--- Run a foreign build target on a device (spec §16.17, §18.5): deploy on the
+--- host → stage → execute remotely. Returns the invocation's exit status (the
+--- device program's; a lost status is a transport failure, EXIT_TRANSPORT).
+--- `deps.backend` / `deps.liveness_ms` are test seams.
+--- @return integer
+function M._run_foreign(lt, ws, f, opts, deps)
+  deps = deps or {}
+  local foreign = require("loomworks.remote.foreign")
+  local runners = require("loomworks.remote.runners")
+  local manifest = require("loomworks.remote.manifest")
+  local remote_run = require("loomworks.remote.run")
+  if #(opts.prefix_tokens or {}) > 0 then
+    die("--prefix cannot wrap '" .. f.name .. "': it runs on a device (built for "
+      .. tostring(f.platform or f.what) .. "), where a local wrapper does not apply.")
+  end
+  if opts.cwd_override then
+    die("--cwd does not apply to a device run — set the project's device.working_dir instead")
+  end
+  local runner = f.platform and runners.for_foreign(f) or nil
+  if not runner then die(foreign.refusal(f)) end
+
+  -- Deploy steps run on the host before staging, unchanged (§18.4).
+  if not opts.no_build then
+    local dok, derr = lt:deploy_sync()
+    if not dok then die("deploy failed: " .. tostring(derr)) end
+  end
+
+  local project = lt._project
+  local cfg = lt._launch_config
+  local block = manifest.effective_block(project and project.device, cfg and cfg.device)
+  for _, b in ipairs({ { project and project.device, "project device" }, { cfg and cfg.device, "launch device" } }) do
+    local vok, verr = manifest.validate_block(b[1], b[2])
+    if not vok then die(verr) end
+  end
+  local unit = f.target._config_unit or lt._config_unit
+  local man, merr = manifest.build({
+    build_dir = unit:build_dir(), artifact = f.artifact, unit = unit, target = f.target,
+    runner = runner, tool = f.tool, device = block,
+  })
+  if not man then die(merr) end
+
+  -- Program arguments: a target-backed launch configuration's declared args
+  -- (expanded), then the forwarded ones.
+  local args = {}
+  if cfg and cfg.args then
+    local expand = require("loomworks.expand")
+    local ctx = expand.launch_context(ws, lt._profile, project)
+    for _, a in ipairs(expand.expand_array(cfg.args, ctx) or {}) do args[#args + 1] = a end
+  end
+  for _, a in ipairs(opts.extra_args or {}) do args[#args + 1] = a end
+
+  local profile = lt._profile
+  if opts.print_mode then
+    local plan, perr = remote_run.plan({ runner = runner, ws_name = ws.name or "workspace", unit = unit,
+      manifest = man, device = block, args = args })
+    if not plan then die(perr) end
+    local dinfo = { runner = runner.id }
+    local list, lerr = require("loomworks.remote.devices").list(runner,
+      { backend = deps.backend, timeouts = opts.timeouts })
+    if list then
+      dinfo.serial, dinfo.error = require("loomworks.remote.devices").select(list, {
+        explicit = opts.device, persisted = profile and profile._device_serial,
+        runner_id = runner.id, profile_key = profile and profile.key })
+    else
+      dinfo.error = lerr
+    end
+    for _, line in ipairs(remote_run.render_print(plan, man, dinfo, opts.print_mode)) do out(line) end
+    return 0
+  end
+
+  local result, err = remote_run.execute({
+    ws = ws, runner = runner, unit = unit, manifest = man, device = block, args = args,
+    serial = opts.device, persisted = profile and profile._device_serial,
+    profile_key = profile and profile.key,
+    fresh = opts.fresh, no_wait = opts.no_wait, timeout = opts.timeout, timeouts = opts.timeouts,
+    log_options = remote_run.merge_log_options(cfg and cfg.device_log, opts.log_options),
+    results = opts.results, extra_args_fn = opts.extra_args_fn,
+    fail_on_missing_results = opts.fail_on_missing_results,
+    backend = deps.backend, liveness_ms = deps.liveness_ms,
+    write_out = deps.write_out, write_err = deps.write_err,
+    note = function(s) errw("lw: " .. s .. "\n") end,
+    on_cleanup = on_exit,
+  })
+  if not result then die(err) end
+  if opts.on_result then return opts.on_result(result) end
+  remote_run.report(result, function(s) errw(s .. "\n") end)
+  return result.exit_code
+end
+
+--- (implementation of `_run_launch_target`, after the device-option check)
+function M._run_launch_target_impl(lt, ws, opts, deps)
   deps = deps or {}
   local run = deps.run_spec or run_spec
   local prefix_tokens = opts.prefix_tokens or {}
@@ -2368,6 +2529,13 @@ function M._run_launch_target(lt, ws, opts, deps)
   if #prefix_tokens > 0 and lt:requires_device() then
     die("--prefix cannot wrap a device target ('" .. lt:display_name() ..
       "') — a local wrapper does not apply to on-device execution.")
+  end
+
+  -- A foreign build target (spec §18.1) never runs here: it is routed to a
+  -- device through its SDK's runner, or refused.
+  local foreign = M._foreign_of(lt)
+  if foreign then
+    return M._run_foreign(lt, ws, foreign, opts, deps)
   end
 
   -- Deploy (both phases). Skipped with --no-build (paired with the build).
