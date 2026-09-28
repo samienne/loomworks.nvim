@@ -798,9 +798,10 @@ the build path.
 ### Entry point
 
 `lua/loomworks/cli.lua`: argument parse → root discovery (walk up from the
-cwd for `loomworks.json` or `.nvim/loomworks.user.json`, stopping at a git
-working-tree boundary so a fresh worktree never binds to a parent checkout —
-spec §1.1) → `Workspace.assemble` → `Workspace.new` +
+cwd for `loomworks.json` or `.nvim/loomworks.user.json` via `root_finder.lua`
+— the same search the editor's auto-load uses — stopping at a git
+working-tree boundary so a fresh worktree never binds to a parent checkout,
+but walking through submodules to the superproject's workspace — spec §1.1) → `Workspace.assemble` → `Workspace.new` +
 remerge → resolve the named profile → for each buildable ConfigUnit, the
 cold path (detect → configure) or warm path per spec §16.4 →
 `overseer.build_spec_for(unit)` → spawn via a libuv runner that replaces
@@ -1379,6 +1380,7 @@ loomworks.nvim/
 │   │   ├── types.lua                  LuaCATS type annotations (not loaded)
 │   │   ├── overseer.lua               Overseer template provider + launching
 │   │   ├── paths.lua                  Path helpers: is_absolute + artifact_path (joins build_dir+artifact, passes an absolute artifact through unchanged)
+│   │   ├── root_finder.lua            Upward workspace-root search (spec §1.1), shared by `lw` and editor auto-load: stops at a repo root / linked worktree, walks through submodules (pure `.git` file reads)
 │   │   ├── lsp.lua                    LSP registry + dispatcher (runtime-path discovery, setup_servers, get_status)
 │   │   ├── integrations/
 │   │   │   ├── lsp/

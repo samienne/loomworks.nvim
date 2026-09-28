@@ -70,7 +70,15 @@ loomworks.nvim is loaded as a standard Neovim plugin. With lazy.nvim:
 ```
 
 By default, loomworks auto-loads when you open Neovim in (or `:cd` to) a
-directory containing `loomworks.json`. You can also initialize manually:
+workspace — a directory containing `loomworks.json` (or a not-yet-published
+`.nvim/loomworks.user.json`) — or any directory below it. The search for the
+workspace walks up from the current directory but stops at a git repository's
+root or a linked `git worktree`'s root, so a fresh worktree never binds to the
+main checkout's workspace (use `lw pull` there). It does walk **through git
+submodules**: in a superproject whose workspace sits at its root, opening Neovim
+(or running `lw`) inside any submodule — however deeply nested — uses the
+superproject's workspace, and `lw status` notes which submodule you are in.
+You can also initialize manually:
 
 ```vim
 :LoomworksInit
@@ -88,7 +96,7 @@ require("loomworks").setup({
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` | Load silently when `loomworks.json` is found in cwd |
+| `"auto"` | Load silently when a workspace is found from cwd (see above) |
 | `"cached_only"` | Load silently only if the workspace has been used before |
 | `"prompt"` | Load cached workspaces silently, prompt for new ones |
 | `false` | Never auto-load, only manual `:LoomworksInit` |

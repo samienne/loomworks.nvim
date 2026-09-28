@@ -8,7 +8,7 @@ local M = {}
 --- Decide what action to take for auto-loading.
 --- Pure function: no side effects, fully testable.
 ---
---- @param opts { mode: string|false, config_exists: boolean, user_exists?: boolean, cache_exists: boolean, loaded_root: string|nil, cwd_root: string }
+--- @param opts { mode: string|false, config_exists: boolean, user_exists?: boolean, cache_exists: boolean, loaded_root: string|nil, cwd_root: string|nil }
 --- @return "load"|"prompt"|"prompt_switch"|"notify"|"skip"
 function M.decide(opts)
     if opts.mode == false then return "skip" end
@@ -31,20 +31,23 @@ function M.decide(opts)
 end
 
 --- Check cwd and perform auto-load if appropriate.
---- Called by autocmds and on plugin load.
+--- Called by autocmds and on plugin load. The root is resolved with the same
+--- upward search `lw` uses (root_finder, spec §1.1/§13.2): it walks up from
+--- cwd, through submodules to their superproject's workspace, but never past
+--- a repository root or a linked worktree's root.
 function M.check_cwd()
     local lw = require("loomworks")
     local mode = lw._auto_load_mode()
 
-    local cwd = vim.fn.getcwd()
-    local cwd_root = vim.fs.normalize(cwd)
-    local config_path = cwd_root .. "/loomworks.json"
-    local user_path = cwd_root .. "/.nvim/loomworks.user.json"
-    local cache_path = cwd_root .. "/.nvim/loomworks.cache.json"
-
-    local config_exists = vim.uv.fs_stat(config_path) ~= nil
-    local user_exists = vim.uv.fs_stat(user_path) ~= nil
-    local cache_exists = vim.uv.fs_stat(cache_path) ~= nil
+    local found = require("loomworks.root_finder").find(vim.fn.getcwd())
+    -- No workspace on the way up: nothing to load (decide → "skip").
+    local cwd_root = found and vim.fs.normalize(found) or nil
+    local config_exists, user_exists, cache_exists = false, false, false
+    if cwd_root then
+        config_exists = vim.uv.fs_stat(cwd_root .. "/loomworks.json") ~= nil
+        user_exists = vim.uv.fs_stat(cwd_root .. "/.nvim/loomworks.user.json") ~= nil
+        cache_exists = vim.uv.fs_stat(cwd_root .. "/.nvim/loomworks.cache.json") ~= nil
+    end
 
     local ws = lw.get_workspace()
     local loaded_root = ws and ws.root or nil
