@@ -18,6 +18,7 @@
   - [`spec/core/integrations.md`](spec/core/integrations.md) — §9–§14 LSP, SDK, device, overseer, auto-load, commands
   - [`spec/core/headless.md`](spec/core/headless.md) — §16 Headless / Standalone
   - [`spec/core/trust.md`](spec/core/trust.md) — §17 Workspace Trust
+  - [`spec/core/remote-exec.md`](spec/core/remote-exec.md) — §18 Remote Execution on Devices
 - **[spec/](spec/)** — Per-implementation specs that fulfil the core
   contracts:
   - [`spec/ui.md`](spec/ui.md) — status page, highlights, winbar

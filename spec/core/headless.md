@@ -458,6 +458,20 @@ invocation, or one file per unit (a label suffix distinguishing them) when a
 profile runs several. The runner maps both to its native mechanism; a runner
 that cannot emit JUnit reports that without failing the run.
 
+A headless test invocation MAY instead name one or more **test
+executables** (build targets). Each named target is built, then run directly —
+not through the native batch runner — with its framework's machine-readable
+results option (§8.9), and its outcome is judged per §18.6 (exit status, parsed
+failures, missing results, crash reports). A named target that is **foreign**
+(§18.1) runs on a device (§18.5–§18.6; device selection §18.3) and its results
+file is pulled back; a host-runnable one runs locally. Caller-forwarded
+arguments go to each named executable. A JUnit request writes the parsed
+results (one file per executable when several run). Naming targets never runs
+the batch runner, and a batch-runner invocation never executes a foreign
+artifact on the host (§15 invariant 19): a profile whose kit is foreign and
+names no targets reports that its registered tests cannot run on this host
+(until the module can express them for a device, §18.6) instead of running them.
+
 ### 16.17 Headless launch (run)
 
 A headless **run** invocation resolves a profile (§16.3) and a **launch
@@ -473,8 +487,16 @@ it live, so progress-aware tools (e.g. ninja) see a real terminal, while a host
 that can only capture emits the same output once the step exits. The run
 differs in being the user's own program — interactive and (where applicable)
 windowed. The run is read-only toward configuration (§16.9) and, like the
-editor's non-debug launch, excludes debugger attachment and device targets
-(both deferred).
+editor's non-debug launch, excludes debugger attachment and module device
+targets (§11; both deferred). A build target whose artifact is
+**foreign** (§18.1) is run on a device instead of the host: the chain becomes
+build → deploy → stage → execute (§18.4–§18.5), the device is resolved per
+§18.3 (a device option selects it for this invocation), forwarded arguments
+reach the device program verbatim, output streams to the invoking terminal, and
+the device program's exit status is the invocation's exit status (a lost status
+is a transport failure with its own non-zero status and message). Standard
+input is not forwarded. When no device runner serves the artifact's platform
+the run is refused (§18.1) — never executed locally.
 
 **Launch target selection.** The launch target is one of:
 
@@ -510,9 +532,9 @@ forwarded verbatim to the launched program (a command configuration's own
 declared arguments precede them). The separator is required to pass arguments,
 so the optional operands are never ambiguous with program arguments.
 
-**Launch prefix.** A run MAY interpose a **prefix command** before the resolved launch command: the launched process becomes `<prefix tokens> <resolved command> <arguments>`, executed in the launch's resolved working directory and environment (§8.6) with the same terminal attachment as an unprefixed run (above). The prefix is a host-level wrapper the system does **not** interpret, so it serves any external launcher — a memory checker, tracer, profiler, timing tool, or an interactive debugger invoked on the program (e.g. `valgrind`, `gdb --args`). It is therefore distinct from debugger *attachment* orchestrated by the system (deferred, above): the system execs the wrapper unaware of its purpose. Running the wrapper **inside** the resolved working directory and environment is the point — a caller cannot reproduce it by wrapping the run invocation itself, which would wrap the resolver, not the program. A prefix is **multiple tokens** (e.g. `valgrind --leak-check=full`); it is supplied as an option, so it consumes neither the positional operands nor the forwarded arguments, and a host defines how the tokens are given (a tokenized string and/or a repeatable option). The launched process's exit status remains the invocation's exit status. A prefix on a **device target** is an error — device launch is deferred, and a local wrapper does not apply to on-device execution.
+**Launch prefix.** A run MAY interpose a **prefix command** before the resolved launch command: the launched process becomes `<prefix tokens> <resolved command> <arguments>`, executed in the launch's resolved working directory and environment (§8.6) with the same terminal attachment as an unprefixed run (above). The prefix is a host-level wrapper the system does **not** interpret, so it serves any external launcher — a memory checker, tracer, profiler, timing tool, or an interactive debugger invoked on the program (e.g. `valgrind`, `gdb --args`). It is therefore distinct from debugger *attachment* orchestrated by the system (deferred, above): the system execs the wrapper unaware of its purpose. Running the wrapper **inside** the resolved working directory and environment is the point — a caller cannot reproduce it by wrapping the run invocation itself, which would wrap the resolver, not the program. A prefix is **multiple tokens** (e.g. `valgrind --leak-check=full`); it is supplied as an option, so it consumes neither the positional operands nor the forwarded arguments, and a host defines how the tokens are given (a tokenized string and/or a repeatable option). The launched process's exit status remains the invocation's exit status. A prefix on a **device target** or a **foreign** build target is an error — a local wrapper does not apply to on-device execution.
 
-**Command inspection.** A run MAY resolve the launch **without executing it**, reporting the fully-resolved invocation instead: the command and its arguments (a command configuration's declared arguments and any forwarded arguments included), the working directory, and the environment overrides the launch contributes — not the inherited environment. This is a read-only report (§16.9), for inspection or for a caller that drives execution itself. A build target's command is known only once its artifact is (§16.18); an unresolved artifact is reported as unresolved, never guessed (§16.3). Because the working directory and environment are reported rather than applied, a caller that reconstructs the invocation is responsible for reproducing them — the prefix mechanism (above) is the faithful way to run under a wrapper. Whether the dependency build (§16.4) precedes the report or is skipped is a host option.
+**Command inspection.** A run MAY resolve the launch **without executing it**, reporting the fully-resolved invocation instead: the command and its arguments (a command configuration's declared arguments and any forwarded arguments included), the working directory, and the environment overrides the launch contributes — not the inherited environment. This is a read-only report (§16.9), for inspection or for a caller that drives execution itself. A build target's command is known only once its artifact is (§16.18); an unresolved artifact is reported as unresolved, never guessed (§16.3). Because the working directory and environment are reported rather than applied, a caller that reconstructs the invocation is responsible for reproducing them — the prefix mechanism (above) is the faithful way to run under a wrapper. Whether the dependency build (§16.4) precedes the report or is skipped is a host option. For a foreign target the report names the device-side invocation instead — device, staged program path, arguments, working directory, library directories and device environment — plus the staging manifest; nothing is staged or executed.
 
 **Shared code paths.** Resolution, dependency build, deploy, and the launch
 command/spec are the same seams the editor drives; the headless runner differs
@@ -1787,3 +1809,64 @@ that is too old reads as found); installing or repairing anything; editor-only
 registry lookups; a per-user cross-workspace cache; a non-zero check mode; an
 editor-native health rendering; probing on any path other than an explicit
 health run.
+
+### 16.34 Device commands
+
+The standalone host exposes devices and remote execution for scripting and
+CI. All device commands resolve runners from the SDKs in scope: the resolved
+profile's SDK when a profile resolves, otherwise every declared SDK whose
+provider supplies a device runner.
+
+- **List** (`lw device list [--json]`) — the attached devices each runner
+  reports: serial, state, runner id, display name, and whether the serial is
+  a profile's persisted device. Read-only; exits 0 with an empty list when
+  nothing is attached, non-zero only when no runner is available.
+- **Select** (`lw device select <serial> [profile]`) — persist the serial as
+  the profile's device (§1.8), a management operation writing the working copy
+  (§16.9). `--clear` removes it.
+- **Named test executables** — `lw test [profile] --target <t> [--target <t>…]
+  [--junit <file>] [-- <args>]` runs the named executables per §16.16 (on a
+  device when foreign); `<args>` go to each executable (e.g. a test filter).
+- **Per-invocation selection** — `run` and `test` accept `--device <serial>`
+  (§18.3 rule 1). It is never persisted.
+- **Staging control** — `run` and `test` accept `--fresh` (re-stage every
+  file, ignoring the sync record, §18.4). `lw device clean [--device <serial>]`
+  removes this workspace's staging root from the device (§18.12) and its sync
+  record.
+- **Timeouts** — `run` and `test` accept `--timeout <seconds>` for the device
+  program (§18.8). `--query-timeout <seconds>` and `--transfer-timeout
+  <seconds>` override the transport timeouts for this invocation (over the
+  runner's and core's defaults, §18.8).
+- **Log options** — `run` and `test` accept `--log <key>=<value>`, repeatable,
+  forwarded verbatim to the device runner over the launch configuration's
+  `device_log` table (§18.13). The host knows no option names; the runner
+  rejects unknown keys or values with an error before anything is staged.
+- **Run folder** — each remote run saves `output.log` (the program's output,
+  unfiltered; a single combined stream when the connector merges standard
+  error), `device.log` (the runner log stream as kept by the runner), pulled
+  result files and crash reports under `<build dir>/.device-runs/`; the ten
+  newest per ConfigUnit are kept (§18.5).
+- **Lock** — device operations wait for the device lock (§18.7);
+  `--no-wait` fails fast instead, naming the holder. `lw unlock --device
+  <serial>` clears a device lock immediately. `LOOMWORKS_DEVICE_LOCK_DIR`
+  relocates the lock directory (§18.7).
+
+Resolution is non-interactive in every host that cannot prompt: ambiguity is an
+error listing the candidates and the option that resolves it.
+
+Example (illustrative names):
+
+```
+$ lw device list
+SERIAL              STATE   RUNNER  NAME
+FMR0225108000951    online  ohos    Mate 60 Pro   (device for Debug:ohos-openharmony-arm64-v8a)
+
+$ lw run Debug:ohos-openharmony-arm64-v8a LumeSceneAPITestRunner -- --gtest_filter=Scene.*
+lw: building LumeSceneAPITestRunner … done
+lw: staging on FMR0225108000951: 3 changed files (1.2 MB), 51 MB archive unchanged
+[==========] Running 12 tests from 1 test suite.
+…
+[  PASSED  ] 12 tests.
+$ echo $?
+0
+```

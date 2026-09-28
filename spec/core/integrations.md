@@ -201,6 +201,7 @@ Each provider table exposes:
 | `validate(path) → boolean` | Return whether a given path looks like a valid installation of this SDK type |
 | `create_sdk(key, path, version) → SDK` | Construct a `loomworks.SDK` domain object from a validated installation |
 | `query_capabilities(sdk, module_id) → table\|nil` | Return opaque capability data this SDK can offer to a given module, or `nil` if it has nothing for that module. `module_id == nil` returns the supported module ids array |
+| `device_runner(sdk) → Runner\|nil` | *(optional)* The device runner that executes this installation's foreign-platform build output on attached devices (§18.2) |
 | `health_inventory(ctx) → Declaration[]` | *(optional)* Extra environment-inventory declarations (§16.33). Without it, core lists the provider's `detect_all()` installations plus every installation a profile pins (each validated once), under category *SDKs*; a pinned installation that no longer validates is a missing **required** item for that profile. A provider with nothing detected and nothing pinned contributes no line |
 
 **Declaring an installation.** An SDK is normally declared by supplying a path,
@@ -324,13 +325,36 @@ language to a configuration when the actual configure enabled more
 than was declared. Not authoritative; user remains the source of
 truth for `Configuration.languages`.
 
+### 10.7 Kit target platform
+
+A provider whose kits build for a platform other than the host declares, in
+its capability data for each such kit, an opaque **target-platform token**
+(e.g. an OS/architecture pair). The module that turns capabilities into kits
+(`kits_from_sdk`) returns the token beside each kit's tool data:
+
+```
+kits_from_sdk(caps, sdk) → { tool_data, target_platform? }[]
+```
+
+Core stores it as the Tool's execution platform (§1.5, §18.1) and records the
+producing SDK on the Tool, so a foreign artifact is routed to that SDK's device
+runner (§18.2). A kit without a token is host-runnable. The token is data about
+the kit, not a program-bearing field: it names no program and is produced by
+detection on this machine (§17.7).
+
+The token vocabulary is free-form and owned by the provider: core compares a
+kit's token only for equality with the `platforms` of the runner of the SDK
+that produced the kit. No shared vocabulary exists; one is introduced only if
+two providers ever have to agree on a platform.
+
 ---
 
 ## 11. Device Interface Contract
 
 Devices are physical or emulated deployment targets (phones,
 simulators, embedded boards). Any module may opt in to device
-support; SDK providers may also expose devices in the future. Core
+support for application packages (this section); SDK providers expose
+devices through device runners for plain executables (§18). Core
 discovers device-capable modules and routes all device operations
 through them — no per-module knowledge in core.
 
@@ -348,7 +372,7 @@ Fields:
 | `serial` | string | Stable device identifier |
 | `display_name` | string | Human-readable label |
 | `state` | string | `"online"` / `"offline"` |
-| `provider` | string | Module id that owns this device type |
+| `provider` | string | Module id or device-runner id (§18.2) that reported the device |
 | `properties` | table | Provider-specific extras |
 
 ### 11.2 Module opt-in
@@ -507,7 +531,9 @@ Devices are typically implemented inside the module that knows the
 relevant connector tool. No v1 core module ships a device interface;
 device-capable modules (e.g. mobile/embedded targets) live in
 separate plugins and document their connector usage in their own
-specs.
+specs. A device-capable module MAY take its device listing and transport
+from its SDK's device runner instead of running the connector itself
+(§18.10).
 
 ---
 

@@ -31,6 +31,27 @@ Ideas:
 
 ---
 
+## Remote execution on devices — deferred pieces
+
+Core §18 ([spec/core/remote-exec.md](spec/core/remote-exec.md)) v1 runs named
+foreign executables (`lw run`, `lw test --target`) on a device through an SDK
+provider's device runner. Deferred:
+
+- **ctest-registered tests on a device** — static listing via
+  `ctest --show-only=json-v1` turned into exec requests (§18.6, cmake §15.3).
+- **`cpp_compiler` device runners** — cross gcc/clang kits whose programs run on
+  a networked board (cmake §15.1).
+- **Device-farm lock interop** — `LOOMWORKS_DEVICE_LOCK_DIR` relocates the lock
+  directory; lock-file format compatibility is validated with a concrete farm
+  (§18.7).
+- **Generic device-log view** — move hilog parsing/filtering out of
+  `device_log.lua` into the ohos plugin; the view takes a format table from the
+  module/runner (§18.13 "Later").
+- **Debugging and test-explorer integration** for foreign targets (§18.11).
+- **stdin forwarding** to device programs (§18.5).
+
+---
+
 ## Workspace trust
 
 Follow-ups to workspace trust (spec §17, `lw help trust`), not done:

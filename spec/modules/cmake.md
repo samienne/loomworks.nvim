@@ -1020,3 +1020,82 @@ which quotes them). A build directory may therefore contain spaces, `(`, `)`,
 argument — `%`, `!`, `"` and line breaks — are refused, with an error naming the
 directory. Inside the batch file every argument is double-quoted (`%` doubled)
 and delayed expansion is disabled.
+
+## 15. Cross kits and device execution (core §18)
+
+### 15.1 Target platform on SDK kits
+
+`kits_from_sdk` (§1a, core §10.7) returns each kit's **target-platform token**
+beside its tool data when the SDK capability declares one. The capability shape
+gains an optional field at platform level and a per-arch override:
+
+```lua
+platforms = { {
+    name = "OpenHarmony",
+    toolchain_file = "...",
+    archs = { "arm64-v8a", "armeabi-v7a" },
+    arch_args = { ... },
+    target_platform = { ["arm64-v8a"] = "ohos-aarch64",   -- per arch
+                        ["armeabi-v7a"] = "ohos-arm" },
+} }
+```
+
+A string `target_platform` applies to every arch of the platform. A kit whose
+capability declares none is host-runnable (the single-compiler shape of
+`cpp_compiler` never declares one: a user-declared cross compiler without a
+runner stays refused only by the host-executability probe, core §18.1). The
+token is **not** part of `tool_data` identity (`tools_match` / `tool_key` are
+unchanged), so existing kit keys and build directories are unaffected.
+
+Deferred: a `cpp_compiler` SDK declaring a target platform (e.g. a cross gcc
+whose programs run on a board reached over the network). It needs a device
+runner, which `cpp_compiler` does not have; until then the probe keeps such a
+build from being executed on the host.
+
+### 15.2 What the module supplies to the manifest
+
+Core §18.4 derives runtime libraries from module data. cmake supplies it from
+the file-api codemodel it already reads:
+
+- **Dependencies** — `parse_targets` already records each target's
+  project-owned `dependencies`; the manifest follows them transitively and takes
+  every `SHARED_LIBRARY` / `MODULE_LIBRARY` artifact (via `resolve_artifacts`,
+  §4.6) at its build-directory-relative path.
+- **Out-of-tree artifacts** — an artifact that resolves outside the build
+  directory (hardcoded output directory, §4.6) cannot be mirrored by relative
+  path; it is an error naming the artifact and suggesting a `device.stage`
+  pattern for a copy placed inside the tree.
+
+Files a build copies next to the executable with custom commands (a
+"copy dependencies" helper target, plugin directories, test data) are not
+file-api artifacts and are **not** derived — they are selected with the
+project's `device.stage` / `device.archive` patterns (core §18.9). This is
+deliberate: guessing from directory contents would stage object files and
+build-system droppings.
+
+### 15.3 Tests on a device
+
+- `CTestUnit` never runs `ctest` for a profile whose kit is foreign (core §15
+  invariant 19): ctest would execute foreign binaries on the host. The headless
+  test run reports that registered tests cannot run on this host and points at
+  `lw test --target`.
+- Named test executables (core §16.16) are run directly. For gtest the results
+  option is `--gtest_output=xml:<device path>`; the pulled file is parsed with
+  the gtest helper's `parse_xml_results` (§8.2), which accepts gtest's own XML
+  (same `testsuite`/`testcase`/`failure` shape). Framework detection uses the
+  helper's list probe executed through the device runner.
+
+Deferred (later phase): device execution of ctest-registered tests, via
+core §18.6's static route. `CTestUnit` reads `ctest --show-only=json-v1`
+(host-side; it executes nothing) and turns each test's command, arguments,
+`WORKING_DIRECTORY` and `ENVIRONMENT` into exec requests, with host
+build-directory paths translated to staged device paths. Configuring with
+`CMAKE_CROSSCOMPILING_EMULATOR` pointing at a loomworks shim, so that ctest
+itself drives the device, is rejected: it bakes a loomworks path into the build
+description (non-invasiveness) and pays staging and locking per test.
+
+### 15.4 Run environment
+
+The host run environment (core §8.7, Windows `PATH` setup and `runtime_path`)
+does not apply to a foreign target; the device loader path is built from the
+manifest (core §18.5). `runtime_path` is not consulted.

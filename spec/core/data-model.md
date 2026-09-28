@@ -541,6 +541,12 @@ from `detect_tools` + SDK enrichment.
 Each module declares a static `has_keyed_tools` property (boolean)
 so that config key construction works before detection completes.
 
+A tool also has an **execution platform**: `nil` when its
+output runs on the host, otherwise an opaque target-platform token set by the
+tool's producer (§10.7). An SDK-derived tool records the SDK that produced it.
+Both are runtime facts of detection, not persisted identity: they never enter
+the tool key (§18.1).
+
 ### 1.5.1 Languages
 
 Languages are first-class **string identifiers** that drive the
@@ -726,7 +732,7 @@ reconnections and emulator restarts.
 |-------|------|-------------|
 | `serial` | string | Unique device identifier (identity key) |
 | `display_name` | string | Human-readable label (model name or serial) |
-| `provider` | string | Module ID that owns this device type |
+| `provider` | string | Module ID or device-runner ID (§18.2) that reported this device |
 | `state` | string | `"online"` or `"offline"` |
 | `properties` | table | Opaque module-specific data (model, OS version, etc.) |
 
@@ -747,6 +753,9 @@ Each profile may store an optional **device serial** (string). This is the
 device selected for device-requiring launch targets in this profile.
 Persisted in user.json alongside `default_target`. If the serial references
 an offline or unknown device, the UI shows a warning.
+
+The same persisted serial selects the device for remote execution of foreign
+build targets (§18.3).
 
 Only modules with `has_devices = true` produce device-requiring targets.
 Profiles in workspaces with no device-capable modules never show device
