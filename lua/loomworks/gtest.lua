@@ -95,6 +95,12 @@ local function output_looks_like_gtest(output)
     return false
 end
 
+--- Whether list-probe output (`--gtest_list_tests`) looks like gtest's. Public
+--- for probes executed elsewhere (a device run, spec §18.6).
+--- @param output string
+--- @return boolean
+M.looks_like_gtest = output_looks_like_gtest
+
 --- Build vim.system opts for a probe invocation.
 --- @param opts? { env?: table<string, string>, cwd?: string }
 --- @return table

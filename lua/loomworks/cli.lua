@@ -12,7 +12,8 @@
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
----           unlock <profile>|--all | settings <...> | completion <shell> | help
+---           unlock <profile>|--all|--device <serial> | device <list|select|clean> |
+--           settings <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -2041,25 +2042,41 @@ function M.cmd_test(ws, args)
     elseif seen_sep then extra[#extra + 1] = args[i]
     else pre[#pre + 1] = args[i] end
   end
-  -- Pre-`--` tokens: `--junit <file>` and a positional profile.
+  -- Pre-`--` tokens: `--junit <file>`, `--target <exe>` (repeatable), device
+  -- options (§16.34) and a positional profile.
   local profile_name, junit
+  local names, dev_opts = {}, DEV.new_device_opts()
   local i = 1
   while pre[i] do
     if pre[i] == "--junit" then
       junit = pre[i + 1]
       if not junit then die("--junit requires a file path") end
       i = i + 2
+    elseif pre[i] == "--target" then
+      if not pre[i + 1] then die("--target requires a test executable name") end
+      names[#names + 1] = pre[i + 1]
+      i = i + 2
+    elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     elseif not profile_name then
       profile_name = pre[i]; i = i + 1
     else
       die("unexpected argument '" .. tostring(pre[i]) ..
-        "' — usage: lw test [profile] [--junit <file>] [-- args…]")
+        "' — usage: lw test [profile] [--target <exe>…] [--junit <file>] [-- args…]")
     end
   end
   if junit then junit = resolve_abs_out(junit, user_cwd()) end
 
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw test <profile>")
+
+  -- Named test executables run directly — locally or on a device (§16.16).
+  if #names > 0 then
+    return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts })
+  end
+  if dev_opts.device or dev_opts.fresh or dev_opts.timeout or dev_opts.no_wait or dev_opts.log_options then
+    die("device options apply to named test executables: lw test <profile> --target <exe> …")
+  end
+  M._refuse_foreign_batch(profile)
   -- Hold the build-dir lock across build AND test: a native runner like
   -- `meson test` rebuilds, so the whole run must be exclusive of other
   -- processes touching the same build dir.
@@ -2498,7 +2515,7 @@ function M._run_foreign(lt, ws, f, opts, deps)
     profile_key = profile and profile.key,
     fresh = opts.fresh, no_wait = opts.no_wait, timeout = opts.timeout, timeouts = opts.timeouts,
     log_options = remote_run.merge_log_options(cfg and cfg.device_log, opts.log_options),
-    results = opts.results, extra_args_fn = opts.extra_args_fn,
+    results = opts.results, extra_args_fn = opts.extra_args_fn, before_exec = opts.before_exec,
     fail_on_missing_results = opts.fail_on_missing_results,
     backend = deps.backend, liveness_ms = deps.liveness_ms,
     write_out = deps.write_out, write_err = deps.write_err,
@@ -2564,6 +2581,134 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
   out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
     table.concat(full, " ")))
   return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
+end
+
+--- The batch runner is a host program that would execute the profile's test
+--- binaries here: never for a cross kit (spec §15 invariant 19, §18.6). Dies
+--- naming the kit and platform, pointing at `lw test --target`.
+--- @param profile loomworks.Profile
+function M._refuse_foreign_batch(profile)
+  for _, pp in ipairs(profile:projects()) do
+    local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
+    if token then
+      die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
+        .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
+        profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key))
+    end
+  end
+end
+
+--- Run named test executables (spec §16.16, §18.6): build the profile, then
+--- run each named executable directly with its framework's results option —
+--- on a device when foreign (§18.5), locally otherwise — and judge each
+--- outcome from exit status + parsed results (+ crashes / missing results on a
+--- device). `opts = { junit?, extra = string[], dev = device options }`.
+--- `deps` (tests): build(profile, ws), resolve_target(ws, profile, name) → lt,
+--- run_spec, backend, liveness_ms, write_out, write_err.
+--- @return integer exit code
+function M._test_targets(ws, profile, names, opts, deps)
+  deps = deps or {}
+  local test_run = require("loomworks.remote.test_run")
+  local gtest = require("loomworks.gtest")
+  local remote_run = require("loomworks.remote.run")
+  if deps.build then
+    deps.build(profile, ws)
+  else
+    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
+  end
+  local function resolve(name)
+    if deps.resolve_target then return deps.resolve_target(ws, profile, name) end
+    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
+    local matches, all = match_targets(ws, profile, name, nil, "target")
+    if #matches == 0 then
+      local labels = {}
+      for _, c in ipairs(all) do if c.kind == "target" then labels[#labels + 1] = c.project.key .. ":" .. c.name end end
+      die("no executable target '" .. name .. "' in profile '" .. profile.key .. "'.\n  executables: " ..
+        (next(labels) and table.concat(labels, ", ") or "(none)"))
+    elseif #matches > 1 then
+      local labels = {}
+      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
+      die("'" .. name .. "' is ambiguous: " .. table.concat(labels, ", ") .. "\n  qualify with <project>:<name>.")
+    end
+    return candidate_launch_target(ws, profile, matches[1])
+  end
+
+  local several = #names > 1
+  local failed_names, wrote = {}, {}
+  for _, name in ipairs(names) do
+    local lt = resolve(name)
+    local f = M._foreign_of(lt)
+    local results, results_requested, results_missing, failed, reasons
+    if f then
+      out(string.format("==> [test] %s (on a device)", name))
+      local hook, st = test_run.device_hook(f.name)
+      local outcome
+      M._run_foreign(lt, ws, f, {
+        extra_args = opts.extra, device = opts.dev.device, fresh = opts.dev.fresh,
+        timeout = opts.dev.timeout, timeouts = opts.dev.timeouts, log_options = opts.dev.log_options,
+        no_wait = opts.dev.no_wait, before_exec = hook,
+        on_result = function(r) outcome = r; return r.exit_code end,
+      }, deps)
+      results_requested = st.framework == "gtest"
+      local path = st.results_name and outcome.results[st.results_name]
+      results = path and gtest.parse_xml_results(path) or nil
+      if path and not results then results = {} end
+      results_missing = results_requested and not path
+      failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
+        results = results, results_missing = results_missing, crashes = #outcome.crashes,
+        transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
+      remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
+    else
+      out(string.format("==> [test] %s", name))
+      local spec, serr = lt:resolve_launch_spec({ extra_args = opts.extra })
+      if not spec then die("cannot resolve test executable: " .. tostring(serr)) end
+      local fw = gtest.probe_sync(spec.cmd, name, { env = spec.env, cwd = spec.cwd })
+      local xml
+      if fw == "gtest" then
+        results_requested = true
+        xml = vim.fn.tempname() .. ".xml"
+        spec.args[#spec.args + 1] = "--gtest_output=xml:" .. xml
+      end
+      local argv = { spec.cmd }
+      for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
+      local code = (deps.run_spec or run_spec)({ cmd = argv, cwd = spec.cwd, env = spec.env }, ws.root)
+      if xml then
+        if uv.fs_stat(xml) then
+          results = gtest.parse_xml_results(xml) or {}
+          os.remove(xml)
+        else
+          results_missing = true
+        end
+      end
+      failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
+        results = results, results_missing = results_missing })
+    end
+    local c = test_run.count(results)
+    if failed then
+      failed_names[#failed_names + 1] = name
+      out(string.format("%s: FAILED (%s)%s", name, table.concat(reasons, ", "),
+        #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
+    else
+      out(string.format("%s: %d test%s passed%s", name, c.total - c.skipped, (c.total - c.skipped) == 1 and "" or "s",
+        c.skipped > 0 and (", " .. c.skipped .. " skipped") or ""))
+    end
+    if opts.junit then
+      if results then
+        local p = test_run.junit_path(opts.junit, name, several)
+        local ok, werr = test_run.write_file(p, test_run.junit_xml(name, results))
+        if ok then wrote[#wrote + 1] = p else errw("lw: warning: cannot write JUnit " .. p .. ": " .. tostring(werr) .. "\n") end
+      else
+        errw("lw: warning: no JUnit output for " .. name .. " (no results file)\n")
+      end
+    end
+  end
+  for _, p in ipairs(wrote) do out("JUnit: " .. p) end
+  if #failed_names > 0 then
+    die(string.format("%d of %d test executable%s failed: %s", #failed_names, #names,
+      #names == 1 and "" or "s", table.concat(failed_names, ", ")), 1)
+  end
+  out(string.format("TESTS OK: %s (%d executable%s)", profile.key, #names, #names == 1 and "" or "s"))
+  return 0
 end
 
 --- `lw launch list [project]` — list command-type launch configs.
@@ -7441,7 +7586,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "device", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -7883,7 +8028,7 @@ working copy) is kept; the next `lw build` reconfigures from scratch.
 This is the remedy when the build cache was not written on this machine (it is
 refused — see `lw help trust`). Confirms first; -y skips the prompt and is
 required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
-  unlock = [[lw unlock <profile> | --all
+  unlock = [[lw unlock <profile> | --all | --device <serial>
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
 on a build dir across processes (editor + CLI) with an advisory lockfile;
@@ -7892,6 +8037,9 @@ its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
 
   <profile>   clear locks on that profile's build dirs
   --all       clear locks on every profile's build dirs
+  --device <serial>
+              clear the per-user DEVICE lock of that serial (remote runs hold
+              it for their whole duration; see `lw help device`)
 
 Warns (on stderr) before clearing a lock that still looks active — meaning a
 build may really be running elsewhere.]],
@@ -7944,7 +8092,57 @@ Disambiguating a name present more than once:
                          config share a name in one project
 
 Deploy steps declared on the target run before launch. Debug (DAP) and device
-launches are editor-only.]],
+launches are editor-only.
+
+Foreign targets (built by a cross-compiling kit): never run on this host. They
+run on an attached DEVICE through the device runner of the kit's SDK — build ->
+deploy -> stage -> execute; the exit code is the device program's (255 when the
+device/transport lost it, 124 on --timeout). See `lw help device`.
+  --device <serial>     the device for this run (else the profile's persisted
+                        device, else the only one online)
+  --fresh               re-stage every file (ignore the sync record)
+  --timeout <s>         stop the device program after <s> seconds
+  --query-timeout <s> / --transfer-timeout <s>
+                        transport timeouts (defaults 120 s / 600 s)
+  --log <key>=<value>   device-log option for the runner (repeatable)
+  --no-wait             fail instead of waiting when the device is busy
+`--prefix` and `--cwd` are errors on a foreign target; `--print` reports the
+device-side invocation and the staging manifest.]],
+  device = [[lw device <list|select|clean>
+
+Devices for running cross-built programs (spec §18). An SDK plugin whose kits
+build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
+("stage") a program onto an attached device and run it there.
+
+  list [--json] [profile]         the devices each runner in scope reports:
+                                  serial, state, runner, name, and the profiles
+                                  that persist the serial. Exit 0 when none are
+                                  attached; non-zero when no runner is available.
+  select <serial> [profile]       persist the profile's device (working copy)
+  select --clear [profile]        forget it
+  clean [--device <serial>]       remove this workspace's staging tree from
+                                  the device and its sync record
+
+Device choice for `lw run` / `lw test --target`: --device, else the profile's
+persisted serial, else the only online device — never guessed otherwise.
+
+What is staged: the program, the project shared libraries it links, the
+platform runtime the runner names, plus the project's `device` block:
+  "device": { "stage": ["bin/*.so"], "archive": ["assets/**"],
+              "env": { "K": "V" }, "working_dir": "bin" }
+`stage`/`archive` are globs relative to the build directory (layout kept);
+`archive` sets travel as one tar. Only changed files are re-sent. Runs save
+output.log (and device.log, pulled results, crash reports) under
+<build>/.device-runs/ (10 newest kept).
+
+Device logs: a launch config's `device_log` table and `--log key=value` are
+passed to the runner as-is; the option names belong to the SDK plugin.
+
+Trust: stage/archive and device_log are honored from loomworks.json; device
+`env` and `working_dir` only from your local config (`lw help trust`).
+One remote operation per device at a time: runs wait for the device lock
+(`--no-wait` fails fast; `lw unlock --device <serial>`;
+LOOMWORKS_DEVICE_LOCK_DIR relocates the lock directory).]],
   target = [[lw target [list] [profile]
 lw target set [<profile>] <target>   |   lw target clear [profile]
 
@@ -8006,6 +8204,7 @@ args/env/working-dir layered on top — no hand-written path.
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],
   test = [[lw test [profile | config-set] [--junit <file>] [-- runner-args…]
+lw test [profile] --target <exe> [--target <exe>…] [--junit <file>] [-- exe-args…]
 
 Build a profile, then run its tests through each module's NATIVE runner (cmake
 -> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
@@ -8027,7 +8226,16 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
                  e.g. `-- -j 4` (ctest) or `-- --num-processes 4` (meson).
 
 CI example (JUnit + 4-way parallel ctest):
-  lw --no-input test Debug:ninja-gcc-12 --junit results.xml -- -j 4]],
+  lw --no-input test Debug:ninja-gcc-12 --junit results.xml -- -j 4
+
+Named test executables (--target, repeatable): each is built and run DIRECTLY
+(not through the batch runner) with gtest's XML results option; the outcome
+fails on a non-zero exit, a failed test in the XML, a missing XML, or (on a
+device) a crash report. Args after `--` go to each executable. A cross-built
+executable runs on a device (`lw help device`; --device, --fresh, --timeout,
+--log, --no-wait apply). A profile whose kit cross-compiles refuses the plain
+batch-runner form — its registered tests cannot run on this host:
+  lw test Debug:ohos-kit --target MyTests -- --gtest_filter=Scene.*]],
   init = [[lw init [--name <name>]
 
 Initialize the workspace working copy (.nvim/loomworks.user.json). The shared
@@ -8978,6 +9186,7 @@ Usage: lw [command] [args]
   run <profile> <target>  same, on a named profile
   target [profile]  list a profile's launchable targets (default marked *)
   target set|clear  set / clear a profile's default target
+  device <sub>      list | select | clean devices for cross-built programs
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
