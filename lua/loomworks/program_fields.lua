@@ -22,7 +22,7 @@
 --- Core defines the generic fields (configuration `env` and compiler-family
 --- `overrides.<family>.env`, launch configurations naming a program /
 --- arguments / environment / working directory, deploy destinations not
---- statically inside the workspace); modules add top-level `type_config` keys
+--- statically inside the workspace, a `device` block's `env` / `working_dir`); modules add top-level `type_config` keys
 --- through their optional `trust_fields = { type_config = {...}, review = {...} }`
 --- declaration (spec §8.4). No module names appear here.
 
@@ -32,6 +32,11 @@ local M = {}
 --- sets any of them is ignored as a whole (spec §17.6) so a partially stripped
 --- launch never runs something other than what was written.
 M.LAUNCH_KEYS = { "command", "args", "env", "working_dir" }
+
+--- Program-bearing fields of a `device` block (spec §18.9): the device-side
+--- environment and working directory. `stage` / `archive` are statically
+--- confined to the build directory and honored from shared config.
+M.DEVICE_KEYS = { "env", "working_dir" }
 
 local function sorted_keys(t)
     local keys = {}
@@ -206,7 +211,27 @@ function M.strip(config, modules)
                                 detail = table.concat(hits, ", "),
                             })
                             proj.launch[lname] = nil
-                        elseif type(l.deploy) == "table" then
+                        else
+                            -- (3b) A launch-level device block's program-bearing
+                            -- fields (spec §18.9): env and working_dir.
+                            if type(l.device) == "table" then
+                                for _, f in ipairs(M.DEVICE_KEYS) do
+                                    if l.device[f] ~= nil then
+                                        add({
+                                            kind = "device", value = l.device[f],
+                                            path = { "projects", pkey, "launch", lname, "device", f },
+                                            raw_path = { "projects", pkey, "launch", lname, "device", f },
+                                            anchor = 4,
+                                            label = "projects." .. pkey .. ".launch." .. lname .. ".device." .. f,
+                                            detail = short(l.device[f]),
+                                        })
+                                        l.device[f] = nil
+                                    end
+                                end
+                                if next(l.device) == nil then l.device = nil end
+                            end
+                        end
+                        if proj.launch[lname] and type(l.deploy) == "table" then
                             for _, dest in ipairs(sorted_keys(l.deploy)) do
                                 if not M.dest_is_local(dest) then
                                     add({
@@ -224,6 +249,24 @@ function M.strip(config, modules)
                     end
                 end
                 if next(proj.launch) == nil then proj.launch = nil end
+            end
+            -- (5) Project-level device block: env / working_dir are
+            -- program-bearing; stage / archive patterns are not (spec §18.9).
+            if type(proj.device) == "table" then
+                for _, f in ipairs(M.DEVICE_KEYS) do
+                    if proj.device[f] ~= nil then
+                        add({
+                            kind = "device", value = proj.device[f],
+                            path = { "projects", pkey, "device", f },
+                            raw_path = { "projects", pkey, "device", f },
+                            anchor = 2,
+                            label = "projects." .. pkey .. ".device." .. f,
+                            detail = short(proj.device[f]),
+                        })
+                        proj.device[f] = nil
+                    end
+                end
+                if next(proj.device) == nil then proj.device = nil end
             end
             -- (4) Project-level deploy destinations.
             if type(proj.deploy) == "table" then
@@ -320,7 +363,7 @@ function M.review(user_data, modules)
             -- Raw shape: the type key is the one table-valued key that is not a
             -- generic project key.
             local generic = { path = true, depends_on = true, launch = true,
-                variables = true, deploy = true, type = true, type_config = true }
+                variables = true, deploy = true, device = true, type = true, type_config = true }
             local mtype, tc = proj.type, proj.type_config
             if not tc then
                 for k, v in pairs(proj) do
@@ -371,6 +414,13 @@ function M.review(user_data, modules)
                                 hits[#hits + 1] = "deploy → " .. dest
                             end
                         end
+                        if type(l.device) == "table" then
+                            for _, f in ipairs(M.DEVICE_KEYS) do
+                                if l.device[f] ~= nil then
+                                    hits[#hits + 1] = "device." .. f .. " = " .. short(l.device[f], 50)
+                                end
+                            end
+                        end
                         if #hits > 0 then
                             p("projects." .. pkey .. ".launch." .. lname .. ": " .. table.concat(hits, ", "))
                         end
@@ -380,6 +430,13 @@ function M.review(user_data, modules)
             if type(proj.deploy) == "table" then
                 for _, dest in ipairs(sorted_keys(proj.deploy)) do
                     p("projects." .. pkey .. ".deploy → " .. dest)
+                end
+            end
+            if type(proj.device) == "table" then
+                for _, f in ipairs(M.DEVICE_KEYS) do
+                    if proj.device[f] ~= nil then
+                        p("projects." .. pkey .. ".device." .. f .. " = " .. short(proj.device[f], 90))
+                    end
                 end
             end
         end

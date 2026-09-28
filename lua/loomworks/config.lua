@@ -20,6 +20,7 @@ local NON_TYPE_KEYS = {
     launch = true,
     variables = true,
     deploy = true,  -- project-level deploy dict, not a module-type key
+    device = true,  -- remote-execution block (spec §18.9)
 }
 
 --- Extract project type from the project definition table.
@@ -76,6 +77,7 @@ function M.normalize_projects(raw_projects)
             launch = def.launch,
             variables = def.variables,
             deploy = def.deploy,
+            device = def.device,
         }
     end
     return projects, nil
@@ -121,6 +123,22 @@ function M.validate(raw, root)
                         return nil, "project '" .. key .. "' launch '"
                             .. launch_name .. "': " .. deploy_err
                     end
+                end
+            end
+        end
+
+        -- Device blocks (spec §18.9) and launch-level device_log options (§18.13).
+        do
+            local man = require("loomworks.remote.manifest")
+            local ok, derr = man.validate_block(def.device, "project '" .. key .. "'")
+            if not ok then return nil, derr end
+            for launch_name, launch_def in pairs(type(def.launch) == "table" and def.launch or {}) do
+                if type(launch_def) == "table" then
+                    local label = "project '" .. key .. "' launch '" .. tostring(launch_name) .. "'"
+                    ok, derr = man.validate_block(launch_def.device, label)
+                    if not ok then return nil, derr end
+                    ok, derr = man.validate_log_options(launch_def.device_log, label)
+                    if not ok then return nil, derr end
                 end
             end
         end
@@ -203,6 +221,7 @@ function M.validate(raw, root)
             launch = def.launch,
             variables = project_variables,
             deploy = def.deploy,
+            device = def.device,
         }
     end
 

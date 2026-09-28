@@ -140,7 +140,10 @@ end
 --- Release a held lock.
 --- @param handle table|nil
 function M.release(handle)
-    if not handle then return end
+    -- Idempotent: a second release (an exit hook after an explicit release)
+    -- must never unlink a lockfile another process has since created.
+    if not handle or handle.released then return end
+    handle.released = true
     if handle.timer then
         pcall(function() handle.timer:stop(); handle.timer:close() end)
     end

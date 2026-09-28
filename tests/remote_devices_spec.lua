@@ -144,6 +144,31 @@ describe("lw device list / select", function()
         assert.equals(2, p.saved)
     end)
 
+    it("device clean removes this workspace's staging tree and its sync records", function()
+        local saved = vim.env.LOOMWORKS_DEVICE_LOCK_DIR
+        local lockroot = fx.mkroot()
+        vim.env.LOOMWORKS_DEVICE_LOCK_DIR = lockroot
+        local dev = fx.device({ serials = { S1 = "One" } })
+        dev.boards.S1.files["/data/stage/myws/u/a"] = { data = "x" }
+        dev.boards.S1.files["/data/stage/other/b"] = { data = "y" }
+        local sdk = fx.fake_sdk(fx.fake_runner_table())
+        local ws = mock_ws(sdk)
+        ws.name = "myws"
+        ws._device_sync = { S1 = { ["/data/stage/myws/u"] = { files = {} }, ["/data/stage/other/v"] = {} } }
+        local saves = 0
+        ws._save_cache = function() saves = saves + 1 end
+        local res = capture(function() return cli._device_clean(ws, {}, { backend = dev:backend() }) end)
+        vim.env.LOOMWORKS_DEVICE_LOCK_DIR = saved
+        require("loomworks.io").rm_rf(lockroot)
+        assert.is_true(res.ok, res.stderr)
+        assert.truthy(res.stdout:find("removed /data/stage/myws from S1", 1, true))
+        assert.is_nil(dev.boards.S1.files["/data/stage/myws/u/a"])
+        assert.is_not_nil(dev.boards.S1.files["/data/stage/other/b"])
+        assert.is_nil(ws._device_sync.S1["/data/stage/myws/u"])
+        assert.is_not_nil(ws._device_sync.S1["/data/stage/other/v"])
+        assert.equals(1, saves)
+    end)
+
     it("select without a profile under non-interactive mode refuses", function()
         local ws = mock_ws(nil, { mock_profile("A"), mock_profile("B") })
         local res = capture(function() return cli._device_select(ws, { "SER9" }) end)

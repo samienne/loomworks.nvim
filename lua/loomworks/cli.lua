@@ -1734,10 +1734,14 @@ end
 -- Devices (spec §16.34, §18.3)
 -- ---------------------------------------------------------------------------
 
+-- Device-command helpers live in one table: the CLI chunk is close to Lua's
+-- 200-locals-per-function limit.
+local DEV = {}
+
 --- The profile a device command is scoped to without dying: a named one
 --- (dies when unknown), else — interactive only — the active / sole profile;
 --- nil means "no profile" (every declared SDK's runner is in scope, §16.34).
-local function soft_profile(ws, name)
+function DEV.soft_profile(ws, name)
   if name then return resolve_profile(ws, name) end
   if not interactive() then return nil end
   local profiles = ws._profiles or {}
@@ -1748,15 +1752,15 @@ local function soft_profile(ws, name)
 end
 
 --- Parse a positive number option value (`--timeout 30`).
-local function parse_seconds(flag, v)
+function DEV.parse_seconds(flag, v)
   local n = tonumber(v)
   if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')") end
   return n
 end
-M._parse_seconds = parse_seconds
+M._parse_seconds = DEV.parse_seconds
 
 --- Serial → profile keys that persist it (§1.8).
-local function persisted_serials(ws)
+function DEV.persisted_serials(ws)
   local map = {}
   for _, p in ipairs(ws._profiles or {}) do
     if p._device_serial then
@@ -1779,14 +1783,14 @@ function M._device_list(ws, opts, deps)
   deps = deps or {}
   local runners = require("loomworks.remote.runners")
   local devices = require("loomworks.remote.devices")
-  local profile = soft_profile(ws, opts.profile)
+  local profile = DEV.soft_profile(ws, opts.profile)
   local scope = runners.in_scope(ws, profile)
   if #scope == 0 then
     die("no device runner available — none of the SDKs in scope" ..
       (profile and (" (profile '" .. profile.key .. "')") or "") ..
       " supplies one (declare the SDK with `lw sdk add`, and install a plugin whose SDK provider ships a device runner)")
   end
-  local persisted = persisted_serials(ws)
+  local persisted = DEV.persisted_serials(ws)
   local rows, failed = {}, 0
   for _, e in ipairs(scope) do
     local list, err = devices.list(e.runner, { backend = deps.backend, timeouts = opts.timeouts })
@@ -1863,6 +1867,77 @@ function M._device_select(ws, args)
   return 0
 end
 
+--- Resolve (runner, serial) for a device operation from the runners in scope:
+--- the device is chosen per §18.3 (explicit > the profile's persisted serial >
+--- the sole online device) across every runner's listing. Dies on ambiguity.
+--- @return loomworks.Runner runner, string serial
+function DEV.pick_device(ws, profile, explicit, opts, deps)
+  local runners = require("loomworks.remote.runners")
+  local devices = require("loomworks.remote.devices")
+  local scope = runners.in_scope(ws, profile)
+  if #scope == 0 then die("no device runner available for this workspace") end
+  local all, owner = {}, {}
+  for _, e in ipairs(scope) do
+    local list, err = devices.list(e.runner, { backend = deps and deps.backend, timeouts = opts.timeouts })
+    if not list then die(err) end
+    devices.merge(ws, e.runner.id, list)
+    for _, d in ipairs(list) do
+      if not owner[d.serial] then owner[d.serial] = e.runner; all[#all + 1] = d end
+    end
+  end
+  local serial, err = devices.select(all, {
+    explicit = explicit, persisted = profile and profile._device_serial or nil,
+    runner_id = #scope == 1 and scope[1].runner.id or "*", profile_key = profile and profile.key,
+  })
+  if not serial then die(err) end
+  return owner[serial], serial
+end
+M._pick_device = DEV.pick_device
+
+--- `lw device clean [--device <serial>] [--no-wait] [profile]` body: remove
+--- this workspace's staging root from the device (§18.12) and its sync record.
+--- @return integer
+function M._device_clean(ws, args, deps)
+  local explicit, no_wait, profile_name = nil, false, nil
+  local opts = { timeouts = {} }
+  local i = 1
+  while args[i] do
+    local v = args[i]
+    if v == "--device" then explicit = args[i + 1]; i = i + 2
+    elseif v == "--no-wait" then no_wait = true; i = i + 1
+    elseif v == "--query-timeout" then opts.timeouts.query = DEV.parse_seconds(v, args[i + 1]); i = i + 2
+    elseif not profile_name and not v:match("^%-") then profile_name = v; i = i + 1
+    else die("usage: lw device clean [--device <serial>] [--no-wait] [profile]") end
+  end
+  local profile = DEV.soft_profile(ws, profile_name)
+  local runner, serial = DEV.pick_device(ws, profile, explicit, opts, deps)
+  local man = require("loomworks.remote.manifest")
+  local ws_prefix = man.device_roots(runner.staging_base, ws.name or "workspace", "_")
+  local device_lock = require("loomworks.remote.device_lock")
+  local h, lerr = device_lock.acquire(serial, {
+    wait = not no_wait, action = "clean", workspace = ws.name,
+    on_wait = function(msg) errw("lw: " .. msg .. "\n") end,
+  })
+  if not h then die(lerr) end
+  on_exit(function() device_lock.release(h) end)
+  local transport = require("loomworks.remote.transport").new({
+    runner = runner, serial = serial, backend = deps and deps.backend, timeouts = opts.timeouts })
+  local ok, err = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
+  device_lock.release(h)
+  if not ok then die(err) end
+  -- Drop the sync records of every staging root under this workspace prefix.
+  local recs = ws._device_sync and ws._device_sync[serial]
+  if recs then
+    for root in pairs(recs) do
+      if man.device_path_under(root, ws_prefix) then recs[root] = nil end
+    end
+    if next(recs) == nil then ws._device_sync[serial] = nil end
+    if ws._save_cache then ws:_save_cache() end
+  end
+  out("removed " .. ws_prefix .. " from " .. serial)
+  return 0
+end
+
 --- `lw device <list|select|clean>` (spec §16.34).
 function M.cmd_device(sub, root, args)
   local rest = {}
@@ -1873,7 +1948,7 @@ function M.cmd_device(sub, root, args)
     while rest[i] do
       local v = rest[i]
       if v == "--json" then opts.json = true; i = i + 1
-      elseif v == "--query-timeout" then opts.timeouts.query = parse_seconds(v, rest[i + 1]); i = i + 2
+      elseif v == "--query-timeout" then opts.timeouts.query = DEV.parse_seconds(v, rest[i + 1]); i = i + 2
       elseif not opts.profile and not v:match("^%-") then opts.profile = v; i = i + 1
       else die("unexpected argument '" .. v .. "' — usage: lw device list [--json] [profile]") end
     end
