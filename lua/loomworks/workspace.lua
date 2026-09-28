@@ -269,6 +269,14 @@ local function merge_project(shared, user)
     end
     merged.deploy = next(merged_deploy) and merged_deploy or nil
 
+    -- Device block (spec §18.9): user wins per field.
+    if shared.device or user.device then
+        local merged_device = {}
+        for k, v in pairs(shared.device or {}) do merged_device[k] = v end
+        for k, v in pairs(user.device or {}) do merged_device[k] = v end
+        merged.device = next(merged_device) and merged_device or nil
+    end
+
     return merged, prov
 end
 
@@ -506,6 +514,7 @@ end
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 --- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
 --- @field _deploy_records table<string, table> normalized dest path -> deploy freshness record
+--- @field _device_sync table<string, table<string, table>> serial -> device staging root -> staging sync record (spec §18.4)
 --- @field _sdks loomworks.SDK[] SDK domain objects
 --- @field _devices table<string, loomworks.Device> serial -> Device (runtime-only)
 --- @field _device_scan_state "idle"|"scanning"|"done"
@@ -572,6 +581,7 @@ function Workspace.new(core, data)
     self._artifact_refs = {}  -- normalized artifact path → ConfigUnits (§5.9)
     self._build_dir_locks = {}
     self._deploy_records = {}  -- normalized dest path → { source_build_dir, source_rel_path, source_mtime }
+    self._device_sync = {}  -- serial → device staging root → sync record (spec §18.4)
     self._sdks = {}  -- SDK domain objects
     self._devices = {}  -- serial -> Device domain object (runtime-only)
     self._device_scan_state = "idle"  -- "idle" | "scanning" | "done"
@@ -821,6 +831,10 @@ function Workspace:_serialize_cache()
     if next(self._deploy_records) then
         data.deploy_state = self._deploy_records
     end
+    -- Remote staging sync records (spec §18.4; runtime state, never shared)
+    if self._device_sync and next(self._device_sync) then
+        data.device_sync = self._device_sync
+    end
 
     return data
 end
@@ -986,6 +1000,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     -- Deploy records: read from cache (no domain object resolution needed)
     if raw_cache and raw_cache.deploy_state then
         self._deploy_records = raw_cache.deploy_state
+    end
+    if raw_cache and type(raw_cache.device_sync) == "table" then
+        self._device_sync = raw_cache.device_sync
     end
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -4158,6 +4175,7 @@ function Workspace:_config_from_objects()
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
                 deploy = project.deploy,
+                device = project.device,
                 variables = project.variables,
             }
         end
@@ -4252,6 +4270,9 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
     end
+    if project.device and next(project.device) then
+        entry.device = project.device
+    end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
     end
@@ -4288,6 +4309,9 @@ function Workspace:_serialize_project(project)
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
+    end
+    if project.device and next(project.device) then
+        entry.device = project.device
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
@@ -4597,6 +4621,7 @@ function Workspace:_user_config_from_objects()
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
                 deploy = project.deploy,
+                device = project.device,
                 variables = project.variables,
             }
         end
@@ -5227,6 +5252,7 @@ function Workspace:_serialize_config_internal()
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
                 deploy = project.deploy,
+                device = project.device,
                 variables = project.variables,
             }
         end
@@ -5300,6 +5326,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
+    end
+    if project.device and next(project.device) then
+        entry.device = project.device
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables

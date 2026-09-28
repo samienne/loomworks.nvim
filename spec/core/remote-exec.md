@@ -110,7 +110,8 @@ interpreter.
 | `log_session(serial, options, program)` | `Session\|nil, err` | *(optional)* The runner log stream for one run (§18.13) |
 
 **`exec` request.** `{ argv, cwd, env, library_dirs, nonce }` — `argv[1]` is a
-device-side path, `cwd` and every `library_dirs` entry are device-side
+device-side path (or, for core's staging housekeeping, a utility name the
+device resolves, §18.4), `cwd` and every `library_dirs` entry are device-side
 absolute paths, `env` is a name → value map, `nonce` is an unpredictable token
 core generates per execution. The rendered command MUST:
 
@@ -208,6 +209,17 @@ are removed from the device staging root.
 
 Deploy steps (§8.8) run on the host before staging, unchanged — a file they
 place inside the build directory is staged if the manifest selects it.
+
+**Device-side housekeeping.** Core performs the device-side steps of staging
+through `exec` (same sentinel protocol, query timeout), with POSIX utility
+argument vectors: `mkdir -p` (directories before transfer), `chmod 755` (the
+program), `rm -f` / `rm -rf` (files that left the manifest; `lw device clean`),
+`tar -xf <archive> -C <staging root>` (an archive set) and the runner's `digest`
+prefix. A runner's device therefore provides these utilities. Every file is
+transferred with `push`, one file per spec. An archive set's archive is kept
+under `<staging root>/.loomworks/` after unpacking, so that `digest`
+verification detects a wiped device for archive sets too; the archive is
+removed with its set.
 
 ### 18.5 Remote execution
 

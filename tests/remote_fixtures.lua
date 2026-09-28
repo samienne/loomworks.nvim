@@ -136,10 +136,11 @@ function M.fake_runner_table(o)
         platforms = { "fake-arm64", "fake-arm" },
         staging_base = "/data/stage",
         archive = o.archive ~= false,
-        digest = o.digest == false and nil or (o.digest or { "fakesum" }),
+        digest = { "fakesum" },
         combined_output = o.combined_output,
         timeouts = o.timeouts,
     }
+    if o.digest == false then r.digest = nil elseif o.digest then r.digest = o.digest end
     local function fail_check(lines)
         for _, l in ipairs(lines) do
             if l:match("^%[Fail%]") then return l end
@@ -459,7 +460,9 @@ function FakeDevice:backend()
                 local plan = dev:run_program(serial, req, nonce)
                 local pid = dev.next_pid
                 dev.next_pid = dev.next_pid + 1
-                if plan.program and dev.pid_lines ~= false then
+                -- The runner contract: the pid line precedes any program output
+                -- for EVERY exec (utilities included).
+                if dev.pid_lines ~= false then
                     emit("stdout", "__PID_" .. nonce .. "=" .. pid)
                 end
                 for _, l in ipairs(plan.out) do emit("stdout", l .. "\r") end

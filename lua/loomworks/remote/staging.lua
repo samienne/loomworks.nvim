@@ -1,0 +1,344 @@
+--- loomworks/remote/staging.lua — mirror a manifest onto a device with
+--- digest-based incremental sync (spec §18.4) and remove a workspace's staging
+--- tree (`lw device clean`, spec §16.34 / §18.12).
+---
+--- The sync record (per device serial and device staging root, kept in the
+--- build cache as runtime state) remembers, per staged file, the host file's
+--- size / mtime / content digest and the device-reported digest. A file is
+--- transferred only when new or its content digest changed; an archive set is
+--- re-sent when the digest of its member list changes. When the runner
+--- declares `digest`, recorded files are verified against the device first
+--- (a wiped / re-flashed device is re-staged). `fresh` ignores the record.
+--- Files that left the manifest are removed from the device staging root.
+---
+--- Remote deletion safety (§18.12): every path core asks a device to remove is
+--- checked to lie under `<staging_base>/<workspace>/` with a separator
+--- boundary; nothing assembled from unchecked cache content is ever sent.
+
+local manifest_mod = require("loomworks.remote.manifest")
+
+local M = {}
+
+local function uv() return vim.uv or vim.loop end
+
+local function read_file(path)
+    local f = io.open(path, "rb")
+    if not f then return nil end
+    local d = f:read("*a")
+    f:close()
+    return d
+end
+
+--- Host-side digest of a file, reusing `prev` when size and mtime match.
+--- @return { size: integer, mtime: integer, digest: string }|nil
+local function local_digest(abs, prev)
+    local st = uv().fs_stat(abs)
+    if not st then return nil end
+    local mtime = (st.mtime and (st.mtime.sec * 1000000000 + (st.mtime.nsec or 0))) or 0
+    if prev and prev.size == st.size and prev.mtime == mtime and type(prev.digest) == "string" then
+        return { size = st.size, mtime = mtime, digest = prev.digest }
+    end
+    local data = read_file(abs)
+    if not data then return nil end
+    return { size = st.size, mtime = mtime, digest = vim.fn.sha256(data) }
+end
+
+--- Parse `<hex digest>  <path>` lines.
+local function parse_digests(lines)
+    local out = {}
+    for _, l in ipairs(lines or {}) do
+        local hex, path = l:match("^\\?(%x+)%s+%*?(.+)$")
+        if hex and path then out[path] = hex:lower() end
+    end
+    return out
+end
+
+local function fmt_bytes(n)
+    if n >= 1024 * 1024 then return string.format("%.1f MB", n / (1024 * 1024)) end
+    if n >= 1024 then return string.format("%.1f KB", n / 1024) end
+    return tostring(n) .. " B"
+end
+M.fmt_bytes = fmt_bytes
+
+--- Run a digest over device paths (chunked). Returns path → hex, or nil + err.
+local function device_digests(transport, paths)
+    local prefix = transport.runner.digest
+    local out = {}
+    local chunk = 64
+    for i = 1, #paths, chunk do
+        local argv = {}
+        for _, a in ipairs(prefix) do argv[#argv + 1] = a end
+        for j = i, math.min(i + chunk - 1, #paths) do argv[#argv + 1] = paths[j] end
+        local status, lines = transport:shell(argv)
+        if status == nil then return nil, lines end
+        for p, h in pairs(parse_digests(lines)) do out[p] = h end
+    end
+    return out
+end
+
+--- Ask the device to remove paths — only ones under `ws_prefix` (§18.12).
+local function device_remove(transport, paths, ws_prefix, recursive)
+    if #paths == 0 then return true end
+    local argv = { "rm", recursive and "-rf" or "-f" }
+    for _, p in ipairs(paths) do
+        if not manifest_mod.device_path_under(p, ws_prefix) then
+            return nil, "refusing to remove device path outside " .. ws_prefix .. ": " .. tostring(p)
+        end
+        argv[#argv + 1] = p
+    end
+    local status, lines = transport:shell(argv)
+    if status == nil then return nil, lines end
+    if status ~= 0 then
+        return nil, "removing staged files failed (status " .. status .. "): " .. table.concat(lines, " ")
+    end
+    return true
+end
+
+local function device_mkdirs(transport, dirs)
+    if #dirs == 0 then return true end
+    local argv = { "mkdir", "-p" }
+    for _, d in ipairs(dirs) do argv[#argv + 1] = d end
+    local status, lines = transport:shell(argv)
+    if status == nil then return nil, lines end
+    if status ~= 0 then return nil, "creating staging directories failed: " .. table.concat(lines, " ") end
+    return true
+end
+
+--- @class loomworks.StageReport
+--- @field sent integer files transferred
+--- @field sent_bytes integer
+--- @field unchanged integer files already current
+--- @field removed integer files removed from the device
+--- @field archives_sent integer
+--- @field archives_unchanged integer
+--- @field archive_bytes integer bytes of archive members (sent or unchanged)
+--- @field verified boolean the record was verified against the device
+
+--- Stage a manifest.
+--- o:
+---   transport  remote/transport instance (runner + serial)
+---   manifest   loomworks.Manifest
+---   ws_prefix  string device workspace prefix (deletion boundary)
+---   root       string device staging root for the unit
+---   record     table|nil the previous sync record for (serial, root)
+---   fresh      boolean  ignore the record (full re-stage)
+---   tmp_dir    string   host directory for temporary archives
+---   on_progress fun(msg)|nil
+--- @param o table
+--- @return table|nil new_record, loomworks.StageReport|string report_or_err
+function M.stage(o)
+    local t, man, root = o.transport, o.manifest, o.root
+    if not manifest_mod.device_path_under(root, o.ws_prefix) or root == o.ws_prefix then
+        return nil, "invalid staging root " .. tostring(root)
+    end
+    local prev = (not o.fresh and type(o.record) == "table") and vim.deepcopy(o.record) or {}
+    prev.files = type(prev.files) == "table" and prev.files or {}
+    prev.archives = type(prev.archives) == "table" and prev.archives or {}
+    local report = { sent = 0, sent_bytes = 0, unchanged = 0, removed = 0,
+        archives_sent = 0, archives_unchanged = 0, archive_bytes = 0, verified = false }
+    local function remote(rel) return root .. "/" .. rel end
+
+    -- (1) Verify the record against the device when the runner can digest.
+    if t.runner.digest and (next(prev.files) or next(prev.archives)) then
+        local paths = {}
+        for rel, e in pairs(prev.files) do
+            if manifest_mod.clean_rel(rel) and e.remote then paths[#paths + 1] = remote(rel) end
+        end
+        for _, a in pairs(prev.archives) do
+            if type(a.tar) == "string" and manifest_mod.clean_rel(a.tar) then paths[#paths + 1] = remote(a.tar) end
+        end
+        table.sort(paths)
+        local got, err = device_digests(t, paths)
+        if not got then return nil, err end
+        for rel, e in pairs(prev.files) do
+            if got[remote(rel)] ~= e.remote then prev.files[rel] = nil end
+        end
+        for key, a in pairs(prev.archives) do
+            if type(a.tar) ~= "string" or got[remote(a.tar)] ~= a.remote then prev.archives[key] = nil end
+        end
+        report.verified = true
+    end
+
+    -- (2) Decide what to send.
+    local new = { files = {}, archives = {} }
+    local to_send, in_manifest = {}, {}
+    for _, f in ipairs(man.files) do
+        if not manifest_mod.clean_rel(f.rel) then return nil, "invalid staged path " .. tostring(f.rel) end
+        in_manifest[f.rel] = true
+        local old = prev.files[f.rel]
+        local d = local_digest(f.abs, old)
+        if not d then return nil, "cannot read " .. f.abs end
+        if old and old.digest == d.digest and old.remote then
+            new.files[f.rel] = { size = d.size, mtime = d.mtime, digest = d.digest, remote = old.remote }
+            report.unchanged = report.unchanged + 1
+        else
+            to_send[#to_send + 1] = { f = f, d = d }
+        end
+    end
+
+    -- Archive sets: member-list digest.
+    local archive_plan = {}
+    for i, a in ipairs(man.archives) do
+        local parts, members = {}, {}
+        for _, m in ipairs(a.members) do
+            if not manifest_mod.clean_rel(m.rel) then return nil, "invalid staged path " .. tostring(m.rel) end
+            local old = prev.archives[a.key] and prev.archives[a.key].locals
+                and prev.archives[a.key].locals[m.rel] or nil
+            local d = local_digest(m.abs, old)
+            if not d then return nil, "cannot read " .. m.abs end
+            parts[#parts + 1] = m.rel .. "\0" .. d.size .. "\0" .. d.digest
+            members[m.rel] = d
+            report.archive_bytes = report.archive_bytes + d.size
+        end
+        local set_digest = vim.fn.sha256(table.concat(parts, "\n"))
+        local old = prev.archives[a.key]
+        local tar_rel = ".loomworks/archive-" .. vim.fn.sha256(a.key):sub(1, 12) .. ".tar"
+        if old and old.digest == set_digest and old.remote then
+            new.archives[a.key] = { digest = set_digest, tar = old.tar, remote = old.remote,
+                locals = members }
+            report.archives_unchanged = report.archives_unchanged + 1
+        else
+            archive_plan[#archive_plan + 1] = { idx = i, set = a, digest = set_digest, tar = tar_rel,
+                locals = members, old = old }
+        end
+    end
+
+    -- (3) Remove files that left the manifest (and archive members that left
+    -- their set).
+    local removals = {}
+    for rel in pairs(prev.files) do
+        if not in_manifest[rel] and manifest_mod.clean_rel(rel) then removals[#removals + 1] = remote(rel) end
+    end
+    local live_members = {}
+    for _, a in ipairs(man.archives) do for _, m in ipairs(a.members) do live_members[m.rel] = true end end
+    for key, a in pairs(prev.archives) do
+        local still = new.archives[key] ~= nil
+        for rel in pairs(type(a.locals) == "table" and a.locals or {}) do
+            if not live_members[rel] and not in_manifest[rel] and manifest_mod.clean_rel(rel) then
+                removals[#removals + 1] = remote(rel)
+            end
+        end
+        if not still and type(a.tar) == "string" and manifest_mod.clean_rel(a.tar) then
+            local kept = false
+            for _, pl in ipairs(archive_plan) do if pl.tar == a.tar then kept = true end end
+            if not kept then removals[#removals + 1] = remote(a.tar) end
+        end
+    end
+    table.sort(removals)
+    if #removals > 0 then
+        local ok, err = device_remove(t, removals, o.ws_prefix, false)
+        if not ok then return nil, err end
+        report.removed = #removals
+    end
+
+    -- (4) Directories, transfers, executable bit.
+    local dirs, seen = {}, {}
+    local function need_dir(rel)
+        local d = rel:match("^(.*)/[^/]+$")
+        local p = d and remote(d) or root
+        if not seen[p] then seen[p] = true; dirs[#dirs + 1] = p end
+    end
+    for _, s in ipairs(to_send) do need_dir(s.f.rel) end
+    for _, pl in ipairs(archive_plan) do need_dir(pl.tar) end
+    if #dirs > 0 then
+        table.sort(dirs)
+        local ok, err = device_mkdirs(t, dirs)
+        if not ok then return nil, err end
+    end
+    local artifact_sent = false
+    for _, s in ipairs(to_send) do
+        if o.on_progress then o.on_progress("push " .. s.f.rel) end
+        local ok, err = t:push(s.f.abs, remote(s.f.rel))
+        if not ok then return nil, err end
+        report.sent = report.sent + 1
+        report.sent_bytes = report.sent_bytes + s.d.size
+        new.files[s.f.rel] = { size = s.d.size, mtime = s.d.mtime, digest = s.d.digest, remote = s.d.digest }
+        if s.f.kind == "artifact" then artifact_sent = true end
+    end
+    if artifact_sent or o.fresh then
+        local status, lines = t:shell({ "chmod", "755", remote(man.artifact) })
+        if status == nil then return nil, lines end
+        if status ~= 0 then return nil, "marking the program executable failed: " .. table.concat(lines, " ") end
+    end
+
+    -- (5) Archive sets: one tar each, unpacked on the device, kept for
+    -- verification.
+    for _, pl in ipairs(archive_plan) do
+        local tmp = o.tmp_dir .. "/archive-" .. pl.idx .. ".tar"
+        vim.fn.mkdir(o.tmp_dir, "p")
+        local ok, err = require("loomworks.remote.tar").write(tmp, pl.set.members)
+        if not ok then return nil, err end
+        if o.on_progress then o.on_progress("push archive " .. pl.set.key) end
+        local pushed, perr = t:push(tmp, remote(pl.tar))
+        local st = uv().fs_stat(tmp)
+        os.remove(tmp)
+        if not pushed then return nil, perr end
+        local status, lines = t:shell({ "tar", "-xf", remote(pl.tar), "-C", root })
+        if status == nil then return nil, lines end
+        if status ~= 0 then
+            return nil, "unpacking archive set '" .. pl.set.key .. "' failed (status " .. status .. "): "
+                .. table.concat(lines, " ")
+        end
+        report.archives_sent = report.archives_sent + 1
+        report.sent_bytes = report.sent_bytes + (st and st.size or 0)
+        new.archives[pl.set.key] = { digest = pl.digest, tar = pl.tar, remote = pl.digest, locals = pl.locals }
+    end
+
+    -- (6) Record the device-side digests of what was just sent.
+    if t.runner.digest then
+        local paths, map = {}, {}
+        for _, s in ipairs(to_send) do
+            local p = remote(s.f.rel); paths[#paths + 1] = p; map[p] = { kind = "file", rel = s.f.rel }
+        end
+        for _, pl in ipairs(archive_plan) do
+            local p = remote(pl.tar); paths[#paths + 1] = p; map[p] = { kind = "archive", key = pl.set.key }
+        end
+        if #paths > 0 then
+            local got, err = device_digests(t, paths)
+            if not got then return nil, err end
+            for p, what in pairs(map) do
+                local hex = got[p]
+                if not hex then return nil, "staged file missing on the device after transfer: " .. p end
+                if what.kind == "file" then new.files[what.rel].remote = hex
+                else new.archives[what.key].remote = hex end
+            end
+        end
+    end
+    return new, report
+end
+
+--- One-line staging summary (spec §16.34 example).
+--- @param serial string
+--- @param r loomworks.StageReport
+--- @return string
+function M.summary(serial, r)
+    local parts = {}
+    if r.sent > 0 then
+        parts[#parts + 1] = string.format("%d changed file%s (%s)", r.sent, r.sent == 1 and "" or "s",
+            fmt_bytes(r.sent_bytes))
+    else
+        parts[#parts + 1] = "no changed files"
+    end
+    if r.archives_sent + r.archives_unchanged > 0 then
+        parts[#parts + 1] = string.format("%s archive %s", fmt_bytes(r.archive_bytes),
+            r.archives_sent > 0 and "sent" or "unchanged")
+    end
+    if r.removed > 0 then parts[#parts + 1] = r.removed .. " removed" end
+    return "staging on " .. serial .. ": " .. table.concat(parts, ", ")
+end
+
+--- Remove a workspace's whole staging tree from a device (`lw device clean`).
+--- @param transport table
+--- @param ws_prefix string `<staging_base>/<workspace>`
+--- @param staging_base string runner staging base
+--- @return boolean|nil ok, string|nil err
+function M.clean(transport, ws_prefix, staging_base)
+    local base = staging_base:gsub("/+$", "")
+    -- The prefix must be exactly one segment below the staging base.
+    if not manifest_mod.device_path_under(ws_prefix, base) or ws_prefix:gsub("/+$", "") == base then
+        return nil, "refusing to remove " .. tostring(ws_prefix) .. ": not a workspace staging root under " .. base
+    end
+    return device_remove(transport, { ws_prefix }, ws_prefix, true)
+end
+
+return M
