@@ -64,6 +64,9 @@ describe("lw sdk add <type> (auto-detect) / lw sdk detect", function()
     cli._reset_modes()
     root = (vim.fn.tempname():gsub("\\", "/"))
     mkdir(root .. "/App")
+    -- Canonical (long) path: on Windows CI tempname() can be the 8.3 short
+    -- form (RUNNER~1) while lw reports resolved paths.
+    root = ((vim.uv or vim.loop).fs_realpath(root) or root):gsub("\\", "/")
     local f = assert(io.open(root .. "/loomworks.json", "w"))
     f:write(vim.json.encode({ projects = { App = { typescript = vim.empty_dict() } } }))
     f:close()
