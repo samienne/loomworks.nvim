@@ -1497,7 +1497,12 @@ build reports that it is one, and a release host with no version identity
 (released before identity existed) reports its release as unknown. The
 distinction uses the same development-build determination as host
 replacement below, so a host reported as a development build is never
-replaced and one reported as an unknown release is.
+replaced and one reported as an unknown release is. The active bundle is
+reported truthfully: a host that resolved no system-Lua source and carries
+none built in (a release host before its first acquisition, §16.13) reports
+that no bundle is installed and names the acquisition operation, never a
+bundle it does not have — the same condition every other command reports as
+"no release installed".
 
 Because host-side behavior (argument handling, source resolution, the
 acquisition procedure itself) lives in the host and not the bundle (§16.11),

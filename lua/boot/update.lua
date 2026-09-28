@@ -542,18 +542,25 @@ function M.version_line(info, channel)
 end
 
 --- Describe the resolved runtime for `lw version`.
+--- With no on-disk source, system Lua can only come from the host itself: it
+--- is `fused` when the host really carries it (a dev build / source run,
+--- `opts.fused_system_lua`); otherwise nothing is installed — a release host
+--- before its first `lw self-update` — and the report says so rather than
+--- claiming a bundle every other command would then fail to find.
 --- @param luaroot string|nil the resolved system-Lua root
 --- @param source_kind "dev"|"release"|nil the system-Lua source
---- @param opts? { dev_build?: boolean } whether the host is a development build (host_update.dev_build)
+--- @param opts? { dev_build?: boolean, fused_system_lua?: boolean } whether the host is a development build (host_update.dev_build) / carries system Lua fused in
 --- @return { host_version: integer, release_version: string|nil, dev_build: boolean, source: string, bundle: string, luaroot: string|nil }
 function M.version_info(luaroot, source_kind, opts)
-  local bundle
+  local bundle, source = nil, source_kind
   if source_kind == "dev" then
     bundle = "dev (" .. (luaroot or "?") .. ")"
   elseif source_kind == "release" and luaroot then
     bundle = luaroot:match("lua%-(.+)$") or "?"
+  elseif opts and opts.fused_system_lua then
+    bundle, source = "bundled (fused)", "fused"
   else
-    bundle = "bundled (fused)"
+    bundle, source = "none installed (run `lw self-update`)", "none"
   end
   return {
     host_version = verify.HOST_VERSION,
@@ -561,7 +568,7 @@ function M.version_info(luaroot, source_kind, opts)
     -- a release host from before version identity (told apart by dev_build).
     release_version = verify.RELEASE_VERSION,
     dev_build = (opts and opts.dev_build) and true or false,
-    source = source_kind or "fused",
+    source = source,
     bundle = bundle,
     luaroot = luaroot,
   }

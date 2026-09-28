@@ -79,6 +79,9 @@ lw="$T/install/$exe_name"
 echo "=== old (unversioned release-style) host reports an unknown release ==="
 out="$("$lw" version 2>&1)"; echo "$out"
 case "$out" in *"host: unknown release"*) ok "unversioned release host reports an unknown release" ;; *) bad "unexpected version: $out" ;; esac
+# No bundle fetched yet: the version line must not claim one (every other
+# command says "no loomworks release is installed").
+case "$out" in *"bundle: none installed (run \`lw self-update\`)"*) ok "no bundle: version says none installed" ;; *) bad "no-bundle version line: $out" ;; esac
 
 echo "=== self-update --no-host leaves the host alone ==="
 out="$("$lw" self-update --no-host 2>&1)"; code=$?; echo "$out"

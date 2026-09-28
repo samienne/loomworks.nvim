@@ -8202,6 +8202,8 @@ bundle, the update channel, and which system-Lua source is active — one of:
   dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
+  none     nothing installed yet — the bundle reads `none installed (run
+           `lw self-update`)`; a downloaded release binary starts this way
 
 A host command, handled by the lw binary itself.]],
   install = [[lw install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
