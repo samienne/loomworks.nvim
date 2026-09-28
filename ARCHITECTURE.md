@@ -875,6 +875,15 @@ replaces it, which would drop `PATH`).
   (label-suffixed when a profile runs several).
 - `lw profile list` — list profiles (name, configuration set, tools) and flag
   which are buildable in this host vs editor-only (`lw profiles` is an alias).
+- `lw trust [--yes] [--discard]` (spec §17.4, §17.10) — review a working copy
+  this machine did not sign (`program_fields.review`: program settings first)
+  and re-sign it (`trust.sign_file`), or delete it and its `.bak` with
+  `--discard`. Never loads the workspace, so it works on a refused one;
+  confirmation is mandatory (`--yes` when non-interactive).
+- `lw nuke [-y]` (spec §17.4) — reset the build state (`.nvim/build/`, the cache,
+  the health cache) through `Core:_nuke_files`, the same deletion half as the
+  editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the
+  configuration; takes no build-dir locks.
 - `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →
   execute). The target is the profile's default (§8.6) when unnamed, else a
   named build target or command launch config; `project:name`, `--project`,

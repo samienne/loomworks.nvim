@@ -203,5 +203,8 @@ clangd binary override and the clangd compilation-database argument are honored
 only from the signed working copy. `configure_cmd`, `build_cmd` and `clean_cmd`
 are the project's **build description** — the shell module's equivalent of a
 build file — and run only on an explicit configure, build or clean (core §17.8);
-they are never run passively. The module environment block is also subject to
-the environment denylist (core §17.9).
+they are never run passively. They are therefore not stripped from
+`loomworks.json`; instead `trust_fields.review = { "configure_cmd", "build_cmd",
+"clean_cmd" }` lists them among the program settings the trust review shows
+(core §8.4, §17.4). The module environment block is also subject to the
+environment denylist (core §17.9).

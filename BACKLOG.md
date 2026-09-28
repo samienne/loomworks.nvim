@@ -33,31 +33,7 @@ Ideas:
 
 ## Workspace trust
 
-~~Deferred from the security hotfix.~~ DONE on `feature/workspace-trust` (spec
-§17, `lw help trust`): a per-machine key signs every loomworks-written `.nvim`
-file; an unsigned/modified working copy is refused until `lw trust` /
-`:LoomworksTrust` (or discarded), an unsigned (pre-trust) cache is discarded and
-rebuilt, a foreign-signed cache refuses the load until `lw nuke`; program-bearing
-fields are honored only from the signed working copy.
-
-- ~~**K2 — SDK paths.**~~ Probed only from the signed working copy (an untrusted
-  working copy refuses the load before any SDK sync); shared SDK declarations
-  carry type/version constraints only.
-- ~~**F1 — clangd / qmlls binary overrides.**~~ Module `trust_fields`: ignored in
-  loomworks.json with a diagnostic; the kit's `clangd_path` comes from detection.
-- ~~**F2 — clangd `extra_args`.**~~ Working copy only (and it is signed).
-- ~~**F3 — meson introspect on repo build dirs.**~~ Passive target scans only on
-  build dirs the signed cache records as configured here.
-- ~~**F4 — test discovery runs binaries from repo build dirs.**~~ Same gate
-  (`ConfigUnit:configured_here`).
-- ~~**F7 — cached `tool_data` paths trusted.**~~ Detection wins per tool key; a
-  cache-only key is "not detected" and runs nothing.
-- ~~**F12 — launch / deploy.**~~ Launch configs naming command/args/env/cwd and
-  non-local deploy destinations are ignored in loomworks.json.
-- ~~**F13 — env denylist.**~~ Case-insensitive denylist on every env source.
-- ~~**F15 — git.**~~ `-c core.fsmonitor=false -c core.hooksPath=` on every call.
-
-Follow-ups (not done):
+Follow-ups to workspace trust (spec §17, `lw help trust`), not done:
 
 - Matching a detected `vcvarsall` against vswhere-reported installs (the path
   already comes from detection, never from the cache).

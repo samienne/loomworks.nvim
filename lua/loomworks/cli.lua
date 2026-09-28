@@ -7046,6 +7046,7 @@ function M.cmd_complete(cword, words)
       topics[#topics + 1] = "agent" -- help-only topics (no command)
       topics[#topics + 1] = "ci"
       topics[#topics + 1] = "cache"
+      topics[#topics + 1] = "submodules"
       emit(topics)
     end
     return 0

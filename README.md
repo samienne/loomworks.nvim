@@ -49,6 +49,10 @@ current version.
   profile or configuration rows includes `Cancel running task(s)`. A Tasks
   section at the bottom surfaces active tasks and held build-dir locks with
   per-row cancel/force-release actions for recovering from stuck state
+- **Workspace trust** — a cloned `loomworks.json` never names programs to run,
+  and your working copy is honored only when this machine signed it (`lw trust`
+  / `:LoomworksTrust` to review one that isn't); see
+  [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)
 
 ## Requirements
 
@@ -567,6 +571,11 @@ Define how to run a project after building:
 Variables available: `${workspace_root}`, `${build_dir}`, `${variant}`,
 `${config_set}`, `${project_path}`, plus user-defined project variables.
 
+Launch configurations that set a `command`, `args`, `env` or `working_dir` are
+honored only from your working copy (`.nvim/loomworks.user.json`, e.g. via
+`lw launch add`). In `loomworks.json` they are ignored with a diagnostic; see
+[Opening a repository you don't trust](#opening-a-repository-you-dont-trust).
+
 A launch configuration is one kind of **target**. `lw target` lists all the
 runnable targets of a profile — the launch configurations above **plus** the
 build system's executable targets (the latter appear only once the project is
@@ -796,7 +805,12 @@ Setting `PATH` (any case) is allowed but **replaces** the PATH the tool sets up
 (e.g. the MSVC developer environment, so `cl.exe` may no longer be found; a
 `${PATH}` in the value expands to lw's own PATH, not the tool's) — lw warns when
 you set it and once when a task uses it. Changing the environment reconfigures
-on the next build (a full reconfigure, as above).
+on the next build (a full reconfigure, as above). An `env` (or
+`overrides.<family>.env`) is honored only from your working copy — in
+`loomworks.json` it is ignored with a diagnostic — and variables that hijack
+other programs (`LD_PRELOAD`, `NODE_OPTIONS`, …) are refused even from the
+working copy; see
+[Opening a repository you don't trust](#opening-a-repository-you-dont-trust).
 
 ```json
 "Debug": {
@@ -866,6 +880,7 @@ automatically from your system.
 |---|---|
 | `:LoomworksInit [path]` | Initialize workspace from directory (default: cwd) |
 | `:LoomworksInfo` | Open workspace status page |
+| `:LoomworksTrust` | Review a working copy not signed by this machine: trust (re-sign), discard, or cancel |
 | `:LoomworksCompileCommand [file]` | Show the compile command loomworks' owned clangd database uses for a file (default: current buffer) |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
 
@@ -1355,6 +1370,8 @@ don't use this — install the module plugin the usual way.)
 | `L` | Load workspace from cwd / rescan tools |
 | `K` | Hover popup with the full content of the current line (paths, diagnostic messages, etc.) |
 | `<C-n>` | Reset workspace: delete `.nvim/build/` + cache, reload (destructive) |
+| `T` | Review & trust a refused working copy |
+| `U` | Discard the working copy (`.nvim/loomworks.user.json`) and reload (destructive, with confirmation) |
 | `?` | Show help dialog |
 | `q` | Close the status page |
 
@@ -1447,7 +1464,10 @@ client).
 Set `type_config.qmlls` on a project to override the binary
 (`${ENV_VAR}` expansion supported); otherwise stock `qmlls` on PATH is
 used. `type_config.qml_import_paths` (a list) adds extra `-I` import
-paths. Opt out per-server with `{ lsp = { qmlls = false } }`.
+paths. Both are honored only from your working copy; in `loomworks.json` they
+are ignored with a diagnostic (see
+[Opening a repository you don't trust](#opening-a-repository-you-dont-trust)).
+Opt out per-server with `{ lsp = { qmlls = false } }`.
 
 ### Buffer excludes
 
@@ -1638,7 +1658,7 @@ from (spec §17, `lw help trust`):
   introspected only in build directories this machine configured; `git` runs
   with the repository's fsmonitor and hooks disabled.
 - **Environment variables that hijack other programs are refused everywhere**
-  (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `NODE_OPTIONS`, `npm_config_*`,
+  (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_*`, `NODE_OPTIONS`, `npm_config_*`,
   `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `BASH_ENV`, `ENV`, `ComSpec`,
   `PATHEXT`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `CMAKE_TOOLCHAIN_FILE`,
   `CCACHE_PREFIX`) — even from a trusted working copy.
