@@ -1823,6 +1823,12 @@ provider supplies a device runner.
   `describe_device` result when it offers one, §18.2, else its listing's name,
   else the serial), and whether the serial is a profile's persisted device. Read-only; exits 0 with an empty list when
   nothing is attached, non-zero only when no runner is available.
+- **Device block** (`lw project set <project> device.stage|device.archive
+  <glob>…`, `device.working_dir <dir>`, `device.env.<NAME> <value>`; `lw project
+  unset <project> device[.<field>[.<NAME>]]`) — edit the project's device block
+  (§18.9) in the working copy, a management operation (§16.9). A glob list
+  replaces the previous one; the result is validated like a loaded block and a
+  denied environment variable (§17.9) is refused.
 - **Select** (`lw device select <serial> [profile]`) — persist the serial as
   the profile's device (§1.8), a management operation writing the working copy
   (§16.9). `--clear` removes it.

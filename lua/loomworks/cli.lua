@@ -1932,6 +1932,71 @@ function DEV.pick_device(ws, profile, explicit, opts, deps)
 end
 M._pick_device = DEV.pick_device
 
+DEV.BLOCK_USAGE = "usage: lw project set <project> device.stage|device.archive <glob>...\n"
+  .. "       lw project set <project> device.working_dir <dir>\n"
+  .. "       lw project set <project> device.env.<NAME> <value>\n"
+  .. "       lw project unset <project> device[.stage|.archive|.working_dir|.env[.<NAME>]]"
+
+--- `lw project set <project> device.<field> <value>...` (spec §18.9, §16.9):
+--- edit the project's device block in the working copy. `stage` / `archive`
+--- take one or more globs and replace the list; `working_dir` one path;
+--- `env.<NAME>` one value (upsert).
+--- @param root string
+--- @param pos string[] positionals: project, field, values...
+--- @return integer
+function DEV.project_device_set(root, pos)
+  local proj_name, field = pos[1], pos[2]
+  local values = {}
+  for i = 3, #pos do values[#values + 1] = pos[i] end
+  local sub, name = field:match("^device%.([%w_]+)%.?(.*)$")
+  if not sub or #values == 0 then die(DEV.BLOCK_USAGE) end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local block = vim.deepcopy(proj.device or {})
+  if (sub == "stage" or sub == "archive") and name == "" then
+    block[sub] = values
+  elseif sub == "working_dir" and name == "" and #values == 1 then
+    block.working_dir = values[1]
+  elseif sub == "env" and name ~= "" and #values == 1 then
+    block.env = type(block.env) == "table" and block.env or {}
+    block.env[name] = values[1]
+  else
+    die("cannot set '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+  end
+  local ok, err = proj:save_device(block)
+  if not ok then die(err or "failed to update the device block") end
+  out(string.format("%s: %s = %s  (working copy: projects.%s.%s.device)", proj.key, field,
+    table.concat(values, " "), proj.key, proj.type or "?"))
+  return 0
+end
+
+--- `lw project unset <project> device[.<field>[.<NAME>]]`.
+--- @return integer
+function DEV.project_device_unset(root, proj_name, field)
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local block = vim.deepcopy(proj.device or {})
+  local sub, name = field:match("^device%.([%w_]+)%.?(.*)$")
+  if field == "device" then
+    block = nil
+  elseif sub == "env" and name ~= "" then
+    if not (type(block.env) == "table" and block.env[name] ~= nil) then
+      die("project '" .. proj.key .. "' sets no device.env." .. name)
+    end
+    block.env[name] = nil
+    if next(block.env) == nil then block.env = nil end
+  elseif (sub == "stage" or sub == "archive" or sub == "working_dir" or sub == "env") and name == "" then
+    if block[sub] == nil then die("project '" .. proj.key .. "' sets no device." .. sub) end
+    block[sub] = nil
+  else
+    die("cannot unset '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+  end
+  local ok, err = proj:save_device(block)
+  if not ok then die(err or "failed to update the device block") end
+  out(string.format("%s: removed %s", proj.key, field))
+  return 0
+end
+
 --- `lw device clean [--device <serial>] [--no-wait] [profile]` body: remove
 --- this workspace's staging root from the device (§18.12) and its sync record.
 --- @return integer
@@ -3654,6 +3719,22 @@ function M.cmd_project_show(root, name)
     end
   end
 
+  -- The device block (spec §18.9), when set.
+  if type(proj.device) == "table" and next(proj.device) then
+    out("")
+    out("  Device:")
+    for _, k in ipairs({ "stage", "archive", "working_dir" }) do
+      local v = proj.device[k]
+      if v ~= nil then
+        out(string.format("    %-22s %s", k, type(v) == "table" and table.concat(v, " ") or tostring(v)))
+      end
+    end
+    local names = {}
+    for n in pairs(type(proj.device.env) == "table" and proj.device.env or {}) do names[#names + 1] = n end
+    table.sort(names)
+    for _, n in ipairs(names) do out(string.format("    %-22s %s", "env." .. n, tostring(proj.device.env[n]))) end
+  end
+
   local rows = config_set_rows(ws, proj)
   out("")
   out("  Configuration sets:")
@@ -3717,6 +3798,11 @@ function M.cmd_project_set(root, argv)
   local pos, var_type = parse_project_set_args(argv)
   local proj_name, var_name, default_val = pos[1], pos[2], pos[3]
   if not proj_name or not var_name then die(PROJECT_SET_USAGE) end
+  -- `device.<field>`: the project's device block (spec §18.9).
+  if var_name == "device" or var_name:match("^device%.") then
+    if var_type then die("--type does not apply to the device block\n" .. DEV.BLOCK_USAGE) end
+    return DEV.project_device_set(root, pos)
+  end
   if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE) end
   var_type = var_type or "string"
   if var_type ~= "string" and var_type ~= "path" then
@@ -3739,6 +3825,9 @@ function M.cmd_project_unset(root, proj_name, var_name)
   if not proj_name or not var_name then
     die("usage: lw project unset <project> <variable>\n" ..
       "  removes a project variable declaration")
+  end
+  if var_name == "device" or var_name:match("^device%.") then
+    return DEV.project_device_unset(root, proj_name, var_name)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -8143,7 +8232,10 @@ the project's module section (e.g. projects.App.cmake.device):
   "device": { "stage": ["bin/*.so"], "archive": ["assets/**"],
               "env": { "K": "V" }, "working_dir": "bin" }
 (An older project-level "device" block is still read and moves into the module
-section on the next save.)
+section on the next save.) Edit it without hand-editing JSON:
+  lw project set <project> device.stage 'bin/*.so' 'lib/*.so'
+  lw project set <project> device.env.LOG debug
+  lw project unset <project> device.stage
 `stage`/`archive` are globs relative to the build directory (layout kept);
 `archive` sets travel as one tar. Only changed files are re-sent. Runs save
 output.log (and device.log, pulled results, crash reports) under
@@ -8644,6 +8736,13 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         --type may come before or after the optional <default>.
   unset <project> <variable>
         Remove a variable declaration (and any configuration overrides of it).
+  set <project> device.stage|device.archive <glob>...
+  set <project> device.working_dir <dir>
+  set <project> device.env.<NAME> <value>
+  unset <project> device | device.<field> | device.env.<NAME>
+        Edit the project's device block (what a device run copies and how it
+        runs it — `lw help device`) in your local config. A glob list replaces
+        the previous one.
   publish <name>
         Mark the project shared (local+shared) and regenerate loomworks.json.
 
