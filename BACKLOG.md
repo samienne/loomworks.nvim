@@ -110,6 +110,22 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   *under*-inclusion (a runtime-only transitive DLL not on the link line → the
   binary fails to load it) — a worse, harder-to-debug failure mode. Only worth
   doing if the same-name case actually bites.
+- **Side-by-side beta mode.** Let a tester run a downloaded pre-release `lw`
+  from a scratch dir without touching the installed one: today a fresh release
+  host shares the per-user data dir (bundles, settings, channel) with the
+  installed lw, so its `self-update` installs into the same `lua-<ver>/` set
+  (and replaces whichever host it is), and `install` targets the one install
+  location. Wanted: a per-invocation data-dir override or a *portable mode*
+  (e.g. a marker file / flag that keeps data beside the exe), plus a way to
+  fetch and verify a bundle for this binary without installing it or replacing
+  any host. `LOOMWORKS_DATA_DIR` covers part of it (data dir only; not config,
+  not the install target, not discoverable). Found testing v0.1.33-beta.3.
+- **Keep `<exe>.old` after `install` for rollback.** `lw install` (and the
+  Windows host self-update swap) renames the replaced binary to `<exe>.old`,
+  and the next start deletes it (`host_update.cleanup_old`). Consider keeping
+  it after an `install` — e.g. until the next successful install/self-update,
+  or behind `lw install --rollback` — so replacing a working lw with a broken
+  pre-release is one step to undo.
 
 ---
 
