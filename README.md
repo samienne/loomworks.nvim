@@ -762,7 +762,9 @@ run waits (printing who holds it); `--no-wait` fails instead. `lw unlock
 lock directory (e.g. to one shared by several users of a lab machine).
 
 **Clean up.** `lw device clean [--device <serial>]` removes this workspace's
-staged files from the device.
+staged files from the device (and the staging directory itself once nothing
+else is in it) and forgets what loomworks recorded as staged there, so the next
+run re-sends everything.
 
 **Trust.** `stage` / `archive` and `device_log` may come from the committed
 `loomworks.json`; a `device` block's `env` and `working_dir` only from your

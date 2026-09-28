@@ -1831,8 +1831,10 @@ provider supplies a device runner.
   (§18.3 rule 1). It is never persisted.
 - **Staging control** — `run` and `test` accept `--fresh` (re-stage every
   file, ignoring the sync record, §18.4). `lw device clean [--device <serial>]`
-  removes this workspace's staging root from the device (§18.12) and its sync
-  record.
+  removes this workspace's staging root from the device (§18.12), then the
+  runner's staging base when that left it empty (an empty-directory removal
+  only), and clears the host's sync record for that device and workspace,
+  saying so.
 - **Timeouts** — `run` and `test` accept `--timeout <seconds>` for the device
   program (§18.8). `--query-timeout <seconds>` and `--transfer-timeout
   <seconds>` override the transport timeouts for this invocation (over the
