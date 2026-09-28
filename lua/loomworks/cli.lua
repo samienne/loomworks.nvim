@@ -73,11 +73,15 @@ local function out(s) io.write(term.render(s or "") .. "\n") end
 --- Write an informational line to stderr. Used when stdout must stay clean for a
 --- machine consumer — e.g. `lw run --print` streams its build/status chatter here
 --- so `valgrind $(lw run --print)` captures only the resolved command line.
-local function note(s) io.stderr:write(term.render(s or "") .. "\n") end
+--- stdout is flushed first: it is buffered (stderr is not), so a stdout line
+--- written earlier (e.g. a `==> [step]` header) would otherwise surface after
+--- this one on a shared terminal.
+local function note(s) io.stdout:flush(); io.stderr:write(term.render(s or "") .. "\n") end
 
 --- stderr counterpart of `out` for text that is not a whole line (same
---- rendering). Raw tool output relayed from a child process does not use it.
-local function errw(s) io.stderr:write(term.render(s or "")) end
+--- rendering; stdout flushed first, as `note`). Raw tool output relayed from a
+--- child process does not use it.
+local function errw(s) io.stdout:flush(); io.stderr:write(term.render(s or "")) end
 
 -- ---------------------------------------------------------------------------
 -- Shell-word splitting and POSIX-sh quoting (for `lw run --prefix` / `--print`)

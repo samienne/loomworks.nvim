@@ -271,7 +271,10 @@ A remote run holds the device lock (§18.7) for its whole duration and performs:
    (never as the program's exit 0 or 127). After the sentinel, the log stream
    is drained briefly and stopped.
 6. **Collect** — pull declared result files (§18.6) and then remove them from
-   the device (best-effort; a failure is a warning), then crash reports new
+   the device (best-effort; a failure is a warning) together with their
+   directories when that leaves them empty (an empty-only removal, strictly
+   below the staging root; a directory still holding anything is left
+   silently), then crash reports new
    since the snapshot, into the **run folder**
    `<build dir>/.device-runs/<UTC timestamp>-<serial>/`, beside the saved
    program output and runner log (§18.13). The folder is reported whenever it
