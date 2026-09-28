@@ -47,6 +47,9 @@ provider's device runner. Deferred:
 - **Generic device-log view** — move hilog parsing/filtering out of
   `device_log.lua` into the ohos plugin; the view takes a format table from the
   module/runner (§18.13 "Later").
+- **Editor launch chain** for foreign targets (§18.11: build → deploy → stage →
+  execute from the editor, output + device log views, stop = cancel). v1 is
+  headless only; the editor refuses a foreign target via `foreign.check_local`.
 - **Debugging and test-explorer integration** for foreign targets (§18.11).
 - **stdin forwarding** to device programs (§18.5).
 

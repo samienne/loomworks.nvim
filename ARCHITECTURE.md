@@ -275,7 +275,7 @@ may import from its own layer or any layer below it, never above.
 | `profile.lua` | Profile and ProfileProject classes. Profile owns `_tool_keys` (flat string array, user-ordered, first-match-per-language resolution wins), `tools_for(configuration)` for language-keyed effective tools, `tool_for(mod_type)` compat shim, `add_tool(key)` / `remove_tool(key)` mutators, `toolchain_entries()` UI surface, `missing_languages_for(configuration)` / `language_gaps()` / `unused_tools()` validity probes, status aggregation, plan_deletion, activate/deactivate. `Profile:activate()` cascades `_mark_user_owned` through the profile, its config set, and the set's mappings — so user.json is self-contained for the active profile. Profile also holds per-machine **fill values for blank project variables** (`_profile_variables`, project_key → name → value): `variable_value` / `set_variable_value` / `clear_variable_value` / `variables_data` accessors, `blank_variables()` enumerates the profile's still-blank declared variables, and `assert_buildable()` refuses configure/build while any is unfilled (core §1.3.1). Fill values live in user.json only (top-level `profile_variables`, mirrored on the Workspace as `_profile_variables_data` so they survive remerge) and are NEVER serialized to loomworks.json. Profile resolves mappings + ConfigurationSet reference in `_apply()`. Profile.key derives from `<set>:<sorted-deduped-tool-keys>` — no separate SDK component (kit_id prefix carries it). ProfileProject registered in Workspace, holds direct refs to Profile + Project. References Workspace via `_workspace` | Own state beyond what workspace provides; do I/O |
 | `project.lua` | Project class, config_cache_key computation, mutation methods (save_options, save_type_config_field, save_variable, save_launch_config, etc.). References Workspace via `_workspace` | Own state beyond what workspace provides |
 | `config_unit.lua` | Per-(project, config) runtime state: running action, progress, elapsed time, deleting flag (with reason: "deleting"/"cleaning"), queued action. Synced during remerge (`_update()` refreshes variant/tool from cache, preserves runtime state) + lazy creation via `get_config_unit()`. Listener pattern via `on_state_change()`. Owns `materialize()`, `materialize_pinned()`, `resolve_tool()`, `referencing_profiles()`, `active_compiler_family()`, `context_profile(profile?)` (the profile whose fills a resolution uses — the caller's, else the active one; spec §5.1 *Resolution context*: every staleness method below takes an optional `profile`, and the build gate (`overseer` `lw_meta.profile` / plan-step `profile`), `record_task_result` (`result.profile`), `Profile:compiler_cache_status` and the status page pass the profile being built / shown, so a non-active profile's `cache` or variable fill is never judged against the active profile's), `resolved_option_fingerprint(profile?)` (options merged across inheritance + expanded through built-ins and family-aware project variables, including the context profile's blank-fill values — the RESOLVED `-D` values `is_stale()` compares against the snapshot taken at configure time; changing a profile fill value therefore makes the unit stale and forces a reconfigure). `build_dir_present()` / `missing_build_dir_needs_reconfigure()` — the build-gate re-check for a build directory removed out of band (spec §3.1 rule 7); the plain directory stat comes from the injected `dir_exists` dep, and `unknown`/`deleting` are exempt. `is_stale()` also folds in a **compiler-cache launcher axis** via `launcher_changed(profile?, lookup?)` (injectable detection for deterministic tests): it recomputes the launcher `compiler_cache.resolve_for` would produce now (policy + family + live PATH presence) (or `"none"` when the module's optional `cache_launcher_applicable({configuration, tool_data})` hook returns false — e.g. a cmake preset, which cannot take the launcher) and compares to the value frozen at configure in `module_info.cache_launcher` — an appeared/disappeared/changed launcher marks the unit stale so the build gate reconfigures. A `nil` recorded value is not compared (the module records no launcher); a configure with no cache records the sentinel `"none"`, so a later-installed cache still differs and fires. **Configure-record migration** (spec §5.1): `record_outdated()` — a configured unit (`_was_configured()`: snapshot, or a configured/built/failed_build state) whose `module_info.record_version` differs from its module's `configure_record_version` (stamped by `Workspace:record_task_result` after a SUCCESSFUL configure only) was recorded by an older lw → stale, and the module takes the full reconfigure; modules without the field skip the check. `stale_reason()` returns the first applicable reason (`configure record from an older lw`, `options changed (FOO removed)`, `module configuration changed`, `configuration environment changed`, `compiler launcher changed`) and `is_stale()` is `stale_reason() ~= nil`; `configure_reason(forced?, profile?)` is the build gate's full reason (first configure / forced / previous configure failed / stale reason / project files changed / build directory missing). **Configuration environment** (spec §1.3.3): `configuration_env()` resolves the configuration's `env` through `config_env.resolve` (chain + family overrides, expanded with the same context as the option fingerprint, reserved names stripped); `env_changed()` compares it with core's record `module_info.configure_env` (absent ⇒ empty — no env was applied before the field existed) and is folded into `is_stale()`, so an env change makes the unit stale and the module takes a full reconfigure. `refresh_cache_compat()` keeps the recorded compat scan (`module_info.cache_compat`) in step with the build's current compile data: when the module's `cache_compat_stamp` (via `cache_compat_stamp()`, from `_compat_scan_ctx()` — the recorded build dir, tool and `configure_env`) differs from the record's `source_stamp`, it re-runs the scan against the recorded launcher and replaces the record in memory (keeping `policy_source`); `Workspace:record_task_result` calls it for every build (persisted with the result, a changed record reported via `_notify_cache_compat` like a configure's) and the health provider before reporting. References Workspace via `_workspace` | Persist anything (runtime only) |
-| `device.lua` | Device domain object: physical/emulated deployment target with serial, display_name, provider (module id), state (online/offline), properties. Runtime-only (not persisted). Workspace-level registry, discovered via module's `list_devices()` | Persist anything (runtime only) |
+| `device.lua` | Device domain object: physical/emulated deployment target with serial, display_name, provider (module id or device-runner id, §18.2), state (online/offline), properties. Runtime-only (not persisted). Workspace-level registry, discovered via a module's `list_devices()` or a device runner (`remote/devices.lua`) | Persist anything (runtime only) |
 | `launch_target.lua` | LaunchTarget class: resolves profile's default target descriptor into object references (Project, ConfigUnit, Target). Three target types: module targets, command launches, device targets. `build()` builds deps → pre-build deploy → build self. `deploy()` executes post-build deploy steps. Both phases merge project-level + launch-level deploy. `launch()`/`debug()` for local targets. `device_install()`/`device_launch()` for device targets. `requires_device()` returns true for device targets | Own state beyond resolution; do I/O directly |
 | `debug.lua` | DAP integration gateway. `run(spec, callbacks)` constructs DAP launch config with adapter-specific `extra` fields and calls `dap.run()`. Checks adapter availability before launch (Mason install hint). `resolve_adapter(workspace, module_type)` reads `user.json` debug settings with defaults (cmake→codelldb, typescript→pwa-node). `known_adapters(module_type)` returns picker options. Per-session callbacks via unique listener keys | Own state; depend on workspace internals |
 | `session_tracker.lua` | Unified launch/debug lifecycle manager. Tracks active run (overseer task or dap session). `start(target, mode)` handles confirmation dialog, build→deploy→execute chain with device extension (device-install→device-launch for device targets), fidget progress. `stop()` terminates overseer task or dap session (with `hierarchy=true` to kill debuggee). Auto-cleans tracked run on dap session end via listeners | Own state beyond what init.lua provides |
@@ -660,6 +660,10 @@ For non-keyed modules (typescript), a single default Tool with nil key
 exists. ConfigUnit, Profile, and Project carry `_tool` references alongside
 legacy `tool` ToolRef tables. Accessor: `unit:tool_object()`,
 `profile:tool_object_for(module)`.
+A Tool also carries its **execution platform** (spec §1.5/§18.1):
+`_target_platform` (opaque token from `kits_from_sdk`, nil for host tools) and
+`_sdk` (the producing SDK), set by `data_model` on every tool sync and never
+part of the key; accessors `tool:execution_platform()`, `tool:sdk()`.
 
 **Configuration** (`configuration.lua`) represents a build variant (Debug,
 Release, Debug-asan). Owned by `Project._configurations` registry, created
@@ -776,6 +780,62 @@ See LOOMTEST.md for full specification.
 
 ---
 
+## Remote Execution on Devices (spec §18)
+
+Cross-built programs never run on the host (invariant 19). The headless CLI
+routes them to a device through a **device runner** that the SDK provider
+supplies (`device_runner(sdk)`); core owns every process, timeout, lock and
+file transfer, the runner only builds command specs and parses output.
+
+```
+lw run / lw test --target
+  └─ cli._foreign_of(lt) ── remote/foreign.classify(unit, artifact)
+        │   (Tool:execution_platform() token, else remote/probe header check)
+        ├─ host-runnable → the local path (unchanged)
+        └─ foreign → cli._run_foreign
+              ├─ remote/runners.for_foreign   (SDK's runner, token ∈ platforms)
+              ├─ remote/manifest.build        (artifact + derived libs + runtime
+              │                                 files + device.stage/archive)
+              └─ remote/run.execute
+                    ├─ remote/devices.list/select   (explicit > persisted > sole)
+                    ├─ remote/device_lock.acquire   (per-serial lockfile, waits)
+                    ├─ runner.log_session           (validates options first)
+                    ├─ remote/staging.stage         (digest sync, tar archives)
+                    ├─ before_exec hook             (lw test: gtest list probe)
+                    ├─ log clear + crash snapshot
+                    ├─ remote/transport:start_exec  (nonce sentinel, pid line,
+                    │                                 liveness re-listing)
+                    └─ pull results + crash reports → <build>/.device-runs/<UTC>-<serial>/
+```
+
+| File | Owns |
+|------|------|
+| `remote/probe.lua` | Executable-header probe (ELF / PE / Mach-O format + machine) vs the host; never refuses what it cannot judge |
+| `remote/foreign.lua` | `classify(unit, artifact)`, the refusal message, `check_local` — the guard every LOCAL execution path calls first (`Target:resolve_run_spec`, target debugging, gtest discovery probes; `ConfigUnit:test_units` returns none for a cross kit) |
+| `remote/runners.lua` | Runner registry: `for_sdk` (provider hook, shape validation, per-SDK cache), `for_foreign`, `in_scope` (profile SDK / every declared SDK) |
+| `remote/spec_exec.lua` | The command-spec executor: absolute program (exe rules), no host shell, env extends parent, CRLF-normalised lines delivered from the main loop, `check_output`, hard timeouts (query 120 s / transfer 600 s; runner < invocation overrides), cancellation, pipe drain. Injectable process backend |
+| `remote/transport.lua` | One runner + serial: `push`/`pull` (transfer timeout), `start_exec` (request validation; pid / sentinel lines consumed; `check_output` only on connector lines before the pid line / after the sentinel), `shell` (housekeeping under the query timeout), `nonce()` |
+| `remote/devices.lua` | Device listing through a runner, registry merge (`Device.provider` = runner id), selection per §18.3 |
+| `remote/device_lock.lua` | Per-serial lockfile under the per-user data dir (`LOOMWORKS_DEVICE_LOCK_DIR`), built on `build_lock`'s path-level API; waits by default |
+| `remote/manifest.lua` | The `device` block (validation, launch-over-project merge), glob matching (`**` / `*` / `?`), the manifest (build-relative mirror), device roots `<staging_base>/<ws>/<unit>` and the §18.12 boundary check |
+| `remote/staging.lua` | Incremental sync (record per serial + root in `Workspace._device_sync` → cache `device_sync`), digest verification, removal of dropped files, archive sets, `lw device clean` |
+| `remote/tar.lua` | ustar writer (pax `path` records, directory entries, streamed file bodies) |
+| `remote/run.lua` | Remote run orchestration, run folders (`make_run_dir`, `prune_runs` — the 10 newest per build dir, pattern-named entries of the canonical `.device-runs` only), `--print` rendering, the post-run report |
+| `remote/test_run.lua` | Named test executables: device results hook, outcome judgement, JUnit rendering |
+
+**Program output** is always saved unfiltered to `output.log`; the runner's
+log stream (`receive` → `device.log`, `display` → terminal per `show`) is the
+only other stream, and core never interprets it. A lost exit status is a
+transport failure (exit 255); `--timeout` exits 124; a collected crash fails
+the run. Editor launch of foreign targets (§18.11) is deferred: the editor
+paths refuse through `foreign.check_local`.
+
+Device-side housekeeping (mkdir / chmod / rm / tar / digest) goes through the
+runner's `exec` with POSIX utility argv, and every removal is checked against
+`<staging_base>/<workspace>/` before a spec is built.
+
+---
+
 ## Testing
 
 ### Running Tests
@@ -875,6 +935,12 @@ replaces it, which would drop `PATH`).
   (label-suffixed when a profile runs several).
 - `lw profile list` — list profiles (name, configuration set, tools) and flag
   which are buildable in this host vs editor-only (`lw profiles` is an alias).
+- `lw test [profile] --target <exe>… [--junit <file>] [-- args…]` — named test
+  executables run directly with gtest's XML option (`cli._test_targets`); a
+  foreign one runs on a device (`remote/run.lua` + `remote/test_run.lua`).
+  Plain `lw test` refuses on a profile whose kit declares a target platform.
+- `lw device list|select|clean`, `lw unlock --device <serial>` — see "Remote
+  Execution on Devices".
 - `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →
   execute). The target is the profile's default (§8.6) when unnamed, else a
   named build target or command launch config; `project:name`, `--project`,
@@ -1426,6 +1492,9 @@ loomworks.nvim/
 │   │   ├── config_unit.lua            ConfigUnit: user intent (project+config+tool)
 │   │   ├── build_dir.lua             BuildDir: cached build artifacts for a directory
 │   │   ├── device.lua               Device: physical/emulated deployment target
+│   │   ├── remote/                   Remote execution on devices (spec §18): probe, foreign,
+│   │   │                             runners, spec_exec, transport, devices, device_lock,
+│   │   │                             manifest, staging, tar, run, test_run
 │   │   ├── launch_target.lua         LaunchTarget: profile's default build/launch/debug target
 │   │   ├── target.lua                Target: module-detected build target (cmake exe, etc.)
 │   │   ├── debug.lua                 DAP integration: config builder, adapter resolution
