@@ -1193,7 +1193,24 @@ call via the module's `create_test_unit(config_unit)` factory.
 **`config_unit:test_units() → TestUnit[]`**
 
 Returns the array of TestUnits the owning module created (empty if the
-module does not support tests).
+module does not support tests). Also empty — and nothing is created or
+cached — for a unit not configured on this machine (§17.8: discovery runs
+binaries from the build directory) and for a unit on a cross kit, whose tests
+cannot run on the host (§18.1). Once the unit is configured here, the next
+call creates the TestUnits.
+
+**`config_unit:batch_runner_test_units() → TestUnit[]`**
+
+For static questions about the native batch runner only: whether
+`run_command_all` exists and what `run_command_all_rebuilds()` returns
+(§8.9.2). A configured unit returns `test_units()`. For a unit not configured
+on this machine, it creates TestUnits through `create_test_unit` without
+caching them. Their constructors only store fields. No discovery runs and
+nothing is executed or read from the build directory. A cross kit gets none
+(§18.1). The headless test planner (§16.16) asks this, not `test_units()`,
+because it plans before configure runs: on a fresh clone every unit is still
+unconfigured then, and the build step of a self-rebuilding unit must still be
+dropped.
 
 **`config_unit:discover_tests() → TestTree|nil`**
 

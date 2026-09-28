@@ -1315,6 +1315,25 @@ function ConfigUnit:test_units()
     return self._test_units
 end
 
+--- TestUnits for answering static questions about this unit's native batch
+--- runner — whether one exists and whether it rebuilds its own targets
+--- (spec §8.9.2) — without discovery. A configured unit returns `test_units()`
+--- unchanged. An unconfigured one (e.g. a fresh clone, where the plan's
+--- configure step has not run yet) gets TestUnits constructed passively through
+--- the module factory: the constructors only store fields, and callers must ask
+--- only `run_command_all` presence / `run_command_all_rebuilds()`, never
+--- discover or run. They are not cached, so `test_units()` keeps its §17.8 gate.
+--- A cross kit gets no host batch runner either way (spec §18.1).
+--- @return loomworks.TestUnit[]
+function ConfigUnit:batch_runner_test_units()
+    if self._test_units or self:configured_here() then return self:test_units() end
+    if require("loomworks.remote.foreign").unit_platform(self) then return {} end
+    local impl = self:_module_impl()
+    if not impl or not impl.create_test_unit then return {} end
+    local tu = impl.create_test_unit(self)
+    return tu and { tu } or {}
+end
+
 --- Discover tests for this configuration. Returns cached results if
 --- available, or runs discovery synchronously. Delegates to TestUnits.
 --- Discovery is passive — it never triggers configure/build.
