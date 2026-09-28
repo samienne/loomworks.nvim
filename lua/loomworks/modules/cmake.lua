@@ -347,7 +347,8 @@ end
 --- @param build_dir string|nil build directory for .bat file placement
 --- @param tag string|nil short action label for the .bat filename
 --- @param env table|nil the task environment
---- @return string[] cmd, table|nil env
+--- @return string[] cmd, table|nil env, string[]|nil display the command the
+---   wrapper runs (the task spec's `display_cmd`, core §8.1); nil when unwrapped
 local function wrap_cmd(cmd, kit, generator, build_dir, tag, env)
     if M.runs_in_vcvars(kit, generator) and build_dir then
         local bat_path, err = write_vcvarsall_bat(
@@ -366,7 +367,8 @@ local function wrap_cmd(cmd, kit, generator, build_dir, tag, env)
         local out_env = {}
         for k, v in pairs(env or {}) do out_env[k] = v end
         out_env[M.VCVARS_BAT_ENV] = (bat_path:gsub("/", "\\"))
-        return { "cmd", "/d", "/v:on", "/c", "!" .. M.VCVARS_BAT_ENV .. "!" }, out_env
+        return { "cmd", "/d", "/v:on", "/c", "!" .. M.VCVARS_BAT_ENV .. "!" }, out_env,
+            vim.list_extend({}, cmd)
     end
     return cmd, env
 end
@@ -1589,11 +1591,12 @@ function M.tasks(project, active_config)
                     if fd then uv.fs_close(fd) end
                 end
             end
-            local wcmd, wenv = wrap(configure_cmd, "configure")
+            local wcmd, wenv, display = wrap(configure_cmd, "configure")
             return {
                 cmd = wcmd,
                 cwd = abs_path,
                 env = wenv,
+                display_cmd = display,
             }
         end,
         loomworks = {
@@ -1656,11 +1659,12 @@ function M.tasks(project, active_config)
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
-                local wcmd, wenv = wrap(build_cmd, "build")
+                local wcmd, wenv, display = wrap(build_cmd, "build")
                 return {
                     cmd = wcmd,
                     cwd = abs_path,
                     env = wenv,
+                    display_cmd = display,
                 }
             end,
             loomworks = {
@@ -1678,12 +1682,13 @@ function M.tasks(project, active_config)
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
-                local wcmd, wenv = wrap(append_build_request({ cmake_cmd, "--build", build_dir }, project),
-                    "build")
+                local wcmd, wenv, display = wrap(
+                    append_build_request({ cmake_cmd, "--build", build_dir }, project), "build")
                 return {
                     cmd = wcmd,
                     cwd = abs_path,
                     env = wenv,
+                    display_cmd = display,
                 }
             end,
             loomworks = {
@@ -1744,11 +1749,12 @@ function M.clean_tasks(project, active_config)
         {
             name = project.name .. ": clean " .. active_config,
             builder = function()
-                local wcmd, wenv = wrap(clean_cmd, "clean")
+                local wcmd, wenv, display = wrap(clean_cmd, "clean")
                 return {
                     cmd = wcmd,
                     cwd = abs_path,
                     env = wenv,
+                    display_cmd = display,
                 }
             end,
             loomworks = {
@@ -1796,11 +1802,12 @@ function M.build_target_task(project, target_id)
     return {
         name = project.name .. ": build " .. target_id,
         builder = function()
-            local wcmd, wenv = wrap_cmd(cmd, kit, generator, build_dir, "build", env)
+            local wcmd, wenv, display = wrap_cmd(cmd, kit, generator, build_dir, "build", env)
             return {
                 cmd = wcmd,
                 cwd = abs_path,
                 env = wenv,
+                display_cmd = display,
             }
         end,
         loomworks = {

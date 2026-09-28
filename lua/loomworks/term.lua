@@ -56,6 +56,26 @@ function M.escape(s)
     return s
 end
 
+--- Format an argv as one readable command line, for display only (logs,
+--- `lw build -v`): an element that is empty or holds whitespace, a quote or a
+--- shell metacharacter is double-quoted, with `"` escaped as `\"`; the rest is
+--- joined verbatim. Not a re-executable quoting for any particular shell.
+--- Control characters are left in place — the output layer (`render` /
+--- `escape`) neutralizes them.
+--- @param argv string[]
+--- @return string
+function M.format_argv(argv)
+    local parts = {}
+    for _, a in ipairs(argv or {}) do
+        a = tostring(a)
+        if a == "" or a:find("[%s\"'`$&|;<>()*?!^%%#{}~]") then
+            a = '"' .. a:gsub('"', '\\"') .. '"'
+        end
+        parts[#parts + 1] = a
+    end
+    return table.concat(parts, " ")
+end
+
 local MARKER = "%z" .. M.NONCE .. "{([%d;]*)}"
 
 --- Render a line for the terminal: escape all control characters (see

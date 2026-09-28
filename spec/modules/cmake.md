@@ -1009,8 +1009,9 @@ A kit's executable paths (`cmake_path`, `compiler_path`, the vcvarsall script,
 key, never from `tool_data` recorded in the cache (core §17.7).
 
 The vcvarsall wrapper (§1a) runs its generated batch file as
-`cmd.exe /d /v:on /c !LOOMWORKS_VCVARS_BAT!` with the batch path passed in that
-environment variable: delayed expansion substitutes the path **after** cmd has
+`cmd.exe /d /v:on /c !LOOMWORKS_VCVARS_BAT!` (the task's `display_cmd`, core
+§8.1, is the cmake command inside the batch, so logs and `lw build -v` show
+that) with the batch path passed in that environment variable: delayed expansion substitutes the path **after** cmd has
 parsed the command line, so the path's characters are never interpreted — the
 same argv works under both process-spawning conventions (the editor's job
 runner, which hands cmd.exe its arguments verbatim, and the standalone host's,

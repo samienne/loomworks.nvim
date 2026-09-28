@@ -1092,13 +1092,14 @@ end
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool and build_targets select what
 ---   it builds — both handed to the module's build task (core §8.1), which
 ---   puts them on its native build command before any wrapping (§16.4);
 ---   force overrides the output-artifact conflict gate (§5.9); reconfigure
----   forces a FULL reconfigure of every unit before building (§16.4).
+---   forces a FULL reconfigure of every unit before building (§16.4);
+---   verbose prints each step's command line + cwd (always logged, §16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
@@ -1170,6 +1171,14 @@ local function run_build_steps(profile, ws, opts)
     if step.kind == "configure" then
       local why = overseer.configure_reason_line(step)
       if why then log("    " .. why) end
+    end
+    -- The command line + cwd (§16.4): always to the workspace log, and on
+    -- the terminal with -v. A wrapped command shows what the wrapper runs.
+    local cwd = step.cwd or ws.root
+    overseer.log_task_command(ws, step.name, step, cwd)
+    if opts.verbose then
+      log("    $ " .. overseer.command_text(step))
+      log("    (in " .. tostring(cwd) .. ")")
     end
     -- Through the module table so tests can stub the spawn.
     local code = M._run_spec(step, ws.root, quiet)
@@ -1260,9 +1269,9 @@ end
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
-  local force, reconfigure, targets = false, false, {}
+  local force, reconfigure, verbose, targets = false, false, false, {}
   local usage = "usage: lw build [profile] [--target <name>]... [--force] [--reconfigure] "
-    .. "[-- build-tool-args…]"
+    .. "[-v|--verbose] [-- build-tool-args…]"
   local i = 2
   while i <= #args do
     local a = args[i]
@@ -1270,6 +1279,7 @@ function M.cmd_build(ws, args)
     elseif seen_sep then extra[#extra + 1] = a
     elseif a == "--force" then force = true
     elseif a == "--reconfigure" then reconfigure = true
+    elseif a == "--verbose" or a == "-v" then verbose = true
     elseif a == "--target" or a:match("^%-%-target=") then
       local name = a:match("^%-%-target=(.*)$")
       if not name then i = i + 1; name = args[i] end
@@ -1292,6 +1302,7 @@ function M.cmd_build(ws, args)
       build_targets = (#targets > 0) and targets or nil,
       force = force,
       reconfigure = reconfigure,
+      verbose = verbose,
     })
   end)
   if built == 0 then
@@ -7072,7 +7083,7 @@ function M.cmd_complete(cword, words)
     emit(sorted_unique(names))
     return 0
   elseif cmd == "build" and n >= 2 and not has(a, "--") then
-    emit({ "--target", "--force", "--reconfigure" })
+    emit({ "--target", "--force", "--reconfigure", "--verbose" })
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
@@ -7318,7 +7329,7 @@ $XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
 (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-- <build-tool args>]
+  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
 `lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI. They go on
@@ -7355,6 +7366,9 @@ for a deterministic build. The CI pattern is:
                 (cmake `--fresh`, below CMake 3.24 a reset of CMakeCache.txt +
                 CMakeFiles; meson `setup --wipe`) — for a build tree whose
                 configure state you no longer trust.
+  -v, --verbose  print each configure / build step's full command line and
+                the directory it runs in (for an MSVC kit, the cmake command
+                run inside vcvarsall). Always written to .nvim/loomworks.log.
 
 Configures first if the build dir isn't configured — or when a configure input
 changed since the last configure (options, env, toolchain, compiler cache), or
