@@ -8,6 +8,12 @@
 --
 -- PATH changes are gated: applied only with an interactive yes, opts.assume_yes
 -- (`-y`), and never when --no-modify-path. Windows needs no PATH edit.
+--
+-- Replacing a DIFFERENT binary already at the install location is gated the
+-- same way (spec §16.15): the existing file is described (size, date, and —
+-- read from its fused bundle, never executed — whether it is a development
+-- build or which release it is) and the user confirms; `-y` skips the question;
+-- non-interactive without `-y` refuses. An identical binary is left as it is.
 
 local uv_ok, uv = pcall(require, "uv")
 if not uv_ok then uv = require("luv") end
@@ -123,21 +129,76 @@ function M.append_path_line(rc, line)
   return true
 end
 
--- Interactive y/N unless assume_yes; false when non-interactive without -y.
+-- Interactive y/N unless assume_yes. Returns true (yes), false (no), or nil
+-- when it could not ask: non-interactive (`--no-input` / LW_NO_INPUT / CI,
+-- opts.no_input) or stdin is not a terminal. opts.ask replaces the terminal
+-- question (tests).
 local function stdin_is_tty()
   local ok, kind = pcall(uv.guess_handle, 0)
   return ok and kind == "tty"
 end
 local function confirm(opts, question)
   if opts.assume_yes then return true end
+  if opts.no_input then return nil end
+  if opts.ask then return opts.ask(question) and true or false end
   if not stdin_is_tty() then return nil end   -- nil = couldn't ask
   io.write(question .. " [y/N] "); io.flush()
   local ans = io.read("*l")
   return ans ~= nil and (ans:lower() == "y" or ans:lower() == "yes")
 end
 
+--- What kind of lw the binary at `p` is, read from its fused bundle (the zip
+--- luvi appends to the executable) without executing it: "a development
+--- build" when system Lua is fused in, "lw <version>" for a release host with
+--- an embedded version, "an lw release host (unknown version)" for one without,
+--- nil when it carries no lw bootstrap (or cannot be read).
+local function read_kind(miniz, p)
+  local rok, reader = pcall(miniz.new_reader, p)
+  if not rok or not reader then return nil end
+  if reader:locate_file("loomworks/cli.lua") then return "a development build" end
+  local idx = reader:locate_file("boot/verify.lua")
+  if not idx then return nil end
+  local xok, src = pcall(reader.extract, reader, idx)
+  local ver = xok and type(src) == "string"
+    and ("\n" .. src):match('\nM%.RELEASE_VERSION = "([%w%.%-%+_]+)"') or nil
+  return ver and ("lw " .. ver) or "an lw release host (unknown version)"
+end
+local function binary_kind(p)
+  local mok, miniz = pcall(require, "miniz")
+  if not mok then return nil end
+  local kind = read_kind(miniz, p)
+  -- The miniz reader has no close(); it holds the file open until collected,
+  -- and on Windows an open handle makes the later rename-aside/swap of that
+  -- very file fail (EPERM). Collect now, while the reader is unreachable.
+  collectgarbage("collect"); collectgarbage("collect")
+  return kind
+end
+
+--- A one-line description of the file at `p` for the replace confirmation —
+--- "<kind>, <size> bytes, modified <date>" — or nil when there is no file.
+--- Cheap and side-effect free: stats the file and reads its bundle directory.
+--- @param p string
+--- @return string|nil
+function M.describe_binary(p)
+  local st = uv.fs_stat(p)
+  if not st or st.type ~= "file" then return nil end
+  local kind = binary_kind(p)
+  return (kind and (kind .. ", ") or "") .. tostring(st.size) .. " bytes, modified " ..
+    os.date("%Y-%m-%d %H:%M", st.mtime.sec)
+end
+
+--- Do `a` and `b` hold identical content? (size first, then the bytes)
+local function same_content(a, b)
+  local sa, sb = uv.fs_stat(a), uv.fs_stat(b)
+  if not sa or not sb or sa.size ~= sb.size then return false end
+  local da, db = read_bin(a), read_bin(b)
+  return da ~= nil and da == db
+end
+
 --- Install the running host. opts:
----   assume_yes, no_modify_path, no_bundle, dry_run
+---   assume_yes (`-y`: replace an existing binary / edit PATH without asking),
+---   no_input (non-interactive: never ask — refuse what needs a yes),
+---   no_modify_path, no_bundle, dry_run; exe_path / ask are test seams.
 --- Returns a list of human-readable report lines (prefixed with the outcome),
 --- or nil, err.
 function M.install(opts)
@@ -160,8 +221,30 @@ function M.install(opts)
   local bindir = dest:match("^(.*)/[^/]*$")
 
   -- 1. place the binary
+  local existing = (norm(exe) ~= norm(dest)) and M.describe_binary(dest) or nil
   if norm(exe) == norm(dest) then
     say("· binary already installed at " .. dest)
+  elseif existing and same_content(exe, dest) then
+    say("· binary already installed at " .. dest .. " (identical to this one)")
+  elseif existing then
+    -- A different lw is installed — maybe a dev build, maybe a newer release.
+    -- Never replace it silently: say what is there and get a yes.
+    if opts.dry_run then
+      say("· would replace existing " .. dest .. " (" .. existing .. ") with " .. exe)
+    else
+      local yes = confirm(opts, "lw is already installed at " .. dest ..
+        "\n    (" .. existing .. ").\nReplace it with " .. exe .. "?")
+      if yes == nil then
+        return nil, "an lw binary is already installed at " .. dest ..
+          "\n    (" .. existing .. ").\n    Not replacing it without " ..
+          "confirmation (non-interactive); re-run with -y to replace it."
+      elseif not yes then
+        return nil, "cancelled; " .. dest .. " was left as it is."
+      end
+      local ok, err = M.copy_binary(exe, dest)
+      if not ok then return nil, err end
+      say("✓ replaced " .. dest .. " (was " .. existing .. ")")
+    end
   elseif opts.dry_run then
     say("· would copy " .. exe .. " -> " .. dest)
   else

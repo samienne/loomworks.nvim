@@ -401,7 +401,18 @@ trusted channel *before* its first execution, and only a matching binary is
 run. Installation is that binary placing itself where it can be invoked; it is
 not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
-(§16.12–16.13). A later replacement of an installed host (§16.32) is verified
+(§16.12–16.13).
+
+Installation never silently replaces a **different** host already at the
+install location. When the location holds a binary whose content differs from
+the running one, installation first describes it — as far as that is knowable
+without executing it: whether it is a development build or which release it
+is, its size, and its modification time — and asks for confirmation. An
+explicit assume-yes flag skips the question; a non-interactive invocation
+without it refuses, with a non-zero status, and leaves the existing binary
+untouched. A binary identical to the running one is reported as already
+installed. A dry run reports the replacement without asking or changing
+anything. A later replacement of an installed host (§16.32) is verified
 by the already-trusted running host against the signed hash list below, before
 the new binary is ever executed.
 

@@ -310,8 +310,16 @@ elseif host_command == "install" then
     if v == "-y" or v == "--yes" then opts.assume_yes = true
     elseif v == "--no-modify-path" then opts.no_modify_path = true
     elseif v == "--no-bundle" then opts.no_bundle = true
-    elseif v == "--dry-run" then opts.dry_run = true end
+    elseif v == "--dry-run" then opts.dry_run = true
+    elseif v == "--no-input" or v == "--non-interactive" then opts.no_input = true end
   end
+  -- Same non-interactive switches as the CLI: never prompt (replacing an
+  -- existing binary or editing PATH then needs -y) under LW_NO_INPUT / CI.
+  local function env_truthy(name)
+    local e = getenv(name)
+    return e ~= nil and e ~= "" and e ~= "0" and e:lower() ~= "false"
+  end
+  if env_truthy("LW_NO_INPUT") or env_truthy("CI") then opts.no_input = true end
   -- install may report progress AND fail: the binary can be placed while the
   -- bundle fetch dies. Print whatever it got done, then honour the error —
   -- exiting 0 on a partial install is what leaves a job to fail later with a
