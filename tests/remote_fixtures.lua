@@ -170,8 +170,11 @@ function M.fake_runner_table(o)
         return { cmd = C, args = { "-t", serial, "exec", vim.json.encode(req) }, check_output = fail_check }
     end
     function r.parse_exit(line, nonce)
-        local n = line:match("^__EXIT_" .. nonce .. "=(%d+)$")
-        return n and tonumber(n) or nil
+        -- Anchored at the END: unterminated program output shares the line
+        -- and is returned as the second value (spec §18.2).
+        local pre, n = line:match("^(.-)__EXIT_" .. nonce .. "=(%d+)$")
+        if not n then return nil end
+        return tonumber(n), pre ~= "" and pre or nil
     end
     if not o.no_pid then
         function r.parse_pid(line, nonce)
@@ -373,6 +376,7 @@ function FakeDevice:run_program(serial, req, nonce)
                 plan.after = r.after
                 plan.connector_tail = r.connector_tail
                 plan.delay_ms = r.delay_ms
+                plan.unterminated = r.unterminated
             end
         end
         plan.program = true
@@ -475,7 +479,7 @@ function FakeDevice:backend()
                     proc.nonce = nonce
                     proc.after = plan.after
                 elseif not plan.no_sentinel then
-                    emit("stdout", "__EXIT_" .. nonce .. "=" .. tostring(plan.exit))
+                    emit("stdout", (plan.unterminated or "") .. "__EXIT_" .. nonce .. "=" .. tostring(plan.exit))
                 end
                 for _, l in ipairs(plan.connector_tail or {}) do emit("stdout", l) end
                 proc.delay_ms = plan.delay_ms

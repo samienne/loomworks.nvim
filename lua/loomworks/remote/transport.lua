@@ -119,11 +119,16 @@ function Transport:pull(remote, local_path)
 end
 
 --- Classify one exec output line: "pid", "exit" or nil (program output).
---- @return string|nil kind, integer|nil value
+--- For "exit", the third value is the program text that preceded the
+--- sentinel on the same line (a program whose last output did not end in a
+--- line break), as reported by the runner's `parse_exit` (spec §18.2).
+--- @return string|nil kind, integer|nil value, string|nil preceding
 function Transport:classify_line(line, nonce)
     local r = self.runner
-    local ok, st = pcall(r.parse_exit, line, nonce)
-    if ok and type(st) == "number" then return "exit", st end
+    local ok, st, pre = pcall(r.parse_exit, line, nonce)
+    if ok and type(st) == "number" then
+        return "exit", st, (type(pre) == "string" and pre ~= "") and pre or nil
+    end
     if r.parse_pid then
         local okp, pid = pcall(r.parse_pid, line, nonce)
         if okp and type(pid) == "number" then return "pid", pid end
@@ -154,8 +159,16 @@ function Transport:start_exec(req, handlers, timeout)
         label = label, timeout = timeout, backend = self.backend,
         on_line = function(stream, line)
             if stream == "stdout" then
-                local kind, v = self:classify_line(line, req.nonce)
+                local kind, v, pre = self:classify_line(line, req.nonce)
                 if kind == "exit" and state.status == nil then
+                    -- Unterminated program output sharing the sentinel's
+                    -- line is program output, delivered before the status.
+                    if pre and not (has_pid and state.pid == nil) then
+                        state.output[#state.output + 1] = pre
+                        if handlers.on_output then handlers.on_output(stream, pre) end
+                    elseif pre then
+                        state.pre[#state.pre + 1] = pre
+                    end
                     state.status = v
                     if handlers.on_exit_status then handlers.on_exit_status(v) end
                     return

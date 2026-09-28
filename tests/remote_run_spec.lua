@@ -158,6 +158,18 @@ describe("lw run on a foreign target", function()
         assert.falsy(all:find("LOG", 1, true))
     end)
 
+    it("unterminated last output sharing the sentinel line is program output", function()
+        dev.behaviors.Runner = function()
+            return { out = { "first" }, unterminated = "no newline at end", exit = 4 }
+        end
+        local res = run()
+        assert.equals(4, res.ret)
+        assert.same({ "first", "no newline at end" }, prog_out)
+        local log = read(run_dirs()[1] .. "/output.log")
+        assert.truthy(log:find("first\nno newline at end\n", 1, true))
+        assert.falsy(log:find("__EXIT_", 1, true))
+    end)
+
     it("a status above 128 is reported as a signal", function()
         dev.behaviors.Runner = function() return { out = { "Segmentation fault" }, exit = 139 } end
         local res = run()
