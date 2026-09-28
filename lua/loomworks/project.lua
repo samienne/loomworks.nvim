@@ -877,6 +877,38 @@ function Project:save_variable(var_name, declaration)
     return true
 end
 
+--- Replace the project's `device` block (spec §18.9) in the working copy;
+--- nil or an empty table removes it. Validated like a loaded block; a denied
+--- device environment variable (§17.9) is refused.
+--- @param block table|nil
+--- @return boolean ok, string|nil err
+function Project:save_device(block)
+    local ws = self._workspace
+    if self._removed then
+        return false, "project '" .. self.key .. "' has been removed"
+    end
+    if block ~= nil and next(block) == nil then block = nil end
+    if block then
+        local ok, err = require("loomworks.remote.manifest").validate_block(block, "project '" .. self.key .. "'")
+        if not ok then return false, err end
+        for k in pairs(type(block.env) == "table" and block.env or {}) do
+            if require("loomworks.env_policy").is_denied(k) then
+                return false, k .. " cannot be set — it makes other programs load or "
+                    .. "run code (see `lw help trust`)"
+            end
+        end
+    end
+    self:_mark_user_owned()
+    local old = self.device
+    self.device = block and vim.deepcopy(block) or nil
+    local ok, err = ws:_save_user()
+    if not ok then
+        self.device = old
+        return false, err
+    end
+    return true
+end
+
 --- Delete a project variable declaration.
 --- Also removes any configuration overrides for this variable.
 --- @param var_name string variable name

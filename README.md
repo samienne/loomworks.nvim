@@ -719,7 +719,10 @@ directory:
 ```
 
 The block sits inside the project's module section (`cmake` here), where an
-older `lw` that does not know it still loads the file. A `device` block written
+older `lw` that does not know it still loads the file. `lw project set
+LumeScene device.stage '<glob>' …`, `device.archive …`, `device.working_dir …`
+and `device.env.<NAME> …` (and `lw project unset LumeScene device[.<field>]`)
+edit it in your local config without touching the JSON. A `device` block written
 directly under the project by an earlier version is still read and moves into
 the module section the next time loomworks saves the file.
 
