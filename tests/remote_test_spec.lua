@@ -11,6 +11,8 @@ local runners = require("loomworks.remote.runners")
 local test_run = require("loomworks.remote.test_run")
 local Target = require("loomworks.target")
 local fx = require("tests.remote_fixtures")
+-- The device staging root of the fixture unit (spec §18.4).
+local DROOT = select(2, require("loomworks.remote.manifest").device_roots("/data/stage", "ws", "build/App/Debug"))
 
 local function capture(fn)
     local out_buf, err_buf = {}, {}
@@ -115,7 +117,7 @@ describe("lw test --target on a device", function()
         assert.truthy(res.stdout:find("TESTS OK: Debug:kit", 1, true))
         -- forwarded args first, then the results option pointing into the staging root
         assert.equals("--gtest_filter=Suite.*", dev.last_argv[2])
-        assert.equals("--gtest_output=xml:/data/stage/ws/build_App_Debug/.loomworks/results/Runner.xml",
+        assert.equals("--gtest_output=xml:" .. DROOT .. "/.loomworks/results/Runner.xml",
             dev.last_argv[3])
         local j = fx.read(junit)
         assert.truthy(j:find('<testcase classname="Suite" name="a"', 1, true))

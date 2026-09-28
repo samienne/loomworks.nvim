@@ -12,6 +12,8 @@ local remote_run = require("loomworks.remote.run")
 local runners = require("loomworks.remote.runners")
 local Target = require("loomworks.target")
 local fx = require("tests.remote_fixtures")
+-- The device staging root of the fixture unit (spec §18.4).
+local DROOT = select(2, require("loomworks.remote.manifest").device_roots("/data/stage", "ws", "build/App/Debug"))
 
 local function capture(fn)
     local out_buf, err_buf = {}, {}
@@ -115,7 +117,7 @@ describe("lw run on a foreign target", function()
         local calls = exec_calls()
         assert.equals(1, #calls)
         local req = calls[1].req
-        local droot = "/data/stage/ws/build_App_Debug"
+        local droot = DROOT
         assert.same({ droot .. "/test/unit/Runner", "--gtest_filter=A.*", "a b; $(x)" }, req.argv)
         assert.equals(droot .. "/test/unit", req.cwd)
         assert.same({ droot .. "/lib" }, req.library_dirs)
@@ -212,7 +214,7 @@ describe("lw run on a foreign target", function()
             { target = "Runner", device_log = { show = "stdout", level = "E" } })
         assert.is_true(res.ok, res.stderr)
         assert.same({ show = "both", level = "E" }, runner.log_options_seen)
-        assert.same({ path = "/data/stage/ws/build_App_Debug/test/unit/Runner", name = "Runner" },
+        assert.same({ path = DROOT .. "/test/unit/Runner", name = "Runner" },
             runner.log_program_seen)
         -- show=both → log displayed live (display filter applied: level E only)
         local all = table.concat(prog_err, "\n")
@@ -358,16 +360,16 @@ describe("lw run on a foreign target", function()
         assert.is_true(res.ok, res.stderr)
         local rep = vim.json.decode(res.stdout)
         assert.equals("SER1", rep.device)
-        assert.equals("/data/stage/ws/build_App_Debug/test/unit/Runner", rep.program)
+        assert.equals(DROOT .. "/test/unit/Runner", rep.program)
         assert.same({ "x y" }, rep.args)
-        assert.same({ "/data/stage/ws/build_App_Debug/lib" }, rep.library_dirs)
+        assert.same({ DROOT .. "/lib" }, rep.library_dirs)
         assert.equals("test", rep.env.APP_MODE)
         assert.equals(2, #rep.manifest.files)
         assert.equals(1, #rep.manifest.archives)
         assert.equals(0, #dev:ops("push"))
         assert.equals(0, #dev:ops("exec"))
         res = run({ print_mode = "sh" })
-        assert.truthy(res.stdout:find("program:      /data/stage/ws/build_App_Debug/test/unit/Runner", 1, true))
+        assert.truthy(res.stdout:find("program:      " .. DROOT .. "/test/unit/Runner", 1, true))
     end)
 
     it("refuses (never runs locally) when no runner serves the kit's platform", function()

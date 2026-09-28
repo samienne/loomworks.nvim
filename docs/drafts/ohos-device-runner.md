@@ -170,7 +170,8 @@ project's local or shared config:
 }
 ```
 
-Device root `R = /data/local/tmp/.loomworks/<workspace>/<unit>/`:
+Device root `R = /data/local/tmp/.loomworks/<workspace>/<unit>/` (short
+segments, e.g. `LumeScene-ohos/OhosRelease-3fa9c01b2e`, spec §18.4):
 
 ```
 R/test/unittest/api_unit_test/LumeSceneAPITestRunner   (artifact, chmod 755)

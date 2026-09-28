@@ -398,6 +398,35 @@ function M.segment(name)
     return s
 end
 
+--- Longest workspace segment kept verbatim; a longer name becomes a readable
+--- prefix + a hash of the name.
+M.WS_SEGMENT_MAX = 24
+
+--- The workspace segment of the device roots (spec §18.4): the sanitized name
+--- when short, else its first 15 characters + "-" + 8 hex digits of its hash.
+--- @param name string
+--- @return string
+function M.workspace_segment(name)
+    local s = M.segment(name)
+    if #s <= M.WS_SEGMENT_MAX then return s end
+    return s:sub(1, 15) .. "-" .. vim.fn.sha256(tostring(name)):sub(1, 8)
+end
+
+--- The unit segment of the device roots (spec §18.4): a short readable prefix
+--- (the unit identity's last path component, sanitized, at most 12 characters)
+--- + "-" + the first 10 hex digits of the identity's hash. Deterministic (the
+--- sync record and digest checks key on it) and short: devices truncate a
+--- process name — the program's path — at 128 bytes.
+--- @param unit_id string
+--- @return string
+function M.unit_segment(unit_id)
+    local id = tostring(unit_id or "_")
+    local last = id:gsub("[/\\]+$", ""):match("([^/\\]+)$") or id
+    local prefix = M.segment(last):sub(1, 12):gsub("[%._%-]+$", "")
+    if prefix == "" or prefix:match("^%.") then prefix = "u" .. prefix end
+    return prefix .. "-" .. vim.fn.sha256(id):sub(1, 10)
+end
+
 --- The device-side roots for a workspace + unit: the workspace prefix (the
 --- only tree core ever asks a device to delete in, §18.12) and the unit's
 --- staging root.
@@ -407,8 +436,8 @@ end
 --- @return string ws_prefix, string unit_root
 function M.device_roots(staging_base, ws_name, unit_id)
     local base = staging_base:gsub("/+$", "")
-    local ws_prefix = base .. "/" .. M.segment(ws_name)
-    return ws_prefix, ws_prefix .. "/" .. M.segment(unit_id)
+    local ws_prefix = base .. "/" .. M.workspace_segment(ws_name)
+    return ws_prefix, ws_prefix .. "/" .. M.unit_segment(unit_id)
 end
 
 --- Is a device path inside `prefix` (separator boundary, after normalising

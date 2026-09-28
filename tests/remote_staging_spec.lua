@@ -129,13 +129,40 @@ describe("remote.manifest", function()
     it("device roots are sanitized and removal stays under the workspace prefix", function()
         local wsp, unit_root = manifest.device_roots("/data/stage/", "my ws", "build/App/Debug")
         assert.equals("/data/stage/my_ws", wsp)
-        assert.equals("/data/stage/my_ws/build_App_Debug", unit_root)
+        local hash = vim.fn.sha256("build/App/Debug"):sub(1, 10)
+        assert.equals("/data/stage/my_ws/Debug-" .. hash, unit_root)
         assert.is_true(manifest.device_path_under(unit_root .. "/x", wsp))
         assert.is_true(manifest.device_path_under(wsp, wsp))
         assert.is_false(manifest.device_path_under("/data/stage/my_ws2/x", wsp))
         assert.is_false(manifest.device_path_under(wsp .. "/../etc", wsp))
         assert.is_false(manifest.device_path_under("/data", wsp))
         assert.equals("_..", manifest.segment(".."))
+    end)
+
+    it("device roots stay short and deterministic (the device truncates process names at 128 bytes)", function()
+        -- The real run: a unit id that is a long build-dir path.
+        local id = "build_LumeScene_ohos-openharmony-arm64-v8a_OhosRelease"
+        local base = "/data/local/tmp/.device-staging"
+        local wsp, r1 = manifest.device_roots(base, "LumeScene-ohos", id)
+        local _, r2 = manifest.device_roots(base, "LumeScene-ohos", id)
+        assert.equals(r1, r2)
+        assert.equals(base .. "/LumeScene-ohos", wsp)
+        local unit_seg = r1:sub(#wsp + 2)
+        assert.is_true(#unit_seg <= 23, unit_seg)
+        assert.truthy(unit_seg:match("^[%w%._%-]+%-%x%x%x%x%x%x%x%x%x%x$"), unit_seg)
+        -- Different units never share a root, even with the same readable tail.
+        local _, r3 = manifest.device_roots(base, "LumeScene-ohos", "build/other/OhosRelease")
+        assert.are_not.equal(r1, r3)
+        -- A long workspace name is shortened (readable prefix + hash), a short
+        -- one kept as is.
+        local long = string.rep("VeryLongWorkspaceName", 3)
+        local wsl = manifest.device_roots(base, long, id)
+        local seg = wsl:sub(#base + 2)
+        assert.is_true(#seg <= 24, seg)
+        assert.are_not.equal(manifest.device_roots(base, long .. "x", id), wsl)
+        -- The run's program path on the device stays well under 128 bytes.
+        local program = r1 .. "/test/unittest/api_unit_test/LumeSceneAPITestRunner"
+        assert.is_true(#program < 128, tostring(#program))
     end)
 end)
 

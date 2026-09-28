@@ -168,10 +168,22 @@ Before executing, core **stages** the program on the device. The staging root on
 the host is the ConfigUnit's build directory; the device-side root is
 
 ```
-<staging_base>/<workspace name>/<config unit identity>/
+<staging_base>/<workspace segment>/<unit segment>/
 ```
 
-and every staged file keeps its **build-directory-relative path** below it, so
+Both segments are **short and deterministic**, because a device may truncate a
+process name — the program's path — to a fixed length (e.g. 128 bytes), which
+breaks crash attribution and log filtering by process. The workspace segment is
+the workspace name with every character outside `[A-Za-z0-9._-]` replaced by
+`_`, kept whole up to 24 characters; a longer name becomes its first 15
+characters, `-`, and 8 hex digits of a hash of the name. The unit segment is a
+readable prefix — the last path component of the ConfigUnit identity, sanitized
+the same way and cut to at most 12 characters — then `-` and 10 hex digits of a
+hash of the whole identity, so distinct units never share a root. A staging
+root written by an earlier scheme is simply no longer used: it stays below the
+workspace segment, where `lw device clean` removes it with the rest (§16.34).
+
+Every staged file keeps its **build-directory-relative path** below the root, so
 relative references between build outputs (a program that loads
 `plugins/*.so` beside itself or reads `../../assets`) resolve on the device
 exactly as in the build tree.
