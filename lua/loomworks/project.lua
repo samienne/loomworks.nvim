@@ -10,7 +10,7 @@ local Configuration = require("loomworks.configuration")
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations
 --- @field deploy? table<string, table|table[]> project-level deploy steps
---- @field device? { stage?: string[], archive?: string[], env?: table<string,string>, working_dir?: string } remote-execution block (spec §18.9)
+--- @field device? { stage?: string[], archive?: string[], env?: table<string,string>, working_dir?: string } remote-execution block (spec §18.9); stored in the module section of the files (`projects.<p>.<type>.device`), never in `type_config`
 --- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
 --- @field configuration? string active configuration name
 --- @field _module? loomworks.Module direct reference to Module domain object

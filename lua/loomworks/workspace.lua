@@ -4265,6 +4265,11 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if next(configs_dict) then
         type_config.configurations = configs_dict
     end
+    -- The device block lives in the module section (spec §18.9): an older lw
+    -- preserves an unknown module field but rejects an unknown project key.
+    if project.device and next(project.device) then
+        type_config.device = vim.deepcopy(project.device)
+    end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4278,9 +4283,6 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
-    end
-    if project.device and next(project.device) then
-        entry.device = project.device
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
@@ -4305,6 +4307,11 @@ function Workspace:_serialize_project(project)
     if next(configs_dict) then
         type_config.configurations = configs_dict
     end
+    -- The device block lives in the module section (spec §18.9): an older lw
+    -- preserves an unknown module field but rejects an unknown project key.
+    if project.device and next(project.device) then
+        type_config.device = vim.deepcopy(project.device)
+    end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4318,9 +4325,6 @@ function Workspace:_serialize_project(project)
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
-    end
-    if project.device and next(project.device) then
-        entry.device = project.device
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
@@ -5322,6 +5326,11 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     if next(configs_dict) then
         type_config.configurations = configs_dict
     end
+    -- The device block lives in the module section (spec §18.9): an older lw
+    -- preserves an unknown module field but rejects an unknown project key.
+    if project.device and next(project.device) then
+        type_config.device = vim.deepcopy(project.device)
+    end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -5335,9 +5344,6 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     end
     if project.deploy and next(project.deploy) then
         entry.deploy = project.deploy
-    end
-    if project.device and next(project.device) then
-        entry.device = project.device
     end
     if project.variables and next(project.variables) then
         entry.variables = project.variables
