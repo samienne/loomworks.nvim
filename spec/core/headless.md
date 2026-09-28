@@ -1234,8 +1234,9 @@ so "health authors nothing" (§16.9) continues to hold. It records two tiers:
   results **as recorded** before the providers run, so an in-memory refresh a
   provider makes (and does not persist) does not invalidate the tier again in
   the next process. When the fingerprint changes, the local tier is stale;
-- a **network tier** — the results of the on-demand (network-backed) providers —
-  stored with the time they were computed and a **running-version key** (the
+- a **network tier** — the results of the on-demand (network-backed) providers
+  (except **report-only** ones, whose items are shown by the health run that
+  computed them and never stored — provider #3 below) — stored with the time they were computed and a **running-version key** (the
   running release bundle, the running host binary's release identity (§16.32) and
   the effective update channel, all read locally). It has **no time-to-live**:
   it is only ever written by a health run and only ever read by a passive
@@ -1355,6 +1356,73 @@ override + channel) but is surfaced in the health view rather than the passive
 count. It is the health-view counterpart of the inline self-update warning for
 the same state; both derive from the identical override/channel resolution
 rather than duplicating it.
+
+**Provider #3 — git submodule drift (on-demand, report-only).** When the
+workspace root lies inside a git repository whose top level has a submodule
+declaration file (`.gitmodules`), health reports how that repository's
+submodules — recursively, nested ones included — stand against what the
+repository records. Located by walking up from the workspace root to the
+nearest repository marker (a `.git` directory or file) and checking for the
+declaration file there, both plain file checks: with no repository, no
+declaration file or no `git` executable the provider is silent and spawns
+nothing. It is **workspace-scoped**. It reports, per submodule:
+
+- **checkout vs recorded commit** — the commit checked out in the submodule
+  against the commit its parent records (the parent's index, as git's own
+  submodule status compares): *match*, *ahead* / *behind* by N commits,
+  *diverged* (N ahead, M behind), *unrelated* (no common history), *recorded
+  commit not present locally* (never fetched), *not initialized*, or
+  *conflicted* (an unmerged gitlink);
+- **recorded commit vs the tracked branch as last fetched** — for an
+  initialized submodule, the recorded commit against the remote-tracking ref of
+  the branch it tracks: the declaration file's `branch` for that submodule
+  (`.` meaning the parent's current branch), else the remote's default branch
+  as last recorded locally (the submodule's `origin/HEAD`). It uses **local refs
+  only — never a fetch**, so it is as fresh as the last fetch; a submodule with
+  no such ref is not compared. A pin behind reads "N behind origin/<branch>";
+  a pin not contained in the branch reads as ahead / diverged (someone may be
+  unable to fetch it);
+- **reachability of uninitialized submodules' remotes** — the URL an
+  initialization would clone (the parent's configured URL for that submodule,
+  else the declared one; a relative URL — `./…`, `../…` — resolved against the
+  parent repository's `origin` URL, or its working directory when it has none,
+  by git's rules) is probed with a remote HEAD query. This is the provider's
+  one network operation and is bounded: at most 16 distinct URLs, probed
+  **concurrently**, each under a **5 s** timeout, with credential and terminal
+  prompts disabled; an unanswered or failed probe marks the URL
+  *unreachable*. A URL beginning with `-` is never passed to git (reported as
+  unchecked). Only an explicit health run probes.
+
+Cost: one recursive submodule status query (a second, recorded-commit query only
+when some checkout differs), plus — concurrently, bounded — one ahead/behind
+count per differing checkout, one per initialized submodule with a
+remote-tracking ref, and the reachability probes; every spawn has a timeout, so
+a hung git reads as unknown and never stalls the report. Everything is local
+file reads and local git queries except the reachability probes.
+
+Every item is **informational** — never counted in `N suggestions`, never
+gating: a checkout ahead of its pin is ordinary work in progress, a pin behind
+its branch is often deliberate, and an optional submodule may be left
+uninitialized on purpose. Items are terse and grouped, one per kind of finding,
+naming the first few submodules and a "+N" for the rest, and pointing at the
+verbose report:
+
+- "submodules: N checked out off their recorded commit (<path> 2 behind, …)";
+- "submodules: N pins behind their tracked branch (<path> 5 behind
+  origin/dev, …)" (ahead / diverged pins included under the same heading);
+- "submodules: N not initialized (M nested) (…)";
+- "submodules: N remotes unreachable (…)";
+- with none of the above: "submodules: N in sync with their recorded commits".
+
+An item's per-submodule detail (one line each, plus the remedy — `git submodule
+update --init --recursive` to restore the recorded commits and initialize
+missing ones, or `git add <path>` in the parent to record the checked-out
+commit) is shown only by the verbose report and carried by the machine-readable
+document; the help topic (`lw help submodules`) explains the states. The
+provider is **report-only**: its items are not written to the health cache
+(nothing passive displays an informational item, and a stored copy would never
+be invalidated), and — spawning processes — it never runs on the passive
+`N suggestions` path.
 
 **Health runs without a workspace.** A provider is either **workspace-scoped**
 (it inspects the resolved workspace — e.g. the compiler-cache provider) or
@@ -1621,7 +1689,8 @@ category is listed one line per item. A verbose flag expands **Other** to one
 line per item with locations.
 
 **Machine-readable output.** A JSON flag prints one document instead of the
-report: `{ schema, workspace?, suggestions[], inventory[], summary, update? }` — `workspace` is
+report: `{ schema, workspace?, suggestions[], inventory[], summary, update?,
+submodules? }` — `workspace` is
 `{ name, root }` when there is one, each suggestion is `{ kind, title, detail?,
 remedy? }` (the full health list, actionable and informational), and each
 inventory entry is a result plus `category`, `required` (boolean) and
@@ -1633,7 +1702,17 @@ status — so a script need not recount. `update` is the update check's outcome
 (§16.31): `{ status, channel, current, newest?, detail? }` with `status`
 `available` (a newer release exists), `current` (up to date) or `unknown` (the
 check failed — `detail` says why); it is absent when the check does not apply
-(a development / fused source or an unknown channel). Object keys are emitted in
+(a development / fused source or an unknown channel). `submodules` is the
+submodule provider's report (§16.31), absent when it does not apply (no
+repository, no declaration file, no `git`): `{ root, entries[] }`, `root` the
+repository's top level and each entry `{ path, name?, nested, state,
+recorded?, checked_out?, ahead?, behind?, tracking?, url?, reachable? }` —
+`path` relative to `root`, `state` one of `match`, `ahead`, `behind`,
+`diverged`, `unrelated`, `missing-commit`, `uninitialized`, `conflict`,
+`unknown`; `tracking` `{ ref, ahead, behind }` compares the recorded commit
+with the tracked branch's remote-tracking ref; `url` / `reachable` are present
+for an uninitialized entry whose URL was probed. Informational only — it never
+affects `summary`. Object keys are emitted in
 sorted order at every depth and arrays in their defined order (inventory: category
 order, then declaration order), so the same data prints byte-identically — stable
 for scripts and CI diffs. It carries the same data as the text report, is
