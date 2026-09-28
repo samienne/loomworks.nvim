@@ -21,7 +21,11 @@ local normalize = vim.fs.normalize
 -- Ensure `.qml` files reliably map to filetype `qml` even when the user's
 -- setup doesn't already register it. qmlls only ever attaches to this
 -- filetype, so the mapping is what makes the integration reachable.
-vim.filetype.add({ extension = { qml = "qml" } })
+-- Editor-only: the standalone host has no filetype registry (and never starts
+-- language servers), so loading this file there must not fail.
+if vim.filetype and vim.filetype.add then
+    vim.filetype.add({ extension = { qml = "qml" } })
+end
 
 local M = { server = "qmlls" }
 

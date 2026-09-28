@@ -306,3 +306,19 @@ describe("clangd owned-database nudge idempotency", function()
         clangd.on_owned_database_changed("/work/App")
     end)
 end)
+
+describe("database-changed nudge (host without language servers)", function()
+    it("never loads loomworks.lsp; forwards only when the editor loaded it", function()
+        local Workspace = require("loomworks.workspace").Workspace
+        local saved = package.loaded["loomworks.lsp"]
+        package.loaded["loomworks.lsp"] = nil
+        Workspace._nudge_lsp("/bd/App/Debug")
+        local loaded_after = package.loaded["loomworks.lsp"]
+        local seen
+        package.loaded["loomworks.lsp"] = { on_owned_database_changed = function(bd) seen = bd end }
+        Workspace._nudge_lsp("/bd/App/Debug")
+        package.loaded["loomworks.lsp"] = saved
+        assert.is_nil(loaded_after)
+        assert.equals("/bd/App/Debug", seen)
+    end)
+end)

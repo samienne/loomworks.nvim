@@ -3178,6 +3178,18 @@ end
 --- databases. It is NOT called when there is nothing to refresh (no
 --- `refresh_lsp_database` hook, or no build dir) — the caller treats those
 --- units as already-settled and never gates on them.
+--- Ask the LSP layer to re-resolve the clients of `build_dir` — only when the
+--- editor has loaded it. Never loads `loomworks.lsp` itself: that would
+--- discover and load the editor-only server integrations in a host that runs
+--- no language servers (the standalone CLI).
+--- @param build_dir string
+function Workspace._nudge_lsp(build_dir)
+    local lsp = package.loaded["loomworks.lsp"]
+    if type(lsp) == "table" and lsp.on_owned_database_changed then
+        pcall(lsp.on_owned_database_changed, build_dir)
+    end
+end
+
 --- @param unit loomworks.ConfigUnit
 --- @param on_settled? fun() called once when the primary DB refresh settles
 function Workspace:_refresh_lsp_database_for(unit, on_settled)
@@ -3206,10 +3218,7 @@ function Workspace:_refresh_lsp_database_for(unit, on_settled)
     -- the generic LSP entry point — no module-type branching here.
     local function on_db_changed(changed)
         if not changed then return end
-        local ok, lsp = pcall(require, "loomworks.lsp")
-        if ok and lsp.on_owned_database_changed then
-            lsp.on_owned_database_changed(build_dir)
-        end
+        Workspace._nudge_lsp(build_dir)
     end
     -- The primary refresh drives both the nudge and (when the caller asked) the
     -- readiness gate. `on_settled` fires once regardless of `changed`, since a
