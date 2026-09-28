@@ -133,6 +133,24 @@ named and one it just removed is not, e.g. `build failed — 1870 compiles use
 /Zi, which sccache will fail (see the scan finding above; lw health; lw help
 cache)`.
 
+**Build arguments and targets.** A build MAY carry a **build request**: a
+list of **targets** to build instead of the default set (`lw build <profile>
+--target <name>`, repeatable) and a list of raw **build-tool arguments**
+(`lw build <profile> -- <args>`). Both apply to the build steps only — never
+to a configure — and reach the module as its build request (§8.1), which puts
+them on the native build command before any wrapping, so they take effect
+exactly as if typed on that command (e.g. cmake `--build <dir> --target <t>
+<args>`, meson `compile -C <dir> <t> <args>`), whatever toolchain environment
+the build runs in. An argument the build's wrapper cannot pass through
+faithfully is refused with the reason, never dropped. Targets are applied to
+every project of the profile; a project whose module does not support target
+selection makes a `--target` build an error, as does forwarding arguments to a
+module that neither accepts them nor runs a command they could be appended to
+(§8.1). Targets are not refused up front against the unit's introspected
+target list (it can omit targets the module does not introspect); the build
+tool decides, and when such a build fails the closing message names each
+requested target the list lacks, with close matches.
+
 A build is additionally gated by the output-artifact conflict rule (§16.28):
 a unit whose build would overwrite an artifact currently owned by another
 built unit is refused unless the caller forces it.

@@ -37,6 +37,11 @@ configuration) and the tsconfig path (from the configuration or a
 letters, digits and `. _ : / \ @ -`; anything else fails the task with the
 offending argument named, rather than being passed to the interpreter.
 
+The build task applies the build request's raw args (core §8.1 `build_args`)
+before that wrapping and under the same check: `npm run <script> -- <args>`
+or `npx tsc --build … <args>`. Target selection (`build_targets`) is not
+supported.
+
 ## 4. Launch integration
 
 Typical TypeScript launch config:

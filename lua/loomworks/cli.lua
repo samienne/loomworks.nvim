@@ -1014,13 +1014,98 @@ local function conflict_message(block)
     block.profile, block.path or "?", block.profile)
 end
 
+--- Whether `cmd` runs a batch file through cmd.exe (`cmd /C <x.bat>`): the
+--- program the build really runs is inside the batch, so arguments appended to
+--- this argv become ignored batch parameters.
+--- @param cmd string[]
+--- @return boolean
+local function runs_batch_file(cmd)
+  local prog = type(cmd) == "table" and type(cmd[1]) == "string"
+    and (cmd[1]:match("([^/\\]+)$") or ""):lower() or ""
+  if prog ~= "cmd" and prog ~= "cmd.exe" then return false end
+  for i = 2, #cmd do
+    local a = tostring(cmd[i]):lower()
+    if a:match("%.bat$") or a:match("%.cmd$") then return true end
+  end
+  return false
+end
+M._runs_batch_file = runs_batch_file
+
+--- Up to three of `candidates` close to `name` (case-insensitive substring
+--- either way, or a small edit distance), nearest first.
+--- @param name string
+--- @param candidates string[]
+--- @return string[]
+local function close_matches(name, candidates)
+  local function dist(a, b)
+    local prev = {}
+    for j = 0, #b do prev[j] = j end
+    for i = 1, #a do
+      local cur = { [0] = i }
+      for j = 1, #b do
+        local cost = a:sub(i, i) == b:sub(j, j) and 0 or 1
+        cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+      end
+      prev = cur
+    end
+    return prev[#b]
+  end
+  local lname, limit = name:lower(), math.max(1, math.floor(#name / 3))
+  local scored = {}
+  for _, c in ipairs(candidates) do
+    local lc = c:lower()
+    local d = dist(lname, lc)
+    if d <= limit or lc:find(lname, 1, true) or lname:find(lc, 1, true) then
+      scored[#scored + 1] = { name = c, d = d }
+    end
+  end
+  table.sort(scored, function(a, b)
+    if a.d ~= b.d then return a.d < b.d end
+    return a.name < b.name
+  end)
+  local outl = {}
+  for i = 1, math.min(3, #scored) do outl[i] = scored[i].name end
+  return outl
+end
+M._close_matches = close_matches
+
+-- Defined with the test runner below; used by the --target failure hint.
+local ensure_unit_targets
+
+--- After a failed `--target` build: name each requested target the unit's
+--- parsed target list does not contain, with close matches. Advisory only —
+--- the list omits targets a module does not introspect (e.g. cmake custom /
+--- utility targets), so `--target` is never refused up front on it; the build
+--- tool is the authority. nil when there is nothing to say.
+--- @return string|nil
+local function unknown_target_hint(ws, step, targets)
+  if not (targets and step.unit) then return nil end
+  pcall(ensure_unit_targets, ws, step.unit)
+  local known = step.unit.targets
+  if type(known) ~= "table" or not next(known) then return nil end
+  local names = {}
+  for id in pairs(known) do names[#names + 1] = id end
+  local lines = {}
+  local project = step.unit._project and step.unit._project.key or "the project"
+  for _, t in ipairs(targets) do
+    if not known[t] then
+      local near = close_matches(t, names)
+      lines[#lines + 1] = string.format("target '%s' is not among %s's known targets%s", t,
+        project, #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "")
+    end
+  end
+  return #lines > 0 and table.concat(lines, "\nlw: ") or nil
+end
+
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], force?: boolean, reconfigure?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
----   extra_args are forwarded to the build tool; force overrides the
----   output-artifact conflict gate (§5.9); reconfigure forces a FULL
----   reconfigure of every unit before building (§16.4).
+---   extra_args are forwarded to the build tool and build_targets select what
+---   it builds — both handed to the module's build task (core §8.1), which
+---   puts them on its native build command before any wrapping (§16.4);
+---   force overrides the output-artifact conflict gate (§5.9); reconfigure
+---   forces a FULL reconfigure of every unit before building (§16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
@@ -1032,9 +1117,35 @@ local function run_build_steps(profile, ws, opts)
     if not buildable then die(tostring(why)) end
   end
   local overseer = require("loomworks.overseer")
-  local steps, plan_err = overseer.plan_profile_build(profile, opts)
+  local steps, plan_err = overseer.plan_profile_build(profile, {
+    for_test = opts.for_test,
+    reconfigure = opts.reconfigure,
+    build_args = opts.extra_args,
+    build_targets = opts.build_targets,
+  })
   if plan_err then die("cannot build: " .. tostring(plan_err)) end
   if not steps or #steps == 0 then return 0 end
+  -- The build request (core §8.1 / §16.4), checked for every build step
+  -- before anything runs. A module that applied it has already put it on its
+  -- native command. For one that did not: `--target` is refused (no generic
+  -- way to select a target), and forwarded args fall back to being appended
+  -- to the step's command — unless that command runs a batch file, where they
+  -- would be silently ignored, so it is refused instead.
+  for _, step in ipairs(steps) do
+    if step.kind == "build" then
+      if opts.build_targets and not step.applied_build_targets then
+        die(string.format("%s: this project's module does not support --target "
+          .. "(pass the build tool's own target syntax after `--` instead)", step.name or "?"))
+      end
+      if opts.extra_args and not step.applied_build_args then
+        if runs_batch_file(step.cmd) then
+          die(string.format("%s: cannot forward build-tool args — the module runs "
+            .. "its build through a batch file and does not accept build args", step.name or "?"))
+        end
+        step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
+      end
+    end
+  end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
@@ -1050,11 +1161,6 @@ local function run_build_steps(profile, ws, opts)
     if step.kind == "build" and step.unit and ws.artifact_conflict_block then
       local block = ws:artifact_conflict_block(step.unit, opts.force or false)
       if block then die(conflict_message(block), 1) end
-    end
-    -- Caller args (`lw build -- -j 4`) go to the BUILD tool only — a configure
-    -- step would choke on them. Appended so they layer on top.
-    if opts.extra_args and step.kind == "build" then
-      step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
     end
     -- Full reconfigure (core §5.1 / §8.1): remove the module-named
     -- configure-state entries first. Core validates + deletes; the build-dir
@@ -1084,6 +1190,11 @@ local function run_build_steps(profile, ws, opts)
       if step.kind == "build" and step.unit and step.unit.module_info then
         hint = require("loomworks.compiler_cache").compat_failure_hint(
           step.unit.module_info.cache_compat)
+      end
+      -- A `--target` the unit's parsed targets do not list (likely a typo).
+      if step.kind == "build" then
+        local th = unknown_target_hint(ws, step, opts.build_targets)
+        if th then hint = hint and (th .. "\nlw: " .. hint) or th end
       end
       die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?")
         .. (hint and ("\nlw: " .. hint) or ""), code)
@@ -1149,22 +1260,35 @@ local function with_build_locks(profile, action, fn)
   with_build_dir_locks(profile_build_dirs(profile), action, fn)
 end
 
---- `lw build [profile] [-- <build-tool args>]` — configure if needed, then
---- build. Args after `--` are forwarded to the build tool (e.g. `-- -j 4`).
+--- `lw build [profile] [--target <name>]... [-- <build-tool args>]` — configure
+--- if needed, then build. `--target` (repeatable) selects what the build tool
+--- builds; args after `--` are forwarded to the build tool (e.g. `-- -j 4`).
+--- Both reach the module's native build command, never the configure (§16.4).
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
-  local force, reconfigure = false, false
-  for i = 2, #args do
-    if not seen_sep and args[i] == "--" then seen_sep = true
-    elseif seen_sep then extra[#extra + 1] = args[i]
-    elseif args[i] == "--force" then force = true
-    elseif args[i] == "--reconfigure" then reconfigure = true
-    else pre[#pre + 1] = args[i] end
+  local force, reconfigure, targets = false, false, {}
+  local usage = "usage: lw build [profile] [--target <name>]... [--force] [--reconfigure] "
+    .. "[-- build-tool-args…]"
+  local i = 2
+  while i <= #args do
+    local a = args[i]
+    if not seen_sep and a == "--" then seen_sep = true
+    elseif seen_sep then extra[#extra + 1] = a
+    elseif a == "--force" then force = true
+    elseif a == "--reconfigure" then reconfigure = true
+    elseif a == "--target" or a:match("^%-%-target=") then
+      local name = a:match("^%-%-target=(.*)$")
+      if not name then i = i + 1; name = args[i] end
+      if not name or name == "" or name == "--" or name:sub(1, 1) == "-" then
+        die("--target needs a target name — " .. usage)
+      end
+      targets[#targets + 1] = name
+    else pre[#pre + 1] = a end
+    i = i + 1
   end
   if pre[2] then
-    die("unexpected argument '" .. tostring(pre[2]) ..
-      "' — usage: lw build [profile] [--force] [--reconfigure] [-- build-tool-args…]")
+    die("unexpected argument '" .. tostring(pre[2]) .. "' — " .. usage)
   end
   local profile
   profile, ws = resolve_build_target(ws, pre[1])
@@ -1172,6 +1296,7 @@ function M.cmd_build(ws, args)
   with_build_locks(profile, "build", function()
     built = run_build_steps(profile, ws, {
       extra_args = (#extra > 0) and extra or nil,
+      build_targets = (#targets > 0) and targets or nil,
       force = force,
       reconfigure = reconfigure,
     })
@@ -1428,7 +1553,7 @@ end
 --- of the editor's post-configure scan (workspace.lua). No-op if already
 --- parsed or the module exposes no target introspection. Requires a configured
 --- build dir, so the caller must build first.
-local function ensure_unit_targets(ws, unit)
+ensure_unit_targets = function(ws, unit)
   if not unit or unit.targets then return end
   local project = unit._project
   local mod = project and project._module and project._module.impl
@@ -6616,6 +6741,27 @@ function M.cmd_complete(cword, words)
       emit({ "dev-lua", "default-source", "release-url", "module-index", "channel" })
     end
     return 0
+  elseif cmd == "build" and n >= 2 and a[n] == "--target" then
+    -- `lw build <profile> --target <TAB>`: the named profile's parsed build
+    -- targets (read from its configured build dirs; none before a configure).
+    local ws_c = comp_ws(root)
+    local names = {}
+    for _, p in ipairs(ws_c and ws_c._profiles or {}) do
+      if p.key == a[2] then
+        for _, pp in ipairs(p:projects()) do
+          local unit = pp._config_unit
+          pcall(ensure_unit_targets, ws_c, unit)
+          for id in pairs(unit and type(unit.targets) == "table" and unit.targets or {}) do
+            names[#names + 1] = id
+          end
+        end
+      end
+    end
+    emit(sorted_unique(names))
+    return 0
+  elseif cmd == "build" and n >= 2 and not has(a, "--") then
+    emit({ "--target", "--force", "--reconfigure" })
+    return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
       local ws = comp_ws(root)
@@ -6849,10 +6995,14 @@ $XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
 (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [--force] [--reconfigure] [-- <build-tool args>]
+  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
-`lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI.
+`lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI. They go on
+the build command itself (cmake `--build <dir> …`, meson `compile -C <dir> …`),
+also for MSVC kits that build inside vcvarsall — `lw build <p> -- --target X`
+works there too. An argument the vcvarsall batch file cannot carry (a `"` or a
+line break) is refused, never dropped.
 
 Build a profile's projects. Interactively, with no profile given, it uses the
 active profile (user.json), else the only profile. With NO profile yet, it
@@ -6870,6 +7020,12 @@ for a deterministic build. The CI pattern is:
               pins resolve to the installed patch version)
   config-set  a set name; onboards a profile for it (interactive)
 
+  --target <name>  build just this target instead of the default set;
+                repeatable (cmake `--build --target <name>…`, meson `compile
+                <name>…`; e.g. an EXCLUDE_FROM_ALL target). Applies to every
+                project of the profile. Not supported for shell / typescript
+                projects. A misspelt name fails in the build tool, and lw then
+                suggests close matches from the parsed targets. Tab-completes.
   --force        build even if it overwrites an artifact another built profile
                 owns (that profile is marked stale).
   --reconfigure  force a FULL reconfigure of every project before building

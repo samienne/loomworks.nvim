@@ -352,6 +352,27 @@ local function wrap_cmd(cmd, kit, generator, build_dir, tag)
     return cmd
 end
 
+--- Append the caller's build request (core §8.1 `build_targets` /
+--- `build_args`, headless `lw build --target X -- <args>`) to a native
+--- `cmake --build` command, BEFORE any vcvarsall wrapping — the wrapped command
+--- is `cmd /C <bat>`, so anything appended afterwards would become an ignored
+--- batch parameter. Targets become one `--target <t>...` (CMake >= 3.15 takes
+--- several names after one flag); the raw args follow.
+--- @param cmd string[] mutated in place
+--- @param project loomworks.ModuleContext
+--- @return string[] cmd
+local function append_build_request(cmd, project)
+    local targets = project.build_targets
+    if type(targets) == "table" and #targets > 0 then
+        cmd[#cmd + 1] = "--target"
+        for _, t in ipairs(targets) do cmd[#cmd + 1] = t end
+    end
+    if type(project.build_args) == "table" then
+        for _, a in ipairs(project.build_args) do cmd[#cmd + 1] = a end
+    end
+    return cmd
+end
+
 --- Read and parse a JSON file, returning nil on failure.
 --- @param path string
 --- @return table|nil
@@ -1606,6 +1627,7 @@ function M.tasks(project, active_config)
             build_cmd[#build_cmd + 1] = "--config"
             build_cmd[#build_cmd + 1] = build_variant
         end
+        append_build_request(build_cmd, project)
         tasks[#tasks + 1] = {
             name = project.name .. ": build " .. active_config,
             builder = function()
@@ -1621,6 +1643,9 @@ function M.tasks(project, active_config)
                 configuration_key = configuration_key,
                 build_dir = build_dir,
                 tool_data = cached_tool_data,
+                -- build_args / build_targets are on the native command (§8.1).
+                applied_build_args = true,
+                applied_build_targets = true,
             },
         }
     else
@@ -1628,7 +1653,8 @@ function M.tasks(project, active_config)
             name = project.name .. ": build " .. active_config,
             builder = function()
                 return {
-                    cmd = wrap({ cmake_cmd, "--build", build_dir }, "build"),
+                    cmd = wrap(append_build_request({ cmake_cmd, "--build", build_dir }, project),
+                        "build"),
                     cwd = abs_path,
                     env = env,
                 }
@@ -1639,6 +1665,9 @@ function M.tasks(project, active_config)
                 configuration_key = configuration_key,
                 build_dir = build_dir,
                 tool_data = cached_tool_data,
+                -- build_args / build_targets are on the native command (§8.1).
+                applied_build_args = true,
+                applied_build_targets = true,
             },
         }
     end
