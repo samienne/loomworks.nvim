@@ -5,6 +5,32 @@ they don't get lost.
 
 ---
 
+## Extra source roots for a project
+
+Reported by a user of a superproject setup (local repro repos:
+`C:\src\LumeSdk` and `C:\src\LumeEditor`). LumeEditor's CMake
+`add_subdirectory`s the whole SDK from a path OUTSIDE the workspace (cache PATH
+variable `LUME_FRAMEWORK_SOURCE_DIRECTORY` → `C:\src\LumeSdk`), so the
+LumeEditor build's compile_commands already contains every SDK translation
+unit. But a file opened under `C:\src\LumeSdk` gets no project —
+`project_for_buf` only matches files under the workspace root — so clangd
+falls back to no/other compile flags, or a second clangd (rooted at the SDK)
+starts.
+
+Ideas:
+- **Discover extra roots from the CMake file API**: codemodel `directories`
+  whose `source` lies outside the workspace root are extra source roots of that
+  project (generic hook: a module reports extra roots per configured unit).
+- **Compile-db membership**: "which active project's compile database contains
+  this file" as the fallback lookup for a buffer outside the root (the owned
+  compile_commands stream already indexes files).
+- **Explicit `source_roots`** on a project as a manual fallback.
+- **Precedence**: the workspace of the current directory wins — a file that is
+  both an extra root of this workspace and inside another loomworks workspace
+  belongs to the cwd's workspace while it is active.
+
+---
+
 ## Workspace trust (next release)
 
 The security hotfix (fix/security-hotfix) removed the plain bugs: plugin ids

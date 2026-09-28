@@ -5570,6 +5570,11 @@ local function health_json(ws, suggestions, entries)
   for _, s in ipairs(suggestions) do
     sugg[#sugg + 1] = { kind = s.kind or "suggestion", title = s.title, detail = s.detail, remedy = s.remedy }
   end
+  -- The submodule report (§16.31 provider #3), absent when it did not apply.
+  local ok_sm, submodules = pcall(function()
+    local sm = require("loomworks.submodules")
+    return sm.json(sm.last_report())
+  end)
   local summary = { actionable = 0, found = 0, missing = 0, unknown = 0, required_missing = 0 }
   for _, s in ipairs(suggestions) do
     if (s.kind or "suggestion") ~= "info" then summary.actionable = summary.actionable + 1 end
@@ -5596,6 +5601,7 @@ local function health_json(ws, suggestions, entries)
     summary = summary,
     -- The update check's outcome (§16.31); absent when it does not apply.
     update = require("loomworks.suggestions").last_update_check(),
+    submodules = ok_sm and submodules or nil,
   }
 end
 M._health_json = health_json
@@ -5637,6 +5643,7 @@ function M.cmd_health(root, opts)
   local ok_s, suggestions = pcall(function()
     local sug = require("loomworks.suggestions")
     sug._update_check = nil -- only this run's outcome reaches --json
+    require("loomworks.submodules")._last = nil
     return sug.collect_health(ws, { inventory = tier })
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
@@ -5678,17 +5685,20 @@ function M.cmd_health(root, opts)
   for _, s in ipairs(suggestions) do
     if s.kind == "info" then notes[#notes + 1] = s else actionable[#actionable + 1] = s end
   end
+  -- A `detail_verbose` item's detail (e.g. the per-submodule lines) is shown
+  -- only with --verbose; --json always carries it.
+  local function show_detail(s) return s.detail and (not s.detail_verbose or opts.verbose) end
   for _, s in ipairs(actionable) do
     out("")
     out(pal.warn("• " .. s.title))
-    if s.detail then out("  " .. s.detail) end
+    if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
   for _, s in ipairs(notes) do
     out("")
     -- Informational items (affirmative status) read as positive, not a warning.
     out(pal.active("· " .. s.title))
-    if s.detail then out("  " .. s.detail) end
+    if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
 
@@ -7398,14 +7408,64 @@ plugins or the profiles' pinned SDKs change, when the count stops including it
 until the next `lw health`. Outside a workspace nothing is
 cached.
 
+SUBMODULES — in a git repository with submodules, health adds informational
+notes on how they (recursively) stand against what the repository records:
+checkouts off their recorded commit, pins behind their tracked branch (as of
+the last fetch), uninitialized submodules and remotes that do not answer. See
+`lw help submodules`; `--verbose` lists every submodule.
+
 `--json` prints one JSON document instead of the report — `{schema,
-workspace?, suggestions[], inventory[], summary, update?}`, each inventory entry
+workspace?, suggestions[], inventory[], summary, update?, submodules?}`, each inventory entry
 carrying id, label, category, status (found | missing | unknown), version,
 path, detail, hint, required and required_by (the full list); `summary` is
 `{required_missing, actionable, found, missing, unknown}`; `update` is the
 update check's outcome `{status (available | current | unknown), channel,
 current, newest?, detail?}`, absent for a development build — and still exits 0
 (CI can test `summary.required_missing > 0`).]],
+  submodules = [[lw help submodules — submodule drift in `lw health`   (also: submodule)
+
+When the workspace root lies in a git repository with a .gitmodules file,
+`lw health` reports its submodules — nested ones included — against what the
+repository records. Every note is informational ("·"): none is counted in
+`lw status`'s N suggestions, since a checkout ahead of its pin is ordinary work
+in progress and an unused submodule may be left uninitialized on purpose.
+One line per kind of finding names the first few submodules; `lw health
+--verbose` lists them all, `lw health --json` has a `submodules` report.
+
+CHECKED OUT OFF THE RECORDED COMMIT — the commit checked out in a submodule is
+not the one its parent records (the parent's index, as `git submodule status`
+compares): N ahead / N behind / diverged (both) / unrelated (no common
+history) / pin not fetched (the recorded commit is not in the submodule) /
+conflicted (unmerged gitlink). Fix: restore the recorded commits with
+  git submodule update --init --recursive
+or, when the checkout is what you want, record it in the parent:
+  git add <path> && git commit
+
+PINS BEHIND THEIR TRACKED BRANCH — the recorded commit against the branch the
+submodule tracks, as of the LAST FETCH (no network is used): the .gitmodules
+`branch` for it (`.` = the parent's current branch), else the remote's
+default branch (`origin/HEAD`). "5 behind origin/dev" means the branch moved on
+since the pin; "ahead of" means the pin is not on that branch (others may not
+be able to fetch it). Refresh with `git -C <path> fetch`; move the pin by
+checking out the newer commit and `git add <path>`.
+
+NOT INITIALIZED — including nested submodules (inside an initialized one).
+Fix: git submodule update --init --recursive.
+
+REMOTES — for an uninitialized submodule, health asks the remote an
+initialization would clone for its HEAD (`git ls-remote`): the parent's
+configured URL, else the .gitmodules one — a relative URL (`../LumeBase`)
+resolves against the parent's `origin`, which fails when that remote (a fork,
+a mirror) does not host the sibling repository. At most 16 network remotes
+(and 64 local paths) are probed, all at once, under a 10 s budget, with
+credential prompts disabled; "unreachable" means the remote answered with an
+error, while a remote that did not answer in time is only "not verified".
+
+COST — git runs only on `lw health`, never on `lw status` or the editor's
+status page: one `git submodule status --recursive`, then small bounded
+queries (ahead/behind counts) and the remote probes. Git is run without
+optional locks, so health never rewrites the repository's index; nothing is
+fetched, and these notes are not cached.]],
   module = [[lw module <sub>   (alias: mod)
 
 Acquire third-party modules for the standalone lw host. Modules ship as
@@ -8003,6 +8063,7 @@ local HELP_ALIASES = {
   sccache = "cache",
   ccache = "cache",
   ["compiler-cache"] = "cache",
+  submodule = "submodules",
   ws = "workspace",
   mod = "module",
 }

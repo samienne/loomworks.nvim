@@ -485,6 +485,38 @@ needs a required item is compacted (e.g. `2 profiles (dev, asan)` — `--verbose
 lists them all).
 Nothing is ever installed or changed; minimum versions are not checked.
 
+#### Submodule drift
+
+When the workspace lives in a git repository with submodules, `lw health` also
+reports how they (and nested ones) stand against what the repository records —
+informational notes (`·`, never counted), one line per kind of finding:
+
+```text
+· submodules: 8 checked out off their recorded commit (LumeBase 1 ahead, LumeEngine 2 ahead, LumeGS 2 ahead, +5) — lw health --verbose
+· submodules: 8 pins behind their tracked branch (LumeBase 1 behind origin/dev, LumeEngine 2 behind origin/dev, LumeGS 2 behind origin/dev, +5) — lw health --verbose
+· submodules: 51 not initialized, 51 nested (Lume3DText/Lume3D, Lume3DText/LumeBase, Lume3DText/LumeEngine, +48) — lw health --verbose
+· submodules: 3 remotes unreachable (LumeGS/Lume3D, LumeParticles/Lume3D, LumeParticles/LumeJava) — lw health --verbose
+```
+
+- **checked out vs recorded** — the commit checked out in each submodule against
+  the one its parent records: ahead / behind / diverged / unrelated / recorded
+  commit not fetched / not initialized / conflicted;
+- **pin vs tracked branch** — the recorded commit against the tracked branch as
+  of the **last fetch** (`.gitmodules` `branch`, else the remote's default
+  branch, `origin/HEAD`); no fetch is made;
+- **not initialized** — including nested submodules, and whether the remote an
+  initialization would clone answers (a relative URL such as `../LumeBase`
+  resolves against the parent's `origin`). The probe is bounded — at most 16
+  remotes, concurrently, 10 s — and a remote that does not answer in time is
+  reported as *not verified*, never as missing.
+
+`--verbose` lists every submodule behind each line with the fix
+(`git submodule update --init --recursive`, or `git add <path>` to record the
+checked-out commit); `--json` carries a `submodules` report with one entry per
+submodule. `lw help submodules` explains the states. Git runs only on
+`lw health` (never on `lw status`), without taking the index lock, and these
+notes are not cached.
+
 ### Languages
 
 Each cmake / meson configuration declares the languages it builds
@@ -1140,7 +1172,7 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
-| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)) |
+| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
