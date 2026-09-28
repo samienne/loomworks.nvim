@@ -35,6 +35,16 @@ M.api_version = 1
 --- §5.1 *Configure record migration*). Bump when the record gains a key the
 --- reconfigure classification depends on.
 M.configure_record_version = 1
+
+--- Does `build_dir` already hold this module's configure state (core §8.4
+--- `has_configure_state`)? Core asks it for a unit with no configure record:
+--- an existing tree is then configured with the full reconfigure, not as a
+--- first configure. A stat only.
+--- @param build_dir string
+--- @return boolean
+function M.has_configure_state(build_dir)
+    return (vim.uv or vim.loop).fs_stat(build_dir .. "/meson-private/coredata.dat") ~= nil
+end
 M.has_keyed_tools = true
 M.has_options = true
 M.languages = { "c++", "c" }

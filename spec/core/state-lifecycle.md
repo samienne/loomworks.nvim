@@ -562,6 +562,13 @@ not reliably applied by merely re-running the configure with the new inputs.
   apply a launcher to as well: they migrate once and then compare their
   recorded "none" as usual. A module that declares no record version takes
   no part.
+- **Configure record missing.** A unit without a configure record whose build
+  directory nevertheless holds the module's configure state (§8.4
+  `has_configure_state`) — the cache was discarded or reset but the build tree
+  kept — is configured with the module's **full** reconfigure (core hands it
+  `force_full_reconfigure`, §8.1), reason `configure record missing (existing
+  build directory)`, never as a first configure: nothing records the inputs the
+  existing tree was configured with.
 - **Forced full reconfigure.** A caller may force the full path for every unit
   of a build (the headless `--reconfigure`, §16.4): core hands the module
   `force_full_reconfigure` (§8.1) and runs the configure even when nothing is

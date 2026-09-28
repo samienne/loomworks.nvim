@@ -731,8 +731,10 @@ The sole loomworks-driven reconfigure triggers are the `unconfigured` /
 `module_config` / `env` changed since the cached configure — an option or
 environment variable **added, changed or removed** — or the unit's configure
 record predates `configure_record_version`, §5d *No (current) record*), a
-forced full reconfigure (`lw build --reconfigure`), and a **missing build
-directory** — a
+forced full reconfigure (`lw build --reconfigure`), a build directory that
+holds a `CMakeCache.txt` while the unit has no configure record (the module's
+`has_configure_state`, core §8.4 — taken as a full reconfigure), and a
+**missing build directory** — a
 generic, core-driven reset (`specification.md` §3.1, rule 7) that applies to
 every module, not just cmake: a `built` / `configured` unit whose build
 directory has been deleted out of band reloads as `unconfigured` and

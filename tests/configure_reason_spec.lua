@@ -203,6 +203,38 @@ describe("forced full reconfigure (--reconfigure)", function()
         assert.is_nil(configure_step(plan(ws, profile)))
     end)
 
+    it("an already-configured build dir with no configure record is a FULL reconfigure, not a first configure", function()
+        -- Regression (real device run): after the unsigned-cache migration
+        -- discarded the cache, the next configure into the existing build dir
+        -- ran as "configure: first configure" without --fresh.
+        local ws, profile, _, r = make_core()
+        root = r
+        local step = configure_step(plan(ws, profile))
+        assert.is_not_nil(step.build_dir)
+        vim.fn.mkdir(step.build_dir, "p")
+        local f = assert(io.open(step.build_dir .. "/CMakeCache.txt", "wb"))
+        f:write("CMAKE_BUILD_TYPE:STRING=Debug\n")
+        f:close()
+        step = configure_step(plan(ws, profile))
+        assert.equals("configure record missing (existing build directory)", step.configure_reason)
+        assert.equals("full", step.reconfigure)
+        assert.is_true(has(step.cmd, "--fresh"))
+        assert.equals("full reconfigure (--fresh): configure record missing (existing build directory)",
+            overseer.configure_reason_line(step))
+    end)
+
+    it("modules report existing configure state by a stat of their own marker", function()
+        local d = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(d .. "/meson-private", "p")
+        assert.is_false(cmake.has_configure_state(d))
+        assert.is_false(meson.has_configure_state(d))
+        local f = assert(io.open(d .. "/meson-private/coredata.dat", "wb")); f:write("x"); f:close()
+        assert.is_true(meson.has_configure_state(d))
+        f = assert(io.open(d .. "/CMakeCache.txt", "wb")); f:write("x"); f:close()
+        assert.is_true(cmake.has_configure_state(d))
+        vim.fn.delete(d, "rf")
+    end)
+
     it("a never-configured unit reports a first configure", function()
         local ws, profile, _, r = make_core()
         root = r

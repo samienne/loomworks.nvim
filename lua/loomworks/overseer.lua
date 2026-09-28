@@ -436,6 +436,10 @@ local function collect_profile_tasks(profile, opts)
         local tool_data = project_tool and project_tool.data or nil
         local task_env, configuration_env = resolve_task_env(
             project, pp._configuration, tool_data, profile, ws.root)
+        -- No configure record, but the build dir already holds configure
+        -- state (§5.1): the module takes its full reconfigure.
+        local orphan_state = pp._config_unit
+            and pp._config_unit:has_orphan_configure_state(pp:build_dir()) or false
         local project_ctx = {
             name = project.key,
             path = project.path or project.key,
@@ -455,7 +459,7 @@ local function collect_profile_tasks(profile, opts)
                 and pp._config_unit.module_info.cache_launcher or nil,
             recorded_module_info = pp._config_unit and pp._config_unit.module_info or nil,
             recorded_options = pp._config_unit and pp._config_unit._cached_options or nil,
-            force_full_reconfigure = opts.force_full_reconfigure or nil,
+            force_full_reconfigure = (opts.force_full_reconfigure or orphan_state) or nil,
             build_args = opts.build_args,
             build_targets = opts.build_targets,
         }
@@ -482,6 +486,7 @@ local function collect_profile_tasks(profile, opts)
                 lw_meta.progress_tool = pt
                 lw_meta.variant = active_config
                 lw_meta.tool = project_tool
+                lw_meta.configure_state_orphan = orphan_state or nil
                 if by_action[lw_meta.action] then
                     by_action[lw_meta.action][#by_action[lw_meta.action] + 1] = task_def
                 end
@@ -1002,7 +1007,8 @@ local function filter_unconfigured_tasks(all_tasks, forced)
         local lw_meta = task_def.loomworks
         if not lw_meta then goto next end
 
-        local reason = lw_meta.unit:configure_reason(forced, lw_meta.profile)
+        local reason = lw_meta.unit:configure_reason(forced, lw_meta.profile,
+            lw_meta.configure_state_orphan)
         if reason then
             lw_meta.configure_reason = reason
             needs_configure[#needs_configure + 1] = task_def
