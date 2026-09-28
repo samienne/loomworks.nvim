@@ -213,7 +213,11 @@ ignored), which is an error. Additive: no `api_versions.module` bump.
 
 Each task_def has:
 - `name`: display name
-- `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
+- `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`),
+  optionally with `display_cmd` — the argv the task effectively runs when `cmd`
+  is a wrapper around it (e.g. a toolchain-environment batch file). Display
+  only: core shows and logs it in place of `cmd` (headless §16.4) and never
+  runs it. Additive: no `api_versions.module` bump
 - `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
   `configuration_key`, `build_dir`, optional `tool_data`, `module_info`
   (module-owned record that replaces the unit's record after a configure, see

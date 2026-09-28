@@ -114,6 +114,14 @@ first configure (or when the module does not say), `full reconfigure
 `full reconfigure (--fresh): configure record from an older lw`. The editor
 logs the same line.
 
+**The command line.** Every configure and build step — headless or from the
+editor — writes its full command line and working directory to the workspace
+log at info level; asked to (`lw build -v` / `--verbose`), the runner also
+prints them under the step's header. A step whose command is a wrapper shows
+the command the wrapper runs (§8.1 `display_cmd`), not the wrapper. Arguments
+are quoted for readability, and data in them is rendered like any other
+(§16.7).
+
 **Forced full reconfigure.** `lw build --reconfigure` configures every unit of
 the profile before building, whether or not the gate would, forcing each
 module's **full** reconfigure (§5.1 *Forced full reconfigure*) — for a build
