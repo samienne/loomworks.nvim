@@ -1871,5 +1871,17 @@ do
   eq(refused, nil, "transport: a non-portable env name is refused before any spec")
 end
 
+print("editor-only LSP integrations under the shim")
+do
+  -- Regression (real device run): a CLI configure nudged the LSP layer, which
+  -- discovered the integrations; qmlls called vim.filetype.add at load and the
+  -- shim has no vim.filetype, printing a stray load error.
+  local vim = require("loomworks.shim")
+  local okq, qerr = pcall(require, "loomworks.integrations.lsp.qmlls")
+  ok(okq, "qmlls integration loads without vim.filetype" .. (okq and "" or (" — " .. tostring(qerr))))
+  local okc, cerr = pcall(require, "loomworks.integrations.lsp.clangd")
+  ok(okc, "clangd integration loads under the shim" .. (okc and "" or (" — " .. tostring(cerr))))
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
