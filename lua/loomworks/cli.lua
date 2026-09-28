@@ -1667,10 +1667,32 @@ end
 --- that still looks active (fresh heartbeat).
 function M.cmd_unlock(ws, args)
   local build_lock = require("loomworks.build_lock")
-  local all, profile_name = false, nil
-  for i = 2, #args do
-    if args[i] == "--all" then all = true
-    elseif not profile_name then profile_name = args[i] end
+  local all, profile_name, device_serial = false, nil, nil
+  local i = 2
+  while args[i] do
+    if args[i] == "--all" then all = true; i = i + 1
+    elseif args[i] == "--device" then
+      device_serial = args[i + 1]
+      if not device_serial then die("--device requires a serial") end
+      i = i + 2
+    elseif not profile_name then profile_name = args[i]; i = i + 1
+    else i = i + 1 end
+  end
+
+  -- `lw unlock --device <serial>` clears a device lock (spec §18.7).
+  if device_serial then
+    local device_lock = require("loomworks.remote.device_lock")
+    local info = device_lock.read(device_serial)
+    if not info then
+      out("no device lock for " .. device_serial)
+      return 0
+    end
+    if not info.stale then
+      errw("lw: forcing an ACTIVE device lock (" .. device_lock.holder(info, device_serial) .. " ago)\n")
+    end
+    device_lock.force(device_serial)
+    out("unlocked device " .. device_serial)
+    return 0
   end
 
   local function unlock_dir(bd)
@@ -1693,7 +1715,7 @@ function M.cmd_unlock(ws, args)
     end
   else
     if not profile_name then
-      die("usage: lw unlock <profile> | --all")
+      die("usage: lw unlock <profile> | --all | --device <serial>")
     end
     for _, bd in ipairs(profile_build_dirs(resolve_profile(ws, profile_name))) do
       targets[bd] = true
@@ -8963,6 +8985,10 @@ local function main()
   -- sub-command loads the workspace itself (no tool detection).
   if command == "device" or command == "devices" then
     finish(M.cmd_device(a[2], root, a))
+  end
+  -- `unlock --device <serial>` needs no workspace (device locks are per user).
+  if command == "unlock" and vim.tbl_contains(a, "--device") then
+    finish(M.cmd_unlock(nil, a))
   end
   -- `launch` manages launch configs in the working copy (no tools needed).
   if command == "launch" then
