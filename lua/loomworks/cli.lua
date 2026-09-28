@@ -1708,6 +1708,166 @@ function M.cmd_unlock(ws, args)
   return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- Devices (spec §16.34, §18.3)
+-- ---------------------------------------------------------------------------
+
+--- The profile a device command is scoped to without dying: a named one
+--- (dies when unknown), else — interactive only — the active / sole profile;
+--- nil means "no profile" (every declared SDK's runner is in scope, §16.34).
+local function soft_profile(ws, name)
+  if name then return resolve_profile(ws, name) end
+  if not interactive() then return nil end
+  local profiles = ws._profiles or {}
+  local active = ws._active_profile_key
+  for _, p in ipairs(profiles) do if p.key == active then return p end end
+  if #profiles == 1 then return profiles[1] end
+  return nil
+end
+
+--- Parse a positive number option value (`--timeout 30`).
+local function parse_seconds(flag, v)
+  local n = tonumber(v)
+  if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')") end
+  return n
+end
+M._parse_seconds = parse_seconds
+
+--- Serial → profile keys that persist it (§1.8).
+local function persisted_serials(ws)
+  local map = {}
+  for _, p in ipairs(ws._profiles or {}) do
+    if p._device_serial then
+      map[p._device_serial] = map[p._device_serial] or {}
+      table.insert(map[p._device_serial], p.key)
+    end
+  end
+  for _, keys in pairs(map) do table.sort(keys) end
+  return map
+end
+
+--- `lw device list [--json]` body (spec §16.34): the attached devices each
+--- runner in scope reports. Read-only. `deps.backend` (tests) is the process
+--- backend. Returns the exit code.
+--- @param ws loomworks.Workspace
+--- @param opts { json?: boolean, profile?: string, timeouts?: table }
+--- @param deps? { backend?: table }
+--- @return integer
+function M._device_list(ws, opts, deps)
+  deps = deps or {}
+  local runners = require("loomworks.remote.runners")
+  local devices = require("loomworks.remote.devices")
+  local profile = soft_profile(ws, opts.profile)
+  local scope = runners.in_scope(ws, profile)
+  if #scope == 0 then
+    die("no device runner available — none of the SDKs in scope" ..
+      (profile and (" (profile '" .. profile.key .. "')") or "") ..
+      " supplies one (declare the SDK with `lw sdk add`, and install a plugin whose SDK provider ships a device runner)")
+  end
+  local persisted = persisted_serials(ws)
+  local rows, failed = {}, 0
+  for _, e in ipairs(scope) do
+    local list, err = devices.list(e.runner, { backend = deps.backend, timeouts = opts.timeouts })
+    if not list then
+      failed = failed + 1
+      errw("lw: " .. tostring(err) .. "\n")
+    else
+      devices.merge(ws, e.runner.id, list)
+      for _, d in ipairs(list) do
+        rows[#rows + 1] = { serial = d.serial, state = d.state, runner = e.runner.id,
+          name = d.display_name, profiles = persisted[d.serial] or {} }
+      end
+    end
+  end
+  if opts.json then
+    local list = {}
+    for _, r in ipairs(rows) do
+      -- `profiles` (the profiles persisting this serial) is omitted when none.
+      list[#list + 1] = { serial = r.serial, state = r.state, runner = r.runner, name = r.name,
+        profiles = #r.profiles > 0 and r.profiles or nil }
+    end
+    out(vim.json.encode({ devices = list }))
+  else
+    local w = { 6, 5, 6 }
+    for _, r in ipairs(rows) do
+      w[1] = math.max(w[1], #r.serial); w[2] = math.max(w[2], #r.state); w[3] = math.max(w[3], #r.runner)
+    end
+    local fmt = "%-" .. w[1] .. "s  %-" .. w[2] .. "s  %-" .. w[3] .. "s  %s"
+    if #rows == 0 then
+      out("no devices attached")
+    else
+      out(string.format(fmt, "SERIAL", "STATE", "RUNNER", "NAME"))
+      for _, r in ipairs(rows) do
+        local tail = #r.profiles > 0 and ("   (device for " .. table.concat(r.profiles, ", ") .. ")") or ""
+        out(string.format(fmt, r.serial, r.state, r.runner, r.name) .. tail)
+      end
+    end
+  end
+  return failed > 0 and 1 or 0
+end
+
+--- `lw device select <serial> [profile]` / `lw device select --clear [profile]`
+--- body: persist (or clear) the profile's device serial in the working copy
+--- (§1.8, §16.9). Never requires the device to be attached.
+--- @return integer
+function M._device_select(ws, args)
+  local clear, positionals = false, {}
+  for _, v in ipairs(args) do
+    if v == "--clear" then clear = true else positionals[#positionals + 1] = v end
+  end
+  local serial, profile_name
+  if clear then
+    profile_name = positionals[1]
+    if #positionals > 1 then die("usage: lw device select --clear [profile]") end
+  else
+    serial, profile_name = positionals[1], positionals[2]
+    if not serial or #positionals > 2 then
+      die("usage: lw device select <serial> [profile] | lw device select --clear [profile]")
+    end
+    if serial:find("[%c]") then die("invalid device serial") end
+  end
+  local profile = resolve_profile(ws, profile_name, { usage = "lw device select <serial> <profile>" })
+  if clear then
+    if not profile._device_serial then
+      out("profile '" .. profile.key .. "' has no device selected")
+      return 0
+    end
+    profile:clear_device()
+    out("cleared the device of profile '" .. profile.key .. "'")
+    return 0
+  end
+  profile:set_device(serial)
+  out("device for profile '" .. profile.key .. "': " .. serial)
+  return 0
+end
+
+--- `lw device <list|select|clean>` (spec §16.34).
+function M.cmd_device(sub, root, args)
+  local rest = {}
+  for i = 3, #args do rest[#rest + 1] = args[i] end
+  if sub == "list" or sub == "ls" then
+    local opts = { timeouts = {} }
+    local i = 1
+    while rest[i] do
+      local v = rest[i]
+      if v == "--json" then opts.json = true; i = i + 1
+      elseif v == "--query-timeout" then opts.timeouts.query = parse_seconds(v, rest[i + 1]); i = i + 2
+      elseif not opts.profile and not v:match("^%-") then opts.profile = v; i = i + 1
+      else die("unexpected argument '" .. v .. "' — usage: lw device list [--json] [profile]") end
+    end
+    local ws = load_workspace(root, false)
+    return M._device_list(ws, opts)
+  elseif sub == "select" then
+    local ws = load_workspace(root, false)
+    return M._device_select(ws, rest)
+  elseif sub == "clean" then
+    local ws = load_workspace(root, false)
+    return M._device_clean(ws, rest)
+  end
+  die("usage: lw device list [--json] | lw device select <serial> [profile] [--clear] | " ..
+    "lw device clean [--device <serial>]")
+end
+
 --- Ensure a config unit's build targets are parsed — the headless equivalent
 --- of the editor's post-configure scan (workspace.lua). No-op if already
 --- parsed or the module exposes no target introspection. Requires a configured
@@ -8798,6 +8958,11 @@ local function main()
 
   if command == "tools" then
     finish(M.cmd_tools(root, a))
+  end
+  -- `device` lists / selects devices and cleans staging (spec §16.34); each
+  -- sub-command loads the workspace itself (no tool detection).
+  if command == "device" or command == "devices" then
+    finish(M.cmd_device(a[2], root, a))
   end
   -- `launch` manages launch configs in the working copy (no tools needed).
   if command == "launch" then
