@@ -253,9 +253,11 @@ end
 --- @return loomworks.RemoteRunResult|nil result, string|nil err (setup failure: nothing ran)
 function M.execute(o)
     local runner = o.runner
-    local note = o.note or function(s) io.stderr:write("lw: " .. s .. "\n") end
+    -- stdout is flushed before each stderr line so earlier stdout (a step
+    -- header) keeps its place on a shared terminal.
+    local note = o.note or function(s) io.stdout:flush(); io.stderr:write("lw: " .. s .. "\n") end
     local write_out = o.write_out or function(s) io.stdout:write(s .. "\n"); io.stdout:flush() end
-    local write_err = o.write_err or function(s) io.stderr:write(s .. "\n") end
+    local write_err = o.write_err or function(s) io.stdout:flush(); io.stderr:write(s .. "\n") end
     local result = { crashes = {}, results = {}, missing_results = {}, warnings = {},
         timed_out = false, failed = false }
 
@@ -587,6 +589,25 @@ function M.execute(o)
         if status ~= 0 then
             result.warnings[#result.warnings + 1] = "could not clear pulled result files from the device: "
                 .. (status == nil and tostring(lines) or table.concat(lines or {}, " "))
+        else
+            -- Then their now-empty directories (e.g. `.loomworks/results`):
+            -- `rmdir` only — it refuses a non-empty directory, so a directory
+            -- still holding anything is left alone (not a warning). Each one
+            -- must be strictly below the unit's staging root, never the root
+            -- itself (§18.12).
+            local dirs, seen = {}, {}
+            for _, r in ipairs(o.results or {}) do
+                local rel = r.device_rel:gsub("\\", "/")
+                local drel = rel:match("^(.+)/[^/]+$")
+                local dpath = drel and (plan.root .. "/" .. drel)
+                if drel and not seen[drel] and manifest_mod.clean_rel(drel)
+                    and manifest_mod.device_path_under(dpath, plan.root)
+                    and dpath:gsub("/+$", "") ~= plan.root:gsub("/+$", "") then
+                    seen[drel] = true
+                    dirs[#dirs + 1] = dpath
+                end
+            end
+            if #dirs > 0 then t:shell({ "rmdir", unpack(dirs) }) end
         end
     end
     if crash_before and runner.crash_collect and not result.transport_error then

@@ -126,6 +126,51 @@ describe("lw test --target on a device", function()
         for p in pairs(dev.boards.SER1.files) do
             assert.is_nil(p:find("/.loomworks/results/", 1, true), "left on the device: " .. p)
         end
+        -- ...and so is their then-empty directory (rmdir, never the root).
+        local rdir = DROOT .. "/.loomworks/results"
+        assert.is_nil(dev.boards.SER1.dirs[rdir], "empty results dir left on the device")
+        assert.same({ rdir }, dev.boards.SER1.removed_dirs)
+    end)
+
+    it("a results dir still holding another file is left alone, without a warning", function()
+        local other = DROOT .. "/.loomworks/results/keep.txt"
+        dev.boards.SER1.files[other] = { data = "x", mode = "644" }
+        local res = test({ "Runner" })
+        assert.is_true(res.ok, res.stderr)
+        assert.equals(0, res.ret)
+        assert.truthy(dev.boards.SER1.files[other])
+        assert.truthy(dev.boards.SER1.dirs[DROOT .. "/.loomworks/results"])
+        assert.is_nil(res.stderr:find("warning", 1, true), res.stderr)
+    end)
+
+    it("the step header comes before the device run's staging/running lines", function()
+        local order, pending = {}, {}
+        local real_stdout = io.stdout
+        -- Interleave both streams into one log; stdout text is only "seen"
+        -- once flushed, as on a pipe/terminal where stdout is buffered and
+        -- stderr is not.
+        local res = capture(function()
+            io.write = function(s) pending[#pending + 1] = s end
+            io.stdout = { write = function(_, s) pending[#pending + 1] = s end,
+                flush = function()
+                    for _, s in ipairs(pending) do order[#order + 1] = "out:" .. s end
+                    pending = {}
+                end }
+            io.stderr = { write = function(_, s) order[#order + 1] = "err:" .. s end, flush = function() end }
+            local deps = { backend = dev:backend(), liveness_ms = 100000, build = function() end,
+                resolve_target = function() return lt() end, write_out = function() end, write_err = function() end }
+            return cli._test_targets(ws, profile, { "Runner" }, { extra = {}, dev = cli._new_device_opts() }, deps)
+        end)
+        io.stdout = real_stdout
+        assert.is_true(res.ok, tostring(res.ret))
+        local header, running
+        for i, l in ipairs(order) do
+            if not header and l:find("==> [test] Runner (on a device)", 1, true) then header = i end
+            if not running and l:find("staging on SER1", 1, true) then running = i end
+        end
+        assert.truthy(header, table.concat(order))
+        assert.truthy(running, table.concat(order))
+        assert.is_true(header < running, table.concat(order))
     end)
 
     it("a failure in the XML fails the run even with exit status 0", function()
