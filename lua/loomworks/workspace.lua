@@ -5792,6 +5792,11 @@ function Workspace:_enrich_tools_from_sdks(tools_by_type)
                             tool_data = t.tool_data,
                             tool_key = mod.impl.tool_key and mod.impl.tool_key(t.tool_data) or nil,
                             tool_label = mod.impl.tool_label and mod.impl.tool_label(t.tool_data) or nil,
+                            -- Execution platform + producing SDK (spec §10.7,
+                            -- §18.1): runtime facts, never part of the key.
+                            target_platform = type(t.target_platform) == "string"
+                                and t.target_platform ~= "" and t.target_platform or nil,
+                            sdk = sdk,
                         }
                     end
                     log:debug("SDK '%s' provided %d tools for module '%s'",

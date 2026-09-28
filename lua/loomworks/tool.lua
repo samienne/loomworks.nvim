@@ -17,6 +17,12 @@
 ---        false for a tool known only from cached tool data: its `data` is a
 ---        record for display, never used to run anything (`exec_data`).
 --- @field mod_type string module type (from _module.id)
+--- @field _target_platform string|nil execution platform (spec §1.5, §18.1): an
+---        opaque target-platform token for a tool whose output runs elsewhere
+---        (set from `kits_from_sdk`, §10.7), nil when its output runs on the
+---        host. Runtime fact of detection — never part of the tool key.
+--- @field _sdk loomworks.SDK|nil the SDK that produced this tool (SDK-derived
+---        kits only); its provider's device runner serves `_target_platform`
 --- @field _removed boolean
 local Tool = {}
 Tool.__index = Tool
@@ -63,7 +69,35 @@ function Tool.new(module, key, data, label)
     self.languages = resolve_languages(module, data)
     self._removed = false
     self._detected = true
+    self._target_platform = nil
+    self._sdk = nil
     return self
+end
+
+--- Record the execution platform and producing SDK (spec §18.1). Called on
+--- every tool sync: detection supplies both (nil for host tools); a tool known
+--- only from the cache gets neither.
+--- @param target_platform string|nil opaque token, nil = host-runnable
+--- @param sdk loomworks.SDK|nil producing SDK
+function Tool:_set_platform(target_platform, sdk)
+    if type(target_platform) ~= "string" or target_platform == "" then
+        target_platform = nil
+    end
+    self._target_platform = target_platform
+    self._sdk = sdk
+end
+
+--- The execution platform token, or nil when this tool's output runs on the
+--- host (spec §18.1). Opaque: compared only for equality.
+--- @return string|nil
+function Tool:execution_platform()
+    return self._target_platform
+end
+
+--- The SDK that produced this tool, or nil (host-detected / cache-only).
+--- @return loomworks.SDK|nil
+function Tool:sdk()
+    return self._sdk
 end
 
 --- The tool data to RUN with (spec §17.7): the data detection produced on

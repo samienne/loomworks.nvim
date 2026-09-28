@@ -1270,6 +1270,10 @@ function ConfigUnit:test_units()
     -- Discovery runs binaries from the build dir: only one this machine
     -- configured (spec §17.8). Not cached, so it appears once configured.
     if not self:configured_here() then return {} end
+    -- A cross kit's tests cannot run on the host (spec §18.1, §18.6): no
+    -- discovery probe, no host batch runner. Named test executables run on a
+    -- device through `lw test --target` instead.
+    if require("loomworks.remote.foreign").unit_platform(self) then return {} end
 
     local impl = self:_module_impl()
     if not impl or not impl.create_test_unit then

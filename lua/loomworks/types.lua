@@ -156,6 +156,9 @@
 --- @field tool_data table opaque module-specific tool data
 --- @field tool_key? string unique key for cache (nil for single-tool modules)
 --- @field tool_label? string display label (nil for single-tool modules)
+--- @field target_platform? string opaque execution-platform token of an
+---   SDK-derived kit (spec §10.7, §18.1); nil = host-runnable
+--- @field sdk? loomworks.SDK the SDK that produced an SDK-derived kit
 
 -- ========================== Merge Results ==========================
 

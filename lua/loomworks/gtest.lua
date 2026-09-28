@@ -125,6 +125,21 @@ local function summarise_result(result)
         #(result.stderr or ""), head(result.stderr, 200))
 end
 
+--- Discovery probes execute the binary: a foreign one (its header names a
+--- format/architecture the host cannot run) is never probed (spec §18.1).
+--- Returns the diagnostic when refused, else nil.
+--- @param executable string
+--- @return string|nil
+function M._foreign_diag(executable)
+    local probe = require("loomworks.remote.probe")
+    local mismatch, what = probe.is_foreign_file(executable)
+    if mismatch then
+        return "not probed: " .. tostring(executable) .. " is " .. tostring(what)
+            .. " the host cannot run"
+    end
+    return nil
+end
+
 --- Probe an executable to detect if it's a gtest binary.
 --- Async: calls callback with results.
 --- @param executable string absolute path to the test binary
@@ -140,6 +155,11 @@ function M.probe(executable, target_id, opts_or_cb, callback)
         opts = nil
     else
         opts = opts_or_cb
+    end
+    local foreign = M._foreign_diag(executable)
+    if foreign then
+        vim.schedule(function() callback(nil, nil, foreign) end)
+        return
     end
     vim.system(
         { executable, "--gtest_list_tests" },
@@ -168,6 +188,8 @@ end
 --- @param opts? { env?: table<string, string>, cwd?: string }
 --- @return string|nil framework, table[]|nil test_list, string|nil diag
 function M.probe_sync(executable, target_id, opts)
+    local foreign = M._foreign_diag(executable)
+    if foreign then return nil, nil, foreign end
     local result = vim.system(
         { executable, "--gtest_list_tests" },
         probe_opts(opts)
