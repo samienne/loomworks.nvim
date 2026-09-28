@@ -916,8 +916,14 @@ replaces it, which would drop `PATH`).
   even in `--no-input`; `set`/`clear` keep the CI-determinism guard (one-operand
   = active profile interactively, explicit `<profile>` required non-interactively).
   Shared seam `collect_targets` also feeds the `lw status` Targets section.
-- `lw sdk <types|list|add|remove>` — declare toolchain installations that
+- `lw sdk <types|detect|list|add|remove>` — declare toolchain installations that
   detection cannot find (a compiler at an arbitrary path, a cross-compiler).
+  `detect [<type>]` lists each provider's `detect_all()` (the enumeration the
+  editor's SDKs section offers); it and `types` run before the workspace guard.
+  `add <type>` without a path (`pick_detected_sdk`) takes the provider's
+  detected installations minus the declared ones: none → error, one → it,
+  several → numbered picker / non-interactive error listing the explicit
+  commands; the chosen path then goes through the same `add_sdk(type, path)`.
   Thin wrappers over `Workspace:add_sdk` / `remove_sdk`; the declared SDK
   produces a kit, so it appears in `lw tools` and is pinnable by
   `lw profile create`. `--force` registers a path that fails identification

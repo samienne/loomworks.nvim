@@ -326,6 +326,12 @@ parsed (§1.5.2) — or silently assuming a default that is wrong for some
 toolchains. Declaration avoids this because the provider *constructs* the
 toolchain rather than guessing at it.
 
+The runner declares an installation either from a supplied path or, with none,
+from the provider's detected installations (§10.1) — never prompting when it
+cannot prompt: several candidates are then an error that lists each as the
+explicit with-path declaration. It also lists every provider's detected
+installations on request, read-only and outside a workspace.
+
 ### 16.11 Runner distribution and system-Lua resolution
 
 The standalone runner separates a **generic runtime host** (the Lua VM and

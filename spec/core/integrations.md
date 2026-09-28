@@ -218,6 +218,15 @@ forced declaration carries only the facts the user gave: where a version was not
 supplied it is unknown, and the installation therefore forfeits version-based
 selection (§16.3) and is referenced by its full key.
 
+A user MAY also declare an installation **without a path**: the candidates are
+the provider's `detect_all()` installations not already declared. None is an
+error that names the with-path form; exactly one is declared (and reported as
+detected); several require a choice — offered interactively, or, where no
+prompt is possible, an error listing each candidate as the explicit with-path
+declaration. The chosen path is then declared exactly as a supplied one
+(validated, key derived). Listing the detected installations is read-only and
+needs no workspace.
+
 ### 10.2 SDK domain object
 
 `loomworks.SDK` (`lua/loomworks/sdk.lua`) wraps a resolved

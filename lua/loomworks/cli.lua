@@ -386,6 +386,7 @@ function M._set_create_intent(v) create_intent = v end
 --- isn't a terminal (piped / redirected / closed — the common CI case).
 local function interactive()
   if force_noninteractive then return false end
+  if M._test_interactive ~= nil then return M._test_interactive end
   local ok, h = pcall(uv.guess_handle, 0)
   return ok and h == "tty"
 end
@@ -4446,12 +4447,128 @@ local function sdk_provider_ids()
   return ids
 end
 
---- `lw sdk <types|list|add|remove>` — declare toolchain installations that
---- auto-detection cannot find (a compiler at an arbitrary path, a
---- cross-compiler). A declared SDK produces a kit, so it shows up in
---- `lw tools` and can be pinned by `lw profile create`.
+--- The installations provider `id` detects on this host — its `detect_all()`,
+--- the same enumeration the editor's SDKs section offers. Entries without a
+--- usable path are dropped; a raising provider yields none plus the error.
+--- @param id string provider id
+--- @return { path: string, version?: string }[]|nil installs, string|nil err
+local function detect_sdk_installations(id)
+  local registry = require("loomworks.sdks")
+  local p = registry.get(id)
+  if not p then return nil, "unknown SDK type" end
+  if type(p.detect_all) ~= "function" then return {} end
+  local ok, res = pcall(p.detect_all)
+  if not ok then return {}, tostring(res) end
+  local list = {}
+  for _, inst in ipairs(type(res) == "table" and res or {}) do
+    if type(inst) == "table" and type(inst.path) == "string" and inst.path ~= "" then
+      list[#list + 1] = inst
+    end
+  end
+  return list
+end
+
+--- A provider's display name (falls back to its id).
+local function sdk_display_name(id)
+  local p = require("loomworks.sdks").get(id)
+  return (p and type(p.display_name) == "string" and p.display_name) or id
+end
+
+--- `lw sdk detect [<type>]` — list the installations every provider (or one)
+--- detects on this host. Read-only: no workspace needed, nothing declared.
+local function cmd_sdk_detect(ids, sdk_type)
+  if sdk_type then
+    if not require("loomworks.sdks").get(sdk_type) then
+      die("unknown SDK type '" .. sdk_type .. "' — types: " ..
+        (next(ids) and table.concat(ids, ", ") or "(none)"))
+    end
+    ids = { sdk_type }
+  end
+  if #ids == 0 then out("(no SDK providers available)"); return 0 end
+  for _, id in ipairs(ids) do
+    local installs, err = detect_sdk_installations(id)
+    if err then
+      out(string.format("  %-14s (detection failed: %s)", id, err))
+    elseif #installs == 0 then
+      out(string.format("  %-14s (none detected)", id))
+    else
+      for _, inst in ipairs(installs) do
+        out(string.format("  %-14s %-12s %s", id, tostring(inst.version or "?"), inst.path))
+      end
+    end
+  end
+  return 0
+end
+
+--- Choose the installation `lw sdk add <type>` (no path) declares: the
+--- provider's detected installations minus those already declared. None →
+--- error naming the explicit form; one → it; several → a picker, or (non-
+--- interactive) an error listing each candidate as the explicit command.
+--- @return string path
+local function pick_detected_sdk(ws, sdk_type)
+  local installs, err = detect_sdk_installations(sdk_type)
+  local explicit = "lw sdk add " .. sdk_type .. " <path>"
+  if not installs then
+    die("unknown SDK type '" .. sdk_type .. "' — `lw sdk types` lists them")
+  end
+  if #installs == 0 then
+    die("no " .. sdk_type .. " installation detected" ..
+      (err and (" (detection failed: " .. err .. ")") or "") ..
+      " — pass a path: " .. explicit)
+  end
+  local declared = {}
+  for _, s in ipairs(ws._sdks or {}) do
+    local sp = s.sdk_path and s:sdk_path() or s._path
+    if sp then declared[norm_cmp(sp)] = s.key end
+  end
+  local fresh, taken = {}, {}
+  for _, inst in ipairs(installs) do
+    local key = declared[norm_cmp(inst.path)]
+    if key then taken[#taken + 1] = key .. " (" .. inst.path .. ")"
+    else fresh[#fresh + 1] = inst end
+  end
+  if #fresh == 0 then
+    die("every detected " .. sdk_type .. " installation is already declared: " ..
+      table.concat(taken, ", ") .. " — `lw sdk list` shows them; declare another with " .. explicit)
+  end
+  if #fresh == 1 then
+    out("detected " .. fresh[1].path)
+    return fresh[1].path
+  end
+  if not interactive() then
+    local lines = {}
+    for _, inst in ipairs(fresh) do
+      lines[#lines + 1] = "  lw sdk add " .. sdk_type .. " " .. inst.path ..
+        (inst.version and ("   (" .. tostring(inst.version) .. ")") or "")
+    end
+    die(#fresh .. " " .. sdk_type .. " installations detected — pass one explicitly:\n" ..
+      table.concat(lines, "\n"))
+  end
+  local display = sdk_display_name(sdk_type)
+  out("Several " .. sdk_type .. " installations detected — select one:")
+  for i, inst in ipairs(fresh) do
+    out(string.format("  %d) %s%s  %s", i, display,
+      inst.version and (" " .. tostring(inst.version)) or "", inst.path))
+  end
+  out("")
+  local line = prompt_line("Enter number (blank to cancel)")
+  if not line or line == "" then out("cancelled"); finish(0) end
+  local n = tonumber(line)
+  if not n or not fresh[n] then die("invalid selection: " .. tostring(line)) end
+  return fresh[n].path
+end
+
+--- `lw sdk <types|detect|list|add|remove>` — declare toolchain installations
+--- that auto-detection cannot find (a compiler at an arbitrary path, a
+--- cross-compiler), or that a provider detects but nothing declares yet (a
+--- platform SDK). A declared SDK produces a kit, so it shows up in `lw tools`
+--- and can be pinned by `lw profile create`.
 function M.cmd_sdk(sub, root, args)
   local ids = sdk_provider_ids()
+
+  if sub == "detect" then
+    return cmd_sdk_detect(ids, args[3])
+  end
 
   if sub == "types" then
     if #ids == 0 then out("(no SDK providers available)"); return 0 end
@@ -4463,7 +4580,7 @@ function M.cmd_sdk(sub, root, args)
     local ws = load_workspace(root, false)
     local sdks = ws._sdks or {}
     if #sdks == 0 then
-      out("(no SDKs declared — `lw sdk add <type> <path>`)")
+      out("(no SDKs declared — `lw sdk detect`, then `lw sdk add <type> [<path>]`)")
       return 0
     end
     for _, sdk in ipairs(sdks) do
@@ -4483,12 +4600,15 @@ function M.cmd_sdk(sub, root, args)
       else pos[#pos + 1] = args[i]; i = i + 1 end
     end
     local sdk_type, path = pos[1], pos[2]
-    if not (sdk_type and path) then
-      die("usage: lw sdk add <type> <path> [--force [--family <f>] [--version <v>]]\n" ..
+    if not sdk_type or (force and not path) then
+      die("usage: lw sdk add <type> [<path>] [--force [--family <f>] [--version <v>]]\n" ..
+        "  (--force needs a <path>; without a <path> the type's detected installation is used)\n" ..
         "  types: " .. (next(ids) and table.concat(ids, ", ") or "(none)"))
     end
-    local abs = resolve_abs(path, user_cwd()) or resolve_abs_out(path, user_cwd())
     local ws = load_workspace(root, false)
+    -- No path: declare the installation the provider detects (§10.1).
+    if not path then path = pick_detected_sdk(ws, sdk_type) end
+    local abs = resolve_abs(path, user_cwd()) or resolve_abs_out(path, user_cwd())
     local sdk, err = ws:add_sdk(sdk_type, abs,
       { force = force, family = family, version = version })
     if not sdk then die("could not add SDK: " .. tostring(err)) end
@@ -4515,7 +4635,7 @@ function M.cmd_sdk(sub, root, args)
     return 0
   end
 
-  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|list|add|remove")
+  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|detect|list|add|remove")
 end
 
 --- `lw profile remove <profile>` — drop a profile from the working copy.
@@ -7114,6 +7234,11 @@ function M.cmd_complete(cword, words)
       end
     end
     return 0
+  elseif cmd == "sdk" then
+    if n == 1 then emit({ "types", "detect", "list", "add", "remove" }); return 0 end
+    -- The provider ids come from the installed providers (no probing).
+    if n == 2 and has({ "add", "create", "detect" }, sub) then emit(sdk_provider_ids()) end
+    return 0
   end
   return 0
 end
@@ -8208,16 +8333,24 @@ loomworks.json on publish — except profiles, which default to local because
 they pin machine-resolved toolchains. Pass --local to keep something out of the
 shared file, and don't `publish` unless the task is to change the shared
 contract. See `lw help publish`.]],
-  sdk = [[lw sdk <types|list|add|remove>
+  sdk = [[lw sdk <types|detect|list|add|remove>
 
-Declare a toolchain installation that auto-detection cannot find — a compiler
-at an arbitrary path, a custom build, or a cross-compiler. A declared SDK
-produces a toolchain, so it appears in `lw tools` and can be pinned by
-`lw profile create`. Declarations live in the working copy (machine-local).
+Declare a toolchain installation — one auto-detection cannot find (a compiler
+at an arbitrary path, a custom build, a cross-compiler), or a platform SDK its
+provider detects. A declared SDK produces a toolchain, so it appears in
+`lw tools` and can be pinned by `lw profile create`. Declarations live in the
+working copy (machine-local).
 
   types                 SDK provider ids available on this host. Plugins add
                         more by shipping a provider (e.g. a platform SDK).
+  detect [<type>]       The installations each provider (or one) detects on
+                        this host. Read-only; works outside a workspace.
   list                  declared SDKs and their paths
+  add <type>            Declare the installation the provider detects (as
+                        `detect` lists it). None detected is an error — pass
+                        the path. Several: pick one (interactive), or, with
+                        --no-input, an error listing each as the explicit
+                        command. One already declared is not offered again.
   add <type> <path>     Probe the path, derive a key, and declare it.
         [--force]       Register even when the path fails to identify itself
                         (an exotic driver or a wrapper script). The path must
@@ -8235,7 +8368,9 @@ different paths therefore stay distinct, and the version stays selectable
 (`cpp_compiler-clang-19` resolves it). `add` prints the key it produced.
 
   lw sdk add cpp_compiler /opt/compilers/clang-19/bin/clang++
-  lw profile create Debug cpp_compiler-clang-19]],
+  lw profile create Debug cpp_compiler-clang-19
+  lw sdk detect            # what each provider finds here
+  lw sdk add ohos          # declare the detected installation (plugin provider)]],
   ci = [[lw help ci — driving CI jobs with lw
 
 Model: commit the CONFIGURATION SETS (the portable unit) and the projects.
@@ -8385,7 +8520,7 @@ Usage: lw [command] [args]
   configset <sub>   create | map | show | ... configuration sets
   profile <sub>     list | show | select | create | remove | publish | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
-  sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
+  sdk <sub>         declare toolchain installations (types|detect|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
@@ -8586,6 +8721,12 @@ local function main()
   -- current workspace, so it runs before the workspace-required guard.
   if command == "worktree" then
     finish(M.cmd_worktree(a))
+  end
+
+  -- `sdk types` / `sdk detect` only ask the providers about this host — no
+  -- workspace needed.
+  if command == "sdk" and (a[2] == "types" or a[2] == "detect") then
+    finish(M.cmd_sdk(a[2], root, a))
   end
 
   -- Workspace commands.
