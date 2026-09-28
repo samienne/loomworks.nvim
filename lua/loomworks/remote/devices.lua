@@ -46,7 +46,40 @@ function M.list(runner, opts)
         end
     end
     table.sort(out, function(a, b) return a.serial < b.serial end)
+    if opts.describe and runner.describe_device then M.describe_devices(runner, out, t.query, opts.backend) end
     return out
+end
+
+--- Ask the runner's optional `describe_device(serial)` (spec §18.2) about each
+--- ONLINE device, once, under the query timeout: a returned `display_name`
+--- replaces the listed name and `properties` merge into the device's. Best
+--- effort — a failing builder, spec or parser keeps what the listing said.
+--- @param runner loomworks.Runner
+--- @param list table[] devices from M.list (updated in place)
+--- @param timeout number query timeout (seconds)
+--- @param backend? table process backend (tests)
+function M.describe_devices(runner, list, timeout, backend)
+    for _, d in ipairs(list) do
+        if d.state == "online" then
+            local ok, spec, parse = pcall(runner.describe_device, d.serial)
+            if ok and type(spec) == "table" and type(parse) == "function" then
+                local job, fail = spec_exec.run(spec, {
+                    label = "describe device " .. d.serial, timeout = timeout, backend = backend,
+                })
+                if not fail then
+                    local pok, info = pcall(parse, job.lines)
+                    if pok and type(info) == "table" then
+                        if type(info.display_name) == "string" and info.display_name ~= "" then
+                            d.display_name = info.display_name
+                        end
+                        for k, v in pairs(type(info.properties) == "table" and info.properties or {}) do
+                            if type(k) == "string" and type(v) == "string" then d.properties[k] = v end
+                        end
+                    end
+                end
+            end
+        end
+    end
 end
 
 --- Merge a runner's listing into the workspace registry. Only devices this

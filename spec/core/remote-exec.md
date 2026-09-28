@@ -97,7 +97,8 @@ interpreter.
 | Builder | Returns | Notes |
 |---------|---------|-------|
 | `list_devices()` | spec | Enumerate attached devices |
-| `parse_devices(lines)` | `{ serial, display_name, state, properties }[]` | Placeholder lines (e.g. an "empty" marker) are not devices |
+| `parse_devices(lines)` | `{ serial, display_name, state, properties }[]` | Placeholder lines (e.g. an "empty" marker) are not devices. `display_name` is optional (the serial stands in) |
+| `describe_device(serial)` | spec, `parse(lines) → { display_name?, properties? }\|nil` | *(optional)* Describe one device for display (e.g. its model name). Core calls it when it presents devices (the device listing, §16.34) — once per **online** device, after `list_devices`, under the query timeout. A returned `display_name` replaces the listed one; `properties` (string → string) merge into the device's. Best-effort: a failing builder, spec or parser keeps what the listing said |
 | `push(serial, local, remote)` | spec | One file host → device. `local` is an absolute host path; the runner renders it in whatever form the connector requires |
 | `pull(serial, remote, local)` | spec | One file device → host |
 | `exec(serial, request)` | spec | Run one program on the device (below) |
@@ -105,7 +106,7 @@ interpreter.
 | `parse_pid(line, nonce)` | `integer\|nil` | *(optional)* Recognise the line announcing the device-side process id of the program started with `nonce` |
 | `terminate(serial, nonce, pid?)` | spec | *(optional)* Stop the device-side program started by `exec` with `nonce` (`pid` when `parse_pid` reported one) |
 | `crash_snapshot(serial)` | spec, `parse(lines) → set` | *(optional)* Identify the device's current crash reports |
-| `crash_collect(before, after)` | remote path[] | *(optional)* Crash reports new since the snapshot |
+| `crash_collect(before, after, ctx?)` | remote path[] | *(optional)* Crash reports new since the snapshot. `ctx = { pid? }` carries the program's device-side process id when `parse_pid` reported one, so the runner can pick the reports of this run's process; a runner must accept the call without `ctx` |
 | `runtime_files(tool)` | `{ local, relative }[]` | *(optional)* Platform runtime files a program built by `tool` needs beside it (§18.4) |
 | `log_session(serial, options, program)` | `Session\|nil, err` | *(optional)* The runner log stream for one run (§18.13) |
 
@@ -138,9 +139,13 @@ path element contains a NUL or a line break.
 
 `check_output` (§11.2) on `push`, `pull` and `exec` detects connector-level
 failures reported in output with a success status (a transfer the connector
-rejected, a device that vanished). On `exec` it inspects only lines the
-connector itself emits before the program starts or after the sentinel —
-never program output.
+rejected, a device that vanished). On `exec` it inspects only the lines before
+the process-id line (or before the program starts) and after the sentinel —
+never program output. Core treats those lines as the connector's own, but a
+connector that merges the device's standard error into its output without
+ordering guarantees can deliver device text there too; `check_output` MUST
+therefore match only the connector's own failure markers, never generic
+device text (an error word a device program or the device's shell printed).
 
 ### 18.3 Device selection
 
@@ -254,8 +259,11 @@ A remote run holds the device lock (§18.7) for its whole duration and performs:
    directory is declared, `library_dirs` = the device-side directories of every
    staged shared library (sorted, deterministic), `env` = the declared device
    environment. Program output streams live (§18.13); core normalizes line
-   endings to LF. When `parse_pid` reports the program's process id, core
-   starts the session's log stream (§18.13).
+   endings to LF. Core announces the start on its own status channel —
+   `running <program> on <serial> (pid <n>)` once `parse_pid` reports the
+   program's process id, or without the pid when the runner has no
+   `parse_pid`. When `parse_pid` reports the process id, core also starts the
+   session's log stream (§18.13).
 5. **Exit status** — the sentinel's status is authoritative and is the run's
    exit status. A status above 128 is additionally reported as "terminated by
    signal N". If the transport ends without a sentinel, the run failed to
@@ -330,7 +338,11 @@ as the run.
 Cancelling a remote run (interrupt in the CLI, stop in the editor) kills the
 host-side transport process, then runs `terminate` when the runner offers it, so
 the device-side program does not outlive the run, and stops the log stream.
-Staged files are kept.
+Staged files are kept. The cancellation is reported, never silent: whether the
+device program was stopped (`interrupted — stopped <program> on <serial>`), or
+the stop was only requested or is not available ("… the stop may not have
+completed" — e.g. when the interrupt handler cannot wait for it), followed by
+the run folder, whose saved output is flushed first.
 
 ### 18.9 The `device` block
 

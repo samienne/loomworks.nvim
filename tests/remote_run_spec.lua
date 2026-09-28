@@ -207,6 +207,11 @@ describe("lw run on a foreign target", function()
         local dirs = run_dirs()
         assert.equals("backtrace", read(dirs[1] .. "/crash/cppcrash-new"))
         assert.is_nil(read(dirs[1] .. "/crash/cppcrash-old"))
+        -- crash_collect learns the program's pid (spec §18.2 `ctx`).
+        assert.is_table(runner.crash_ctx_seen)
+        assert.is_number(runner.crash_ctx_seen.pid)
+        assert.equals(tostring(runner.crash_ctx_seen.pid),
+            res.stderr:match("running Runner on SER1 %(pid (%d+)%)"))
     end)
 
     it("log options: device_log + --log merge (CLI wins per key) and reach the runner opaquely", function()
@@ -267,6 +272,7 @@ describe("lw run on a foreign target", function()
 
     it("cancellation kills the connector, terminates the device program, stops the log, frees the lock", function()
         local cancel
+        local notes = {}
         dev.behaviors.Runner = function()
             return { out = { "running" }, hang = true, after = function()
                 vim.schedule(function() cancel() end)
@@ -277,7 +283,8 @@ describe("lw run on a foreign target", function()
         local result = remote_run.execute({
             ws = ws, runner = runner, unit = unit, manifest = man, device = {}, args = {},
             backend = dev:backend(), liveness_ms = 100000,
-            write_out = function() end, write_err = function() end, note = function() end,
+            write_out = function() end, write_err = function() end,
+            note = function(s) notes[#notes + 1] = s end,
             on_cleanup = function(fn) cancel = fn end,
         })
         assert.is_table(result)
@@ -285,6 +292,37 @@ describe("lw run on a foreign target", function()
         assert.truthy(result.transport_error:find("cancelled", 1, true))
         assert.equals(1, #dev.killed)
         assert.is_nil(require("loomworks.remote.device_lock").read("SER1"))
+        -- The interrupt is reported, with the run folder (output.log written).
+        local all = table.concat(notes, "\n")
+        assert.truthy(all:find("running Runner on SER1 (pid ", 1, true), all)
+        assert.truthy(all:find("interrupted — stopped Runner on SER1", 1, true), all)
+        local folder = all:match("run folder: ([^\n]+)")
+        assert.is_not_nil(folder, all)
+        assert.equals(result.run_dir, folder)
+        assert.truthy((read(folder .. "/output.log") or ""):find("running", 1, true))
+    end)
+
+    it("an interrupt without a runner terminate says the device program may still run", function()
+        local cancel
+        runner.terminate = nil
+        dev.behaviors.Runner = function()
+            return { out = { "running" }, hang = true, after = function()
+                vim.schedule(function() cancel() end)
+            end }
+        end
+        local notes = {}
+        local man = assert(require("loomworks.remote.manifest").build({ build_dir = root,
+            artifact = root .. "/test/unit/Runner", unit = unit, target = target, runner = runner }))
+        remote_run.execute({
+            ws = ws, runner = runner, unit = unit, manifest = man, device = {}, args = {},
+            backend = dev:backend(), liveness_ms = 100000,
+            write_out = function() end, write_err = function() end,
+            note = function(s) notes[#notes + 1] = s end,
+            on_cleanup = function(fn) cancel = fn end,
+        })
+        local all = table.concat(notes, "\n")
+        assert.truthy(all:find("interrupted", 1, true), all)
+        assert.truthy(all:find("may not have completed", 1, true), all)
     end)
 
     it("parses run/test device options", function()

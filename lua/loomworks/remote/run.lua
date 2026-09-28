@@ -286,10 +286,14 @@ function M.execute(o)
     local t = transport_mod.new({ runner = runner, serial = serial, backend = o.backend, timeouts = o.timeouts })
     local exec_job, log_job, live_job, live_timer
     local state
+    local out_f, dev_f
     local cleaned = false
     local function stop_timer()
         if live_timer then pcall(function() live_timer:stop(); live_timer:close() end); live_timer = nil end
     end
+    --- Stop the device-side program. Returns "stopped" (the stop request
+    --- completed), "sent" (issued but not awaited, or it failed) or nil (the
+    --- runner cannot stop it).
     local function terminate()
         if runner.terminate and state and plan.nonce then
             local ok, spec = pcall(runner.terminate, serial, plan.nonce, state.pid)
@@ -298,9 +302,13 @@ function M.execute(o)
                 -- From a signal handler (a fast libuv callback) nothing may
                 -- block: the stop request is sent and the process exits.
                 local fast = vim.in_fast_event and vim.in_fast_event()
-                if not fast then pcall(job.wait, job) end
+                if fast then return "sent" end
+                local wok = pcall(job.wait, job)
+                local failed = not wok or (job.failure and job:failure())
+                return failed and "sent" or "stopped"
             end
         end
+        return nil
     end
     local function cleanup(cancelled)
         if cleaned then return end
@@ -308,7 +316,22 @@ function M.execute(o)
         stop_timer()
         if cancelled and exec_job and not exec_job.done then
             exec_job:kill("cancel")
-            terminate()
+            local how = terminate()
+            -- Interrupted mid-run (Ctrl-C in the CLI, stop in the editor):
+            -- say what happened to the device program, and where the run's
+            -- output was saved.
+            if out_f then pcall(out_f.flush, out_f) end
+            if dev_f then pcall(dev_f.flush, dev_f) end
+            if how == "stopped" then
+                note("interrupted — stopped " .. plan.name .. " on " .. serial)
+            elseif how == "sent" then
+                note("interrupted — asked " .. serial .. " to stop " .. plan.name
+                    .. " (the stop may not have completed)")
+            else
+                note("interrupted — the connection to " .. serial .. " was closed; " .. plan.name
+                    .. " may still be running there (the stop may not have completed)")
+            end
+            if result.run_dir then note("run folder: " .. result.run_dir) end
         end
         if log_job and not log_job.done then log_job:kill("cancel") end
         if live_job and not live_job.done then live_job:kill("cancel") end
@@ -397,8 +420,7 @@ function M.execute(o)
     local run_dir, rerr = M.make_run_dir(o.manifest.root, serial)
     if not run_dir then return fail_setup(rerr) end
     result.run_dir = run_dir
-    local out_f = io.open(run_dir .. "/output.log", "wb")
-    local dev_f
+    out_f = io.open(run_dir .. "/output.log", "wb")
     local tail, tail_n = {}, (type(show.tail) == "number" and show.tail) or 30
 
     -- (3) Prepare: log clear (best-effort) + crash snapshot.
@@ -455,11 +477,15 @@ function M.execute(o)
     local req = { argv = plan.argv, cwd = plan.cwd, env = plan.env, library_dirs = plan.library_dirs,
         nonce = plan.nonce }
     if session and not runner.parse_pid then start_log(nil) end
+    if not runner.parse_pid then note("running " .. plan.name .. " on " .. serial) end
     local combined = runner.combined_output
     local err
     exec_job, state = t:start_exec(req, {
         label = "run " .. plan.name .. " on " .. serial,
-        on_pid = function(pid) start_log(pid) end,
+        on_pid = function(pid)
+            note("running " .. plan.name .. " on " .. serial .. " (pid " .. tostring(pid) .. ")")
+            start_log(pid)
+        end,
         on_output = function(stream, line)
             if out_f then out_f:write(line, "\n") end
             if show.program ~= "off" then
@@ -570,7 +596,8 @@ function M.execute(o)
                 backend = o.backend })
             if not cfail then
                 local pok, after = pcall(crash_parse, job.lines)
-                local cok, paths = pcall(runner.crash_collect, crash_before, pok and after or {})
+                local cok, paths = pcall(runner.crash_collect, crash_before, pok and after or {},
+                    { pid = state.pid })
                 if cok and type(paths) == "table" then
                     for _, rp in ipairs(paths) do
                         if type(rp) == "string" and not rp:find("[%z\r\n]") then

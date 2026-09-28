@@ -193,13 +193,28 @@ function M.fake_runner_table(o)
                 return set
             end
         end
-        function r.crash_collect(before, after)
+        function r.crash_collect(before, after, ctx)
+            r.crash_ctx_seen = ctx
             local out = {}
             for name in pairs(after) do
                 if not before[name] then out[#out + 1] = "/crash/" .. name end
             end
             table.sort(out)
             return out
+        end
+    end
+    if o.describe then
+        -- Optional per-device description (spec §18.2 `describe_device`).
+        function r.describe_device(serial)
+            return { cmd = C, args = { "-t", serial, "describe" } }, function(lines)
+                local props = {}
+                for _, l in ipairs(lines) do
+                    local k, v = l:match("^([%w_]+)=(.*)$")
+                    if k then props[k] = v end
+                end
+                if not next(props) then return nil end
+                return { display_name = props.market_name or props.model, properties = props }
+            end
         end
     end
     if o.runtime_file then
@@ -457,6 +472,13 @@ function FakeDevice:backend()
                 for n in pairs(board.crashes) do names[#names + 1] = n end
                 table.sort(names)
                 for _, n in ipairs(names) do emit("stdout", n) end
+            elseif call.op == "describe" then
+                if board.describe_fails then
+                    emit("stderr", "describe: failed")
+                    exit_code = 1
+                else
+                    for k, v in pairs(board.describe or {}) do emit("stdout", k .. "=" .. v) end
+                end
             elseif call.op == "logclear" then
                 dev.log_cleared = (dev.log_cleared or 0) + 1
             elseif call.op == "logstream" then

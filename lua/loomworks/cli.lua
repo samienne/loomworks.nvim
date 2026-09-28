@@ -1830,7 +1830,8 @@ function M._device_list(ws, opts, deps)
   local persisted = DEV.persisted_serials(ws)
   local rows, failed = {}, 0
   for _, e in ipairs(scope) do
-    local list, err = devices.list(e.runner, { backend = deps.backend, timeouts = opts.timeouts })
+    local list, err = devices.list(e.runner, { backend = deps.backend, timeouts = opts.timeouts,
+      describe = true })
     if not list then
       failed = failed + 1
       errw("lw: " .. tostring(err) .. "\n")
@@ -8111,7 +8112,12 @@ device/transport lost it, 124 on --timeout). See `lw help device`.
   --log <key>=<value>   device-log option for the runner (repeatable)
   --no-wait             fail instead of waiting when the device is busy
 `--prefix` and `--cwd` are errors on a foreign target; `--print` reports the
-device-side invocation and the staging manifest.]],
+device-side invocation and the staging manifest. The run announces
+"running <program> on <serial> (pid N)"; Ctrl-C stops the device program and
+says so, with the run folder.
+
+Output: build output goes to stdout like `lw build`, but to stderr under
+--print / --print=json so stdout carries only the report.]],
   device = [[lw device <list|select|clean>
 
 Devices for running cross-built programs (spec §18). An SDK plugin whose kits

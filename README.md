@@ -742,8 +742,11 @@ back, `lw` says so and exits 255 — never a fake 0 or 127. Each run leaves a
 folder `<build>/.device-runs/<time>-<serial>/` (the last 10 are kept) with
 `output.log` (the program's stdout+stderr, unfiltered), `device.log` (the
 device's own log as the runner keeps it), pulled results and any **crash
-reports** that appeared during the run — a crash fails the run. `--print`
-shows the device-side command and the staging list without running anything.
+reports** that appeared during the run — a crash fails the run. `lw` prints
+`running <program> on <serial> (pid N)` when the program starts; Ctrl-C stops
+it on the device, says so, and names the run folder. `--print` shows the
+device-side command and the staging list without running anything (the build
+before it then logs to stderr, so stdout holds only the report).
 
 **Device logs.** What is shown from the device's log, and how it is filtered,
 belongs to the SDK plugin: pass options per run with `--log key=value`
