@@ -97,11 +97,13 @@ function M.parse_line(line)
         "^(%d%d%-%d%d %d%d:%d%d:%d%d%.%d+)%s+(%d+)%s+(%d+)%s+([A-Z])%s+(.*)$")
     if not time then return nil, line end
 
-    -- Three-segment form: DOMAIN/PROC/TAG: msg
-    local domain, proc, tag, msg = rest:match("^([^/%s]+)/([^/]+)/([^:]+):%s?(.*)$")
+    -- Three-segment form: DOMAIN/PROC/TAG: msg. Neither PROC nor TAG holds
+    -- whitespace, so a two-segment line whose message contains "/" and ": "
+    -- (`C03F00/MUSL-LDSO: load /system/lib/x.so: ok`) is never split there.
+    local domain, proc, tag, msg = rest:match("^([^/%s]+)/([^/%s]+)/([^:%s]+):%s?(.*)$")
     if not domain then
         -- Two-segment form: DOMAIN/TAG: msg
-        domain, tag, msg = rest:match("^([^/%s]+)/([^:]+):%s?(.*)$")
+        domain, tag, msg = rest:match("^([^/%s]+)/([^:%s]+):%s?(.*)$")
         proc = nil
     end
     if not domain then return nil, line end
