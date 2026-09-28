@@ -158,6 +158,9 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
             local tool = get_or_create_tool(
                 ctx, modules_arr, modules_registry,
                 mod_type, dt.tool_key, dt.tool_data, dt.tool_label)
+            -- Execution platform (spec §18.1): set from detection every sync,
+            -- so a kit that stops declaring a token becomes host-runnable.
+            tool:_set_platform(dt.target_platform, dt.sdk)
             seen[tool] = true
         end
     end
@@ -177,6 +180,9 @@ local function sync_tools(ctx, modules_arr, tools_by_type, cache, modules_regist
                     local tool = get_or_create_tool(
                         ctx, modules_arr, modules_registry,
                         cc.type, cc.tool_key, cc.tool_data or {}, nil, false)
+                    -- A cache record carries no execution platform (it is not
+                    -- detection on this machine, §17.7); the probe still guards.
+                    tool:_set_platform(nil, nil)
                     seen[tool] = true
                 end
             end
@@ -902,5 +908,8 @@ function M.refresh(workspace, config, cache, active_set, all_profile_defs, curre
         active_profile = active_profile,
     }
 end
+
+-- Test seam: the tool sync (execution platform plumbing, spec §18.1).
+M._sync_tools = sync_tools
 
 return M

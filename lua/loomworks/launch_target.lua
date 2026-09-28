@@ -802,6 +802,13 @@ function LaunchTarget:_debug_target()
     end
 
     local artifact_path = require("loomworks.paths").artifact_path(build_dir, target.artifact)
+    -- Debugging a foreign target is refused in this version (spec §18.11); it
+    -- must never start on the host (§18.1).
+    local host_ok, foreign_err = require("loomworks.remote.foreign").check_local(unit, artifact_path)
+    if not host_ok then
+        vim.notify("loomworks: " .. foreign_err, vim.log.levels.ERROR)
+        return
+    end
     local project_name = unit._project and unit._project.key or unit._init_project_key or "?"
     local lang = unit._project and unit._project._module and unit._project._module:primary_language() or "c++"
 
