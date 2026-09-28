@@ -31,6 +31,7 @@ M._clock = function() return os.time() end
 --- @field detail string|nil why it fires (optional — terse items carry only a title)
 --- @field remedy string|nil concrete action the user can take (nil for info items)
 --- @field kind? "suggestion"|"info" actionable (default) vs informational
+--- @field detail_verbose? boolean `detail` is shown only by the verbose report (and `--json`)
 
 --- Registered **passive** provider functions: `(workspace) -> Suggestion[]`.
 --- These are side-effect-free and MUST NOT spawn tools or touch the network —
@@ -44,6 +45,14 @@ M._providers = {}
 --- status count (`collect`). See the no-passive-network constraint (§16.31).
 --- @type (fun(workspace: loomworks.Workspace): loomworks.Suggestion[])[]
 M._health_providers = {}
+
+--- Health providers registered **report-only** (`register_health(fn, {
+--- persist = false })`): their items are shown by the health run that computed
+--- them but never written to the cached network tier (§16.31) — e.g. the
+--- submodule report, whose informational items no passive consumer displays
+--- and whose stored copy would never be invalidated.
+--- @type table<function, true>
+M._report_only = {}
 
 --- Register a **passive** suggestion provider. A provider inspects the resolved
 --- workspace and returns zero or more suggestions. It must be side-effect-free
@@ -59,9 +68,13 @@ end
 --- invoked (`collect_health`), and is deliberately excluded from the passive
 --- `collect` the status count uses, so a status render never hits the network
 --- (§16.31).
+--- `opts.persist = false` makes it **report-only**: its items are never
+--- written to the cached network tier.
 --- @param fn fun(workspace: loomworks.Workspace): loomworks.Suggestion[]
-function M.register_health(fn)
+--- @param opts? { persist?: boolean }
+function M.register_health(fn, opts)
     M._health_providers[#M._health_providers + 1] = fn
+    if opts and opts.persist == false then M._report_only[fn] = true end
 end
 
 --- Run `list` of providers against `workspace`, appending their suggestions to
@@ -89,13 +102,16 @@ local function run_local(workspace)
 end
 
 --- Run the **health-only**/network providers and return their flattened
---- suggestions.
+--- suggestions: those to persist in the network tier, and the report-only
+--- ones (`M._report_only`) that are shown but never cached.
 --- @param workspace loomworks.Workspace|nil
---- @return loomworks.Suggestion[]
+--- @return loomworks.Suggestion[] persisted, loomworks.Suggestion[] report_only
 local function run_network(workspace)
-    local out = {}
-    run_providers(M._health_providers, workspace, out)
-    return out
+    local keep, only = {}, {}
+    for _, provider in ipairs(M._health_providers) do
+        run_providers({ provider }, workspace, M._report_only[provider] and only or keep)
+    end
+    return keep, only
 end
 
 --- The caching backing for a workspace — its `.nvim/` root and an io dependency
@@ -215,7 +231,9 @@ function M.collect_health(workspace, opts)
     if not env then
         local out = {}
         append(out, run_local(workspace))
-        append(out, run_network(workspace))
+        local net, only = run_network(workspace)
+        append(out, net)
+        append(out, only)
         append(out, inventory_items(workspace, opts.inventory))
         return out
     end
@@ -237,7 +255,8 @@ function M.collect_health(workspace, opts)
 
     -- Network tier: always re-fetched (no reuse, however recent), keyed to the
     -- running version so the passive path can drop it after a self-update.
-    local net_items = run_network(workspace)
+    -- Report-only providers' items are shown below but never stored.
+    local net_items, report_only = run_network(workspace)
     data.network_tier = { items = net_items, computed_at = now, key = M._network_key() }
 
     -- Inventory tier: replaced by the fresh probe when the caller ran one.
@@ -248,6 +267,7 @@ function M.collect_health(workspace, opts)
     local out = {}
     append(out, local_items)
     append(out, net_items)
+    append(out, report_only)
     append(out, inventory_items(workspace, opts.inventory))
     return out
 end
@@ -1022,5 +1042,22 @@ end
 
 M.register_health(M.update_check_provider)
 M.register_health(M.channel_override_provider)
+
+-- ---------------------------------------------------------------------------
+-- Provider #3 — git submodule drift (HEALTH-ONLY, REPORT-ONLY, §16.31)
+--
+-- Spawns git (and probes uninitialized submodules' remotes, bounded), so it is
+-- on-demand; its items are all informational and are not cached — see
+-- `loomworks.submodules`.
+-- ---------------------------------------------------------------------------
+
+--- Health provider: the workspace repository's submodule drift report.
+--- @param workspace loomworks.Workspace|nil
+--- @return loomworks.Suggestion[]
+function M.submodule_provider(workspace)
+    return require("loomworks.submodules").provider(workspace)
+end
+
+M.register_health(M.submodule_provider, { persist = false })
 
 return M
