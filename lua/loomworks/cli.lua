@@ -287,35 +287,17 @@ M._on_exit = on_exit
 M._make_interrupt_cleanup = make_interrupt_cleanup
 M._install_interrupt_handler = install_interrupt_handler
 
---- Walk up from `start` for the nearest directory containing loomworks.json.
+--- Walk up from `start` for the workspace root (spec §1.1). The search itself
+--- — including why a linked worktree is a hard boundary while a submodule is
+--- walked through to its superproject — lives in root_finder, shared with the
+--- editor's auto-load so both resolve the same workspace. Returns
+--- `(root, info)`; `info.submodule` names the submodule crossed, if any.
 --- @param start? string
---- @return string|nil root
+--- @return string|nil root, { submodule: string|nil }|nil info
 local function find_root(start)
-  local dir = (start or uv.cwd()):gsub("\\", "/"):gsub("/+$", "")
-  while dir ~= "" do
-    -- A workspace is recognized by the published snapshot OR the working copy
-    -- — a not-yet-published `lw init` has only the latter.
-    if uv.fs_stat(dir .. "/loomworks.json")
-        or uv.fs_stat(dir .. "/.nvim/loomworks.user.json") then
-      return dir
-    end
-    -- Stop at a git working-tree boundary — a directory with a `.git` entry
-    -- (a dir in a normal checkout, a FILE in a linked worktree). A workspace
-    -- must not resolve across a checkout boundary: without this, `lw` in a
-    -- fresh `git worktree` (whose `.nvim/` doesn't exist yet, is gitignored,
-    -- and isn't created by `git worktree add`) would silently walk past the
-    -- worktree and bind to the PARENT checkout's workspace, operating on the
-    -- wrong build dir. Returning nil here surfaces the "run `lw init`" hint
-    -- instead.
-    if uv.fs_stat(dir .. "/.git") then
-      return nil
-    end
-    local parent = dir:gsub("/[^/]*$", "")
-    if parent == dir then break end
-    dir = parent
-  end
-  return nil
+  return require("loomworks.root_finder").find(start)
 end
+M._find_root = find_root
 
 local function is_windows() return package.config:sub(1, 1) == "\\" end
 
@@ -5231,6 +5213,8 @@ end
 --- a workspace too. Every section is capped to keep it to a single page.
 --- `opts.check` (from `lw status --check`) makes the invocation exit non-zero
 --- when any diagnostic is present, for CI; it never changes the rendering.
+--- `opts.submodule` (the submodule dir the root search crossed, spec §1.1)
+--- adds a one-line note that the workspace came from the superproject.
 function M.cmd_status(root, opts)
   opts = opts or {}
   if not root then
@@ -5240,6 +5224,13 @@ function M.cmd_status(root, opts)
   local ws = load_workspace(root, false) -- pinned info only; skip tool detection
   local pal = status_palette(stdout_supports_color())
   out(pal.title("loomworks — " .. (ws.name or "?")) .. "  " .. pal.dim("(" .. ws.root .. ")"))
+  -- Reached by walking out of a submodule (spec §1.1): say so, so acting on the
+  -- superproject's build from inside a submodule is not a surprise (§16 status).
+  if opts.submodule then
+    local rel = opts.submodule:sub(#root + 2)
+    out(pal.dim("(workspace of the superproject — you are in submodule " ..
+      (rel ~= "" and rel or opts.submodule) .. ")"))
+  end
 
   -- Workspace diagnostics — the SAME source the editor's Diagnostics section
   -- uses. Rendered as a top section (when non-empty) and, per item, inline
@@ -8250,7 +8241,8 @@ local function main()
 
   -- LW_ROOT lets a launcher pass the user's directory when the process itself
   -- runs from elsewhere (the luvi host runs from the bundle dir).
-  local root = find_root(os.getenv("LW_ROOT"))
+  -- `root_info.submodule` is set when the root came from a superproject.
+  local root, root_info = find_root(os.getenv("LW_ROOT"))
 
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then
@@ -8262,7 +8254,8 @@ local function main()
       if v == "--check" then check = true end
       if v == "--cache-stats" then cache_stats = true end
     end
-    finish(M.cmd_status(root, { check = check, cache_stats = cache_stats }))
+    finish(M.cmd_status(root, { check = check, cache_stats = cache_stats,
+      submodule = root_info and root_info.submodule }))
   end
 
   -- `health` lists advisory suggestions; like status it works outside a

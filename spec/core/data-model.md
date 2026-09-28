@@ -16,6 +16,36 @@ top-level organizational unit.
   with no root found. This keeps an invocation inside a fresh git worktree
   (whose own working copy does not exist yet) from binding to a parent
   checkout's workspace.
+  - **Submodules are not boundaries.** A submodule's checkout is part of its
+    superproject's working tree, so a workspace at (or above) the
+    superproject root is found from inside any submodule, however deeply
+    nested. The search classifies each `.git` entry it meets without
+    running git — by reading files only:
+    - a `.git` **directory** is a repository root → boundary;
+    - a `.git` **file** is read for its `gitdir:` line (surrounding
+      whitespace and a trailing CR are ignored; a relative target resolves
+      against the directory holding the file, an absolute one is used as
+      is). The entry is a **linked worktree** → boundary when the target
+      directory contains a `commondir` file (every linked-worktree admin
+      directory has one; a repository's own git directory never does), or
+      — when the target does not exist — when the target's final two
+      components are `worktrees/<name>`. Otherwise it is a **submodule** →
+      the search continues upward when the target lies under a `.git`
+      directory's `modules/` area, either directly (`…/.git/modules/…`,
+      nested submodules included: `…/.git/modules/A/modules/B`) or under a
+      linked worktree's admin directory (`…/.git/worktrees/<name>/modules/…`,
+      a submodule checked out inside a linked worktree of the superproject,
+      whose search then stops at that worktree's own root);
+    - anything else — an unreadable file, no `gitdir:` line, or a target of
+      any other shape (e.g. a repository with a separated git directory) —
+      is a boundary. When in doubt the search stops, which is the
+      pre-submodule behaviour.
+  - A search that found its root by continuing past one or more submodule
+    entries MAY report that fact (the nearest submodule crossed) so a host
+    can tell the user the workspace came from the superproject.
+  - Every host that searches upward for the root — the headless host
+    (§16) and the editor's auto-load (§13) — MUST use this same search, so
+    both resolve the same workspace from the same directory.
 - Opening files outside the workspace does not change the active workspace.
 - The workspace name defaults to the root directory name. It may be
   overridden by a `"name"` field in the working copy (`user.json`) or the

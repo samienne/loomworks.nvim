@@ -547,7 +547,7 @@ require("loomworks").setup({
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` | Always load silently when a workspace file is found in cwd. Notify via `vim.notify`. |
+| `"auto"` | Always load silently when a workspace root is found from cwd (§13.2). Notify via `vim.notify`. |
 | `"cached_only"` | Load silently if cache exists (`.nvim/loomworks.cache.json`). For uncached workspaces, notify but do not load. |
 | `"prompt"` | Load silently if cache exists. For uncached workspaces, prompt the user for confirmation. |
 | `false` | Never auto-load. Only manual `:LoomworksInit`. |
@@ -561,19 +561,26 @@ Auto-load runs on:
 4. **`User ResessionLoadPost` event** — re-checks cwd after resession.nvim
    session restore (safe to register even if resession is not installed)
 
-All checks use **cwd only** — no parent directory walking. Use
-`:LoomworksInit` for workspaces in parent or non-cwd directories.
+Every check resolves the workspace root with the **upward root search of
+§1.1**, starting at cwd — the same search the headless host uses, so the
+editor and `lw` resolve the same workspace from the same directory. The
+search stops at a git working-tree boundary (a repository root or a linked
+worktree) but continues through submodules, so Neovim started inside a
+submodule of a superproject loads the superproject's workspace. Use
+`:LoomworksInit` for a workspace outside that search (e.g. above a
+repository root).
 
-**Detection order**: `loomworks.json` is checked first, then
-`.nvim/loomworks.user.json`. Either file is sufficient to identify a
+**Detection order**: at each directory, `loomworks.json` is checked first,
+then `.nvim/loomworks.user.json`. Either file is sufficient to identify a
 workspace root.
 
 ### 13.3 Behavior
 
 When a trigger fires:
-1. Check if `loomworks.json` or `.nvim/loomworks.user.json` exists in
-   cwd (two `stat` calls).
-2. If neither found → no-op.
+1. Search upward from cwd (§1.1) for a directory holding
+   `loomworks.json` or `.nvim/loomworks.user.json` — that directory is the
+   root.
+2. If none found → no-op.
 3. If found and a workspace is already loaded at that root → no-op.
 4. If found and a **different** workspace is already loaded → prompt
    "Switch workspace to {name}?" regardless of `auto_load` mode.
@@ -622,9 +629,11 @@ when the user explicitly publishes (`:w`).
 - **No file watching for workspace file creation**: If loomworks.json or
   user.json is created after Neovim starts and no `:cd` occurs, use
   `:LoomworksInit` manually.
-- **No parent directory walking**: Auto-load only checks cwd, not parent
-  directories. Opening Neovim in `workspace/src/` will not find
-  `workspace/loomworks.json`. Use `:LoomworksInit` or `:cd` to the root.
+- **No walking across repository boundaries**: the upward search (§1.1)
+  stops at a repository root or a linked worktree's root. A workspace
+  placed above the repository root (or in a main checkout, when Neovim is
+  started in a linked worktree) is not found — use `:LoomworksInit`, or
+  `lw pull` to seed the worktree.
 
 ## 14. Neovim Commands
 

@@ -560,6 +560,13 @@ worktree — it offers only to initialise one. Detecting the parent worktree is 
 best-effort, time-bounded hint: it never fails the report, and a slow or absent
 git only adds a small bounded delay.
 
+When the workspace resolved only by continuing the upward root search past a
+git submodule (§1.1) — the invocation sits inside a submodule of the
+superproject that holds the workspace — the overview says so in one dim line
+under its title, naming the superproject root and the submodule the
+invocation came from, so an operation that acts on the superproject's build
+is not a surprise. Every other operation resolves the same root silently.
+
 The overview MAY also surface the workspace's **diagnostics** — the same set
 the interactive host presents — as a top section shown only when non-empty,
 with each per-item warning or error also shown inline under the profile,
