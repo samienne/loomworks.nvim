@@ -673,6 +673,108 @@ When the same destination appears at both project and launch level,
 directories union (both sets of files copied) and file destinations
 override (launch wins).
 
+### Running on a device
+
+When a profile's kit **cross-compiles** (an SDK kit that builds for a phone,
+board or other platform), loomworks never runs the result on your PC. It runs
+it on an attached **device** — or tells you why it can't:
+
+```
+lw: LumeSceneAPITestRunner was built for ohos-aarch64 by kit ohos-openharmony-arm64-v8a;
+    this host cannot run it. No device runner serves that platform.
+```
+
+A program whose executable format your PC cannot run is refused the same way
+even when no kit declared it cross-built — it is never guessed onto a device.
+
+**Prerequisites.** The SDK is declared (`lw sdk add …`), a device is attached
+and authorised, and the SDK's plugin ships a **device runner** (it knows the
+connector tool; loomworks core does not). Remote runs are a headless (`lw`)
+feature in this version; the editor refuses to launch or debug a cross-built
+target.
+
+**Pick a device.** `lw device list` shows what the runners report. With one
+device online it is used automatically; with several, pass `--device <serial>`
+for one run, or persist it for a profile with `lw device select <serial>
+[profile]` (`--clear` forgets it). A named device that is not online is an
+error — another is never substituted.
+
+**What gets copied.** The program, the project shared libraries it links (as
+the build system reports them), the platform runtime the runner names, plus
+whatever your project's `device` block selects — globs relative to the build
+directory:
+
+```json
+"LumeScene": {
+    "cmake": { },
+    "device": {
+        "stage":   [ "test/unittest/api_unit_test/*.so",
+                     "test/unittest/api_unit_test/plugins/*.so" ],
+        "archive": [ "test/assets/**" ],
+        "env":     { "SCENE_LOG_LEVEL": "debug" },
+        "working_dir": "test/unittest/api_unit_test"
+    }
+}
+```
+
+Files keep their build-tree layout on the device, so a program that loads
+`plugins/*.so` beside itself or reads `../../assets` finds them. `archive` sets
+travel as one archive, unpacked on the device (large data trees). Only changed
+files are re-sent (the device is checked when the runner can digest files);
+`--fresh` re-sends everything. A launch configuration's own `device` block
+overrides the project's field by field.
+
+**Run.**
+
+```sh
+lw run Debug:ohos-kit LumeSceneAPITestRunner -- --gtest_filter=Scene.*
+```
+
+Output streams live and the exit code is the program's (a status above 128 is
+reported as a signal). If the device or connection drops and no status comes
+back, `lw` says so and exits 255 — never a fake 0 or 127. Each run leaves a
+folder `<build>/.device-runs/<time>-<serial>/` (the last 10 are kept) with
+`output.log` (the program's stdout+stderr, unfiltered), `device.log` (the
+device's own log as the runner keeps it), pulled results and any **crash
+reports** that appeared during the run — a crash fails the run. `--print`
+shows the device-side command and the staging list without running anything.
+
+**Device logs.** What is shown from the device's log, and how it is filtered,
+belongs to the SDK plugin: pass options per run with `--log key=value`
+(repeatable), or put them in a launch configuration as `"device_log": { … }`.
+See your SDK plugin's documentation for the option names (for HarmonyOS, the
+default prints program output and the last device-log lines on failure;
+`--log show=both --log level=D --log tag=…` shows more).
+
+**Test.** `lw test <profile> --target <exe> [--target <exe>…] [--junit out.xml]
+-- --gtest_filter=…` runs test executables directly — on the device when they
+are cross-built — with gtest's XML output pulled back and parsed; a failure is
+a non-zero exit, a failed test, a missing XML, or a crash. Plain `lw test` on a
+cross-compiling profile refuses: its registered tests (ctest) would run the
+binaries on your PC.
+
+**Timeouts and hangs.** Device connectors can hang when a device disappears:
+every transfer and query has a hard timeout (`--query-timeout`, default 120 s;
+`--transfer-timeout`, default 600 s), and while the program runs the device is
+re-listed — gone twice in a row ends the run. `--timeout <s>` limits the
+program itself (exit 124). Ctrl-C stops the program on the device too.
+
+**Sharing a device.** One run at a time per device on this machine: a second
+run waits (printing who holds it); `--no-wait` fails instead. `lw unlock
+--device <serial>` clears a stuck lock; `LOOMWORKS_DEVICE_LOCK_DIR` moves the
+lock directory (e.g. to one shared by several users of a lab machine).
+
+**Clean up.** `lw device clean [--device <serial>]` removes this workspace's
+staged files from the device.
+
+**Trust.** `stage` / `archive` and `device_log` may come from the committed
+`loomworks.json`; a `device` block's `env` and `working_dir` only from your
+local config (`lw help trust`).
+
+**Limits (v1).** No standard input for device programs, no debugging on a
+device, no test-explorer integration for device tests, and ctest-registered
+tests do not run on a device yet (name the executables with `--target`).
+
 ### Progress notifications
 
 When fidget.nvim is installed, build/configure progress shows up
@@ -1192,10 +1294,12 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
-| `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
-| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy |
+| `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
+| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
+| `lw device <sub>` | `list [--json]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
+| `lw unlock <profile> \| --all \| --device <serial>` | Clear a stale build-directory lock, or a device lock |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
