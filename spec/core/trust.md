@@ -153,7 +153,14 @@ the generic ones:
 - a deploy destination (§8.8) that is not statically inside the workspace: any
   destination other than a relative path — optionally prefixed by the
   workspace-root built-in variable — with no other variable reference;
-- a working-copy-only SDK installation path (§10.4) appearing in shared data.
+- a working-copy-only SDK installation path (§10.4) appearing in shared data;
+- a `device` block's device-side environment (`env`) or working directory
+  (`working_dir`) (§18.9). Its `stage` / `archive` patterns are not
+  program-bearing: they are statically confined to the build directory and
+  select what an explicit remote run transfers, not what runs. A launch
+  configuration's `device_log` options (§18.13) are not program-bearing either:
+  they are opaque data a device runner validates and may never turn into a
+  program, a path to execute, or device command text.
 
 Modules add their own through the optional `trust_fields` declaration (§8.4):
 the top-level `type_config` keys that are program-bearing (a language-server
@@ -242,7 +249,9 @@ and a diagnostic on the configuration. Edit paths refuse to set one. `PATH`
 stays allowed, with its existing warning (§1.3.3). The denylist applies to every
 environment source loomworks composes — configuration, compiler-family
 override, module environment block, tool environment and launch environment —
-not to the user's own process environment.
+not to the user's own process environment. It also applies
+to a declared device-side environment; a device program's loader search path
+comes only from the staging manifest.
 
 ### 17.10 Hosts
 
