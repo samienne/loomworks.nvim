@@ -894,7 +894,9 @@ downgraded.
 `lw version` reports the binary's release (`host: 0.1.29 (v1)`; `dev build`
 for a binary built from a checkout, which never replaces itself; `unknown
 release` for a release binary without an embedded version, which
-`lw self-update` does replace).
+`lw self-update` does replace). A release binary that has not fetched a bundle
+yet says so — ``bundle: none installed (run `lw self-update`)`` — rather than
+naming one.
 
 - `lw self-update --no-host` updates only the bundle.
 - `--force` reinstalls the *bundle* only; it never forces a reinstall (or

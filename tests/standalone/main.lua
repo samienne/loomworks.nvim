@@ -222,6 +222,19 @@ do
     and line2:find("channel: unstable", 1, true) ~= nil,
     "version line leads with the embedded release version")
 
+  -- A release host with NO bundle installed (and no system Lua fused in) used
+  -- to claim "bundle: bundled (fused)" while every other command said "no
+  -- loomworks release is installed". It must say there is none, and how to get it.
+  local none = update.version_info(nil, nil, { fused_system_lua = false })
+  eq(none.source, "none", "no bundle: source is none")
+  local nline = update.version_line(none, "unstable")
+  ok(nline:find("bundle: none installed (run `lw self-update`)", 1, true) ~= nil
+    and nline:find("fused", 1, true) == nil,
+    "no bundle: version line says none installed + self-update  (got " .. nline .. ")")
+  local fz = update.version_info(nil, nil, { fused_system_lua = true, dev_build = true })
+  eq(fz.source, "fused", "fused dev build: source is fused")
+  eq(fz.bundle, "bundled (fused)", "fused dev build: bundle is bundled (fused)")
+
   paths.rm_rf(sandbox)
 end
 

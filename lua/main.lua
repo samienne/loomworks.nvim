@@ -205,8 +205,11 @@ if host_command == "version" then
   -- Same dev-build predicate self-update uses (§16.32), so the label never
   -- calls a host a dev build that self-update would replace, or vice versa.
   local hu = require("boot.host_update")
-  local dev_build = hu.dev_build({ exe = hu.exe_path(), fused_system_lua = fused_system_lua() }) ~= nil
-  local info = upd.version_info(luaroot, source_kind, { dev_build = dev_build })
+  local fused = fused_system_lua()
+  local dev_build = hu.dev_build({ exe = hu.exe_path(), fused_system_lua = fused }) ~= nil
+  -- `fused_system_lua` decides "bundled (fused)" vs "none installed": a release
+  -- host with no bundle must not claim one (every other command would say none).
+  local info = upd.version_info(luaroot, source_kind, { dev_build = dev_build, fused_system_lua = fused })
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
