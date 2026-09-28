@@ -1387,18 +1387,26 @@ nothing. It is **workspace-scoped**. It reports, per submodule:
   else the declared one; a relative URL — `./…`, `../…` — resolved against the
   parent repository's `origin` URL, or its working directory when it has none,
   by git's rules) is probed with a remote HEAD query. This is the provider's
-  one network operation and is bounded: at most 16 distinct URLs, probed
-  **concurrently**, each under a **5 s** timeout, with credential and terminal
-  prompts disabled; an unanswered or failed probe marks the URL
-  *unreachable*. A URL beginning with `-` is never passed to git (reported as
-  unchecked). Only an explicit health run probes.
+  one network operation and is bounded: at most 16 distinct network URLs (and
+  64 local-path ones, which are local queries), deduplicated, all network
+  probes running **concurrently** under one **10 s** timeout (a real ssh round
+  trip to a distant forge was measured at ~4.6 s, so a 5 s budget misreported
+  answering remotes), with credential and terminal prompts disabled. Only a
+  **definitive** failure (the remote or transport answered with an error)
+  marks a URL *unreachable*; a probe that times out leaves it **not
+  verified** — a slow network is never reported as a missing remote. A URL
+  beginning with `-` is never passed to git (reported as not checked), nor is
+  one beyond the caps. Only an explicit health run probes.
 
-Cost: one recursive submodule status query (a second, recorded-commit query only
-when some checkout differs), plus — concurrently, bounded — one ahead/behind
-count per differing checkout, one per initialized submodule with a
-remote-tracking ref, and the reachability probes; every spawn has a timeout, so
-a hung git reads as unknown and never stalls the report. Everything is local
-file reads and local git queries except the reachability probes.
+Cost: one recursive submodule status query, one index lookup per parent of a
+differing checkout (the recorded commits), plus — concurrently, bounded — one
+ahead/behind count per differing checkout, one per initialized submodule with
+a remote-tracking ref, and the reachability probes; every spawn has a timeout,
+so a hung git reads as unknown and never stalls the report. Every git query
+runs without optional locks (it never refreshes or rewrites the repository's
+index). Everything is local file reads and local git queries except the
+network reachability probes. When the status query itself fails or times out,
+one informational item says the submodules could not be checked.
 
 Every item is **informational** — never counted in `N suggestions`, never
 gating: a checkout ahead of its pin is ordinary work in progress, a pin behind
@@ -1410,8 +1418,9 @@ verbose report:
 - "submodules: N checked out off their recorded commit (<path> 2 behind, …)";
 - "submodules: N pins behind their tracked branch (<path> 5 behind
   origin/dev, …)" (ahead / diverged pins included under the same heading);
-- "submodules: N not initialized (M nested) (…)";
+- "submodules: N not initialized, M nested (…)";
 - "submodules: N remotes unreachable (…)";
+- "submodules: N remotes did not answer within 10 s — not verified (…)";
 - with none of the above: "submodules: N in sync with their recorded commits".
 
 An item's per-submodule detail (one line each, plus the remedy — `git submodule
@@ -1704,15 +1713,17 @@ status — so a script need not recount. `update` is the update check's outcome
 check failed — `detail` says why); it is absent when the check does not apply
 (a development / fused source or an unknown channel). `submodules` is the
 submodule provider's report (§16.31), absent when it does not apply (no
-repository, no declaration file, no `git`): `{ root, entries[] }`, `root` the
+repository, no declaration file, no `git`): `{ root, entries[], error? }`, `root` the
 repository's top level and each entry `{ path, name?, nested, state,
-recorded?, checked_out?, ahead?, behind?, tracking?, url?, reachable? }` —
+recorded?, checked_out?, ahead?, behind?, tracking?, url?, reach?, reachable? }` —
 `path` relative to `root`, `state` one of `match`, `ahead`, `behind`,
 `diverged`, `unrelated`, `missing-commit`, `uninitialized`, `conflict`,
 `unknown`; `tracking` `{ ref, ahead, behind }` compares the recorded commit
-with the tracked branch's remote-tracking ref; `url` / `reachable` are present
-for an uninitialized entry whose URL was probed. Informational only — it never
-affects `summary`. Object keys are emitted in
+with the tracked branch's remote-tracking ref; `url` is the resolved URL of an
+uninitialized entry, `reach` its probe outcome (`reachable`, `unreachable`,
+`no-answer`, `not-checked`) and `reachable` a boolean present only for a
+definitive answer; `error` is set when the status query failed. Informational
+only — it never affects `summary`. Object keys are emitted in
 sorted order at every depth and arrays in their defined order (inventory: category
 order, then declaration order), so the same data prints byte-identically — stable
 for scripts and CI diffs. It carries the same data as the text report, is
