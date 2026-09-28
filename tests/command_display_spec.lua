@@ -25,6 +25,9 @@ local function make_core()
     local root = (vim.fn.tempname():gsub("\\", "/"))
     vim.fn.mkdir(root .. "/App", "p")
     vim.fn.mkdir(root .. "/bin", "p")
+    -- Canonical (long) path: on Windows CI tempname() can be the 8.3 short
+    -- form (RUNNER~1) while lw reports resolved paths.
+    root = ((vim.uv or vim.loop).fs_realpath(root) or root):gsub("\\", "/")
     local cmake_path = root .. "/bin/cmake" .. (vim.fn.has("win32") == 1 and ".exe" or "")
     vim.fn.writefile({}, cmake_path)
     if vim.fn.has("win32") == 0 then vim.fn.setfperm(cmake_path, "rwxr-xr-x") end
