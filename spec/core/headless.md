@@ -791,6 +791,10 @@ never deletes repository content).
 A launcher never downloads or extracts the bundle itself — it fetches and execs
 only the host binary, and the exec'd host self-provisions the bundle as above,
 so the launcher depends on nothing beyond a system downloader and a hash tool.
+The native Windows launcher invokes the operating system's own tools by their
+absolute system location, never by a bare name resolved through the search path,
+so a same-named tool from another toolset placed earlier on the path (as in a
+Unix-style shell environment) cannot change its behavior.
 
 ### 16.23 Global pin-aware redirect
 

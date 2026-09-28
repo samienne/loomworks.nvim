@@ -1044,6 +1044,107 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.bootstrap — lw.cmd calls Windows system tools by absolute path (PATH-shadowing)")
+do
+  local bootstrap = require("boot.bootstrap")
+
+  -- Static: every external system tool in lw.cmd is invoked by its absolute
+  -- %SystemRoot%\System32 path, never by a bare name that PATH could shadow
+  -- (Git's usr/bin/find ahead of System32 broke the download in CI).
+  local SYS32 = [[%SystemRoot%\System32\]]
+  local tools = { "find", "findstr", "certutil", "curl", "where" }
+  local bare = {}
+  for line in (bootstrap.LW_CMD .. "\n"):gmatch("([^\n]*)\n") do
+    if not line:match("^%s*rem[%s$]") and not line:match("^%s*rem$") then
+      for _, t in ipairs(tools) do
+        local init = 1
+        while true do
+          local s, e = line:find("%f[%w_%-]" .. t .. "%f[^%w_%-]", init)
+          if not s then break end
+          local pre = line:sub(1, s - 1)
+          local absolute = pre:sub(-#SYS32) == SYS32
+          -- the literal word inside an echo message is not an invocation
+          local in_echo = pre:match("echo[^|&]*$") ~= nil
+          if not absolute and not in_echo then bare[#bare + 1] = t .. " in: " .. line end
+          init = e + 1
+        end
+      end
+    end
+  end
+  ok(#bare == 0, "lw.cmd invokes no system tool by bare name" ..
+    (#bare > 0 and (" — " .. table.concat(bare, " | ")) or ""))
+
+  -- Dynamic (Windows only): run the generated lw.cmd with a PATH whose first
+  -- entry holds fake find/findstr/certutil/curl/where that lie (exit 0, no
+  -- output). The pinned-version validation, the local-mirror copy and the
+  -- sha256 check must still behave exactly as with the real System32 tools.
+  if package.config:sub(1, 1) == "\\" then
+    local sysroot = (os.getenv("SystemRoot") or [[C:\Windows]])
+    local cmdexe = sysroot .. [[\System32\cmd.exe]]
+    local sb = root .. "/tests/.tmp-lwcmd"; paths.rm_rf(sb); paths.mkdirp(sb)
+    local fake = sb .. "/fakebin"; paths.mkdirp(fake)
+    -- `lie` is the exit status every fake returns: 0 claims a match (findstr
+    -- would reject a valid version, find would send a local mirror to curl),
+    -- 1 claims no match (findstr would let an invalid version through).
+    local function plant_fakes(lie)
+      for _, t in ipairs(tools) do
+        local f = assert(io.open(fake .. "/" .. t .. ".bat", "wb"))
+        f:write("@exit /b " .. lie .. "\r\n"); f:close()
+      end
+    end
+    local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+    local asset = "lw-windows-x86_64.exe"
+    -- the "pinned host binary" is a copy of cmd.exe, so forwarding is observable
+    local body = readfile(cmdexe)
+    do local f = assert(io.open(mirror .. "/" .. asset, "wb")); f:write(body); f:close() end
+    local want = verify.sha256_hex(body)
+
+    local function run_launcher(repo, version, args)
+      paths.mkdirp(repo)
+      do local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(bootstrap.LW_CMD); f:close() end
+      do local f = assert(io.open(repo .. "/lw.pin", "wb"))
+         f:write("version=" .. version .. "\nsha256_" .. asset .. "=" .. want .. "\n"); f:close() end
+      local env = {}
+      for k, v in pairs(uv.os_environ()) do
+        local uk = k:upper()
+        if uk ~= "PATH" and uk ~= "LOOMWORKS_LW" and uk ~= "LOOMWORKS_RELEASE_URL" then
+          env[#env + 1] = k .. "=" .. v
+        end
+      end
+      env[#env + 1] = "PATH=" .. fake:gsub("/", "\\") .. ";" .. sysroot .. [[\System32]]
+      env[#env + 1] = "LOOMWORKS_RELEASE_URL=" .. mirror
+      local out = {}
+      local stdout, stderr = uv.new_pipe(false), uv.new_pipe(false)
+      local code
+      local argv = { "/d", "/c", (repo:gsub("/", "\\")) .. [[\lw.cmd]] }
+      for _, a in ipairs(args) do argv[#argv + 1] = a end
+      local h = uv.spawn(cmdexe, { args = argv, env = env, cwd = repo, stdio = { nil, stdout, stderr } },
+        function(c) code = c end)
+      local function rd(_, d) if d then out[#out + 1] = d end end
+      stdout:read_start(rd); stderr:read_start(rd)
+      uv.run()
+      if h and not h:is_closing() then h:close() end
+      return code, table.concat(out)
+    end
+
+    plant_fakes(0)
+    local ver = "7.8.9-test"
+    local code, out = run_launcher(sb .. "/good", ver, { "/c", "exit", "7" })
+    ok(not out:find("invalid pinned version", 1, true),
+      "fake findstr on PATH does not reject a valid version  (" .. out .. ")")
+    eq(code, 7, "launcher fetched, verified and forwarded to the pinned binary despite fake tools on PATH")
+    ok(uv.fs_stat(sb .. "/good/.nvim/cache/lw-" .. ver .. "-" .. asset) ~= nil,
+      "pinned binary cached from the local mirror")
+
+    plant_fakes(1)
+    local bcode, bout = run_launcher(sb .. "/bad", "1.0/evil", { "/c", "exit", "0" })
+    ok(bcode ~= 0 and bout:find("invalid pinned version", 1, true) ~= nil,
+      "an invalid pinned version is still rejected  (" .. tostring(bcode) .. ": " .. bout .. ")")
+
+    paths.rm_rf(sb)
+  end
+end
+
 print("SECURITY — malicious lw.pin version cannot redirect the fetch or rm outside cache")
 do
   local pin = require("boot.pin")
