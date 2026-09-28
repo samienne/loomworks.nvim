@@ -1632,9 +1632,11 @@ from (spec §17, `lw help trust`):
 - **`loomworks.json` never names programs.** Environment variables
   (configuration `env`, compiler-family `overrides.<family>.env`, a shell
   project's `env`), launch configurations with a `command` / `args` / `env` /
-  `working_dir`, deploy destinations outside the workspace, and module program
-  settings (a `clangd` / `qmlls` binary, qmlls import paths, a shell project's
-  clangd database argument) found in it are **ignored**, each with a diagnostic
+  `working_dir`, deploy destinations outside the workspace, SDK installation
+  paths (a shared SDK declaration keeps only its type and version
+  requirements), and module program settings (a `clangd` / `qmlls` binary,
+  qmlls import paths, a shell project's clangd database argument) found in it
+  are **ignored**, each with a diagnostic
   (`lw status`, the status page). They stay in the file — publishing keeps a
   teammate's values — and to use one you copy it into your working copy.
 - **`.nvim/loomworks.user.json` is honored only when this machine signed it.**
