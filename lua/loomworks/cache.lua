@@ -169,7 +169,8 @@ function M.save(root, data)
     local ok, dir_err = io_mod.ensure_dir(dir)
     if not ok then return false, "mkdir: " .. (dir_err or "unknown") end
 
-    return io_mod.write_json(M.filepath(root), data)
+    -- Signed with the machine key (spec §17.3).
+    return io_mod.write_json_signed(M.filepath(root), "cache", data)
 end
 
 return M

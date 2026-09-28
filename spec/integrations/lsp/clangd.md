@@ -38,6 +38,13 @@ directory's native database (see [`spec/modules/cmake.md`](../../modules/cmake.m
 compiler the entries use `cl.exe` as the driver so clangd's cl-compatible
 mode applies.
 
+**Trust (core §17).** A `binary` a module forwards comes either from the signed
+working copy (a module's program-bearing `type_config` key, core §17.6) or from
+the active tool's **detected** data (core §17.7); a binary override in
+`loomworks.json` never reaches this integration. The user options of §12
+(`extra_args` included — e.g. `--query-driver` makes clangd execute compilers)
+exist only in the signed working copy.
+
 ## 3. Per-buffer cmd resolution
 
 The `cmd` function the integration installs into `vim.lsp.config`

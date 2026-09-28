@@ -2,9 +2,10 @@
 --
 -- The only Lua fused into the host binary. It carries no behavioral logic; it
 -- (1) resolves where *system Lua* (the loomworks implementation) comes from,
--- (2) handles the host-level commands `version` and `self-update` (which must
--- work even with no bundle installed), and (3) runs the CLI from the resolved
--- source.
+-- (2) handles the host-level commands `version`, `self-update`, `install`,
+-- `bootstrap` and `update` (which must work even with no bundle installed) —
+-- and, when there is no system Lua at all, their help (boot.help) — and
+-- (3) runs the CLI from the resolved source.
 --
 -- System-Lua source precedence:
 --   LOOMWORKS_LUA env > `--dev[=PATH]` > settings `default-source=dev`
@@ -192,7 +193,9 @@ local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~=
 
 -- `lw <host-command> --help` / `-h` must show help, never perform the operation
 -- (a `self-update --help` that replaced the binary was a real bug). Leave such
--- invocations to the CLI's central help dispatcher below.
+-- invocations to the CLI's central help dispatcher below — or, with no system
+-- Lua to run it, to the host's own help (boot.help, before the "no release"
+-- error).
 local help_requested = false
 for _, v in ipairs(forwarded) do
   if v == "--help" or v == "-h" then help_requested = true; break end
@@ -205,8 +208,11 @@ if host_command == "version" then
   -- Same dev-build predicate self-update uses (§16.32), so the label never
   -- calls a host a dev build that self-update would replace, or vice versa.
   local hu = require("boot.host_update")
-  local dev_build = hu.dev_build({ exe = hu.exe_path(), fused_system_lua = fused_system_lua() }) ~= nil
-  local info = upd.version_info(luaroot, source_kind, { dev_build = dev_build })
+  local fused = fused_system_lua()
+  local dev_build = hu.dev_build({ exe = hu.exe_path(), fused_system_lua = fused }) ~= nil
+  -- `fused_system_lua` decides "bundled (fused)" vs "none installed": a release
+  -- host with no bundle must not claim one (every other command would say none).
+  local info = upd.version_info(luaroot, source_kind, { dev_build = dev_build, fused_system_lua = fused })
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
@@ -310,8 +316,16 @@ elseif host_command == "install" then
     if v == "-y" or v == "--yes" then opts.assume_yes = true
     elseif v == "--no-modify-path" then opts.no_modify_path = true
     elseif v == "--no-bundle" then opts.no_bundle = true
-    elseif v == "--dry-run" then opts.dry_run = true end
+    elseif v == "--dry-run" then opts.dry_run = true
+    elseif v == "--no-input" or v == "--non-interactive" then opts.no_input = true end
   end
+  -- Same non-interactive switches as the CLI: never prompt (replacing an
+  -- existing binary or editing PATH then needs -y) under LW_NO_INPUT / CI.
+  local function env_truthy(name)
+    local e = getenv(name)
+    return e ~= nil and e ~= "" and e ~= "0" and e:lower() ~= "false"
+  end
+  if env_truthy("LW_NO_INPUT") or env_truthy("CI") then opts.no_input = true end
   -- install may report progress AND fail: the binary can be placed while the
   -- bundle fetch dies. Print whatever it got done, then honour the error —
   -- exiting 0 on a partial install is what leaves a job to fail later with a
@@ -446,8 +460,15 @@ if luaroot then
 else
   -- No on-disk root. Fall back to a full-fused bundle (dev exe / source run);
   -- if there is no fused loomworks either, this is a bootstrap-only host with
-  -- nothing installed yet — guide the user to fetch a release.
+  -- nothing installed yet — guide the user to fetch a release. Help still
+  -- works: a user must be able to learn what `install` / `self-update` do
+  -- before either has run (host usage + per-host-command help, exit 0).
   if not bundle.readfile("loomworks/cli.lua") then
+    local help_text = require("boot.help").for_args(forwarded)
+    if help_text then
+      io.write(help_text .. "\n")
+      exit(0)
+    end
     io.stderr:write(
       "lw: no loomworks release is installed.\n" ..
       "    Run `lw self-update` to download and verify the current release.\n")

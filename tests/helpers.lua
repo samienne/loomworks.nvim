@@ -723,6 +723,24 @@ function M.make_mock_core(overrides)
     return M.make_mock_workspace(ws_overrides)
 end
 
+--- A `trust` dependency that treats every `.nvim` file as signed by this
+--- machine (for unit tests whose fixtures are unsigned JSON strings).
+M.trust_all = {
+    verify = function(_, text) return "valid", text end,
+    sign_file = function() return true end,
+}
+
+--- Sign a JSON text for `kind` with the real machine key (test fixtures that
+--- go through the real trust gate). Re-encodes to loomworks' own format.
+--- @param kind "user"|"cache"|"health"
+--- @param json string|table
+--- @return string
+function M.signed(kind, json)
+    local trust = require("loomworks.trust")
+    local tbl = type(json) == "table" and json or vim.json.decode(json)
+    return assert(trust.sign(kind, trust.encode(tbl)))
+end
+
 --- Build mocked deps for Core.new() that use in-memory file content.
 --- @param files? table<string, string> path -> content mapping
 --- @param opts? table extra dep overrides
@@ -785,6 +803,11 @@ function M.make_test_deps(files, opts)
             save = function() return true end,
         },
         detect_tools_async = function(config, cache, callback) callback({}) end,
+        -- In-memory fixtures are unsigned; these unit tests exercise other
+        -- behavior, so their files count as signed by this machine. The trust
+        -- gate itself is tested against the real `loomworks.trust`
+        -- (tests/workspace_trust_spec.lua).
+        trust = { verify = M.trust_all.verify, sign_file = M.trust_all.sign_file },
         modules = {
             get = function(mod_type)
                 if not mod_type then return nil end

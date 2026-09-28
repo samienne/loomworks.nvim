@@ -237,11 +237,26 @@ local function make_fixture()
 end
 
 describe("submodules report (real git)", function()
-    it("reports checkout drift, pins vs tracked branch, nested uninitialized and reachability", function()
+    it("reports checkout drift, pins vs tracked branch, nested uninitialized and reachability; git runs hook-free", function()
         if not git_ok then pending("git not available in this environment") return end
         local super, base = make_fixture()
 
-        local report = sm.report(super .. "/")
+        -- Every git call disables repository command hooks (spec §17.8).
+        local exe = require("loomworks.exe")
+        local orig_system = exe.system
+        local lines = {}
+        exe.system = function(cmd, ...)
+            lines[#lines + 1] = table.concat(cmd, " ")
+            return orig_system(cmd, ...)
+        end
+        local ok, report = pcall(sm.report, super .. "/")
+        exe.system = orig_system
+        assert.is_true(ok, report)
+        assert.is_true(#lines > 0)
+        for _, line in ipairs(lines) do
+            assert.is_truthy(line:find("-c core.fsmonitor=false", 1, true), line)
+            assert.is_truthy(line:find("-c core.hooksPath=", 1, true), line)
+        end
         assert.is_not_nil(report)
         assert.equals(super, report.root)
         local by = {}

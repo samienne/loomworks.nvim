@@ -34,15 +34,19 @@ local function make_core(fills, active)
     } } }
     if fills then user.profile_variables = { ["debug:ninja-gcc-13"] = { App = fills } } end
     if active then user.active_profile = "debug:ninja-gcc-13" end
+    local app = {
+        variables = { warn = { type = "string" } },
+        cmake = { configurations = { Debug = {
+            variant = "Debug", options = { FOO = "${warn}" },
+            env = { MY_WARN = "${warn}" },
+        } } },
+    }
+    -- The env-bearing configuration is in the working copy (an env in
+    -- loomworks.json is ignored, spec §17.6).
+    user.projects = { App = app }
     local files = {
         ["loomworks.json"] = h.make_config_json({
-            projects = { App = {
-                variables = { warn = { type = "string" } },
-                cmake = { configurations = { Debug = {
-                    variant = "Debug", options = { FOO = "${warn}" },
-                    env = { MY_WARN = "${warn}" },
-                } } },
-            } },
+            projects = { App = app },
             configuration_sets = { debug = { App = "Debug" } },
         }),
         ["loomworks.user.json"] = h.make_user_json(user),

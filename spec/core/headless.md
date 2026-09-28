@@ -114,6 +114,14 @@ first configure (or when the module does not say), `full reconfigure
 `full reconfigure (--fresh): configure record from an older lw`. The editor
 logs the same line.
 
+**The command line.** Every configure and build step — headless or from the
+editor — writes its full command line and working directory to the workspace
+log at info level; asked to (`lw build -v` / `--verbose`), the runner also
+prints them under the step's header. A step whose command is a wrapper shows
+the command the wrapper runs (§8.1 `display_cmd`), not the wrapper. Arguments
+are quoted for readability, and data in them is rendered like any other
+(§16.7).
+
 **Forced full reconfigure.** `lw build --reconfigure` configures every unit of
 the profile before building, whether or not the gate would, forcing each
 module's **full** reconfigure (§5.1 *Forced full reconfigure*) — for a build
@@ -202,6 +210,11 @@ that hands the rest to a build tool or program) print that command's help and
 exit 0 — the flag is never read as an operand such as a profile name. This
 holds for the host-level commands too (version reporting, self-update,
 installation, pin management): asking for their help never performs them.
+Help does not depend on the bundle: a host with no system Lua to run (a
+release host before its first acquisition, §16.13) still answers every help
+request with exit 0 — the host-level commands' own help for those commands,
+and otherwise a short usage listing the host-level commands — stating that
+full help needs the bundle and naming the acquisition operation.
 A sub-command's help (`lw help <command> <sub-command>`, or `--help` after the
 sub-command) prints only that sub-command's part of the command's help, with a
 pointer to the whole; a sub-command the help does not document falls back to
@@ -326,6 +339,12 @@ parsed (§1.5.2) — or silently assuming a default that is wrong for some
 toolchains. Declaration avoids this because the provider *constructs* the
 toolchain rather than guessing at it.
 
+The runner declares an installation either from a supplied path or, with none,
+from the provider's detected installations (§10.1) — never prompting when it
+cannot prompt: several candidates are then an error that lists each as the
+explicit with-path declaration. It also lists every provider's detected
+installations on request, read-only and outside a workspace.
+
 ### 16.11 Runner distribution and system-Lua resolution
 
 The standalone runner separates a **generic runtime host** (the Lua VM and
@@ -387,7 +406,18 @@ trusted channel *before* its first execution, and only a matching binary is
 run. Installation is that binary placing itself where it can be invoked; it is
 not part of the verified-bundle chain and MUST NOT be assumed to have verified
 the running binary. Once trusted this way, the host bootstraps the bundle chain
-(§16.12–16.13). A later replacement of an installed host (§16.32) is verified
+(§16.12–16.13).
+
+Installation never silently replaces a **different** host already at the
+install location. When the location holds a binary whose content differs from
+the running one, installation first describes it — as far as that is knowable
+without executing it: whether it is a development build or which release it
+is, its size, and its modification time — and asks for confirmation. An
+explicit assume-yes flag skips the question; a non-interactive invocation
+without it refuses, with a non-zero status, and leaves the existing binary
+untouched. A binary identical to the running one is reported as already
+installed. A dry run reports the replacement without asking or changing
+anything. A later replacement of an installed host (§16.32) is verified
 by the already-trusted running host against the signed hash list below, before
 the new binary is ever executed.
 
@@ -824,7 +854,10 @@ re-authoring it.
 
 Pull is a management write (§16.9): it authors the current working copy only,
 never the published snapshot (§2.4) and never any build or cache state (§2.3).
-It is never part of a build.
+It is never part of a build. It reads the source's working copy only when that
+file carries a valid machine signature, and merges only into a target working
+copy that is valid or absent; the result is signed (§17.5) — a pull never turns
+an untrusted file into a signed one.
 
 **Source resolution.** The source is another checkout directory. Absent an
 explicit source, the operation resolves the **main worktree** of the current git
@@ -1469,7 +1502,12 @@ build reports that it is one, and a release host with no version identity
 (released before identity existed) reports its release as unknown. The
 distinction uses the same development-build determination as host
 replacement below, so a host reported as a development build is never
-replaced and one reported as an unknown release is.
+replaced and one reported as an unknown release is. The active bundle is
+reported truthfully: a host that resolved no system-Lua source and carries
+none built in (a release host before its first acquisition, §16.13) reports
+that no bundle is installed and names the acquisition operation, never a
+bundle it does not have — the same condition every other command reports as
+"no release installed".
 
 Because host-side behavior (argument handling, source resolution, the
 acquisition procedure itself) lives in the host and not the bundle (§16.11),

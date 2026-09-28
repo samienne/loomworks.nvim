@@ -386,6 +386,7 @@ function M._set_create_intent(v) create_intent = v end
 --- isn't a terminal (piped / redirected / closed — the common CI case).
 local function interactive()
   if force_noninteractive then return false end
+  if M._test_interactive ~= nil then return M._test_interactive end
   local ok, h = pcall(uv.guess_handle, 0)
   return ok and h == "tty"
 end
@@ -577,6 +578,10 @@ local function load_workspace(root, wait_tools)
       errw(tostring(msg) .. "\n")
     end
   end
+  -- A refused `.nvim` file (spec §17.4) is reported by the CLI itself, with
+  -- its own commands (spec §17.10).
+  core._deps.quiet_trust_errors = true
+  core._deps.trust_actions = { trust = "lw trust", discard = "lw trust --discard", nuke = "lw nuke" }
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
@@ -605,6 +610,7 @@ local function load_workspace(root, wait_tools)
   if not ws then
     if completion_mode then return nil end
     local e = core.get_setup_error and core:get_setup_error()
+    if e and e.trust then die(M._trust_refusal_message(e.trust)) end
     die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
   end
   -- Await tool detection (needed for cold builds + accurate buildability).
@@ -996,9 +1002,13 @@ local function conflict_message(block)
     block.profile, block.path or "?", block.profile)
 end
 
---- Whether `cmd` runs a batch file through cmd.exe (`cmd /C <x.bat>`): the
---- program the build really runs is inside the batch, so arguments appended to
---- this argv become ignored batch parameters.
+--- Whether `cmd` runs a batch file through cmd.exe: the program the build
+--- really runs is inside the batch, so arguments appended to this argv never
+--- reach it. Recognizes a literal batch path (`cmd /C <x.bat>`) and a program
+--- named only by a variable reference cmd.exe expands (`!VAR!` / `%VAR%`) —
+--- the cmake vcvarsall wrapper's `cmd /d /v:on /c !LOOMWORKS_VCVARS_BAT!`
+--- form. An argv whose real program cmd.exe substitutes cannot be extended
+--- safely either way, so it is treated as a batch (refuse, never drop args).
 --- @param cmd string[]
 --- @return boolean
 local function runs_batch_file(cmd)
@@ -1008,6 +1018,7 @@ local function runs_batch_file(cmd)
   for i = 2, #cmd do
     local a = tostring(cmd[i]):lower()
     if a:match("%.bat$") or a:match("%.cmd$") then return true end
+    if a:match("^!.+!$") or a:match("^%%.+%%$") then return true end
   end
   return false
 end
@@ -1081,13 +1092,14 @@ end
 
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
---- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean }
+--- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean }
 ---   for_test skips building units whose native test runner rebuilds itself;
 ---   extra_args are forwarded to the build tool and build_targets select what
 ---   it builds — both handed to the module's build task (core §8.1), which
 ---   puts them on its native build command before any wrapping (§16.4);
 ---   force overrides the output-artifact conflict gate (§5.9); reconfigure
----   forces a FULL reconfigure of every unit before building (§16.4).
+---   forces a FULL reconfigure of every unit before building (§16.4);
+---   verbose prints each step's command line + cwd (always logged, §16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
   -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
@@ -1159,6 +1171,14 @@ local function run_build_steps(profile, ws, opts)
     if step.kind == "configure" then
       local why = overseer.configure_reason_line(step)
       if why then log("    " .. why) end
+    end
+    -- The command line + cwd (§16.4): always to the workspace log, and on
+    -- the terminal with -v. A wrapped command shows what the wrapper runs.
+    local cwd = step.cwd or ws.root
+    overseer.log_task_command(ws, step.name, step, cwd)
+    if opts.verbose then
+      log("    $ " .. overseer.command_text(step))
+      log("    (in " .. tostring(cwd) .. ")")
     end
     -- Through the module table so tests can stub the spawn.
     local code = M._run_spec(step, ws.root, quiet)
@@ -1249,9 +1269,9 @@ end
 function M.cmd_build(ws, args)
   -- Split on `--`: everything after goes to the build tool.
   local pre, extra, seen_sep = {}, {}, false
-  local force, reconfigure, targets = false, false, {}
+  local force, reconfigure, verbose, targets = false, false, false, {}
   local usage = "usage: lw build [profile] [--target <name>]... [--force] [--reconfigure] "
-    .. "[-- build-tool-args…]"
+    .. "[-v|--verbose] [-- build-tool-args…]"
   local i = 2
   while i <= #args do
     local a = args[i]
@@ -1259,6 +1279,7 @@ function M.cmd_build(ws, args)
     elseif seen_sep then extra[#extra + 1] = a
     elseif a == "--force" then force = true
     elseif a == "--reconfigure" then reconfigure = true
+    elseif a == "--verbose" or a == "-v" then verbose = true
     elseif a == "--target" or a:match("^%-%-target=") then
       local name = a:match("^%-%-target=(.*)$")
       if not name then i = i + 1; name = args[i] end
@@ -1281,6 +1302,7 @@ function M.cmd_build(ws, args)
       build_targets = (#targets > 0) and targets or nil,
       force = force,
       reconfigure = reconfigure,
+      verbose = verbose,
     })
   end)
   if built == 0 then
@@ -1485,6 +1507,161 @@ function M.cmd_reset(ws, args)
   return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- Workspace trust (spec §17)
+-- ---------------------------------------------------------------------------
+
+--- The message for a refused `.nvim` file (spec §17.10). `t` is the setup
+--- error's `trust` table `{ kind = "user"|"cache", status }`.
+--- @param t table
+--- @return string
+function M._trust_refusal_message(t)
+  if t.kind == "cache" then
+    return ".nvim/loomworks.cache.json was not written on this machine (its signature does not match).\n"
+      .. "  It is not used. Reset the build cache (deletes .nvim/build and the cache): lw nuke"
+  end
+  local why = (t.status == "unsigned")
+    and "is not signed by this machine (written by hand, or by an earlier lw)"
+    or "was modified outside loomworks (its signature does not match this machine)"
+  return ".nvim/loomworks.user.json " .. why .. ".\n"
+    .. "  It is not used until you review it.\n"
+    .. "  Review and trust it:  lw trust\n"
+    .. "  Or discard it:        lw trust --discard\n"
+    .. "  (`lw help trust` explains why.)"
+end
+
+--- `lw trust [--yes] [--discard]` — review the working copy and re-sign it
+--- for this machine, or discard it (spec §17.4, §17.10). Works on a refused
+--- workspace: it never loads the workspace.
+--- @param root string
+--- @param args string[]
+--- @return integer
+function M.cmd_trust(root, args)
+  local yes, discard = false, false
+  for i = 2, #args do
+    local v = args[i]
+    if v == "-y" or v == "--yes" then yes = true
+    elseif v == "--discard" then discard = true
+    else die("unknown argument '" .. v .. "' — usage: lw trust [--yes] [--discard]") end
+  end
+  local trust = require("loomworks.trust")
+  local io_mod = require("loomworks.io")
+  local user = require("loomworks.user")
+  local path = user.filepath(root)
+
+  -- The build cache's state, reported alongside (its only remedy is a reset).
+  local function cache_note()
+    local ctext = io_mod.read_file(require("loomworks.cache").filepath(root))
+    if ctext and trust.verify("cache", ctext) == "invalid" then
+      out("note: .nvim/loomworks.cache.json was not written on this machine — reset it with `lw nuke`.")
+    end
+  end
+
+  local text = io_mod.read_file(path)
+  if not text then
+    out("no working copy (.nvim/loomworks.user.json) — nothing to trust.")
+    cache_note()
+    return 0
+  end
+  local status, content = trust.verify("user", text)
+
+  if discard then
+    out("Will delete " .. path .. " (the working copy: profiles, local configuration, settings).")
+    if not yes then
+      if not interactive() then
+        die("refusing to discard the working copy without confirmation.\n  Re-run with --yes.")
+      end
+      local answer = (prompt_line("Discard it? [y/N]") or ""):lower()
+      if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+    end
+    for _, p in ipairs({ path, path .. ".bak" }) do
+      local ok, err = io_mod.rm_rf(p)
+      if not ok then die("could not delete " .. p .. ": " .. tostring(err)) end
+    end
+    out("DISCARDED: " .. path)
+    return 0
+  end
+
+  if status == "valid" then
+    out(".nvim/loomworks.user.json is trusted (signed by this machine) — nothing to do.")
+    cache_note()
+    return 0
+  end
+
+  local ok, decoded = pcall(vim.json.decode, content)
+  if not ok or type(decoded) ~= "table" then
+    die(path .. " is not valid JSON — fix it, or discard it with `lw trust --discard`")
+  end
+  out(path)
+  out(status == "unsigned"
+    and "  is not signed by this machine (written by hand, or by an earlier lw)."
+    or "  was modified outside loomworks, or copied from another machine.")
+  out("")
+  local prog, other = require("loomworks.program_fields").review(decoded, require("loomworks.modules"))
+  out("Program settings — what loomworks may run on this file's word:")
+  if #prog == 0 then out("  (none)") end
+  for _, l in ipairs(prog) do out("  " .. l) end
+  out("Other contents:")
+  for _, l in ipairs(other) do out("  " .. l) end
+  out("")
+  if not yes then
+    if not interactive() then
+      die("refusing to trust without confirmation.\n"
+        .. "  Review the summary above, then re-run with --yes.")
+    end
+    local answer = (prompt_line("Trust this working copy? [y/N]") or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then die("aborted — the working copy stays untrusted") end
+  end
+  local sok, serr = trust.sign_file(path, "user", content)
+  if not sok then die("could not sign " .. path .. ": " .. tostring(serr)) end
+  out("TRUSTED: .nvim/loomworks.user.json (signed for this machine)")
+  cache_note()
+  return 0
+end
+
+--- `lw nuke [-y]` — reset the build cache: delete `.nvim/build/`, the cache
+--- and the health cache (spec §17.4). The remedy for a cache this machine did
+--- not write; destructive, so it confirms (and `-y` is mandatory when
+--- non-interactive, like `lw reset`).
+--- @param root string
+--- @param args string[]
+--- @return integer
+function M.cmd_nuke(root, args)
+  local yes = false
+  for i = 2, #args do
+    local v = args[i]
+    if v == "-y" or v == "--yes" then yes = true
+    else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]") end
+  end
+  local targets = {
+    root .. "/.nvim/build/",
+    require("loomworks.cache").filepath(root),
+    root .. "/.nvim/loomworks.health.json",
+  }
+  out("Will delete (build state only; your configuration is kept):")
+  for _, p in ipairs(targets) do out("  " .. p) end
+  if not yes then
+    if not interactive() then
+      die("refusing to delete build state without confirmation.\n  Re-run with -y.")
+    end
+    local answer = (prompt_line("Reset the build cache? [y/N]") or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+  end
+  local core = require("loomworks")._core()
+  local errors = {}
+  local saved_notify = core._deps.notify
+  core._deps.notify = function(msg, level)
+    if level and level >= vim.log.levels.ERROR then errors[#errors + 1] = tostring(msg) end
+  end
+  local done = core:_nuke_files(root)
+  core._deps.notify = saved_notify
+  if not done or #errors > 0 then
+    die("nuke failed" .. (#errors > 0 and (":\n  " .. table.concat(errors, "\n  ")) or ""))
+  end
+  out("NUKED: build state removed — the next build reconfigures from scratch.")
+  return 0
+end
+
 --- `lw unlock <profile> | --all` — force-remove build-dir locks,
 --- for recovery after a crash left a stale lock. Warns before clearing a lock
 --- that still looks active (fresh heartbeat).
@@ -1541,6 +1718,8 @@ ensure_unit_targets = function(ws, unit)
   local mod = project and project._module and project._module.impl
   local build_dir = unit.build_dir and unit:build_dir()
   if not (mod and mod.parse_targets and build_dir) then return end
+  -- Only a build dir this machine configured (signed cache, spec §17.8).
+  if unit.configured_here and not unit:configured_here() then return end
   -- config_name is the module build type (e.g. "Debug"); matters for
   -- multi-config generators, ignored by single-config ones.
   local cfg = unit.configuration and unit:configuration()
@@ -4279,12 +4458,128 @@ local function sdk_provider_ids()
   return ids
 end
 
---- `lw sdk <types|list|add|remove>` — declare toolchain installations that
---- auto-detection cannot find (a compiler at an arbitrary path, a
---- cross-compiler). A declared SDK produces a kit, so it shows up in
---- `lw tools` and can be pinned by `lw profile create`.
+--- The installations provider `id` detects on this host — its `detect_all()`,
+--- the same enumeration the editor's SDKs section offers. Entries without a
+--- usable path are dropped; a raising provider yields none plus the error.
+--- @param id string provider id
+--- @return { path: string, version?: string }[]|nil installs, string|nil err
+local function detect_sdk_installations(id)
+  local registry = require("loomworks.sdks")
+  local p = registry.get(id)
+  if not p then return nil, "unknown SDK type" end
+  if type(p.detect_all) ~= "function" then return {} end
+  local ok, res = pcall(p.detect_all)
+  if not ok then return {}, tostring(res) end
+  local list = {}
+  for _, inst in ipairs(type(res) == "table" and res or {}) do
+    if type(inst) == "table" and type(inst.path) == "string" and inst.path ~= "" then
+      list[#list + 1] = inst
+    end
+  end
+  return list
+end
+
+--- A provider's display name (falls back to its id).
+local function sdk_display_name(id)
+  local p = require("loomworks.sdks").get(id)
+  return (p and type(p.display_name) == "string" and p.display_name) or id
+end
+
+--- `lw sdk detect [<type>]` — list the installations every provider (or one)
+--- detects on this host. Read-only: no workspace needed, nothing declared.
+local function cmd_sdk_detect(ids, sdk_type)
+  if sdk_type then
+    if not require("loomworks.sdks").get(sdk_type) then
+      die("unknown SDK type '" .. sdk_type .. "' — types: " ..
+        (next(ids) and table.concat(ids, ", ") or "(none)"))
+    end
+    ids = { sdk_type }
+  end
+  if #ids == 0 then out("(no SDK providers available)"); return 0 end
+  for _, id in ipairs(ids) do
+    local installs, err = detect_sdk_installations(id)
+    if err then
+      out(string.format("  %-14s (detection failed: %s)", id, err))
+    elseif #installs == 0 then
+      out(string.format("  %-14s (none detected)", id))
+    else
+      for _, inst in ipairs(installs) do
+        out(string.format("  %-14s %-12s %s", id, tostring(inst.version or "?"), inst.path))
+      end
+    end
+  end
+  return 0
+end
+
+--- Choose the installation `lw sdk add <type>` (no path) declares: the
+--- provider's detected installations minus those already declared. None →
+--- error naming the explicit form; one → it; several → a picker, or (non-
+--- interactive) an error listing each candidate as the explicit command.
+--- @return string path
+local function pick_detected_sdk(ws, sdk_type)
+  local installs, err = detect_sdk_installations(sdk_type)
+  local explicit = "lw sdk add " .. sdk_type .. " <path>"
+  if not installs then
+    die("unknown SDK type '" .. sdk_type .. "' — `lw sdk types` lists them")
+  end
+  if #installs == 0 then
+    die("no " .. sdk_type .. " installation detected" ..
+      (err and (" (detection failed: " .. err .. ")") or "") ..
+      " — pass a path: " .. explicit)
+  end
+  local declared = {}
+  for _, s in ipairs(ws._sdks or {}) do
+    local sp = s.sdk_path and s:sdk_path() or s._path
+    if sp then declared[norm_cmp(sp)] = s.key end
+  end
+  local fresh, taken = {}, {}
+  for _, inst in ipairs(installs) do
+    local key = declared[norm_cmp(inst.path)]
+    if key then taken[#taken + 1] = key .. " (" .. inst.path .. ")"
+    else fresh[#fresh + 1] = inst end
+  end
+  if #fresh == 0 then
+    die("every detected " .. sdk_type .. " installation is already declared: " ..
+      table.concat(taken, ", ") .. " — `lw sdk list` shows them; declare another with " .. explicit)
+  end
+  if #fresh == 1 then
+    out("detected " .. fresh[1].path)
+    return fresh[1].path
+  end
+  if not interactive() then
+    local lines = {}
+    for _, inst in ipairs(fresh) do
+      lines[#lines + 1] = "  lw sdk add " .. sdk_type .. " " .. inst.path ..
+        (inst.version and ("   (" .. tostring(inst.version) .. ")") or "")
+    end
+    die(#fresh .. " " .. sdk_type .. " installations detected — pass one explicitly:\n" ..
+      table.concat(lines, "\n"))
+  end
+  local display = sdk_display_name(sdk_type)
+  out("Several " .. sdk_type .. " installations detected — select one:")
+  for i, inst in ipairs(fresh) do
+    out(string.format("  %d) %s%s  %s", i, display,
+      inst.version and (" " .. tostring(inst.version)) or "", inst.path))
+  end
+  out("")
+  local line = prompt_line("Enter number (blank to cancel)")
+  if not line or line == "" then out("cancelled"); finish(0) end
+  local n = tonumber(line)
+  if not n or not fresh[n] then die("invalid selection: " .. tostring(line)) end
+  return fresh[n].path
+end
+
+--- `lw sdk <types|detect|list|add|remove>` — declare toolchain installations
+--- that auto-detection cannot find (a compiler at an arbitrary path, a
+--- cross-compiler), or that a provider detects but nothing declares yet (a
+--- platform SDK). A declared SDK produces a kit, so it shows up in `lw tools`
+--- and can be pinned by `lw profile create`.
 function M.cmd_sdk(sub, root, args)
   local ids = sdk_provider_ids()
+
+  if sub == "detect" then
+    return cmd_sdk_detect(ids, args[3])
+  end
 
   if sub == "types" then
     if #ids == 0 then out("(no SDK providers available)"); return 0 end
@@ -4296,7 +4591,7 @@ function M.cmd_sdk(sub, root, args)
     local ws = load_workspace(root, false)
     local sdks = ws._sdks or {}
     if #sdks == 0 then
-      out("(no SDKs declared — `lw sdk add <type> <path>`)")
+      out("(no SDKs declared — `lw sdk detect`, then `lw sdk add <type> [<path>]`)")
       return 0
     end
     for _, sdk in ipairs(sdks) do
@@ -4316,12 +4611,15 @@ function M.cmd_sdk(sub, root, args)
       else pos[#pos + 1] = args[i]; i = i + 1 end
     end
     local sdk_type, path = pos[1], pos[2]
-    if not (sdk_type and path) then
-      die("usage: lw sdk add <type> <path> [--force [--family <f>] [--version <v>]]\n" ..
+    if not sdk_type or (force and not path) then
+      die("usage: lw sdk add <type> [<path>] [--force [--family <f>] [--version <v>]]\n" ..
+        "  (--force needs a <path>; without a <path> the type's detected installation is used)\n" ..
         "  types: " .. (next(ids) and table.concat(ids, ", ") or "(none)"))
     end
-    local abs = resolve_abs(path, user_cwd()) or resolve_abs_out(path, user_cwd())
     local ws = load_workspace(root, false)
+    -- No path: declare the installation the provider detects (§10.1).
+    if not path then path = pick_detected_sdk(ws, sdk_type) end
+    local abs = resolve_abs(path, user_cwd()) or resolve_abs_out(path, user_cwd())
     local sdk, err = ws:add_sdk(sdk_type, abs,
       { force = force, family = family, version = version })
     if not sdk then die("could not add SDK: " .. tostring(err)) end
@@ -4348,7 +4646,7 @@ function M.cmd_sdk(sub, root, args)
     return 0
   end
 
-  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|list|add|remove")
+  die("unknown sdk subcommand '" .. tostring(sub) .. "' — use types|detect|list|add|remove")
 end
 
 --- `lw profile remove <profile>` — drop a profile from the working copy.
@@ -4842,13 +5140,23 @@ local function check_exit_code(check, diags)
 end
 M._check_exit_code = check_exit_code
 
+--- The git argv prefix every lw git call uses (spec §17.8): repository-local
+--- configuration must not be able to run commands on lw's behalf, so the
+--- file-system monitor hook and the hooks directory are disabled on every
+--- invocation (`git` itself is resolved to an absolute path by exe.system).
+--- @return string[]
+local function git_base_cmd()
+  return { "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" }
+end
+M._git_base_cmd = git_base_cmd
+
 --- Best-effort, time-bounded git query for the no-workspace status hint. Never
 --- throws and never hangs status: a missing binary, non-zero exit, or a git
 --- that runs long past the timeout all collapse to nil. Returns trimmed stdout
 --- only on a clean (code 0) run. `cwd` nil runs git unanchored (for `--version`).
 local GIT_HINT_TIMEOUT_MS = 1500
 local function git_query(cwd, args)
-  local cmd = { "git" }
+  local cmd = git_base_cmd()
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
@@ -4881,7 +5189,7 @@ local GIT_MUTATE_TIMEOUT_MS = 60000
 --- @param timeout_ms? number
 --- @return table|nil result
 local function git_exec(cwd, args, timeout_ms)
-  local cmd = { "git" }
+  local cmd = git_base_cmd()
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
   local done, res = false, nil
@@ -6193,10 +6501,24 @@ function M._plan_pull(opts)
     return nil, "nothing to pull from " .. source_root ..
       " (no .nvim/loomworks.user.json)"
   end
-  local src_data = user.load(source_root)
+  -- Only a working copy signed by this machine is read, on either side
+  -- (spec §16.25, §17.5): a pull must never turn an untrusted file into a
+  -- signed one.
+  local function untrusted(root_dir, status)
+    return "the working copy in " .. root_dir .. " is " ..
+      (status == "unsigned" and "not signed by this machine" or "modified outside loomworks") ..
+      " — review it there first:  lw trust   (run in " .. root_dir .. ")"
+  end
+  local src_data, src_status = user.load(source_root)
+  if not src_data then return nil, untrusted(source_root, src_status) end
 
   local tgt_user_path = user.filepath(target_root)
-  local tgt_data = uv.fs_stat(tgt_user_path) and user.load(target_root) or {}
+  local tgt_data = {}
+  if uv.fs_stat(tgt_user_path) then
+    local d, st = user.load(target_root)
+    if not d then return nil, untrusted(target_root, st) end
+    tgt_data = d
+  end
 
   local merged = M._pull_merge(tgt_data, src_data)
 
@@ -6694,7 +7016,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "update", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -6724,6 +7046,7 @@ function M.cmd_complete(cword, words)
       topics[#topics + 1] = "agent" -- help-only topics (no command)
       topics[#topics + 1] = "ci"
       topics[#topics + 1] = "cache"
+      topics[#topics + 1] = "submodules"
       emit(topics)
     end
     return 0
@@ -6761,7 +7084,7 @@ function M.cmd_complete(cword, words)
     emit(sorted_unique(names))
     return 0
   elseif cmd == "build" and n >= 2 and not has(a, "--") then
-    emit({ "--target", "--force", "--reconfigure" })
+    emit({ "--target", "--force", "--reconfigure", "--verbose" })
     return 0
   elseif cmd == "build" or cmd == "test" or cmd == "clean" then
     if n == 1 then
@@ -6777,6 +7100,12 @@ function M.cmd_complete(cword, words)
       names[#names + 1] = "--all"
       emit(sorted_unique(names))
     end
+    return 0
+  elseif cmd == "trust" then
+    emit({ "--discard", "--yes" })
+    return 0
+  elseif cmd == "nuke" then
+    emit({ "-y" })
     return 0
   elseif cmd == "unlock" then
     if n == 1 then
@@ -6917,6 +7246,11 @@ function M.cmd_complete(cword, words)
       end
     end
     return 0
+  elseif cmd == "sdk" then
+    if n == 1 then emit({ "types", "detect", "list", "add", "remove" }); return 0 end
+    -- The provider ids come from the installed providers (no probing).
+    if n == 2 and has({ "add", "create", "detect" }, sub) then emit(sdk_provider_ids()) end
+    return 0
   end
   return 0
 end
@@ -6996,7 +7330,7 @@ $XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
 (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-- <build-tool args>]
+  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
 `lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI. They go on
@@ -7033,6 +7367,9 @@ for a deterministic build. The CI pattern is:
                 (cmake `--fresh`, below CMake 3.24 a reset of CMakeCache.txt +
                 CMakeFiles; meson `setup --wipe`) — for a build tree whose
                 configure state you no longer trust.
+  -v, --verbose  print each configure / build step's full command line and
+                the directory it runs in (for an MSVC kit, the cmake command
+                run inside vcvarsall). Always written to .nvim/loomworks.log.
 
 Configures first if the build dir isn't configured — or when a configure input
 changed since the last configure (options, env, toolchain, compiler cache), or
@@ -7078,6 +7415,50 @@ Reset is exclusive (like clean/delete): it holds each build directory's lock
 so it cannot race a concurrent build. A build directory still
 referenced by another profile not being reset is kept on disk (its state cleared
 only for the reset). Non-zero exit on any failure.]],
+  trust = [[lw trust [--yes] [--discard]
+
+Workspace trust. A repository can come from anywhere, so loomworks decides what
+it may run by where a setting comes from:
+
+  loomworks.json (committed, shared)   never names programs. Environment
+      variables, launch commands/arguments/working directories, deploy
+      destinations outside the workspace, and module program settings (e.g. a
+      clangd/qmlls binary) found there are IGNORED, with a diagnostic in
+      `lw status`. They stay in the file (publishing keeps them); to use one,
+      copy it into your working copy.
+  .nvim/loomworks.user.json (yours)    honored — when it is signed by this
+      machine. Every lw/editor write signs it with a per-machine key
+      (<data dir>/trust.key, never in a repository). A file written by hand,
+      by an earlier lw, or copied from elsewhere is REFUSED until you review it.
+  .nvim/loomworks.cache.json            build state; used only when signed here.
+      An unsigned one (earlier lw) is discarded and rebuilt automatically; one
+      signed elsewhere refuses the load until `lw nuke`.
+  Tool paths                            always from detection on this machine,
+      never from the cache.
+
+Opening a workspace (`lw status`, the editor) never runs anything the shared or
+an unsigned file names. `lw build` / `lw test` / `lw run` still run the
+project's own build system (cmake/meson/npm and the build files they read) —
+that is what you asked for.
+
+  lw trust            show what the working copy would let loomworks run
+                      (program settings first), then ask to trust (re-sign) it
+  lw trust --yes      trust without asking (non-interactive: required)
+  lw trust --discard  delete the working copy instead (asks; --yes skips)
+
+Editing .nvim/loomworks.user.json by hand is fine: run `lw trust` afterwards.
+Environment variables that hijack loaders or interpreters (LD_PRELOAD,
+DYLD_*, NODE_OPTIONS, PYTHONPATH, ComSpec, PATHEXT, GIT_SSH_COMMAND, …) are
+refused from every configuration, even a trusted one.]],
+  nuke = [[lw nuke [-y]
+
+Delete the workspace's build state: .nvim/build/, .nvim/loomworks.cache.json
+and .nvim/loomworks.health.json. Your configuration (loomworks.json and the
+working copy) is kept; the next `lw build` reconfigures from scratch.
+
+This is the remedy when the build cache was not written on this machine (it is
+refused — see `lw help trust`). Confirms first; -y skips the prompt and is
+required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
   unlock = [[lw unlock <profile> | --all
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
@@ -7822,6 +8203,8 @@ bundle, the update channel, and which system-Lua source is active — one of:
   dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
+  none     nothing installed yet — the bundle reads `none installed (run
+           `lw self-update`)`; a downloaded release binary starts this way
 
 A host command, handled by the lw binary itself.]],
   install = [[lw install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
@@ -7833,10 +8216,16 @@ is on PATH, and fetches the first release bundle. No admin required.
   location   Windows: %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe (on PATH)
              Unix:    ~/.local/bin/lw
 
-  -y                 apply PATH changes without prompting (needed with --no-input)
+  -y, --yes          replace an existing lw and apply PATH changes without
+                     prompting (needed with --no-input / in CI)
   --no-modify-path   install the binary but never touch PATH / shell rc
   --no-bundle        skip fetching the release bundle (do `lw self-update` later)
   --dry-run          print what would happen, change nothing
+
+If a different lw is already installed at that location, install says what it
+is (a development build or its release, size, date) and asks before replacing
+it; without a terminal (--no-input, LW_NO_INPUT, CI) it refuses unless -y is
+given. An identical binary is reported as already installed.
 
 Typical bootstrap (download, verify by hash, then let the verified binary
 install itself) — from the release page for your platform, e.g.:
@@ -7967,16 +8356,24 @@ loomworks.json on publish — except profiles, which default to local because
 they pin machine-resolved toolchains. Pass --local to keep something out of the
 shared file, and don't `publish` unless the task is to change the shared
 contract. See `lw help publish`.]],
-  sdk = [[lw sdk <types|list|add|remove>
+  sdk = [[lw sdk <types|detect|list|add|remove>
 
-Declare a toolchain installation that auto-detection cannot find — a compiler
-at an arbitrary path, a custom build, or a cross-compiler. A declared SDK
-produces a toolchain, so it appears in `lw tools` and can be pinned by
-`lw profile create`. Declarations live in the working copy (machine-local).
+Declare a toolchain installation — one auto-detection cannot find (a compiler
+at an arbitrary path, a custom build, a cross-compiler), or a platform SDK its
+provider detects. A declared SDK produces a toolchain, so it appears in
+`lw tools` and can be pinned by `lw profile create`. Declarations live in the
+working copy (machine-local).
 
   types                 SDK provider ids available on this host. Plugins add
                         more by shipping a provider (e.g. a platform SDK).
+  detect [<type>]       The installations each provider (or one) detects on
+                        this host. Read-only; works outside a workspace.
   list                  declared SDKs and their paths
+  add <type>            Declare the installation the provider detects (as
+                        `detect` lists it). None detected is an error — pass
+                        the path. Several: pick one (interactive), or, with
+                        --no-input, an error listing each as the explicit
+                        command. One already declared is not offered again.
   add <type> <path>     Probe the path, derive a key, and declare it.
         [--force]       Register even when the path fails to identify itself
                         (an exotic driver or a wrapper script). The path must
@@ -7994,7 +8391,9 @@ different paths therefore stay distinct, and the version stays selectable
 (`cpp_compiler-clang-19` resolves it). `add` prints the key it produced.
 
   lw sdk add cpp_compiler /opt/compilers/clang-19/bin/clang++
-  lw profile create Debug cpp_compiler-clang-19]],
+  lw profile create Debug cpp_compiler-clang-19
+  lw sdk detect            # what each provider finds here
+  lw sdk add ohos          # declare the detected installation (plugin provider)]],
   ci = [[lw help ci — driving CI jobs with lw
 
 Model: commit the CONFIGURATION SETS (the portable unit) and the projects.
@@ -8144,10 +8543,12 @@ Usage: lw [command] [args]
   configset <sub>   create | map | show | ... configuration sets
   profile <sub>     list | show | select | create | remove | publish | query
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
-  sdk <sub>         declare toolchains detection can't find (types|list|add|remove)
+  sdk <sub>         declare toolchain installations (types|detect|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
+  trust             review + re-sign the working copy (see `lw help trust`)
+  nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
   run [target]      build, then execute a target on the active profile
   run <profile> <target>  same, on a named profile
@@ -8345,8 +8746,23 @@ local function main()
     finish(M.cmd_worktree(a))
   end
 
+  -- `sdk types` / `sdk detect` only ask the providers about this host — no
+  -- workspace needed.
+  if command == "sdk" and (a[2] == "types" or a[2] == "detect") then
+    finish(M.cmd_sdk(a[2], root, a))
+  end
+
   -- Workspace commands.
   if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
+
+  -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
+  -- load the workspace (it would be refused).
+  if command == "trust" then
+    finish(M.cmd_trust(root, a))
+  end
+  if command == "nuke" then
+    finish(M.cmd_nuke(root, a))
+  end
 
   -- `profile` manages its own workspace load (select skips tool detection).
   if command == "profile" then

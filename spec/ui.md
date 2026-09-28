@@ -88,7 +88,8 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
-| `U`     | delete_user | Delete user.json and reload (with confirmation) |
+| `U`     | delete_user | Delete user.json and reload (with confirmation); for a refused working copy (core §17.4) this is the discard action |
+| `T`     | trust       | Refused working copy (core §17.4): review its summary and trust (re-sign) it |
 | `:w`    | (write)     | Publish: regenerate loomworks.json from working copy |
 | `:e`    | (edit)      | Reload from published baseline (refused if any divergence) |
 | `:e!`   | (force edit)| Force-revert workspace to baseline (preserves data, drops publication wishes for unmatched items) |
@@ -131,6 +132,13 @@ brackets, separated by double spaces.
 
 **Header hint**: After the Root line, a `Comment` leaf shows global actions:
 `[?] help  [L] load  [<C-n>] reset`
+
+**Refused-state hint**: When the workspace failed to load because a `.nvim`
+file was refused (core §17.4), the page shows only the load error (title,
+`Failed to load workspace`, root, message) followed by a blank line and a
+`Comment` hint naming the remedy for the refused file:
+- refused working copy (`user.json`): `[T] review & trust  [U] discard working copy`
+- refused build cache: `[<C-n>] reset build cache`
 
 **Group header hints with `[t]`**: Profile project groups also include `[t] task output`.
 

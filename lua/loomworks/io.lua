@@ -190,6 +190,25 @@ function M.write_json(path, tbl)
     return M.write_file_atomic(path, pretty)
 end
 
+--- Write a loomworks state file under `.nvim/` (working copy, build cache,
+--- health cache) as JSON signed with the machine key (spec §17.3): the same
+--- sorted, pretty encoding as `write_json`, with the signature member first.
+--- When the key is unavailable the file is still written, unsigned (it will be
+--- refused or discarded on the next read — never trusted) and the error is
+--- returned as a third value so callers can report it.
+--- @param path string
+--- @param kind "user"|"cache"|"health"
+--- @param tbl table
+--- @return boolean ok, string|nil err, string|nil sign_err
+function M.write_json_signed(path, kind, tbl)
+    local ok, encoded = pcall(M.encode_sorted, tbl)
+    if not ok then return false, "json encode: " .. tostring(encoded) end
+    local pretty = M._pretty_json(encoded)
+    local signed, sign_err = require("loomworks.trust").sign(kind, pretty)
+    local wok, werr = M.write_file_atomic(path, signed or pretty)
+    return wok, werr, sign_err
+end
+
 --- Ensure a directory exists (mkdir -p equivalent).
 --- @param path string
 --- @return boolean ok, string|nil err

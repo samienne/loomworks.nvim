@@ -308,8 +308,11 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `io.lua` | Atomic file read/write (sync and async), JSON encode/decode (`write_json` pretty-prints with keys sorted at every depth via `encode_sorted` — stable diffs for user.json / loomworks.json / cache), rm_rf (sync) / rm_rf_async (libuv async fs ops — no subprocess, no shell; `lstat`-based so links/junctions are removed, never followed; read-only files chmod'ed and retried), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction | Write files (config is read-only) |
-| `user.lua` | `loomworks.user.json` parse/save/defaults | Validate beyond structural correctness |
-| `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking | Business logic; auto-migration |
+| `user.lua` | `loomworks.user.json` parse/save/defaults; `save` signs (`io.write_json_signed`), `load` returns nil + status for a file not signed by this machine | Validate beyond structural correctness |
+| `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking; `save` signs | Business logic; auto-migration |
+| `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review) | Decide policy (callers decide what refusal means) |
+| `program_fields.lua` | Program-bearing fields (spec §17.6): `strip(config, modules)` removes them from the parsed shared config before any merge (generic: configuration/override `env`, launches naming command/args/env/working_dir, non-local deploy destinations, shared SDK paths; plus each module's `trust_fields.type_config`), `regraft(raw, ignored)` restores them on publish, `diagnostics(ignored, merged)`, `review(user_data, modules)` for the trust prompt | Know module names |
+| `env_policy.lua` | Environment denylist (spec §17.9): `is_denied(name)` (case-insensitive, prefix entries), `filter(env, opts)` with one-time warnings (silent for a captured tool env that repeats the process's own value) | Touch the process environment |
 | `file_tracker.lua` | Watching three JSON files via `uv.fs_poll`, content-change deduplication; `watch_signal(path, cb)` adds a stat-change watch (no content read) for directories — used for the cmake file-api reply dir (owned-DB regen trigger) | Domain logic; know about merge or profiles |
 | `config_editor.lua` | **Legacy** — retained for backward compatibility but not used at runtime. Mutation methods (`add_project`, `remove_project`, `add_configuration_set`, etc.) have moved to Workspace. Only `create_workspace` remains as a standalone entry point (paralleled by `workspace.create_workspace_config`) | Domain logic; know about runtime model |
 | `api_versions.lua` | Strict-equality version constants (`module`, `sdk`) for the plugin-interface registries. Both `modules.get` and `sdks.get` refuse to load plugins whose declared `api_version` doesn't match. See specification.md §8.0 for the bump policy | Track an interface that already has a more direct registration path (LSP, debug) |
@@ -346,7 +349,7 @@ may import from its own layer or any layer below it, never above.
 
 | File | Owns | Must NOT do |
 |------|------|-------------|
-| `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks and build dir lock acquisition, auto-configure-before-build (`filter_unconfigured_tasks` stamps each selected configure task's `configure_reason`, computed by `unit:configure_reason(forced, lw_meta.profile)` — every task's `lw_meta.profile` is the profile whose context assembled it (the profile being built; the active one for a unit-scoped action) and plan steps carry it as `profile`, so staleness and the post-configure record resolve in the same context, spec §5.1 *Resolution context*; `configure_reason_line(meta)` composes it with the module's `reconfigure`/`reconfigure_detail` into the one-line report the CLI prints and `start_one_task` logs; `plan_profile_build(profile, { reconfigure = true })` forwards `force_full_reconfigure` into the module context and selects every configure task — `lw build --reconfigure`), profile-level operations; **nice/ionice cmd wrapping** for action ∈ {configure, build, clean} (Linux only, via `loomworks.nice`) so long tasks yield CPU/IO to the editor. **Assembles the `ModuleContext`** each module's `tasks()` sees, and single-sources the compiler-cache fields at every build-context site: `compiler_cache = {tool,path}|nil` (core-resolved via `compiler_cache.resolve_for`) that the module applies, and `recorded_cache_launcher` (the unit's frozen `module_info.cache_launcher`) that lets a module detect a launcher change, plus the previous-configure record `recorded_module_info` (the unit's `module_info`) / `recorded_options` (core's option snapshot) that lets a module classify a reconfigure, and the **configuration environment** (spec §1.3.3): `configuration_env` (resolved via `config_env.resolve`) and `env` = tool env with `configuration_env` layered on top (`config_env.compose`), at every context-assembly site (configure/build/clean, per-unit and per-profile, `build_spec_for`; `target.lua`'s per-target build uses the same composition) — all additive-optional (no `api_version` bump). **Faithful reconfigure** (spec §5.1): a configure task's optional `pre_configure_reset` (build-dir-relative configure-state entries) is executed by core — `start_one_task` runs `Workspace:_pre_configure_reset` after acquiring the exclusive lock and before the builder (refusal releases the locks and rejects), and `plan_profile_build` steps carry it (plus `module_info`) so the headless runner does the same. A clean task declaring `wipe_build_dir` (shell's default clean) has no command: `run_*_clean` call `_wipe_build_dir` (`_validate_build_dir` — never the root — then `io.rm_rf_async`), `plan_profile_clean` emits a `wipe_build_dir` step the CLI validates + `io.rm_rf`s. Every `new_task` spec first passes `harden` (`loomworks.exe.harden_spec`) | Import core.lua directly; own state beyond task generation |
+| `overseer.lua` | Template provider registration, task collection from modules, task launching with readiness checks and build dir lock acquisition, auto-configure-before-build (`filter_unconfigured_tasks` stamps each selected configure task's `configure_reason`, computed by `unit:configure_reason(forced, lw_meta.profile)` — every task's `lw_meta.profile` is the profile whose context assembled it (the profile being built; the active one for a unit-scoped action) and plan steps carry it as `profile`, so staleness and the post-configure record resolve in the same context, spec §5.1 *Resolution context*; `configure_reason_line(meta)` composes it with the module's `reconfigure`/`reconfigure_detail` into the one-line report the CLI prints and `start_one_task` logs; `command_text(spec)` (a spec's `display_cmd` — the command a wrapper runs, e.g. cmake's vcvarsall batch — else `cmd`, via `term.format_argv`) and `log_task_command(ws, name, spec, cwd)` (info-level `name: $ <argv>  (in <cwd>)`, control characters escaped) are shared by `start_one_task` (logged from the raw builder result, then `display_cmd` is stripped before `harden`/overseer) and the CLI's `run_build_steps` (always logged; printed under `==> [kind]` with `lw build -v`), and `plan_profile_build` steps carry `display_cmd`; `plan_profile_build(profile, { reconfigure = true })` forwards `force_full_reconfigure` into the module context and selects every configure task — `lw build --reconfigure`), profile-level operations; **nice/ionice cmd wrapping** for action ∈ {configure, build, clean} (Linux only, via `loomworks.nice`) so long tasks yield CPU/IO to the editor. **Assembles the `ModuleContext`** each module's `tasks()` sees, and single-sources the compiler-cache fields at every build-context site: `compiler_cache = {tool,path}|nil` (core-resolved via `compiler_cache.resolve_for`) that the module applies, and `recorded_cache_launcher` (the unit's frozen `module_info.cache_launcher`) that lets a module detect a launcher change, plus the previous-configure record `recorded_module_info` (the unit's `module_info`) / `recorded_options` (core's option snapshot) that lets a module classify a reconfigure, and the **configuration environment** (spec §1.3.3): `configuration_env` (resolved via `config_env.resolve`) and `env` = tool env with `configuration_env` layered on top (`config_env.compose`), at every context-assembly site (configure/build/clean, per-unit and per-profile, `build_spec_for`; `target.lua`'s per-target build uses the same composition) — all additive-optional (no `api_version` bump). **Faithful reconfigure** (spec §5.1): a configure task's optional `pre_configure_reset` (build-dir-relative configure-state entries) is executed by core — `start_one_task` runs `Workspace:_pre_configure_reset` after acquiring the exclusive lock and before the builder (refusal releases the locks and rejects), and `plan_profile_build` steps carry it (plus `module_info`) so the headless runner does the same. A clean task declaring `wipe_build_dir` (shell's default clean) has no command: `run_*_clean` call `_wipe_build_dir` (`_validate_build_dir` — never the root — then `io.rm_rf_async`), `plan_profile_clean` emits a `wipe_build_dir` step the CLI validates + `io.rm_rf`s. Every `new_task` spec first passes `harden` (`loomworks.exe.harden_spec`) | Import core.lua directly; own state beyond task generation |
 | `lsp.lua` | LSP dispatch layer + plugin-style integration registry. On load, scans every runtime path for `integrations/lsp/*.lua` and requires each — integrations self-register via `register(server, M)`. Exposes generic `cmd(server, base)` / `root_dir(server, fallback)` factories, a `setup_servers(opts)` that installs enabled integrations via `vim.lsp.config` + `vim.lsp.enable`, buffer excludes (`default_excludes()` / `excluded(bufnr)` + `LspAttach` detach autocmd) applied uniformly across all managed integrations, `get_status()` dispatching per-server status fields to integrations, and the **generic restart machinery**: `wrap_on_exit(server, user_on_exit)` distinguishes managed-stop / clean external stop / unexpected death; `mark_managed_stop(client_id)` lets integrations flag their own intentional stops; per-`(server, root_dir)` throttle (4 attempts / 5min sliding window) deferring with `vim.defer_fn`; `is_suppressed` / `clear_suppression` / `reset_attempts` for the UI Reset path; subscribes to `lsp_options_changed` and dispatches to integrations' `on_lsp_options_changed` for cmd-affecting toggles. **`entry_for_project`/`entries_for` are content-memoized**: on `active_set_changed` every integration iterates every project through this resolver, so a per-project cache keyed on `{generation, ws.root, project.key, active-profile key, resolved build_dir/config_key/build-state/tool, fallback cached.build_dir + tool_data clangd, hash(type_config)}` returns the prior `module.lsp_configs()` result on a hit — a no-op switch and the second integration on a tick pay nothing. The memo is blown on `workspace_changed` and its keys invalidated (generation bump) on `lsp_options_changed`; the early return-on-hit is structured so a future mtime-guarded side effect inside `lsp_configs` is skipped on hits too | Contain server-specific wiring (lives in `integrations/lsp/<server>.lua`) |
 | `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **always-on `--pch-storage=disk`** + **user-configurable `--clang-tidy`/`--background-index`/`--background-index-priority`/`extra_args`** appended to every cmd (last-wins via LLVM `cl::opt`); reads via `Workspace:get_lsp_options("clangd")` (defaults applied); coalesced restart on `on_lsp_options_changed`; **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
@@ -370,7 +373,11 @@ plugin/loomworks.lua
       → state = "initializing", emit "workspace_initializing"
       → read_files_async([config, user, cache])        ← libuv async I/O
         → vim.schedule → core._on_files_read()
-          → workspace.assemble(root, config, user, cache)  ← pure, returns data
+          → workspace.assemble(root, config, user, cache, { trust, modules })
+              ← verifies the .nvim signatures (only signed bytes are parsed) and
+                strips loomworks.json program-bearing fields (program_fields)
+          → core:_trust_error(): unsigned/invalid working copy or invalid cache
+              → refuse (setup_error.trust; status page T/U/<C-n>, `lw trust`/`lw nuke`)
           → cache version check (refuse if incompatible)
           → core._validate_projects()
           → Workspace.new(core, data)                  ← creates domain container
@@ -378,6 +385,7 @@ plugin/loomworks.lua
           → ws:_cleanup_orphaned_skeletons()
           → ws:remerge()                               ← merge + sync all registries
           → state = "initialized", emit "workspace_changed"
+          → unsigned (pre-trust) cache → notice + ws:_save_cache() (signed)
           → ws:_start_tracking(paths)                  ← file watcher owned by Workspace
           → ws:_scan_tools_async()
             → tool_state = "scanning", emit "tools_scanning"
@@ -436,12 +444,50 @@ Materialization calls (`_materialize_from_data`, `materialize_configuration`,
 file_tracker (uv.fs_poll, 2s interval, owned by Workspace)
   → stat change detected → read content → compare to last known
   → ws:_on_file_changed(which_file, new_content)
+    → user/cache content verified first: unsigned/modified working copy or
+      invalid cache → core:setup() (enters the refused state); unsigned cache
+      change → ignored (next save replaces it)
     → config changed → reassemble + validate + update ws fields + remerge
     → user changed   → re-parse user data + remerge
     → cache changed  → re-parse cache data + remerge
   → ws:remerge() → events.emit("active_set_changed")
   → UI/integrations react to event
 ```
+
+### Workspace trust (spec §17)
+
+Where each gate sits — every one is on a single choke point so a new caller
+inherits it:
+
+- **Signatures.** Writers go through `io.write_json_signed` (`user.save`,
+  `cache.save`, `health_cache.write`, `init_workspace`, `lw pull`). Readers verify
+  before parsing: `workspace.assemble` (startup + loomworks.json change),
+  `Workspace:_on_file_changed` (user/cache change), `user.load` (pull),
+  `health_cache.read`. Refusal is a setup error carrying `trust = { kind,
+  status, path }`; the CLI (`load_workspace`) prints its own message
+  (`quiet_trust_errors`, `trust_actions`), the editor shows the status page's
+  T / U / `<C-n>` actions and `:LoomworksTrust` (`init.trust_user_prefs` →
+  `Core:review_user_prefs` / `Core:trust_user_prefs`). `Core:_nuke_files` is the
+  shared deletion half of the editor nuke and `lw nuke`.
+- **Shared program fields.** Stripped in `assemble` (and when `publish_one`
+  re-bases the baseline) so the merged model — and therefore the cascade into
+  user.json — never holds them; `_shared_ignored` feeds
+  `Workspace:diagnostics()` and `program_fields.regraft` in `_save_config` /
+  `publish_one`. `_sync_sdks` copies only type/version constraints from shared
+  declarations.
+- **Detected tool data.** `data_model.sync_tools` lets detection win per key and
+  marks cache-only tools `_detected = false`; `Tool:exec_data()`, the ToolRef
+  `detected` flag, `overseer.exec_tool_data` (every task collector refuses an
+  undetected keyed tool), `Profile:is_valid` (after a completed scan),
+  `Project:to_module_context` and the cmake clangd path honor it.
+- **Environment.** `env_policy.filter` in `config_env.resolve` / `compose`
+  (configuration + tool layers), the shell module's env block and launch
+  environments; edit-time refusal in `Project:save_configuration` /
+  `save_launch_config`; a configuration diagnostic.
+- **Passive execution.** `ConfigUnit:configured_here()` (signed-cache state)
+  gates `_scan_targets_async`, `ConfigUnit:test_units()` and the CLI's
+  `ensure_unit_targets`; every git call uses `git_base_cmd()`
+  (`-c core.fsmonitor=false -c core.hooksPath=`).
 
 ### Task Execution
 
@@ -789,7 +835,14 @@ The `vim` global is provided by either Neovim (the editor, and
 - maps `vim.uv` to `require("luv")`,
 - hand-writes the native-backed surface: `json`, `system` (over
   `uv.spawn`), `fn.{executable,exepath,mkdir,has,getcwd,fnamemodify}`,
-  `v.shell_error`, `schedule` (drained by `uv.run()`), `notify` / `log`.
+  `v.shell_error`, `schedule` (drained by `uv.run()`), `notify` / `log`,
+  and nvim's job API — `fn.jobstart` (list argv resolved like `system`, a
+  string through `cmd.exe /s /c` / `sh -c`; `cwd`, `env`/`clear_env`,
+  `on_stdout`/`on_stderr` with nvim's partial-line `data` lists and
+  `*_buffered`, `on_exit` last), `fn.jobwait` (pumps `uv.run`; -1 timeout,
+  -3 unknown id), `fn.jobstop`, `fn.jobpid` — for modules that list devices
+  through a helper process. Job callbacks run from whatever pumps the loop
+  (`jobwait`, `vim.wait`).
 
 The JSON shim MUST reproduce Neovim's `empty_dict` / `NIL` / array-vs-object
 semantics (spec §16.1). A differential test uses headless Neovim as the
@@ -822,6 +875,15 @@ replaces it, which would drop `PATH`).
   (label-suffixed when a profile runs several).
 - `lw profile list` — list profiles (name, configuration set, tools) and flag
   which are buildable in this host vs editor-only (`lw profiles` is an alias).
+- `lw trust [--yes] [--discard]` (spec §17.4, §17.10) — review a working copy
+  this machine did not sign (`program_fields.review`: program settings first)
+  and re-sign it (`trust.sign_file`), or delete it and its `.bak` with
+  `--discard`. Never loads the workspace, so it works on a refused one;
+  confirmation is mandatory (`--yes` when non-interactive).
+- `lw nuke [-y]` (spec §17.4) — reset the build state (`.nvim/build/`, the cache,
+  the health cache) through `Core:_nuke_files`, the same deletion half as the
+  editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the
+  configuration; takes no build-dir locks.
 - `lw run <profile> [target] [-- args…]` — non-debug launch (build → deploy →
   execute). The target is the profile's default (§8.6) when unnamed, else a
   named build target or command launch config; `project:name`, `--project`,
@@ -870,8 +932,14 @@ replaces it, which would drop `PATH`).
   even in `--no-input`; `set`/`clear` keep the CI-determinism guard (one-operand
   = active profile interactively, explicit `<profile>` required non-interactively).
   Shared seam `collect_targets` also feeds the `lw status` Targets section.
-- `lw sdk <types|list|add|remove>` — declare toolchain installations that
+- `lw sdk <types|detect|list|add|remove>` — declare toolchain installations that
   detection cannot find (a compiler at an arbitrary path, a cross-compiler).
+  `detect [<type>]` lists each provider's `detect_all()` (the enumeration the
+  editor's SDKs section offers); it and `types` run before the workspace guard.
+  `add <type>` without a path (`pick_detected_sdk`) takes the provider's
+  detected installations minus the declared ones: none → error, one → it,
+  several → numbered picker / non-interactive error listing the explicit
+  commands; the chosen path then goes through the same `add_sdk(type, path)`.
   Thin wrappers over `Workspace:add_sdk` / `remove_sdk`; the declared SDK
   produces a kit, so it appears in `lw tools` and is pinnable by
   `lw profile create`. `--force` registers a path that fails identification
@@ -1308,12 +1376,16 @@ decode + small encode, `verify.lua` ECDSA-P256 manifest verifier + the host's
 curl/local fetch, `update.lua` self-update + miniz extraction + pinned
 provisioning (`ensure_host_binary` / `ensure_version`), `host_update.lua` host
 binary self-replacement (spec §16.32), `install.lua`
-self-install, `modules.lua` module acquisition, `pin.lua` pin parse / asset
+self-install (asks before replacing a *different* installed binary, which
+`describe_binary` identifies from its fused zip without executing it),
+`help.lua` host-level help used when no system Lua exists, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap`/`update` + the
 launcher-script templates), `lua/loomworks/shim/`, `modules.json` (the curated
 module index), `bin/lw`, `bin/lw.cmd` exist. The bootstrap intercepts the host
 commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
-`lw update`, and redirects workspace ops to a repo's pinned `lw`; `lw module` is
+`lw update`, and redirects workspace ops to a repo's pinned `lw`; with no
+system Lua at all (release host, no bundle yet) it answers help requests from
+`boot.help` instead of failing with "no loomworks release is installed"; `lw module` is
 a CLI command (system Lua) that calls into `boot.modules`.
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + release version + fuse
@@ -1373,6 +1445,9 @@ loomworks.nvim/
 │   │   ├── compiler_cache.lua        Compiler-cache launcher resolution (policy→binary, PATH-gated)
 │   │   ├── suggestions.lua           Advisory suggestion framework (`lw health`, status count line)
 │   │   ├── health_cache.lua          Suggestion-result cache (`.nvim/loomworks.health.json`, local/network/inventory tiers)
+│   │   ├── trust.lua                 Machine key + HMAC signatures on .nvim state (spec §17)
+│   │   ├── program_fields.lua        Shared program-bearing fields: strip / regraft / diagnose / review
+│   │   ├── env_policy.lua            Environment denylist (loader/interpreter hijack variables)
 │   │   ├── operation.lua              Operation class (profile action tracking)
 │   │   ├── cmake_kits.lua             CMake tool detection (MSVC/VS; delegates gcc/clang)
 │   │   ├── cpp_compilers.lua          Shared C/C++ compiler detection + arbitrary-path probe

@@ -49,6 +49,10 @@ current version.
   profile or configuration rows includes `Cancel running task(s)`. A Tasks
   section at the bottom surfaces active tasks and held build-dir locks with
   per-row cancel/force-release actions for recovering from stuck state
+- **Workspace trust** — a cloned `loomworks.json` never names programs to run,
+  and your working copy is honored only when this machine signed it (`lw trust`
+  / `:LoomworksTrust` to review one that isn't); see
+  [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)
 
 ## Requirements
 
@@ -567,6 +571,11 @@ Define how to run a project after building:
 Variables available: `${workspace_root}`, `${build_dir}`, `${variant}`,
 `${config_set}`, `${project_path}`, plus user-defined project variables.
 
+Launch configurations that set a `command`, `args`, `env` or `working_dir` are
+honored only from your working copy (`.nvim/loomworks.user.json`, e.g. via
+`lw launch add`). In `loomworks.json` they are ignored with a diagnostic; see
+[Opening a repository you don't trust](#opening-a-repository-you-dont-trust).
+
 A launch configuration is one kind of **target**. `lw target` lists all the
 runnable targets of a profile — the launch configurations above **plus** the
 build system's executable targets (the latter appear only once the project is
@@ -796,7 +805,12 @@ Setting `PATH` (any case) is allowed but **replaces** the PATH the tool sets up
 (e.g. the MSVC developer environment, so `cl.exe` may no longer be found; a
 `${PATH}` in the value expands to lw's own PATH, not the tool's) — lw warns when
 you set it and once when a task uses it. Changing the environment reconfigures
-on the next build (a full reconfigure, as above).
+on the next build (a full reconfigure, as above). An `env` (or
+`overrides.<family>.env`) is honored only from your working copy — in
+`loomworks.json` it is ignored with a diagnostic — and variables that hijack
+other programs (`LD_PRELOAD`, `NODE_OPTIONS`, …) are refused even from the
+working copy; see
+[Opening a repository you don't trust](#opening-a-repository-you-dont-trust).
 
 ```json
 "Debug": {
@@ -866,6 +880,7 @@ automatically from your system.
 |---|---|
 | `:LoomworksInit [path]` | Initialize workspace from directory (default: cwd) |
 | `:LoomworksInfo` | Open workspace status page |
+| `:LoomworksTrust` | Review a working copy not signed by this machine: trust (re-sign), discard, or cancel |
 | `:LoomworksCompileCommand [file]` | Show the compile command loomworks' owned clangd database uses for a file (default: current buffer) |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
 
@@ -934,7 +949,9 @@ downgraded.
 `lw version` reports the binary's release (`host: 0.1.29 (v1)`; `dev build`
 for a binary built from a checkout, which never replaces itself; `unknown
 release` for a release binary without an embedded version, which
-`lw self-update` does replace).
+`lw self-update` does replace). A release binary that has not fetched a bundle
+yet says so — ``bundle: none installed (run `lw self-update`)`` — rather than
+naming one.
 
 - `lw self-update --no-host` updates only the bundle.
 - `--force` reinstalls the *bundle* only; it never forces a reinstall (or
@@ -1058,12 +1075,22 @@ Neither path defends against a compromise of the CI signing identity itself,
 or a malicious commit that CI faithfully builds — those need repository and
 account security, not artifact verification.
 
+Before a bundle is fetched, the binary still documents itself: `lw help`,
+`lw --help`, and `lw install --help` / `lw self-update --help` print the
+binary's own commands and options (full help arrives with the bundle).
+
 `lw install` copies the binary to a per-user location — `~/.local/bin/lw`
 (Unix) or `%LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe` (Windows, already on
 PATH) — ensures it is on PATH (prompting first; `-y` to apply non-interactively,
 `--no-modify-path` to skip), and runs `lw self-update` to fetch the verified
 release bundle. `--dry-run` shows what it would do; `--no-bundle` skips the
-fetch. No admin required. Installing over an `lw` that is currently running
+fetch. No admin required. If a *different* `lw` is already installed there
+(say, a development build, or another release), `lw install` shows what it is —
+development build or release version, size, and date — and asks before
+replacing it; `-y` replaces without asking, and without a terminal
+(`--no-input`, `LW_NO_INPUT`, CI) it refuses unless `-y` is given. An identical
+binary is simply reported as already installed. Installing over an `lw` that
+is currently running
 (a build in another terminal) works too: the new binary is swapped in the same
 way `lw self-update` replaces itself, rather than written over the running one.
 Then enable completion with `lw completion bash`
@@ -1159,10 +1186,12 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw configset <sub>` | `create` \| `map` \| `show` \| `rename` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
-| `lw sdk <sub>` | Declare toolchains detection can't find: `types` \| `list` \| `add` \| `remove` |
-| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)` |
+| `lw sdk <sub>` | Declare toolchain installations: `types` \| `detect` \| `list` \| `add` \| `remove`. `add <type> <path>` declares an installation detection can't find; `add <type>` (no path) declares the one the provider detects — several → a picker, or under `--no-input` an error listing each as the explicit command. `detect [<type>]` lists what each provider finds on this host (read-only, no workspace needed) |
+| `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
+| `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
+| `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
@@ -1341,6 +1370,8 @@ don't use this — install the module plugin the usual way.)
 | `L` | Load workspace from cwd / rescan tools |
 | `K` | Hover popup with the full content of the current line (paths, diagnostic messages, etc.) |
 | `<C-n>` | Reset workspace: delete `.nvim/build/` + cache, reload (destructive) |
+| `T` | Review & trust a refused working copy |
+| `U` | Discard the working copy (`.nvim/loomworks.user.json`) and reload (destructive, with confirmation) |
 | `?` | Show help dialog |
 | `q` | Close the status page |
 
@@ -1433,7 +1464,10 @@ client).
 Set `type_config.qmlls` on a project to override the binary
 (`${ENV_VAR}` expansion supported); otherwise stock `qmlls` on PATH is
 used. `type_config.qml_import_paths` (a list) adds extra `-I` import
-paths. Opt out per-server with `{ lsp = { qmlls = false } }`.
+paths. Both are honored only from your working copy; in `loomworks.json` they
+are ignored with a diagnostic (see
+[Opening a repository you don't trust](#opening-a-repository-you-dont-trust)).
+Opt out per-server with `{ lsp = { qmlls = false } }`.
 
 ### Buffer excludes
 
@@ -1557,7 +1591,8 @@ workspace-root/
 └── .nvim/
     ├── loomworks.user.json      Always gitignored. Live working state and runtime
     │                            source of truth (projects, config sets, profiles,
-    │                            active selection, intent overrides).
+    │                            active selection, intent overrides). Signed for
+    │                            this machine — edit by hand, then `lw trust`.
     ├── loomworks.cache.json     Always gitignored (build state).
     ├── loomworks.health.json    Always gitignored. Advisory suggestion cache
     │                            (`lw health` / `N suggestions`); self-healing,
@@ -1591,10 +1626,49 @@ data and does not let it redirect where code is loaded from:
   followed.
 - `lw` output escapes control characters that arrive with data.
 
-Paths and commands the workspace configures on purpose — an SDK or clangd
-binary, cached toolchain paths, launch/deploy commands, environment — are
-still used as configured; gating those behind an explicit "trust this
-workspace" step is planned for a later release.
+What a workspace may make loomworks **run** depends on where the setting comes
+from (spec §17, `lw help trust`):
+
+- **`loomworks.json` never names programs.** Environment variables
+  (configuration `env`, compiler-family `overrides.<family>.env`, a shell
+  project's `env`), launch configurations with a `command` / `args` / `env` /
+  `working_dir`, deploy destinations outside the workspace, SDK installation
+  paths (a shared SDK declaration keeps only its type and version
+  requirements), and module program settings (a `clangd` / `qmlls` binary,
+  qmlls import paths, a shell project's clangd database argument) found in it
+  are **ignored**, each with a diagnostic
+  (`lw status`, the status page). They stay in the file — publishing keeps a
+  teammate's values — and to use one you copy it into your working copy.
+- **`.nvim/loomworks.user.json` is honored only when this machine signed it.**
+  Every write by `lw` or the editor signs the `.nvim` files with a per-machine
+  key (`trust.key` in your per-user data directory, never in a repository). A
+  working copy written by hand, by an earlier loomworks, or copied from
+  elsewhere is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
+  / `T` on the status page) lists the program settings it contains and re-signs
+  it on confirmation; `lw trust --discard` (or `U`) deletes it instead. After
+  upgrading, each existing workspace asks for this once.
+- **Caches are regenerable.** An unsigned build cache (from an earlier
+  loomworks) is discarded and rebuilt automatically — units read as
+  unconfigured and reconfigure into their existing build directories. A cache
+  signed on another machine refuses the load until you reset it (`lw nuke`, or
+  `<C-n>` on the status page). An unsigned health cache is ignored.
+- **Tool paths come from detection on this machine**, never from the cache. A
+  profile whose toolchain isn't detected here is not buildable.
+- **Opening a workspace runs nothing it names**: language servers start only
+  with binaries/arguments from your signed working copy, detection, or `PATH`;
+  SDK paths are probed only from the signed working copy; targets and tests are
+  introspected only in build directories this machine configured; `git` runs
+  with the repository's fsmonitor and hooks disabled.
+- **Environment variables that hijack other programs are refused everywhere**
+  (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_*`, `NODE_OPTIONS`, `npm_config_*`,
+  `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `BASH_ENV`, `ENV`, `ComSpec`,
+  `PATHEXT`, `GIT_SSH_COMMAND`, `GIT_CONFIG_*`, `CMAKE_TOOLCHAIN_FILE`,
+  `CCACHE_PREFIX`) — even from a trusted working copy.
+
+Explicit `lw build` / `test` / `run` (and the editor's build actions) still run
+the project's own build system — cmake, meson, npm and the build files they
+read, a shell project's commands — because that is what you asked for; review a
+repository you don't trust before building it.
 
 ## API
 

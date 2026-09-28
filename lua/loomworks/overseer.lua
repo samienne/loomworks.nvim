@@ -24,12 +24,43 @@ local NICE_ACTIONS = { configure = true, build = true, clean = true }
 --- the task runs does not search its cwd either. Applied BEFORE the nice
 --- wrapper so the real program is the one resolved. Returns the spec, or nil +
 --- err: an unresolvable program is reported, never spawned by its bare name.
+--- A module's display-only `display_cmd` (§8.1) is dropped here, so it never
+--- reaches overseer — every `new_task` spec passes through this.
 --- @param spec table
 --- @return table|nil spec, string|nil err
 local function harden(spec)
+    if type(spec) == "table" then spec.display_cmd = nil end
     return require("loomworks.exe").harden_spec(spec)
 end
 M._harden = harden
+
+--- The command line a task spec runs, for display (headless §16.4): the
+--- module's `display_cmd` when it supplied one — the command a wrapper such as
+--- a toolchain-environment batch file runs (core §8.1) — else `cmd`, readably
+--- quoted (term.format_argv). Control characters are NOT escaped here; the
+--- output layer does that (`log_task_command` escapes for the log file).
+--- @param spec { cmd?: string[], display_cmd?: string[] }
+--- @return string
+function M.command_text(spec)
+    local argv = (type(spec.display_cmd) == "table" and #spec.display_cmd > 0)
+        and spec.display_cmd or spec.cmd
+    return require("loomworks.term").format_argv(type(argv) == "table" and argv or {})
+end
+
+--- Write a configure / build step's command line and cwd to the workspace log
+--- at info level — for every configure and build, from the editor's task path
+--- and the headless runner alike (headless §16.4). Never raises.
+--- @param ws loomworks.Workspace|nil
+--- @param name string|nil task name
+--- @param spec { cmd?: string[], display_cmd?: string[], cwd?: string }
+--- @param cwd string|nil the directory it runs in (defaults to `spec.cwd`)
+function M.log_task_command(ws, name, spec, cwd)
+    local log = ws and ws._core and ws._core._deps and ws._core._deps.log
+    if not log or type(spec) ~= "table" then return end
+    local term = require("loomworks.term")
+    pcall(log.info, log, "%s: $ %s  (in %s)", term.escape(name or "?"),
+        term.escape(M.command_text(spec)), term.escape(cwd or spec.cwd or "?"))
+end
 
 local function apply_nice(build_result, action)
     if not action or not NICE_ACTIONS[action] then return build_result end
@@ -130,6 +161,27 @@ local function task_configurations(mod_info)
 end
 M._task_configurations = task_configurations  -- exported for tests
 
+--- The tool data a unit's tasks RUN with (spec §17.7): the detected data for
+--- its tool key. A keyed tool known only from the cache yields nil + reason —
+--- cached tool data is a record, never a source of executable paths.
+--- @param unit loomworks.ConfigUnit
+--- @return table|nil tool_data, string|nil err
+local function exec_tool_data(unit)
+    local tool = unit._tool
+    local key = (tool and tool.key) or unit:tool_key()
+    if key == nil then return (tool and tool.data) or unit:tool_data() end
+    if tool and tool._detected ~= false then return tool.data end
+    return nil, "toolchain '" .. key .. "' is not detected on this machine — rescan tools "
+        .. "(cached tool data is never used to run programs)"
+end
+M._exec_tool_data = function(unit) return (exec_tool_data(unit)) end
+
+--- Refuse a task collection whose tool is not detected (notify once per call).
+local function refuse_undetected(err)
+    vim.notify("loomworks: " .. err, vim.log.levels.ERROR)
+    return nil
+end
+
 --- Collect task definitions for a single project configuration, grouped by action.
 --- @param unit loomworks.ConfigUnit
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
@@ -147,7 +199,8 @@ local function collect_configuration_tasks(unit)
 
     local variant = unit:variant()
     local tool = unit._tool
-    local tool_data = tool and tool.data or unit:tool_data()
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return refuse_undetected(terr) end
 
     -- Get module info (reconstruct type_config with configurations for module)
     local abs_path = ws.root .. "/" .. (project.path or project.key)
@@ -239,8 +292,8 @@ function M.build_spec_for(unit, target_id)
     local ws = unit._workspace
     if not ws then return nil end
     local variant = unit:variant()
-    local tool = unit._tool
-    local tool_data = tool and tool.data or unit:tool_data()
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return refuse_undetected(terr) end
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local tc_for_module = project._type_config_for_module
@@ -374,6 +427,12 @@ local function collect_profile_tasks(profile, opts)
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
+        -- Detected tool data only (spec §17.7): a cache-only tool runs nothing.
+        if project_tool and project_tool.detected == false then
+            return refuse_undetected("toolchain '" .. tostring(project_tool.key)
+                .. "' is not detected on this machine — rescan tools "
+                .. "(cached tool data is never used to run programs)")
+        end
         local tool_data = project_tool and project_tool.data or nil
         local task_env, configuration_env = resolve_task_env(
             project, pp._configuration, tool_data, profile, ws.root)
@@ -451,8 +510,8 @@ local function collect_configuration_clean_tasks(unit)
     if not mod or not mod.clean_tasks then return nil end
 
     local variant = unit:variant()
-    local tool = unit._tool
-    local tool_data = tool and tool.data or unit:tool_data()
+    local tool_data, terr = exec_tool_data(unit)
+    if terr then return refuse_undetected(terr) end
 
     local abs_path = ws.root .. "/" .. (project.path or project.key)
     local mod_info = mod.info and mod.info(abs_path, project.type_config)
@@ -506,6 +565,12 @@ local function collect_profile_clean_tasks(profile)
         if not active_config then goto continue end
 
         local project_tool = profile:tool_for(project.type)
+        -- Detected tool data only (spec §17.7): a cache-only tool runs nothing.
+        if project_tool and project_tool.detected == false then
+            return refuse_undetected("toolchain '" .. tostring(project_tool.key)
+                .. "' is not detected on this machine — rescan tools "
+                .. "(cached tool data is never used to run programs)")
+        end
         local tool_data = project_tool and project_tool.data or nil
         local task_env, configuration_env = resolve_task_env(
             project, pp._configuration, tool_data, profile, ws.root)
@@ -646,7 +711,15 @@ local function start_one_task(overseer, task_def, on_complete)
                 end
             end
 
-            local build_result, h_err = harden(task_def.builder())
+            local raw_spec = task_def.builder()
+            -- The command line + cwd, to the log (headless §16.4) — as the
+            -- module wrote it, before program resolution and priority
+            -- wrapping (`harden` then drops the display-only `display_cmd`).
+            if type(raw_spec) == "table" and (lw_meta.action == "configure"
+                    or lw_meta.action == "build") then
+                M.log_task_command(unit._workspace, task_def.name, raw_spec)
+            end
+            local build_result, h_err = harden(raw_spec)
             if not build_result then
                 if lw_meta.build_dir then
                     local ws = unit._workspace
@@ -1063,6 +1136,8 @@ function M.plan_profile_build(profile, opts)
                         applied_build_args = td.loomworks and td.loomworks.applied_build_args or nil,
                         applied_build_targets = td.loomworks and td.loomworks.applied_build_targets or nil,
                         cmd = spec.cmd,
+                        -- The command a wrapper runs, for display (§8.1).
+                        display_cmd = spec.display_cmd,
                         cwd = (type(spec.cwd) == "string" and spec.cwd ~= "")
                             and spec.cwd or nil,
                         env = spec.env,

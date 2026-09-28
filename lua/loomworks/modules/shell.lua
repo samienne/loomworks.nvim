@@ -15,6 +15,15 @@ M.has_options = false
 M.has_devices = false
 M.languages = { "c++" }
 
+--- Program-bearing type_config keys (core §8.4 / §17.6; shell spec §14): the
+--- module environment and the clangd binary / database argument. The
+--- configure/build/clean commands are the project's build description — run
+--- only on an explicit action — so they are listed for the trust review only.
+M.trust_fields = {
+    type_config = { "env", "clangd", "compile_commands" },
+    review = { "configure_cmd", "build_cmd", "clean_cmd" },
+}
+
 local uv = vim.uv or vim.loop
 local expand = require("loomworks.expand")
 
@@ -73,7 +82,10 @@ local function resolve_env(project, ctx)
     for k, v in pairs(project.env or {}) do env[k] = v end
     local tc = shell_block(project)
     if type(tc.env) == "table" then
-        for k, v in pairs(tc.env) do
+        -- Denylisted loader/interpreter variables are refused (core §17.9).
+        local allowed = require("loomworks.env_policy").filter(tc.env,
+            { label = (project.name or "shell") .. " env" })
+        for k, v in pairs(allowed) do
             if type(v) == "string" then
                 env[k] = expand.expand_string(v, ctx)
             end

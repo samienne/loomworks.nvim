@@ -311,8 +311,9 @@ describe("plan_profile_build after reload (real planner)", function()
         assert.truthy(unit1:build_dir():match("/cc/"))
         local cache = build_and_strip_cache(core1, unit1)
 
-        -- Phase 2: fresh reload, no detected tools.
-        local core2 = build_core(config, user, cache, nil)
+        -- Phase 2: fresh reload. The toolchain is detected again (a tool known
+        -- only from the cache runs nothing, spec §17.7).
+        local core2 = build_core(config, user, cache, tools)
         local unit2, _, profile2 = profile_unit(core2, "App")
         assert.is_not_nil(unit2)
         assert.equals("built", unit2:state())

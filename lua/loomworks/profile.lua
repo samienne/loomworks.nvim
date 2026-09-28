@@ -474,7 +474,8 @@ function Profile:tool_for(mod_type)
     if self._tool_objects then
         for mod, tool in pairs(self._tool_objects) do
             if mod.id == mod_type and not tool._removed then
-                return { key = tool.key, data = tool.data, label = tool.label }
+                return { key = tool.key, data = tool.data, label = tool.label,
+                    detected = tool._detected ~= false }
             end
         end
     end
@@ -483,7 +484,8 @@ function Profile:tool_for(mod_type)
         for _, key in ipairs(self._tool_keys or {}) do
             local tool = mod:find_tool(key)
             if tool and not tool._removed then
-                return { key = tool.key, data = tool.data, label = tool.label }
+                return { key = tool.key, data = tool.data, label = tool.label,
+                    detected = tool._detected ~= false }
             end
         end
     end
@@ -1287,6 +1289,31 @@ function Profile:is_valid()
     if #legacy_missing > 0 then
         reasons[#reasons + 1] = "incomplete — no tool/SDK selected for: "
             .. table.concat(legacy_missing, ", ")
+    end
+
+    -- A tool known only from the cache is not available (spec §17.7): its
+    -- recorded data is never run. Judged once detection has finished AND
+    -- produced results for the tool's module type — a host that served no
+    -- tool list at all (a CLI read with no machine tool cache) did not
+    -- detect anything, so it cannot say "not detected". Running is gated
+    -- regardless (overseer refuses an undetected keyed tool).
+    local ws = self._workspace
+    if ws and ws._tool_state == "scanned" then
+        local undetected, seen_t = {}, {}
+        for _, pp in ipairs(self:projects()) do
+            local tool = pp.tool_object and pp:tool_object() or nil
+            local scanned_type = tool and type(ws._tools_by_type) == "table"
+                and ws._tools_by_type[tool.mod_type] ~= nil
+            if tool and tool.key and tool._detected == false and scanned_type and not seen_t[tool] then
+                seen_t[tool] = true
+                undetected[#undetected + 1] = tool.key
+            end
+        end
+        if #undetected > 0 then
+            table.sort(undetected)
+            reasons[#reasons + 1] = "toolchain " .. table.concat(undetected, ", ")
+                .. " is not detected on this machine (rescan tools)"
+        end
     end
 
     -- Abstract configurations: a configuration with no variant —

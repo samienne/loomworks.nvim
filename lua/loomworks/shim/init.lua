@@ -2,7 +2,8 @@
 --- (luvi / LuaJIT + libuv) host. Installs `_G.vim` and returns it.
 ---
 --- Provides only what the headless build/detect path touches: JSON (with nvim
---- empty_dict/NIL fidelity), libuv as vim.uv, process spawning, PATH probing,
+--- empty_dict/NIL fidelity), libuv as vim.uv, process spawning (vim.system and
+--- nvim's job API — vim.fn.jobstart/jobwait/jobstop/jobpid), PATH probing,
 --- table/string helpers, an event-loop-drained scheduler, and vim.wait over
 --- uv.run(). No editor surface (buffers, windows, autocommands).
 
@@ -369,6 +370,174 @@ function vim.system(cmd, opts, on_exit)
     end,
     pid = handle and uv.process_get_pid and uv.process_get_pid(handle) or nil,
   }
+end
+
+-- ---------------------------------------------------------------------------
+-- jobs (vim.fn.jobstart / jobwait / jobstop / jobpid, over uv.spawn)
+-- ---------------------------------------------------------------------------
+
+--- Neovim's job API, enough for modules that spawn a helper and collect its
+--- output through callbacks (e.g. listing a platform's connected devices):
+---   * `jobstart(cmd, opts)` → a job id (> 0); 0 for invalid arguments, -1 when
+---     the program is not executable. A list `cmd` runs that program (resolved
+---     like `vim.system`: absolute PATH entries only, never the current
+---     directory); a string runs through the platform shell (`cmd.exe /s /c`,
+---     `sh -c`). opts: `cwd`, `env` (+ `clear_env`), `detach`,
+---     `on_stdout` / `on_stderr` — called as (job_id, lines, "stdout"|"stderr")
+---     with the data split on "\n" (a chunk may end mid-line: its last item
+---     continues in the next call's first; EOF is `{ "" }`; NUL bytes read as
+---     "\n") — `stdout_buffered` / `stderr_buffered` (one call at EOF with all
+---     lines; without a callback the lines are stored in `opts.stdout` /
+---     `opts.stderr`), and `on_exit` — (job_id, exit_code, "exit"), after the
+---     output callbacks. stdin is not connected. `pty` / `rpc` are unsupported
+---     (return 0).
+---   * `jobwait(ids, timeout_ms)` → per id: its exit code, -1 on timeout, -3
+---     for an unknown id. Drives the libuv loop while waiting, so callbacks run.
+---   * `jobstop(id)` → 1 when a running job was signalled, else 0.
+---   * `jobpid(id)` → the process id (0 for an unknown job).
+--- Callbacks run from the event loop (whoever pumps it: jobwait, vim.wait, a
+--- blocking vim.system wait); an error in one is reported, never propagated.
+local jobs, next_job_id = {}, 3
+
+--- Split output the way nvim hands it to job callbacks.
+local function job_lines(s)
+  local r = {}
+  for piece in (s .. "\n"):gmatch("(.-)\n") do r[#r + 1] = (piece:gsub("%z", "\n")) end
+  return r
+end
+
+local function job_callback(fn, ...)
+  if type(fn) ~= "function" then return end
+  local ok, err = pcall(fn, ...)
+  if not ok then vim.notify("job callback error: " .. tostring(err), vim.log.levels.ERROR) end
+end
+
+function vim.fn.jobstart(cmd, opts)
+  opts = opts or {}
+  if opts.pty or opts.rpc then return 0 end
+  local argv
+  if type(cmd) == "string" and cmd ~= "" then
+    argv = IS_WINDOWS and { "cmd.exe", "/s", "/c", '"' .. cmd .. '"' } or { "sh", "-c", cmd }
+  elseif type(cmd) == "table" and type(cmd[1]) == "string" and cmd[1] ~= "" then
+    argv = {}
+    for i, a in ipairs(cmd) do
+      if type(a) ~= "string" and type(a) ~= "number" then return 0 end
+      argv[i] = tostring(a)
+    end
+  else
+    return 0
+  end
+  if opts.cwd ~= nil then
+    local st = type(opts.cwd) == "string" and uv.fs_stat(opts.cwd)
+    if not (st and st.type == "directory") then return 0 end
+  end
+  local resolved = which(argv[1], opts.env, opts.cwd)
+  if not resolved then return -1 end
+  local args = {}
+  for i = 2, #argv do args[#args + 1] = argv[i] end
+
+  local id = next_job_id
+  next_job_id = next_job_id + 1
+  local job = { id = id, done = false, status = nil, open = 2 }
+  local so, se = uv.new_pipe(false), uv.new_pipe(false)
+
+  local function finish()
+    if job.done or job.open > 0 or job.status == nil then return end
+    job.done = true
+    if job.handle and not job.handle:is_closing() then job.handle:close() end
+    job_callback(opts.on_exit, id, job.status, "exit")
+  end
+
+  local function reader(pipe, name)
+    local buffered = opts[name .. "_buffered"]
+    local cb = opts["on_" .. name]
+    local buf = {}
+    uv.read_start(pipe, function(_, data)
+      if data then
+        if buffered then buf[#buf + 1] = data
+        elseif cb then job_callback(cb, id, job_lines(data), name) end
+        return
+      end
+      -- EOF
+      pipe:read_stop()
+      if not pipe:is_closing() then pipe:close() end
+      if buffered then
+        local lines = job_lines(table.concat(buf))
+        if cb then job_callback(cb, id, lines, name) else opts[name] = lines end
+      elseif cb then
+        job_callback(cb, id, { "" }, name)
+      end
+      job.open = job.open - 1
+      finish()
+    end)
+  end
+
+  local env = opts.env
+  if env == nil and opts.clear_env then env = {} end
+  local handle, pid = uv.spawn(win_exe(resolved), {
+    args = args,
+    stdio = { nil, so, se },
+    cwd = opts.cwd,
+    env = build_spawn_env(env, opts.clear_env),
+    detached = opts.detach and true or nil,
+    hide = IS_WINDOWS,
+    verbatim = (type(cmd) == "string" and IS_WINDOWS) or nil,
+  }, function(code, signal)
+    if (code == 0 or code == nil) and signal and signal ~= 0 then code = 128 + signal end
+    job.status = code or 0
+    finish()
+  end)
+  if not handle then
+    so:close(); se:close()
+    return -1
+  end
+  job.handle, job.pid = handle, pid
+  jobs[id] = job
+  reader(so, "stdout")
+  reader(se, "stderr")
+  return id
+end
+
+function vim.fn.jobwait(ids, timeout)
+  local deadline_hit = false
+  local timer
+  if timeout and timeout >= 0 then
+    uv.update_time()
+    timer = uv.new_timer()
+    timer:start(timeout, 0, function() deadline_hit = true end)
+  end
+  local function pending()
+    for _, id in ipairs(ids or {}) do
+      local j = jobs[id]
+      if j and not j.done then return true end
+    end
+    return false
+  end
+  while pending() and not deadline_hit do uv.run("once") end
+  if timer then timer:stop(); if not timer:is_closing() then timer:close() end end
+  local out = {}
+  for i, id in ipairs(ids or {}) do
+    local j = jobs[id]
+    if not j then out[i] = -3
+    elseif j.done then out[i] = j.status
+    else out[i] = -1 end
+  end
+  return out
+end
+
+function vim.fn.jobstop(id)
+  local j = jobs[id]
+  if not j or j.done or j.status ~= nil then return 0 end
+  if j.handle and not j.handle:is_closing() then
+    pcall(uv.process_kill, j.handle, "sigterm")
+    return 1
+  end
+  return 0
+end
+
+function vim.fn.jobpid(id)
+  local j = jobs[id]
+  return j and j.pid or 0
 end
 
 -- ---------------------------------------------------------------------------

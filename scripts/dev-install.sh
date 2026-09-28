@@ -24,7 +24,9 @@ case "$(uname -s)" in
 esac
 
 # Install the freshly-fused host (skip the release-bundle fetch: it's fused).
-"$out" install --no-bundle "$@"
+# `-y`: `make install` IS the request to replace the installed lw, so don't ask
+# the "replace existing binary?" question `lw install` otherwise asks.
+"$out" install -y --no-bundle "$@"
 
 echo
 echo "Point --dev at this checkout (once):"

@@ -118,6 +118,9 @@ function M.resolve(project, configuration, family, profile, root)
     table.sort(stripped)
     local label = (project and project.key or "?") .. "/"
         .. (configuration and configuration.name or "?")
+    -- Loader/interpreter-hijack variables are refused from every source,
+    -- even a trusted working copy (spec §17.9).
+    env = require("loomworks.env_policy").filter(env, { label = label })
     if #stripped > 0 then
         -- A hand-edited file (the CLI and editor refuse these at set time).
         warn_once(label .. "|" .. table.concat(stripped, ","), string.format(
@@ -147,6 +150,13 @@ end
 --- @return table<string, string>
 function M.compose(tool_env, config_env, case_insensitive)
     if case_insensitive == nil then case_insensitive = vim.fn.has("win32") == 1 end
+    -- The environment denylist (spec §17.9) applies to both layers. A tool
+    -- environment is often a captured developer-environment `set` output that
+    -- repeats this process's own ComSpec/PATHEXT — dropped silently then (the
+    -- child inherits the same value).
+    local policy = require("loomworks.env_policy")
+    tool_env = policy.filter(tool_env, { label = "tool environment", quiet_if_inherited = true })
+    config_env = policy.filter(config_env, { label = "configuration environment" })
     local out = {}
     for k, v in pairs(tool_env or {}) do out[k] = v end
     for k, v in pairs(config_env or {}) do

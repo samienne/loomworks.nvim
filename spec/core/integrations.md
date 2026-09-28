@@ -218,6 +218,15 @@ forced declaration carries only the facts the user gave: where a version was not
 supplied it is unknown, and the installation therefore forfeits version-based
 selection (§16.3) and is referenced by its full key.
 
+A user MAY also declare an installation **without a path**: the candidates are
+the provider's `detect_all()` installations not already declared. None is an
+error that names the with-path form; exactly one is declared (and reported as
+detected); several require a choice — offered interactively, or, where no
+prompt is possible, an error listing each candidate as the explicit with-path
+declaration. The chosen path is then declared exactly as a supplied one
+(validated, key derived). Listing the detected installations is read-only and
+needs no workspace.
+
 ### 10.2 SDK domain object
 
 `loomworks.SDK` (`lua/loomworks/sdk.lua`) wraps a resolved
@@ -642,6 +651,7 @@ when the user explicitly publishes (`:w`).
 | `:LoomworksInit [path]` | Optional directory | Initialize workspace (default: cwd) |
 | `:LoomworksInfo` | None | Open/focus status page |
 | `:LoomworksCompileCommand [file]` | Optional file (default: current buffer) | Show the compile command loomworks' owned LSP database uses for the file, under the active profile |
+| `:LoomworksTrust` | None | Review a refused working copy (§17.4): show its summary, then trust (re-sign), discard, or cancel |
 
 `:LoomworksCompileCommand` resolves the active profile, finds the module
 ConfigUnit whose project source tree is the nearest ancestor of the file, and

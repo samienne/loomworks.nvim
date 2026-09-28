@@ -213,7 +213,11 @@ ignored), which is an error. Additive: no `api_versions.module` bump.
 
 Each task_def has:
 - `name`: display name
-- `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`)
+- `builder()`: returns an overseer task specification (`{ cmd, cwd, env }`),
+  optionally with `display_cmd` — the argv the task effectively runs when `cmd`
+  is a wrapper around it (e.g. a toolchain-environment batch file). Display
+  only: core shows and logs it in place of `cmd` (headless §16.4) and never
+  runs it. Additive: no `api_versions.module` bump
 - `loomworks`: metadata — `project_key`, `action` ("configure"|"build"),
   `configuration_key`, `build_dir`, optional `tool_data`, `module_info`
   (module-owned record that replaces the unit's record after a configure, see
@@ -692,6 +696,20 @@ filesystem access — because a passive collect evaluates it on every
 recomputation of the count. Absent hook = the module's projects require nothing
 beyond the module itself. Additive and optional: no `api_versions.module` bump
 (§8.0).
+
+**`trust_fields`** *(optional static property)*
+
+`{ type_config = string[], review? = string[] }` — `type_config` lists the top-level keys of the module's `type_config`
+that are **program-bearing** (§17.6): they name a program to run (e.g. a
+language-server binary override), add program arguments, or set a spawned
+environment. Core removes these keys from the shared snapshot's layer before the
+merge and reports each removal as a diagnostic; they are honored only from the
+signed working copy. Keys that are part of the project's own build description
+(build commands, toolchain or cross files, build options) are **not** listed —
+explicit builds run them (§17.8). `review` optionally lists further keys
+(e.g. the module's own build commands) that the trust review (§17.4) shows
+but that are not stripped. Absent = none. Additive and optional: no
+`api_versions.module` bump (§8.0).
 
 ### 8.5 Module implementations
 

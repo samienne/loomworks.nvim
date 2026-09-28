@@ -63,12 +63,22 @@ function M.parse(content)
 end
 
 --- Load user preferences for a workspace.
---- Returns defaults if file doesn't exist.
+--- Returns defaults if file doesn't exist. A working copy that is not signed
+--- by this machine is never read (spec §17.4): it returns nil plus the
+--- verification status (`"unsigned"` / `"invalid"`).
 --- @param root string
---- @return loomworks.UserData
+--- @return loomworks.UserData|nil data, string|nil trust_status
 function M.load(root)
-    local data, err = io_mod.read_json(M.filepath(root))
-    if not data then
+    local text = io_mod.read_file(M.filepath(root))
+    if not text then
+        return M.default()
+    end
+    local status, body = require("loomworks.trust").verify("user", text)
+    if status ~= "valid" then
+        return nil, status
+    end
+    local ok, data = pcall(vim.json.decode, body)
+    if not ok or type(data) ~= "table" then
         return M.default()
     end
 
@@ -100,7 +110,9 @@ function M.save(root, data)
     local ok, dir_err = io_mod.ensure_dir(dir)
     if not ok then return false, "mkdir: " .. (dir_err or "unknown") end
 
-    return io_mod.write_json(M.filepath(root), data)
+    -- Signed with the machine key (spec §17.3): only a signed working copy is
+    -- ever used, so every loomworks write signs it.
+    return io_mod.write_json_signed(M.filepath(root), "user", data)
 end
 
 return M

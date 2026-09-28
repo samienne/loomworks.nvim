@@ -79,6 +79,23 @@ lw="$T/install/$exe_name"
 echo "=== old (unversioned release-style) host reports an unknown release ==="
 out="$("$lw" version 2>&1)"; echo "$out"
 case "$out" in *"host: unknown release"*) ok "unversioned release host reports an unknown release" ;; *) bad "unexpected version: $out" ;; esac
+# No bundle fetched yet: the version line must not claim one (every other
+# command says "no loomworks release is installed").
+case "$out" in *"bundle: none installed (run \`lw self-update\`)"*) ok "no bundle: version says none installed" ;; *) bad "no-bundle version line: $out" ;; esac
+
+# Help must work before any bundle exists — it is how a user learns what
+# install / self-update do (spec §16.7).
+echo "=== help works with no bundle installed ==="
+for h in "help" "--help" "-h" "install --help" "help self-update" "build --help"; do
+  # shellcheck disable=SC2086
+  out="$("$lw" $h 2>&1)"; code=$?
+  [ $code -eq 0 ] && ok "lw $h exits 0" || bad "lw $h exit $code: $out"
+  case "$out" in *"no loomworks release is installed"*) bad "lw $h: bundle error instead of help" ;; esac
+  case "$out" in *"run \`lw self-update\`"*) ok "lw $h: names self-update" ;; *) bad "lw $h: no self-update hint: $out" ;; esac
+done
+out="$("$lw" install --help 2>&1)"
+case "$out" in *"lw install [-y]"*"--dry-run"*) ok "install --help: install's own help" ;; *) bad "install --help: $out" ;; esac
+[ ! -e "$T/home/Microsoft" ] && [ ! -e "$T/home/.local/bin" ] && ok "install --help installed nothing" || bad "install --help installed something"
 
 echo "=== self-update --no-host leaves the host alone ==="
 out="$("$lw" self-update --no-host 2>&1)"; code=$?; echo "$out"

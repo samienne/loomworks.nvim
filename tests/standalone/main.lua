@@ -222,6 +222,19 @@ do
     and line2:find("channel: unstable", 1, true) ~= nil,
     "version line leads with the embedded release version")
 
+  -- A release host with NO bundle installed (and no system Lua fused in) used
+  -- to claim "bundle: bundled (fused)" while every other command said "no
+  -- loomworks release is installed". It must say there is none, and how to get it.
+  local none = update.version_info(nil, nil, { fused_system_lua = false })
+  eq(none.source, "none", "no bundle: source is none")
+  local nline = update.version_line(none, "unstable")
+  ok(nline:find("bundle: none installed (run `lw self-update`)", 1, true) ~= nil
+    and nline:find("fused", 1, true) == nil,
+    "no bundle: version line says none installed + self-update  (got " .. nline .. ")")
+  local fz = update.version_info(nil, nil, { fused_system_lua = true, dev_build = true })
+  eq(fz.source, "fused", "fused dev build: source is fused")
+  eq(fz.bundle, "bundled (fused)", "fused dev build: bundle is bundled (fused)")
+
   paths.rm_rf(sandbox)
 end
 
@@ -324,6 +337,149 @@ do
     ok(joined:find("Done.", 1, true) == nil,
       "a failed install must not claim it is done")
   end
+
+  paths.rm_rf(sb)
+end
+
+print("boot.help — host-level help works without a bundle")
+do
+  -- `lw help` / `-h` / `--help` / `lw <cmd> --help` failed with "no loomworks
+  -- release is installed" on a fresh release binary, so nobody could learn
+  -- what `install` / `self-update` do. The host answers them itself.
+  local hok, help = pcall(require, "boot.help")
+  ok(hok, "boot.help loads")
+  if hok then
+    local HINT = "run `lw self-update`"
+    local function t(args) return (help.for_args(args)) end
+    for _, args in ipairs({ { "help" }, { "--help" }, { "-h" }, { "--no-input", "help" } }) do
+      local s = t(args) or ""
+      ok(s:find("self-update", 1, true) and s:find("install [-y]", 1, true)
+        and s:find("version", 1, true) and s:find("bootstrap", 1, true)
+        and s:find(HINT, 1, true),
+        "`lw " .. table.concat(args, " ") .. "` prints host usage + the self-update hint")
+    end
+    local inst = t({ "install", "--help" }) or ""
+    ok(inst:find("lw install [-y]", 1, true) and inst:find("--dry-run", 1, true)
+      and inst:find("--no-bundle", 1, true) and inst:find(HINT, 1, true),
+      "`lw install --help` prints install's host help  (got " .. inst .. ")")
+    local su = t({ "help", "self-update" }) or ""
+    ok(su:find("lw self-update [--force] [--channel", 1, true) and su:find("--no-host", 1, true),
+      "`lw help self-update` prints self-update's host help")
+    ok((t({ "version", "-h" }) or ""):find("lw version", 1, true),
+      "`lw version -h` prints version's host help")
+    ok((t({ "update", "--help" }) or ""):find("lw.pin", 1, true),
+      "`lw update --help` prints update's host help")
+    local other = t({ "build", "--help" }) or ""
+    ok(other:find("`lw build`", 1, true) and other:find("install [-y]", 1, true)
+      and other:find(HINT, 1, true),
+      "`lw build --help` prints host usage, saying build needs the bundle  (got " .. other .. ")")
+    ok(t({ "build" }) == nil, "no help requested -> nil")
+    ok(t({}) == nil, "bare lw -> nil")
+    ok(t({ "run", "app", "--", "--help" }) == nil, "--help after `--` belongs to the program")
+  end
+end
+
+print("boot.install — replacing an existing installed binary asks first")
+do
+  -- A downloaded (e.g. pre-release) lw run with `install` used to overwrite the
+  -- installed one silently — here a dev build — with no word about what it
+  -- replaced. It must describe what is there and ask; -y skips the question;
+  -- non-interactive without -y refuses; identical content is "already installed".
+  local sb = (root .. "/tests/.tmp-install-replace"):gsub("\\", "/")
+  paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("LOCALAPPDATA", sb)
+  uv.os_setenv("HOME", sb)
+  local dest = install.target_path()
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+  local function fused(files)  -- a fake fused host: junk "exe" + appended zip
+    local w = miniz.new_writer()
+    for name, body in pairs(files) do w:add(name, body) end
+    return "MZ-not-really-an-exe" .. w:finalize()
+  end
+  local dev_bytes = fused({ ["loomworks/cli.lua"] = "return {}", ["boot/verify.lua"] = "M.RELEASE_VERSION = nil\n" })
+  local new_bytes = fused({ ["boot/verify.lua"] = 'M.RELEASE_VERSION = "0.1.33-beta.3"\n' })
+  local src = sb .. "/download/lw-new"
+  put(src, new_bytes)
+  local base = { exe_path = src, no_bundle = true, no_modify_path = true }
+  local function with(extra)
+    local o = {}
+    for k, v in pairs(base) do o[k] = v end
+    for k, v in pairs(extra) do o[k] = v end
+    return o
+  end
+
+  -- describe_binary: cheap, never executes the file
+  local d = install.describe_binary and install.describe_binary(dest) or nil
+  ok(d == nil, "describe_binary: nil for a missing file")
+  put(dest, dev_bytes)
+  d = install.describe_binary and install.describe_binary(dest)
+  ok(type(d) == "string" and d:find(#dev_bytes .. " bytes", 1, true) ~= nil
+    and d:find("modified ", 1, true) ~= nil,
+    "describe_binary: size + mtime  (got " .. tostring(d) .. ")")
+  ok(type(d) == "string" and d:find("development build", 1, true) ~= nil,
+    "describe_binary: recognises a dev build (fused system Lua)  (got " .. tostring(d) .. ")")
+  local d2 = install.describe_binary and install.describe_binary(src)
+  ok(type(d2) == "string" and d2:find("lw 0.1.33-beta.3", 1, true) ~= nil,
+    "describe_binary: reads a release host's embedded version  (got " .. tostring(d2) .. ")")
+
+  -- non-interactive without -y: refuse, leave the installed binary alone
+  local asked = 0
+  local function ask(answer) return function() asked = asked + 1; return answer end end
+  local r, e = install.install(with({ no_input = true }))
+  ok(r == nil and type(e) == "string" and e:find(dest, 1, true) ~= nil
+    and e:find("-y", 1, true) ~= nil,
+    "non-interactive replace without -y is refused, naming the target and -y  (got " .. tostring(e) .. ")")
+  ok(readfile(dest) == dev_bytes, "refused install left the existing binary untouched")
+
+  -- interactive: the question describes what is there; "no" cancels
+  local question
+  r, e = install.install(with({ ask = function(q) question = q; asked = asked + 1; return false end }))
+  ok(asked == 1 and type(question) == "string" and question:find(dest, 1, true) ~= nil
+    and question:find("development build", 1, true) ~= nil
+    and question:find(#dev_bytes .. " bytes", 1, true) ~= nil,
+    "asks before replacing, describing the existing binary  (got " .. tostring(question) .. ")")
+  ok(r == nil and type(e) == "string" and e:find("cancelled", 1, true) ~= nil,
+    "declining cancels the install  (got " .. tostring(e) .. ")")
+  ok(readfile(dest) == dev_bytes, "declined install left the existing binary untouched")
+
+  -- --dry-run describes, never asks, changes nothing
+  asked = 0
+  r = install.install(with({ dry_run = true, ask = ask(true) }))
+  local joined = table.concat(r or {}, "\n")
+  ok(asked == 0 and joined:find("would replace existing " .. dest, 1, true) ~= nil,
+    "--dry-run reports the replacement without asking  (got " .. joined .. ")")
+  ok(readfile(dest) == dev_bytes, "--dry-run changed nothing")
+
+  -- "yes" replaces, and the report says what was replaced
+  r, e = install.install(with({ ask = ask(true) }))
+  joined = table.concat(r or {}, "\n")
+  ok(e == nil and joined:find("replaced", 1, true) ~= nil,
+    "confirmed install replaces and says so  (got " .. joined .. tostring(e) .. ")")
+  ok(readfile(dest) == new_bytes, "confirmed install placed the new binary")
+
+  -- identical content: already installed, no question even non-interactively
+  asked = 0
+  r, e = install.install(with({ no_input = true, ask = ask(false) }))
+  joined = table.concat(r or {}, "\n")
+  ok(e == nil and asked == 0 and joined:find("already installed", 1, true) ~= nil,
+    "identical binary: already installed, nothing asked  (got " .. joined .. tostring(e) .. ")")
+
+  -- -y skips the question, even non-interactively
+  put(dest, dev_bytes)
+  asked = 0
+  r, e = install.install(with({ assume_yes = true, no_input = true, ask = ask(false) }))
+  ok(e == nil and asked == 0, "-y replaces without asking  (got " .. tostring(e) .. ")")
+  ok(readfile(dest) == new_bytes, "-y placed the new binary")
+
+  -- fresh target: nothing to confirm
+  paths.rm_rf(sb .. "/Microsoft"); paths.rm_rf(sb .. "/.local")
+  asked = 0
+  r, e = install.install(with({ no_input = true, ask = ask(false) }))
+  ok(e == nil and asked == 0 and uv.fs_stat(dest) ~= nil,
+    "a fresh install needs no confirmation  (got " .. tostring(e) .. ")")
 
   paths.rm_rf(sb)
 end
@@ -1514,6 +1670,7 @@ do
   local res = vim.system({ "lwprobe" }, { text = true }):wait()
   eq(res.code, 127, "shim vim.system: a cwd-only program is not spawned")
   ok(tostring(res.stderr):find("not found on PATH", 1, true) ~= nil, "…with a clear error")
+  eq(vim.fn.jobstart({ "lwprobe" }, {}), -1, "shim jobstart: a cwd-only program is not spawned")
   -- Relative / empty PATH entries are ignored (they mean "the cwd").
   uv.os_setenv("PATH", "." .. sep .. sep .. (saved_path or ""))
   ok(bexe.resolve("lwprobe") == nil, "boot.exe: '.' and empty PATH entries ignored")
@@ -1528,6 +1685,148 @@ do
   eq(q.code, 0, "shim vim.system: ./prog resolves against the child cwd")
   uv.chdir(saved)
   paths.rm_rf(sb)
+end
+
+print("loomworks.trust — machine signatures under the standalone host (§17.3)")
+do
+  -- The editor host computes the same values (tests/workspace_trust_spec.lua):
+  -- the same key + content yields the same signature, so the CLI and the
+  -- editor on one machine read each other's `.nvim` files.
+  require("loomworks.shim")
+  local trust = require("loomworks.trust")
+  local ossl = require("openssl")
+  local dir = uv.os_tmpdir():gsub("\\", "/") .. "/lw-trust-" .. tostring(uv.hrtime())
+  uv.fs_mkdir(dir, 448)
+  local kf = io.open(dir .. "/trust.key", "wb")
+  kf:write("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n"); kf:close()
+  trust._set_key_path(dir .. "/trust.key")
+  local content = '{\n  "_meta": {\n    "version": 2\n  },\n  "name": "fixture"\n}\n'
+  local signed = trust.sign("user", content)
+  eq(trust.split(signed), "c127ba0466fe01f413302d041f7f58b60aabba5b43a5ff8ed3bfd214934415f1",
+    "trust.sign: same signature as the editor host")
+  eq((trust.verify("user", signed)), "valid", "trust.verify: valid under the standalone host")
+  -- The pure-Lua HMAC agrees with OpenSSL on binary keys and messages.
+  local key = ""
+  for i = 0, 63 do key = key .. string.char((i * 37 + 11) % 256) end
+  for _, msg in ipairs({ "", "abc", string.rep("\0\255\10", 50), ("x"):rep(1000) }) do
+    eq(trust.hmac_sha256_hex(key, msg), ossl.hmac.hmac("sha256", msg, key, false),
+      "trust.hmac_sha256_hex == OpenSSL HMAC (" .. #msg .. " bytes)")
+  end
+  -- A fresh key is created with owner-only permissions (non-Windows).
+  trust._set_key_path(dir .. "/new/trust.key")
+  ok(trust.key() ~= nil, "trust.key: created on first use")
+  if package.config:sub(1, 1) ~= "\\" then
+    local st = uv.fs_stat(dir .. "/new/trust.key")
+    eq(st.mode % 64, 0, "trust.key: no group/other permission bits")
+  end
+  trust._set_key_path(nil)
+  os.remove(dir .. "/new/trust.key"); uv.fs_rmdir(dir .. "/new")
+  os.remove(dir .. "/trust.key"); uv.fs_rmdir(dir)
+end
+
+print("loomworks.shim — vim.fn.jobstart / jobwait / jobstop (nvim job semantics)")
+do
+  -- A platform module lists devices with `vim.fn.jobstart` (buffered stdout +
+  -- on_exit), so the standalone host needs nvim's job API. Benign commands
+  -- only (the platform shell echoing / exiting).
+  local vim = require("loomworks.shim")
+  local is_win = package.config:sub(1, 1) == "\\"
+  local function sh(script) -- run `script` in the platform shell
+    if is_win then return { "cmd", "/d", "/c", script } end
+    return { "sh", "-c", script }
+  end
+  local function strip_cr(list)
+    local r = {}
+    for i, l in ipairs(list or {}) do r[i] = (l:gsub("\r$", "")) end
+    return r
+  end
+  local two_lines = is_win and "echo one&echo two" or "printf 'one\\ntwo\\n'"
+
+  -- Buffered stdout: one call with every line (trailing "" = final newline),
+  -- before on_exit(job_id, code, "exit").
+  local events, got, exit_args = {}, nil, nil
+  local id = vim.fn.jobstart(sh(two_lines), {
+    stdout_buffered = true,
+    on_stdout = function(j, data, ev) events[#events + 1] = "stdout"; got = { j = j, data = data, ev = ev } end,
+    on_exit = function(j, code, ev) events[#events + 1] = "exit"; exit_args = { j = j, code = code, ev = ev } end,
+  })
+  ok(type(id) == "number" and id > 0, "jobstart returns a job id > 0")
+  local waited = vim.fn.jobwait({ id }, 10000)
+  eq(waited[1], 0, "jobwait returns the exit code")
+  eq(table.concat(events, ","), "stdout,exit", "buffered: on_stdout once, then on_exit")
+  eq(table.concat(strip_cr(got and got.data), "|"), "one|two|", "buffered stdout lines (trailing '' for the final newline)")
+  eq(got and got.ev, "stdout", "on_stdout event name")
+  eq(got and got.j, id, "on_stdout receives the job id")
+  eq(exit_args and exit_args.code, 0, "on_exit code")
+  eq(exit_args and exit_args.ev, "exit", "on_exit event name")
+  eq(exit_args and exit_args.j, id, "on_exit receives the job id")
+
+  -- Unbuffered: chunks joined with nvim's partial-line rule reproduce the
+  -- output; EOF arrives as { "" }.
+  local chunks, eof = {}, false
+  local acc = { "" }
+  local id2 = vim.fn.jobstart(sh(two_lines), {
+    on_stdout = function(_, data)
+      if #data == 1 and data[1] == "" then eof = true; return end
+      acc[#acc] = acc[#acc] .. data[1]
+      for i = 2, #data do acc[#acc + 1] = data[i] end
+      chunks[#chunks + 1] = data
+    end,
+  })
+  vim.fn.jobwait({ id2 }, 10000)
+  ok(#chunks >= 1 and eof, "unbuffered: data chunks then an EOF { \"\" }")
+  eq(table.concat(strip_cr(acc), "|"), "one|two|", "unbuffered: partial-line joining reproduces the output")
+
+  -- Exit code, stderr, env and cwd.
+  local code
+  local id3 = vim.fn.jobstart(sh("exit 3"), { on_exit = function(_, c) code = c end })
+  eq(vim.fn.jobwait({ id3 }, 10000)[1], 3, "jobwait: non-zero exit code")
+  eq(code, 3, "on_exit: non-zero exit code")
+  local err_lines
+  local id4 = vim.fn.jobstart(sh(is_win and "echo oops 1>&2" or "echo oops 1>&2"), {
+    stderr_buffered = true, on_stderr = function(_, d, ev) err_lines = { d = d, ev = ev } end,
+  })
+  vim.fn.jobwait({ id4 }, 10000)
+  ok(err_lines and (err_lines.d[1] or ""):find("oops", 1, true) ~= nil and err_lines.ev == "stderr",
+    "on_stderr (buffered) receives stderr lines")
+  local env_opts = {
+    env = { LWJOBTEST = "xyz" }, stdout_buffered = true,
+  }
+  local id5 = vim.fn.jobstart(sh(is_win and "echo %LWJOBTEST%" or "echo $LWJOBTEST"), env_opts)
+  vim.fn.jobwait({ id5 }, 10000)
+  eq(strip_cr(env_opts.stdout)[1], "xyz", "env extends the environment; buffered output without a callback lands in opts.stdout")
+  local sb = root .. "/tests/.tmp-job"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local cwd_opts = { cwd = sb, stdout_buffered = true }
+  local id6 = vim.fn.jobstart(is_win and { "cmd", "/d", "/c", "cd" } or { "pwd" }, cwd_opts)
+  vim.fn.jobwait({ id6 }, 10000)
+  local printed = (strip_cr(cwd_opts.stdout)[1] or ""):gsub("\\", "/"):lower()
+  ok(printed:find("tests/.tmp-job", 1, true) ~= nil, "cwd option: the job runs in cwd (" .. printed .. ")")
+  paths.rm_rf(sb)
+
+  -- A string command runs through the platform shell.
+  local str_opts = { stdout_buffered = true }
+  local id8 = vim.fn.jobstart(is_win and "echo a b&echo c" or "echo a b; echo c", str_opts)
+  eq(vim.fn.jobwait({ id8 }, 10000)[1], 0, "string cmd: exit 0")
+  eq(table.concat(strip_cr(str_opts.stdout), "|"), "a b|c|", "string cmd: runs through the shell")
+
+  -- The callbacks fire while a caller pumps the loop with vim.wait.
+  local done = false
+  vim.fn.jobstart(sh("exit 0"), { on_exit = function() done = true end })
+  ok(vim.wait(10000, function() return done end), "on_exit fires under vim.wait")
+
+  -- Timeout, stop, and bad ids.
+  local long = is_win and { "ping", "-n", "30", "127.0.0.1" } or { "sleep", "30" }
+  local id7 = vim.fn.jobstart(long, {})
+  eq(vim.fn.jobwait({ id7 }, 100)[1], -1, "jobwait: -1 on timeout")
+  eq(vim.fn.jobstop(id7), 1, "jobstop: 1 for a running job")
+  local stopped = vim.fn.jobwait({ id7 }, 10000)[1]
+  ok(stopped ~= -1 and stopped ~= 0, "jobwait after jobstop: the job ended (" .. tostring(stopped) .. ")")
+  eq(vim.fn.jobstop(id7), 0, "jobstop: 0 for a finished job")
+  eq(vim.fn.jobwait({ 987654 }, 10)[1], -3, "jobwait: -3 for an unknown id")
+
+  -- Failures: an unresolvable program is never spawned (-1); bad args are 0.
+  eq(vim.fn.jobstart({ "lw-no-such-program-xyz" }, {}), -1, "jobstart: -1 when the program is not executable")
+  eq(vim.fn.jobstart({}, {}), 0, "jobstart: 0 for an empty argv")
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

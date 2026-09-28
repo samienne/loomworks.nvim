@@ -31,42 +31,23 @@ Ideas:
 
 ---
 
-## Workspace trust (next release)
+## Workspace trust
 
-The security hotfix (fix/security-hotfix) removed the plain bugs: plugin ids
-loaded only from the runtime path, bare program names resolved from absolute
-PATH entries only, pinned artifacts only from the per-user verified cache,
-in-process build-dir deletion, quoted vcvars batches, validated npm/tsconfig
-arguments, escaped CLI output. What remains is *configured* execution: a
-workspace (possibly an untrusted clone) can still name executables and
-commands on purpose. Plan: a per-user "trust this workspace" decision (keyed by
-root + content of the shared/working files), with untrusted workspaces
-refusing the items below until trusted (editor prompt; `lw trust` / a flag for
-the CLI; CI opt-in via env).
+Follow-ups to workspace trust (spec §17, `lw help trust`), not done:
 
-- **K2 — SDK paths.** Profile-pinned SDK installation paths (user.json) feed
-  compilers/tools that get executed.
-- **F1 — clangd / qmlls binary overrides** (`type_config.clangd`/`qmlls`,
-  including from a committed loomworks.json, `${ENV}`-expanded) are started as
-  language servers.
-- **F2 — clangd `extra_args`** (`lsp_options.clangd.extra_args`) reach the
-  clangd command line (e.g. `--query-driver` globs make clangd execute
-  compilers).
-- **F3 — meson introspect on repo build dirs**: `meson introspect` against a
-  build dir that came with the clone.
-- **F4 — test discovery runs binaries from repo build dirs** (gtest
-  `--gtest_list_tests` probes, ctest `--show-only` reading repo CTest files).
-- **F7 — cached `tool_data` paths trusted** (compiler_path, cmake_path,
-  vcvarsall, env) from loomworks.cache.json. The hotfix validates vcvarsall
-  syntactically; matching it against vswhere-detected installs belongs here.
-- **F12 — launch / deploy**: launch configs (`command`, `program`, args, env)
-  and deploy steps are executed/copied as configured.
-- **F13 — env denylist**: configuration / tool `env` can set `PATH`,
-  `LD_PRELOAD`, `PYTHONPATH`, `NODE_OPTIONS`, `CMAKE_*` hooks, … for every
-  task; decide a denylist or trust-gate.
-- **F15 — git**: `lw` runs `git` inside the repository (worktree hints, `lw
-  worktree`), which honours repo-local config (`core.fsmonitor`, hooks for
-  mutating calls); pass `-c core.fsmonitor=` / safe options or gate on trust.
+- Matching a detected `vcvarsall` against vswhere-reported installs (the path
+  already comes from detection, never from the cache).
+- CMake options that name programs (`CMAKE_<LANG>_COMPILER_LAUNCHER`,
+  `CMAKE_MAKE_PROGRAM`, `CMAKE_PROJECT_INCLUDE`), `toolchain` / meson
+  `machine_file` and shell project commands in loomworks.json are treated as the
+  project's build description (explicit builds only, spec §17.8) — a stricter
+  mode could gate them too.
+- Deploy **sources** with an absolute `path` (a copy INTO the workspace) are not
+  gated.
+- A CI opt-in (`LW_TRUST=…`) was considered and not added: a fresh CI checkout
+  has no `.nvim` state, and `lw trust --yes` covers a restored cache.
+- Explicit `lw nuke` does not take build-directory locks (the cache it resets is
+  untrusted, so its directories are unknown); it deletes `.nvim/build/` wholesale.
 
 Also noted during the hotfix: the loomtest runner (independent of loomworks)
 spawns its test commands through overseer without `loomworks.exe` resolution
@@ -131,6 +112,22 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   *under*-inclusion (a runtime-only transitive DLL not on the link line → the
   binary fails to load it) — a worse, harder-to-debug failure mode. Only worth
   doing if the same-name case actually bites.
+- **Side-by-side beta mode.** Let a tester run a downloaded pre-release `lw`
+  from a scratch dir without touching the installed one: today a fresh release
+  host shares the per-user data dir (bundles, settings, channel) with the
+  installed lw, so its `self-update` installs into the same `lua-<ver>/` set
+  (and replaces whichever host it is), and `install` targets the one install
+  location. Wanted: a per-invocation data-dir override or a *portable mode*
+  (e.g. a marker file / flag that keeps data beside the exe), plus a way to
+  fetch and verify a bundle for this binary without installing it or replacing
+  any host. `LOOMWORKS_DATA_DIR` covers part of it (data dir only; not config,
+  not the install target, not discoverable). Found testing v0.1.33-beta.3.
+- **Keep `<exe>.old` after `install` for rollback.** `lw install` (and the
+  Windows host self-update swap) renames the replaced binary to `<exe>.old`,
+  and the next start deletes it (`host_update.cleanup_old`). Consider keeping
+  it after an `install` — e.g. until the next successful install/self-update,
+  or behind `lw install --rollback` — so replacing a working lw with a broken
+  pre-release is one step to undo.
 
 ---
 

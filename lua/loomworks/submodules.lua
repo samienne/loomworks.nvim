@@ -244,7 +244,9 @@ local function run_jobs(git, jobs)
     local local_running = 0
     local next_i = 1
     local function start(job)
-        local cmd = { git, "-C", job.cwd }
+        -- Repository-local configuration must not run commands on lw's behalf
+        -- (spec §17.8): no file-system monitor hook, no hooks directory.
+        local cmd = { git, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-C", job.cwd }
         for _, a in ipairs(job.args) do cmd[#cmd + 1] = a end
         local env = {}
         for k, v in pairs(GIT_ENV) do env[k] = v end

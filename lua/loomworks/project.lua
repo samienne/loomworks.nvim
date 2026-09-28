@@ -294,7 +294,8 @@ end
 --- @return loomworks.ModuleContext
 function Project:to_module_context(ws_root)
     local tool_key = self._tool and self._tool.key or nil
-    local tool_data = self._tool and self._tool.data or nil
+    -- Detected data only (spec §17.7): a cache-only tool runs nothing.
+    local tool_data = self._tool and self._tool:exec_data() or nil
     return {
         name = self.key,
         path = self.path or self.key,
@@ -413,6 +414,10 @@ function Project:save_configuration(config_name, config_data)
                 if reserved.is_reserved_env(k) then
                     return false, k .. " cannot be set here — the compiler is "
                         .. "chosen by the profile's tool. Select a tool instead."
+                end
+                if require("loomworks.env_policy").is_denied(k) then
+                    return false, k .. " cannot be set — it makes other programs load or "
+                        .. "run code (see `lw help trust`)"
                 end
             end
         end
@@ -916,10 +921,19 @@ end
 --- @return boolean ok, string|nil err
 function Project:save_launch_config(launch_name, config)
     local ws = self._workspace
-    self:_mark_user_owned()
     if self._removed then
         return false, "project '" .. self.key .. "' has been removed"
     end
+    -- Loader/interpreter-hijack variables are refused (spec §17.9).
+    if type(config) == "table" and type(config.env) == "table" then
+        for k in pairs(config.env) do
+            if require("loomworks.env_policy").is_denied(k) then
+                return false, k .. " cannot be set — it makes other programs load or "
+                    .. "run code (see `lw help trust`)"
+            end
+        end
+    end
+    self:_mark_user_owned()
 
     if not self.launch then
         self.launch = {}

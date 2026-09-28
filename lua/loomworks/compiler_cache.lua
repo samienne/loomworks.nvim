@@ -140,7 +140,14 @@ function M.resolve(policy, family, lookup)
         local fam = require("loomworks.cpp_compilers").normalize_family(family)
         candidates = AUTO_PREFERENCE[fam or ""] or DEFAULT_PREFERENCE
     else
-        -- Explicit named launcher: use exactly that tool (still PATH-gated).
+        -- Explicit named launcher: use exactly that tool (still PATH-gated) —
+        -- and only a core-known launcher name: an unknown policy value names no
+        -- program (spec §17.6), it builds uncached with a diagnostic.
+        local known = false
+        for _, t in ipairs(M.KNOWN_LAUNCHERS) do
+            if t == p then known = true end
+        end
+        if not known then return nil end
         candidates = { p }
     end
 
