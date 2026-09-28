@@ -2,7 +2,15 @@
 ---
 --- Writes to {workspace_root}/.nvim/loomworks.log by default.
 --- Injectable via core deps for testing. Levels: ERROR, WARN, INFO, DEBUG.
---- Truncates log on each workspace load to prevent unbounded growth.
+---
+--- The file is shared by every host — the editor and each `lw` invocation,
+--- possibly at the same time — so it is only ever opened in append mode
+--- (never truncated): earlier invocations' lines survive, and concurrent
+--- writers each append whole lines. Its size is bounded by rotation: once it
+--- exceeds `M.MAX_BYTES` it is renamed to `loomworks.log.1` (replacing the
+--- previous one — one old file is kept) and a new file starts. Rotation is
+--- best-effort: a failed rename (e.g. the file is momentarily open elsewhere
+--- on Windows) just means a later write tries again.
 
 local M = {}
 
@@ -22,6 +30,37 @@ M.DEBUG = 4
 
 local LEVEL_NAMES = { "ERROR", "WARN", "INFO", "DEBUG" }
 
+--- Rotation threshold for the log file (bytes).
+M.MAX_BYTES = 1024 * 1024
+
+local function file_size(path)
+    local uv = vim.uv or vim.loop
+    local st = uv and uv.fs_stat(path)
+    return st and st.size or 0
+end
+
+--- Rotate `path` to `path.1` when it exceeds the limit. The size is
+--- re-checked right before the rename, narrowing the race with a concurrent
+--- writer that rotated first (worst case an old `.1` is replaced early; the
+--- live file is never truncated).
+local function maybe_rotate(path)
+    if file_size(path) <= M.MAX_BYTES then return end
+    local old = path .. ".1"
+    pcall(os.remove, old)
+    if file_size(path) > M.MAX_BYTES then pcall(os.rename, path, old) end
+end
+
+--- Append one chunk (whole lines) in a single write, then rotate when the
+--- file has grown past the limit.
+local function append(path, text)
+    local f = io.open(path, "ab")
+    if not f then return end
+    f:write(text)
+    local size = f:seek("end")
+    f:close()
+    if size and size > M.MAX_BYTES then maybe_rotate(path) end
+end
+
 --- Create a new logger.
 --- @param opts? { path?: string, level?: number, capture?: boolean }
 --- @return loomworks.Logger
@@ -36,15 +75,13 @@ function M.new(opts)
 end
 
 --- Set the log file path. Called when workspace root is known.
---- Truncates existing log.
+--- Appends a start marker (never truncates — see the module header), rotating
+--- an oversized file first.
 --- @param root string workspace root path
 function Logger:set_root(root)
     self._path = root .. "/.nvim/loomworks.log"
-    local f = io.open(self._path, "w")
-    if f then
-        f:write("-- loomworks log started " .. os.date("!%Y-%m-%dT%H:%M:%SZ") .. "\n")
-        f:close()
-    end
+    maybe_rotate(self._path)
+    append(self._path, "-- loomworks log started " .. os.date("!%Y-%m-%dT%H:%M:%SZ") .. "\n")
 end
 
 --- Set minimum log level.
@@ -71,11 +108,7 @@ local function write_entry(self, level, fmt, ...)
 
     if not self._path then return end
 
-    local f = io.open(self._path, "a")
-    if f then
-        f:write(entry .. "\n")
-        f:close()
-    end
+    append(self._path, entry .. "\n")
 end
 
 --- Log an error.
