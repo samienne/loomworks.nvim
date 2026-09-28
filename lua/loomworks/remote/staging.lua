@@ -3,10 +3,14 @@
 --- tree (`lw device clean`, spec §16.34 / §18.12).
 ---
 --- The sync record (per device serial and device staging root, kept in the
---- build cache as runtime state) remembers, per staged file, the host file's
---- size / mtime / content digest and the device-reported digest. A file is
---- transferred only when new or its content digest changed; an archive set is
---- re-sent when the digest of its member list changes. When the runner
+--- build cache as runtime state) remembers, per individually staged file, the
+--- host file's size / mtime / content digest and the device-reported digest;
+--- per archive set only the set digest (over every member's path, size and
+--- content digest), a host stat fingerprint, the device digests of the
+--- sampled members and the member paths grouped by directory — never a
+--- per-member digest, which kept the record ~100 KB for a few hundred members.
+--- A file is transferred only when new or its content digest changed; an
+--- archive set is re-sent when its set digest changes. When the runner
 --- declares `digest`, recorded files are verified against the device first
 --- (a wiped / re-flashed device is re-staged). `fresh` ignores the record.
 --- An archive set's tar is deleted after unpacking; a completion marker (the
@@ -43,6 +47,84 @@ local function local_digest(abs, prev)
     local data = read_file(abs)
     if not data then return nil end
     return { size = st.size, mtime = mtime, digest = vim.fn.sha256(data) }
+end
+
+--- Group member paths by directory: `{ [dir] = { basename… } }` ("." for the
+--- staging root itself). This is all an archive set's record keeps per member
+--- — enough to remove members that later leave the set.
+--- @param rels string[]
+--- @return table<string, string[]>
+function M.group_members(rels)
+    local sorted = vim.deepcopy(rels)
+    table.sort(sorted)
+    local out = {}
+    for _, rel in ipairs(sorted) do
+        local d, b = rel:match("^(.*)/([^/]+)$")
+        if not d then d, b = ".", rel end
+        out[d] = out[d] or {}
+        table.insert(out[d], b)
+    end
+    return out
+end
+
+--- The member paths an archive set's record names: the compact `members`
+--- grouping, or a legacy record's per-member `locals` map.
+--- @param a table archive record
+--- @return string[] rels
+function M.member_rels(a)
+    local rels = {}
+    if type(a) ~= "table" then return rels end
+    if type(a.members) == "table" then
+        for d, names in pairs(a.members) do
+            if type(d) == "string" and type(names) == "table" then
+                for _, n in ipairs(names) do
+                    if type(n) == "string" then rels[#rels + 1] = d == "." and n or (d .. "/" .. n) end
+                end
+            end
+        end
+    elseif type(a.locals) == "table" then
+        for rel in pairs(a.locals) do
+            if type(rel) == "string" then rels[#rels + 1] = rel end
+        end
+    end
+    return rels
+end
+
+--- Rewrite a sync record in the compact form (in place): an archive set keeps
+--- only its set digest, marker, the device digests of its sampled members, a
+--- host stat fingerprint and its member paths grouped by directory — never a
+--- per-member digest (a changed member changes the set digest, which is what
+--- re-sends it). A legacy record's per-member `locals` become `members`.
+--- @param rec table|nil a (serial, staging root) sync record
+--- @return table|nil rec
+function M.compact_record(rec)
+    if type(rec) ~= "table" or type(rec.archives) ~= "table" then return rec end
+    for _, a in pairs(rec.archives) do
+        if type(a) == "table" and type(a.locals) == "table" then
+            a.members = M.group_members(M.member_rels(a))
+            a.locals = nil
+        end
+    end
+    return rec
+end
+
+--- Host stat fingerprint of an archive set's members (path, size, mtime):
+--- when it matches the recorded one the recorded set digest is reused without
+--- reading any member (as a staged file's digest is reused on size + mtime).
+--- @param members { rel: string, abs: string }[]
+--- @return string|nil fingerprint, table<string, table>|nil stats, integer bytes
+local function stat_fingerprint(members)
+    local parts, stats, bytes = {}, {}, 0
+    for _, m in ipairs(members) do
+        local st = uv().fs_stat(m.abs)
+        if not st then return nil, nil, bytes end
+        local sec = st.mtime and st.mtime.sec or 0
+        local nsec = st.mtime and st.mtime.nsec or 0
+        parts[#parts + 1] = m.rel .. "\0" .. st.size .. "\0" .. sec .. "." .. nsec
+        stats[m.rel] = st
+        bytes = bytes + st.size
+    end
+    return vim.fn.sha256(table.concat(parts, "\n")), stats, bytes
 end
 
 --- Parse `<hex digest>  <path>` lines.
@@ -156,6 +238,16 @@ function M.stage(o)
     local prev = (not o.fresh and type(o.record) == "table") and vim.deepcopy(o.record) or {}
     prev.files = type(prev.files) == "table" and prev.files or {}
     prev.archives = type(prev.archives) == "table" and prev.archives or {}
+    -- Host-side knowledge of each archive set (stat fingerprint, set digest,
+    -- legacy per-member digests), kept even when device verification below
+    -- drops the set: a wiped device re-sends it without re-hashing members.
+    local host_sets = {}
+    for key, a in pairs(prev.archives) do
+        if type(a) == "table" then
+            host_sets[key] = { stat = a.stat, digest = a.digest,
+                locals = type(a.locals) == "table" and a.locals or nil }
+        end
+    end
     local report = { sent = 0, sent_bytes = 0, unchanged = 0, removed = 0,
         archives_sent = 0, archives_unchanged = 0, archive_bytes = 0, verified = false }
     local function remote(rel) return root .. "/" .. rel end
@@ -222,27 +314,41 @@ function M.stage(o)
     -- Archive sets: member-list digest.
     local archive_plan = {}
     for i, a in ipairs(man.archives) do
-        local parts, members = {}, {}
+        local rels = {}
         for _, m in ipairs(a.members) do
             if not manifest_mod.clean_rel(m.rel) then return nil, "invalid staged path " .. tostring(m.rel) end
-            local old = prev.archives[a.key] and prev.archives[a.key].locals
-                and prev.archives[a.key].locals[m.rel] or nil
-            local d = local_digest(m.abs, old)
-            if not d then return nil, "cannot read " .. m.abs end
-            parts[#parts + 1] = m.rel .. "\0" .. d.size .. "\0" .. d.digest
-            members[m.rel] = d
-            report.archive_bytes = report.archive_bytes + d.size
+            rels[#rels + 1] = m.rel
         end
-        local set_digest = vim.fn.sha256(table.concat(parts, "\n"))
+        local host = host_sets[a.key] or {}
+        local fp, _, bytes = stat_fingerprint(a.members)
+        local set_digest
+        if fp and host.stat == fp and type(host.digest) == "string" then
+            -- Nothing changed on the host (path, size, mtime): reuse the digest.
+            set_digest = host.digest
+            report.archive_bytes = report.archive_bytes + bytes
+        else
+            -- The set digest covers every member's content, so a changed
+            -- member re-sends the set. A legacy record's per-member digests
+            -- are reused on size + mtime (once; the record is then compact).
+            local parts = {}
+            for _, m in ipairs(a.members) do
+                local d = local_digest(m.abs, host.locals and host.locals[m.rel] or nil)
+                if not d then return nil, "cannot read " .. m.abs end
+                parts[#parts + 1] = m.rel .. "\0" .. d.size .. "\0" .. d.digest
+                report.archive_bytes = report.archive_bytes + d.size
+            end
+            set_digest = vim.fn.sha256(table.concat(parts, "\n"))
+        end
+        local members = M.group_members(rels)
         local old = prev.archives[a.key]
         local stem = ".loomworks/archive-" .. vim.fn.sha256(a.key):sub(1, 12)
         if old and old.digest == set_digest and old.remote then
             new.archives[a.key] = { digest = set_digest, marker = old.marker, remote = old.remote,
-                sample = old.sample, locals = members }
+                sample = old.sample, stat = fp, members = members }
             report.archives_unchanged = report.archives_unchanged + 1
         else
             archive_plan[#archive_plan + 1] = { idx = i, set = a, digest = set_digest,
-                tar = stem .. ".tar", marker = stem .. ".ok", locals = members, old = old }
+                tar = stem .. ".tar", marker = stem .. ".ok", stat = fp, members = members, old = old }
         end
     end
 
@@ -256,7 +362,7 @@ function M.stage(o)
     for _, a in ipairs(man.archives) do for _, m in ipairs(a.members) do live_members[m.rel] = true end end
     for key, a in pairs(prev.archives) do
         local still = new.archives[key] ~= nil
-        for rel in pairs(type(a.locals) == "table" and a.locals or {}) do
+        for _, rel in ipairs(M.member_rels(a)) do
             if not live_members[rel] and not in_manifest[rel] and manifest_mod.clean_rel(rel) then
                 removals[#removals + 1] = remote(rel)
             end
@@ -338,7 +444,7 @@ function M.stage(o)
         report.archives_sent = report.archives_sent + 1
         report.sent_bytes = report.sent_bytes + (st and st.size or 0)
         new.archives[pl.set.key] = { digest = pl.digest, marker = pl.marker, remote = pl.digest,
-            sample = {}, locals = pl.locals }
+            sample = {}, stat = pl.stat, members = pl.members }
     end
 
     -- (6) Record the device-side digests of what was just sent.

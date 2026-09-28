@@ -327,6 +327,67 @@ describe("remote.staging (fake device)", function()
         assert.truthy(err:find("[Fail]transfer rejected", 1, true))
     end)
 
+    it("the sync record stays compact: an archive set keeps no per-member digest", function()
+        -- A few hundred members (the real-device case was 504).
+        for k = 1, 500 do
+            fx.write(string.format("%s/test/assets/share/icons/theme/scalable/icon-%03d.svg", root, k), "svg" .. k)
+        end
+        local rec, rep = stage(nil, false)
+        assert.is_table(rec, rep)
+        local a = rec.archives["test/assets/**"]
+        assert.is_nil(a.locals)
+        assert.is_string(a.stat)
+        assert.equals(500, #a.members["test/assets/share/icons/theme/scalable"])
+        assert.same({ "a.bin" }, a.members["test/assets/data"])
+        assert.is_true(vim.tbl_count(a.sample) <= staging.ARCHIVE_SAMPLE)
+        local size = #vim.json.encode(rec)
+        assert.is_true(size < 16 * 1024, "record is " .. size .. " bytes")
+        -- Unchanged host → no re-send; a changed member still re-sends the set.
+        local rec2, rep2 = stage(rec, false)
+        assert.equals(0, rep2.archives_sent)
+        assert.equals(a.digest, rec2.archives["test/assets/**"].digest)
+        fx.write(root .. "/test/assets/share/icons/theme/scalable/icon-250.svg", "changed")
+        local rec3, rep3 = stage(rec2, false)
+        assert.equals(1, rep3.archives_sent)
+        assert.are_not.equal(a.digest, rec3.archives["test/assets/**"].digest)
+        assert.equals("changed", dev.boards.SER1.files[droot .. "/test/assets/share/icons/theme/scalable/icon-250.svg"].data)
+    end)
+
+    it("an older record with per-member digests is migrated compact without re-sending the set", function()
+        local rec = assert(stage(nil, false))
+        local a = rec.archives["test/assets/**"]
+        -- The earlier record shape: every member's size / mtime / digest.
+        local locals = {}
+        for _, rel in ipairs({ "test/assets/data/a.bin", "test/assets/data/deep/b.bin", "test/assets/gone.bin" }) do
+            local st = vim.uv.fs_stat(root .. "/" .. rel)
+            local data = st and fx.read(root .. "/" .. rel) or "x"
+            locals[rel] = { size = st and st.size or 1,
+                mtime = st and (st.mtime.sec * 1000000000 + st.mtime.nsec) or 0, digest = vim.fn.sha256(data) }
+        end
+        dev.boards.SER1.files[droot .. "/test/assets/gone.bin"] = { data = "x", mode = "644" }
+        rec.archives["test/assets/**"] = { digest = a.digest, marker = a.marker, remote = a.remote,
+            sample = a.sample, locals = locals }
+        -- Loading the cache compacts it (workspace load calls this).
+        local legacy = vim.deepcopy(rec)
+        staging.compact_record(legacy)
+        assert.is_nil(legacy.archives["test/assets/**"].locals)
+        local rels = staging.member_rels(legacy.archives["test/assets/**"])
+        table.sort(rels)
+        assert.same({ "test/assets/data/a.bin", "test/assets/data/deep/b.bin", "test/assets/gone.bin" }, rels)
+        -- Staging from either shape: the set is unchanged (same set digest),
+        -- a member that left the set is removed, and the new record is compact.
+        for _, r0 in ipairs({ rec, legacy }) do
+            dev.boards.SER1.files[droot .. "/test/assets/gone.bin"] = { data = "x", mode = "644" }
+            local rec2, rep = stage(r0, false)
+            assert.is_table(rec2, rep)
+            assert.equals(0, rep.archives_sent)
+            assert.equals(1, rep.archives_unchanged)
+            assert.is_nil(dev.boards.SER1.files[droot .. "/test/assets/gone.bin"])
+            assert.is_nil(rec2.archives["test/assets/**"].locals)
+            assert.is_table(rec2.archives["test/assets/**"].members)
+        end
+    end)
+
     it("clean removes the whole workspace staging tree, and nothing outside it", function()
         assert(stage(nil, false))
         dev.boards.SER1.files["/data/stage/other/keep"] = { data = "x" }

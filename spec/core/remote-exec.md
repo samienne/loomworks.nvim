@@ -214,11 +214,16 @@ build-directory-relative path after normalization; a pattern whose fixed prefix
 escapes the build directory (`..`) is refused. Every file in the manifest must
 exist when staging starts; a derived file that is missing is an error naming it.
 
-**Incremental sync.** Core records, per device serial and staging root, the
-size and content digest of every file it has staged, in the build cache
-(§2.3, runtime state — never shared). A file is transferred only when it is
-new or its digest changed; an archive set is re-sent when the digest of its
-member list changes. When the runner declares `digest`, core verifies recorded
+**Incremental sync.** Core records, per device serial and staging root, in the
+build cache (§2.3, runtime state — never shared): the size and content digest
+of every individually staged file; for an archive set only the **set digest**
+(over every member's path, size and content digest), the device digests of
+its sampled members (below) and its member paths — never a per-member digest,
+so the record stays small for a set of hundreds of files. A file is
+transferred only when it is new or its digest changed; an archive set is
+re-sent when its set digest changes, so a changed member re-sends the set. A
+record in an older form (a digest per archive member) is read and rewritten
+in this form, without re-sending anything. When the runner declares `digest`, core verifies recorded
 files against the device before trusting the record (a device that was wiped
 or re-flashed is re-staged); without it, the record is trusted and a
 `fresh` request (§16.34) forces a full re-stage. Files removed from the manifest

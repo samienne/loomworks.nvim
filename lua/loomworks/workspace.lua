@@ -1003,6 +1003,15 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     end
     if raw_cache and type(raw_cache.device_sync) == "table" then
         self._device_sync = raw_cache.device_sync
+        -- An older record kept every archive member's digest (~100 KB for a
+        -- few hundred members): rewrite it compact (§18.4) — the next cache
+        -- save persists the smaller form.
+        local compact = require("loomworks.remote.staging").compact_record
+        for _, by_root in pairs(self._device_sync) do
+            if type(by_root) == "table" then
+                for _, rec in pairs(by_root) do compact(rec) end
+            end
+        end
     end
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
