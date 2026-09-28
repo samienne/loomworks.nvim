@@ -1514,6 +1514,7 @@ do
   local res = vim.system({ "lwprobe" }, { text = true }):wait()
   eq(res.code, 127, "shim vim.system: a cwd-only program is not spawned")
   ok(tostring(res.stderr):find("not found on PATH", 1, true) ~= nil, "…with a clear error")
+  eq(vim.fn.jobstart({ "lwprobe" }, {}), -1, "shim jobstart: a cwd-only program is not spawned")
   -- Relative / empty PATH entries are ignored (they mean "the cwd").
   uv.os_setenv("PATH", "." .. sep .. sep .. (saved_path or ""))
   ok(bexe.resolve("lwprobe") == nil, "boot.exe: '.' and empty PATH entries ignored")
@@ -1565,6 +1566,111 @@ do
   trust._set_key_path(nil)
   os.remove(dir .. "/new/trust.key"); uv.fs_rmdir(dir .. "/new")
   os.remove(dir .. "/trust.key"); uv.fs_rmdir(dir)
+end
+
+print("loomworks.shim — vim.fn.jobstart / jobwait / jobstop (nvim job semantics)")
+do
+  -- A platform module lists devices with `vim.fn.jobstart` (buffered stdout +
+  -- on_exit), so the standalone host needs nvim's job API. Benign commands
+  -- only (the platform shell echoing / exiting).
+  local vim = require("loomworks.shim")
+  local is_win = package.config:sub(1, 1) == "\\"
+  local function sh(script) -- run `script` in the platform shell
+    if is_win then return { "cmd", "/d", "/c", script } end
+    return { "sh", "-c", script }
+  end
+  local function strip_cr(list)
+    local r = {}
+    for i, l in ipairs(list or {}) do r[i] = (l:gsub("\r$", "")) end
+    return r
+  end
+  local two_lines = is_win and "echo one&echo two" or "printf 'one\\ntwo\\n'"
+
+  -- Buffered stdout: one call with every line (trailing "" = final newline),
+  -- before on_exit(job_id, code, "exit").
+  local events, got, exit_args = {}, nil, nil
+  local id = vim.fn.jobstart(sh(two_lines), {
+    stdout_buffered = true,
+    on_stdout = function(j, data, ev) events[#events + 1] = "stdout"; got = { j = j, data = data, ev = ev } end,
+    on_exit = function(j, code, ev) events[#events + 1] = "exit"; exit_args = { j = j, code = code, ev = ev } end,
+  })
+  ok(type(id) == "number" and id > 0, "jobstart returns a job id > 0")
+  local waited = vim.fn.jobwait({ id }, 10000)
+  eq(waited[1], 0, "jobwait returns the exit code")
+  eq(table.concat(events, ","), "stdout,exit", "buffered: on_stdout once, then on_exit")
+  eq(table.concat(strip_cr(got and got.data), "|"), "one|two|", "buffered stdout lines (trailing '' for the final newline)")
+  eq(got and got.ev, "stdout", "on_stdout event name")
+  eq(got and got.j, id, "on_stdout receives the job id")
+  eq(exit_args and exit_args.code, 0, "on_exit code")
+  eq(exit_args and exit_args.ev, "exit", "on_exit event name")
+  eq(exit_args and exit_args.j, id, "on_exit receives the job id")
+
+  -- Unbuffered: chunks joined with nvim's partial-line rule reproduce the
+  -- output; EOF arrives as { "" }.
+  local chunks, eof = {}, false
+  local acc = { "" }
+  local id2 = vim.fn.jobstart(sh(two_lines), {
+    on_stdout = function(_, data)
+      if #data == 1 and data[1] == "" then eof = true; return end
+      acc[#acc] = acc[#acc] .. data[1]
+      for i = 2, #data do acc[#acc + 1] = data[i] end
+      chunks[#chunks + 1] = data
+    end,
+  })
+  vim.fn.jobwait({ id2 }, 10000)
+  ok(#chunks >= 1 and eof, "unbuffered: data chunks then an EOF { \"\" }")
+  eq(table.concat(strip_cr(acc), "|"), "one|two|", "unbuffered: partial-line joining reproduces the output")
+
+  -- Exit code, stderr, env and cwd.
+  local code
+  local id3 = vim.fn.jobstart(sh("exit 3"), { on_exit = function(_, c) code = c end })
+  eq(vim.fn.jobwait({ id3 }, 10000)[1], 3, "jobwait: non-zero exit code")
+  eq(code, 3, "on_exit: non-zero exit code")
+  local err_lines
+  local id4 = vim.fn.jobstart(sh(is_win and "echo oops 1>&2" or "echo oops 1>&2"), {
+    stderr_buffered = true, on_stderr = function(_, d, ev) err_lines = { d = d, ev = ev } end,
+  })
+  vim.fn.jobwait({ id4 }, 10000)
+  ok(err_lines and (err_lines.d[1] or ""):find("oops", 1, true) ~= nil and err_lines.ev == "stderr",
+    "on_stderr (buffered) receives stderr lines")
+  local env_opts = {
+    env = { LWJOBTEST = "xyz" }, stdout_buffered = true,
+  }
+  local id5 = vim.fn.jobstart(sh(is_win and "echo %LWJOBTEST%" or "echo $LWJOBTEST"), env_opts)
+  vim.fn.jobwait({ id5 }, 10000)
+  eq(strip_cr(env_opts.stdout)[1], "xyz", "env extends the environment; buffered output without a callback lands in opts.stdout")
+  local sb = root .. "/tests/.tmp-job"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local cwd_opts = { cwd = sb, stdout_buffered = true }
+  local id6 = vim.fn.jobstart(is_win and { "cmd", "/d", "/c", "cd" } or { "pwd" }, cwd_opts)
+  vim.fn.jobwait({ id6 }, 10000)
+  local printed = (strip_cr(cwd_opts.stdout)[1] or ""):gsub("\\", "/"):lower()
+  ok(printed:find("tests/.tmp-job", 1, true) ~= nil, "cwd option: the job runs in cwd (" .. printed .. ")")
+  paths.rm_rf(sb)
+
+  -- A string command runs through the platform shell.
+  local str_opts = { stdout_buffered = true }
+  local id8 = vim.fn.jobstart(is_win and "echo a b&echo c" or "echo a b; echo c", str_opts)
+  eq(vim.fn.jobwait({ id8 }, 10000)[1], 0, "string cmd: exit 0")
+  eq(table.concat(strip_cr(str_opts.stdout), "|"), "a b|c|", "string cmd: runs through the shell")
+
+  -- The callbacks fire while a caller pumps the loop with vim.wait.
+  local done = false
+  vim.fn.jobstart(sh("exit 0"), { on_exit = function() done = true end })
+  ok(vim.wait(10000, function() return done end), "on_exit fires under vim.wait")
+
+  -- Timeout, stop, and bad ids.
+  local long = is_win and { "ping", "-n", "30", "127.0.0.1" } or { "sleep", "30" }
+  local id7 = vim.fn.jobstart(long, {})
+  eq(vim.fn.jobwait({ id7 }, 100)[1], -1, "jobwait: -1 on timeout")
+  eq(vim.fn.jobstop(id7), 1, "jobstop: 1 for a running job")
+  local stopped = vim.fn.jobwait({ id7 }, 10000)[1]
+  ok(stopped ~= -1 and stopped ~= 0, "jobwait after jobstop: the job ended (" .. tostring(stopped) .. ")")
+  eq(vim.fn.jobstop(id7), 0, "jobstop: 0 for a finished job")
+  eq(vim.fn.jobwait({ 987654 }, 10)[1], -3, "jobwait: -3 for an unknown id")
+
+  -- Failures: an unresolvable program is never spawned (-1); bad args are 0.
+  eq(vim.fn.jobstart({ "lw-no-such-program-xyz" }, {}), -1, "jobstart: -1 when the program is not executable")
+  eq(vim.fn.jobstart({}, {}), 0, "jobstart: 0 for an empty argv")
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

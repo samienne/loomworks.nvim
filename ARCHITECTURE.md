@@ -834,7 +834,14 @@ The `vim` global is provided by either Neovim (the editor, and
 - maps `vim.uv` to `require("luv")`,
 - hand-writes the native-backed surface: `json`, `system` (over
   `uv.spawn`), `fn.{executable,exepath,mkdir,has,getcwd,fnamemodify}`,
-  `v.shell_error`, `schedule` (drained by `uv.run()`), `notify` / `log`.
+  `v.shell_error`, `schedule` (drained by `uv.run()`), `notify` / `log`,
+  and nvim's job API — `fn.jobstart` (list argv resolved like `system`, a
+  string through `cmd.exe /s /c` / `sh -c`; `cwd`, `env`/`clear_env`,
+  `on_stdout`/`on_stderr` with nvim's partial-line `data` lists and
+  `*_buffered`, `on_exit` last), `fn.jobwait` (pumps `uv.run`; -1 timeout,
+  -3 unknown id), `fn.jobstop`, `fn.jobpid` — for modules that list devices
+  through a helper process. Job callbacks run from whatever pumps the loop
+  (`jobwait`, `vim.wait`).
 
 The JSON shim MUST reproduce Neovim's `empty_dict` / `NIL` / array-vs-object
 semantics (spec §16.1). A differential test uses headless Neovim as the
