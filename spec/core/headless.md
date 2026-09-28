@@ -210,6 +210,11 @@ that hands the rest to a build tool or program) print that command's help and
 exit 0 — the flag is never read as an operand such as a profile name. This
 holds for the host-level commands too (version reporting, self-update,
 installation, pin management): asking for their help never performs them.
+Help does not depend on the bundle: a host with no system Lua to run (a
+release host before its first acquisition, §16.13) still answers every help
+request with exit 0 — the host-level commands' own help for those commands,
+and otherwise a short usage listing the host-level commands — stating that
+full help needs the bundle and naming the acquisition operation.
 A sub-command's help (`lw help <command> <sub-command>`, or `--help` after the
 sub-command) prints only that sub-command's part of the command's help, with a
 pointer to the whole; a sub-command the help does not document falls back to

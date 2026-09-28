@@ -1060,6 +1060,10 @@ Neither path defends against a compromise of the CI signing identity itself,
 or a malicious commit that CI faithfully builds — those need repository and
 account security, not artifact verification.
 
+Before a bundle is fetched, the binary still documents itself: `lw help`,
+`lw --help`, and `lw install --help` / `lw self-update --help` print the
+binary's own commands and options (full help arrives with the bundle).
+
 `lw install` copies the binary to a per-user location — `~/.local/bin/lw`
 (Unix) or `%LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe` (Windows, already on
 PATH) — ensures it is on PATH (prompting first; `-y` to apply non-interactively,
