@@ -1365,12 +1365,16 @@ decode + small encode, `verify.lua` ECDSA-P256 manifest verifier + the host's
 curl/local fetch, `update.lua` self-update + miniz extraction + pinned
 provisioning (`ensure_host_binary` / `ensure_version`), `host_update.lua` host
 binary self-replacement (spec §16.32), `install.lua`
-self-install, `modules.lua` module acquisition, `pin.lua` pin parse / asset
+self-install (asks before replacing a *different* installed binary, which
+`describe_binary` identifies from its fused zip without executing it),
+`help.lua` host-level help used when no system Lua exists, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap`/`update` + the
 launcher-script templates), `lua/loomworks/shim/`, `modules.json` (the curated
 module index), `bin/lw`, `bin/lw.cmd` exist. The bootstrap intercepts the host
 commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
-`lw update`, and redirects workspace ops to a repo's pinned `lw`; `lw module` is
+`lw update`, and redirects workspace ops to a repo's pinned `lw`; with no
+system Lua at all (release host, no bundle yet) it answers help requests from
+`boot.help` instead of failing with "no loomworks release is installed"; `lw module` is
 a CLI command (system Lua) that calls into `boot.modules`.
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + release version + fuse

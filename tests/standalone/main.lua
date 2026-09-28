@@ -341,6 +341,44 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.help — host-level help works without a bundle")
+do
+  -- `lw help` / `-h` / `--help` / `lw <cmd> --help` failed with "no loomworks
+  -- release is installed" on a fresh release binary, so nobody could learn
+  -- what `install` / `self-update` do. The host answers them itself.
+  local hok, help = pcall(require, "boot.help")
+  ok(hok, "boot.help loads")
+  if hok then
+    local HINT = "run `lw self-update`"
+    local function t(args) return (help.for_args(args)) end
+    for _, args in ipairs({ { "help" }, { "--help" }, { "-h" }, { "--no-input", "help" } }) do
+      local s = t(args) or ""
+      ok(s:find("self-update", 1, true) and s:find("install [-y]", 1, true)
+        and s:find("version", 1, true) and s:find("bootstrap", 1, true)
+        and s:find(HINT, 1, true),
+        "`lw " .. table.concat(args, " ") .. "` prints host usage + the self-update hint")
+    end
+    local inst = t({ "install", "--help" }) or ""
+    ok(inst:find("lw install [-y]", 1, true) and inst:find("--dry-run", 1, true)
+      and inst:find("--no-bundle", 1, true) and inst:find(HINT, 1, true),
+      "`lw install --help` prints install's host help  (got " .. inst .. ")")
+    local su = t({ "help", "self-update" }) or ""
+    ok(su:find("lw self-update [--force] [--channel", 1, true) and su:find("--no-host", 1, true),
+      "`lw help self-update` prints self-update's host help")
+    ok((t({ "version", "-h" }) or ""):find("lw version", 1, true),
+      "`lw version -h` prints version's host help")
+    ok((t({ "update", "--help" }) or ""):find("lw.pin", 1, true),
+      "`lw update --help` prints update's host help")
+    local other = t({ "build", "--help" }) or ""
+    ok(other:find("`lw build`", 1, true) and other:find("install [-y]", 1, true)
+      and other:find(HINT, 1, true),
+      "`lw build --help` prints host usage, saying build needs the bundle  (got " .. other .. ")")
+    ok(t({ "build" }) == nil, "no help requested -> nil")
+    ok(t({}) == nil, "bare lw -> nil")
+    ok(t({ "run", "app", "--", "--help" }) == nil, "--help after `--` belongs to the program")
+  end
+end
+
 print("boot.install — replacing an existing installed binary asks first")
 do
   -- A downloaded (e.g. pre-release) lw run with `install` used to overwrite the
