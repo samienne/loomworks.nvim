@@ -2928,8 +2928,9 @@ function Workspace:record_task_result(result)
     end
 
     self._core._deps.log:debug("record_task_result: %s/%s %s %s → %s",
-        result.unit and result.unit._init_project_key or "?",
-        result.variant or "?",
+        (config_unit._project and config_unit._project.key) or config_unit._init_project_key
+            or result.project_key or "?",
+        result.variant or config_unit:variant() or result.configuration_key or "?",
         action,
         success and "success" or "failure",
         config_unit.state_value or "?")
