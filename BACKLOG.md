@@ -31,6 +31,39 @@ Ideas:
 
 ---
 
+## Remote execution on devices — deferred pieces
+
+Core §18 ([spec/core/remote-exec.md](spec/core/remote-exec.md)) v1 runs named
+foreign executables (`lw run`, `lw test --target`) on a device through an SDK
+provider's device runner. Deferred:
+
+- **ctest-registered tests on a device** — static listing via
+  `ctest --show-only=json-v1` turned into exec requests (§18.6, cmake §15.3).
+- **`cpp_compiler` device runners** — cross gcc/clang kits whose programs run on
+  a networked board (cmake §15.1).
+- **Device-farm lock interop** — `LOOMWORKS_DEVICE_LOCK_DIR` relocates the lock
+  directory; lock-file format compatibility is validated with a concrete farm
+  (§18.7).
+- **Generic device-log view** — move hilog parsing/filtering out of
+  `device_log.lua` into the ohos plugin; the view takes a format table from the
+  module/runner (§18.13 "Later").
+- **Editor launch chain** for foreign targets (§18.11: build → deploy → stage →
+  execute from the editor, output + device log views, stop = cancel). v1 is
+  headless only; the editor refuses a foreign target via `foreign.check_local`.
+- **Debugging and test-explorer integration** for foreign targets (§18.11).
+- **stdin forwarding** to device programs (§18.5).
+- **hiview faultlogger reports for lw-launched runs** — hiview doesn't write
+  faultlogger/cppcrash-*.log for lw-launched runs (only
+  faultlog/temp/cppcrash-<pid>-*.json, which lw collects). Manual runs with the
+  same `./<exe>` name DID get a faultlogger report, so the exec name isn't the
+  cause. Remaining differences: lw's `$$`+exec wrapper vs a plain
+  `cd … && LD_LIBRARY_PATH=… ./exe … > out.txt 2>&1` in one hdc shell string,
+  and stdout/stderr streamed over hdc vs redirected to a file on the device.
+  Needs a controlled phone experiment varying one factor at a time. Low
+  priority: the collected temp json has the full stack.
+
+---
+
 ## Workspace trust
 
 Follow-ups to workspace trust (spec §17, `lw help trust`), not done:
@@ -77,8 +110,8 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   resolution. v1 is system-wide (per-user, on PATH) only.
 - **`lw run` device targets.** Non-debug launch is DONE — `lw run <profile>
   [target]` builds then executes a launch target, and `lw launch` manages the
-  configs (spec §16.17). Still deferred: debug launch (DAP) and device install
-  / launch, which stay editor-only.
+  configs (spec §16.17). Plain cross-built executables now run on a device
+  headlessly (§18, #62); §11 package install/launch and DAP stay editor-only.
 - ~~**Keyless signing / provenance.**~~ DONE (v0.1.2) — and not with minisign:
   the host verifies with **ECDSA P-256 + SHA-256** because luvi's bundled
   lua-openssl cannot do Ed25519's one-shot verify, and minisign isn't a

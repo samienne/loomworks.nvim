@@ -203,6 +203,61 @@ describe("forced full reconfigure (--reconfigure)", function()
         assert.is_nil(configure_step(plan(ws, profile)))
     end)
 
+    it("an already-configured build dir with no configure record is a FULL reconfigure, not a first configure", function()
+        -- Regression (real device run): after the unsigned-cache migration
+        -- discarded the cache, the next configure into the existing build dir
+        -- ran as "configure: first configure" without --fresh.
+        local ws, profile, _, r = make_core()
+        root = r
+        local step = configure_step(plan(ws, profile))
+        assert.is_not_nil(step.build_dir)
+        vim.fn.mkdir(step.build_dir, "p")
+        local f = assert(io.open(step.build_dir .. "/CMakeCache.txt", "wb"))
+        f:write("CMAKE_BUILD_TYPE:STRING=Debug\n")
+        f:close()
+        step = configure_step(plan(ws, profile))
+        assert.equals("configure record missing (existing build directory)", step.configure_reason)
+        assert.equals("full", step.reconfigure)
+        assert.is_true(has(step.cmd, "--fresh"))
+        assert.equals("full reconfigure (--fresh): configure record missing (existing build directory)",
+            overseer.configure_reason_line(step))
+    end)
+
+    it("the task-result log line names the unit's configuration, never '?'", function()
+        local ws, profile, _, r = make_core()
+        root = r
+        local lines = {}
+        local real = ws._core._deps.log
+        ws._core._deps.log = setmetatable({
+            debug = function(_, fmt, ...) lines[#lines + 1] = string.format(fmt, ...) end,
+        }, { __index = function(_, k)
+            local v = real[k]
+            if type(v) == "function" then return function(_, ...) return v(real, ...) end end
+            return v
+        end })
+        local ok, err = pcall(function()
+            require("loomworks.cli")._record_step(ws, configure_step(plan(ws, profile)), true)
+        end)
+        ws._core._deps.log = real
+        assert.is_true(ok, err)
+        local found
+        for _, l in ipairs(lines) do if l:find("record_task_result:", 1, true) then found = l end end
+        assert.is_not_nil(found)
+        assert.truthy(found:find("App/Debug configure success", 1, true), found)
+    end)
+
+    it("modules report existing configure state by a stat of their own marker", function()
+        local d = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(d .. "/meson-private", "p")
+        assert.is_false(cmake.has_configure_state(d))
+        assert.is_false(meson.has_configure_state(d))
+        local f = assert(io.open(d .. "/meson-private/coredata.dat", "wb")); f:write("x"); f:close()
+        assert.is_true(meson.has_configure_state(d))
+        f = assert(io.open(d .. "/CMakeCache.txt", "wb")); f:write("x"); f:close()
+        assert.is_true(cmake.has_configure_state(d))
+        vim.fn.delete(d, "rf")
+    end)
+
     it("a never-configured unit reports a first configure", function()
         local ws, profile, _, r = make_core()
         root = r

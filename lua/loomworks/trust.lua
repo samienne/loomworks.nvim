@@ -183,6 +183,13 @@ local function data_dir()
     return ((env("HOME") or env("USERPROFILE") or "."):gsub("\\", "/")) .. "/.local/share/loomworks"
 end
 
+--- The per-user data directory (also the default home of the device locks,
+--- spec §18.7).
+--- @return string
+function M.data_dir()
+    return data_dir()
+end
+
 --- Path of the machine key file.
 --- @return string
 function M.key_path()

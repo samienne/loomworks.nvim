@@ -269,6 +269,14 @@ local function merge_project(shared, user)
     end
     merged.deploy = next(merged_deploy) and merged_deploy or nil
 
+    -- Device block (spec §18.9): user wins per field.
+    if shared.device or user.device then
+        local merged_device = {}
+        for k, v in pairs(shared.device or {}) do merged_device[k] = v end
+        for k, v in pairs(user.device or {}) do merged_device[k] = v end
+        merged.device = next(merged_device) and merged_device or nil
+    end
+
     return merged, prov
 end
 
@@ -506,6 +514,7 @@ end
 --- @field _build_dir_locks table<string, loomworks.BuildDirLock> per-build-dir operation locks
 --- @field _build_dirs loomworks.BuildDir[] all BuildDir objects (including orphaned)
 --- @field _deploy_records table<string, table> normalized dest path -> deploy freshness record
+--- @field _device_sync table<string, table<string, table>> serial -> device staging root -> staging sync record (spec §18.4)
 --- @field _sdks loomworks.SDK[] SDK domain objects
 --- @field _devices table<string, loomworks.Device> serial -> Device (runtime-only)
 --- @field _device_scan_state "idle"|"scanning"|"done"
@@ -572,6 +581,7 @@ function Workspace.new(core, data)
     self._artifact_refs = {}  -- normalized artifact path → ConfigUnits (§5.9)
     self._build_dir_locks = {}
     self._deploy_records = {}  -- normalized dest path → { source_build_dir, source_rel_path, source_mtime }
+    self._device_sync = {}  -- serial → device staging root → sync record (spec §18.4)
     self._sdks = {}  -- SDK domain objects
     self._devices = {}  -- serial -> Device domain object (runtime-only)
     self._device_scan_state = "idle"  -- "idle" | "scanning" | "done"
@@ -821,6 +831,10 @@ function Workspace:_serialize_cache()
     if next(self._deploy_records) then
         data.deploy_state = self._deploy_records
     end
+    -- Remote staging sync records (spec §18.4; runtime state, never shared)
+    if self._device_sync and next(self._device_sync) then
+        data.device_sync = self._device_sync
+    end
 
     return data
 end
@@ -986,6 +1000,18 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     -- Deploy records: read from cache (no domain object resolution needed)
     if raw_cache and raw_cache.deploy_state then
         self._deploy_records = raw_cache.deploy_state
+    end
+    if raw_cache and type(raw_cache.device_sync) == "table" then
+        self._device_sync = raw_cache.device_sync
+        -- An older record kept every archive member's digest (~100 KB for a
+        -- few hundred members): rewrite it compact (§18.4) — the next cache
+        -- save persists the smaller form.
+        local compact = require("loomworks.remote.staging").compact_record
+        for _, by_root in pairs(self._device_sync) do
+            if type(by_root) == "table" then
+                for _, rec in pairs(by_root) do compact(rec) end
+            end
+        end
     end
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
@@ -2911,8 +2937,9 @@ function Workspace:record_task_result(result)
     end
 
     self._core._deps.log:debug("record_task_result: %s/%s %s %s → %s",
-        result.unit and result.unit._init_project_key or "?",
-        result.variant or "?",
+        (config_unit._project and config_unit._project.key) or config_unit._init_project_key
+            or result.project_key or "?",
+        result.variant or config_unit:variant() or result.configuration_key or "?",
         action,
         success and "success" or "failure",
         config_unit.state_value or "?")
@@ -3161,6 +3188,18 @@ end
 --- databases. It is NOT called when there is nothing to refresh (no
 --- `refresh_lsp_database` hook, or no build dir) — the caller treats those
 --- units as already-settled and never gates on them.
+--- Ask the LSP layer to re-resolve the clients of `build_dir` — only when the
+--- editor has loaded it. Never loads `loomworks.lsp` itself: that would
+--- discover and load the editor-only server integrations in a host that runs
+--- no language servers (the standalone CLI).
+--- @param build_dir string
+function Workspace._nudge_lsp(build_dir)
+    local lsp = package.loaded["loomworks.lsp"]
+    if type(lsp) == "table" and lsp.on_owned_database_changed then
+        pcall(lsp.on_owned_database_changed, build_dir)
+    end
+end
+
 --- @param unit loomworks.ConfigUnit
 --- @param on_settled? fun() called once when the primary DB refresh settles
 function Workspace:_refresh_lsp_database_for(unit, on_settled)
@@ -3189,10 +3228,7 @@ function Workspace:_refresh_lsp_database_for(unit, on_settled)
     -- the generic LSP entry point — no module-type branching here.
     local function on_db_changed(changed)
         if not changed then return end
-        local ok, lsp = pcall(require, "loomworks.lsp")
-        if ok and lsp.on_owned_database_changed then
-            lsp.on_owned_database_changed(build_dir)
-        end
+        Workspace._nudge_lsp(build_dir)
     end
     -- The primary refresh drives both the nudge and (when the caller asked) the
     -- readiness gate. `on_settled` fires once regardless of `changed`, since a
@@ -4158,6 +4194,7 @@ function Workspace:_config_from_objects()
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
                 deploy = project.deploy,
+                device = project.device,
                 variables = project.variables,
             }
         end
@@ -4238,6 +4275,11 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if next(configs_dict) then
         type_config.configurations = configs_dict
     end
+    -- The device block lives in the module section (spec §18.9): an older lw
+    -- preserves an unknown module field but rejects an unknown project key.
+    if project.device and next(project.device) then
+        type_config.device = vim.deepcopy(project.device)
+    end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4274,6 +4316,11 @@ function Workspace:_serialize_project(project)
     end
     if next(configs_dict) then
         type_config.configurations = configs_dict
+    end
+    -- The device block lives in the module section (spec §18.9): an older lw
+    -- preserves an unknown module field but rejects an unknown project key.
+    if project.device and next(project.device) then
+        type_config.device = vim.deepcopy(project.device)
     end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
@@ -4597,6 +4644,7 @@ function Workspace:_user_config_from_objects()
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
                 deploy = project.deploy,
+                device = project.device,
                 variables = project.variables,
             }
         end
@@ -5227,6 +5275,7 @@ function Workspace:_serialize_config_internal()
                 depends_on = project._depends_on_keys,
                 launch = project.launch,
                 deploy = project.deploy,
+                device = project.device,
                 variables = project.variables,
             }
         end
@@ -5286,6 +5335,11 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     end
     if next(configs_dict) then
         type_config.configurations = configs_dict
+    end
+    -- The device block lives in the module section (spec §18.9): an older lw
+    -- preserves an unknown module field but rejects an unknown project key.
+    if project.device and next(project.device) then
+        type_config.device = vim.deepcopy(project.device)
     end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
@@ -5792,6 +5846,11 @@ function Workspace:_enrich_tools_from_sdks(tools_by_type)
                             tool_data = t.tool_data,
                             tool_key = mod.impl.tool_key and mod.impl.tool_key(t.tool_data) or nil,
                             tool_label = mod.impl.tool_label and mod.impl.tool_label(t.tool_data) or nil,
+                            -- Execution platform + producing SDK (spec §10.7,
+                            -- §18.1): runtime facts, never part of the key.
+                            target_platform = type(t.target_platform) == "string"
+                                and t.target_platform ~= "" and t.target_platform or nil,
+                            sdk = sdk,
                         }
                     end
                     log:debug("SDK '%s' provided %d tools for module '%s'",

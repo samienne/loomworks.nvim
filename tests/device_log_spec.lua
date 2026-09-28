@@ -25,6 +25,17 @@ describe("device_log parser", function()
         assert.equals("[a92ab178] SingleDirectionSyncHelper: not allow sync", r.msg)
     end)
 
+    it("a message containing '/' and ': ' never becomes a proc/tag (no whitespace in either)", function()
+        local line = "04-21 16:14:16.478 1234 1234 I "
+            .. "C03F00/MUSL-LDSO: load /system/lib/x.so: ok"
+        local r = dl.parse_line(line)
+        assert.is_not_nil(r)
+        assert.equals("C03F00", r.domain)
+        assert.is_nil(r.proc)
+        assert.equals("MUSL-LDSO", r.tag)
+        assert.equals("load /system/lib/x.so: ok", r.msg)
+    end)
+
     it("parses a two-segment hilog line (DOMAIN/TAG)", function()
         local line = "04-10 15:08:15.076     0     0 I I00000/HiLog: "
             .. "========Zeroth log of type: init"

@@ -67,8 +67,9 @@
 --- @class loomworks.ConfigProject
 --- @field path string relative path from workspace root
 --- @field type string module type ("cmake", "typescript")
---- @field type_config table module-specific configuration from loomworks.json
+--- @field type_config table module-specific configuration from loomworks.json (without `device`)
 --- @field depends_on? string[]
+--- @field device? table remote-execution block (spec §18.9), lifted out of the module section
 
 --- Explicit profile definition in loomworks.json.
 --- @class loomworks.ConfigProfileDef
@@ -90,6 +91,7 @@
 --- @field _meta loomworks.CacheMeta
 --- @field configurations table<string, loomworks.CachedConfig> flat dict keyed by "project_key/config_key"
 --- @field profiles? table<string, loomworks.CachedProfile>
+--- @field device_sync? table<string, table<string, table>> serial -> device staging root -> incremental-sync record (spec §18.4; compacted on load)
 
 --- Cache metadata.
 --- @class loomworks.CacheMeta
@@ -156,6 +158,9 @@
 --- @field tool_data table opaque module-specific tool data
 --- @field tool_key? string unique key for cache (nil for single-tool modules)
 --- @field tool_label? string display label (nil for single-tool modules)
+--- @field target_platform? string opaque execution-platform token of an
+---   SDK-derived kit (spec §10.7, §18.1); nil = host-runnable
+--- @field sdk? loomworks.SDK the SDK that produced an SDK-derived kit
 
 -- ========================== Merge Results ==========================
 
@@ -201,6 +206,7 @@
 --- @field type string module type
 --- @field path? string relative path
 --- @field type_config? table module-specific configuration
+--- @field device? table remote-execution block (spec §18.9)
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool_key? string cache key suffix

@@ -151,7 +151,9 @@ also for a configured unit that carries no `passed_options` record or whose
 record's `record_version` differs from the module's `configure_record_version`
 (currently `1`; configured by an older loomworks, so it cannot be classified
 with certainty — core §5.1 *Configure record migration*), or when the caller
-forced a full reconfigure (`force_full_reconfigure`, core §8.1), the
+forced a full reconfigure (`force_full_reconfigure`, core §8.1 — core also
+sets it for a unit with no record whose build directory holds
+`meson-private/coredata.dat`, the module's `has_configure_state`, core §8.4), the
 configure task names `meson-private/cmd_line.txt` in `pre_configure_reset` (core
 §8.1) and runs `meson setup --wipe`: core removes the stored command line under
 the deletion-safety rules (otherwise `--wipe` would **replay** the previous

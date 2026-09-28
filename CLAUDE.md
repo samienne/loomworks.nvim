@@ -18,6 +18,7 @@
   - [`spec/core/integrations.md`](spec/core/integrations.md) — §9–§14 LSP, SDK, device, overseer, auto-load, commands
   - [`spec/core/headless.md`](spec/core/headless.md) — §16 Headless / Standalone
   - [`spec/core/trust.md`](spec/core/trust.md) — §17 Workspace Trust
+  - [`spec/core/remote-exec.md`](spec/core/remote-exec.md) — §18 Remote Execution on Devices
 - **[spec/](spec/)** — Per-implementation specs that fulfil the core
   contracts:
   - [`spec/ui.md`](spec/ui.md) — status page, highlights, winbar
@@ -152,7 +153,9 @@ See specification.md sections 1.1–1.7 for full definitions.
 Any change that touches deletion logic (rm_rf, rm_rf_async, _run_deletion,
 _validate_build_dir, delete_cached_configs, reset_cached_configs,
 execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
-`lw nuke`, `lw trust --discard`) **must** be reviewed for
+`lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
+pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
+`clean`) and `lw device clean`) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -172,6 +175,11 @@ directory safety before merging:
 6. **Shared dir protection**: `_build_dir_refs` tracks which cache keys
    reference each build dir. `_run_deletion` skips rm-rf when remaining
    refs > 0 after subtracting the batch being deleted.
+7. **Device paths** (spec §18.12): a device is only asked to remove paths
+   under `<staging_base>/<workspace segment>/`, checked with
+   `manifest.device_path_under` (separator boundary, no `.`/`..` segments);
+   the staging base itself only with `rmdir`. `prune_runs` removes only
+   timestamp-named children of a non-link `<build_dir>/.device-runs`.
 
 ## Implementation Notes
 

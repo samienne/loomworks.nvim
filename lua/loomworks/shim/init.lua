@@ -101,6 +101,7 @@ end
 vim.islist = vim.tbl_isarray
 
 function vim.trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+function vim.pesc(s) return (s:gsub("[%(%)%.%%%+%-%*%?%[%]%^%$]", "%%%0")) end
 function vim.startswith(s, p) return s:sub(1, #p) == p end
 function vim.endswith(s, p) return p == "" or s:sub(-#p) == p end
 function vim.split(s, sep, opts)

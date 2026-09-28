@@ -59,6 +59,8 @@ The `device` field maps profile keys to device serial strings:
     "Debug:<sdk>-<platform>-<arch>": "FMR0225108000951"
 }
 ```
+It is unrelated to a project's `device` block (`projects.<p>.<type>.device`,
+§18.9), which shapes remote execution and lives in the project definition.
 
 The `profile_variables` field holds each profile's machine-local fill values
 for **blank** project variables (§1.3.1), keyed profile → project → variable:
@@ -448,6 +450,8 @@ Sparse record of what has actually been configured and built.
 - `deploy_state` dict keyed by normalized absolute destination path. Tracks
   which source config unit's artifact was last deployed to each destination.
   Cleaned when source config units are deleted/cleaned.
+- `device_sync` — per device serial → staging root, the §18.4 incremental-sync
+  record (runtime state; compacted on load).
 - `artifacts` — the config unit's **resolved artifact set**: the absolute
   on-disk output paths its last successful configure resolved, via the
   module's `resolve_artifacts` (§8.4). Stored in **display** casing, exactly

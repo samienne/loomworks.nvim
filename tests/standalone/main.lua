@@ -765,6 +765,9 @@ do
   ok(env.PATH ~= nil or env.Path ~= nil, "vim.fn.environ() includes PATH")
   ok(type(vim.fn.exepath) == "function" and type(vim.fn.getcwd) == "function",
     "vim.fn.exepath / getcwd present")
+  -- Plugin code (device runners, modules) runs under this shim too.
+  eq(vim.pesc("a.b%c-d*e+f?g[h]^$(x)"), "a%.b%%c%-d%*e%+f%?g%[h%]%^%$%(x%)", "vim.pesc escapes pattern magic")
+  eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
 local function slurp(p)
@@ -1827,6 +1830,57 @@ do
   -- Failures: an unresolvable program is never spawned (-1); bad args are 0.
   eq(vim.fn.jobstart({ "lw-no-such-program-xyz" }, {}), -1, "jobstart: -1 when the program is not executable")
   eq(vim.fn.jobstart({}, {}), 0, "jobstart: 0 for an empty argv")
+end
+
+print("remote execution under the shim (spec §18)")
+do
+  -- The executor, transport and sentinel protocol rely on vim.schedule /
+  -- vim.wait / uv pipes; run them under the real shim (luvi host).
+  local vim = require("loomworks.shim")
+  package.path = root .. "/?.lua;" .. package.path
+  local se = require("loomworks.remote.spec_exec")
+  local is_win = package.config:sub(1, 1) == "\\"
+  local sh = is_win and ((os.getenv("SystemRoot") or "C:/Windows"):gsub("\\", "/") .. "/System32/cmd.exe") or "/bin/sh"
+  local args = is_win and { "/d", "/c", "echo one& (echo two)1>&2& exit 3" }
+    or { "-c", "echo one; echo two 1>&2; exit 3" }
+  local job, fail = se.run({ cmd = sh, args = args }, { label = "probe" })
+  eq(job.lines[1], "one", "spec_exec: stdout line, CRLF normalised")
+  eq(job.err_lines[1], "two", "spec_exec: stderr line")
+  eq(job.code, 3, "spec_exec: exit status")
+  ok(fail and fail:find("probe failed (exit 3)", 1, true) ~= nil, "spec_exec: failure names the step")
+  local long = is_win and { "/d", "/c", "ping -n 30 127.0.0.1 >nul" } or { "-c", "sleep 30" }
+  local tjob, tfail = se.run({ cmd = sh, args = long }, { label = "hang", timeout = 0.5 })
+  ok(tjob.timed_out and tfail:find("timed out", 1, true) ~= nil, "spec_exec: hard timeout kills the step")
+  local rel = se.run({ cmd = "sh", args = {} }, { label = "rel" })
+  ok(rel.spawn_error ~= nil, "spec_exec: a bare program name is refused")
+
+  local fx = require("tests.remote_fixtures")
+  local dev = fx.device()
+  local runner = fx.fake_runner_table()
+  local t = require("loomworks.remote.transport").new({ runner = runner, serial = "SER1", backend = dev:backend() })
+  dev.boards.SER1.files["/x/prog"] = { data = "p" }
+  dev.behaviors.prog = function() return { out = { "hello" }, exit = 7 } end
+  local req = { argv = { "/x/prog", "a b" }, cwd = "/x", env = { K = "v" }, library_dirs = { "/x" },
+    nonce = require("loomworks.remote.transport").nonce() }
+  local seen = {}
+  local ejob, st = t:start_exec(req, { on_output = function(_, l) seen[#seen + 1] = l end })
+  ejob:wait()
+  eq(st.status, 7, "transport: status comes from the nonce sentinel")
+  eq(table.concat(seen, "|"), "hello", "transport: sentinel / pid lines are not program output")
+  local refused = t:start_exec({ argv = { "/x/prog" }, cwd = "/x", env = { ["A-B"] = "1" }, nonce = "n1" })
+  eq(refused, nil, "transport: a non-portable env name is refused before any spec")
+end
+
+print("editor-only LSP integrations under the shim")
+do
+  -- Regression (real device run): a CLI configure nudged the LSP layer, which
+  -- discovered the integrations; qmlls called vim.filetype.add at load and the
+  -- shim has no vim.filetype, printing a stray load error.
+  local vim = require("loomworks.shim")
+  local okq, qerr = pcall(require, "loomworks.integrations.lsp.qmlls")
+  ok(okq, "qmlls integration loads without vim.filetype" .. (okq and "" or (" — " .. tostring(qerr))))
+  local okc, cerr = pcall(require, "loomworks.integrations.lsp.clangd")
+  ok(okc, "clangd integration loads under the shim" .. (okc and "" or (" — " .. tostring(cerr))))
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

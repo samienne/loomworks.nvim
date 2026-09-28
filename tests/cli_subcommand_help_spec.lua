@@ -102,7 +102,8 @@ describe("`lw <command> --help`", function()
     for _, topic in ipairs({ "status", "build", "clean", "reset", "unlock", "run", "target",
       "launch", "test", "init", "workspace", "migrate", "cache", "health", "module", "publish",
       "pull", "worktree", "project", "config", "configset", "profile", "settings", "completion",
-      "version", "install", "self-update", "bootstrap", "update", "agent", "sdk", "ci", "tools" }) do
+      "version", "install", "self-update", "bootstrap", "update", "agent", "sdk", "ci", "tools",
+      "trust", "nuke", "submodules", "device" }) do
       local t = help_text(topic)
       assert.is_nil(t:find("§", 1, true), topic .. ": " .. (t:match("[^\n]*§[^\n]*") or ""))
     end

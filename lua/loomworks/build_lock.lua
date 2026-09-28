@@ -36,12 +36,11 @@ local function this_host()
     return (ok and type(h) == "string" and h) or "?"
 end
 
---- Read the lock info for a build dir (with computed `age`/`stale`), or nil when
---- unlocked.
---- @param build_dir string
+--- Read the lock info of a lockfile path (with computed `age`/`stale`), or nil
+--- when unlocked. Path-level API shared with the device lock (spec §18.7).
+--- @param path string lockfile path
 --- @return table|nil
-function M.read(build_dir)
-    local path = lock_path(build_dir)
+function M.read_path(path)
     local st = uv.fs_stat(path)
     if not st then return nil end
     local info = {}
@@ -58,15 +57,23 @@ function M.read(build_dir)
     return info
 end
 
+--- Read the lock info for a build dir (with computed `age`/`stale`), or nil
+--- when unlocked.
+--- @param build_dir string
+--- @return table|nil
+function M.read(build_dir)
+    return M.read_path(lock_path(build_dir))
+end
+
 --- Write a fresh lock file exclusively. Returns true on success, else nil + the
 --- fs error (e.g. "EEXIST").
 --- @return boolean|nil ok, string|nil err
-local function create_locked(path, action)
+local function create_locked(path, action, extra)
     local fd, err = uv.fs_open(path, "wx", tonumber("644", 8))
     if not fd then return nil, err end
-    local body = vim.json.encode({
-        pid = this_pid(), host = this_host(), action = action, started_at = now(),
-    })
+    local rec = { pid = this_pid(), host = this_host(), action = action, started_at = now() }
+    for k, v in pairs(extra or {}) do rec[k] = v end
+    local body = vim.json.encode(rec)
     uv.fs_write(fd, body)
     uv.fs_close(fd)
     return true
@@ -83,6 +90,40 @@ local function busy_reason(info)
         tostring(info.age or "?"))
 end
 
+--- Try once to take the lockfile at `path` (path-level API shared with the
+--- device lock, spec §18.7). A stale (crashed) holder's lock is reclaimed.
+--- Returns a handle, or `(nil, info)` with the live holder's lock info.
+--- @param path string
+--- @param action string
+--- @param extra? table extra fields recorded in the lockfile
+--- @return table|nil handle, table|nil holder_info
+function M.try_acquire_path(path, action, extra)
+    local parent = path:match("^(.*)[/\\][^/\\]+$")
+    if parent then pcall(vim.fn.mkdir, parent, "p") end
+
+    local ok = create_locked(path, action, extra)
+    local info
+    if not ok then
+        info = M.read_path(path)
+        if info and info.stale then
+            -- Atomic reclaim: only the process whose rename wins removes the
+            -- stale lock; a racing reclaimer then re-hits the fresh lock.
+            local tmp = path .. ".stale." .. this_pid()
+            if uv.fs_rename(path, tmp) then
+                pcall(uv.fs_unlink, tmp)
+                ok = create_locked(path, action, extra)
+            end
+        end
+        if not ok then return nil, info or {} end
+    end
+
+    local timer = uv.new_timer()
+    timer:start(M.HEARTBEAT_MS, M.HEARTBEAT_MS, function()
+        pcall(uv.fs_utime, path, now(), now())
+    end)
+    return { path = path, timer = timer }
+end
+
 --- Acquire the lock for `build_dir`. Fail-fast: returns a handle on
 --- success, or `(nil, reason)` if a live process holds it. A stale (crashed)
 --- holder's lock is reclaimed automatically.
@@ -90,37 +131,19 @@ end
 --- @param action "build"|"configure"|"clean"
 --- @return table|nil handle, string|nil reason
 function M.acquire(build_dir, action)
-    local path = lock_path(build_dir)
-    -- The parent may not exist yet (first configure creates the build dir).
-    local parent = path:match("^(.*)[/\\][^/\\]+$")
-    if parent then pcall(vim.fn.mkdir, parent, "p") end
-
-    local ok = create_locked(path, action)
-    if not ok then
-        local info = M.read(build_dir)
-        if info and info.stale then
-            -- Atomic reclaim: only the process whose rename wins removes the
-            -- stale lock; a racing reclaimer then re-hits the fresh lock.
-            local tmp = path .. ".stale." .. this_pid()
-            if uv.fs_rename(path, tmp) then
-                pcall(uv.fs_unlink, tmp)
-                ok = create_locked(path, action)
-            end
-        end
-        if not ok then return nil, busy_reason(info) end
-    end
-
-    local timer = uv.new_timer()
-    timer:start(M.HEARTBEAT_MS, M.HEARTBEAT_MS, function()
-        pcall(uv.fs_utime, path, now(), now())
-    end)
-    return { path = path, timer = timer, build_dir = build_dir }
+    local h, info = M.try_acquire_path(lock_path(build_dir), action)
+    if not h then return nil, busy_reason(info) end
+    h.build_dir = build_dir
+    return h
 end
 
 --- Release a held lock.
 --- @param handle table|nil
 function M.release(handle)
-    if not handle then return end
+    -- Idempotent: a second release (an exit hook after an explicit release)
+    -- must never unlink a lockfile another process has since created.
+    if not handle or handle.released then return end
+    handle.released = true
     if handle.timer then
         pcall(function() handle.timer:stop(); handle.timer:close() end)
     end
@@ -131,7 +154,13 @@ end
 --- @param build_dir string
 --- @return boolean removed true if a lock file was present
 function M.force(build_dir)
-    local path = lock_path(build_dir)
+    return M.force_path(lock_path(build_dir))
+end
+
+--- Force-remove a lockfile by path.
+--- @param path string
+--- @return boolean removed
+function M.force_path(path)
     if not uv.fs_stat(path) then return false end
     pcall(uv.fs_unlink, path)
     return true

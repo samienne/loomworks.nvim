@@ -29,6 +29,7 @@ never renumbered, and no top-level `§N` is ever split across two files.
 | §15 | Invariants | this file (`specification.md`) |
 | §16 | Headless / Standalone Execution | [`spec/core/headless.md`](spec/core/headless.md) |
 | §17 | Workspace Trust | [`spec/core/trust.md`](spec/core/trust.md) |
+| §18 | Remote Execution on Devices | [`spec/core/remote-exec.md`](spec/core/remote-exec.md) |
 
 Implementation-specific specs live in sibling files under `spec/`:
 
@@ -44,7 +45,7 @@ Implementation-specific specs live in sibling files under `spec/`:
 
 Section numbering differs by subtree. The `spec/core/*.md` files are a
 physical partition of the single global core §-namespace: they keep their
-**original** section numbers (§1, §2, …, §16) and do **not** restart at §1.
+**original** section numbers (§1, §2, …, §18) and do **not** restart at §1.
 By contrast, section numbers inside the other `spec/` subtrees
 (`spec/modules/`, `spec/integrations/`, `spec/sdks/`, `spec/ui.md`) are
 local to each file and restart at §1.
@@ -64,6 +65,7 @@ local to each file and restart at §1.
 | A deferred / planned feature that is not yet implemented | [`BACKLOG.md`](BACKLOG.md), not core spec |
 | How the system behaves when run outside the editor (headless / standalone) | `specification.md` §16 |
 | What a workspace's files may cause to execute; machine signatures on `.nvim/` state | `specification.md` §17 |
+| Running cross-built programs on a device: foreign-artifact detection, device runners, staging, remote run/test | `specification.md` §18 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
@@ -268,6 +270,15 @@ belongs in the matching `spec/` file.
     workspace executes nothing that unsigned or shared data names (§17.8); and
     loader/interpreter-hijack environment variables are refused from every
     environment source (§17.9).
+
+19. **Foreign programs never run on the host**: A build-target artifact whose
+    kit targets another platform, or whose executable format the host cannot
+    run, is never executed locally — by a launch, a headless run, a test run
+    or a discovery probe. It is routed to a device through the device runner
+    of the SDK that serves its platform, or refused with a message naming the
+    platform (§18.1). A remote run's exit status is the program's, recovered
+    explicitly; a transport that loses it reports a transport failure, never
+    a program status (§18.5).
 
 ---
 

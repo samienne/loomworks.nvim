@@ -10,6 +10,7 @@ local Configuration = require("loomworks.configuration")
 --- @field type_config? table module-specific configuration (options, configurations, etc.)
 --- @field launch? table<string, table> launch configurations
 --- @field deploy? table<string, table|table[]> project-level deploy steps
+--- @field device? { stage?: string[], archive?: string[], env?: table<string,string>, working_dir?: string } remote-execution block (spec §18.9); stored in the module section of the files (`projects.<p>.<type>.device`), never in `type_config`
 --- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
 --- @field configuration? string active configuration name
 --- @field _module? loomworks.Module direct reference to Module domain object
@@ -76,6 +77,7 @@ function Project:_update(data)
     end
     self.launch = data.launch
     self.deploy = data.deploy
+    self.device = data.device
     self.variables = data.variables or nil
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
@@ -872,6 +874,38 @@ function Project:save_variable(var_name, declaration)
     end
 
     ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Replace the project's `device` block (spec §18.9) in the working copy;
+--- nil or an empty table removes it. Validated like a loaded block; a denied
+--- device environment variable (§17.9) is refused.
+--- @param block table|nil
+--- @return boolean ok, string|nil err
+function Project:save_device(block)
+    local ws = self._workspace
+    if self._removed then
+        return false, "project '" .. self.key .. "' has been removed"
+    end
+    if block ~= nil and next(block) == nil then block = nil end
+    if block then
+        local ok, err = require("loomworks.remote.manifest").validate_block(block, "project '" .. self.key .. "'")
+        if not ok then return false, err end
+        for k in pairs(type(block.env) == "table" and block.env or {}) do
+            if require("loomworks.env_policy").is_denied(k) then
+                return false, k .. " cannot be set — it makes other programs load or "
+                    .. "run code (see `lw help trust`)"
+            end
+        end
+    end
+    self:_mark_user_owned()
+    local old = self.device
+    self.device = block and vim.deepcopy(block) or nil
+    local ok, err = ws:_save_user()
+    if not ok then
+        self.device = old
+        return false, err
+    end
     return true
 end
 

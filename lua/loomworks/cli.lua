@@ -12,7 +12,8 @@
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
----           unlock <profile>|--all | settings <...> | completion <shell> | help
+---           unlock <profile>|--all|--device <serial> | device <list|select|clean> |
+--           settings <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
 -- Under the luvi host the source is a "bundle:" path and require resolves via
@@ -72,11 +73,15 @@ local function out(s) io.write(term.render(s or "") .. "\n") end
 --- Write an informational line to stderr. Used when stdout must stay clean for a
 --- machine consumer — e.g. `lw run --print` streams its build/status chatter here
 --- so `valgrind $(lw run --print)` captures only the resolved command line.
-local function note(s) io.stderr:write(term.render(s or "") .. "\n") end
+--- stdout is flushed first: it is buffered (stderr is not), so a stdout line
+--- written earlier (e.g. a `==> [step]` header) would otherwise surface after
+--- this one on a shared terminal.
+local function note(s) io.stdout:flush(); io.stderr:write(term.render(s or "") .. "\n") end
 
 --- stderr counterpart of `out` for text that is not a whole line (same
---- rendering). Raw tool output relayed from a child process does not use it.
-local function errw(s) io.stderr:write(term.render(s or "")) end
+--- rendering; stdout flushed first, as `note`). Raw tool output relayed from a
+--- child process does not use it.
+local function errw(s) io.stdout:flush(); io.stderr:write(term.render(s or "")) end
 
 -- ---------------------------------------------------------------------------
 -- Shell-word splitting and POSIX-sh quoting (for `lw run --prefix` / `--print`)
@@ -1667,10 +1672,32 @@ end
 --- that still looks active (fresh heartbeat).
 function M.cmd_unlock(ws, args)
   local build_lock = require("loomworks.build_lock")
-  local all, profile_name = false, nil
-  for i = 2, #args do
-    if args[i] == "--all" then all = true
-    elseif not profile_name then profile_name = args[i] end
+  local all, profile_name, device_serial = false, nil, nil
+  local i = 2
+  while args[i] do
+    if args[i] == "--all" then all = true; i = i + 1
+    elseif args[i] == "--device" then
+      device_serial = args[i + 1]
+      if not device_serial then die("--device requires a serial") end
+      i = i + 2
+    elseif not profile_name then profile_name = args[i]; i = i + 1
+    else i = i + 1 end
+  end
+
+  -- `lw unlock --device <serial>` clears a device lock (spec §18.7).
+  if device_serial then
+    local device_lock = require("loomworks.remote.device_lock")
+    local info = device_lock.read(device_serial)
+    if not info then
+      out("no device lock for " .. device_serial)
+      return 0
+    end
+    if not info.stale then
+      errw("lw: forcing an ACTIVE device lock (" .. device_lock.holder(info, device_serial) .. " ago)\n")
+    end
+    device_lock.force(device_serial)
+    out("unlocked device " .. device_serial)
+    return 0
   end
 
   local function unlock_dir(bd)
@@ -1693,7 +1720,7 @@ function M.cmd_unlock(ws, args)
     end
   else
     if not profile_name then
-      die("usage: lw unlock <profile> | --all")
+      die("usage: lw unlock <profile> | --all | --device <serial>")
     end
     for _, bd in ipairs(profile_build_dirs(resolve_profile(ws, profile_name))) do
       targets[bd] = true
@@ -1706,6 +1733,345 @@ function M.cmd_unlock(ws, args)
   end
   if removed == 0 then out("no build-dir locks to clear") end
   return 0
+end
+
+-- ---------------------------------------------------------------------------
+-- Devices (spec §16.34, §18.3)
+-- ---------------------------------------------------------------------------
+
+-- Device-command helpers live in one table: the CLI chunk is close to Lua's
+-- 200-locals-per-function limit.
+local DEV = {}
+
+--- The profile a device command is scoped to without dying: a named one
+--- (dies when unknown), else — interactive only — the active / sole profile;
+--- nil means "no profile" (every declared SDK's runner is in scope, §16.34).
+function DEV.soft_profile(ws, name)
+  if name then return resolve_profile(ws, name) end
+  if not interactive() then return nil end
+  local profiles = ws._profiles or {}
+  local active = ws._active_profile_key
+  for _, p in ipairs(profiles) do if p.key == active then return p end end
+  if #profiles == 1 then return profiles[1] end
+  return nil
+end
+
+--- Parse a positive number option value (`--timeout 30`).
+function DEV.parse_seconds(flag, v)
+  local n = tonumber(v)
+  if not n or n <= 0 then die(flag .. " requires a positive number of seconds (got '" .. tostring(v) .. "')") end
+  return n
+end
+M._parse_seconds = DEV.parse_seconds
+
+--- Serial → profile keys that persist it (§1.8).
+function DEV.persisted_serials(ws)
+  local map = {}
+  for _, p in ipairs(ws._profiles or {}) do
+    if p._device_serial then
+      map[p._device_serial] = map[p._device_serial] or {}
+      table.insert(map[p._device_serial], p.key)
+    end
+  end
+  for _, keys in pairs(map) do table.sort(keys) end
+  return map
+end
+
+--- Fresh per-invocation device options for `run` / `test` (spec §16.34).
+function DEV.new_device_opts()
+  return { timeouts = {}, log_options = nil }
+end
+
+--- Consume one device option at `argv[i]` into `o` (setting `o._next`).
+--- Returns false when `argv[i]` is not a device option. Options: `--device
+--- <serial>`, `--fresh`, `--timeout <s>`, `--query-timeout <s>`,
+--- `--transfer-timeout <s>`, `--log <key>=<value>` (repeatable; CLI wins per
+--- key), `--no-wait`.
+--- @return boolean
+function DEV.parse_device_opt(argv, i, o)
+  local v = argv[i]
+  if v == "--device" then
+    o.device = argv[i + 1]
+    if not o.device or o.device == "" then die("--device requires a serial") end
+    o._next = i + 2
+  elseif v == "--fresh" then o.fresh = true; o._next = i + 1
+  elseif v == "--no-wait" then o.no_wait = true; o._next = i + 1
+  elseif v == "--timeout" then o.timeout = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
+  elseif v == "--query-timeout" then o.timeouts.query = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
+  elseif v == "--transfer-timeout" then o.timeouts.transfer = DEV.parse_seconds(v, argv[i + 1]); o._next = i + 2
+  elseif v == "--log" then
+    local k, val = require("loomworks.remote.run").parse_log_arg(argv[i + 1] or "")
+    if not k then die(val) end
+    o.log_options = o.log_options or {}
+    o.log_options[k] = val
+    o._next = i + 2
+  else
+    return false
+  end
+  return true
+end
+M._parse_device_opt = DEV.parse_device_opt
+M._new_device_opts = DEV.new_device_opts
+
+--- `lw device list [--json]` body (spec §16.34): the attached devices each
+--- runner in scope reports. Read-only. `deps.backend` (tests) is the process
+--- backend. Returns the exit code.
+--- @param ws loomworks.Workspace
+--- @param opts { json?: boolean, profile?: string, timeouts?: table }
+--- @param deps? { backend?: table }
+--- @return integer
+function M._device_list(ws, opts, deps)
+  deps = deps or {}
+  local runners = require("loomworks.remote.runners")
+  local devices = require("loomworks.remote.devices")
+  local profile = DEV.soft_profile(ws, opts.profile)
+  local scope = runners.in_scope(ws, profile)
+  if #scope == 0 then
+    die("no device runner available — none of the SDKs in scope" ..
+      (profile and (" (profile '" .. profile.key .. "')") or "") ..
+      " supplies one (declare the SDK with `lw sdk add`, and install a plugin whose SDK provider ships a device runner)")
+  end
+  local persisted = DEV.persisted_serials(ws)
+  local rows, failed = {}, 0
+  for _, e in ipairs(scope) do
+    local list, err = devices.list(e.runner, { backend = deps.backend, timeouts = opts.timeouts,
+      describe = true })
+    if not list then
+      failed = failed + 1
+      errw("lw: " .. tostring(err) .. "\n")
+    else
+      devices.merge(ws, e.runner.id, list)
+      for _, d in ipairs(list) do
+        rows[#rows + 1] = { serial = d.serial, state = d.state, runner = e.runner.id,
+          name = d.display_name, profiles = persisted[d.serial] or {} }
+      end
+    end
+  end
+  if opts.json then
+    local list = {}
+    for _, r in ipairs(rows) do
+      -- `profiles` (the profiles persisting this serial) is omitted when none.
+      list[#list + 1] = { serial = r.serial, state = r.state, runner = r.runner, name = r.name,
+        profiles = #r.profiles > 0 and r.profiles or nil }
+    end
+    out(vim.json.encode({ devices = list }))
+  else
+    local w = { 6, 5, 6 }
+    for _, r in ipairs(rows) do
+      w[1] = math.max(w[1], #r.serial); w[2] = math.max(w[2], #r.state); w[3] = math.max(w[3], #r.runner)
+    end
+    local fmt = "%-" .. w[1] .. "s  %-" .. w[2] .. "s  %-" .. w[3] .. "s  %s"
+    if #rows == 0 then
+      out("no devices attached")
+    else
+      out(string.format(fmt, "SERIAL", "STATE", "RUNNER", "NAME"))
+      for _, r in ipairs(rows) do
+        local tail = #r.profiles > 0 and ("   (device for " .. table.concat(r.profiles, ", ") .. ")") or ""
+        out(string.format(fmt, r.serial, r.state, r.runner, r.name) .. tail)
+      end
+    end
+  end
+  return failed > 0 and 1 or 0
+end
+
+--- `lw device select <serial> [profile]` / `lw device select --clear [profile]`
+--- body: persist (or clear) the profile's device serial in the working copy
+--- (§1.8, §16.9). Never requires the device to be attached.
+--- @return integer
+function M._device_select(ws, args)
+  local clear, positionals = false, {}
+  for _, v in ipairs(args) do
+    if v == "--clear" then clear = true else positionals[#positionals + 1] = v end
+  end
+  local serial, profile_name
+  if clear then
+    profile_name = positionals[1]
+    if #positionals > 1 then die("usage: lw device select --clear [profile]") end
+  else
+    serial, profile_name = positionals[1], positionals[2]
+    if not serial or #positionals > 2 then
+      die("usage: lw device select <serial> [profile] | lw device select --clear [profile]")
+    end
+    if serial:find("[%c]") then die("invalid device serial") end
+  end
+  local profile = resolve_profile(ws, profile_name, { usage = "lw device select <serial> <profile>" })
+  if clear then
+    if not profile._device_serial then
+      out("profile '" .. profile.key .. "' has no device selected")
+      return 0
+    end
+    profile:clear_device()
+    out("cleared the device of profile '" .. profile.key .. "'")
+    return 0
+  end
+  profile:set_device(serial)
+  out("device for profile '" .. profile.key .. "': " .. serial)
+  return 0
+end
+
+--- Resolve (runner, serial) for a device operation from the runners in scope:
+--- the device is chosen per §18.3 (explicit > the profile's persisted serial >
+--- the sole online device) across every runner's listing. Dies on ambiguity.
+--- @return loomworks.Runner runner, string serial
+function DEV.pick_device(ws, profile, explicit, opts, deps)
+  local runners = require("loomworks.remote.runners")
+  local devices = require("loomworks.remote.devices")
+  local scope = runners.in_scope(ws, profile)
+  if #scope == 0 then die("no device runner available for this workspace") end
+  local all, owner = {}, {}
+  for _, e in ipairs(scope) do
+    local list, err = devices.list(e.runner, { backend = deps and deps.backend, timeouts = opts.timeouts })
+    if not list then die(err) end
+    devices.merge(ws, e.runner.id, list)
+    for _, d in ipairs(list) do
+      if not owner[d.serial] then owner[d.serial] = e.runner; all[#all + 1] = d end
+    end
+  end
+  local serial, err = devices.select(all, {
+    explicit = explicit, persisted = profile and profile._device_serial or nil,
+    runner_id = #scope == 1 and scope[1].runner.id or "*", profile_key = profile and profile.key,
+  })
+  if not serial then die(err) end
+  return owner[serial], serial
+end
+M._pick_device = DEV.pick_device
+
+DEV.BLOCK_USAGE = "usage: lw project set <project> device.stage|device.archive <glob>...\n"
+  .. "       lw project set <project> device.working_dir <dir>\n"
+  .. "       lw project set <project> device.env.<NAME> <value>\n"
+  .. "       lw project unset <project> device[.stage|.archive|.working_dir|.env[.<NAME>]]"
+
+--- `lw project set <project> device.<field> <value>...` (spec §18.9, §16.9):
+--- edit the project's device block in the working copy. `stage` / `archive`
+--- take one or more globs and replace the list; `working_dir` one path;
+--- `env.<NAME>` one value (upsert).
+--- @param root string
+--- @param pos string[] positionals: project, field, values...
+--- @return integer
+function DEV.project_device_set(root, pos)
+  local proj_name, field = pos[1], pos[2]
+  local values = {}
+  for i = 3, #pos do values[#values + 1] = pos[i] end
+  local sub, name = field:match("^device%.([%w_]+)%.?(.*)$")
+  if not sub or #values == 0 then die(DEV.BLOCK_USAGE) end
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local block = vim.deepcopy(proj.device or {})
+  if (sub == "stage" or sub == "archive") and name == "" then
+    block[sub] = values
+  elseif sub == "working_dir" and name == "" and #values == 1 then
+    block.working_dir = values[1]
+  elseif sub == "env" and name ~= "" and #values == 1 then
+    block.env = type(block.env) == "table" and block.env or {}
+    block.env[name] = values[1]
+  else
+    die("cannot set '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+  end
+  local ok, err = proj:save_device(block)
+  if not ok then die(err or "failed to update the device block") end
+  out(string.format("%s: %s = %s  (working copy: projects.%s.%s.device)", proj.key, field,
+    table.concat(values, " "), proj.key, proj.type or "?"))
+  return 0
+end
+
+--- `lw project unset <project> device[.<field>[.<NAME>]]`.
+--- @return integer
+function DEV.project_device_unset(root, proj_name, field)
+  local ws = load_workspace(root, false)
+  local proj = resolve_project(ws, proj_name)
+  local block = vim.deepcopy(proj.device or {})
+  local sub, name = field:match("^device%.([%w_]+)%.?(.*)$")
+  if field == "device" then
+    block = nil
+  elseif sub == "env" and name ~= "" then
+    if not (type(block.env) == "table" and block.env[name] ~= nil) then
+      die("project '" .. proj.key .. "' sets no device.env." .. name)
+    end
+    block.env[name] = nil
+    if next(block.env) == nil then block.env = nil end
+  elseif (sub == "stage" or sub == "archive" or sub == "working_dir" or sub == "env") and name == "" then
+    if block[sub] == nil then die("project '" .. proj.key .. "' sets no device." .. sub) end
+    block[sub] = nil
+  else
+    die("cannot unset '" .. field .. "'\n" .. DEV.BLOCK_USAGE)
+  end
+  local ok, err = proj:save_device(block)
+  if not ok then die(err or "failed to update the device block") end
+  out(string.format("%s: removed %s", proj.key, field))
+  return 0
+end
+
+--- `lw device clean [--device <serial>] [--no-wait] [profile]` body: remove
+--- this workspace's staging root from the device (§18.12) and its sync record.
+--- @return integer
+function M._device_clean(ws, args, deps)
+  local explicit, no_wait, profile_name = nil, false, nil
+  local opts = { timeouts = {} }
+  local i = 1
+  while args[i] do
+    local v = args[i]
+    if v == "--device" then explicit = args[i + 1]; i = i + 2
+    elseif v == "--no-wait" then no_wait = true; i = i + 1
+    elseif v == "--query-timeout" then opts.timeouts.query = DEV.parse_seconds(v, args[i + 1]); i = i + 2
+    elseif not profile_name and not v:match("^%-") then profile_name = v; i = i + 1
+    else die("usage: lw device clean [--device <serial>] [--no-wait] [profile]") end
+  end
+  local profile = DEV.soft_profile(ws, profile_name)
+  local runner, serial = DEV.pick_device(ws, profile, explicit, opts, deps)
+  local man = require("loomworks.remote.manifest")
+  local ws_prefix = man.device_roots(runner.staging_base, ws.name or "workspace", "_")
+  local device_lock = require("loomworks.remote.device_lock")
+  local h, lerr = device_lock.acquire(serial, {
+    wait = not no_wait, action = "clean", workspace = ws.name,
+    on_wait = function(msg) errw("lw: " .. msg .. "\n") end,
+  })
+  if not h then die(lerr) end
+  on_exit(function() device_lock.release(h) end)
+  local transport = require("loomworks.remote.transport").new({
+    runner = runner, serial = serial, backend = deps and deps.backend, timeouts = opts.timeouts })
+  local ok, err, base_removed = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
+  device_lock.release(h)
+  if not ok then die(err) end
+  -- Drop the sync records of every staging root under this workspace prefix.
+  local recs = ws._device_sync and ws._device_sync[serial]
+  if recs then
+    for root in pairs(recs) do
+      if man.device_path_under(root, ws_prefix) then recs[root] = nil end
+    end
+    if next(recs) == nil then ws._device_sync[serial] = nil end
+    if ws._save_cache then ws:_save_cache() end
+  end
+  out("removed " .. ws_prefix .. " from " .. serial)
+  if base_removed then out("removed empty " .. runner.staging_base:gsub("/+$", "") .. " from " .. serial) end
+  out("cleared host sync record")
+  return 0
+end
+
+--- `lw device <list|select|clean>` (spec §16.34).
+function M.cmd_device(sub, root, args)
+  local rest = {}
+  for i = 3, #args do rest[#rest + 1] = args[i] end
+  if sub == "list" or sub == "ls" then
+    local opts = { timeouts = {} }
+    local i = 1
+    while rest[i] do
+      local v = rest[i]
+      if v == "--json" then opts.json = true; i = i + 1
+      elseif v == "--query-timeout" then opts.timeouts.query = DEV.parse_seconds(v, rest[i + 1]); i = i + 2
+      elseif not opts.profile and not v:match("^%-") then opts.profile = v; i = i + 1
+      else die("unexpected argument '" .. v .. "' — usage: lw device list [--json] [profile]") end
+    end
+    local ws = load_workspace(root, false)
+    return M._device_list(ws, opts)
+  elseif sub == "select" then
+    local ws = load_workspace(root, false)
+    return M._device_select(ws, rest)
+  elseif sub == "clean" then
+    local ws = load_workspace(root, false)
+    return M._device_clean(ws, rest)
+  end
+  die("usage: lw device list [--json] | lw device select <serial> [profile] [--clear] | " ..
+    "lw device clean [--device <serial>]")
 end
 
 --- Ensure a config unit's build targets are parsed — the headless equivalent
@@ -1748,25 +2114,41 @@ function M.cmd_test(ws, args)
     elseif seen_sep then extra[#extra + 1] = args[i]
     else pre[#pre + 1] = args[i] end
   end
-  -- Pre-`--` tokens: `--junit <file>` and a positional profile.
+  -- Pre-`--` tokens: `--junit <file>`, `--target <exe>` (repeatable), device
+  -- options (§16.34) and a positional profile.
   local profile_name, junit
+  local names, dev_opts = {}, DEV.new_device_opts()
   local i = 1
   while pre[i] do
     if pre[i] == "--junit" then
       junit = pre[i + 1]
       if not junit then die("--junit requires a file path") end
       i = i + 2
+    elseif pre[i] == "--target" then
+      if not pre[i + 1] then die("--target requires a test executable name") end
+      names[#names + 1] = pre[i + 1]
+      i = i + 2
+    elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     elseif not profile_name then
       profile_name = pre[i]; i = i + 1
     else
       die("unexpected argument '" .. tostring(pre[i]) ..
-        "' — usage: lw test [profile] [--junit <file>] [-- args…]")
+        "' — usage: lw test [profile] [--target <exe>…] [--junit <file>] [-- args…]")
     end
   end
   if junit then junit = resolve_abs_out(junit, user_cwd()) end
 
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw test <profile>")
+
+  -- Named test executables run directly — locally or on a device (§16.16).
+  if #names > 0 then
+    return M._test_targets(ws, profile, names, { junit = junit, extra = extra, dev = dev_opts })
+  end
+  if dev_opts.device or dev_opts.fresh or dev_opts.timeout or dev_opts.no_wait or dev_opts.log_options then
+    die("device options apply to named test executables: lw test <profile> --target <exe> …")
+  end
+  M._refuse_foreign_batch(profile)
   -- Hold the build-dir lock across build AND test: a native runner like
   -- `meson test` rebuilds, so the whole run must be exclusive of other
   -- processes touching the same build dir.
@@ -1981,6 +2363,7 @@ function M.cmd_run(ws, args)
   -- the forwarded (post-`--`) args.
   local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
   local prefix_tokens, print_mode, no_build = {}, nil, false
+  local dev_opts = DEV.new_device_opts()
   local i = 1
   while pre[i] do
     if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
@@ -2003,6 +2386,7 @@ function M.cmd_run(ws, args)
       end
       print_mode = fmt; i = i + 1
     elseif pre[i] == "--no-build" then no_build = true; i = i + 1
+    elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     else positionals[#positionals + 1] = pre[i]; i = i + 1 end
   end
 
@@ -2076,6 +2460,8 @@ function M.cmd_run(ws, args)
     no_build = no_build,
     extra_args = extra_args,
     cwd_override = cwd_override,
+    device = dev_opts.device, fresh = dev_opts.fresh, timeout = dev_opts.timeout,
+    timeouts = dev_opts.timeouts, log_options = dev_opts.log_options, no_wait = dev_opts.no_wait,
   })
 end
 
@@ -2095,6 +2481,127 @@ end
 --- @param deps? { run_spec?: function }
 --- @return integer
 function M._run_launch_target(lt, ws, opts, deps)
+  if not M._foreign_of(lt) then
+    if opts.log_options and next(opts.log_options) then opts.log = true end
+    for _, k in ipairs({ "device", "fresh", "timeout", "no_wait", "log" }) do
+      if opts[k] then
+        die("--" .. k:gsub("_", "-") .. " applies only to a build target that runs on a device "
+          .. "(one built by a cross-compiling kit)")
+      end
+    end
+  end
+  return M._run_launch_target_impl(lt, ws, opts, deps)
+end
+
+--- The foreign-artifact classification of a launch target's build-target
+--- artifact (spec §18.1), or nil: a module target or a target-backed launch
+--- configuration whose artifact is foreign. Command launches are never probed.
+--- @param lt loomworks.LaunchTarget
+--- @return loomworks.ForeignArtifact|nil
+function M._foreign_of(lt)
+  local target = lt._launch_config and lt._config_target or lt._target
+  if lt._launch_config and not lt._launch_config.target then return nil end
+  if not (target and target.artifact) then return nil end
+  local unit = target._config_unit or lt._config_unit
+  local bd = unit and unit.build_dir and unit:build_dir()
+  if not bd then return nil end
+  local artifact = require("loomworks.paths").artifact_path(bd, target.artifact)
+  local f = require("loomworks.remote.foreign").classify(unit, artifact)
+  if f then f.target = target end
+  return f
+end
+
+--- Run a foreign build target on a device (spec §16.17, §18.5): deploy on the
+--- host → stage → execute remotely. Returns the invocation's exit status (the
+--- device program's; a lost status is a transport failure, EXIT_TRANSPORT).
+--- `deps.backend` / `deps.liveness_ms` are test seams.
+--- @return integer
+function M._run_foreign(lt, ws, f, opts, deps)
+  deps = deps or {}
+  local foreign = require("loomworks.remote.foreign")
+  local runners = require("loomworks.remote.runners")
+  local manifest = require("loomworks.remote.manifest")
+  local remote_run = require("loomworks.remote.run")
+  if #(opts.prefix_tokens or {}) > 0 then
+    die("--prefix cannot wrap '" .. f.name .. "': it runs on a device (built for "
+      .. tostring(f.platform or f.what) .. "), where a local wrapper does not apply.")
+  end
+  if opts.cwd_override then
+    die("--cwd does not apply to a device run — set the project's device.working_dir instead")
+  end
+  local runner = f.platform and runners.for_foreign(f) or nil
+  if not runner then die(foreign.refusal(f)) end
+
+  -- Deploy steps run on the host before staging, unchanged (§18.4).
+  if not opts.no_build then
+    local dok, derr = lt:deploy_sync()
+    if not dok then die("deploy failed: " .. tostring(derr)) end
+  end
+
+  local project = lt._project
+  local cfg = lt._launch_config
+  local block = manifest.effective_block(project and project.device, cfg and cfg.device)
+  for _, b in ipairs({ { project and project.device, "project device" }, { cfg and cfg.device, "launch device" } }) do
+    local vok, verr = manifest.validate_block(b[1], b[2])
+    if not vok then die(verr) end
+  end
+  local unit = f.target._config_unit or lt._config_unit
+  local man, merr = manifest.build({
+    build_dir = unit:build_dir(), artifact = f.artifact, unit = unit, target = f.target,
+    runner = runner, tool = f.tool, device = block,
+  })
+  if not man then die(merr) end
+
+  -- Program arguments: a target-backed launch configuration's declared args
+  -- (expanded), then the forwarded ones.
+  local args = {}
+  if cfg and cfg.args then
+    local expand = require("loomworks.expand")
+    local ctx = expand.launch_context(ws, lt._profile, project)
+    for _, a in ipairs(expand.expand_array(cfg.args, ctx) or {}) do args[#args + 1] = a end
+  end
+  for _, a in ipairs(opts.extra_args or {}) do args[#args + 1] = a end
+
+  local profile = lt._profile
+  if opts.print_mode then
+    local plan, perr = remote_run.plan({ runner = runner, ws_name = ws.name or "workspace", unit = unit,
+      manifest = man, device = block, args = args })
+    if not plan then die(perr) end
+    local dinfo = { runner = runner.id }
+    local list, lerr = require("loomworks.remote.devices").list(runner,
+      { backend = deps.backend, timeouts = opts.timeouts })
+    if list then
+      dinfo.serial, dinfo.error = require("loomworks.remote.devices").select(list, {
+        explicit = opts.device, persisted = profile and profile._device_serial,
+        runner_id = runner.id, profile_key = profile and profile.key })
+    else
+      dinfo.error = lerr
+    end
+    for _, line in ipairs(remote_run.render_print(plan, man, dinfo, opts.print_mode)) do out(line) end
+    return 0
+  end
+
+  local result, err = remote_run.execute({
+    ws = ws, runner = runner, unit = unit, manifest = man, device = block, args = args,
+    serial = opts.device, persisted = profile and profile._device_serial,
+    profile_key = profile and profile.key,
+    fresh = opts.fresh, no_wait = opts.no_wait, timeout = opts.timeout, timeouts = opts.timeouts,
+    log_options = remote_run.merge_log_options(cfg and cfg.device_log, opts.log_options),
+    results = opts.results, extra_args_fn = opts.extra_args_fn, before_exec = opts.before_exec,
+    fail_on_missing_results = opts.fail_on_missing_results,
+    backend = deps.backend, liveness_ms = deps.liveness_ms,
+    write_out = deps.write_out, write_err = deps.write_err,
+    note = function(s) errw("lw: " .. s .. "\n") end,
+    on_cleanup = on_exit,
+  })
+  if not result then die(err) end
+  if opts.on_result then return opts.on_result(result) end
+  remote_run.report(result, function(s) errw(s .. "\n") end)
+  return result.exit_code
+end
+
+--- (implementation of `_run_launch_target`, after the device-option check)
+function M._run_launch_target_impl(lt, ws, opts, deps)
   deps = deps or {}
   local run = deps.run_spec or run_spec
   local prefix_tokens = opts.prefix_tokens or {}
@@ -2111,6 +2618,13 @@ function M._run_launch_target(lt, ws, opts, deps)
   if #prefix_tokens > 0 and lt:requires_device() then
     die("--prefix cannot wrap a device target ('" .. lt:display_name() ..
       "') — a local wrapper does not apply to on-device execution.")
+  end
+
+  -- A foreign build target (spec §18.1) never runs here: it is routed to a
+  -- device through its SDK's runner, or refused.
+  local foreign = M._foreign_of(lt)
+  if foreign then
+    return M._run_foreign(lt, ws, foreign, opts, deps)
   end
 
   -- Deploy (both phases). Skipped with --no-build (paired with the build).
@@ -2139,6 +2653,135 @@ function M._run_launch_target(lt, ws, opts, deps)
   out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
     table.concat(full, " ")))
   return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
+end
+
+--- The batch runner is a host program that would execute the profile's test
+--- binaries here: never for a cross kit (spec §15 invariant 19, §18.6). Dies
+--- naming the kit and platform, pointing at `lw test --target`.
+--- @param profile loomworks.Profile
+function M._refuse_foreign_batch(profile)
+  for _, pp in ipairs(profile:projects()) do
+    local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
+    if token then
+      die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
+        .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
+        profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key))
+    end
+  end
+end
+
+--- Run named test executables (spec §16.16, §18.6): build the profile, then
+--- run each named executable directly with its framework's results option —
+--- on a device when foreign (§18.5), locally otherwise — and judge each
+--- outcome from exit status + parsed results (+ crashes / missing results on a
+--- device). `opts = { junit?, extra = string[], dev = device options }`.
+--- `deps` (tests): build(profile, ws), resolve_target(ws, profile, name) → lt,
+--- run_spec, backend, liveness_ms, write_out, write_err.
+--- @return integer exit code
+function M._test_targets(ws, profile, names, opts, deps)
+  deps = deps or {}
+  local test_run = require("loomworks.remote.test_run")
+  local gtest = require("loomworks.gtest")
+  local remote_run = require("loomworks.remote.run")
+  if deps.build then
+    deps.build(profile, ws)
+  else
+    with_build_locks(profile, "build", function() run_build_steps(profile, ws, {}) end)
+  end
+  local function resolve(name)
+    if deps.resolve_target then return deps.resolve_target(ws, profile, name) end
+    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
+    local matches, all = match_targets(ws, profile, name, nil, "target")
+    if #matches == 0 then
+      local labels = {}
+      for _, c in ipairs(all) do if c.kind == "target" then labels[#labels + 1] = c.project.key .. ":" .. c.name end end
+      die("no executable target '" .. name .. "' in profile '" .. profile.key .. "'.\n  executables: " ..
+        (next(labels) and table.concat(labels, ", ") or "(none)"))
+    elseif #matches > 1 then
+      local labels = {}
+      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
+      die("'" .. name .. "' is ambiguous: " .. table.concat(labels, ", ") .. "\n  qualify with <project>:<name>.")
+    end
+    return candidate_launch_target(ws, profile, matches[1])
+  end
+
+  local several = #names > 1
+  local failed_names, wrote = {}, {}
+  for _, name in ipairs(names) do
+    local lt = resolve(name)
+    local f = M._foreign_of(lt)
+    local results, results_requested, results_missing, failed, reasons
+    if f then
+      out(string.format("==> [test] %s (on a device)", name))
+      local hook, st = test_run.device_hook(f.name)
+      local outcome
+      M._run_foreign(lt, ws, f, {
+        extra_args = opts.extra, device = opts.dev.device, fresh = opts.dev.fresh,
+        timeout = opts.dev.timeout, timeouts = opts.dev.timeouts, log_options = opts.dev.log_options,
+        no_wait = opts.dev.no_wait, before_exec = hook,
+        on_result = function(r) outcome = r; return r.exit_code end,
+      }, deps)
+      results_requested = st.framework == "gtest"
+      local path = st.results_name and outcome.results[st.results_name]
+      results = path and gtest.parse_xml_results(path) or nil
+      if path and not results then results = {} end
+      results_missing = results_requested and not path
+      failed, reasons = test_run.judge({ status = outcome.status, results_requested = results_requested,
+        results = results, results_missing = results_missing, crashes = #outcome.crashes,
+        transport_error = outcome.transport_error or (outcome.timed_out and "timeout" or nil) })
+      remote_run.report(outcome, function(s2) errw(s2 .. "\n") end, failed)
+    else
+      out(string.format("==> [test] %s", name))
+      local spec, serr = lt:resolve_launch_spec({ extra_args = opts.extra })
+      if not spec then die("cannot resolve test executable: " .. tostring(serr)) end
+      local fw = gtest.probe_sync(spec.cmd, name, { env = spec.env, cwd = spec.cwd })
+      local xml
+      if fw == "gtest" then
+        results_requested = true
+        -- (no vim.fn.tempname in the standalone host)
+        xml = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-test-" .. require("loomworks.remote.transport").nonce() .. ".xml"
+        spec.args[#spec.args + 1] = "--gtest_output=xml:" .. xml
+      end
+      local argv = { spec.cmd }
+      for _, a in ipairs(spec.args) do argv[#argv + 1] = a end
+      local code = (deps.run_spec or run_spec)({ cmd = argv, cwd = spec.cwd, env = spec.env }, ws.root)
+      if xml then
+        if uv.fs_stat(xml) then
+          results = gtest.parse_xml_results(xml) or {}
+          os.remove(xml)
+        else
+          results_missing = true
+        end
+      end
+      failed, reasons = test_run.judge({ status = code, results_requested = results_requested,
+        results = results, results_missing = results_missing })
+    end
+    local c = test_run.count(results)
+    if failed then
+      failed_names[#failed_names + 1] = name
+      out(string.format("%s: FAILED (%s)%s", name, table.concat(reasons, ", "),
+        #c.failed_ids > 0 and (": " .. table.concat(c.failed_ids, ", ")) or ""))
+    else
+      out(string.format("%s: %d test%s passed%s", name, c.total - c.skipped, (c.total - c.skipped) == 1 and "" or "s",
+        c.skipped > 0 and (", " .. c.skipped .. " skipped") or ""))
+    end
+    if opts.junit then
+      if results then
+        local p = test_run.junit_path(opts.junit, name, several)
+        local ok, werr = test_run.write_file(p, test_run.junit_xml(name, results))
+        if ok then wrote[#wrote + 1] = p else errw("lw: warning: cannot write JUnit " .. p .. ": " .. tostring(werr) .. "\n") end
+      else
+        errw("lw: warning: no JUnit output for " .. name .. " (no results file)\n")
+      end
+    end
+  end
+  for _, p in ipairs(wrote) do out("JUnit: " .. p) end
+  if #failed_names > 0 then
+    die(string.format("%d of %d test executable%s failed: %s", #failed_names, #names,
+      #names == 1 and "" or "s", table.concat(failed_names, ", ")), 1)
+  end
+  out(string.format("TESTS OK: %s (%d executable%s)", profile.key, #names, #names == 1 and "" or "s"))
+  return 0
 end
 
 --- `lw launch list [project]` — list command-type launch configs.
@@ -3080,6 +3723,22 @@ function M.cmd_project_show(root, name)
     end
   end
 
+  -- The device block (spec §18.9), when set.
+  if type(proj.device) == "table" and next(proj.device) then
+    out("")
+    out("  Device:")
+    for _, k in ipairs({ "stage", "archive", "working_dir" }) do
+      local v = proj.device[k]
+      if v ~= nil then
+        out(string.format("    %-22s %s", k, type(v) == "table" and table.concat(v, " ") or tostring(v)))
+      end
+    end
+    local names = {}
+    for n in pairs(type(proj.device.env) == "table" and proj.device.env or {}) do names[#names + 1] = n end
+    table.sort(names)
+    for _, n in ipairs(names) do out(string.format("    %-22s %s", "env." .. n, tostring(proj.device.env[n]))) end
+  end
+
   local rows = config_set_rows(ws, proj)
   out("")
   out("  Configuration sets:")
@@ -3143,6 +3802,11 @@ function M.cmd_project_set(root, argv)
   local pos, var_type = parse_project_set_args(argv)
   local proj_name, var_name, default_val = pos[1], pos[2], pos[3]
   if not proj_name or not var_name then die(PROJECT_SET_USAGE) end
+  -- `device.<field>`: the project's device block (spec §18.9).
+  if var_name == "device" or var_name:match("^device%.") then
+    if var_type then die("--type does not apply to the device block\n" .. DEV.BLOCK_USAGE) end
+    return DEV.project_device_set(root, pos)
+  end
   if #pos > 3 then die("too many arguments\n" .. PROJECT_SET_USAGE) end
   var_type = var_type or "string"
   if var_type ~= "string" and var_type ~= "path" then
@@ -3165,6 +3829,9 @@ function M.cmd_project_unset(root, proj_name, var_name)
   if not proj_name or not var_name then
     die("usage: lw project unset <project> <variable>\n" ..
       "  removes a project variable declaration")
+  end
+  if var_name == "device" or var_name:match("^device%.") then
+    return DEV.project_device_unset(root, proj_name, var_name)
   end
   local ws = load_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
@@ -7016,7 +7683,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "device", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -7459,7 +8126,7 @@ working copy) is kept; the next `lw build` reconfigures from scratch.
 This is the remedy when the build cache was not written on this machine (it is
 refused — see `lw help trust`). Confirms first; -y skips the prompt and is
 required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
-  unlock = [[lw unlock <profile> | --all
+  unlock = [[lw unlock <profile> | --all | --device <serial>
 
 Force-remove build-directory locks. loomworks serializes configure/build/clean
 on a build dir across processes (editor + CLI) with an advisory lockfile;
@@ -7468,6 +8135,9 @@ its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
 
   <profile>   clear locks on that profile's build dirs
   --all       clear locks on every profile's build dirs
+  --device <serial>
+              clear the per-user DEVICE lock of that serial (remote runs hold
+              it for their whole duration; see `lw help device`)
 
 Warns (on stderr) before clearing a lock that still looks active — meaning a
 build may really be running elsewhere.]],
@@ -7519,8 +8189,72 @@ Disambiguating a name present more than once:
   --target | --launch    force the kind when a build target and a launch
                          config share a name in one project
 
-Deploy steps declared on the target run before launch. Debug (DAP) and device
-launches are editor-only.]],
+Deploy steps declared on the target run before launch. Debug (DAP) and module
+device-package launches are editor-only; a cross-built build target runs on a
+device (below).
+
+Foreign targets (built by a cross-compiling kit): never run on this host. They
+run on an attached DEVICE through the device runner of the kit's SDK — build ->
+deploy -> stage -> execute; the exit code is the device program's (255 when the
+device/transport lost it, 124 on --timeout). See `lw help device`.
+  --device <serial>     the device for this run (else the profile's persisted
+                        device, else the only one online)
+  --fresh               re-stage every file (ignore the sync record)
+  --timeout <s>         stop the device program after <s> seconds
+  --query-timeout <s> / --transfer-timeout <s>
+                        transport timeouts (defaults 120 s / 600 s)
+  --log <key>=<value>   device-log option for the runner (repeatable)
+  --no-wait             fail instead of waiting when the device is busy
+`--prefix` and `--cwd` are errors on a foreign target; `--print` reports the
+device-side invocation and the staging manifest. The run announces
+"running <program> on <serial> (pid N)"; Ctrl-C stops the device program and
+says so, with the run folder.
+
+Output: build output goes to stdout like `lw build`, but to stderr under
+--print / --print=json so stdout carries only the report.]],
+  device = [[lw device <list|select|clean>
+
+Devices for running cross-built programs. An SDK plugin whose kits
+build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
+("stage") a program onto an attached device and run it there.
+
+  list [--json] [profile]         the devices each runner in scope reports:
+                                  serial, state, runner, name, and the profiles
+                                  that persist the serial. Exit 0 when none are
+                                  attached; non-zero when no runner is available.
+  select <serial> [profile]       persist the profile's device (working copy)
+  select --clear [profile]        forget it
+  clean [--device <serial>]       remove this workspace's staging tree from
+                                  the device (and the staging base if that
+                                  leaves it empty) and clear the host's sync
+                                  record
+
+Device choice for `lw run` / `lw test --target`: --device, else the profile's
+persisted serial, else the only online device — never guessed otherwise.
+
+What is staged: the program, the project shared libraries it links, the
+platform runtime the runner names, plus the project's `device` block, kept in
+the project's module section (e.g. projects.App.cmake.device):
+  "device": { "stage": ["bin/*.so"], "archive": ["assets/**"],
+              "env": { "K": "V" }, "working_dir": "bin" }
+(An older project-level "device" block is still read and moves into the module
+section on the next save.) Edit it without hand-editing JSON:
+  lw project set <project> device.stage 'bin/*.so' 'lib/*.so'
+  lw project set <project> device.env.LOG debug
+  lw project unset <project> device.stage
+`stage`/`archive` are globs relative to the build directory (layout kept);
+`archive` sets travel as one tar. Only changed files are re-sent. Runs save
+output.log (and device.log, pulled results, crash reports) under
+<build>/.device-runs/ (10 newest kept).
+
+Device logs: a launch config's `device_log` table and `--log key=value` are
+passed to the runner as-is; the option names belong to the SDK plugin.
+
+Trust: stage/archive and device_log are honored from loomworks.json; device
+`env` and `working_dir` only from your local config (`lw help trust`).
+One remote operation per device at a time: runs wait for the device lock
+(`--no-wait` fails fast; `lw unlock --device <serial>`;
+LOOMWORKS_DEVICE_LOCK_DIR relocates the lock directory).]],
   target = [[lw target [list] [profile]
 lw target set [<profile>] <target>   |   lw target clear [profile]
 
@@ -7582,6 +8316,7 @@ args/env/working-dir layered on top — no hand-written path.
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],
   test = [[lw test [profile | config-set] [--junit <file>] [-- runner-args…]
+lw test [profile] --target <exe> [--target <exe>…] [--junit <file>] [-- exe-args…]
 
 Build a profile, then run its tests through each module's NATIVE runner (cmake
 -> ctest, meson -> `meson test`), streaming output and reporting a REAL exit
@@ -7603,7 +8338,16 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
                  e.g. `-- -j 4` (ctest) or `-- --num-processes 4` (meson).
 
 CI example (JUnit + 4-way parallel ctest):
-  lw --no-input test Debug:ninja-gcc-12 --junit results.xml -- -j 4]],
+  lw --no-input test Debug:ninja-gcc-12 --junit results.xml -- -j 4
+
+Named test executables (--target, repeatable): each is built and run DIRECTLY
+(not through the batch runner) with gtest's XML results option; the outcome
+fails on a non-zero exit, a failed test in the XML, a missing XML, or (on a
+device) a crash report. Args after `--` go to each executable. A cross-built
+executable runs on a device (`lw help device`; --device, --fresh, --timeout,
+--log, --no-wait apply). A profile whose kit cross-compiles refuses the plain
+batch-runner form — its registered tests cannot run on this host:
+  lw test Debug:ohos-kit --target MyTests -- --gtest_filter=Scene.*]],
   init = [[lw init [--name <name>]
 
 Initialize the workspace working copy (.nvim/loomworks.user.json). The shared
@@ -7998,6 +8742,13 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         --type may come before or after the optional <default>.
   unset <project> <variable>
         Remove a variable declaration (and any configuration overrides of it).
+  set <project> device.stage|device.archive <glob>...
+  set <project> device.working_dir <dir>
+  set <project> device.env.<NAME> <value>
+  unset <project> device | device.<field> | device.env.<NAME>
+        Edit the project's device block (what a device run copies and how it
+        runs it — `lw help device`) in your local config. A glob list replaces
+        the previous one.
   publish <name>
         Mark the project shared (local+shared) and regenerate loomworks.json.
 
@@ -8554,6 +9305,7 @@ Usage: lw [command] [args]
   run <profile> <target>  same, on a named profile
   target [profile]  list a profile's launchable targets (default marked *)
   target set|clear  set / clear a profile's default target
+  device <sub>      list | select | clean devices for cross-built programs
   launch <sub>      list | add | show | remove launch configurations
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
@@ -8798,6 +9550,15 @@ local function main()
 
   if command == "tools" then
     finish(M.cmd_tools(root, a))
+  end
+  -- `device` lists / selects devices and cleans staging (spec §16.34); each
+  -- sub-command loads the workspace itself (no tool detection).
+  if command == "device" or command == "devices" then
+    finish(M.cmd_device(a[2], root, a))
+  end
+  -- `unlock --device <serial>` needs no workspace (device locks are per user).
+  if command == "unlock" and vim.tbl_contains(a, "--device") then
+    finish(M.cmd_unlock(nil, a))
   end
   -- `launch` manages launch configs in the working copy (no tools needed).
   if command == "launch" then

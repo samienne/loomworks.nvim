@@ -220,6 +220,16 @@ M.api_version = 1
 --- §5.1 *Configure record migration*). Bump when the record gains a key the
 --- reconfigure classification depends on.
 M.configure_record_version = 1
+
+--- Does `build_dir` already hold this module's configure state (core §8.4
+--- `has_configure_state`)? Core asks it for a unit with no configure record:
+--- an existing tree is then configured with the full reconfigure, not as a
+--- first configure. A stat only.
+--- @param build_dir string
+--- @return boolean
+function M.has_configure_state(build_dir)
+    return (vim.uv or vim.loop).fs_stat(build_dir .. "/CMakeCache.txt") ~= nil
+end
 M.has_keyed_tools = true
 M.has_options = true
 -- CMake's default `project(name)` call enables both C and CXX, so
@@ -2078,9 +2088,12 @@ end
 
 --- Generate cross-compilation kits from SDK capabilities.
 --- Called by core when an SDK provides capabilities for cmake.
+--- A platform's optional `target_platform` (a string for every arch, or an
+--- arch → token table) is returned BESIDE each kit's tool_data, never inside
+--- it: the token is not part of kit identity (cmake.md §15.1, core §10.7).
 --- @param caps table opaque data from sdk:query("cmake")
 --- @param sdk loomworks.SDK
---- @return { tool_data: table }[]
+--- @return { tool_data: table, target_platform?: string }[]
 function M.kits_from_sdk(caps, sdk)
     if not caps then return {} end
     local kits = {}
@@ -2132,7 +2145,10 @@ function M.kits_from_sdk(caps, sdk)
                 vim.list_extend(extra_args, platform.arch_args[arch])
             end
             local id_parts = { sdk:sdk_type(), platform_name:lower():gsub("%s+", "-"), arch }
-            kits[#kits + 1] = { tool_data = {
+            local tp = platform.target_platform
+            if type(tp) == "table" then tp = tp[arch] end
+            if type(tp) ~= "string" or tp == "" then tp = nil end
+            kits[#kits + 1] = { target_platform = tp, tool_data = {
                 id = table.concat(id_parts, "-"),
                 display = platform_name .. " " .. (sdk:sdk_version() or "") .. " " .. arch,
                 generator = "Ninja",
