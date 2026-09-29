@@ -451,15 +451,15 @@ or missing:
 
 ```text
 $ lw health            # in a plain directory
-Not a loomworks workspace — lw init to create one.
+Not a loomworks workspace - lw init to create one.
 
-build tools      ✓ cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
-                 ✓ ninja 1.12.1   C:\tools\ninja.exe
-                 – meson          not found (pip install meson)
-compilers        ✓ MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/…/Community (VS 17.11.2)
-                 ✓ clang-cl 18.1.8
-                 – gcc / clang    none on PATH
-…
+build tools      + cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
+                 + ninja 1.12.1   C:\tools\ninja.exe
+                 - meson          not found (pip install meson)
+compilers        + MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/.../Community (VS 17.11.2)
+                 + clang-cl 18.1.8
+                 - gcc / clang    none on PATH
+...
 ```
 
 Inside a workspace the list is split into **Required by this workspace** — what
@@ -468,7 +468,7 @@ active) — and **Other**, compacted to one line per category. A Ninja build wit
 an MSVC / clang-cl tool runs inside `vcvarsall`, which appends the cmake and
 ninja Visual Studio bundles to `PATH`, so for such a profile those count: with
 none on your own `PATH` the requirement shows the VS-bundled copy as found
-(`✓ cmake (VS 2022 Enterprise) 3.31.6 … (VS-bundled)`). The Visual Studio
+(`+ cmake (VS 2022 Enterprise) 3.31.6 ... (VS-bundled)`). The Visual Studio
 generator and GCC/Clang tools run cmake and ninja from your `PATH` only. Only a
 *missing required* item is a suggestion and counts toward `lw status`'s `N suggestions`;
 everything else is information. Probing runs tool version queries and the Visual
@@ -478,7 +478,9 @@ without probing, until your `PATH` or the installed plugins change, when the
 count simply stops including it until the next `lw health`. (Directories only
 Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory —
 do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
-item; `lw health --json` prints the same data for scripts and CI
+item. The text report is plain ASCII (`*` actionable, `-` informational, `+` / `x` / `-` / `?`
+found / missing-required / missing / unknown), so it reads in any console code page;
+`lw health --json` prints the same data for scripts and CI
 (`{schema, workspace, suggestions[], inventory[], summary, update}`; inventory entries
 carry `status`, `version`, `path`, `required`, the full `required_by`, and a
 `hint` when not found; `summary` counts `required_missing`, `actionable`,
@@ -493,17 +495,35 @@ needs a required item is compacted (e.g. `2 profiles (dev, asan)` — `--verbose
 lists them all).
 Nothing is ever installed or changed; minimum versions are not checked.
 
+#### Repo launcher checks
+
+In a repository with a pinned launcher (`lw.pin`, see
+[Repo-local launcher](#repo-local-launcher-lw-bootstrap)), `lw health` checks
+that `lw.sh` / `lw.cmd` / `lw.pin` will work for every contributor and CI runner
+— the pin's hashes, launchers current, `lw.sh` committed as mode `100755`, the
+`.gitattributes` eol rules, the committed and checked-out line endings, and that
+`.nvim/cache/` is ignored by the repository (not only your personal gitignore):
+
+```text
+* launcher: lw.sh is not executable in git (mode 100644) - CI on Linux/macOS cannot run it
+* launcher: no line-ending rule for lw.sh, lw.cmd, lw.pin in .gitattributes
+```
+
+It reports and never fixes; the usual remedy is `./lw.sh update --version
+<pinned version>`, which repairs the files without moving the pin. `lw help
+launcher` lists the checks.
+
 #### Submodule drift
 
 When the workspace lives in a git repository with submodules, `lw health` also
 reports how they (and nested ones) stand against what the repository records —
-informational notes (`·`, never counted), one line per kind of finding:
+informational notes (`-`, never counted), one line per kind of finding:
 
 ```text
-· submodules: 8 checked out off their recorded commit (LumeBase 1 ahead, LumeEngine 2 ahead, LumeGS 2 ahead, +5) — lw health --verbose
-· submodules: 8 pins behind their tracked branch (LumeBase 1 behind origin/dev, LumeEngine 2 behind origin/dev, LumeGS 2 behind origin/dev, +5) — lw health --verbose
-· submodules: 51 not initialized, 51 nested (Lume3DText/Lume3D, Lume3DText/LumeBase, Lume3DText/LumeEngine, +48) — lw health --verbose
-· submodules: 3 remotes unreachable (LumeGS/Lume3D, LumeParticles/Lume3D, LumeParticles/LumeJava) — lw health --verbose
+- submodules: 8 checked out off their recorded commit (LumeBase 1 ahead, LumeEngine 2 ahead, LumeGS 2 ahead, +5) - lw health --verbose
+- submodules: 8 pins behind their tracked branch (LumeBase 1 behind origin/dev, LumeEngine 2 behind origin/dev, LumeGS 2 behind origin/dev, +5) - lw health --verbose
+- submodules: 51 not initialized, 51 nested (Lume3DText/Lume3D, Lume3DText/LumeBase, Lume3DText/LumeEngine, +48) - lw health --verbose
+- submodules: 3 remotes unreachable (LumeGS/Lume3D, LumeParticles/Lume3D, LumeParticles/LumeJava) - lw health --verbose
 ```
 
 - **checked out vs recorded** — the commit checked out in each submodule against
@@ -1238,40 +1258,59 @@ pinned** `lw` — with no prior global install — commit a repo-local launcher.
 From the repo root:
 
 ```sh
-lw bootstrap                 # pins this host's release; or: lw bootstrap --version 0.1.0
-git add lw.sh lw.cmd lw.pin  # commit the three files
+lw bootstrap        # pins this host's release; or: lw bootstrap --version 0.1.0
+git add lw.cmd lw.pin .gitattributes .gitignore   # lw.sh is already staged (see below)
+git commit -m "Add the pinned lw launcher"
 ```
 
-`bootstrap` writes three committed files and gitignores the machine-local cache:
+`bootstrap` writes three committed files:
 
 | File | What it is |
 |---|---|
 | `lw.pin` | the pinned release **version** + the SHA-256 of every host binary and of the release bundle (plain `key = value`, no JSON) |
-| `lw.sh` | POSIX launcher (Linux/macOS, and Git-Bash/MSYS on Windows) |
-| `lw.cmd` | native Windows launcher (cmd/PowerShell) |
+| `lw.sh` | POSIX launcher: Linux, macOS, and Git Bash / MSYS2 on Windows |
+| `lw.cmd` | native Windows launcher: cmd.exe and PowerShell |
 
 The hashes come from that release's **signed** `SHA256SUMS` (its signature is
-verified against the key built into `lw` before any hash is trusted). The
-launcher caches the host binary it downloads under `.nvim/cache/`, which
-`bootstrap` appends to `.gitignore` idempotently; the pinned bundle that host
-provisions lives in your per-user data directory (`<data>/loomworks/pinned/`),
-never in the repository — a cloned repository could otherwise ship a
-pre-"extracted" bundle.
+verified against the key built into `lw` before any hash is trusted — every
+`lw`, including one built from source, carries the release key). It also makes
+sure the repository carries the files correctly, and says what it changed:
+
+- **`.gitignore`** — the launcher caches the host binary it downloads under
+  `.nvim/cache/`; bootstrap appends that to `.gitignore` unless a committed rule
+  of the repository already covers it (e.g. `.nvim/`). A rule only in your
+  personal global gitignore does not count — teammates and CI don't have it.
+- **`.gitattributes`** — `lw.sh` and `lw.pin` get `text eol=lf`, `lw.cmd`
+  `text eol=crlf`, so every checkout has working line endings whatever its
+  `core.autocrlf` (a CRLF `lw.sh` fails under `sh`).
+- **Exec bit** — on Windows git does not track file modes, so bootstrap stages
+  `lw.sh` as executable (`git add --chmod=+x`, mode `100755`) — the only file it
+  stages. Otherwise the file mode is set directly.
+
+An `lw.sh` / `lw.cmd` that is not a launcher `lw` wrote (local edits) is kept
+unless you pass `--force`. The pinned bundle the host provisions lives in your
+per-user data directory (`<data>/loomworks/pinned/`), never in the repository —
+a cloned repository could otherwise ship a pre-"extracted" bundle.
 
 Then anyone with a checkout runs the launcher — no global `lw` needed:
 
 ```sh
-./lw.sh build Debug:ninja-gcc-14      # Linux/macOS/Git-Bash
-lw.cmd build Debug:ninja-gcc-14       # Windows cmd/PowerShell
-./lw.sh --no-interaction test --junit results.xml   # CI: forwards args verbatim
+./lw.sh build Debug:ninja-gcc-14      # Linux, macOS, Git Bash on Windows
+.\lw.cmd build Debug:ninja-gcc-14     # Windows cmd / PowerShell
+./lw.sh --no-input test --junit results.xml   # CI: forwards args verbatim
 ```
+
+Use the relative form `.\lw.cmd`: a bare `lw.cmd` can run another `lw.cmd`
+found on `PATH`. `./lw.sh version` names the `lw.pin` it runs under.
 
 The launcher selects the host binary for the platform, downloads it from the
 official release (**verifying its sha256 against the pin — always**), caches it
 under `.nvim/cache/`, and execs it; that host then provisions (downloads and
-verifies) the pinned bundle into the per-user pinned cache. So a clean checkout goes from `./lw.sh build` to
-building, **reproducibly** — host and bundle are the exact pinned release, and
-the machine-global install is left untouched.
+verifies) the pinned bundle into the per-user pinned cache. The download is
+quiet (one `lw: fetching pinned lw …` line) and retried up to 3 times; a run
+with the binary already cached prints nothing of its own. So a clean checkout
+goes from `./lw.sh build` to building, **reproducibly** — host and bundle are
+the exact pinned release, and the machine-global install is left untouched.
 
 - **Proxies / air-gapped.** The launcher honors `HTTPS_PROXY` / `HTTP_PROXY`.
   `--insecure` (or `LOOMWORKS_INSECURE=1`) relaxes TLS for an intercepting
@@ -1294,16 +1333,28 @@ Management commands (`version`, `self-update`, `install`, `bootstrap`, `update`)
 never redirect. The global host never executes the repo's `lw.sh`/`lw.cmd` — it
 resolves the pin declaratively and runs the official binary it fetched itself.
 
-Move the pin forward with `lw update` (from a repo already bootstrapped):
+Move the pin forward with `update` — through the launcher, so no global `lw` is
+needed (it runs as the currently pinned release):
 
 ```sh
-lw update                 # repoint lw.pin at the latest release
-lw update --version 0.2.0 # or a specific one
+./lw.sh update                  # repoint lw.pin at the latest release
+./lw.sh update --version 0.2.0  # or a specific one
+./lw.sh update --version <the current pin>   # repair: refresh launchers/rules, keep the pin
 ```
 
 `update` rewrites `lw.pin` with the target release's signed hashes (failing
-cleanly if that release isn't fetchable) and refreshes the launcher scripts. See
-`lw help bootstrap` / `lw help update`.
+cleanly if that release isn't fetchable), applies the same metadata steps as
+`bootstrap`, removes cached binaries of other versions from `.nvim/cache/`, and
+prints only what changed (`lw.pin: 0.1.34 -> 0.1.35`, or `lw.pin already at X -
+no changes`). The pinned release writes *its* launchers, so after moving to a
+newer release run `./lw.sh update` once more to take the new release's launchers
+(update says so). A global `lw` — a release or a build from source — can run
+`lw update` directly too.
+
+`lw health` checks the launcher files — the pin's hashes, current launchers,
+the committed exec bit and line endings, the `.gitattributes` and `.gitignore`
+rules — and names the fix (`lw help launcher`). See `lw help bootstrap` /
+`lw help update`.
 
 ### Commands
 
@@ -1341,8 +1392,8 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
-| `lw bootstrap [--version <x.y.z>]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) |
-| `lw update [--version <x.y.z>]` | Repoint `lw.pin` at a target (or the latest) release |
+| `lw bootstrap [--version <x.y.z>] [--force]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) and its `.gitattributes` / `.gitignore` rules |
+| `lw update [--version <x.y.z>] [--force]` | Repoint `lw.pin` at a target (or the latest) release; with the current version, repair the launcher files |
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command
@@ -1447,9 +1498,11 @@ don't use this — install the module plugin the usual way.)
 
 - **Pin `lw` itself** with a repo-local launcher (see
   [Repo-local launcher](#repo-local-launcher-lw-bootstrap)): commit `lw.sh` /
-  `lw.cmd` / `lw.pin` with `lw bootstrap`, then run `./lw.sh --no-interaction
-  build …` on the runner — it fetches + verifies the pinned host and bundle, so
-  every cell runs the same reproducible `lw` with no separate install step.
+  `lw.cmd` / `lw.pin` with `lw bootstrap`, then run `./lw.sh --no-input
+  build …` on the runner (`.\lw.cmd --no-input build …` from cmd/PowerShell;
+  on GitHub Actions' Windows runners `shell: bash` runs `./lw.sh`) — it fetches +
+  verifies the pinned host and bundle, so every cell runs the same reproducible
+  `lw` with no separate install step.
 - Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
   instead of blocking on a prompt. In non-interactive mode `lw build` also
   ignores the active profile and never picks a sole profile — name the profile

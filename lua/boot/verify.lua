@@ -31,14 +31,24 @@ M.HOST_VERSION = 1
 -- fuse_host.sh matches this exact line — keep it a single `= nil` assignment.
 M.RELEASE_VERSION = nil
 
--- Trusted public key, embedded at build time. THIS IS A TEST KEY — the release
--- build (CI) replaces it with the production public key. Verifying against a
--- test key means only test-signed bundles are accepted, which is the intent
--- until the real key is wired in.
+-- Trusted public key: the PRODUCTION loomworks release key
+-- (keys/loomworks-release.pub.pem), embedded in the committed source so every
+-- build -- a release host, a `make install` / `lw --dev` build from a working
+-- tree -- verifies official releases (spec §16.12). A public key is not secret.
+-- Tests that verify test-signed artifacts pass their key explicitly (the
+-- `pubkey_pem` parameters below, or a host fused for the test with
+-- scripts/release/fuse_host.sh, which substitutes this block). Nothing at run
+-- time -- no environment value, setting or repository file -- changes it.
 M.PUBLIC_KEY_PEM = [[-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEof9ebYzGUMr12vgj5aRy7+CwNFi6
-h8GUtZ2fZzTEL2I4/4KEbeDlX4NJb6A70kWSftOh7dtmr3YXg9PHOrj10A==
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8MhoZlT5ww82JmplPiRyta32R8HY
+meq3+ZL1wAo7PHHBnHHzXIE+Kab49ClyLvDUGsOR3LG+kU1lH6nxunmO2A==
 -----END PUBLIC KEY-----]]
+
+-- Fingerprint (SHA-256 of the DER public key, first 16 hex digits) of the
+-- production release key. NOT substituted by fuse_host.sh, so a host fused with
+-- another key (a test fuse) can tell that it does not carry the release key and
+-- say so when a signature fails. `openssl pkey -pubin -outform der | sha256sum`.
+M.RELEASE_KEY_ID = "f03ee2f4bba18602"
 
 --- Lowercase hex SHA-256 of `bytes`.
 function M.sha256_hex(bytes)
@@ -58,7 +68,37 @@ function M.verify_detached(data, sig, pubkey_pem)
   local vok, res = pcall(function() return pub:verify(data, sig, "sha256") end)
   if not vok then return false, "verify error: " .. tostring(res) end
   if res == true then return true end
-  return false, "signature does not verify"
+  return false, "signature does not verify" .. M.key_note(pubkey_pem)
+end
+
+--- Short fingerprint of a PEM public key: the first 16 hex digits of the
+--- SHA-256 of its DER encoding (what `openssl pkey -pubin -outform der |
+--- sha256sum` prints). nil when the PEM cannot be decoded.
+--- @param pem string
+--- @return string|nil
+function M.key_id(pem)
+  if type(pem) ~= "string" then return nil end
+  local b64 = pem:gsub("%-%-%-%-%-[^\n]-%-%-%-%-%-", ""):gsub("%s", "")
+  local ok, der = pcall(ossl.base64, b64, false)
+  if not ok or type(der) ~= "string" or der == "" then return nil end
+  return M.sha256_hex(der):sub(1, 16)
+end
+
+--- The explanation appended to a failed signature check: which key this lw
+--- trusts, whether it is the loomworks release key, and the likely causes
+--- (spec §16.12) -- never only "does not verify".
+--- @param pubkey_pem string|nil the key the check used (default: embedded)
+--- @return string
+function M.key_note(pubkey_pem)
+  local id = M.key_id(pubkey_pem or M.PUBLIC_KEY_PEM) or "unreadable"
+  if id == M.RELEASE_KEY_ID then
+    return " against the loomworks release key (" .. id .. "); the file is " ..
+      "corrupt or not an official loomworks release (if LOOMWORKS_RELEASE_URL " ..
+      "or the release-url setting points at a mirror, check what it serves)"
+  end
+  return " against key " .. id .. ", which is NOT the loomworks release key (" ..
+    M.RELEASE_KEY_ID .. "): this lw was built with a test key and cannot " ..
+    "verify official releases; use a release lw or rebuild it from source"
 end
 
 --- Validate the decoded manifest's shape. Returns the manifest or nil, err.

@@ -126,12 +126,12 @@ function M.incompatible_reason(entry, host_api)
   if entry.api_version > host_api then
     return string.format(
       "module '%s' needs host module interface v%d but this host provides v%d"
-        .. " — update lw (`lw self-update`)",
+        .. " - update lw (`lw self-update`)",
       entry.name, entry.api_version, host_api)
   end
   return string.format(
     "module '%s' targets host module interface v%d but this host provides v%d"
-      .. " — the module has no release compatible with this host yet",
+      .. " - the module has no release compatible with this host yet",
     entry.name, entry.api_version, host_api)
 end
 
@@ -185,7 +185,7 @@ function M.install(entry)
   if got:lower() ~= entry.sha256:lower() then
     paths.rm_rf(tmpzip)
     return nil, string.format(
-      "sha256 mismatch for module '%s' (expected %s, got %s) — refusing to install",
+      "sha256 mismatch for module '%s' (expected %s, got %s) - refusing to install",
       entry.name, entry.sha256:lower(), got:lower())
   end
 

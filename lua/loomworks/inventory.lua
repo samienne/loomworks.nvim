@@ -635,7 +635,10 @@ local function core_declarations(ctx, contributors)
             elseif facts.dev_build then
                 detail = "dev build"
             elseif facts.pinned then
-                detail = "pinned (lw.pin)"
+                -- The pin, not the update channel, decides what runs here.
+                -- Rendered inside parentheses, so it carries none of its own.
+                detail = "pinned by lw.pin"
+                    .. (require("boot.paths").is_prerelease(version) and ", prerelease" or "")
             end
             done({
                 id = "lw", label = facts and "lw" or "loomworks", status = "found",

@@ -75,6 +75,21 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
+      # The committed source embeds the production key (spec §16.12) so source
+      # builds verify real releases; fail if it ever drifts from the key file.
+      - name: Check the embedded key is the committed production key
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          src = open("lua/boot/verify.lua").read()
+          m = re.search(r'M\.PUBLIC_KEY_PEM = \[\[(.*?)\]\]', src, re.S)
+          prod = open("keys/loomworks-release.pub.pem").read().replace("\r", "").strip()
+          assert m and m.group(1).replace("\r", "").strip() == prod, \
+              "lua/boot/verify.lua does not embed keys/loomworks-release.pub.pem"
+          print("embedded key == keys/loomworks-release.pub.pem")
+          PY
+
       - name: Fuse host binary
         shell: bash
         env:

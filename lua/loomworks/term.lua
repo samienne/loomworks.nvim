@@ -97,4 +97,35 @@ function M.render(s)
     return table.concat(parts)
 end
 
+-- The report glyphs `ascii` folds (UTF-8 -> ASCII). Only these: any other
+-- non-ASCII text is data (a user name in a path) and passes through.
+local ASCII_FOLD = {
+    ["\226\128\162"] = "*",   -- • bullet (actionable)
+    ["\194\183"] = "-",       -- · middle dot (informational / separator)
+    ["\226\156\147"] = "+",   -- ✓
+    ["\226\156\151"] = "x",   -- ✗
+    ["\226\128\147"] = "-",   -- – en dash
+    ["\226\128\148"] = "-",   -- — em dash
+    ["\226\134\146"] = "->",  -- →
+    ["\226\128\166"] = "...", -- …
+    ["\226\137\165"] = ">=",  -- ≥
+    ["\226\137\164"] = "<=",  -- ≤
+    ["\226\128\152"] = "'",   -- ‘
+    ["\226\128\153"] = "'",   -- ’
+    ["\226\128\156"] = '"',   -- “
+    ["\226\128\157"] = '"',   -- ”
+}
+
+--- Fold the report glyphs in `s` to ASCII (`lw health`, spec §16.31: its
+--- output must read in any console code page). The strings themselves stay
+--- Unicode for the editor, which renders them itself.
+--- @param s string
+--- @return string
+function M.ascii(s)
+    s = tostring(s)
+    if not s:find("[\194\226]") then return s end
+    -- One UTF-8 character at a time: a lead byte and its continuation bytes.
+    return (s:gsub("[\192-\247][\128-\191]*", function(ch) return ASCII_FOLD[ch] end))
+end
+
 return M

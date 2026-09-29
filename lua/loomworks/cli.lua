@@ -68,7 +68,17 @@ end
 --- Every line goes through `term.render`: control characters in DATA (names,
 --- paths, values read from workspace/cache/health files) are escaped; only the
 --- palette's own SGR markers become escape sequences (loomworks.term).
-local function out(s) io.write(term.render(s or "") .. "\n") end
+-- While true, `out` folds report glyphs (bullets, marks, dashes) to ASCII —
+-- set by `lw health` (spec §16.31), whose report must read in any console
+-- code page. The strings stay Unicode for the editor, which renders its own.
+-- (A field, not a local: this chunk is at Lua's 200-local limit.)
+M._ascii_out = false
+
+local function out(s)
+  local r = term.render(s or "")
+  if M._ascii_out then r = term.ascii(r) end
+  io.write(r .. "\n")
+end
 
 --- Write an informational line to stderr. Used when stdout must stay clean for a
 --- machine consumer — e.g. `lw run --print` streams its build/status chatter here
@@ -1155,7 +1165,7 @@ local function run_build_steps(profile, ws, opts)
     -- a build that would clobber a still-`built` unit's shared artifact unless
     -- forced. Evaluated at compile-start — for a configure→build chain the
     -- configure step (below) already populated this unit's artifact set, so
-    -- the set is known here. `--force` and `--no-interaction` alike just
+    -- the set is known here. `--force` and `--no-input` alike just
     -- refuse with exit 1; force is the only bypass, never a prompt.
     if step.kind == "build" and step.unit and ws.artifact_conflict_block then
       local block = ws:artifact_conflict_block(step.unit, opts.force or false)
@@ -6392,14 +6402,14 @@ function M._probe_inventory(ws)
   return require("loomworks.inventory").probe_tier(ws)
 end
 
---- Status mark for an inventory entry: ✓ found, ✗ missing+required, – missing,
+--- Status mark for an inventory entry: + found, x missing+required, - missing,
 --- ? unknown.
 --- @param e table classified entry
 --- @return string
 local function inv_mark(e)
-  if e.status == "found" then return "✓" end
+  if e.status == "found" then return "+" end
   if e.status == "unknown" then return "?" end
-  return e.required and "✗" or "–"
+  return e.required and "x" or "-"
 end
 
 --- Paint an entry's mark: found green, missing-required warn, others dim.
@@ -6466,7 +6476,7 @@ M._inventory_name_width = inventory_name_width
 
 --- Render `entries` one line per item. Without `with_needed` a left category
 --- column names each category once; with it (the Required block) each line
---- ends with "· <who needs it>" — compacted (`names_phrase`), the full list
+--- ends with "- <who needs it>" — compacted (`names_phrase`), the full list
 --- with `full_names` (`--verbose`).
 --- @param pal table
 --- @param entries table[] classified entries (category order)
@@ -6490,7 +6500,7 @@ local function render_inventory_lines(pal, entries, indent, with_needed, full_na
     local line = indent .. (with_needed and "" or (pal.title(upad(cat, cat_w)) .. "  "))
       .. inv_paint_mark(pal, e) .. " " .. upad(name, name_w) .. "  " .. inv_tail(pal, e)
     if with_needed and #(e.required_by or {}) > 0 then
-      line = line .. pal.dim("  · " .. inv.names_phrase(e.required_by, { full = full_names }))
+      line = line .. pal.dim("  - " .. inv.names_phrase(e.required_by, { full = full_names }))
     end
     out((line:gsub("%s+$", "")))
   end
@@ -6523,8 +6533,8 @@ local function render_inventory_compact(pal, entries)
         items[#items + 1] = inv_paint_mark(pal, e) .. " " .. txt
       end
     end
-    if loaded > 0 then table.insert(items, 1, pal.active("✓") .. " " .. loaded .. " loaded") end
-    out("  " .. pal.title(upad(c, cat_w)) .. "  " .. table.concat(items, pal.dim(" · ")))
+    if loaded > 0 then table.insert(items, 1, pal.active("+") .. " " .. loaded .. " loaded") end
+    out("  " .. pal.title(upad(c, cat_w)) .. "  " .. table.concat(items, pal.dim(" - ")))
   end
 end
 
@@ -6601,6 +6611,20 @@ M._health_json = health_json
 --- @return integer exit code (always 0)
 function M.cmd_health(root, opts)
   opts = opts or {}
+  -- The text report is ASCII (§16.31); --json keeps the data verbatim.
+  local prev = M._ascii_out
+  M._ascii_out = not opts.json
+  local ok, res = pcall(M._cmd_health, root, opts)
+  M._ascii_out = prev
+  if not ok then error(res, 0) end
+  return res
+end
+
+--- `cmd_health`'s body (see there).
+--- @param root string|nil
+--- @param opts table
+--- @return integer
+function M._cmd_health(root, opts)
   local pal = status_palette((not opts.json) and stdout_supports_color())
   local ws = root and load_workspace(root, false) or nil
   local inv = require("loomworks.inventory")
@@ -6653,8 +6677,8 @@ function M.cmd_health(root, opts)
     out(pal.dim("No suggestions — nothing to flag."))
   end
 
-  -- Actionable items first ("•", the ones `lw status`'s N suggestions
-  -- counts), then informational notes with their own "·" bullet — so the
+  -- Actionable items first ("*", the ones `lw status`'s N suggestions
+  -- counts), then informational notes with their own "-" bullet — so the
   -- bullets a reader counts match that number, with or without color.
   local actionable, notes = {}, {}
   for _, s in ipairs(suggestions) do
@@ -6665,14 +6689,14 @@ function M.cmd_health(root, opts)
   local function show_detail(s) return s.detail and (not s.detail_verbose or opts.verbose) end
   for _, s in ipairs(actionable) do
     out("")
-    out(pal.warn("• " .. s.title))
+    out(pal.warn("* " .. s.title))
     if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
   for _, s in ipairs(notes) do
     out("")
     -- Informational items (affirmative status) read as positive, not a warning.
-    out(pal.active("· " .. s.title))
+    out(pal.active("- " .. s.title))
     if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
@@ -7714,6 +7738,7 @@ function M.cmd_complete(cword, words)
       topics[#topics + 1] = "ci"
       topics[#topics + 1] = "cache"
       topics[#topics + 1] = "submodules"
+      topics[#topics + 1] = "launcher"
       emit(topics)
     end
     return 0
@@ -8485,8 +8510,8 @@ no build and authors no project or build-system files, and it ALWAYS exits 0
 
 Each suggestion prints a one-line title and, when there is something to do, a
 short remedy (some add a line of detail). Actionable suggestions — the ones
-`lw status` counts as N suggestions — come first, marked "•"; informational
-notes (e.g. "using sccache") follow, marked "·". Providers are advisory and
+`lw status` counts as N suggestions — come first, marked "*"; informational
+notes (e.g. "using sccache") follow, marked "-". The report is plain ASCII. Providers are advisory and
 extensible; the compiler-cache one gives a one-line verdict for C/C++
 workspaces (using <tool> / available but not enabled / not found / not applied
 / /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
@@ -8516,8 +8541,8 @@ toolset version, clang-cl; VS's bundled cmake/ninja under build tools), compiler
 caches, language servers (clangd, qmlls) and debug adapters (codelldb, cppdbg,
 js-debug — on PATH or in Mason's install directory), SDKs, the module / SDK /
 integration plugins (a rejected one with the reason) and lw itself. Marks:
-  ✓ found (version, location)   ✗ missing and required
-  – missing, not required       ? unknown (the probe failed or timed out)
+  + found (version, location)   x missing and required
+  - missing, not required       ? unknown (the probe failed or timed out)
 Inside a workspace the list is split into "Required by this workspace" (what
 the active profile's projects and toolchains need — every profile's when none
 is active — each naming who needs it, compacted to e.g. "2 profiles (dev,
@@ -8533,6 +8558,11 @@ plugins or the profiles' pinned SDKs change, when the count stops including it
 until the next `lw health`. Outside a workspace nothing is
 cached.
 
+LAUNCHER — in a repository with a version pin (lw.pin), health checks the
+committed launcher files: the pin's hashes, lw.sh / lw.cmd being current, the
+lw.sh exec bit and line endings in git, the .gitattributes rules and the
+.nvim/cache/ ignore rule. It reports and never fixes — see `lw help launcher`.
+
 SUBMODULES — in a git repository with submodules, health adds informational
 notes on how they (recursively) stand against what the repository records:
 checkouts off their recorded commit, pins behind their tracked branch (as of
@@ -8547,6 +8577,38 @@ path, detail, hint, required and required_by (the full list); `summary` is
 update check's outcome `{status (available | current | unknown), channel,
 current, newest?, detail?}`, absent for a development build — and still exits 0
 (CI can test `summary.required_missing > 0`).]],
+  launcher = [[lw help launcher — repo launcher checks in `lw health`   (also: pin)
+
+In a repository with a version pin (lw.pin, written by `lw bootstrap`), `lw
+health` checks that lw.sh / lw.cmd / lw.pin will work for every contributor
+and CI runner. It reports and never fixes; lines start with `launcher:`.
+
+  lw.pin           parses, and has a hash for every platform's lw binary and
+                   for the bundle (a missing hash: that platform cannot run)
+  lw.sh / lw.cmd   present, and the launcher this lw writes. An older one
+                   with a defect that breaks runs is a suggestion; one that
+                   is only older (no download retry, noisy progress) is a
+                   note; content lw never wrote is a note (local edits?)
+  exec bit         lw.sh is committed as mode 100755 (bootstrapped on Windows
+                   it may not be: CI on Linux/macOS then cannot run it)
+  .gitattributes   lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`
+                   (your global attributes file does not count)
+  line endings     committed LF-only; in this checkout lw.sh / lw.pin LF and
+                   lw.cmd CR LF (a CR LF lw.sh fails under sh)
+  .nvim/cache/     ignored by a .gitignore of the repository - a rule only in
+                   your personal gitignore does not count (teammates and CI do
+                   not have it)
+  old binaries     cached lw binaries of other versions (removed by the next
+                   `lw update`)
+
+The usual remedy is the repair form of the pin update, which rewrites the
+launchers and adds the missing rules without moving the pin:
+
+  ./lw.sh update --version <pinned version>     (.\lw.cmd from cmd/PowerShell)
+
+Line endings already committed wrong need `git add --renormalize lw.sh lw.cmd
+lw.pin` once the attributes are in place. Git checks need git and a git work
+tree; without them only the file checks run. Health never stages or commits.]],
   submodules = [[lw help submodules — submodule drift in `lw health`   (also: submodule)
 
 When the workspace root lies in a git repository with a .gitmodules file,
@@ -8925,6 +8987,9 @@ Keys:
                   verified release bundle.
   release-url     override where releases are fetched from (a local directory
                   works as an offline mirror); LOOMWORKS_RELEASE_URL wins.
+  module-index    where `lw module install` / `lw module update` read the
+                  module index from (a URL or a local path);
+                  LOOMWORKS_MODULE_INDEX wins. See `lw help module`.
   channel         `stable` (default) or `unstable`. The update channel
                   `lw self-update` follows. `unstable` includes
                   pre-releases; both are equally signature/hash-verified.
@@ -8945,128 +9010,6 @@ Completes commands, subcommands, project / config-set / profile names,
 toolchains (from the cache — no scan), configuration names, module types, and
 paths. `lw` must be on PATH so the completion can call it back. Completion is
 non-interactive and never blocks; names come from a fast (~250ms) load.]],
-  version = [[lw version
-
-Print the host's release version (with its capability version in
-parentheses; `dev build` for a host built from a source tree, `unknown
-release` for a release host without an embedded version), the active
-bundle, the update channel, and which system-Lua source is active — one of:
-  dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
-  release  a verified release bundle (lua-<ver>/ under the data dir)
-  fused    the copy bundled into the lw binary (a full-fused/dev build)
-  none     nothing installed yet — the bundle reads `none installed (run
-           `lw self-update`)`; a downloaded release binary starts this way
-
-A host command, handled by the lw binary itself.]],
-  install = [[lw install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
-
-Install the running lw binary for the current user and make it usable.
-It copies itself to a per-user location, ensures that location
-is on PATH, and fetches the first release bundle. No admin required.
-
-  location   Windows: %LOCALAPPDATA%\Microsoft\WindowsApps\lw.exe (on PATH)
-             Unix:    ~/.local/bin/lw
-
-  -y, --yes          replace an existing lw and apply PATH changes without
-                     prompting (needed with --no-input / in CI)
-  --no-modify-path   install the binary but never touch PATH / shell rc
-  --no-bundle        skip fetching the release bundle (do `lw self-update` later)
-  --dry-run          print what would happen, change nothing
-
-If a different lw is already installed at that location, install says what it
-is (a development build or its release, size, date) and asks before replacing
-it; without a terminal (--no-input, LW_NO_INPUT, CI) it refuses unless -y is
-given. An identical binary is reported as already installed.
-
-Typical bootstrap (download, verify by hash, then let the verified binary
-install itself) — from the release page for your platform, e.g.:
-
-  curl -fsSL <url>/lw-linux-x86_64 -o /tmp/lw \
-    && echo "<sha256>  /tmp/lw" | sha256sum -c \
-    && chmod +x /tmp/lw && /tmp/lw install
-
-A host command (handled by lw itself).]],
-  ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>] [--no-host]
-
-Download the current release, verify its signature and hashes, and activate
-it. Fetches manifest.json + manifest.json.sig, checks the
-signature against the key built into lw, downloads the bundle, verifies its
-SHA-256 against the (trusted) manifest, then extracts it into a new
-lua-<version>/ under the data dir — never overwriting a running copy. Integrity
-rests on the signature, not the transport, so it is safe behind a proxy;
-set LOOMWORKS_INSECURE_TLS=1 for TLS-intercepting proxies.
-
-Then it replaces the lw binary itself with the same release's host,
-when that release is newer than the running host's (it never
-downgrades the binary, e.g. after a channel switch to stable): the release's
-SHA256SUMS signature is checked against the built-in key and the downloaded
-binary against its hash BEFORE the installed binary is touched (never relaxed,
-even behind a proxy); the swap is atomic and any failure leaves the old binary
-in place. If the binary's location is not writable (a system or
-package-managed install) it warns with the manual steps and still succeeds.
-A pinned (lw.pin) or development host never replaces itself.
-
-If the release needs a newer lw binary than this one, the binary is updated
-first and self-update exits non-zero asking you to re-run it for the bundle.
-
-  --force              reinstall the bundle even if that version is already
-                       present (does NOT force a reinstall of the lw binary —
-                       that is replaced only by a newer release)
-  --channel <name>     `stable` (default) or `unstable` for this run only
-  --no-host            update only the bundle; leave the lw binary as it is
-
-Update channel: `stable` follows the newest full release;
-`unstable` includes pre-releases, for testing ahead of a stable cut. Both are
-verified identically — `unstable` never means less checking. Precedence:
---channel > LOOMWORKS_CHANNEL > the `channel` setting > stable. Persist a
-default with `lw settings set channel unstable`.
-
-Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` settings key,
-else the built-in default. A local directory works as an offline mirror and is
-used as-is (it supersedes the channel — no release-API query).
-Not applicable to a development source. A host command (handled by lw itself).]],
-  bootstrap = [[lw bootstrap [--version <x.y.z>]
-
-Install a repo-local launcher + version pin so contributors and CI run a fixed,
-verified lw without a prior global install. Writes three
-committed files at the repo root — lw.sh, lw.cmd, and lw.pin — and adds
-`.nvim/cache/` to .gitignore (created if absent, appended idempotently).
-
-The pin records the release version and the SHA-256 of every host binary and of
-the release bundle, taken from that release's SIGNED SHA256SUMS (its signature
-is verified against the key built into lw before any hash is trusted). Defaults
-to this host's release version; pass --version to pin a different release.
-
-  --version <x.y.z>   pin this release instead of the running host's version
-
-Run the launcher with `./lw.sh <cmd>` (or lw.cmd on Windows): it downloads the
-pinned host binary into .nvim/cache/, verifies its sha256 against the pin, and
-runs it — the host then provisions (downloads + verifies) the pinned bundle into
-your per-user data dir, never into the repository. So a clean checkout goes from
-`./lw.sh build` to building, reproducibly.
-
-Proxies: the launcher honors HTTPS_PROXY/HTTP_PROXY. `--insecure` (or
-LOOMWORKS_INSECURE=1) relaxes TLS for an intercepting proxy — safe only because
-the sha256 check is independent and always enforced. `--verify` additionally
-runs `gh attestation verify` when gh is present (skipped with a note otherwise).
-Air-gapped: point LOOMWORKS_RELEASE_URL at a local mirror directory.
-
-A globally-installed `lw` also honors the pin: for build/run/test/clean it runs
-the pinned release (fetching + verifying it), unless the pin matches itself.
-Bypass with `--no-pin`, or LOOMWORKS_LW=<path> to run a specific binary (the
-dev / test-at-head override). A host command (handled by lw itself).]],
-  update = [[lw update [--version <x.y.z>]
-
-Repoint lw.pin at a target release (default: the latest), rewriting its version
-and the per-artifact SHA-256 hashes from that release's signed SHA256SUMS, and
-refreshing lw.sh / lw.cmd. Validates the target release is fetchable before
-touching the pin, so a bad version fails cleanly. Run it from a repo already set
-up with `lw bootstrap`.
-
-  --version <x.y.z>   pin this release instead of the latest
-
-A host command (handled by lw itself); like bootstrap it runs as the global lw
-and is never redirected by an existing pin.]],
   agent = [[lw help agent — driving lw from an automation agent
 
 Run EVERY command with --no-input (or export LW_NO_INPUT=1). In this mode lw
@@ -9153,41 +9096,23 @@ own profile — profiles are per-machine and need not be committed. Run every
 command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
 `lw help agent` for the non-interactive contract.
 
-1. Bootstrap lw on the runner
-   Download a PINNED binary for the platform, verify it by hash, then let the
-   verified binary install itself (details + one-liner in `lw help install`):
-     curl -fsSL <url>/lw-linux-x86_64 -o /tmp/lw \
-       && echo "<sha256>  /tmp/lw" | sha256sum -c \
-       && chmod +x /tmp/lw && /tmp/lw install -y
-   Pin the version by using a specific release URL + sha256 and NOT running
-   `lw self-update`. Air-gapped runner: point LOOMWORKS_RELEASE_URL (or the
-   `release-url` settings key) at a local mirror directory.
-
-2. Pick a toolchain deterministically (per matrix cell)
-   Pin a toolchain COARSELY — by major version, or without an edition — and it
-   resolves to the best installed match, so the job never names the exact patch
-   or the runner image's VS edition:
-     lw --no-input profile create Debug ninja-clang-18
-   Key shapes differ per MODULE, so run `lw tools` on the runner to see the
-   real keys before writing the matrix:
-     cmake   generator + compiler:  ninja-clang-18 · ninja-gcc-12 ·
-             msvc-17 (any edition) · ninja-msvc-17
-     meson   compiler only (no generator):  clang-18 · gcc-12
-   A truncated pin never crosses a boundary, so `clang-1` matches nothing.
-
-3. Build and test with machine-readable output
-     lw --no-input build Debug:ninja-clang-18
-     lw --no-input test  Debug:ninja-clang-18 --junit results.xml -- -j 4
-   `--junit <file>` writes JUnit XML for your reporter (one file per test unit);
-   everything after `--` forwards to the native runner (ctest `-j N`, meson
-   `--num-processes N`). The exit code is real: 0 iff build + every test passed.
-   The profile selector (`ninja-clang-18`) resolves the same here as on create.
-
-4. Collect build artifacts
-     BD=$(lw --no-input profile query Debug:ninja-clang-18 app build-dir)
-     cp "$BD/app" out/
-   The build directory is deterministic and known BEFORE building. Fields:
-   build-dir | config | state | tool | cache (see `lw help profile`).
+1. Get lw on the runner: commit a pinned launcher once
+   On a dev machine, once: `lw bootstrap` (see `lw help bootstrap`), then commit
+   lw.sh, lw.cmd, lw.pin (+ .gitattributes / .gitignore). Every job then runs the
+   pinned, hash-verified lw straight from the checkout - no install step, no
+   `lw self-update`, the same release on every runner:
+     ./lw.sh --no-input build Debug:ninja-clang-18    Linux, macOS, Git Bash
+     .\lw.cmd --no-input build Debug:ninja-clang-18   cmd, PowerShell
+   GitHub Actions on Windows: `shell: bash` runs ./lw.sh; `shell: pwsh` or
+   `cmd` runs .\lw.cmd (keep the `.\`: a bare lw.cmd can pick up another one
+   on PATH). The first run downloads the lw binary into .nvim/cache/ (retrying
+   a failed download) and the release bundle into the per-user data dir; cache
+   them keyed on lw.pin to skip that. Move the pin with `./lw.sh update` and
+   commit the result; `lw health` checks the launcher files (`lw help
+   launcher`). Air-gapped runner: point LOOMWORKS_RELEASE_URL at a local mirror
+   directory. (A global install also works - `lw help install` - and honors
+   the pin for build/run/test/clean.)
+   Below, `lw` stands for ./lw.sh or .\lw.cmd.
 
 Gitignore `.nvim/`: it holds the working copy (loomworks.user.json), the cache,
 and the build trees — all machine-local. If it isn't in the repo's .gitignore,
@@ -9203,6 +9128,12 @@ cache, or offline mode of its own. Fetched deps land inside the build dir
 both fetched sources and compiled objects.]],
 }
 
+-- The host commands' help is owned by the host (boot.help, spec §16.7): the
+-- same complete text with or without a bundle.
+for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "update" }) do
+  HELP[k] = require("boot.help").TOPICS[k]
+end
+
 --- Command aliases → their canonical help topic.
 local HELP_ALIASES = {
   configuration = "config",
@@ -9214,6 +9145,7 @@ local HELP_ALIASES = {
   ccache = "cache",
   ["compiler-cache"] = "cache",
   submodule = "submodules",
+  pin = "launcher",
   ws = "workspace",
   mod = "module",
 }

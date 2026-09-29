@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Fuse a host binary: stage the bootstrap (main.lua + boot/), inject the
-# production public key (and, for a release, the release version) into
-# boot/verify.lua, then fuse it into a copy of luvi.
+# Fuse a host binary: stage the bootstrap (main.lua + boot/), embed the given
+# public key (the production key for a release — which the committed source
+# already carries — or a test key for a test fuse) and, for a release, the
+# release version into boot/verify.lua, then fuse it into a copy of luvi.
 #
 #   fuse_host.sh <luvi_binary> <public_key.pem> <out_path> [<release_version>]
 #
@@ -38,17 +39,27 @@ trap 'rm -rf "$stage"' EXIT
 cp "$repo/lua/main.lua" "$stage/main.lua"
 cp -r "$repo/lua/boot" "$stage/boot"
 
-# Replace the embedded (test) public key with the production one, and inject the
-# release version when one was given.
-python3 - "$stage/boot/verify.lua" "$pub" "$relver" <<'PY'
+# The committed boot/verify.lua already embeds the PRODUCTION public key
+# (keys/loomworks-release.pub.pem, spec §16.12). Embed the given key — a test
+# fuse (`make dist`, scripts/ci/host-self-update-e2e.sh) passes the test key —
+# and warn when that is not the production key. Inject the release version when
+# one was given.
+python3 - "$stage/boot/verify.lua" "$pub" "$relver" "$repo/keys/loomworks-release.pub.pem" <<'PY'
 import sys, re
-vf, pubf, relver = sys.argv[1], sys.argv[2], sys.argv[3]
-pub = open(pubf).read().strip()
+vf, pubf, relver, prodf = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+def norm(s): return s.replace("\r", "").strip()
+pub = norm(open(pubf).read())
+prod = norm(open(prodf).read())
 src = open(vf).read()
 new, n = re.subn(r'M\.PUBLIC_KEY_PEM = \[\[.*?\]\]',
                  'M.PUBLIC_KEY_PEM = [[\n' + pub + '\n]]', src, flags=re.S)
 assert n == 1, "expected exactly one M.PUBLIC_KEY_PEM block, found %d" % n
-print("injected public key into boot/verify.lua")
+if pub == prod:
+    print("embedded the production public key in boot/verify.lua")
+else:
+    print("WARNING: fusing with a public key that is NOT the production release "
+          "key (keys/loomworks-release.pub.pem): this host cannot verify official "
+          "releases", file=sys.stderr)
 if relver:
     new, n = re.subn(r'^M\.RELEASE_VERSION = nil$',
                      'M.RELEASE_VERSION = "' + relver + '"', new, flags=re.M)

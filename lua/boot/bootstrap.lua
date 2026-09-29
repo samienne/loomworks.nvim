@@ -2,9 +2,11 @@
 --
 -- Fetches a release's SIGNED hash list (SHA256SUMS + .sig), verifies the
 -- signature against the embedded release key, and writes lw.pin (version +
--- per-host-binary + bundle hashes), lw.sh, lw.cmd, and an idempotent
--- .gitignore entry for the machine-local cache. Management operations (spec
--- §16.24): they run as the global host and never redirect.
+-- per-host-binary + bundle hashes) and lw.sh / lw.cmd (boot.launcher), then
+-- brings the repository metadata up to date (boot.repo_meta: ignore rule,
+-- line-ending attributes, lw.sh exec bit) and prunes old cached binaries.
+-- Reports only what changed. Management operations (spec §16.24): they run as
+-- the invoked host and never redirect.
 
 local uv_ok, uv = pcall(require, "uv")
 if not uv_ok then uv = require("luv") end
@@ -13,260 +15,15 @@ local verify = require("boot.verify")
 local download = require("boot.download")
 local update = require("boot.update")
 local pin = require("boot.pin")
+local launcher = require("boot.launcher")
+local repo_meta = require("boot.repo_meta")
 
 local M = {}
 
--- ---------------------------------------------------------------------------
--- Launcher script templates (written verbatim into the repo). Kept here as the
--- single source of truth; long-bracket strings so nothing is escape-processed.
--- ---------------------------------------------------------------------------
-
-M.LW_SH = [==[#!/bin/sh
-# loomworks repo-local launcher. Committed alongside lw.pin. Fetches the pinned,
-# verified lw host binary into .nvim/cache/ and execs it; the host provisions the
-# pinned bundle itself. Regenerate with `lw update`. See `lw help bootstrap`.
-set -eu
-
-# Dev / test-at-head override: run a named binary, bypassing the pin entirely.
-if [ -n "${LOOMWORKS_LW:-}" ]; then
-  exec "$LOOMWORKS_LW" "$@"
-fi
-
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-pin="$here/lw.pin"
-[ -f "$pin" ] || { echo "lw: no lw.pin next to this launcher" >&2; exit 1; }
-
-# --- select the host-binary asset for this OS/arch -------------------------
-os=$(uname -s 2>/dev/null || echo unknown)
-arch=$(uname -m 2>/dev/null || echo unknown)
-case "$os" in
-  Linux) os=linux ;;
-  Darwin) os=macos ;;
-  MINGW*|MSYS*|CYGWIN*|Windows_NT) os=windows ;;
-  *) echo "lw: unsupported OS '$os'" >&2; exit 1 ;;
-esac
-case "$arch" in
-  x86_64|amd64) arch=x86_64 ;;
-  arm64|aarch64) arch=arm64 ;;
-esac
-case "$os-$arch" in
-  linux-x86_64) asset=lw-linux-x86_64 ;;
-  macos-arm64) asset=lw-macos-arm64 ;;
-  windows-x86_64) asset=lw-windows-x86_64.exe ;;
-  *) echo "lw: no pinned lw binary for $os/$arch" >&2; exit 1 ;;
-esac
-
-# --- read version + the asset's pinned sha256 from lw.pin ------------------
-version=$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*//p' "$pin" | head -n1)
-want=$(sed -n "s/^[[:space:]]*sha256_$asset[[:space:]]*=[[:space:]]*//p" "$pin" | head -n1)
-[ -n "$version" ] || { echo "lw: lw.pin has no version" >&2; exit 1; }
-[ -n "$want" ] || { echo "lw: lw.pin has no sha256 for $asset" >&2; exit 1; }
-# Reject a malicious pinned version before it reaches a download URL: a repo
-# cannot redirect the fetch (a traversal like /../ would leave the origin).
-case "$version" in
-  *..*|*[!0-9A-Za-z._+-]*)
-    echo "lw: invalid pinned version '$version'" >&2; exit 1 ;;
-esac
-want=$(printf '%s' "$want" | tr 'A-Z' 'a-z')
-
-cache="$here/.nvim/cache"
-bin="$cache/lw-$version-$asset"
-
-# --- peel launcher-only flags (--insecure / --verify); forward the rest ---
-insecure=0; do_verify=0
-[ "${LOOMWORKS_INSECURE:-}" = "1" ] && insecure=1
-new=""
-for a in "$@"; do
-  case "$a" in
-    --insecure) insecure=1; continue ;;
-    --verify) do_verify=1; continue ;;
-  esac
-  new="$new $(printf "%s" "$a" | sed "s/'/'\\\\''/g; 1s/^/'/; \$s/\$/'/")"
-done
-eval "set -- $new"
-
-sha_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
-  else echo "lw: need sha256sum or shasum to verify the download" >&2; exit 1; fi
-}
-
-# Fetch $1 -> $2. A bare path / file:// (offline mirror) is copied, matching how
-# the host reads a local LOOMWORKS_RELEASE_URL; only real URLs use curl/wget.
-fetch_to() {
-  case "$1" in
-    file://*) cp "$(printf '%s' "$1" | sed 's,^file://,,')" "$2" ;;
-    *://*)
-      if command -v curl >/dev/null 2>&1; then
-        k=""; [ "$insecure" = "1" ] && k="-k"
-        curl -fL $k -o "$2" "$1"
-      elif command -v wget >/dev/null 2>&1; then
-        k=""; [ "$insecure" = "1" ] && k="--no-check-certificate"
-        wget $k -O "$2" "$1"
-      else
-        echo "lw: need curl or wget to download the pinned binary" >&2; return 1
-      fi ;;
-    *) cp "$1" "$2" ;;
-  esac
-}
-
-# --- ensure the pinned binary is cached + verified (hash is mandatory) ----
-if [ ! -f "$bin" ] || [ "$(sha_of "$bin" | tr 'A-Z' 'a-z')" != "$want" ]; then
-  rm -f "$bin"
-  mkdir -p "$cache"
-  if [ -n "${LOOMWORKS_RELEASE_URL:-}" ]; then
-    url="$LOOMWORKS_RELEASE_URL/$asset"
-  else
-    url="https://github.com/samienne/loomworks.nvim/releases/download/v$version/$asset"
-  fi
-  echo "lw: fetching pinned lw $version ($asset)..." >&2
-  tmp="$bin.dl.$$"
-  fetch_to "$url" "$tmp" || { echo "lw: download failed: $url" >&2; rm -f "$tmp"; exit 1; }
-  got=$(sha_of "$tmp" | tr 'A-Z' 'a-z')
-  if [ "$got" != "$want" ]; then
-    echo "lw: sha256 mismatch for $asset (pin $want, got $got) -- aborting" >&2
-    rm -f "$tmp"; exit 1
-  fi
-  mv "$tmp" "$bin"
-  [ "$os" = windows ] || chmod +x "$bin"
-  printf 'version=%s\nasset=%s\nsha256=%s\n' "$version" "$asset" "$want" > "$cache/lw.marker"
-fi
-
-# --- optional stronger provenance check (never required) ------------------
-if [ "$do_verify" = "1" ]; then
-  if command -v gh >/dev/null 2>&1; then
-    gh attestation verify "$bin" --repo samienne/loomworks.nvim \
-      || { echo "lw: gh attestation verify failed" >&2; exit 1; }
-  else
-    echo "lw: --verify: gh not found; skipping attestation (sha256 already verified)" >&2
-  fi
-fi
-
-# --- exec the pinned host; it provisions the pinned bundle itself ----------
-LOOMWORKS_PINNED="$version" LW_ROOT="$PWD" exec "$bin" "$@"
-]==]
-
-M.LW_CMD = [==[@echo off
-setlocal EnableExtensions EnableDelayedExpansion
-rem loomworks repo-local launcher (Windows). Committed alongside lw.pin. Fetches
-rem the pinned, verified lw host binary into .nvim\cache\ and runs it; the host
-rem provisions the pinned bundle itself. Regenerate with `lw update`.
-rem Windows system tools (find, findstr, certutil, curl, where) are called by
-rem their absolute %SystemRoot%\System32 path: a bare name can resolve to a
-rem same-named tool earlier on PATH (Git's usr/bin/find under Git Bash / CI).
-
-if not "%LOOMWORKS_LW%"=="" (
-  "%LOOMWORKS_LW%" %*
-  exit /b !ERRORLEVEL!
-)
-
-set "here=%~dp0"
-set "pin=%here%lw.pin"
-if not exist "%pin%" ( echo lw: no lw.pin next to this launcher 1>&2 & exit /b 1 )
-
-set "asset=lw-windows-x86_64.exe"
-if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
-  echo lw: no pinned lw binary for windows/arm64 1>&2 & exit /b 1
-)
-
-set "version="
-set "want="
-for /f "usebackq tokens=1,* delims== " %%A in ("%pin%") do (
-  set "k=%%A"
-  set "v=%%B"
-  if /I "!k!"=="version" set "version=!v!"
-  if /I "!k!"=="sha256_%asset%" set "want=!v!"
-)
-if "!version!"=="" ( echo lw: lw.pin has no version 1>&2 & exit /b 1 )
-if "!want!"=="" ( echo lw: lw.pin has no sha256 for %asset% 1>&2 & exit /b 1 )
-rem reject a malicious pinned version before it reaches a URL (a repo must not
-rem be able to redirect the fetch): forbid anything outside [-0-9A-Za-z._+] or `..`
-echo(!version!| "%SystemRoot%\System32\findstr.exe" /r /c:"[^-0-9A-Za-z._+]" >nul && ( echo lw: invalid pinned version !version! 1>&2 & exit /b 1 )
-echo(!version!| "%SystemRoot%\System32\findstr.exe" /c:".." >nul && ( echo lw: invalid pinned version !version! 1>&2 & exit /b 1 )
-
-set "cache=%here%.nvim\cache"
-set "bin=%cache%\lw-!version!-%asset%"
-
-rem detect launcher-only flags without shifting (so phase 2 still sees all args)
-set "insecure=0"
-if "%LOOMWORKS_INSECURE%"=="1" set "insecure=1"
-set "do_verify=0"
-for %%A in (%*) do (
-  if /I "%%~A"=="--insecure" set "insecure=1"
-  if /I "%%~A"=="--verify" set "do_verify=1"
-)
-
-set "ok=0"
-if exist "%bin%" ( call :sha "%bin%" & if /I "!got!"=="!want!" set "ok=1" )
-if "!ok!"=="1" goto forward
-
-del /f /q "%bin%" 2>nul
-if not exist "%cache%" mkdir "%cache%"
-if defined LOOMWORKS_RELEASE_URL (
-  set "url=%LOOMWORKS_RELEASE_URL%/%asset%"
-) else (
-  set "url=https://github.com/samienne/loomworks.nvim/releases/download/v!version!/%asset%"
-)
-echo lw: fetching pinned lw !version! ^(%asset%^)... 1>&2
-set "tmp=%bin%.dl"
-echo(!url!| "%SystemRoot%\System32\find.exe" "://" >nul
-if errorlevel 1 (
-  rem bare path / offline mirror: copy instead of curl (matches the host)
-  set "src=!url:/=\!"
-  copy /y "!src!" "%tmp%" >nul
-) else (
-  set "kflag="
-  if "!insecure!"=="1" set "kflag=-k"
-  "%SystemRoot%\System32\curl.exe" -fL !kflag! -o "%tmp%" "!url!"
-)
-if errorlevel 1 ( echo lw: download failed: !url! 1>&2 & del /f /q "%tmp%" 2>nul & exit /b 1 )
-call :sha "%tmp%"
-if /I not "!got!"=="!want!" (
-  echo lw: sha256 mismatch for %asset% ^(pin !want!, got !got!^) -- aborting 1>&2
-  del /f /q "%tmp%" 2>nul & exit /b 1
-)
-move /y "%tmp%" "%bin%" >nul
-> "%cache%\lw.marker" (
-  echo version=!version!
-  echo asset=%asset%
-  echo sha256=!want!
-)
-
-:forward
-if "!do_verify!"=="1" (
-  "%SystemRoot%\System32\where.exe" gh >nul 2>nul
-  if errorlevel 1 (
-    echo lw: --verify: gh not found; skipping attestation ^(sha256 already verified^) 1>&2
-  ) else (
-    gh attestation verify "%bin%" --repo samienne/loomworks.nvim || exit /b 1
-  )
-)
-rem Forward args with delayed expansion OFF so a forwarded arg containing `!`
-rem survives; re-peel the launcher-only flags from the untouched arg list.
-set "PINVER=!version!"
-set "PINBIN=!bin!"
-setlocal DisableDelayedExpansion
-set "LOOMWORKS_PINNED=%PINVER%"
-set "LW_ROOT=%CD%"
-set "fwd="
-:peel
-if "%~1"=="" goto peeled
-if /I "%~1"=="--insecure" ( shift & goto peel )
-if /I "%~1"=="--verify" ( shift & goto peel )
-set "fwd=%fwd% %1"
-shift
-goto peel
-:peeled
-"%PINBIN%"%fwd%
-exit /b %ERRORLEVEL%
-
-:sha
-set "got="
-rem the outer quote pair keeps cmd /c from stripping the program path's quotes
-for /f "skip=1 delims=" %%H in ('""%SystemRoot%\System32\certutil.exe" -hashfile "%~1" SHA256"') do if not defined got set "got=%%H"
-set "got=!got: =!"
-goto :eof
-]==]
+-- The launcher templates live in boot.launcher (pure, shared with the health
+-- provider); re-exported here for existing callers.
+M.LW_SH = launcher.LW_SH
+M.LW_CMD = launcher.LW_CMD
 
 -- ---------------------------------------------------------------------------
 -- Hash-list acquisition
@@ -357,49 +114,158 @@ function M.write_pin(root, version, hashes)
   return write_file(root .. "/lw.pin", pin.serialize(version, hashes))
 end
 
-function M.write_launchers(root)
-  -- Force line endings regardless of how this file is stored: lw.sh MUST be LF
-  -- (a CRLF `#!/bin/sh` breaks on Linux), lw.cmd is CRLF for cmd.exe.
-  local sh = (M.LW_SH:gsub("\r\n", "\n"):gsub("\r", "\n"))
-  local ok1, e1 = write_file(root .. "/lw.sh", sh)
-  if not ok1 then return nil, e1 end
-  if not paths.is_windows then pcall(uv.fs_chmod, root .. "/lw.sh", tonumber("755", 8)) end
-  local cmd = (M.LW_CMD:gsub("\r\n", "\n"):gsub("\n", "\r\n"))
-  local ok2, e2 = write_file(root .. "/lw.cmd", cmd)
-  if not ok2 then return nil, e2 end
+local function read(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local s = f:read("*a"); f:close()
+  return s
+end
+
+--- Write one launcher unless it is already exactly what this host writes.
+--- Refuses to overwrite content that is not a known launcher generation (a
+--- hand edit, or a newer host's) unless `force` (spec §16.24).
+--- @param root string
+--- @param kind "sh"|"cmd"
+--- @param force boolean|nil
+--- @return "written"|"refreshed"|"eol"|"replaced"|"kept"|"same"|nil status, table|string|nil info
+function M.write_launcher(root, kind, force)
+  local name = launcher.KINDS[kind]
+  local path = root .. "/" .. name
+  local want = launcher.render(kind)
+  local have = read(path)
+  if have == want then return "same" end
+  local status = "written"
+  local info
+  if have ~= nil then
+    local c = launcher.classify(kind, have, verify.sha256_hex)
+    if c.status == "current" then
+      status = "eol"                       -- same content, wrong line endings
+    elseif c.status == "known" then
+      status, info = "refreshed", c
+    elseif force then
+      status = "replaced"
+    else
+      return "kept"
+    end
+  end
+  local ok, e = write_file(path, want)
+  if not ok then return nil, e end
+  if kind == "sh" and not paths.is_windows then
+    pcall(uv.fs_chmod, path, tonumber("755", 8))
+  end
+  return status, info
+end
+
+--- Write both launchers (kept for callers/tests that just want them written).
+function M.write_launchers(root, force)
+  for _, kind in ipairs({ "sh", "cmd" }) do
+    local st, e = M.write_launcher(root, kind, force)
+    if st == nil then return nil, e end
+  end
   return true
 end
 
---- Idempotently ensure `.nvim/cache/` is ignored by `<root>/.gitignore`.
---- Append-only: never rewrites or removes existing content; creates the file if
---- absent. Returns "added" | "present" or nil, err.
+--- Idempotently ensure the launcher cache is ignored by the repository (see
+--- boot.repo_meta.ensure_gitignore). Returns "added" | "present" | "covered"
+--- or nil, err.
 function M.ensure_gitignore(root)
-  local path = root .. "/.gitignore"
-  local entry = ".nvim/cache/"
-  local existing = ""
-  local f = io.open(path, "r")
-  if f then existing = f:read("*a") or ""; f:close() end
-  for line in (existing .. "\n"):gmatch("([^\n]-)\n") do
-    local l = line:gsub("%s+$", "")
-    if l == entry or l == ".nvim/cache" then return "present" end
-  end
-  -- Append-only: keep existing content verbatim, add our block, atomic-write.
-  local addition = (existing ~= "" and existing:sub(-1) ~= "\n") and "\n" or ""
-  addition = addition ..
-    "\n# loomworks: pinned lw binaries + provisioned bundle (machine-local)\n" ..
-    entry .. "\n"
-  local ok, e = write_file(path, existing .. addition)
-  if not ok then return nil, e end
-  return "added"
+  return repo_meta.ensure_gitignore(root, repo_meta.toplevel(root), write_file)
 end
+
+--- One line per launcher write outcome worth reporting.
+local function launcher_line(kind, status, info)
+  local name = launcher.KINDS[kind]
+  if status == "written" then return "wrote " .. name end
+  if status == "refreshed" then
+    return "refreshed " .. name .. ": replaced the launcher written by lw " .. tostring(info and info.releases or "?")
+  end
+  if status == "eol" then
+    return "rewrote " .. name .. " with " .. (kind == "sh" and "LF" or "CRLF") .. " line endings"
+  end
+  if status == "replaced" then return "replaced " .. name .. " (--force)" end
+  if status == "kept" then
+    return "kept " .. name .. ": it differs from every launcher lw wrote (local edits?);" ..
+      " rerun with --force to replace it"
+  end
+  return nil
+end
+
+--- Shared tail of bootstrap/update: write the pin + launchers, update the
+--- repository metadata, prune the launcher cache. Returns the change lines
+--- (empty when nothing changed) or nil, err.
+local function apply(root, version, hashes, opts)
+  local changes = {}
+  local function add(line) if line then changes[#changes + 1] = line end end
+
+  local old = pin.read(root)
+  local want_pin = pin.serialize(version, hashes)
+  local have_pin = read(root .. "/lw.pin")
+  local pin_changed = have_pin == nil
+    or have_pin:gsub("\r\n", "\n") ~= want_pin
+  -- Same content with CR LF endings (a checkout without the eol attribute):
+  -- the POSIX launcher would read `version = x\r` — rewrite it with LF.
+  local pin_eol = not pin_changed and have_pin ~= want_pin
+  if pin_changed or pin_eol then
+    local okp, ep = M.write_pin(root, version, hashes)
+    if not okp then return nil, ep end
+  end
+  if pin_eol then add("rewrote lw.pin with LF line endings") end
+
+  local wrote_launcher = false
+  for _, kind in ipairs({ "sh", "cmd" }) do
+    local st, info = M.write_launcher(root, kind, opts.force)
+    if st == nil then return nil, info end
+    if st ~= "same" and st ~= "kept" then wrote_launcher = true end
+    add(launcher_line(kind, st, info))
+  end
+
+  local top = repo_meta.toplevel(root)
+  local gi, eg = repo_meta.ensure_gitignore(root, top, write_file)
+  if not gi then return nil, eg end
+  if gi == "added" then add("added " .. launcher.CACHE_DIR .. "/ to .gitignore") end
+
+  local appended, problem, ea = repo_meta.ensure_gitattributes(root, top, write_file)
+  if not appended then return nil, ea end
+  if #appended > 0 then
+    add("added line-ending rules for " .. table.concat(appended, ", ") .. " to .gitattributes")
+  end
+  add(problem)
+
+  local xb, xproblem = repo_meta.ensure_exec_bit(root, top)
+  if xb == "staged" then add("staged lw.sh as executable (git mode 100755)") end
+  if xb == "set" then add("set lw.sh executable in the git index (mode 100755)") end
+  add(xproblem)
+
+  local removed, bytes = repo_meta.prune_cache(root, version, opts.running_exe)
+  if removed > 0 then
+    add(string.format("removed %d old pinned lw binar%s from %s (%.1f MB)", removed,
+      removed == 1 and "y" or "ies", launcher.CACHE_DIR, bytes / 1048576))
+  end
+
+  return changes, { old = old, pin_changed = pin_changed, wrote_launcher = wrote_launcher }
+end
+
+--- The hint when a host older than the target wrote the launchers: it can only
+--- write its own generation (spec §16.24 "Updating through the launcher").
+local function older_host_hint(version, opts, st)
+  local self = opts.self_version
+  if not (self and st and st.pin_changed and paths.version_gt(version, self)) then return nil end
+  return "lw.sh / lw.cmd are the launchers of lw " .. self .. " (the lw that ran this);" ..
+    " run `./lw.sh update --version " .. version .. "` once more to take " .. version .. "'s"
+end
+
+-- One flat clause, no nested parentheses (spec §16.24 "Reporting").
+local SIGNED = "hashes from the signed SHA256SUMS, signature verified"
 
 -- ---------------------------------------------------------------------------
 -- Operations
 -- ---------------------------------------------------------------------------
 
---- `lw bootstrap` — install lw.sh/lw.cmd/lw.pin into `root` and gitignore the
---- cache. Pins `opts.version` (else the running host's `self_version`). Returns
---- a report (list of lines) or nil, err.
+--- `lw bootstrap` — install lw.sh/lw.cmd/lw.pin into `root` and bring the
+--- repository metadata up to date. Pins `opts.version` (else the running
+--- host's `self_version`). `opts.force` replaces launchers that are not a known
+--- generation; `opts.running_exe` is never pruned. Returns a report (list of
+--- lines) or nil, err.
 function M.bootstrap(root, self_version, opts)
   opts = opts or {}
   local version = opts.version or self_version
@@ -412,26 +278,31 @@ function M.bootstrap(root, self_version, opts)
   local hashes, e2 = M.pin_hashes(version, sums)
   if not hashes then return nil, e2 end
 
+  local o = opts
+  local changes, st = apply(root, version, hashes, o)
+  if not changes then return nil, st end
+
   local out = {}
-  local okp, ep = M.write_pin(root, version, hashes)
-  if not okp then return nil, ep end
-  out[#out + 1] = "wrote lw.pin (version " .. version .. ")"
-  local okl, el = M.write_launchers(root)
-  if not okl then return nil, el end
-  out[#out + 1] = "wrote lw.sh and lw.cmd"
-  local gi, eg = M.ensure_gitignore(root)
-  if not gi then return nil, eg end
-  out[#out + 1] = (gi == "added" and "added .nvim/cache/ to .gitignore"
-    or ".nvim/cache/ already in .gitignore")
+  if st.pin_changed then
+    out[#out + 1] = "wrote lw.pin: version " .. version .. "; " .. SIGNED
+  else
+    out[#out + 1] = "lw.pin already at " .. version .. "; " .. SIGNED
+  end
+  for _, l in ipairs(changes) do out[#out + 1] = l end
+  out[#out + 1] = older_host_hint(version, o, st)
   out[#out + 1] = ""
-  out[#out + 1] = "Commit lw.sh, lw.cmd, and lw.pin. Run `./lw.sh <cmd>` (or lw.cmd on"
-  out[#out + 1] = "Windows); update the pin with `lw update`."
+  out[#out + 1] = "Commit lw.sh, lw.cmd and lw.pin (and .gitignore / .gitattributes if changed)."
+  out[#out + 1] = "Run it as:  ./lw.sh <cmd>    (Linux, macOS, Git Bash on Windows)"
+  out[#out + 1] = "            .\\lw.cmd <cmd>   (cmd, PowerShell)"
+  out[#out + 1] = "Move the pin later with `./lw.sh update`."
   return out
 end
 
 --- `lw update` — rewrite lw.pin to `opts.version` (or the latest release).
 --- Validates the target release is fetchable before writing; refreshes the
---- launcher scripts. Returns a report or nil, err.
+--- launchers only when they differ; reports only what changed. `opts.force`,
+--- `opts.running_exe`, `opts.self_version` as for bootstrap. Returns a report
+--- or nil, err.
 function M.update(root, opts)
   opts = opts or {}
   local version = opts.version
@@ -446,12 +317,26 @@ function M.update(root, opts)
   local hashes, e2 = M.pin_hashes(version, sums)
   if not hashes then return nil, e2 end
 
+  local changes, st = apply(root, version, hashes, opts)
+  if not changes then return nil, st end
+
+  if not st.pin_changed and #changes == 0 then
+    return { "lw.pin already at " .. version .. " - no changes; " .. SIGNED }
+  end
   local out = {}
-  local okp, ep = M.write_pin(root, version, hashes)
-  if not okp then return nil, ep end
-  out[#out + 1] = "updated lw.pin -> version " .. version
-  local okl = M.write_launchers(root)
-  if okl then out[#out + 1] = "refreshed lw.sh / lw.cmd" end
+  local old_v = st.old and st.old.version
+  if not st.pin_changed then
+    -- The same wording as the no-op above (whichever host runs the update).
+    out[#out + 1] = "lw.pin already at " .. version .. "; " .. SIGNED
+  elseif old_v and old_v ~= version then
+    out[#out + 1] = "lw.pin: " .. old_v .. " -> " .. version .. "; " .. SIGNED
+  elseif old_v then
+    out[#out + 1] = "lw.pin: " .. version .. " hashes updated; " .. SIGNED
+  else
+    out[#out + 1] = "wrote lw.pin: version " .. version .. "; " .. SIGNED
+  end
+  for _, l in ipairs(changes) do out[#out + 1] = l end
+  out[#out + 1] = older_host_hint(version, opts, st)
   return out
 end
 

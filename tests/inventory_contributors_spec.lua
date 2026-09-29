@@ -624,3 +624,32 @@ describe("inventory contributors", function()
     end)
 end)
 
+
+describe("inventory: the lw entry in pinned context", function()
+    local sug = require("loomworks.suggestions")
+    local saved_facts, saved_ver
+    before_each(function()
+        saved_facts, saved_ver = sug._host_facts, sug._current_release_version
+    end)
+    after_each(function()
+        sug._host_facts, sug._current_release_version = saved_facts, saved_ver
+    end)
+
+    local function lw_entry(version)
+        sug._host_facts = function()
+            return { release_version = version, pinned = true, self_update = true, exe = "/r/.nvim/cache/lw" }
+        end
+        sug._current_release_version = function() return version end
+        local by = probe(inv.declarations(fake_ctx()), fake_ctx())
+        return by["lw"]
+    end
+
+    it("says the pin decides, marks a prerelease, and nests no parentheses", function()
+        -- beta.1 showed "lw 0.1.36-beta.1 (pinned (lw.pin))".
+        local e = lw_entry("0.1.36-beta.1")
+        assert.equals("0.1.36-beta.1", e.version)
+        assert.equals("pinned by lw.pin, prerelease", e.detail)
+        e = lw_entry("0.1.35")
+        assert.equals("pinned by lw.pin", e.detail)
+    end)
+end)

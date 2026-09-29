@@ -216,7 +216,11 @@ if host_command == "version" then
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
-  io.write(upd.version_line(info, channel) .. "\n")
+  -- In pinned context (a launcher / the redirect set the sentinel) the pin, not
+  -- the channel setting, decides what runs: name it instead of the channel.
+  local pinned = (pinned_sentinel and pin_root)
+    and { file = pin_root .. "/lw.pin", version = pinned_sentinel } or nil
+  io.write(upd.version_line(info, channel, pinned) .. "\n")
   exit(0)
 elseif host_command == "self-update" then
   if source_kind == "dev" then
@@ -242,7 +246,7 @@ elseif host_command == "self-update" then
       fused_system_lua = fused_system_lua(),
     }
   end
-  io.write("lw: checking for updates…\n")
+  io.write("lw: checking for updates...\n")
   local res, err, info = require("boot.update").self_update({ force = force, channel = channel ~= "" and channel or nil })
   if not res and info and info.host_incompatible then
     -- The (verified) release needs a newer host than this one. Replace the
@@ -283,7 +287,7 @@ elseif host_command == "self-update" then
   end
   if res.channel_overridden then
     io.stderr:write("lw: --channel " .. res.channel_overridden ..
-      " is ignored — a release-url override is in effect (LOOMWORKS_RELEASE_URL / " ..
+      " is ignored - a release-url override is in effect (LOOMWORKS_RELEASE_URL / " ..
       "the `release-url` setting). The channel governs only the default origin; " ..
       "unset the override to use channels.\n")
   end
@@ -326,6 +330,9 @@ elseif host_command == "install" then
     return e ~= nil and e ~= "" and e ~= "0" and e:lower() ~= "false"
   end
   if env_truthy("LW_NO_INPUT") or env_truthy("CI") then opts.no_input = true end
+  -- A host with its system Lua fused in (a `make install` development build)
+  -- gets no "run lw self-update" advice for a skipped bundle.
+  opts.fused_system_lua = fused_system_lua()
   -- install may report progress AND fail: the binary can be placed while the
   -- bundle fetch dies. Print whatever it got done, then honour the error —
   -- exiting 0 on a partial install is what leaves a job to fail later with a
@@ -342,11 +349,23 @@ elseif host_command == "install" then
 elseif host_command == "bootstrap" or host_command == "update" then
   -- Pin management (spec §16.24): runs as the global host, never redirected.
   local bootstrap = require("boot.bootstrap")
-  local ver_opt
-  for i, v in ipairs(forwarded) do if v == "--version" then ver_opt = forwarded[i + 1] end end
+  local ver_opt, force = nil, false
+  for i, v in ipairs(forwarded) do
+    if v == "--version" then ver_opt = forwarded[i + 1] end
+    if v == "--force" then force = true end
+  end
   local self_version = (source_kind == "release" and luaroot)
     and luaroot:match("lua%-(.+)$") or nil
   local root = paths.norm(getenv("LW_ROOT")) or (uv.cwd():gsub("\\", "/"):gsub("/+$", ""))
+  -- The running executable is never pruned from the launcher cache (under
+  -- `./lw.sh update` it IS a cached binary, still executing).
+  local okx, running_exe = pcall(uv.exepath)
+  -- The launcher templates are the HOST's (boot.launcher), so the "written by
+  -- an older lw" hint compares against the host's own release version (nil
+  -- for a development build, whose templates are the newest).
+  local bopts = { version = ver_opt, force = force,
+    self_version = require("boot.verify").RELEASE_VERSION,
+    running_exe = okx and running_exe or nil }
   local report, err
   if command == "update" then
     -- Update rewrites an existing pin; it must already be bootstrapped.
@@ -355,9 +374,9 @@ elseif host_command == "bootstrap" or host_command == "update" then
       io.stderr:write("lw: no lw.pin found (run `lw bootstrap` first)\n")
       exit(1)
     end
-    report, err = bootstrap.update(existing, { version = ver_opt })
+    report, err = bootstrap.update(existing, bopts)
   else
-    report, err = bootstrap.bootstrap(root, self_version, { version = ver_opt })
+    report, err = bootstrap.bootstrap(root, self_version, bopts)
   end
   if report then for _, line in ipairs(report) do io.write(line .. "\n") end end
   if err then
@@ -394,7 +413,7 @@ do
     -- Machine-local (never the repo's .nvim/cache): a clone could ship a
     -- binary there together with a pin naming its hash (spec §16.22/§16.23).
     local bin = require("boot.update").pinned_binary_path(p.version, asset)
-    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it…\n")
+    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
     io.stdout:flush()
     local ok, err = require("boot.update").ensure_host_binary(
       p.version, asset, p.hashes[asset], bin)
@@ -464,7 +483,9 @@ else
   -- works: a user must be able to learn what `install` / `self-update` do
   -- before either has run (host usage + per-host-command help, exit 0).
   if not bundle.readfile("loomworks/cli.lua") then
-    local help_text = require("boot.help").for_args(forwarded)
+    -- In a pinned repository the full-help note names the launcher (which
+    -- runs the pinned release and provisions its bundle), not self-update.
+    local help_text = require("boot.help").for_args(forwarded, { pinned = pin_root ~= nil })
     if help_text then
       io.write(help_text .. "\n")
       exit(0)

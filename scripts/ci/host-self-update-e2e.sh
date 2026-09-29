@@ -91,8 +91,19 @@ for h in "help" "--help" "-h" "install --help" "help self-update" "build --help"
   out="$("$lw" $h 2>&1)"; code=$?
   [ $code -eq 0 ] && ok "lw $h exits 0" || bad "lw $h exit $code: $out"
   case "$out" in *"no loomworks release is installed"*) bad "lw $h: bundle error instead of help" ;; esac
-  case "$out" in *"run \`lw self-update\`"*) ok "lw $h: names self-update" ;; *) bad "lw $h: no self-update hint: $out" ;; esac
+  # A host command's help is its complete help (no "needs the bundle" note);
+  # the usage and a bundle command's help name self-update.
+  case "$h" in
+    "install --help"|"help self-update")
+      case "$out" in *"Full help needs"*) bad "lw $h: host-command help carries the bundle note: $out" ;; *) ok "lw $h: complete, no bundle note" ;; esac ;;
+    *)
+      case "$out" in *"run \`lw self-update\`"*) ok "lw $h: names self-update" ;; *) bad "lw $h: no self-update hint: $out" ;; esac ;;
+  esac
 done
+# Inside a pinned repository the note names the launcher, not self-update.
+mkdir -p "$T/pinned-repo"; printf 'version = 0.0.0-test\n' > "$T/pinned-repo/lw.pin"
+out="$(cd "$T/pinned-repo" && LW_ROOT= "$lw" help build 2>&1)"
+case "$out" in *"./lw.sh help <command>"*) ok "pinned repo: help names the launcher" ;; *) bad "pinned repo help: $out" ;; esac
 out="$("$lw" install --help 2>&1)"
 case "$out" in *"lw install [-y]"*"--dry-run"*) ok "install --help: install's own help" ;; *) bad "install --help: $out" ;; esac
 [ ! -e "$T/home/Microsoft" ] && [ ! -e "$T/home/.local/bin" ] && ok "install --help installed nothing" || bad "install --help installed something"

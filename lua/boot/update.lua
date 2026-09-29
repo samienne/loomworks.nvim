@@ -337,7 +337,7 @@ function M.check_legacy_pinned_bundle(legacy_dir, verified_dir)
   if not want then return nil, "verified bundle missing at " .. verified_dir end
   local mismatch = function(rel, why)
     return nil, legacy_dir .. " does not match the pinned release (" .. rel .. ": " .. why ..
-      "); it is a cache — delete it and re-run"
+      "); it is a cache - delete it and re-run"
   end
   for rel in pairs(got) do
     if not want[rel] then return mismatch(rel, "not part of the release") end
@@ -530,15 +530,26 @@ end
 --- development build (`info.dev_build`, from host_update.dev_build — the same
 --- predicate self-update uses), else `unknown release` (a release host built
 --- before version identity existed, which self-update does replace).
+--- ASCII only (spec §16.7): it prints before system Lua can set the console
+--- encoding. In pinned context (§16.32) the PIN decides what runs, not the
+--- update channel: the line names the pinned version (marked prerelease when it
+--- is one) and the pin file, and carries no channel.
 --- @param info { host_version: integer, release_version?: string, dev_build?: boolean, source: string, bundle: string }
 --- @param channel string the resolved update channel
+--- @param pinned? { file: string, version: string } the pin this invocation runs under
 --- @return string line
-function M.version_line(info, channel)
+function M.version_line(info, channel, pinned)
   local label = info.release_version
     or (info.dev_build and "dev build" or "unknown release")
   local host = label .. " (v" .. info.host_version .. ")"
-  return string.format("lw — host: %s · source: %s · bundle: %s · channel: %s",
-    host, info.source, info.bundle, channel)
+  local line = string.format("lw - host: %s | source: %s | bundle: %s",
+    host, info.source, info.bundle)
+  if pinned then
+    return line .. " | pinned: " .. pinned.version
+      .. (paths.is_prerelease(pinned.version) and " (prerelease)" or "")
+      .. " by " .. pinned.file
+  end
+  return line .. " | channel: " .. channel
 end
 
 --- Describe the resolved runtime for `lw version`.

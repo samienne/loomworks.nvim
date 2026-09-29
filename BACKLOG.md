@@ -224,48 +224,73 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
 ## Bootstrap / pinned-launcher polish (next release)
 
 Found on the first real use of `lw bootstrap` (samienne/reactive#165, pin
-0.1.35). Planned together as the "bootstrap polish" release.
+0.1.35). All items below were implemented on `feature/bootstrap-polish` (spec
+§16.7, §16.12, §16.21-16.24, §16.31 provider #4, §16.32):
 
-- **Repo hygiene written by `lw bootstrap`:**
-  - no `.gitattributes`: add `lw.sh text eol=lf`, `lw.cmd text eol=crlf`,
-    `lw.pin text eol=lf` (with `core.autocrlf=true` git warns on the LF
-    `lw.pin`);
-  - `.nvim/cache/` is appended to `.gitignore` even when `.nvim/` is already
-    ignored;
-  - bootstrapped on Windows, `lw.sh` is not committed as mode 100755: run
-    `git update-index --add --chmod=+x lw.sh`.
-- **`lw health` checks the bootstrap files** (user request): inside a
-  workspace, verify the `.gitattributes` eol rules for `lw.sh` / `lw.cmd` /
-  `lw.pin`, the committed exec bit on `lw.sh`, the committed line endings, and
-  that pin and launchers agree.
-- **Launchers:**
-  - no download retry (reactive wraps the first call in a 3-try loop);
-  - `lw.cmd` shows curl's full progress meter, garbled in cmd / PowerShell / CI
-    logs: use `-sS` or `--progress-bar`;
-  - a bare `lw.cmd` (vs `.\lw.cmd`) can silently resolve to another `lw.cmd` on
-    PATH: docs and bootstrap output should say `.\lw.cmd`; the launcher could
-    print which pin it runs.
-- **Source-built `lw` can't bootstrap or update.** It embeds the TEST public key
-  (`lua/boot/verify.lua`; release builds swap in the production key via
-  `scripts/release/fuse_host.sh`), so bootstrap/update fail with a bare
-  "SHA256SUMS signature: signature does not verify". Plan: embed the production
-  public key in source; at minimum hint at the cause. Related: bumping the pin
-  when the global lw is a source build — document (or verify) `./lw.sh update`
-  as the path.
-- **`lw update` output:**
-  - prints "refreshed lw.sh / lw.cmd" even when nothing changed: say "already
-    at X" / "no changes";
-  - no old → new version summary and no "SHA256SUMS signature verified" line.
-- **Help:**
-  - `lw help ci` still describes the old curl + sha + `lw install` flow; point
-    it at `lw bootstrap` / `./lw.sh`;
-  - say which launcher to use on Windows under Git Bash (`./lw.sh` works);
-  - `lw help update` on a bare release binary says full help needs the bundle /
-    `lw self-update` — confusing in the pinned-launcher workflow.
-- **Old pinned binaries in `.nvim/cache`** (~5.7 MB each) are never pruned
-  after a re-pin (compare the pinned-cache GC note under Workspace trust).
-- **`--version` output uses non-ASCII `—` / `·`**, which comes out as mojibake
-  in some Windows consoles / logs.
+- ~~Repo hygiene written by `lw bootstrap`: `.gitattributes` eol rules,
+  `.nvim/cache/` appended even when `.nvim/` is ignored, `lw.sh` not 100755
+  when bootstrapped on Windows.~~
+- ~~`lw health` checks the bootstrap files (user request).~~
+- ~~Launchers: no download retry; garbled curl progress meter in `lw.cmd`;
+  bare `lw.cmd` vs `.\lw.cmd`, which pin runs.~~
+- ~~Source-built `lw` can't bootstrap or update (test key embedded); bumping
+  the pin from a source build (`./lw.sh update`).~~
+- ~~`lw update` output ("refreshed" when nothing changed; no old -> new; no
+  "signature verified").~~
+- ~~Help: `lw help ci` old flow; which launcher under Git Bash; `lw help
+  update` on a bare release binary.~~
+- ~~Old pinned binaries in `.nvim/cache` never pruned.~~
+- ~~`--version` output non-ASCII (mojibake).~~
+
+The v0.1.36-beta.1 field test (reactive re-pinned 0.1.35 -> 0.1.36-beta.1)
+added fixes shipped in beta.2 on the same branch: appends to
+`.gitattributes` / `.gitignore` keep the file's line endings (a CRLF working
+copy under `core.autocrlf=true` got LF lines, "w/mixed"); no duplicate
+attributes header; no trailing space in `lw.cmd` messages; flat report wording
+(no nested parentheses, one "already at" message, per-file generation labels);
+`lw version` names the pin instead of the channel in pinned context; `lw
+health` prints ASCII.
+
+Open follow-ups:
+
+- **Redundant `.nvim/cache/` line.** A repo bootstrapped before the
+  "committed rule already covers it" check can carry a `.nvim/cache/` line
+  that a broader `.nvim/` rule makes redundant. Neither bootstrap/update nor
+  the health launcher check notices it or offers its removal.
+- **Pin path printed three ways.** The fetch line and `lw version` show the
+  pin as `/c/...` (MSYS, from `lw.sh` under Git Bash), `C:\...` (from
+  `lw.cmd`) and `C:/...` (from the host). One normalized form would read
+  better; the launcher can only print what its shell gives it.
+- **Cached binaries pruned only by `lw update`.** Old `lw-<ver>-<asset>`
+  binaries in `.nvim/cache/` are removed by `lw bootstrap` / `lw update` only;
+  a checkout that switches branches between pins (or a launcher-only user who
+  never runs update) keeps accumulating them. Health reports them; the
+  launcher could prune on a fresh fetch.
+- The per-user pinned cache (`<data>/loomworks/pinned/`) is still never GC'd
+  (see the note under Workspace trust). The standalone suite runs in
+CI on Linux only, so the dynamic `lw.cmd` tests (retry, PATH shadowing) run only
+when the suite is run on Windows locally - a Windows standalone CI job would
+cover them.
+
+
+### `lw health fix <n>` (deferred, user idea)
+
+`lw health` numbers the issues that have an automatic fix; `lw health fix <n>`
+(or `--all`) applies fix n from the **last** health report, read from the
+cached report, so the numbers stay stable until health runs again. Before
+applying, re-verify that the issue is still present. Each fix runs exactly the
+command health printed; there is no second repair path. Show the command and
+ask for confirmation unless `--yes`. Only loomworks-owned, safe repairs
+(launcher/pin repair, cache prune, tool rescan): never commits, never deletes
+outside `.nvim/`, never touches trust. The printed-command remedies stay as they
+are until then.
+
+Open questions:
+
+- Outside a workspace, health deliberately caches nothing (user decision), so
+  the last report needs a per-user location.
+- Meanwhile, `lw health --json` should expose an `id` and a `fix_command` per
+  issue.
 
 ---
 
