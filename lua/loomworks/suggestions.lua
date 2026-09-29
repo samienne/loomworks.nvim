@@ -1060,4 +1060,21 @@ end
 
 M.register_health(M.submodule_provider, { persist = false })
 
+-- ---------------------------------------------------------------------------
+-- Provider #4 — repo launcher and pin (HEALTH-ONLY, REPORT-ONLY, §16.31)
+--
+-- Pin-scoped (runs whenever an lw.pin is found, with or without a workspace);
+-- spawns a few local git queries, so on-demand; not cached — see
+-- `loomworks.launcher_health`.
+-- ---------------------------------------------------------------------------
+
+--- Health provider: the repo launcher / pin checks.
+--- @param workspace loomworks.Workspace|nil
+--- @return loomworks.Suggestion[]
+function M.launcher_provider(workspace)
+    return require("loomworks.launcher_health").provider(workspace)
+end
+
+M.register_health(M.launcher_provider, { persist = false })
+
 return M

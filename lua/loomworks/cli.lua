@@ -7714,6 +7714,7 @@ function M.cmd_complete(cword, words)
       topics[#topics + 1] = "ci"
       topics[#topics + 1] = "cache"
       topics[#topics + 1] = "submodules"
+      topics[#topics + 1] = "launcher"
       emit(topics)
     end
     return 0
@@ -8533,6 +8534,11 @@ plugins or the profiles' pinned SDKs change, when the count stops including it
 until the next `lw health`. Outside a workspace nothing is
 cached.
 
+LAUNCHER — in a repository with a version pin (lw.pin), health checks the
+committed launcher files: the pin's hashes, lw.sh / lw.cmd being current, the
+lw.sh exec bit and line endings in git, the .gitattributes rules and the
+.nvim/cache/ ignore rule. It reports and never fixes — see `lw help launcher`.
+
 SUBMODULES — in a git repository with submodules, health adds informational
 notes on how they (recursively) stand against what the repository records:
 checkouts off their recorded commit, pins behind their tracked branch (as of
@@ -8547,6 +8553,38 @@ path, detail, hint, required and required_by (the full list); `summary` is
 update check's outcome `{status (available | current | unknown), channel,
 current, newest?, detail?}`, absent for a development build — and still exits 0
 (CI can test `summary.required_missing > 0`).]],
+  launcher = [[lw help launcher — repo launcher checks in `lw health`   (also: pin)
+
+In a repository with a version pin (lw.pin, written by `lw bootstrap`), `lw
+health` checks that lw.sh / lw.cmd / lw.pin will work for every contributor
+and CI runner. It reports and never fixes; lines start with `launcher:`.
+
+  lw.pin           parses, and has a hash for every platform's lw binary and
+                   for the bundle (a missing hash: that platform cannot run)
+  lw.sh / lw.cmd   present, and the launcher this lw writes. An older one
+                   with a defect that breaks runs is a suggestion; one that
+                   is only older (no download retry, noisy progress) is a
+                   note; content lw never wrote is a note (local edits?)
+  exec bit         lw.sh is committed as mode 100755 (bootstrapped on Windows
+                   it may not be: CI on Linux/macOS then cannot run it)
+  .gitattributes   lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`
+                   (your global attributes file does not count)
+  line endings     committed LF-only; in this checkout lw.sh / lw.pin LF and
+                   lw.cmd CR LF (a CR LF lw.sh fails under sh)
+  .nvim/cache/     ignored by a .gitignore of the repository - a rule only in
+                   your personal gitignore does not count (teammates and CI do
+                   not have it)
+  old binaries     cached lw binaries of other versions (removed by the next
+                   `lw update`)
+
+The usual remedy is the repair form of the pin update, which rewrites the
+launchers and adds the missing rules without moving the pin:
+
+  ./lw.sh update --version <pinned version>     (.\lw.cmd from cmd/PowerShell)
+
+Line endings already committed wrong need `git add --renormalize lw.sh lw.cmd
+lw.pin` once the attributes are in place. Git checks need git and a git work
+tree; without them only the file checks run. Health never stages or commits.]],
   submodules = [[lw help submodules — submodule drift in `lw health`   (also: submodule)
 
 When the workspace root lies in a git repository with a .gitmodules file,
@@ -9098,6 +9136,7 @@ local HELP_ALIASES = {
   ccache = "cache",
   ["compiler-cache"] = "cache",
   submodule = "submodules",
+  pin = "launcher",
   ws = "workspace",
   mod = "module",
 }

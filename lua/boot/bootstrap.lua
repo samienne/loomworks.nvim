@@ -202,10 +202,14 @@ local function apply(root, version, hashes, opts)
   local have_pin = read(root .. "/lw.pin")
   local pin_changed = have_pin == nil
     or have_pin:gsub("\r\n", "\n") ~= want_pin
-  if pin_changed then
+  -- Same content with CR LF endings (a checkout without the eol attribute):
+  -- the POSIX launcher would read `version = x\r` — rewrite it with LF.
+  local pin_eol = not pin_changed and have_pin ~= want_pin
+  if pin_changed or pin_eol then
     local okp, ep = M.write_pin(root, version, hashes)
     if not okp then return nil, ep end
   end
+  if pin_eol then add("rewrote lw.pin with LF line endings") end
 
   local wrote_launcher = false
   for _, kind in ipairs({ "sh", "cmd" }) do

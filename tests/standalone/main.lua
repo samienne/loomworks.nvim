@@ -1293,6 +1293,12 @@ do
   local r4 = bootstrap.update(repo, { version = V2 })
   ok(has(r4, "rewrote lw.sh with LF line endings"), "a CRLF lw.sh is rewritten with LF  (" .. show(r4) .. ")")
   ok(not (slurp(repo .. "/lw.sh") or ""):find("\r", 1, true), "lw.sh is LF again")
+  -- an lw.pin checked out with CR LF (lw.sh's sed would read `version = x\r`)
+  put(repo .. "/lw.pin", (slurp(repo .. "/lw.pin"):gsub("\n", "\r\n")))
+  local r5 = bootstrap.update(repo, { version = V2 })
+  ok(has(r5, "rewrote lw.pin with LF line endings") and not has(r5, "hashes updated"),
+    "a CRLF lw.pin is rewritten with LF  (" .. show(r5) .. ")")
+  ok(not (slurp(repo .. "/lw.pin") or ""):find("\r", 1, true), "lw.pin is LF again")
   -- classify
   eq(launcher.classify("sh", launcher.LW_SH, verify.sha256_hex).status, "current", "classify: current")
   local c1 = launcher.classify("cmd", "x", verify.sha256_hex)
