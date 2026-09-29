@@ -347,8 +347,8 @@ describe("lw health submodule items", function()
         vim.fn.mkdir(super .. "/App", "p")
 
         local text = capture(function() assert.equals(0, cli.cmd_health(super)) end)
-        assert.is_truthy(text:find("· submodules: 2 checked out off their recorded commit", 1, true), text)
-        assert.is_truthy(text:find("· submodules: 1 remote unreachable (A/gone)", 1, true), text)
+        assert.is_truthy(text:find("- submodules: 2 checked out off their recorded commit", 1, true), text)
+        assert.is_truthy(text:find("- submodules: 1 remote unreachable (A/gone)", 1, true), text)
         -- Per-submodule detail only in the verbose report.
         assert.is_nil(text:find("git submodule update --init --recursive", 1, true))
 

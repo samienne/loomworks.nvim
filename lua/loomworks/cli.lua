@@ -68,7 +68,17 @@ end
 --- Every line goes through `term.render`: control characters in DATA (names,
 --- paths, values read from workspace/cache/health files) are escaped; only the
 --- palette's own SGR markers become escape sequences (loomworks.term).
-local function out(s) io.write(term.render(s or "") .. "\n") end
+-- While true, `out` folds report glyphs (bullets, marks, dashes) to ASCII —
+-- set by `lw health` (spec §16.31), whose report must read in any console
+-- code page. The strings stay Unicode for the editor, which renders its own.
+-- (A field, not a local: this chunk is at Lua's 200-local limit.)
+M._ascii_out = false
+
+local function out(s)
+  local r = term.render(s or "")
+  if M._ascii_out then r = term.ascii(r) end
+  io.write(r .. "\n")
+end
 
 --- Write an informational line to stderr. Used when stdout must stay clean for a
 --- machine consumer — e.g. `lw run --print` streams its build/status chatter here
@@ -6392,14 +6402,14 @@ function M._probe_inventory(ws)
   return require("loomworks.inventory").probe_tier(ws)
 end
 
---- Status mark for an inventory entry: ✓ found, ✗ missing+required, – missing,
+--- Status mark for an inventory entry: + found, x missing+required, - missing,
 --- ? unknown.
 --- @param e table classified entry
 --- @return string
 local function inv_mark(e)
-  if e.status == "found" then return "✓" end
+  if e.status == "found" then return "+" end
   if e.status == "unknown" then return "?" end
-  return e.required and "✗" or "–"
+  return e.required and "x" or "-"
 end
 
 --- Paint an entry's mark: found green, missing-required warn, others dim.
@@ -6466,7 +6476,7 @@ M._inventory_name_width = inventory_name_width
 
 --- Render `entries` one line per item. Without `with_needed` a left category
 --- column names each category once; with it (the Required block) each line
---- ends with "· <who needs it>" — compacted (`names_phrase`), the full list
+--- ends with "- <who needs it>" — compacted (`names_phrase`), the full list
 --- with `full_names` (`--verbose`).
 --- @param pal table
 --- @param entries table[] classified entries (category order)
@@ -6490,7 +6500,7 @@ local function render_inventory_lines(pal, entries, indent, with_needed, full_na
     local line = indent .. (with_needed and "" or (pal.title(upad(cat, cat_w)) .. "  "))
       .. inv_paint_mark(pal, e) .. " " .. upad(name, name_w) .. "  " .. inv_tail(pal, e)
     if with_needed and #(e.required_by or {}) > 0 then
-      line = line .. pal.dim("  · " .. inv.names_phrase(e.required_by, { full = full_names }))
+      line = line .. pal.dim("  - " .. inv.names_phrase(e.required_by, { full = full_names }))
     end
     out((line:gsub("%s+$", "")))
   end
@@ -6523,8 +6533,8 @@ local function render_inventory_compact(pal, entries)
         items[#items + 1] = inv_paint_mark(pal, e) .. " " .. txt
       end
     end
-    if loaded > 0 then table.insert(items, 1, pal.active("✓") .. " " .. loaded .. " loaded") end
-    out("  " .. pal.title(upad(c, cat_w)) .. "  " .. table.concat(items, pal.dim(" · ")))
+    if loaded > 0 then table.insert(items, 1, pal.active("+") .. " " .. loaded .. " loaded") end
+    out("  " .. pal.title(upad(c, cat_w)) .. "  " .. table.concat(items, pal.dim(" - ")))
   end
 end
 
@@ -6601,6 +6611,20 @@ M._health_json = health_json
 --- @return integer exit code (always 0)
 function M.cmd_health(root, opts)
   opts = opts or {}
+  -- The text report is ASCII (§16.31); --json keeps the data verbatim.
+  local prev = M._ascii_out
+  M._ascii_out = not opts.json
+  local ok, res = pcall(M._cmd_health, root, opts)
+  M._ascii_out = prev
+  if not ok then error(res, 0) end
+  return res
+end
+
+--- `cmd_health`'s body (see there).
+--- @param root string|nil
+--- @param opts table
+--- @return integer
+function M._cmd_health(root, opts)
   local pal = status_palette((not opts.json) and stdout_supports_color())
   local ws = root and load_workspace(root, false) or nil
   local inv = require("loomworks.inventory")
@@ -6653,8 +6677,8 @@ function M.cmd_health(root, opts)
     out(pal.dim("No suggestions — nothing to flag."))
   end
 
-  -- Actionable items first ("•", the ones `lw status`'s N suggestions
-  -- counts), then informational notes with their own "·" bullet — so the
+  -- Actionable items first ("*", the ones `lw status`'s N suggestions
+  -- counts), then informational notes with their own "-" bullet — so the
   -- bullets a reader counts match that number, with or without color.
   local actionable, notes = {}, {}
   for _, s in ipairs(suggestions) do
@@ -6665,14 +6689,14 @@ function M.cmd_health(root, opts)
   local function show_detail(s) return s.detail and (not s.detail_verbose or opts.verbose) end
   for _, s in ipairs(actionable) do
     out("")
-    out(pal.warn("• " .. s.title))
+    out(pal.warn("* " .. s.title))
     if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
   for _, s in ipairs(notes) do
     out("")
     -- Informational items (affirmative status) read as positive, not a warning.
-    out(pal.active("· " .. s.title))
+    out(pal.active("- " .. s.title))
     if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
@@ -8486,8 +8510,8 @@ no build and authors no project or build-system files, and it ALWAYS exits 0
 
 Each suggestion prints a one-line title and, when there is something to do, a
 short remedy (some add a line of detail). Actionable suggestions — the ones
-`lw status` counts as N suggestions — come first, marked "•"; informational
-notes (e.g. "using sccache") follow, marked "·". Providers are advisory and
+`lw status` counts as N suggestions — come first, marked "*"; informational
+notes (e.g. "using sccache") follow, marked "-". The report is plain ASCII. Providers are advisory and
 extensible; the compiler-cache one gives a one-line verdict for C/C++
 workspaces (using <tool> / available but not enabled / not found / not applied
 / /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
@@ -8517,8 +8541,8 @@ toolset version, clang-cl; VS's bundled cmake/ninja under build tools), compiler
 caches, language servers (clangd, qmlls) and debug adapters (codelldb, cppdbg,
 js-debug — on PATH or in Mason's install directory), SDKs, the module / SDK /
 integration plugins (a rejected one with the reason) and lw itself. Marks:
-  ✓ found (version, location)   ✗ missing and required
-  – missing, not required       ? unknown (the probe failed or timed out)
+  + found (version, location)   x missing and required
+  - missing, not required       ? unknown (the probe failed or timed out)
 Inside a workspace the list is split into "Required by this workspace" (what
 the active profile's projects and toolchains need — every profile's when none
 is active — each naming who needs it, compacted to e.g. "2 profiles (dev,

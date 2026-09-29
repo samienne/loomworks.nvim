@@ -29,6 +29,12 @@ describe("loomworks.term", function()
         assert.equals(s, term.render(s))
     end)
 
+    it("ascii() folds the report glyphs to ASCII and leaves data alone", function()
+        assert.equals("* - + x - - -> ... >=", term.ascii("• · ✓ ✗ – — → … ≥"))
+        -- other non-ASCII (a user's name in a path) is data, not a glyph
+        assert.equals("C:/Users/José/lw", term.ascii("C:/Users/José/lw"))
+    end)
+
     it("turns only its own markers into SGR sequences", function()
         local painted = term.sgr("36") .. "lw pull" .. term.sgr("0")
         assert.equals(ESC .. "[36mlw pull" .. ESC .. "[0m", term.render(painted))

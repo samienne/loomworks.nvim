@@ -451,15 +451,15 @@ or missing:
 
 ```text
 $ lw health            # in a plain directory
-Not a loomworks workspace — lw init to create one.
+Not a loomworks workspace - lw init to create one.
 
-build tools      ✓ cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
-                 ✓ ninja 1.12.1   C:\tools\ninja.exe
-                 – meson          not found (pip install meson)
-compilers        ✓ MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/…/Community (VS 17.11.2)
-                 ✓ clang-cl 18.1.8
-                 – gcc / clang    none on PATH
-…
+build tools      + cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
+                 + ninja 1.12.1   C:\tools\ninja.exe
+                 - meson          not found (pip install meson)
+compilers        + MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/.../Community (VS 17.11.2)
+                 + clang-cl 18.1.8
+                 - gcc / clang    none on PATH
+...
 ```
 
 Inside a workspace the list is split into **Required by this workspace** — what
@@ -468,7 +468,7 @@ active) — and **Other**, compacted to one line per category. A Ninja build wit
 an MSVC / clang-cl tool runs inside `vcvarsall`, which appends the cmake and
 ninja Visual Studio bundles to `PATH`, so for such a profile those count: with
 none on your own `PATH` the requirement shows the VS-bundled copy as found
-(`✓ cmake (VS 2022 Enterprise) 3.31.6 … (VS-bundled)`). The Visual Studio
+(`+ cmake (VS 2022 Enterprise) 3.31.6 ... (VS-bundled)`). The Visual Studio
 generator and GCC/Clang tools run cmake and ninja from your `PATH` only. Only a
 *missing required* item is a suggestion and counts toward `lw status`'s `N suggestions`;
 everything else is information. Probing runs tool version queries and the Visual
@@ -478,7 +478,9 @@ without probing, until your `PATH` or the installed plugins change, when the
 count simply stops including it until the next `lw health`. (Directories only
 Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory —
 do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
-item; `lw health --json` prints the same data for scripts and CI
+item. The text report is plain ASCII (`*` actionable, `-` informational, `+` / `x` / `-` / `?`
+found / missing-required / missing / unknown), so it reads in any console code page;
+`lw health --json` prints the same data for scripts and CI
 (`{schema, workspace, suggestions[], inventory[], summary, update}`; inventory entries
 carry `status`, `version`, `path`, `required`, the full `required_by`, and a
 `hint` when not found; `summary` counts `required_missing`, `actionable`,
@@ -503,8 +505,8 @@ that `lw.sh` / `lw.cmd` / `lw.pin` will work for every contributor and CI runner
 `.nvim/cache/` is ignored by the repository (not only your personal gitignore):
 
 ```text
-• launcher: lw.sh is not executable in git (mode 100644) - CI on Linux/macOS cannot run it
-• launcher: no line-ending rule for lw.sh, lw.cmd, lw.pin in .gitattributes
+* launcher: lw.sh is not executable in git (mode 100644) - CI on Linux/macOS cannot run it
+* launcher: no line-ending rule for lw.sh, lw.cmd, lw.pin in .gitattributes
 ```
 
 It reports and never fixes; the usual remedy is `./lw.sh update --version
@@ -515,13 +517,13 @@ launcher` lists the checks.
 
 When the workspace lives in a git repository with submodules, `lw health` also
 reports how they (and nested ones) stand against what the repository records —
-informational notes (`·`, never counted), one line per kind of finding:
+informational notes (`-`, never counted), one line per kind of finding:
 
 ```text
-· submodules: 8 checked out off their recorded commit (LumeBase 1 ahead, LumeEngine 2 ahead, LumeGS 2 ahead, +5) — lw health --verbose
-· submodules: 8 pins behind their tracked branch (LumeBase 1 behind origin/dev, LumeEngine 2 behind origin/dev, LumeGS 2 behind origin/dev, +5) — lw health --verbose
-· submodules: 51 not initialized, 51 nested (Lume3DText/Lume3D, Lume3DText/LumeBase, Lume3DText/LumeEngine, +48) — lw health --verbose
-· submodules: 3 remotes unreachable (LumeGS/Lume3D, LumeParticles/Lume3D, LumeParticles/LumeJava) — lw health --verbose
+- submodules: 8 checked out off their recorded commit (LumeBase 1 ahead, LumeEngine 2 ahead, LumeGS 2 ahead, +5) - lw health --verbose
+- submodules: 8 pins behind their tracked branch (LumeBase 1 behind origin/dev, LumeEngine 2 behind origin/dev, LumeGS 2 behind origin/dev, +5) - lw health --verbose
+- submodules: 51 not initialized, 51 nested (Lume3DText/Lume3D, Lume3DText/LumeBase, Lume3DText/LumeEngine, +48) - lw health --verbose
+- submodules: 3 remotes unreachable (LumeGS/Lume3D, LumeParticles/Lume3D, LumeParticles/LumeJava) - lw health --verbose
 ```
 
 - **checked out vs recorded** — the commit checked out in each submodule against
