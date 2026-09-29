@@ -285,9 +285,17 @@ implementations of the committed-ignore rule. Follow-ups:
 
 - **Remove `lw update`** one release after the deprecation (help topic,
   parser branch, README row, tests).
-- **Launcher template comment** still says "Regenerate with `lw update`";
-  change it with the next functional template change (a new generation), at
-  the latest when `lw update` is removed.
+- ~~**Launcher template comment** still says "Regenerate with `lw update`".~~
+  Done in 0.1.37-beta.2 with the launcher self-identification generation
+  (`LOOMWORKS_LAUNCHER`).
+- **J. Repair needs the network.** A plain repair `install` re-fetches the
+  signed SHA256SUMS on every run, so it fails offline even when the pin is
+  unchanged. Idea: skip the fetch when the pin is kept and every required hash
+  is present (nothing to download), verifying only when the pin moves.
+- **K. Old hosts and plain `bootstrap`.** An old `lw.cmd` / global `lw` (0.1.36
+  and earlier) treats plain `lw bootstrap` as the old write and can fail with
+  "no version to pin" (seen through a 0.1.36-pinned `.\lw.cmd`). Only the docs
+  can mitigate that for old hosts (README "Changed in 0.1.37").
 - **Pin-only is inferred** (pin + neither launcher). Deleting both launchers
   by hand therefore reads as pin-only; a recorded mode was considered and
   declined.

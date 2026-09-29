@@ -879,6 +879,14 @@ redirecting host first verifies that the location is absent or byte-for-byte
 identical to the bundle it verified, and otherwise refuses the redirect (it
 never deletes repository content).
 
+**Self-identification.** A launcher tells the host it runs which launcher it
+is, in an environment value set only for that process (`LOOMWORKS_LAUNCHER`,
+`lw.sh` or `lw.cmd`, beside the pinned-context sentinel; also on the
+development override path), so the host spells the commands it prints in that
+launcher's form (§16.24 "Invoked form"). The host removes the value from its own
+environment once read, so nothing it starts inherits it. A launcher that does not
+set it (an earlier generation) is still honoured, with the `./lw.sh` form.
+
 A launcher never downloads or extracts the bundle itself — it fetches and execs
 only the host binary, and the exec'd host self-provisions the bundle as above,
 so the launcher depends on nothing beyond a system downloader and a hash tool.
@@ -979,12 +987,16 @@ says so on its directory line ("not the repository root `<top>`"), and an
 install that creates a pin there says so in its report, since a pin below the
 top is only found from inside that subdirectory.
 
-**Invoked form.** Every command the status page, a report or a remedy prints is
-spelled in the form that was invoked: in pinned context (§16.22, run through a
-launcher) the launcher form (`./lw.sh bootstrap install`, with `.\lw.cmd …` noted
-for cmd/PowerShell), otherwise the global form (`lw bootstrap install`). The
-invoked host is the one whose launcher generation a write produces (below), so
-a remedy is always a command that takes effect from where the user stands.
+**Invoked form.** Every command lw prints for pin management — on the status
+page, in a report, a remedy, a usage error or the deprecation notice — is
+spelled in the form that was invoked. A repo launcher **names itself** to the
+host it runs (§16.22), so run through `lw.sh` the commands read `./lw.sh …` and
+run through `lw.cmd` they read `.\lw.cmd …`; a pinned context whose launcher did
+not name itself (a launcher written by an earlier release) prints the `./lw.sh`
+form with `.\lw.cmd …` noted for cmd/PowerShell; otherwise the global form
+(`lw bootstrap install`). The invoked host is the one whose launcher generation
+a write produces (below), so a remedy is always a command that takes effect from
+where the user stands.
 
 **Checks: one source of truth.** The status page and the launcher provider of
 `lw health` (§16.31 provider #4) evaluate **the same checks**, implemented once
@@ -992,10 +1004,13 @@ and producing the same findings with the same wording and the same remedies;
 they differ only in presentation (health prefixes each item `launcher:` and
 lists it among its other suggestions; the status page groups them under its own
 headings). The checks are those listed under provider #4 — pin parse and hash
-coverage, launcher presence and generation, tracked state, the POSIX launcher's
-index mode, effective line-ending attributes, committed and checked-out line
-endings, the committed ignore rule, stale cached binaries — scoped by the
-repository's **launcher mode** (below).
+coverage, launcher presence and generation, committed state, the POSIX
+launcher's index mode, effective and committed line-ending attributes, committed
+and checked-out line endings, the committed ignore rule, stale cached binaries —
+scoped by the repository's **launcher mode** (below). **Committed** always means
+the content of the last commit: a file that is untracked, staged but never
+committed, or modified relative to it is not committed, and a rule counts only
+when it is in the committed content of a tracked file of the repository.
 
 **Launcher mode.** A pin root is in one of three modes, inferred from the files
 (nothing records the mode):
@@ -1004,9 +1019,9 @@ repository's **launcher mode** (below).
   applies, and a missing launcher is actionable (a half-installed pair);
 - **pin-only** — the pin with **neither** launcher: absent launchers are
   intended, not a finding. Only the checks that concern the pin apply — pin
-  parse and hash coverage, the pin tracked, the pin's `text eol=lf` attribute,
-  its committed and checked-out line endings, and stale cached binaries (left
-  over from launchers that were removed). The exec bit, the Windows launcher's
+  parse and hash coverage, the pin (and the attributes file) committed, the
+  pin's `text eol=lf` attribute, its committed and checked-out line endings, and
+  stale cached binaries (left over from launchers that were removed). The exec bit, the Windows launcher's
   rule and the launcher-cache ignore rule are not checked (nothing uses them);
 - **none** — no pin found.
 
@@ -1017,15 +1032,23 @@ A read-only report, ASCII (§16.7), in three parts.
 1. **State.** One labelled line each: the directory (the pin root, or the target
    directory with "no lw.pin"); the pin (`lw.pin -> lw <version>` and its hash
    coverage, or "none", or why it cannot be read); the **release** line — the
-   newest release on the resolved update channel (§16.29), stated as "`<newest>`
-   is available on the `<channel>` channel" when strictly newer than the pinned
-   version (or, with no pin, than the version an install would pin), else
-   "`<pinned>` is the newest on the `<channel>` channel"; the launcher mode and
+   newest release on the resolved update channel (§16.29) compared with the
+   pinned version (or, with no pin, the version an install would pin): "`<newest>`
+   is available on the `<channel>` channel" when it is newer; "`<pinned>` is the
+   newest on the `<channel>` channel" when they are equal; and, when the pin is
+   **ahead** of the channel (typically a prerelease pinned while following
+   stable), "pinned prerelease `<pinned>`; newest stable: `<newest>`" (or "pinned
+   `<pinned>`; newest `<channel>`: `<newest>`" for a non-prerelease), followed by
+   the newest unstable release when it is newer than the pin ("; newest
+   unstable: `<u>`", with the command to take it) — never a claim that the pin is
+   the channel's newest; the launcher mode and
    each launcher's generation state (current / written by lw `<releases>` / not
    a launcher lw wrote / missing); and — inside a git work tree with git
    available — the index mode, the committed and checked-out line endings, the
    effective attributes and the ignore rule, each only as far as the mode
-   applies. The release line is the only network operation: it uses the health
+   applies (the committed state names the files not committed yet). The release
+   line is the only network operation (two probes when the pin is ahead: the
+   channel's newest and the newest unstable): it uses the health
    update check's bounded, no-retry probe (§16.31 provider #2: 5 s connect,
    10 s total, never a bundle download) and on failure reads "not checked -
    offline or release server unreachable"; nothing is cached. A
@@ -1046,8 +1069,10 @@ A read-only report, ASCII (§16.7), in three parts.
      and CI need no global lw"; a pin-scoped finding's fix is `lw bootstrap
      install --pin-only` (plain `install` would also add the launchers);
    - **a finding** → its exact fix command first (usually `lw bootstrap
-     install`, which keeps the pin; the renormalize command for committed line
-     endings);
+     install`, which keeps the pin; `install --force` to restore a launcher that
+     is not one lw wrote; the renormalize command for committed line endings);
+   - **files not committed** → one `git add <files> && git commit` naming every
+     file a finding says is not committed (lw never commits);
    - **a newer release** → `lw bootstrap upgrade` "move the pin to `<newest>`",
      plus, when the invoked host is older than `<newest>` and launchers are in
      use, "then run `… bootstrap install` once more to take `<newest>`'s
@@ -1063,21 +1088,34 @@ A read-only report, ASCII (§16.7), in three parts.
 **Exit status.** The status page exits **0** whatever it finds (like `lw status`
 and `lw health`, §16.18/§16.31). With **`--check`** it exits **1** when there is
 no pin or there is any **actionable** finding, else 0 — for a CI step that
-guards the committed launcher files. Informational findings, an available newer
-release and a failed release check never affect `--check`, which never changes
-what is printed. Usage errors exit 2.
+guards the committed launcher files. What counts: a pin that cannot be read or
+lacks a hash; a missing launcher (outside pin-only), a launcher generation with
+a breaking defect, or a launcher that is **not one lw wrote** (local edits:
+restore it with `install --force`, or keep the edits and do not guard with
+`--check`); pin, launcher or metadata files **not committed** (untracked,
+staged only, or modified); line-ending rules missing or not committed; wrong
+committed or checked-out line endings; the POSIX launcher not executable in the
+index; the launcher cache not ignored by a committed rule. What never counts:
+informational findings (an older launcher generation with only cosmetic
+differences, stale cached binaries), an available newer release, a pin ahead of
+the channel, and a failed release check. `--check` never changes what is
+printed. Usage errors exit 2.
 
 **Machine-readable output.** `--json` prints one document instead of the page,
 following the health document's conventions (§16.33: sorted object keys at every
 depth, arrays in their defined order, versioned by `schema`, the same exit rules
-as the text form): `{ schema, root, repo_top?, mode, invoked, pin?, launchers,
-update?, findings[], actions[], summary }` — `mode` is `launchers` | `pin-only`
-| `none`; `invoked` is `launcher` | `global`; `pin` is `{ version, file,
+as the text form): `{ schema, root, repo_top?, mode, invoked, launcher?, pin?,
+launchers, update?, findings[], actions[], summary }` — `mode` is `launchers` |
+`pin-only` | `none`; `invoked` is `launcher` | `global`, and `launcher` names it
+(`lw.sh` | `lw.cmd`) when it named itself; `pin` is `{ version, file,
 missing_hashes[] }` (absent with no pin; `{ file, error }` when unreadable);
 `launchers` maps `lw.sh` and `lw.cmd` to `{ present, generation, releases? }`
 with `generation` `current` | `known` | `unknown` | `absent`; `update` is the
 health `update` shape `{ status, channel, current, newest?, detail? }` (`current`
-being the pinned version, or the one an install would pin); each finding is the
+being the pinned version, or the one an install would pin) with `status`
+`available` | `current` | `ahead` (the pin is newer than the channel's newest) |
+`unknown`, plus `newest_unstable` when the pin is ahead and the unstable channel
+was probed; each finding is the
 health suggestion shape `{ kind, title, detail?, remedy? }` without the
 `launcher:` prefix; each action is `{ command, why }` in displayed order; and
 `summary` is `{ actionable }`.
@@ -1098,7 +1136,9 @@ changes nothing.
   override supersedes the channel). It **never moves the pin backwards**: when
   the pin is already newer than the channel's newest (a pre-release pinned while
   following stable), the pin is kept and the report says so and names
-  `--version` for an intentional downgrade;
+  `--version` for an intentional downgrade. The report always starts by naming
+  what it resolved ("newest unstable release: `<version>`"), so a run that
+  changes nothing still says what the channel offers;
 - **neither, with a pin** → the **pinned version** is kept. Plain `install` in a
   pinned repository therefore only repairs; it never bumps, whatever host runs
   it. `--version` / `--latest` are the only ways to move a pin;
@@ -1167,11 +1207,15 @@ user also edits. With `--pin-only` only the pin's attribute rule applies (above)
   already covers the cache directory (for example one ignoring the whole
   workspace-state directory) satisfies this and nothing is appended; a match
   that comes only from the user's personal or repository-local, uncommitted
-  exclude rules does **not** count, since teammates and CI do not have them.
-  Otherwise — or when version control is unavailable and no line of the root
-  ignore file names the cache directory or an ancestor of it — the cache
-  directory is appended to the root ignore file, creating it if absent. Existing
-  content is never rewritten or reordered.
+  exclude rules does **not** count, since teammates and CI do not have them, and
+  neither does a matching line of the repository's own ignore file that is not
+  in its committed content (untracked, staged only, or modified) — that one is
+  reported as not committed, and nothing is appended either, since the rule is
+  already there and committing it is what is missing. Otherwise — or when
+  version control is unavailable and no line of the root ignore file names the
+  cache directory or an ancestor of it — the cache directory is appended to the
+  root ignore file, creating it if absent. Existing content is never rewritten
+  or reordered.
 - **Line-ending attributes.** The root attributes file must give the POSIX
   launcher and the pin `text eol=lf` and the Windows launcher `text eol=crlf`
   (§16.21). The check uses the **effective** attributes when version control can
@@ -1202,9 +1246,9 @@ user also edits. With `--pin-only` only the pin's attribute rule applies (above)
 
 **Reporting.** Install reports what it changed and nothing else:
 
-- an unchanged pin is always reported with the same words, whichever host runs
-  the operation (`lw.pin already at <version>`), followed by ` - no changes`
-  when nothing else changed either;
+- a run that changes nothing reports `lw.pin already at <version> - no
+  changes`; an unchanged pin in a run that changed something else reads
+  `lw.pin kept at <version>` — the same words whichever host runs it;
 - a moved pin reports `lw.pin: <old> -> <new>`, a first pin `wrote lw.pin:
   version <version>`;
 - the pin line always states that the release's signed hash list was verified,
@@ -1218,9 +1262,15 @@ user also edits. With `--pin-only` only the pin's attribute rule applies (above)
   "kept … as they are" line above;
 - each metadata step reports only an action it took (rule appended, executable
   bit staged) or a problem it could not fix;
+- each pruned binary is named with its version, file name and size
+  (`removed old pinned lw 0.1.36 (lw-0.1.36-lw-windows-x86_64.exe, 5.5 MB) from
+  .nvim/cache`);
 - a run that **created** the pin or a launcher closes with how to run the
   launchers (`./lw.sh <cmd>`, `.\lw.cmd <cmd>`) — or, for `--pin-only`, that a
-  global `lw` honours the pin — and which files to commit.
+  global `lw` honours the pin — and how to check it later (the status page);
+- a run that wrote or changed files ends with the commit hint naming exactly
+  those files (`Commit them: git add lw.pin .gitattributes && git commit`);
+  install never commits.
 
 **Exit status.** 0 when the repository reached the target state (a launcher kept
 for lack of `--force` still counts: everything else converged and the report
@@ -1271,8 +1321,8 @@ deprecated alias with its old meaning: `lw update` → `lw bootstrap install
 <x.y.z>`, `--force` carried over. As before it requires an existing pin (with
 none, the error names `lw bootstrap install`). It first prints one line to
 standard error — "lw: `lw update` is deprecated; use `lw bootstrap upgrade` (or
-`lw bootstrap install --version <x.y.z>`)" — then behaves exactly as the target
-form. Its old default "latest" read only the default release base (the stable
+`lw bootstrap install --version <x.y.z>`)", every command in the invoked form
+(`./lw.sh update` … through `lw.sh`) — then behaves exactly as the target form. Its old default "latest" read only the default release base (the stable
 channel); as an alias it follows `--latest`'s channel resolution, which is the
 same for users on the default channel. It is not offered by shell completion;
 `lw help update` prints the deprecation and the equivalent forms.
@@ -1940,7 +1990,7 @@ bootstrap`, §16.24): one implementation produces the findings, their wording
 and remedies for both; health adds the `launcher:` prefix. Checks are scoped by
 the **launcher mode** (§16.24): in a **pin-only** repository (the pin with
 neither launcher) the absent launchers are intended and not reported, and only
-the pin-scoped checks run — the pin, its tracked state, its attribute, its
+the pin-scoped checks run — the pin, its committed state, its attribute, its
 committed and checked-out line endings, stale cached binaries.
 
 File checks (local reads, no process spawned):
@@ -1961,24 +2011,35 @@ File checks (local reads, no process spawned):
   → **informational** ("lw.cmd is the launcher written by lw `<releases>`,
   older than this lw's: …; refresh it with …"; the defective case reads "…
   written by lw `<releases>`: `<defect>`"); **not a known
-  generation** → **informational** ("lw.cmd differs from every launcher lw
-  wrote (local edits?)"), never a nag about content the user may own. A
-  generation newer than the running host is reported as not recognized, never
-  as defective.
+  generation** → **actionable** ("lw.cmd differs from every launcher lw wrote
+  (local edits?)", remedy: if the edits are not intended, `lw bootstrap install
+  --force` restores the generated launcher), since other contributors and CI run
+  whatever it does. A generation newer than the running host is reported as not
+  recognized, never as defective.
 
 Version-control checks, only when the pin root is inside a git working tree
 and `git` is available (else silently skipped). A few local queries, each under
 a timeout, run without optional locks (never refreshing the index):
 
-- **tracked** — each of the three files is tracked; an untracked one is
-  **informational** ("lw.sh, lw.pin not committed yet");
+- **committed** — the pin, the launchers and the metadata files pin management
+  writes (the root ignore and attributes files; in a pin-only repository the pin
+  and the attributes file) are committed: one **actionable** item names each
+  one that is untracked, staged but never committed, modified or deleted
+  relative to the last commit ("not committed yet: lw.pin (modified), lw.sh
+  (staged, new), .gitignore (untracked)"; remedy: `git add <files> && git
+  commit`);
 - **executable bit** — the POSIX launcher's **index** mode is `100755`; `100644`
   is **actionable** ("lw.sh is not executable in git — CI on Linux/macOS cannot
   run it"; remedy: the repair, or `git update-index --chmod=+x lw.sh`, then
   commit);
 - **line-ending attributes** — the effective attributes give the POSIX launcher
   and the pin `text eol=lf` and the Windows launcher `text eol=crlf`; a missing
-  or contrary rule is **actionable** (remedy: the repair);
+  or contrary rule is **actionable** (remedy: the repair); and the rules that
+  are effective come from **committed** content — the attributes as the last
+  commit's tree gives them — else **actionable** ("line-ending rules for … are
+  not committed yet (.gitattributes)"; remedy: commit it). With no commit yet
+  every rule is uncommitted; a git too old to evaluate attributes from a commit
+  skips this part;
 - **committed line endings** — the index copy of each file is LF-only (a text
   file stored with CR LF or mixed endings will be checked out wrongly on some
   platform) → otherwise **actionable** (remedy: `git add --renormalize lw.sh
@@ -1988,10 +2049,14 @@ a timeout, run without optional locks (never refreshing the index):
   endings in this checkout — sh will fail"; remedy: re-checkout the file once
   the attributes are in place);
 - **ignore rule** — the launcher cache directory is ignored by a committed
-  ignore rule of the repository, not only by a personal or repository-local
-  exclude (the same test pin management applies, §16.24); otherwise
-  **actionable** ("`.nvim/cache/` is ignored only by your personal gitignore —
-  others will see downloaded binaries as untracked").
+  rule of the repository: the matching line is in the committed content of a
+  tracked ignore file inside the work tree, not only in a personal or
+  repository-local exclude, and not only in an untracked, staged or modified
+  ignore file (the same test pin management applies, §16.24); otherwise
+  **actionable** — "`.nvim/cache/` is ignored only by an uncommitted rule in
+  `<file>`" (remedy: commit it), or "… ignored only by an uncommitted or
+  personal rule (your global gitignore or .git/info/exclude) — others will see
+  downloaded binaries as untracked", or "… is not ignored".
 
 When every check passes, one **informational** line affirms it ("launcher: lw
 `<version>` pinned; lw.sh / lw.cmd current, modes and line endings ok"; in a

@@ -501,8 +501,10 @@ In a repository with a pinned launcher (`lw.pin`, see
 [Repo-local launcher](#repo-local-launcher-lw-bootstrap)), `lw health` checks
 that `lw.sh` / `lw.cmd` / `lw.pin` will work for every contributor and CI runner
 — the pin's hashes, launchers current, `lw.sh` committed as mode `100755`, the
-`.gitattributes` eol rules, the committed and checked-out line endings, and that
-`.nvim/cache/` is ignored by the repository (not only your personal gitignore):
+`.gitattributes` eol rules, the committed and checked-out line endings, that the
+files are committed (not untracked, staged only or modified), and that
+`.nvim/cache/` is ignored by a committed rule of the repository (not only your
+personal gitignore, nor a `.gitignore` you have not committed yet):
 
 ```text
 * launcher: lw.sh is not executable in git (mode 100644) - CI on Linux/macOS cannot run it
@@ -1372,8 +1374,11 @@ needed (it runs as the currently pinned release):
 channel unstable`, or `--channel` for one run) and never moves the pin
 backwards. It rewrites `lw.pin` with the target release's signed hashes (failing
 cleanly if that release isn't fetchable), applies the metadata steps, removes
-cached binaries of other versions from `.nvim/cache/`, and prints only what
-changed (`lw.pin: 0.1.36 -> 0.1.37`, or `lw.pin already at X - no changes`). The
+cached binaries of other versions from `.nvim/cache/` (naming each), and prints
+only what changed (`lw.pin: 0.1.36 -> 0.1.37`; `lw.pin kept at X` when only other
+files changed; `lw.pin already at X - no changes`), ending with the `git add … &&
+git commit` for the files it wrote — lw never commits. `--latest` / `upgrade`
+first name the release they resolved (`newest unstable release: …`). The
 pinned release writes *its* launchers, so after moving to a newer release run
 `./lw.sh bootstrap install` once more to take the new release's launchers
 (upgrade says so). A global `lw` — a release or a build from source — can run
@@ -1381,9 +1386,15 @@ pinned release writes *its* launchers, so after moving to a newer release run
 
 `lw bootstrap` (and `lw health`) check the launcher files — the pin's hashes,
 current launchers, the committed exec bit and line endings, the `.gitattributes`
-and `.gitignore` rules — and name the fix (`lw help launcher`). `lw bootstrap
---check` exits 1 when there is no pin or something needs fixing (a CI guard);
-`--json` prints the same as one JSON document. See `lw help bootstrap`.
+and `.gitignore` rules, and that all of it is committed — and name the fix (`lw
+help launcher`). `lw bootstrap --check` exits 1 when there is no pin or something
+needs fixing — including files not committed yet and a launcher lw did not write
+(`lw bootstrap install --force` restores it) — but never for a newer release or
+an offline check (a CI guard); `--json` prints the same as one JSON document. A
+pinned prerelease newer than the stable release reads as such ("pinned
+prerelease 0.1.37-beta.1; newest stable: 0.1.36"). The launchers tell `lw` which
+one ran it, so the commands it prints read `./lw.sh …` from `lw.sh` and
+`.\lw.cmd …` from `lw.cmd`. See `lw help bootstrap`.
 
 ### Commands
 

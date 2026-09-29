@@ -1378,27 +1378,38 @@ with no prior install (spec §16.21–16.24). Layers:
   consumed by the `lw bootstrap` status page (luvi host, no system Lua) and by
   `loomworks/launcher_health.lua` (system Lua, either host). Pure over an
   injected `env = { git(cwd, args) -> code, stdout; sha256(bytes); read(path)?;
-  exists(path)?; stale(root, version)? -> n, bytes; invoked = "launcher"|"global" }`
+  exists(path)?; stale(root, version)? -> n, bytes; invoked = "lw.sh"|"lw.cmd"|"launcher"|"global" }`
   — no vim shim, no direct spawn —
   so each host passes its own git runner (`boot.repo_meta._git` /
   `loomworks.exe.system`) and tests pass fakes. `run_checks(root, env)` →
   `{ root, mode = "launchers"|"pin-only"|"none", version?, pin?, pin_error?,
   missing_hashes, launchers, git?, stale?, repair, findings[] }`, each finding
-  `{ id, kind = "suggestion"|"info", title, detail?, remedy? }` (actionable
-  first) with the remedy already spelled in the invoked form. The mode is
+  `{ id, kind = "suggestion"|"info", title, detail?, remedy?, command?, why?,
+  commit_files? }` (actionable first) with the remedy already spelled in the
+  invoked form; `command` / `commit_files` let the status page build one action
+  per fix and a single `git add … && git commit`. "Committed" is checked against
+  HEAD: `git status --porcelain` over the pin, launchers, `.gitignore` and
+  `.gitattributes` (`parse_porcelain`), `check-attr --source HEAD` for the eol
+  rules, and `git show HEAD:<file>` for the ignore line `check-ignore -v` found.
+  `invoked()` gives system Lua the form main.lua determined
+  (`_G.__loomworks_invoked`, else `LOOMWORKS_LAUNCHER` / the pinned sentinel). The mode is
   inferred (pin + neither launcher = pin-only) and scopes the checks. The
   committed-ignore test (`cache_ignored_by_repo`) moves here from
   `repo_meta` so the checker and the writer apply one rule (today health
   re-implements it with its own path heuristics). `stale_cache` stays in `repo_meta` (it is the prune's
   dry run) and is reached through `env.stale`. `cmd(invoked, rest)` / `run(invoked,
-  rest)` spell a command in the invoked form.
+  rest)` spell a command in the invoked form (`./lw.sh`, `.\lw.cmd`, `lw`);
+  `commit_cmd(files)` the commit hint.
 - **`boot/repo_meta.lua`** — the `.gitignore` / `.gitattributes` /
   exec-bit steps shared by bootstrap and update: `git check-ignore -v` (a match
-  counts only when its source is a committed `.gitignore` inside the repo, not
-  `core.excludesFile` or `.git/info/exclude`), `git check-attr text eol`,
+  counts only when its line is in the committed content of a tracked
+  `.gitignore` inside the repo — `launcher_check.cache_ignored_by_repo` — not
+  `core.excludesFile` or `.git/info/exclude`; an uncommitted in-repo rule is
+  not appended again), `git check-attr text eol`,
   `git ls-files --stage`, `git add --chmod=+x` / `git update-index --chmod=+x`
   for `lw.sh` only; textual fallbacks when git is absent. Also
-  `prune_launcher_cache(root, keep_version)` — confined to regular files named
+  `prune_cache(root, keep_version, running)` → removed, bytes, files (each
+  pruned binary's name/version/size, for the report) — confined to regular files named
   `lw-<valid version>-<HOST_ASSETS value>` directly in `<root>/.nvim/cache`
   (lstat, separator-bounded prefix check, never the running exe); listed under
   CLAUDE.md "Deletion Safety".
@@ -1466,7 +1477,10 @@ with no prior install (spec §16.21–16.24). Layers:
   commands handled before the redirect, so they never redirect. `bootstrap`
   (and the deprecated `update`) are dispatched **before** pinned-context bundle
   provisioning too — they need no system Lua — so `./lw.sh bootstrap` works
-  offline and can repair a pin whose bundle entry is wrong. `main.lua` only
+  offline and can repair a pin whose bundle entry is wrong. Before that,
+  `main.lua` reads `LOOMWORKS_LAUNCHER` (set by the launchers since
+  0.1.37-beta.2) into `invoked_form` / `_G.__loomworks_invoked` and unsets it so
+  children do not inherit it. `main.lua` only
   parses argv (`pin.parse_bootstrap_args`) into `{ sub = nil|"install"|"upgrade", version, latest, channel,
   pin_only, force, json, check }` (usage errors exit 2), prints the one-line
   deprecation on `update`, and calls `boot.bootstrap`.
