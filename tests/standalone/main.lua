@@ -1355,6 +1355,50 @@ do
     ok(not has(rr3, "line-ending rules"), "nothing reported for attributes  (" .. show(rr3) .. ")")
   end
 
+  -- ---- appends match the file's line endings; no duplicate header (beta.1) ---
+  do
+    local function bare_lf(s) return (s:gsub("\r\n", "")):find("\n", 1, true) ~= nil end
+    -- core.autocrlf=true checkout: .gitattributes is CRLF in the working copy
+    -- and already has the repo's own comment + two of the three rules.
+    local r = sb .. "/crlf"; git_init(r); git(r, "config", "core.autocrlf", "true")
+    local ga0 = "# launchers need fixed line endings\r\nlw.sh text eol=lf\r\nlw.cmd text eol=crlf\r\n" ..
+      "\r\n# other\r\n*.png binary\r\n"
+    put(r .. "/.gitattributes", ga0)
+    put(r .. "/.gitignore", "build/\r\n")
+    local rr = bootstrap.bootstrap(r, nil, { version = V2 })
+    local ga = slurp(r .. "/.gitattributes") or ""
+    ok(not bare_lf(ga), "a CRLF .gitattributes stays CRLF (no mixed endings)  (" .. ga:gsub("\r", "\\r"):gsub("\n", "\\n") .. ")")
+    eq(ga, "# launchers need fixed line endings\r\nlw.sh text eol=lf\r\nlw.cmd text eol=crlf\r\n" ..
+      "lw.pin text eol=lf\r\n\r\n# other\r\n*.png binary\r\n",
+      "the missing rule goes right after the last launcher rule, with no second header")
+    ok(has(rr, "lw.pin to .gitattributes"), "the added rule is reported  (" .. show(rr) .. ")")
+    local gi = slurp(r .. "/.gitignore") or ""
+    ok(not bare_lf(gi) and gi:find(".nvim/cache/\r\n", 1, true) ~= nil,
+      "a CRLF .gitignore gets a CRLF append  (" .. gi:gsub("\r", "\\r"):gsub("\n", "\\n") .. ")")
+
+    -- A NEW file follows what git would check out: CRLF under autocrlf=true …
+    local r2 = sb .. "/crlf-new"; git_init(r2); git(r2, "config", "core.autocrlf", "true")
+    bootstrap.bootstrap(r2, nil, { version = V2 })
+    local ga2 = slurp(r2 .. "/.gitattributes") or ""
+    ok(ga2:find("lw.sh text eol=lf\r\n", 1, true) and not bare_lf(ga2),
+      "a new .gitattributes is CRLF when git checks text out as CRLF")
+    ok(select(2, ga2:gsub("# loomworks:", "")) == 1, "a new file gets exactly one header")
+    local gi2 = slurp(r2 .. "/.gitignore") or ""
+    ok(gi2 ~= "" and not bare_lf(gi2), "a new .gitignore is CRLF too")
+    -- … and LF otherwise.
+    local r3 = sb .. "/lf-new"; git_init(r3)
+    bootstrap.bootstrap(r3, nil, { version = V2 })
+    local ga3 = slurp(r3 .. "/.gitattributes") or ""
+    ok(ga3 ~= "" and not ga3:find("\r", 1, true), "a new .gitattributes is LF when git keeps LF")
+    -- An LF file with none of the rules gets the header + all three, LF.
+    local r4 = sb .. "/lf-none"; git_init(r4); git(r4, "config", "core.autocrlf", "true")
+    put(r4 .. "/.gitattributes", "*.png binary\n")
+    bootstrap.bootstrap(r4, nil, { version = V2 })
+    eq(slurp(r4 .. "/.gitattributes"), "*.png binary\n\n# loomworks: repo-local launcher line endings\n" ..
+      "lw.sh text eol=lf\nlw.cmd text eol=crlf\nlw.pin text eol=lf\n",
+      "an LF file stays LF even under autocrlf; the first rules bring the header")
+  end
+
   -- ---- no git: textual fallbacks, no staging --------------------------------
   do
     local saved = repo_meta._git

@@ -112,6 +112,42 @@ local function join(base, rel)
   return lead .. table.concat(parts, "/")
 end
 
+--- The line ending to write into an ignore/attributes file (spec §16.24): the
+--- file's own — CR LF when it already has CR LF lines — so an append never
+--- leaves it with mixed endings; for a file being created (`text` empty), what
+--- git would check it out with: CR LF under `core.autocrlf=true`, else LF.
+--- @param text string|nil the file's current content
+--- @param root string
+--- @param top string|nil work-tree top (nil: not a repository / no git)
+--- @return string eol "\r\n" or "\n"
+function M.eol_for(text, root, top)
+  if text and text ~= "" then
+    return text:find("\r\n", 1, true) and "\r\n" or "\n"
+  end
+  if top then
+    -- Plain `config` (the effective, last value): `--type=bool` fails outright
+    -- when ANY config level holds the non-boolean `input`.
+    local v = (git_ok(root, { "config", "core.autocrlf" }) or ""):lower():match("^%s*(%S*)")
+    if v == "true" or v == "yes" or v == "on" or v == "1" then return "\r\n" end
+  end
+  return "\n"
+end
+
+--- `existing` plus a blank-line-separated block of `lines`, every line ended
+--- with `eol` (an unterminated last line of `existing` is terminated first).
+--- @param existing string
+--- @param lines string[]
+--- @param eol string
+--- @return string
+function M.append_block(existing, lines, eol)
+  local pre = ""
+  if existing ~= "" then
+    if existing:sub(-1) ~= "\n" then pre = eol end
+    pre = pre .. eol
+  end
+  return existing .. pre .. table.concat(lines, eol) .. eol
+end
+
 --- Is the launcher cache ignored by one of the REPOSITORY's own ignore files
 --- (a `.gitignore` inside the work tree)? Global excludes and
 --- `.git/info/exclude` do not count: teammates and CI do not have them.
@@ -140,10 +176,10 @@ function M.ensure_gitignore(root, top, write_file)
   if covered then
     return launcher.ignore_text_covers(existing) and "present" or "covered"
   end
-  local addition = (existing ~= "" and existing:sub(-1) ~= "\n") and "\n" or ""
-  addition = addition ..
-    "\n# loomworks: pinned lw binaries (machine-local)\n" .. launcher.CACHE_DIR .. "/\n"
-  local ok, e = write_file(path, existing .. addition)
+  local ok, e = write_file(path, M.append_block(existing, {
+    "# loomworks: pinned lw binaries (machine-local)",
+    launcher.CACHE_DIR .. "/",
+  }, M.eol_for(existing, root, top)))
   if not ok then return nil, e end
   return "added"
 end
@@ -171,10 +207,20 @@ function M.ensure_gitattributes(root, top, write_file)
     if not good then missing[#missing + 1] = f end
   end
   if #missing == 0 then return {} end
-  local add = (existing ~= "" and existing:sub(-1) ~= "\n") and "\n" or ""
-  add = add .. "\n# loomworks: repo-local launcher line endings\n"
-  for _, f in ipairs(missing) do add = add .. launcher.attr_line(f) .. "\n" end
-  local ok, e = write_file(path, existing .. add)
+  local eol = M.eol_for(existing, root, top)
+  local rules = {}
+  for _, f in ipairs(missing) do rules[#rules + 1] = launcher.attr_line(f) end
+  local new_text
+  local at = launcher.last_rule_line_end(existing)
+  if at then
+    -- Some launcher rules are already there (under the repo's own comment):
+    -- add only the missing lines right after the last of them, no header.
+    new_text = existing:sub(1, at) .. table.concat(rules, eol) .. eol .. existing:sub(at + 1)
+  else
+    table.insert(rules, 1, "# loomworks: repo-local launcher line endings")
+    new_text = M.append_block(existing, rules, eol)
+  end
+  local ok, e = write_file(path, new_text)
   if not ok then return nil, nil, e end
   -- A later-precedence rule we cannot edit (.git/info/attributes) still wins.
   local after = M.effective_attrs(root, top)
@@ -198,8 +244,8 @@ end
 --- @return "staged"|"set"|nil action, string|nil problem
 function M.ensure_exec_bit(root, top)
   if not top then return nil end
-  local fm = git_ok(root, { "config", "--type=bool", "core.filemode" })
-  local filemode = not (fm and fm:match("^%s*false"))
+  local fm = (git_ok(root, { "config", "core.filemode" }) or ""):lower():match("^%s*(%S*)")
+  local filemode = not (fm == "false" or fm == "no" or fm == "off" or fm == "0")
   local stage = git_ok(root, { "ls-files", "--stage", "--", "lw.sh" })
   if stage == nil then return nil, "could not read the git index for lw.sh" end
   local mode = launcher.parse_ls_stage(stage)["lw.sh"]

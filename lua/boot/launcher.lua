@@ -460,6 +460,30 @@ function M.attrs_ok(file, attrs)
   return (attrs.text == "set" or attrs.text == "auto") and attrs.eol == M.EOL[file]
 end
 
+--- Byte offset of the end (after its line ending) of the last line in
+--- attributes-file `text` that is a rule for one of the launcher files (its
+--- pattern is `lw.sh`, `lw.cmd` or `lw.pin`, optionally `/`-anchored), or nil
+--- when there is none. Pure.
+--- @param text string
+--- @return integer|nil
+function M.last_rule_line_end(text)
+  local names = {}
+  for _, f in ipairs(M.FILES) do names[f] = true end
+  local last, pos = nil, 1
+  text = tostring(text or "")
+  while pos <= #text do
+    local nl = text:find("\n", pos, true)
+    local line_end = nl or #text
+    local line = text:sub(pos, nl and nl - 1 or #text):gsub("\r$", "")
+    local pat = line:match("^%s*(%S+)")
+    if pat and pat:sub(1, 1) ~= "#" and names[(pat:gsub("^/", ""))] and nl then
+      last = line_end
+    end
+    pos = line_end + 1
+  end
+  return last
+end
+
 --- Does attributes-file text contain the exact rule for `file`? Textual
 --- fallback for when git cannot answer.
 function M.attr_text_has(text, file)
