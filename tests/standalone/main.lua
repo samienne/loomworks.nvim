@@ -1272,11 +1272,21 @@ do
   stage(V2)
   local up = bootstrap.update(repo, { version = V2 })
   ok(up and up[1] == "lw.pin: " .. V1 .. " -> " .. V2 ..
-    " (hashes from the release's signed SHA256SUMS (signature verified))",
+    "; hashes from the signed SHA256SUMS, signature verified",
     "a moved pin reports old -> new + signature verified  (" .. show(up) .. ")")
   ok(not has(up, "refreshed") and not has(up, "wrote lw"),
     "unchanged launchers are not reported as refreshed")
   ok(up and up[1]:match("^[%w%p ]+$") ~= nil, "update output is ASCII")
+  -- No nested parentheses in any report line (beta.1 had "(... (signature verified))").
+  for _, l in ipairs(up or {}) do
+    ok(not l:find("%([^)]*%("), "no nested parentheses: " .. l)
+  end
+  -- A run that moves nothing but still changes something (here: a launcher
+  -- rewritten) leads with the same "already at" wording as a no-op.
+  put(repo .. "/lw.sh", (launcher.render("sh"):gsub("\n", "\r\n")))
+  local same = bootstrap.update(repo, { version = V2 })
+  ok(same and same[1] == "lw.pin already at " .. V2 .. "; hashes from the signed SHA256SUMS, signature verified",
+    "pin unchanged + other changes: the same 'already at' line  (" .. show(same) .. ")")
   local hint = bootstrap.update(repo, { version = V1, self_version = "1.0.0-test" })
   ok(hint and not has(hint, "once more"), "no older-host hint when the host is the target")
   local hint2 = bootstrap.update(repo, { version = V2, self_version = "1.0.0-test" })
@@ -1290,7 +1300,7 @@ do
     { gen = 0, releases = "9.9-test", defects = { { severity = "breaks", text = "x" } } }
   put(repo .. "/lw.cmd", old_cmd)
   local r1 = bootstrap.update(repo, { version = V2 })
-  ok(has(r1, "refreshed lw.cmd (was the launcher from lw 9.9-test)"),
+  ok(has(r1, "refreshed lw.cmd: replaced the launcher written by lw 9.9-test"),
     "a known generation is refreshed  (" .. show(r1) .. ")")
   eq(slurp(repo .. "/lw.cmd"), launcher.render("cmd"), "lw.cmd rewritten to the current template")
   -- content that is no known generation is kept unless --force
@@ -1501,6 +1511,30 @@ do
   ok(#bare == 0, "lw.cmd invokes no system tool by bare name" ..
     (#bare > 0 and (" — " .. table.concat(bare, " | ")) or ""))
 
+  -- Every message line ends without a trailing space: `echo text 1>&2` and
+  -- `( echo text & ...)` echo the space before the redirect / `&` / `)`
+  -- (the beta.1 fetch line did). The redirect goes first: `1>&2 echo text`.
+  local trailing = {}
+  for line in (bootstrap.LW_CMD .. "\n"):gmatch("([^\n]*)\n") do
+    if not line:match("^%s*rem[%s$]") then
+      local i = line:find("echo[ (]")
+      if i and not line:find("^echo%(", i) then
+        -- the echoed text: up to the first unescaped &, |, ) or end of line
+        local rest, text = line:sub(i + 5), ""
+        local j = 1
+        while j <= #rest do
+          local c = rest:sub(j, j)
+          if c == "^" then text = text .. rest:sub(j, j + 1); j = j + 2
+          elseif c == "&" or c == "|" or c == ")" then break
+          else text = text .. c; j = j + 1 end
+        end
+        if text:find("1>&2", 1, true) or text:find("%s$") then trailing[#trailing + 1] = line end
+      end
+    end
+  end
+  ok(#trailing == 0, "no lw.cmd message ends in a trailing space" ..
+    (#trailing > 0 and (" -- " .. table.concat(trailing, " | ")) or ""))
+
   -- Dynamic (Windows only): run the generated lw.cmd with a PATH whose first
   -- entry holds fake find/findstr/certutil/curl/where that lie (exit 0, no
   -- output). The pinned-version validation, the local-mirror copy and the
@@ -1528,7 +1562,7 @@ do
 
     local function run_launcher(repo, version, args)
       paths.mkdirp(repo)
-      do local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(bootstrap.LW_CMD); f:close() end
+      do local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(require("boot.launcher").render("cmd")); f:close() end
       do local f = assert(io.open(repo .. "/lw.pin", "wb"))
          f:write("version=" .. version .. "\nsha256_" .. asset .. "=" .. want .. "\n"); f:close() end
       local env = {}
@@ -1644,7 +1678,7 @@ do
     local want = verify.sha256_hex(body)
     local function setup(repo)
       paths.mkdirp(repo)
-      local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(bootstrap.LW_CMD); f:close()
+      local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(require("boot.launcher").render("cmd")); f:close()
       f = assert(io.open(repo .. "/lw.pin", "wb"))
       f:write("version=" .. ver .. "\nsha256_" .. asset .. "=" .. want .. "\n"); f:close()
     end
@@ -1664,6 +1698,8 @@ do
     ok(not out:find("% Total", 1, true) and not out:find("Dload", 1, true),
       "lw.cmd: no curl progress meter")
     ok(out:match("^[%w%p%s]*$") ~= nil, "lw.cmd: output is ASCII")
+    ok(not out:find(" \r?\n") and not out:find(" $"), "lw.cmd: no line ends in a space  ("
+      .. out:gsub(" \r?\n", "<SP>|") .. ")")
     -- a second run finds the cached, verified binary and prints nothing of its own
     local code2, out2 = run(cmdexe, { "/d", "/c", (repo:gsub("/", "\\")) .. [[\lw.cmd]], "/c", "exit", "3" },
       base_env({ "LOOMWORKS_RELEASE_URL=http://127.0.0.1:1" }), repo)
@@ -1679,6 +1715,7 @@ do
     eq(state2.hits, 3, "lw.cmd: gives up after three attempts")
     ok(out3:find("download failed after 3 attempts", 1, true) ~= nil,
       "lw.cmd: says the attempts were exhausted  (" .. out3 .. ")")
+    ok(not out3:find(" \r?\n") and not out3:find(" $"), "lw.cmd: failure lines end without a space")
     ok(not uv.fs_stat(repo2 .. "/.nvim/cache/lw-" .. ver .. "-" .. asset)
       and not uv.fs_stat(repo2 .. "/.nvim/cache/lw-" .. ver .. "-" .. asset .. ".dl"),
       "lw.cmd: nothing left in the cache")

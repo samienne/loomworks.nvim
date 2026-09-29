@@ -177,7 +177,7 @@ local function launcher_line(kind, status, info)
   local name = launcher.KINDS[kind]
   if status == "written" then return "wrote " .. name end
   if status == "refreshed" then
-    return "refreshed " .. name .. " (was the launcher from lw " .. tostring(info and info.releases or "?") .. ")"
+    return "refreshed " .. name .. ": replaced the launcher written by lw " .. tostring(info and info.releases or "?")
   end
   if status == "eol" then
     return "rewrote " .. name .. " with " .. (kind == "sh" and "LF" or "CRLF") .. " line endings"
@@ -254,7 +254,8 @@ local function older_host_hint(version, opts, st)
     " run `./lw.sh update --version " .. version .. "` once more to take " .. version .. "'s"
 end
 
-local SIGNED = "hashes from the release's signed SHA256SUMS (signature verified)"
+-- One flat clause, no nested parentheses (spec §16.24 "Reporting").
+local SIGNED = "hashes from the signed SHA256SUMS, signature verified"
 
 -- ---------------------------------------------------------------------------
 -- Operations
@@ -283,9 +284,9 @@ function M.bootstrap(root, self_version, opts)
 
   local out = {}
   if st.pin_changed then
-    out[#out + 1] = "wrote lw.pin (version " .. version .. "; " .. SIGNED .. ")"
+    out[#out + 1] = "wrote lw.pin: version " .. version .. "; " .. SIGNED
   else
-    out[#out + 1] = "lw.pin already at " .. version .. " (" .. SIGNED .. ")"
+    out[#out + 1] = "lw.pin already at " .. version .. "; " .. SIGNED
   end
   for _, l in ipairs(changes) do out[#out + 1] = l end
   out[#out + 1] = older_host_hint(version, o, st)
@@ -320,18 +321,19 @@ function M.update(root, opts)
   if not changes then return nil, st end
 
   if not st.pin_changed and #changes == 0 then
-    return { "lw.pin already at " .. version .. " - no changes (" .. SIGNED .. ")" }
+    return { "lw.pin already at " .. version .. " - no changes; " .. SIGNED }
   end
   local out = {}
   local old_v = st.old and st.old.version
   if not st.pin_changed then
-    out[#out + 1] = "lw.pin: " .. version .. " unchanged (" .. SIGNED .. ")"
+    -- The same wording as the no-op above (whichever host runs the update).
+    out[#out + 1] = "lw.pin already at " .. version .. "; " .. SIGNED
   elseif old_v and old_v ~= version then
-    out[#out + 1] = "lw.pin: " .. old_v .. " -> " .. version .. " (" .. SIGNED .. ")"
+    out[#out + 1] = "lw.pin: " .. old_v .. " -> " .. version .. "; " .. SIGNED
   elseif old_v then
-    out[#out + 1] = "lw.pin: " .. version .. " hashes updated (" .. SIGNED .. ")"
+    out[#out + 1] = "lw.pin: " .. version .. " hashes updated; " .. SIGNED
   else
-    out[#out + 1] = "lw.pin: wrote version " .. version .. " (" .. SIGNED .. ")"
+    out[#out + 1] = "wrote lw.pin: version " .. version .. "; " .. SIGNED
   end
   for _, l in ipairs(changes) do out[#out + 1] = l end
   out[#out + 1] = older_host_hint(version, opts, st)

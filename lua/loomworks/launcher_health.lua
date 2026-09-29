@@ -82,9 +82,10 @@ function M.report(start)
     local function repair()
         local v = version or "<x.y.z>"
         if has_sh then
-            return "run `./lw.sh update --version " .. v .. "` (keeps the pin; `.\\lw.cmd` from cmd/PowerShell)"
+            return "run `./lw.sh update --version " .. v .. "`, which keeps the pin"
+                .. " - `.\\lw.cmd update ...` from cmd/PowerShell"
         end
-        return "run `lw update --version " .. v .. "` (keeps the pin)"
+        return "run `lw update --version " .. v .. "`, which keeps the pin"
     end
     if not p then
         nag("lw.pin cannot be read (" .. tostring(perr) .. ")",
@@ -121,11 +122,11 @@ function M.report(start)
                     for _, d in ipairs(c.defects) do
                         if d.severity == "breaks" then broken[#broken + 1] = d.text end
                     end
-                    nag(name .. " is an old launcher (from lw " .. c.releases .. "): " .. join(broken),
+                    nag(name .. " is the launcher written by lw " .. c.releases .. ": " .. join(broken),
                         repair(), table.concat(texts, "; "))
                 else
-                    info(name .. " is an older launcher (from lw " .. c.releases .. ": " .. join(texts) ..
-                        ") - refresh it with " .. repair():gsub("^run ", ""))
+                    info(name .. " is the launcher written by lw " .. c.releases .. ", older than this lw's: "
+                        .. join(texts) .. "; refresh it with " .. (repair():gsub("^run ", "")))
                 end
             elseif c.status == "unknown" then
                 info(name .. " differs from every launcher lw wrote (local edits?)")

@@ -169,6 +169,8 @@ rem loomworks repo-local launcher (Windows). Committed alongside lw.pin. Fetches
 rem the pinned, verified lw host binary into .nvim\cache\ and runs it; the host
 rem provisions the pinned bundle itself. Regenerate with `lw update`.
 rem Run it as .\lw.cmd: a bare lw.cmd can resolve to another one on PATH.
+rem Messages are `1>&2 echo text`: a trailing ` 1>&2` would leave a space at the
+rem end of every line.
 rem Windows system tools (find, findstr, certutil, curl, where, ping) are called
 rem by their absolute %SystemRoot%\System32 path: a bare name can resolve to a
 rem same-named tool earlier on PATH (Git's usr/bin/find under Git Bash / CI).
@@ -180,11 +182,11 @@ if not "%LOOMWORKS_LW%"=="" (
 
 set "here=%~dp0"
 set "pin=%here%lw.pin"
-if not exist "%pin%" ( echo lw: no lw.pin next to this launcher 1>&2 & exit /b 1 )
+if not exist "%pin%" ( 1>&2 echo lw: no lw.pin next to this launcher& exit /b 1 )
 
 set "asset=lw-windows-x86_64.exe"
 if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" (
-  echo lw: no pinned lw binary for windows/arm64 1>&2 & exit /b 1
+  1>&2 echo lw: no pinned lw binary for windows/arm64& exit /b 1
 )
 
 set "version="
@@ -195,12 +197,12 @@ for /f "usebackq tokens=1,* delims== " %%A in ("%pin%") do (
   if /I "!k!"=="version" set "version=!v!"
   if /I "!k!"=="sha256_%asset%" set "want=!v!"
 )
-if "!version!"=="" ( echo lw: lw.pin has no version 1>&2 & exit /b 1 )
-if "!want!"=="" ( echo lw: lw.pin has no sha256 for %asset% 1>&2 & exit /b 1 )
+if "!version!"=="" ( 1>&2 echo lw: lw.pin has no version& exit /b 1 )
+if "!want!"=="" ( 1>&2 echo lw: lw.pin has no sha256 for %asset%& exit /b 1 )
 rem reject a malicious pinned version before it reaches a URL (a repo must not
 rem be able to redirect the fetch): forbid anything outside [-0-9A-Za-z._+] or `..`
-echo(!version!| "%SystemRoot%\System32\findstr.exe" /r /c:"[^-0-9A-Za-z._+]" >nul && ( echo lw: invalid pinned version !version! 1>&2 & exit /b 1 )
-echo(!version!| "%SystemRoot%\System32\findstr.exe" /c:".." >nul && ( echo lw: invalid pinned version !version! 1>&2 & exit /b 1 )
+echo(!version!| "%SystemRoot%\System32\findstr.exe" /r /c:"[^-0-9A-Za-z._+]" >nul && ( 1>&2 echo lw: invalid pinned version !version!& exit /b 1 )
+echo(!version!| "%SystemRoot%\System32\findstr.exe" /c:".." >nul && ( 1>&2 echo lw: invalid pinned version !version!& exit /b 1 )
 
 set "cache=%here%.nvim\cache"
 set "bin=%cache%\lw-!version!-%asset%"
@@ -225,7 +227,7 @@ if defined LOOMWORKS_RELEASE_URL (
 ) else (
   set "url=https://github.com/samienne/loomworks.nvim/releases/download/v!version!/%asset%"
 )
-echo lw: fetching pinned lw !version! ^(%asset%^) for %pin%... 1>&2
+1>&2 echo lw: fetching pinned lw !version! ^(%asset%^) for %pin%...
 set "tmp=%bin%.dl"
 set "islocal=0"
 echo(!url!| "%SystemRoot%\System32\find.exe" "://" >nul
@@ -249,18 +251,18 @@ if "!islocal!"=="1" (
 if not errorlevel 1 goto fetched
 if "!islocal!"=="1" goto fetchfail
 if !attempt! GEQ 3 goto fetchfail
-echo lw: download attempt !attempt! failed; retrying... 1>&2
+1>&2 echo lw: download attempt !attempt! failed; retrying...
 set /a wait=attempt+1
 "%SystemRoot%\System32\ping.exe" -n !wait! 127.0.0.1 >nul
 goto fetch
 :fetchfail
-if "!islocal!"=="1" ( echo lw: copy failed: !url! 1>&2 ) else ( echo lw: download failed after !attempt! attempts: !url! 1>&2 )
+if "!islocal!"=="1" (1>&2 echo lw: copy failed: !url!) else (1>&2 echo lw: download failed after !attempt! attempts: !url!)
 del /f /q "%tmp%" 2>nul
 exit /b 1
 :fetched
 call :sha "%tmp%"
 if /I not "!got!"=="!want!" (
-  echo lw: sha256 mismatch for %asset% ^(pin !want!, got !got!^) -- aborting 1>&2
+  1>&2 echo lw: sha256 mismatch for %asset% ^(pin !want!, got !got!^) -- aborting
   del /f /q "%tmp%" 2>nul & exit /b 1
 )
 move /y "%tmp%" "%bin%" >nul
@@ -274,7 +276,7 @@ move /y "%tmp%" "%bin%" >nul
 if "!do_verify!"=="1" (
   "%SystemRoot%\System32\where.exe" gh >nul 2>nul
   if errorlevel 1 (
-    echo lw: --verify: gh not found; skipping attestation ^(sha256 already verified^) 1>&2
+    1>&2 echo lw: --verify: gh not found; skipping attestation ^(sha256 already verified^)
   ) else (
     gh attestation verify "%bin%" --repo samienne/loomworks.nvim || exit /b 1
   )
@@ -355,6 +357,13 @@ M.GENERATIONS = {
         { severity = "breaks", text = "calls find/findstr/certutil by bare name, " ..
           "so a same-named tool on PATH (Git Bash, CI) breaks it" },
         { severity = "minor", text = "no download retry; shows a progress meter" },
+      },
+    },
+    -- v0.1.36-beta.1
+    ["8fa140032b7fd103af7e401c90a1f2d40cae98f12eeab029e776ab81abde08f8"] = {
+      gen = 3, releases = "0.1.36-beta.1",
+      defects = {
+        { severity = "minor", text = "messages end in a trailing space" },
       },
     },
     -- v0.1.35

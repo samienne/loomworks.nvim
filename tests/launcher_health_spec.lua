@@ -125,7 +125,7 @@ describe("launcher health (§16.31 provider #4)", function()
         end
         local p = nag("lw.pin has no hash for lw-macos-arm64")
         assert.matches("./lw.sh update --version 1.2.3", p.remedy, 1, true)
-        nag("lw.cmd is an old launcher (from lw 0.0.1-0.0.2): calls find by bare name")
+        nag("lw.cmd is the launcher written by lw 0.0.1-0.0.2: calls find by bare name")
         local x = nag("lw.sh is not executable in git (mode 100644)")
         assert.matches("git update-index --chmod=+x lw.sh", x.remedy, 1, true)
         nag("no line-ending rule for lw.sh, lw.cmd, lw.pin in .gitattributes")
