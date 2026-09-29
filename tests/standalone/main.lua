@@ -36,6 +36,38 @@ local sig            = readfile(FX .. "manifest.json.sig")
 local wrongsig       = readfile(FX .. "manifest.json.wrongsig")
 local test_pub       = readfile(FX .. "test_ec_pub.pem")
 
+print("boot.verify — the committed source embeds the PRODUCTION release key")
+do
+  -- A source build (`make install`, `lw --dev`) used to embed the TEST key, so
+  -- it could not verify a real release's SHA256SUMS: `lw bootstrap` / `update`
+  -- failed with a bare "signature does not verify" (spec §16.12).
+  local function body(pem) return (pem:gsub("\r", ""):gsub("%s+$", "")) end
+  local prod = readfile(root .. "/keys/loomworks-release.pub.pem")
+  eq(body(verify.PUBLIC_KEY_PEM), body(prod),
+    "verify.PUBLIC_KEY_PEM is keys/loomworks-release.pub.pem")
+  ok(body(verify.PUBLIC_KEY_PEM) ~= body(test_pub), "the embedded key is not the test key")
+  eq(verify.key_id(prod), verify.RELEASE_KEY_ID, "RELEASE_KEY_ID is the production key's fingerprint")
+  -- the README's copies (the out-of-band channel, §16.15) are the same key
+  local readme = readfile(root .. "/README.md"):gsub("\r", "")
+  local n, same = 0, 0
+  for blk in readme:gmatch("%-%-%-%-%-BEGIN PUBLIC KEY%-%-%-%-%-.-%-%-%-%-%-END PUBLIC KEY%-%-%-%-%-") do
+    n = n + 1; if blk == body(prod) then same = same + 1 end
+  end
+  ok(n > 0 and n == same, "every README public key block is the production key (" .. same .. "/" .. n .. ")")
+  -- a failed check names the trusted key and the likely cause
+  local _, perr = verify.verify_detached("data", readfile(FX .. "manifest.json.sig"))
+  ok(perr and perr:find("does not verify", 1, true) and perr:find(verify.RELEASE_KEY_ID, 1, true)
+    and perr:find("not an official loomworks release", 1, true),
+    "production-key failure names the release key + likely causes  (" .. tostring(perr) .. ")")
+  local _, terr = verify.verify_detached("data", readfile(FX .. "manifest.json.sig"), test_pub)
+  ok(terr and terr:find("NOT the loomworks release key", 1, true)
+    and terr:find(verify.key_id(test_pub), 1, true),
+    "test-key failure says the host does not carry the release key  (" .. tostring(terr) .. ")")
+end
+-- Everything below verifies TEST-signed fixtures: supply the test key
+-- explicitly for the rest of the suite (the embedded default is production).
+verify.PUBLIC_KEY_PEM = test_pub
+
 print("boot.json")
 do
   local v = json.decode('{"a":1,"b":[true,false,null,"x\\ny"],"c":{"d":-2.5e1}}')
@@ -52,10 +84,10 @@ end
 
 print("boot.verify — signature")
 do
-  -- The embedded default key IS the test key in this slice, so no explicit key
-  -- needed; also exercise the explicit-key path.
+  -- The suite-level default is the test key (set above); also exercise the
+  -- explicit-key path.
   local m, err = verify.load_manifest(manifest_bytes, sig)
-  ok(m ~= nil, "valid manifest+sig loads (embedded key)" .. (err and (" — " .. err) or ""))
+  ok(m ~= nil, "valid manifest+sig loads (suite default key)" .. (err and (" — " .. err) or ""))
   if m then eq(m.version, "0.0.0-test", "manifest version") end
 
   local m2 = verify.load_manifest(manifest_bytes, sig, test_pub)
