@@ -436,8 +436,16 @@ do
       ok(s:match("^[%w%p%s]*$") ~= nil, "`lw help " .. cmd .. "` is ASCII")
     end
     local upd = t({ "help", "update" }) or ""
-    ok(upd:find("./lw.sh update", 1, true) and upd:find("--force", 1, true)
-      and upd:find("already", 1, true), "`lw help update` covers the launcher path, --force, no-op output")
+    ok(upd:find("deprecated", 1, true) and upd:find("lw bootstrap install --latest", 1, true)
+      and upd:find("lw bootstrap install --version <x.y.z>", 1, true) and upd:find("--force", 1, true),
+      "`lw help update` states the deprecation and the equivalent bootstrap forms")
+    local bsi = t({ "help", "bootstrap", "install" }) or ""
+    ok(bsi:find("lw bootstrap install", 1, true) and bsi:find("--pin-only", 1, true)
+      and not bsi:find("Which launcher", 1, true) and bsi:find("`lw help bootstrap` for the whole command", 1, true),
+      "`lw help bootstrap install` prints only the install part (no bundle needed)")
+    local bsu = t({ "bootstrap", "upgrade", "--help" }) or ""
+    ok(bsu:find("lw bootstrap upgrade", 1, true) and not bsu:find("--pin-only  ", 1, true),
+      "`lw bootstrap upgrade --help` prints the upgrade part")
     local bs = t({ "help", "bootstrap" }) or ""
     ok(bs:find(".\\lw.cmd <cmd>", 1, true) and bs:find("Git Bash", 1, true)
       and bs:find(".gitattributes", 1, true), "`lw help bootstrap` says which launcher to use + the metadata")
@@ -1157,7 +1165,7 @@ do
   ok(select(1, bootstrap.fetch_hashes(ver)) == nil, "wrong SHA256SUMS signature rejected")
   stage(ver, "V1")  -- restore the good, matching signed list
 
-  local rep, berr = bootstrap.bootstrap(repo, nil, { version = ver })
+  local rep, berr = bootstrap.install(repo, { version = ver })
   ok(rep ~= nil, "bootstrap succeeds" .. (berr and (" — " .. berr) or ""))
   local p = pin.read(repo)
   ok(p ~= nil, "lw.pin written + parseable")
@@ -1184,7 +1192,7 @@ do
     do local f = assert(io.open(m2 .. "/SHA256SUMS", "wb")); f:write(partial); f:close() end
     do local f = assert(io.open(m2 .. "/SHA256SUMS.sig", "wb")); f:write(sign(partial)); f:close() end
     uv.os_setenv("LOOMWORKS_RELEASE_URL", m2)
-    ok(select(1, bootstrap.bootstrap(sb .. "/repo3", nil, { version = ver })) == nil,
+    ok(select(1, bootstrap.install(sb .. "/repo3", { version = ver })) == nil,
       "bootstrap errors when the release lacks a required asset")
     uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
   end
@@ -1192,7 +1200,7 @@ do
   -- update repoints the pin at a new version
   local ver2 = "3.5.0-test"
   local exp2 = stage(ver2, "V2")
-  local urep, uerr = bootstrap.update(repo, { version = ver2 })
+  local urep, uerr = bootstrap.install(repo, { version = ver2 })
   ok(urep ~= nil, "update rewrites the pin" .. (uerr and (" — " .. uerr) or ""))
   local p2 = pin.read(repo)
   eq(p2 and p2.version, ver2, "pin updated to the new version")
@@ -1201,7 +1209,7 @@ do
 
   -- update to an unfetchable release fails cleanly, leaving the pin intact
   uv.os_setenv("LOOMWORKS_RELEASE_URL", sb .. "/nope")
-  ok(select(1, bootstrap.update(repo, { version = "9.9.9-nope" })) == nil,
+  ok(select(1, bootstrap.install(repo, { version = "9.9.9-nope" })) == nil,
     "update to an unfetchable release fails cleanly")
   eq(pin.read(repo).version, ver2, "failed update leaves the pin intact")
 
@@ -1250,7 +1258,7 @@ do
 
   -- ---- bootstrap in a git repo (Windows-like: core.filemode=false) ---------
   local repo = sb .. "/repo"; git_init(repo)
-  local rep, err = bootstrap.bootstrap(repo, nil, { version = V1 })
+  local rep, err = bootstrap.install(repo, { version = V1 })
   ok(rep ~= nil, "bootstrap succeeds" .. (err and (" — " .. err) or ""))
   ok(has(rep, "signature verified"), "bootstrap says the signed hash list was verified  (" .. show(rep) .. ")")
   ok(has(rep, "./lw.sh <cmd>") and has(rep, ".\\lw.cmd <cmd>"),
@@ -1270,19 +1278,19 @@ do
 
   -- a re-run appends nothing (idempotent) and reports no metadata change
   local ga_before, gi_before = slurp(repo .. "/.gitattributes"), slurp(repo .. "/.gitignore")
-  local rep2 = bootstrap.bootstrap(repo, nil, { version = V1 })
+  local rep2 = bootstrap.install(repo, { version = V1 })
   eq(slurp(repo .. "/.gitattributes"), ga_before, "re-bootstrap leaves .gitattributes alone")
   eq(slurp(repo .. "/.gitignore"), gi_before, "re-bootstrap leaves .gitignore alone")
   ok(rep2 and has(rep2, "lw.pin already at " .. V1) and not has(rep2, "wrote lw.sh"),
     "re-bootstrap reports nothing rewritten  (" .. show(rep2) .. ")")
 
   -- ---- update: change-only reporting ---------------------------------------
-  local noop = bootstrap.update(repo, { version = V1 })
+  local noop = bootstrap.install(repo, { version = V1 })
   ok(noop and #noop == 1 and noop[1]:find("already at " .. V1 .. " - no changes", 1, true)
     and noop[1]:find("signature verified", 1, true),
     "a no-op update says 'already at X - no changes' and nothing else  (" .. show(noop) .. ")")
   stage(V2)
-  local up = bootstrap.update(repo, { version = V2 })
+  local up = bootstrap.install(repo, { version = V2 })
   ok(up and up[1] == "lw.pin: " .. V1 .. " -> " .. V2 ..
     "; hashes from the signed SHA256SUMS, signature verified",
     "a moved pin reports old -> new + signature verified  (" .. show(up) .. ")")
@@ -1296,12 +1304,12 @@ do
   -- A run that moves nothing but still changes something (here: a launcher
   -- rewritten) leads with the same "already at" wording as a no-op.
   put(repo .. "/lw.sh", (launcher.render("sh"):gsub("\n", "\r\n")))
-  local same = bootstrap.update(repo, { version = V2 })
+  local same = bootstrap.install(repo, { version = V2 })
   ok(same and same[1] == "lw.pin already at " .. V2 .. "; hashes from the signed SHA256SUMS, signature verified",
     "pin unchanged + other changes: the same 'already at' line  (" .. show(same) .. ")")
-  local hint = bootstrap.update(repo, { version = V1, self_version = "1.0.0-test" })
+  local hint = bootstrap.install(repo, { version = V1, self_version = "1.0.0-test" })
   ok(hint and not has(hint, "once more"), "no older-host hint when the host is the target")
-  local hint2 = bootstrap.update(repo, { version = V2, self_version = "1.0.0-test" })
+  local hint2 = bootstrap.install(repo, { version = V2, self_version = "1.0.0-test" })
   ok(hint2 and has(hint2, "once more to take " .. V2),
     "an older host moving the pin says to run the update once more  (" .. show(hint2) .. ")")
 
@@ -1311,26 +1319,26 @@ do
   launcher.GENERATIONS.cmd[verify.sha256_hex(launcher.normalize(old_cmd))] =
     { gen = 0, releases = "9.9-test", defects = { { severity = "breaks", text = "x" } } }
   put(repo .. "/lw.cmd", old_cmd)
-  local r1 = bootstrap.update(repo, { version = V2 })
+  local r1 = bootstrap.install(repo, { version = V2 })
   ok(has(r1, "refreshed lw.cmd: replaced the launcher written by lw 9.9-test"),
     "a known generation is refreshed  (" .. show(r1) .. ")")
   eq(slurp(repo .. "/lw.cmd"), launcher.render("cmd"), "lw.cmd rewritten to the current template")
   -- content that is no known generation is kept unless --force
   put(repo .. "/lw.sh", "#!/bin/sh\necho my own launcher\n")
-  local r2 = bootstrap.update(repo, { version = V2 })
+  local r2 = bootstrap.install(repo, { version = V2 })
   ok(has(r2, "kept lw.sh") and has(r2, "--force"), "an unknown lw.sh is kept, naming --force  (" .. show(r2) .. ")")
   eq(slurp(repo .. "/lw.sh"), "#!/bin/sh\necho my own launcher\n", "the hand-edited lw.sh is untouched")
-  local r3 = bootstrap.update(repo, { version = V2, force = true })
+  local r3 = bootstrap.install(repo, { version = V2, force = true })
   ok(has(r3, "replaced lw.sh (--force)"), "--force replaces it")
   eq(slurp(repo .. "/lw.sh"), launcher.render("sh"), "lw.sh is the current template again")
   -- the current template with CRLF endings is rewritten with LF
   put(repo .. "/lw.sh", (launcher.render("sh"):gsub("\n", "\r\n")))
-  local r4 = bootstrap.update(repo, { version = V2 })
+  local r4 = bootstrap.install(repo, { version = V2 })
   ok(has(r4, "rewrote lw.sh with LF line endings"), "a CRLF lw.sh is rewritten with LF  (" .. show(r4) .. ")")
   ok(not (slurp(repo .. "/lw.sh") or ""):find("\r", 1, true), "lw.sh is LF again")
   -- an lw.pin checked out with CR LF (lw.sh's sed would read `version = x\r`)
   put(repo .. "/lw.pin", (slurp(repo .. "/lw.pin"):gsub("\n", "\r\n")))
-  local r5 = bootstrap.update(repo, { version = V2 })
+  local r5 = bootstrap.install(repo, { version = V2 })
   ok(has(r5, "rewrote lw.pin with LF line endings") and not has(r5, "hashes updated"),
     "a CRLF lw.pin is rewritten with LF  (" .. show(r5) .. ")")
   ok(not (slurp(repo .. "/lw.pin") or ""):find("\r", 1, true), "lw.pin is LF again")
@@ -1346,7 +1354,7 @@ do
     git(r, "add", "--", "lw.sh"); git(r, "commit", "-q", "-m", "x")
     local _, s0 = git(r, "ls-files", "--stage", "--", "lw.sh")
     eq(launcher.parse_ls_stage(s0)["lw.sh"], "100644", "(setup) lw.sh committed as 100644")
-    local rr = bootstrap.bootstrap(r, nil, { version = V2 })
+    local rr = bootstrap.install(r, { version = V2 })
     local _, s1 = git(r, "ls-files", "--stage", "--", "lw.sh")
     eq(launcher.parse_ls_stage(s1)["lw.sh"], "100755", "bootstrap sets +x on a tracked 100644 lw.sh")
     ok(has(rr, "set lw.sh executable in the git index"), "and reports it  (" .. show(rr) .. ")")
@@ -1356,7 +1364,7 @@ do
   do
     local r = sb .. "/ign1"; git_init(r)
     put(r .. "/.gitignore", "/.nvim/**\n")
-    bootstrap.bootstrap(r, nil, { version = V2 })
+    bootstrap.install(r, { version = V2 })
     eq(slurp(r .. "/.gitignore"), "/.nvim/**\n",
       "a committed rule already ignoring .nvim/ (any form git accepts) -> nothing appended")
 
@@ -1364,14 +1372,14 @@ do
     put(r2 .. "/.git/info/exclude", ".nvim/\n")
     local excl = sb .. "/personal-excludes"; put(excl, ".nvim/\n")
     git(r2, "config", "core.excludesFile", excl)
-    local rr = bootstrap.bootstrap(r2, nil, { version = V2 })
+    local rr = bootstrap.install(r2, { version = V2 })
     ok((slurp(r2 .. "/.gitignore") or ""):find(".nvim/cache/", 1, true) ~= nil,
       "an ignore rule only in info/exclude or core.excludesFile does not count -> appended")
     ok(has(rr, "added .nvim/cache/ to .gitignore"), "the append is reported")
 
     local r3 = sb .. "/ign3"; git_init(r3)
     put(r3 .. "/.gitattributes", "*.sh text eol=lf\n*.cmd text eol=crlf\n*.pin text eol=lf\n")
-    local rr3 = bootstrap.bootstrap(r3, nil, { version = V2 })
+    local rr3 = bootstrap.install(r3, { version = V2 })
     eq(slurp(r3 .. "/.gitattributes"), "*.sh text eol=lf\n*.cmd text eol=crlf\n*.pin text eol=lf\n",
       "equivalent pattern rules satisfy the attributes check -> nothing appended")
     ok(not has(rr3, "line-ending rules"), "nothing reported for attributes  (" .. show(rr3) .. ")")
@@ -1387,7 +1395,7 @@ do
       "\r\n# other\r\n*.png binary\r\n"
     put(r .. "/.gitattributes", ga0)
     put(r .. "/.gitignore", "build/\r\n")
-    local rr = bootstrap.bootstrap(r, nil, { version = V2 })
+    local rr = bootstrap.install(r, { version = V2 })
     local ga = slurp(r .. "/.gitattributes") or ""
     ok(not bare_lf(ga), "a CRLF .gitattributes stays CRLF (no mixed endings)  (" .. ga:gsub("\r", "\\r"):gsub("\n", "\\n") .. ")")
     eq(ga, "# launchers need fixed line endings\r\nlw.sh text eol=lf\r\nlw.cmd text eol=crlf\r\n" ..
@@ -1400,7 +1408,7 @@ do
 
     -- A NEW file follows what git would check out: CRLF under autocrlf=true …
     local r2 = sb .. "/crlf-new"; git_init(r2); git(r2, "config", "core.autocrlf", "true")
-    bootstrap.bootstrap(r2, nil, { version = V2 })
+    bootstrap.install(r2, { version = V2 })
     local ga2 = slurp(r2 .. "/.gitattributes") or ""
     ok(ga2:find("lw.sh text eol=lf\r\n", 1, true) and not bare_lf(ga2),
       "a new .gitattributes is CRLF when git checks text out as CRLF")
@@ -1409,13 +1417,13 @@ do
     ok(gi2 ~= "" and not bare_lf(gi2), "a new .gitignore is CRLF too")
     -- … and LF otherwise.
     local r3 = sb .. "/lf-new"; git_init(r3)
-    bootstrap.bootstrap(r3, nil, { version = V2 })
+    bootstrap.install(r3, { version = V2 })
     local ga3 = slurp(r3 .. "/.gitattributes") or ""
     ok(ga3 ~= "" and not ga3:find("\r", 1, true), "a new .gitattributes is LF when git keeps LF")
     -- An LF file with none of the rules gets the header + all three, LF.
     local r4 = sb .. "/lf-none"; git_init(r4); git(r4, "config", "core.autocrlf", "true")
     put(r4 .. "/.gitattributes", "*.png binary\n")
-    bootstrap.bootstrap(r4, nil, { version = V2 })
+    bootstrap.install(r4, { version = V2 })
     eq(slurp(r4 .. "/.gitattributes"), "*.png binary\n\n# loomworks: repo-local launcher line endings\n" ..
       "lw.sh text eol=lf\nlw.cmd text eol=crlf\nlw.pin text eol=lf\n",
       "an LF file stays LF even under autocrlf; the first rules bring the header")
@@ -1427,7 +1435,7 @@ do
     repo_meta._git = function() return nil, "git not found" end
     local r = sb .. "/nogit"; paths.mkdirp(r)
     put(r .. "/.gitignore", ".nvim/\n")
-    local rr, e = bootstrap.bootstrap(r, nil, { version = V2 })
+    local rr, e = bootstrap.install(r, { version = V2 })
     repo_meta._git = saved
     ok(rr ~= nil, "bootstrap works without git" .. (e and (" — " .. e) or ""))
     eq(slurp(r .. "/.gitignore"), ".nvim/\n", "without git, a `.nvim/` line covers the cache -> nothing appended")
@@ -1450,7 +1458,7 @@ do
     paths.mkdirp(cache .. "/lw-0.5.0-lw-linux-x86_64")       -- a directory
     put(cache .. "/lw-0.5.0-lw-linux-x86_64/inner", "i")
     local outside = sb .. "/outside-lw-0.4.0-lw-linux-x86_64"; put(outside, "o")
-    local rr = bootstrap.update(repo, { version = V2, running_exe = running })
+    local rr = bootstrap.install(repo, { version = V2, running_exe = running })
     ok(has(rr, "removed 2 old pinned lw binaries"), "prune reports what it removed  (" .. show(rr) .. ")")
     ok(not uv.fs_stat(old) and not uv.fs_stat(old_win), "older cached binaries removed")
     ok(uv.fs_stat(keep) ~= nil, "the pinned version's binary is kept")
@@ -1461,7 +1469,7 @@ do
       "only exact cached-binary names that are regular files are candidates")
     -- a no-op update still prunes (a binary busy last time is collected later)
     put(old, "old")
-    local rn = bootstrap.update(repo, { version = V2, running_exe = running })
+    local rn = bootstrap.install(repo, { version = V2, running_exe = running })
     ok(not uv.fs_stat(old) and has(rn, "removed 1 old pinned lw binary"),
       "a no-op update prunes too  (" .. show(rn) .. ")")
 
@@ -1490,6 +1498,322 @@ do
   eq(launcher.cached_binary_version("lw-1.0.0-lw-linux-x86_64.dl.9", assets, pin.valid_version), nil,
     "a partial download is not a candidate")
 
+  paths.rm_rf(sb)
+end
+
+print("boot.bootstrap — install converge, version selection, --pin-only, status page, aliases (§16.24)")
+do
+  local bootstrap = require("boot.bootstrap")
+  local launcher = require("boot.launcher")
+  local check = require("boot.launcher_check")
+  local pin = require("boot.pin")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function sign(data) return priv:sign(data, "sha256") end
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+  local function has(lines, needle)
+    for _, l in ipairs(lines or {}) do
+      if l:find(needle, 1, true) then return true end
+    end
+    return false
+  end
+  local function show(lines) return table.concat(lines or {}, " | ") end
+
+  local sb = root .. "/tests/.tmp-bscmds"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  local lines = {}
+  local function stage(version)
+    for _, a in ipairs({ "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe",
+        pin.bundle_asset(version) }) do
+      local body = version .. ":" .. a .. "\n"
+      put(mirror .. "/" .. a, body)
+      lines[#lines + 1] = verify.sha256_hex(body) .. "  " .. a
+    end
+    local sums = table.concat(lines, "\n") .. "\n"
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", sign(sums))
+  end
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  local V1, V2, V3 = "2.0.0-test", "2.1.0-test", "2.2.0-beta.1"
+  stage(V1); stage(V2); stage(V3)
+  local function newest_is(v, seen)
+    return function(o) if seen then seen[#seen + 1] = o end return v end
+  end
+
+  -- ---- BUG: plain `lw bootstrap` re-pinned to the running host's version ------
+  do
+    local r = sb .. "/keep"; git_init(r)
+    ok(bootstrap.install(r, { version = V1 }) ~= nil, "(setup) pinned at " .. V1)
+    local rep = bootstrap.install(r, { host_version = V2 })
+    eq(pin.read(r).version, V1, "plain install in a pinned repo keeps the pin (a newer host never bumps it)")
+    ok(rep and rep[1]:find("lw.pin already at " .. V1, 1, true), "and says so  (" .. show(rep) .. ")")
+    -- --version is the explicit way
+    bootstrap.install(r, { version = V2 })
+    eq(pin.read(r).version, V2, "--version moves the pin")
+  end
+
+  -- ---- BUG: `lw update` read only the stable base, ignoring the channel -------
+  do
+    local r = sb .. "/latest"; git_init(r)
+    bootstrap.install(r, { version = V1 })
+    local seen = {}
+    local rep, err = bootstrap.install(r, { latest = true, channel = "unstable",
+      resolve_newest = newest_is(V3, seen) })
+    ok(rep ~= nil, "--latest succeeds" .. (err and (" - " .. err) or ""))
+    eq(seen[1] and seen[1].channel, "unstable", "--latest resolves the newest release on the requested channel")
+    eq(pin.read(r).version, V3, "--latest pins the channel's newest")
+    -- the channel setting / environment is honoured too (no --channel)
+    uv.os_setenv("LOOMWORKS_CHANNEL", "unstable")
+    local seen2 = {}
+    bootstrap.install(r, { latest = true, resolve_newest = newest_is(V3, seen2) })
+    uv.os_unsetenv("LOOMWORKS_CHANNEL")
+    eq(seen2[1] and seen2[1].channel, "unstable", "--latest follows LOOMWORKS_CHANNEL")
+    -- never backwards: the pin (a pre-release newer than stable) is kept
+    local back = bootstrap.install(r, { latest = true, channel = "stable", resolve_newest = newest_is(V2) })
+    eq(pin.read(r).version, V3, "--latest never moves the pin backwards")
+    ok(has(back, "is newer than the newest stable release " .. V2) and has(back, "--version"),
+      "and names --version for a deliberate downgrade  (" .. show(back) .. ")")
+    local e1 = select(2, bootstrap.install(r, { latest = true, channel = "nightly" }))
+    ok(e1 and e1:find("nightly", 1, true), "an unknown channel is an error  (" .. tostring(e1) .. ")")
+  end
+
+  -- ---- version selection without a pin ---------------------------------------
+  do
+    local r = sb .. "/fresh"; git_init(r)
+    local _, e = bootstrap.install(r, {})
+    ok(e and e:find("--version", 1, true) and e:find("--latest", 1, true),
+      "a dev build with no pin refuses, naming --version and --latest  (" .. tostring(e) .. ")")
+    ok(not uv.fs_stat(r .. "/lw.pin"), "and writes nothing")
+    local rep = bootstrap.install(r, { host_version = V1 })
+    eq(pin.read(r).version, V1, "no pin: the running host's release version")
+    ok(has(rep, "wrote lw.pin: version " .. V1) and has(rep, "Check it any time with `lw bootstrap`"),
+      "first install closes with how to run + check  (" .. show(rep) .. ")")
+    local again = bootstrap.install(r, { host_version = V1 })
+    ok(again and #again == 1 and again[1]:find("- no changes", 1, true), "a second run changes nothing")
+  end
+
+  -- ---- converge from a broken state -------------------------------------------
+  do
+    local r = sb .. "/broken"; git_init(r)
+    bootstrap.install(r, { version = V1 })
+    -- drop a hash, delete lw.cmd, strip the attributes
+    local t = slurp(r .. "/lw.pin"):gsub("[^\n]*lw%-macos%-arm64[^\n]*\n", "")
+    put(r .. "/lw.pin", t)
+    os.remove(r .. "/lw.cmd")
+    put(r .. "/.gitattributes", "")
+    local rep = bootstrap.install(r, {})
+    eq(pin.read(r).version, V1, "repair keeps the version")
+    ok(pin.read(r).hashes["lw-macos-arm64"] ~= nil, "the missing hash is restored")
+    ok(uv.fs_stat(r .. "/lw.cmd") ~= nil, "the missing launcher is written")
+    ok((slurp(r .. "/.gitattributes") or ""):find("lw.cmd text eol=crlf", 1, true), "the rules are back")
+    ok(has(rep, "lw.pin: " .. V1 .. " hashes updated") and has(rep, "wrote lw.cmd"),
+      "and reports it  (" .. show(rep) .. ")")
+  end
+
+  -- ---- --pin-only ---------------------------------------------------------------
+  do
+    local r = sb .. "/pinonly"; git_init(r)
+    local rep = bootstrap.install(r, { version = V1, pin_only = true })
+    ok(uv.fs_stat(r .. "/lw.pin") and not uv.fs_stat(r .. "/lw.sh") and not uv.fs_stat(r .. "/lw.cmd"),
+      "--pin-only writes lw.pin and no launcher")
+    eq(slurp(r .. "/.gitattributes"), "# loomworks: repo-local launcher line endings\nlw.pin text eol=lf\n",
+      "--pin-only adds only lw.pin's attribute rule")
+    ok(not uv.fs_stat(r .. "/.gitignore"), "--pin-only adds no ignore rule")
+    local _, stg = git(r, "ls-files", "--stage")
+    eq(stg, "", "--pin-only stages nothing")
+    ok(has(rep, "globally installed lw runs the pinned release"), "and explains how a pin-only repo runs  (" .. show(rep) .. ")")
+    -- the checks treat the absent launchers as intended
+    local res = check.run_checks(r, { git = function(c, a) return require("boot.repo_meta")._git(c, a) end,
+      sha256 = verify.sha256_hex })
+    eq(res.mode, "pin-only", "mode inferred: pin-only")
+    local titles = {}
+    for _, f in ipairs(res.findings) do titles[#titles + 1] = f.kind .. "|" .. f.title end
+    ok(not table.concat(titles, "\n"):find("missing", 1, true), "no 'missing launcher' finding  (" .. table.concat(titles, "; ") .. ")")
+    -- a finding in pin-only mode is fixed with --pin-only
+    put(r .. "/.gitattributes", "")
+    local res2 = check.run_checks(r, { git = function(c, a) return require("boot.repo_meta")._git(c, a) end,
+      sha256 = verify.sha256_hex })
+    local attr
+    for _, f in ipairs(res2.findings) do if f.id == "attributes" then attr = f end end
+    ok(attr and attr.title:find("lw.pin", 1, true) and not attr.title:find("lw.sh", 1, true)
+      and attr.remedy:find("bootstrap install --pin-only", 1, true),
+      "a pin-scoped finding's fix is install --pin-only  (" .. tostring(attr and attr.remedy) .. ")")
+    -- existing launchers are neither refreshed nor deleted by --pin-only
+    put(r .. "/lw.sh", "#!/bin/sh\necho mine\n")
+    local rep2 = bootstrap.install(r, { version = V2, pin_only = true })
+    eq(slurp(r .. "/lw.sh"), "#!/bin/sh\necho mine\n", "--pin-only leaves an existing launcher alone")
+    ok(has(rep2, "kept lw.sh as it is (--pin-only)"), "and says so  (" .. show(rep2) .. ")")
+    eq(pin.read(r).version, V2, "--pin-only still moves the pin with --version")
+    -- a later plain install adds the launchers, keeping the pin
+    os.remove(r .. "/lw.sh")
+    local rep3 = bootstrap.install(r, {})
+    ok(uv.fs_stat(r .. "/lw.sh") and uv.fs_stat(r .. "/lw.cmd"), "plain install adds the launchers")
+    eq(pin.read(r).version, V2, "keeping the pin")
+    ok(has(rep3, "wrote lw.sh") and has(rep3, "./lw.sh <cmd>"), "reports the new launchers  (" .. show(rep3) .. ")")
+  end
+
+  -- ---- the deprecated `lw update` alias: needs a pin --------------------------
+  do
+    local _, e = bootstrap.install(sb .. "/nopin-update", { require_pin = true, latest = true })
+    ok(e and e:find("no lw.pin found", 1, true) and e:find("lw bootstrap install", 1, true),
+      "`lw update` without a pin refuses, naming `lw bootstrap install`  (" .. tostring(e) .. ")")
+  end
+
+  -- ---- argument grammar ----------------------------------------------------------
+  do
+    local P = pin.parse_bootstrap_args
+    local o = P({ "bootstrap" }, "bootstrap")
+    ok(o and o.sub == nil, "plain `lw bootstrap` is the status page")
+    o = P({ "--no-input", "bootstrap", "--json", "--check" }, "bootstrap")
+    ok(o and o.json and o.check and o.sub == nil, "status page flags (global flags tolerated)")
+    local _, e = P({ "bootstrap", "--version", "0.1.36" }, "bootstrap")
+    ok(e and e:find("`lw bootstrap install --version 0.1.36`", 1, true),
+      "old `lw bootstrap --version X` is a usage error naming install  (" .. tostring(e) .. ")")
+    _, e = P({ "bootstrap", "--force" }, "bootstrap")
+    ok(e and e:find("bootstrap install --force", 1, true), "old `lw bootstrap --force` too")
+    o = P({ "bootstrap", "install", "--version=1.2.3", "--pin-only", "--force" }, "bootstrap")
+    ok(o and o.sub == "install" and o.version == "1.2.3" and o.pin_only and o.force, "install flags (--version=X form)")
+    o = P({ "bootstrap", "upgrade", "--channel", "unstable" }, "bootstrap")
+    ok(o and o.sub == "upgrade" and o.latest and o.channel == "unstable", "upgrade = install --latest (+ --channel)")
+    _, e = P({ "bootstrap", "install", "--version", "1", "--latest" }, "bootstrap")
+    ok(e ~= nil, "--version with --latest is a usage error")
+    _, e = P({ "bootstrap", "install", "--channel", "unstable" }, "bootstrap")
+    ok(e ~= nil, "--channel without --latest is a usage error")
+    _, e = P({ "bootstrap", "frobnicate" }, "bootstrap")
+    ok(e and e:find("install, upgrade", 1, true), "an unknown sub-command is a usage error")
+    _, e = P({ "bootstrap", "install", "--json" }, "bootstrap")
+    ok(e ~= nil, "--json belongs to the status page")
+    o = P({ "update" }, "update")
+    ok(o and o.sub == "install" and o.latest and o.require_pin, "`lw update` = install --latest, needs a pin")
+    o = P({ "update", "--version", "1.2.3", "--force" }, "update")
+    ok(o and o.version == "1.2.3" and not o.latest and o.force, "`lw update --version X` = install --version X")
+    _, e = P({ "update", "--pin-only" }, "update")
+    ok(e ~= nil, "`lw update` takes only its old flags")
+  end
+
+  -- ---- status page ------------------------------------------------------------------
+  do
+    local json = require("boot.json")
+    -- no pin
+    local r = sb .. "/st-none"; git_init(r)
+    local st = bootstrap.status(r, { host_version = V1, resolve_newest = newest_is(V2) })
+    local text = table.concat(st.lines, "\n")
+    eq(st.exit, 0, "status page exits 0 without a pin")
+    ok(text:find("(no lw.pin)", 1, true) and text:find("What you can do:\n  lw bootstrap install ", 1, true)
+      and text:find("pin this repo to lw " .. V1, 1, true),
+      "no pin: leads with `lw bootstrap install`  (" .. text .. ")")
+    ok(text:find("only reports now", 1, true), "no pin: the migration note")
+    ok(text:match("^[%w%p%s]*$") ~= nil, "status page is ASCII")
+    eq(bootstrap.status(r, { check = true, offline = true }).exit, 1, "--check exits 1 without a pin")
+    ok(uv.fs_stat(r .. "/lw.pin") == nil, "the status page writes nothing")
+    -- a subdirectory of the repository says it is not the root
+    paths.mkdirp(r .. "/sub")
+    local sub = table.concat(bootstrap.status(r .. "/sub", { offline = true }).lines, "\n")
+    ok(sub:find("not the repository root", 1, true), "a subdirectory is flagged  (" .. sub .. ")")
+    local subrep = bootstrap.install(r .. "/sub", { version = V1, pin_only = true })
+    ok(has(subrep, "is not the repository root"), "an install there says so too  (" .. show(subrep) .. ")")
+    os.remove(r .. "/sub/lw.pin"); os.remove(r .. "/sub/.gitattributes")
+
+    -- pinned, healthy, a newer release on the channel
+    local h = sb .. "/st-ok"; git_init(h)
+    bootstrap.install(h, { version = V1 })
+    git(h, "add", "-A"); git(h, "commit", "-q", "-m", "x")
+    local st2 = bootstrap.status(h, { invoked = "launcher", self_version = V1, resolve_newest = newest_is(V2) })
+    local t2 = table.concat(st2.lines, "\n")
+    ok(t2:find(V2 .. " is available on the stable channel", 1, true), "newer release named  (" .. t2 .. ")")
+    ok(t2:find("pinned; lw.sh / lw.cmd current", 1, true), "healthy: the shared affirmation")
+    ok(t2:find("./lw.sh bootstrap upgrade", 1, true) and t2:find("once more to take " .. V2, 1, true),
+      "the invoked (launcher) form + the run-it-once-more hint")
+    ok(not t2:find("only reports now", 1, true), "no migration note when pinned")
+    eq(bootstrap.status(h, { check = true, resolve_newest = newest_is(V2) }).exit, 0,
+      "--check passes on a healthy pin with a newer release available")
+    -- offline: not checked, never a failure
+    local t3 = table.concat(bootstrap.status(h, { resolve_newest = function() return nil, "offline" end }).lines, "\n")
+    ok(t3:find("not checked - offline", 1, true), "a failed release check reads 'not checked'")
+    -- json
+    local doc = bootstrap.status(h, { resolve_newest = newest_is(V2) }).doc
+    local enc = json.encode(doc)
+    local back = json.decode(enc)
+    ok(back and back.mode == "launchers" and back.pin.version == V1 and back.update.status == "available"
+      and back.update.newest == V2 and back.summary.actionable == 0 and back.launchers["lw.sh"].generation == "current",
+      "--json document  (" .. enc:sub(1, 300) .. ")")
+    ok(enc:find('"missing_hashes":[]', 1, true) ~= nil, "empty arrays encode as []")
+
+    -- pin-only with a finding
+    local po = sb .. "/st-po"; git_init(po)
+    bootstrap.install(po, { version = V1, pin_only = true })
+    put(po .. "/.gitattributes", "")
+    local st4 = bootstrap.status(po, { resolve_newest = newest_is(V1) })
+    local t4 = table.concat(st4.lines, "\n")
+    ok(t4:find("none - pin only", 1, true) and t4:find("* no line-ending rule for lw.pin", 1, true)
+      and t4:find("lw bootstrap install --pin-only", 1, true),
+      "pin-only + finding: fix with --pin-only  (" .. t4 .. ")")
+    ok(t4:find("add lw.sh / lw.cmd", 1, true), "pin-only: how to add the launchers")
+    eq(bootstrap.status(po, { check = true, resolve_newest = newest_is(V1) }).exit, 1,
+      "--check exits 1 on an actionable finding")
+  end
+
+  -- ---- BUG: two implementations of the committed-ignore rule --------------------
+  do
+    local saved = check.cache_ignored_by_repo
+    local calls = 0
+    check.cache_ignored_by_repo = function(...) calls = calls + 1; return saved(...) end
+    local r = sb .. "/ign"; git_init(r)
+    put(r .. "/.gitignore", "/.nvim/**\n")
+    local rm = require("boot.repo_meta")
+    local writer = rm.cache_ignored_by_repo(r, rm.toplevel(r))
+    put(r .. "/lw.pin", "version = 1.0.0\n"); put(r .. "/lw.sh", launcher.render("sh"))
+    local res = check.run_checks(r, { git = function(c, a) return rm._git(c, a) end, sha256 = verify.sha256_hex })
+    check.cache_ignored_by_repo = saved
+    eq(writer, true, "the writer sees the committed rule")
+    eq(res.git and res.git.ignore, "repo", "the checks see the same")
+    eq(calls, 2, "writer and checks go through the one rule (launcher_check.cache_ignored_by_repo)")
+  end
+
+  -- ---- BUG: pin management provisioned the pinned bundle first ------------------
+  -- `./lw.sh bootstrap` (pinned context: LOOMWORKS_PINNED set) must not
+  -- download the bundle — it needs no system Lua, and a pin whose bundle entry
+  -- is wrong must still be repairable through the launcher.
+  do
+    local work = sb .. "/pinned-ctx"
+    local repo = work .. "/proj"; git_init(repo)
+    local hashes = {}
+    for _, a in pairs(pin.HOST_ASSETS) do hashes[a] = string.rep("a", 64) end
+    hashes[pin.bundle_asset(V1)] = string.rep("b", 64)   -- no such bundle anywhere
+    put(repo .. "/lw.pin", pin.serialize(V1, hashes))
+    local home = work .. "/home"; paths.mkdirp(home)
+    local env = {}
+    local override = { LOCALAPPDATA = home, XDG_DATA_HOME = home, APPDATA = home, XDG_CONFIG_HOME = home,
+      LOOMWORKS_PINNED = V1, LW_ROOT = repo, LOOMWORKS_RELEASE_URL = work .. "/empty-mirror" }
+    for k, v in pairs(uv.os_environ()) do
+      if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" then env[#env + 1] = k .. "=" .. v end
+    end
+    for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+    local logf = work .. "/out.txt"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local done, code = false, nil
+    local rel = "../../../../lua"   -- luvi joins a bundle path onto its cwd
+    local h = uv.spawn(uv.exepath(), { args = { rel, "--", "bootstrap", "--check" }, cwd = repo, env = env,
+      stdio = { nil, fd, fd } }, function(c) code = c; done = true end)
+    ok(h ~= nil, "spawned a source-run host in pinned context")
+    if h then
+      local t = uv.new_timer()
+      t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+    end
+    uv.fs_close(fd)
+    local out = slurp(logf) or ""
+    ok(not out:find("could not provision pinned bundle", 1, true),
+      "`./lw.sh bootstrap` does not provision the pinned bundle  (" .. out:sub(1, 300) .. ")")
+    ok(out:find("lw.pin -> lw " .. V1, 1, true) and out:find("./lw.sh bootstrap", 1, true),
+      "it prints the status page in the launcher form (exit " .. tostring(code) .. ")")
+  end
+
+  uv.os_unsetenv("LOOMWORKS_RELEASE_URL")
   paths.rm_rf(sb)
 end
 
