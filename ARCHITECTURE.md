@@ -1377,18 +1377,21 @@ with no prior install (spec §16.21–16.24). Layers:
   pin checks (spec §16.24 "Checks: one source of truth", §16.31 provider #4),
   consumed by the `lw bootstrap` status page (luvi host, no system Lua) and by
   `loomworks/launcher_health.lua` (system Lua, either host). Pure over an
-  injected `env = { git(cwd, args) -> code, stdout; sha256(bytes); read(path);
-  stat(path); invoked = "launcher"|"global" }` — no vim shim, no direct spawn —
+  injected `env = { git(cwd, args) -> code, stdout; sha256(bytes); read(path)?;
+  exists(path)?; stale(root, version)? -> n, bytes; invoked = "launcher"|"global" }`
+  — no vim shim, no direct spawn —
   so each host passes its own git runner (`boot.repo_meta._git` /
-  `loomworks.exe.system`) and tests pass fakes. `run(root, env)` →
-  `{ root, repo_top?, mode = "launchers"|"pin-only"|"none", pin?, launchers,
-  findings[] }`, each finding `{ id, kind = "suggestion"|"info", title, detail?,
-  remedy? }` with the remedy already spelled in the invoked form. The mode is
+  `loomworks.exe.system`) and tests pass fakes. `run_checks(root, env)` →
+  `{ root, mode = "launchers"|"pin-only"|"none", version?, pin?, pin_error?,
+  missing_hashes, launchers, git?, stale?, repair, findings[] }`, each finding
+  `{ id, kind = "suggestion"|"info", title, detail?, remedy? }` (actionable
+  first) with the remedy already spelled in the invoked form. The mode is
   inferred (pin + neither launcher = pin-only) and scopes the checks. The
   committed-ignore test (`cache_ignored_by_repo`) moves here from
   `repo_meta` so the checker and the writer apply one rule (today health
   re-implements it with its own path heuristics). `stale_cache` stays in `repo_meta` (it is the prune's
-  dry run) and is reached through `env`.
+  dry run) and is reached through `env.stale`. `cmd(invoked, rest)` / `run(invoked,
+  rest)` spell a command in the invoked form.
 - **`boot/repo_meta.lua`** — the `.gitignore` / `.gitattributes` /
   exec-bit steps shared by bootstrap and update: `git check-ignore -v` (a match
   counts only when its source is a committed `.gitignore` inside the repo, not
@@ -1404,7 +1407,10 @@ with no prior install (spec §16.21–16.24). Layers:
   `{ lines[], doc, exit }`: `launcher_check.run` + the bounded release probe
   (`update.resolve_newest_version` with health's fetch limits) + the tailored
   "What you can do" actions; `doc` is the `--json` document (encoded by
-  `boot/json.lua`, sorted keys). `install(start, opts)` resolves the target
+  `boot/json.lua`, sorted keys; `json.array()` marks arrays so an empty one
+  encodes as `[]`). The argument grammar (`pin.parse_bootstrap_args`, pure) maps
+  `upgrade` / `update` onto install options and rejects the old flags on the
+  status page (exit 2). `install(start, opts)` resolves the target
   (pin root or start dir) and the version (explicit > `--latest` via
   `resolve_newest_version` with the never-backwards rule > pinned > host), then:
   fetch the release's
@@ -1461,7 +1467,7 @@ with no prior install (spec §16.21–16.24). Layers:
   (and the deprecated `update`) are dispatched **before** pinned-context bundle
   provisioning too — they need no system Lua — so `./lw.sh bootstrap` works
   offline and can repair a pin whose bundle entry is wrong. `main.lua` only
-  parses argv into `{ sub = nil|"install"|"upgrade", version, latest, channel,
+  parses argv (`pin.parse_bootstrap_args`) into `{ sub = nil|"install"|"upgrade", version, latest, channel,
   pin_only, force, json, check }` (usage errors exit 2), prints the one-line
   deprecation on `update`, and calls `boot.bootstrap`.
 

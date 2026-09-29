@@ -975,8 +975,9 @@ root or the current directory. When one is found, that **pin root** is the
 directory reported and written. When none is found, the **target directory** is
 the start directory itself (where `lw bootstrap` has always written). When the
 target lies inside a git work tree but is not its top level, the status page
-says so on its directory line ("not the repository root `<top>`"), since a pin
-below the top is only found from inside that subdirectory.
+says so on its directory line ("not the repository root `<top>`"), and an
+install that creates a pin there says so in its report, since a pin below the
+top is only found from inside that subdirectory.
 
 **Invoked form.** Every command the status page, a report or a remedy prints is
 spelled in the form that was invoked: in pinned context (§16.22, run through a

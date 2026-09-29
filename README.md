@@ -509,9 +509,12 @@ that `lw.sh` / `lw.cmd` / `lw.pin` will work for every contributor and CI runner
 * launcher: no line-ending rule for lw.sh, lw.cmd, lw.pin in .gitattributes
 ```
 
-It reports and never fixes; the usual remedy is `./lw.sh update --version
-<pinned version>`, which repairs the files without moving the pin. `lw help
-launcher` lists the checks.
+It reports and never fixes; the usual remedy is `lw bootstrap install`
+(`./lw.sh bootstrap install` through the launcher), which repairs the files
+without moving the pin. In a pin-only repository (`lw.pin` without launchers)
+the missing launchers are intended and only the pin's checks run. `lw bootstrap`
+shows the same checks as a status page with what to do next; `lw help launcher`
+lists them.
 
 #### Submodule drift
 
@@ -1255,15 +1258,24 @@ Then enable completion with `lw completion bash`
 
 For a project where every contributor and CI runner should use the **same,
 pinned** `lw` — with no prior global install — commit a repo-local launcher.
-From the repo root:
+`lw bootstrap` shows where the repository stands and what to do; `lw bootstrap
+install` writes the files. From the repo root:
 
 ```sh
-lw bootstrap        # pins this host's release; or: lw bootstrap --version 0.1.0
+lw bootstrap                 # status: pin, launchers, git metadata - and what you can do
+lw bootstrap install         # pin this lw's release; or: --version 0.1.37, or --latest
 git add lw.cmd lw.pin .gitattributes .gitignore   # lw.sh is already staged (see below)
 git commit -m "Add the pinned lw launcher"
 ```
 
-`bootstrap` writes three committed files:
+> **Changed in 0.1.37.** Plain `lw bootstrap` used to write the files; it is now
+> a read-only status page, and `lw bootstrap install` writes them (the old flags
+> on plain `lw bootstrap` — `--version`, `--force` — are an error naming the new
+> form). `lw update` is deprecated: it still works for now, with a notice, as
+> `lw bootstrap install --latest` (`lw update --version X` as `lw bootstrap
+> install --version X`); use `lw bootstrap upgrade`.
+
+`install` writes three committed files:
 
 | File | What it is |
 |---|---|
@@ -1277,20 +1289,26 @@ verified against the key built into `lw` before any hash is trusted — every
 sure the repository carries the files correctly, and says what it changed:
 
 - **`.gitignore`** — the launcher caches the host binary it downloads under
-  `.nvim/cache/`; bootstrap appends that to `.gitignore` unless a committed rule
+  `.nvim/cache/`; install appends that to `.gitignore` unless a committed rule
   of the repository already covers it (e.g. `.nvim/`). A rule only in your
   personal global gitignore does not count — teammates and CI don't have it.
 - **`.gitattributes`** — `lw.sh` and `lw.pin` get `text eol=lf`, `lw.cmd`
   `text eol=crlf`, so every checkout has working line endings whatever its
   `core.autocrlf` (a CRLF `lw.sh` fails under `sh`).
-- **Exec bit** — on Windows git does not track file modes, so bootstrap stages
+- **Exec bit** — on Windows git does not track file modes, so install stages
   `lw.sh` as executable (`git add --chmod=+x`, mode `100755`) — the only file it
   stages. Otherwise the file mode is set directly.
 
-An `lw.sh` / `lw.cmd` that is not a launcher `lw` wrote (local edits) is kept
-unless you pass `--force`. The pinned bundle the host provisions lives in your
-per-user data directory (`<data>/loomworks/pinned/`), never in the repository —
-a cloned repository could otherwise ship a pre-"extracted" bundle.
+`install` is one idempotent command for every case: from nothing, a pin only,
+stale or edited launchers, or missing rules it brings the repository to the
+correct state, and a second run changes nothing. Which version it pins:
+`--version` / `--latest` when given; otherwise **the pinned version** — so plain
+`install` in a pinned repository only repairs and never moves the pin; with no
+pin, the running `lw`'s release (a development build needs `--version` or
+`--latest`). An `lw.sh` / `lw.cmd` that is not a launcher `lw` wrote (local
+edits) is kept unless you pass `--force`. The pinned bundle the host provisions
+lives in your per-user data directory (`<data>/loomworks/pinned/`), never in the
+repository — a cloned repository could otherwise ship a pre-"extracted" bundle.
 
 Then anyone with a checkout runs the launcher — no global `lw` needed:
 
@@ -1329,32 +1347,43 @@ global `lw` resolves the pin for `build` / `run` / `test` / `clean`: if the pin
 matches its own version it runs in-process (no download); otherwise it fetches +
 verifies the pinned release and re-execs it, so you always get the pinned
 behavior. Bypass with `--no-pin` (run the global as-is) or `LOOMWORKS_LW=<path>`.
-Management commands (`version`, `self-update`, `install`, `bootstrap`, `update`)
-never redirect. The global host never executes the repo's `lw.sh`/`lw.cmd` — it
+Management commands (`version`, `self-update`, `install`, `bootstrap`) never
+redirect. The global host never executes the repo's `lw.sh`/`lw.cmd` — it
 resolves the pin declaratively and runs the official binary it fetched itself.
 
-Move the pin forward with `update` — through the launcher, so no global `lw` is
+**Pin only.** `lw bootstrap install --pin-only` commits just `lw.pin` (and its
+`.gitattributes` rule) — no scripts. The pin then works through a globally
+installed `lw`, which runs the pinned release for `build` / `run` / `test` /
+`configure` / `clean` as above, so everyone (CI included) needs `lw` installed.
+`lw bootstrap` and `lw health` treat the missing launchers as intended; launchers
+already present are left alone by `--pin-only`; a later plain `lw bootstrap
+install` adds them, keeping the pin. The pin does not govern the editor plugin.
+
+Move the pin forward with `upgrade` — through the launcher, so no global `lw` is
 needed (it runs as the currently pinned release):
 
 ```sh
-./lw.sh update                  # repoint lw.pin at the latest release
-./lw.sh update --version 0.2.0  # or a specific one
-./lw.sh update --version <the current pin>   # repair: refresh launchers/rules, keep the pin
+./lw.sh bootstrap upgrade                  # the newest release on your update channel
+./lw.sh bootstrap install --version 0.2.0  # or a specific one
+./lw.sh bootstrap install                  # repair: refresh launchers/rules, keep the pin
 ```
 
-`update` rewrites `lw.pin` with the target release's signed hashes (failing
-cleanly if that release isn't fetchable), applies the same metadata steps as
-`bootstrap`, removes cached binaries of other versions from `.nvim/cache/`, and
-prints only what changed (`lw.pin: 0.1.34 -> 0.1.35`, or `lw.pin already at X -
-no changes`). The pinned release writes *its* launchers, so after moving to a
-newer release run `./lw.sh update` once more to take the new release's launchers
-(update says so). A global `lw` — a release or a build from source — can run
-`lw update` directly too.
+`upgrade` (= `install --latest`) follows your update channel (`lw settings set
+channel unstable`, or `--channel` for one run) and never moves the pin
+backwards. It rewrites `lw.pin` with the target release's signed hashes (failing
+cleanly if that release isn't fetchable), applies the metadata steps, removes
+cached binaries of other versions from `.nvim/cache/`, and prints only what
+changed (`lw.pin: 0.1.36 -> 0.1.37`, or `lw.pin already at X - no changes`). The
+pinned release writes *its* launchers, so after moving to a newer release run
+`./lw.sh bootstrap install` once more to take the new release's launchers
+(upgrade says so). A global `lw` — a release or a build from source — can run
+`lw bootstrap upgrade` directly too.
 
-`lw health` checks the launcher files — the pin's hashes, current launchers,
-the committed exec bit and line endings, the `.gitattributes` and `.gitignore`
-rules — and names the fix (`lw help launcher`). See `lw help bootstrap` /
-`lw help update`.
+`lw bootstrap` (and `lw health`) check the launcher files — the pin's hashes,
+current launchers, the committed exec bit and line endings, the `.gitattributes`
+and `.gitignore` rules — and name the fix (`lw help launcher`). `lw bootstrap
+--check` exits 1 when there is no pin or something needs fixing (a CI guard);
+`--json` prints the same as one JSON document. See `lw help bootstrap`.
 
 ### Commands
 
@@ -1392,8 +1421,10 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
-| `lw bootstrap [--version <x.y.z>] [--force]` | Install a repo-local launcher + version pin (`lw.sh`/`lw.cmd`/`lw.pin`) and its `.gitattributes` / `.gitignore` rules |
-| `lw update [--version <x.y.z>] [--force]` | Repoint `lw.pin` at a target (or the latest) release; with the current version, repair the launcher files |
+| `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
+| `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
+| `lw bootstrap upgrade` | `lw bootstrap install --latest`: move the pin to the newest release |
+| `lw update` | Deprecated: `lw bootstrap install --latest` (`--version X`: `install --version X`) |
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command
@@ -1498,11 +1529,12 @@ don't use this — install the module plugin the usual way.)
 
 - **Pin `lw` itself** with a repo-local launcher (see
   [Repo-local launcher](#repo-local-launcher-lw-bootstrap)): commit `lw.sh` /
-  `lw.cmd` / `lw.pin` with `lw bootstrap`, then run `./lw.sh --no-input
+  `lw.cmd` / `lw.pin` with `lw bootstrap install`, then run `./lw.sh --no-input
   build …` on the runner (`.\lw.cmd --no-input build …` from cmd/PowerShell;
   on GitHub Actions' Windows runners `shell: bash` runs `./lw.sh`) — it fetches +
   verifies the pinned host and bundle, so every cell runs the same reproducible
-  `lw` with no separate install step.
+  `lw` with no separate install step. `./lw.sh bootstrap --check` fails a job
+  when the launcher files need attention (`lw bootstrap` shows what and why).
 - Pass `--no-input` (or set `CI=1`, which implies it) so a missing value errors
   instead of blocking on a prompt. In non-interactive mode `lw build` also
   ignores the active profile and never picks a sole profile — name the profile

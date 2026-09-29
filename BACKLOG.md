@@ -256,13 +256,13 @@ Open follow-ups:
 - **Redundant `.nvim/cache/` line.** A repo bootstrapped before the
   "committed rule already covers it" check can carry a `.nvim/cache/` line
   that a broader `.nvim/` rule makes redundant. Neither bootstrap/update nor
-  the health launcher check notices it or offers its removal.
+  the launcher checks (`lw bootstrap` / `lw health`) notice it or offer its removal.
 - **Pin path printed three ways.** The fetch line and `lw version` show the
   pin as `/c/...` (MSYS, from `lw.sh` under Git Bash), `C:\...` (from
   `lw.cmd`) and `C:/...` (from the host). One normalized form would read
   better; the launcher can only print what its shell gives it.
-- **Cached binaries pruned only by `lw update`.** Old `lw-<ver>-<asset>`
-  binaries in `.nvim/cache/` are removed by `lw bootstrap` / `lw update` only;
+- **Cached binaries pruned only by `lw bootstrap install`.** Old `lw-<ver>-<asset>`
+  binaries in `.nvim/cache/` are removed by `lw bootstrap install` / `upgrade` only;
   a checkout that switches branches between pins (or a launcher-only user who
   never runs update) keeps accumulating them. Health reports them; the
   launcher could prune on a fresh fetch.
@@ -272,6 +272,25 @@ CI on Linux only, so the dynamic `lw.cmd` tests (retry, PATH shadowing) run only
 when the suite is run on Windows locally - a Windows standalone CI job would
 cover them.
 
+
+### Bootstrap command restructure (feature/bootstrap-commands)
+
+`lw bootstrap` = read-only status page (shared checks with `lw health`),
+`lw bootstrap install` = one converge command, `--pin-only`, `upgrade` alias,
+`lw update` deprecated (spec §16.24). Fixed along the way: plain `lw bootstrap`
+re-pinned a pinned repo to the running host's version; `lw update` ignored the
+update channel; `./lw.sh update` provisioned the pinned bundle first (so a pin
+with a bad bundle hash could not be repaired through the launcher); two
+implementations of the committed-ignore rule. Follow-ups:
+
+- **Remove `lw update`** one release after the deprecation (help topic,
+  parser branch, README row, tests).
+- **Launcher template comment** still says "Regenerate with `lw update`";
+  change it with the next functional template change (a new generation), at
+  the latest when `lw update` is removed.
+- **Pin-only is inferred** (pin + neither launcher). Deleting both launchers
+  by hand therefore reads as pin-only; a recorded mode was considered and
+  declined.
 
 ### `lw health fix <n>` (deferred, user idea)
 
