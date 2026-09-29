@@ -8598,16 +8598,22 @@ and CI runner. It reports and never fixes; lines start with `launcher:`.
   lw.sh / lw.cmd   present, and the launcher this lw writes. An older one
                    with a defect that breaks runs is a suggestion; one that
                    is only older (no download retry, noisy progress) is a
-                   note; content lw never wrote is a note (local edits?)
+                   note; content lw never wrote is a suggestion (local edits?
+                   `lw bootstrap install --force` restores it)
+  committed        lw.pin, lw.sh, lw.cmd, .gitignore and .gitattributes are
+                   committed - untracked, staged-only or modified files are
+                   listed with the `git add ... && git commit` to run
   exec bit         lw.sh is committed as mode 100755 (bootstrapped on Windows
                    it may not be: CI on Linux/macOS then cannot run it)
-  .gitattributes   lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`
-                   (your global attributes file does not count)
+  .gitattributes   lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`,
+                   from committed content (your global attributes file, or
+                   rules not committed yet, do not count)
   line endings     committed LF-only; in this checkout lw.sh / lw.pin LF and
                    lw.cmd CR LF (a CR LF lw.sh fails under sh)
-  .nvim/cache/     ignored by a .gitignore of the repository - a rule only in
-                   your personal gitignore does not count (teammates and CI do
-                   not have it)
+  .nvim/cache/     ignored by a committed .gitignore of the repository - a rule
+                   only in your personal gitignore, or in a .gitignore not
+                   committed yet, does not count (teammates and CI do not have
+                   it)
   old binaries     cached lw binaries of other versions (removed by the next
                    `lw bootstrap install`)
 

@@ -138,7 +138,7 @@ end
 --- Is the launcher cache ignored by one of the REPOSITORY's own ignore files?
 --- The rule lives in boot.launcher_check (one rule for writing here and for the
 --- checks that health and the status page report).
---- @return boolean|nil covered (nil: git could not answer)
+--- @return boolean|nil covered (nil: git could not answer), string|nil uncommitted_source
 function M.cache_ignored_by_repo(root, top)
   return require("boot.launcher_check").cache_ignored_by_repo(root, top,
     function(cwd, args) return M._git(cwd, args) end)
@@ -149,11 +149,15 @@ end
 function M.ensure_gitignore(root, top, write_file)
   local path = root .. "/.gitignore"
   local existing = read(path) or ""
-  local covered = M.cache_ignored_by_repo(root, top)
-  if covered == nil then covered = launcher.ignore_text_covers(existing) end
+  local covered, uncommitted_src = M.cache_ignored_by_repo(root, top)
   if covered then
     return launcher.ignore_text_covers(existing) and "present" or "covered"
   end
+  -- Not (yet) a committed rule: when an ignore file of the repository already
+  -- has a rule covering the cache — ours from an earlier run, or the user's,
+  -- not committed yet — adding another would only duplicate it; committing it
+  -- is what is missing (the checks report that).
+  if uncommitted_src or launcher.ignore_text_covers(existing) then return "present" end
   local ok, e = write_file(path, M.append_block(existing, {
     "# loomworks: pinned lw binaries (machine-local)",
     launcher.CACHE_DIR .. "/",
@@ -250,27 +254,27 @@ end
 --- @param root string pin root
 --- @param keep string the pinned version to keep
 --- @param running string|nil the running executable's path
---- @return integer removed, integer bytes
+--- @return integer removed, integer bytes, { name: string, version: string, size: integer }[] files
 function M.prune_cache(root, keep, running)
-  if type(root) ~= "string" or root == "" or type(keep) ~= "string" then return 0, 0 end
+  if type(root) ~= "string" or root == "" or type(keep) ~= "string" then return 0, 0, {} end
   root = root:gsub("\\", "/"):gsub("/+$", "")
   local nvim, dir = root .. "/.nvim", root .. "/" .. launcher.CACHE_DIR
   for _, d in ipairs({ nvim, dir }) do
     local st = uv.fs_lstat(d)
-    if not st or st.type ~= "directory" then return 0, 0 end
+    if not st or st.type ~= "directory" then return 0, 0, {} end
   end
   -- Resolved, the cache must still lie under the resolved root.
   local rroot, rdir = uv.fs_realpath(root), uv.fs_realpath(dir)
-  if not rroot or not rdir then return 0, 0 end
+  if not rroot or not rdir then return 0, 0, {} end
   rroot = rroot:gsub("\\", "/"):gsub("/+$", ""); rdir = rdir:gsub("\\", "/"):gsub("/+$", "")
-  if rdir == rroot or not under(rdir, rroot) then return 0, 0 end
+  if rdir == rroot or not under(rdir, rroot) then return 0, 0, {} end
 
   local assets = {}
   for _, a in pairs(pin.HOST_ASSETS) do assets[#assets + 1] = a end
   local run = running and lower_if_win((running:gsub("\\", "/")))
   local handle = uv.fs_scandir(dir)
-  if not handle then return 0, 0 end
-  local removed, bytes = 0, 0
+  if not handle then return 0, 0, {} end
+  local removed, bytes, files = 0, 0, {}
   while true do
     local name = uv.fs_scandir_next(handle)
     if not name then break end
@@ -284,11 +288,13 @@ function M.prune_cache(root, keep, running)
       if st and st.type == "file" and not is_running then
         if uv.fs_unlink(p) then
           removed = removed + 1; bytes = bytes + (st.size or 0)
+          files[#files + 1] = { name = name, version = v, size = st.size or 0 }
         end
       end
     end
   end
-  return removed, bytes
+  table.sort(files, function(a, b) return a.name < b.name end)
+  return removed, bytes, files
 end
 
 --- Old cached binaries a prune would remove (for health): count + bytes.

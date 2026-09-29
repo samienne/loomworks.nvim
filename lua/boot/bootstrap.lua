@@ -187,8 +187,13 @@ end
 --- metadata, prune the launcher cache. Returns the change lines (empty when
 --- nothing changed) and a state table, or nil, err.
 local function apply(root, version, hashes, opts)
-  local changes = {}
+  local changes, touched = {}, {}
   local function add(line) if line then changes[#changes + 1] = line end end
+  local function touch(f)
+    for _, x in ipairs(touched) do if x == f then return end end
+    touched[#touched + 1] = f
+  end
+  local cmd = require("boot.launcher_check").cmd
 
   local have_pin = read(root .. "/lw.pin")
   local old = have_pin and pin.parse(have_pin) or nil
@@ -201,6 +206,7 @@ local function apply(root, version, hashes, opts)
   if pin_changed or pin_eol then
     local okp, ep = M.write_pin(root, version, hashes)
     if not okp then return nil, ep end
+    touch("lw.pin")
   end
   if pin_eol then add("rewrote lw.pin with LF line endings") end
 
@@ -213,14 +219,15 @@ local function apply(root, version, hashes, opts)
     end
     if #present > 0 then
       add("kept " .. table.concat(present, ", ") .. (#present == 1 and " as it is" or " as they are") ..
-        " (--pin-only);" ..
-        " `lw bootstrap install` refreshes them")
+        " (--pin-only); `" .. cmd(opts.invoked, "bootstrap install") .. "` refreshes " ..
+        (#present == 1 and "it" or "them"))
     end
   else
     for _, kind in ipairs({ "sh", "cmd" }) do
       local st, info = M.write_launcher(root, kind, opts.force)
       if st == nil then return nil, info end
       if st == "written" then created_launcher = true end
+      if st ~= "same" and st ~= "kept" then touch(launcher.KINDS[kind]) end
       add(launcher_line(kind, st, info))
     end
   end
@@ -229,7 +236,7 @@ local function apply(root, version, hashes, opts)
   if not opts.pin_only then
     local gi, eg = repo_meta.ensure_gitignore(root, top, write_file)
     if not gi then return nil, eg end
-    if gi == "added" then add("added " .. launcher.CACHE_DIR .. "/ to .gitignore") end
+    if gi == "added" then add("added " .. launcher.CACHE_DIR .. "/ to .gitignore"); touch(".gitignore") end
   end
 
   local appended, problem, ea = repo_meta.ensure_gitattributes(root, top, write_file,
@@ -237,24 +244,25 @@ local function apply(root, version, hashes, opts)
   if not appended then return nil, ea end
   if #appended > 0 then
     add("added line-ending rules for " .. table.concat(appended, ", ") .. " to .gitattributes")
+    touch(".gitattributes")
   end
   add(problem)
 
   if not opts.pin_only then
     local xb, xproblem = repo_meta.ensure_exec_bit(root, top)
-    if xb == "staged" then add("staged lw.sh as executable (git mode 100755)") end
-    if xb == "set" then add("set lw.sh executable in the git index (mode 100755)") end
+    if xb == "staged" then add("staged lw.sh as executable (git mode 100755)"); touch("lw.sh") end
+    if xb == "set" then add("set lw.sh executable in the git index (mode 100755)"); touch("lw.sh") end
     add(xproblem)
   end
 
-  local removed, bytes = repo_meta.prune_cache(root, version, opts.running_exe)
-  if removed > 0 then
-    add(string.format("removed %d old pinned lw binar%s from %s (%.1f MB)", removed,
-      removed == 1 and "y" or "ies", launcher.CACHE_DIR, bytes / 1048576))
+  local _, _, pruned = repo_meta.prune_cache(root, version, opts.running_exe)
+  for _, f in ipairs(pruned or {}) do
+    add(string.format("removed old pinned lw %s (%s, %.1f MB) from %s", f.version, f.name,
+      f.size / 1048576, launcher.CACHE_DIR))
   end
 
   return changes, { old = old, had_pin = have_pin ~= nil, pin_changed = pin_changed,
-    created_launcher = created_launcher, top = top }
+    created_launcher = created_launcher, top = top, touched = touched }
 end
 
 --- The hint when a host older than the target wrote the launchers: it can only
@@ -264,7 +272,23 @@ local function older_host_hint(version, opts, st)
   if opts.pin_only then return nil end
   if not (self and st and st.pin_changed and paths.version_gt(version, self)) then return nil end
   return "lw.sh / lw.cmd are the launchers of lw " .. self .. " (the lw that ran this);" ..
-    " run `./lw.sh bootstrap install` once more to take " .. version .. "'s"
+    " run `" .. M.launcher_cmd(opts.invoked, "bootstrap install") .. "` once more to take " .. version .. "'s"
+end
+
+--- A command that must run through a launcher (the pinned release): the
+--- invoked launcher's form, else ./lw.sh.
+function M.launcher_cmd(invoked, rest)
+  local check = require("boot.launcher_check")
+  if invoked == "lw.cmd" or invoked == "lw.sh" then return check.cmd(invoked, rest) end
+  return check.cmd("lw.sh", rest)
+end
+
+--- The one-line deprecation notice of `lw update`, in the invoked form (spec
+--- §16.24).
+function M.deprecation_line(invoked)
+  local cmd = require("boot.launcher_check").cmd
+  return "lw: `" .. cmd(invoked, "update") .. "` is deprecated; use `" .. cmd(invoked, "bootstrap upgrade") ..
+    "` (or `" .. cmd(invoked, "bootstrap install --version <x.y.z>") .. "`)"
 end
 
 -- One flat clause, no nested parentheses (spec §16.24 "Reporting").
@@ -306,15 +330,16 @@ end
 --- @return string[]|nil report, string|nil err
 function M.install(start, opts)
   opts = opts or {}
+  local cmd = require("boot.launcher_check").cmd
   local root, has_pin = M.target(start)
   if opts.require_pin and not has_pin then
-    return nil, "no lw.pin found (run `lw bootstrap install` first)"
+    return nil, "no lw.pin found (run `" .. cmd(opts.invoked, "bootstrap install") .. "` first)"
   end
   if opts.version and opts.latest then
     return nil, "--version and --latest cannot be combined"
   end
   local current = has_pin and pin.read(root) or nil
-  local version, kept_note
+  local version, kept_note, newest_note
   if opts.version then
     version = opts.version
   elseif opts.latest then
@@ -323,6 +348,7 @@ function M.install(start, opts)
       return nil, "could not resolve the newest release" ..
         (channel and (" on the " .. channel .. " channel") or "") .. ": " .. tostring(err)
     end
+    newest_note = "newest " .. channel .. " release: " .. newest
     if current and paths.version_gt(current.version, newest) then
       version = current.version
       kept_note = "lw.pin " .. current.version .. " is newer than the newest " .. channel ..
@@ -354,6 +380,7 @@ function M.install(start, opts)
   if not changes then return nil, st end
 
   local out = {}
+  if newest_note then out[#out + 1] = newest_note end
   if kept_note then out[#out + 1] = kept_note end
   local old_v = st.old and st.old.version
   if not st.pin_changed and #changes == 0 then
@@ -361,8 +388,8 @@ function M.install(start, opts)
     return out
   end
   if not st.pin_changed then
-    -- The same wording as the no-op above (whichever host runs it).
-    out[#out + 1] = "lw.pin already at " .. version .. "; " .. SIGNED
+    -- Kept, but something else changed: distinct from the no-op wording.
+    out[#out + 1] = "lw.pin kept at " .. version .. "; " .. SIGNED
   elseif old_v and old_v ~= version then
     out[#out + 1] = "lw.pin: " .. old_v .. " -> " .. version .. "; " .. SIGNED
   elseif old_v then
@@ -380,15 +407,21 @@ function M.install(start, opts)
   if not st.had_pin or st.created_launcher then
     out[#out + 1] = ""
     if opts.pin_only then
-      out[#out + 1] = "Commit lw.pin (and .gitattributes if changed)."
       out[#out + 1] = "A globally installed lw runs the pinned release for build, run, test, configure"
-      out[#out + 1] = "and clean. Add launchers later with `lw bootstrap install`."
+      out[#out + 1] = "and clean. Add launchers later with `" .. cmd(opts.invoked, "bootstrap install") .. "`."
     else
-      out[#out + 1] = "Commit lw.sh, lw.cmd and lw.pin (and .gitignore / .gitattributes if changed)."
       out[#out + 1] = "Run it as:  ./lw.sh <cmd>    (Linux, macOS, Git Bash on Windows)"
       out[#out + 1] = "            .\\lw.cmd <cmd>   (cmd, PowerShell)"
     end
-    out[#out + 1] = "Check it any time with `lw bootstrap`."
+    out[#out + 1] = "Check it any time with `" .. cmd(opts.invoked, "bootstrap") .. "`."
+  end
+  -- The commit hint: the files this run wrote or changed (lw never commits).
+  if #st.touched > 0 then
+    if st.top then
+      out[#out + 1] = "Commit them: " .. require("boot.launcher_check").commit_cmd(st.touched)
+    else
+      out[#out + 1] = "Commit them: " .. table.concat(st.touched, ", ")
+    end
   end
   return out
 end
@@ -443,11 +476,19 @@ function M.status(start, opts)
   channel = channel or opts.channel or update.DEFAULT_CHANNEL
   upd.channel = channel
   upd.current = compare
-  local newer = false
+  local newer, ahead = false, false
+  local newest_unstable
   if newest then
     upd.newest = newest
     newer = compare ~= nil and paths.version_gt(newest, compare)
-    upd.status = newer and "available" or "current"
+    ahead = compare ~= nil and paths.version_gt(compare, newest)
+    upd.status = newer and "available" or ahead and "ahead" or "current"
+    -- A pin ahead of the channel (a prerelease pinned while following stable):
+    -- what the newest unstable release is matters too.
+    if ahead and channel ~= "unstable" and not opts.offline then
+      local u = M.newest({ channel = "unstable", fetch = M.STATUS_FETCH, resolve_newest = opts.resolve_newest })
+      if u then newest_unstable = u; upd.newest_unstable = u end
+    end
   else
     upd.status = "unknown"
     local why = tostring(nerr or "no version"):match("^[^\n]*"):gsub("%s+$", "")
@@ -475,13 +516,22 @@ function M.status(start, opts)
       or ("no hash for " .. table.concat(r.missing_hashes, ", "))
     row("pin", "lw.pin -> lw " .. r.version .. "; " .. cover)
   end
+  local function is_pre(v) return v and v:find("-", 1, true) ~= nil end
   if newest then
     if newer then
       row("release", newest .. " is available on the " .. channel .. " channel")
+    elseif ahead then
+      local text = (is_pre(compare) and "pinned prerelease " or "pinned ") .. compare ..
+        "; newest " .. channel .. ": " .. newest
+      if newest_unstable then
+        text = text .. (paths.version_gt(newest_unstable, compare)
+          and ("; newest unstable: " .. newest_unstable)
+          or "; it is the newest unstable")
+      end
+      row("release", text)
     else
-      row("release", (compare and paths.version_gt(compare, newest) and compare or newest) ..
-        " is the newest on the " .. channel .. " channel" ..
-        ((compare and paths.version_gt(compare, newest)) and (" (newest release: " .. newest .. ")") or ""))
+      row("release", compare and (compare .. " is the newest on the " .. channel .. " channel")
+        or (newest .. " is the newest on the " .. channel .. " channel"))
     end
   else
     row("release", "not checked - offline or release server unreachable")
@@ -502,12 +552,9 @@ function M.status(start, opts)
   end
   if r.git then
     local g = r.git
-    local files = r.mode == "pin-only" and { "lw.pin" } or launcher.FILES
-    local tracked = {}
-    for _, f in ipairs(files) do
-      if g.modes and g.modes[f] then tracked[#tracked + 1] = f end
-    end
-    local gitparts = { #tracked > 0 and (table.concat(tracked, ", ") .. " tracked") or "not committed yet" }
+    local gitparts = { (g.uncommitted and #g.uncommitted > 0)
+      and ("not committed yet: " .. table.concat(g.uncommitted, ", "))
+      or (r.mode == "pin-only" and "lw.pin committed" or "lw.sh, lw.cmd, lw.pin committed") }
     if r.mode == "launchers" and g.modes and g.modes["lw.sh"] then
       gitparts[#gitparts + 1] = "lw.sh mode " .. g.modes["lw.sh"]
     end
@@ -517,12 +564,14 @@ function M.status(start, opts)
     end
     row("git", table.concat(gitparts, "; "))
     if g.attrs_bad then
-      row("attributes", #g.attrs_bad == 0 and "ok"
-        or ("no rule for " .. table.concat(g.attrs_bad, ", ")))
+      row("attributes", #g.attrs_bad > 0 and ("no rule for " .. table.concat(g.attrs_bad, ", "))
+        or (g.attrs_uncommitted and #g.attrs_uncommitted > 0) and "rules present but not committed"
+        or "ok")
     end
     if g.ignore then
       row("ignore", g.ignore == "repo" and ".nvim/cache/ ignored by a committed .gitignore"
-        or g.ignore == "personal" and ".nvim/cache/ ignored only by your personal gitignore"
+        or g.ignore == "uncommitted" and (".nvim/cache/ ignored only by an uncommitted rule in " .. g.ignore_source)
+        or g.ignore == "personal" and ".nvim/cache/ ignored only by an uncommitted or personal rule"
         or ".nvim/cache/ not ignored")
     end
   end
@@ -566,25 +615,41 @@ function M.status(start, opts)
     if not r.pin then
       act(cmd("bootstrap install --version <x.y.z>"), "rewrite the unreadable lw.pin")
     end
+    -- One action per fix: the repair, restore (--force), renormalize, and a
+    -- single commit of every file some finding says is not committed.
+    local commit_files, commit_seen = {}, {}
     for _, f in ipairs(r.findings) do
       if f.kind == "suggestion" and r.pin then
-        if f.id == "eol-committed" then
-          local files = r.mode == "pin-only" and "lw.pin" or "lw.sh lw.cmd lw.pin"
-          act(r.repair, "repair: add the missing rules, keeping lw " .. r.version)
-          act("git add --renormalize " .. files, "then commit, to store the files with LF")
-        else
+        if f.commit_files then
+          for _, cf in ipairs(f.commit_files) do
+            if not commit_seen[cf] then commit_seen[cf] = true; commit_files[#commit_files + 1] = cf end
+          end
+        elseif f.command == r.repair then
           act(r.repair, "repair: fix the findings above, keeping lw " .. r.version)
+        elseif f.command then
+          if f.id == "eol-committed" then
+            act(r.repair, "repair: add the missing rules, keeping lw " .. r.version)
+          end
+          act(f.command, f.why or "fix the finding above")
         end
       end
     end
-    if newer and r.pin then
-      local up = r.mode == "pin-only" and "bootstrap upgrade --pin-only" or "bootstrap upgrade"
-      local why = "move the pin to " .. newest
-      local sv = opts.self_version
-      if r.mode == "launchers" and sv and paths.version_gt(newest, sv) then
-        why = why .. ", then run `./lw.sh bootstrap install` once more to take " .. newest .. "'s launchers"
+    if #commit_files > 0 then
+      act(check.commit_cmd(commit_files), "commit them - contributors and CI only get what is committed")
+    end
+    local sv = opts.self_version
+    local function upgrade(to, extra)
+      local up = "bootstrap upgrade" .. (extra or "") .. (r.mode == "pin-only" and " --pin-only" or "")
+      local why = "move the pin to " .. to
+      if r.mode == "launchers" and sv and paths.version_gt(to, sv) then
+        why = why .. ", then run `" .. M.launcher_cmd(invoked, "bootstrap install") ..
+          "` once more to take " .. to .. "'s launchers"
       end
       act(cmd(up), why)
+    end
+    if newer and r.pin then upgrade(newest) end
+    if ahead and r.pin and newest_unstable and paths.version_gt(newest_unstable, compare) then
+      upgrade(newest_unstable, " --channel unstable")
     end
     if r.mode == "pin-only" then
       act(cmd("bootstrap install"), "add lw.sh / lw.cmd so contributors and CI need no global lw")
@@ -592,7 +657,8 @@ function M.status(start, opts)
     if r.stale and r.pin then
       act(r.repair, "remove the old cached binaries, keeping lw " .. r.version)
     end
-    if actionable == 0 and not newer then
+    local unstable_newer = ahead and newest_unstable and paths.version_gt(newest_unstable, compare)
+    if actionable == 0 and not newer and not unstable_newer then
       act(cmd("bootstrap install --version <x.y.z>"), "pin a different release")
     end
   end
@@ -610,7 +676,8 @@ function M.status(start, opts)
   end
   if r.mode == "none" then
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "Note: `lw bootstrap` only reports now; `lw bootstrap install` writes the files."
+    lines[#lines + 1] = "Note: `" .. cmd("bootstrap") .. "` only reports now; `" .. cmd("bootstrap install") ..
+      "` writes the files."
   end
 
   -- ---- exit + json ------------------------------------------------------------------
@@ -625,7 +692,8 @@ function M.status(start, opts)
     root = root,
     repo_top = top,
     mode = r.mode,
-    invoked = invoked,
+    invoked = (invoked == "global") and "global" or "launcher",
+    launcher = (invoked == "lw.sh" or invoked == "lw.cmd") and invoked or nil,
     launchers = {},
     update = upd,
     findings = r.mode == "none" and json.array() or findings,

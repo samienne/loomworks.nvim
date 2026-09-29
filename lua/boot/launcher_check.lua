@@ -11,7 +11,9 @@
 --   env.read(path)     -> bytes|nil       (default: io.open)
 --   env.exists(path)   -> boolean         (default: io.open)
 --   env.stale(root, version) -> n, bytes  (stale cached binaries; default none)
---   env.invoked        "launcher"|"global" (how the remedies are spelled)
+--   env.invoked        how lw was run, so remedies are spelled in that form:
+--                      "lw.sh" | "lw.cmd" (the launcher named itself),
+--                      "launcher" (pinned context, launcher unknown), "global"
 --
 -- ASCII only: the status page prints before system Lua (§16.7).
 
@@ -67,12 +69,16 @@ function M.toplevel(root, git)
   return top and (top:gsub("\\", "/"):gsub("/+$", "")) or nil
 end
 
---- Is the launcher cache ignored by one of the REPOSITORY's own ignore files
---- (a `.gitignore` inside the work tree)? The user's global excludes and
---- `.git/info/exclude` do not count: teammates and CI do not have them. The one
---- rule both pin management (writing) and the checks (reporting) apply.
+--- Is the launcher cache ignored by a COMMITTED rule of the repository: the
+--- matching line is in the committed (HEAD) content of a tracked `.gitignore`
+--- inside the work tree? The user's global excludes and `.git/info/exclude` do
+--- not count (teammates and CI do not have them), nor does an untracked,
+--- staged-only or locally modified `.gitignore` line. The one rule both pin
+--- management (writing) and the checks (reporting) apply.
 --- @param git fun(cwd: string, args: string[]): integer|nil, string|nil
---- @return boolean|nil covered (nil: git could not answer)
+--- @return boolean|nil covered (nil: git could not answer), string|nil source
+---   when not covered but matched by an uncommitted rule: that file, relative
+---   to the work-tree top
 function M.cache_ignored_by_repo(root, top, git)
   if not top then return nil end
   local code, out = git(root, { "-c", "core.excludesFile=", "check-ignore", "-v", "--no-index",
@@ -84,23 +90,72 @@ function M.cache_ignored_by_repo(root, top, git)
   -- git reports the source relative to the work-tree top (or absolute).
   local src = join(top, m.source)
   local base = src:match("([^/]+)$")
-  return base == ".gitignore" and under(src, top) and not under(src, top .. "/.git")
+  if not (base == ".gitignore" and under(src, top) and not under(src, top .. "/.git")) then
+    return false
+  end
+  -- Committed content: the matching line must be in HEAD's copy of the file.
+  local rel = src == top and "" or src:sub(#top + 2)
+  local c2, committed = git(root, { "show", "HEAD:" .. rel })
+  if c2 == 0 and type(committed) == "string" then
+    for line in (committed .. "\n"):gmatch("([^\n]*)\n") do
+      if (line:gsub("\r$", ""):gsub("^%s+", ""):gsub("%s+$", "")) == m.pattern then return true end
+    end
+  end
+  return false, rel
 end
 
---- The command prefix for the invoked form (spec §16.24 "Invoked form").
---- @param invoked "launcher"|"global"|nil
+--- The command prefix of an invoked form (spec §16.24 "Invoked form").
+M.PREFIX = { ["lw.sh"] = "./lw.sh", ["lw.cmd"] = ".\\lw.cmd", launcher = "./lw.sh", global = "lw" }
+
+--- A command spelled in the invoked form.
+--- @param invoked "lw.sh"|"lw.cmd"|"launcher"|"global"|nil
 function M.cmd(invoked, rest)
-  if invoked == "launcher" then return "./lw.sh " .. rest end
-  return "lw " .. rest
+  return (M.PREFIX[invoked or "global"] or "lw") .. " " .. rest
 end
 
---- The one-line "run it" advice, naming the Windows launcher form too when
---- the invoked form is the launcher.
+--- The one-line "run it" advice; for a launcher that did not name itself, the
+--- Windows launcher form is added.
 function M.run(invoked, rest)
   if invoked == "launcher" then
     return "run `./lw.sh " .. rest .. "` (`.\\lw.cmd " .. rest .. "` from cmd/PowerShell)"
   end
-  return "run `lw " .. rest .. "`"
+  return "run `" .. M.cmd(invoked, rest) .. "`"
+end
+
+--- How the running lw was invoked, for code running after main.lua (system
+--- Lua): main.lua's verdict when there is one, else the environment.
+--- @return "lw.sh"|"lw.cmd"|"launcher"|"global"
+function M.invoked()
+  local g = rawget(_G, "__loomworks_invoked")
+  if g then return g end
+  local l = os.getenv("LOOMWORKS_LAUNCHER")
+  if l == "lw.sh" or l == "lw.cmd" then return l end
+  if (os.getenv("LOOMWORKS_PINNED") or "") ~= "" then return "launcher" end
+  return "global"
+end
+
+--- `git add <files> && git commit`.
+function M.commit_cmd(files)
+  return "git add " .. table.concat(files, " ") .. " && git commit"
+end
+
+--- Parse `git status --porcelain=v1` output into { [path] = state }, `state`
+--- one of "untracked", "staged, new", "modified", "deleted". Pure.
+function M.parse_porcelain(out)
+  local res = {}
+  for line in (tostring(out or "") .. "\n"):gmatch("([^\r\n]*)\r?\n") do
+    local x, y, path = line:match("^(.)(.) (.+)$")
+    if x then
+      path = path:gsub('^"(.*)"$', "%1")
+      local st
+      if x == "?" then st = "untracked"
+      elseif x == "A" then st = "staged, new"
+      elseif x == "D" or y == "D" then st = "deleted"
+      else st = "modified" end
+      res[path] = st
+    end
+  end
+  return res
 end
 
 --- Inspect a pin root. Returns the full picture the status page renders and
@@ -115,8 +170,11 @@ function M.run_checks(root, env)
   local git = env.git or function() return nil end
   local invoked = env.invoked or "global"
   local findings = {}
-  local function nag(id, title, remedy, detail)
-    findings[#findings + 1] = { id = id, kind = "suggestion", title = title, remedy = remedy, detail = detail }
+  local function nag(id, title, remedy, detail, extra)
+    local f = { id = id, kind = "suggestion", title = title, remedy = remedy, detail = detail }
+    for k, v in pairs(extra or {}) do f[k] = v end
+    findings[#findings + 1] = f
+    return f
   end
   local function info(id, title, detail)
     findings[#findings + 1] = { id = id, kind = "info", title = title, detail = detail }
@@ -136,6 +194,7 @@ function M.run_checks(root, env)
   local repair_args = pin_only and "bootstrap install --pin-only" or "bootstrap install"
   local function repair() return M.run(invoked, repair_args) .. ", which keeps the pin" end
   res.repair = M.cmd(invoked, repair_args)
+  local R = { command = res.repair }   -- findings fixed by the repair
 
   -- ---- the pin --------------------------------------------------------------
   local p, perr = pin.parse(read(root .. "/lw.pin") or "")
@@ -154,7 +213,7 @@ function M.run_checks(root, env)
     end
     if #res.missing_hashes > 0 then
       nag("pin-hashes", "lw.pin has no hash for " .. join_list(res.missing_hashes) ..
-        " - those platforms cannot run the launcher", repair())
+        " - those platforms cannot run the launcher", repair(), nil, R)
     end
   end
 
@@ -167,7 +226,7 @@ function M.run_checks(root, env)
       local bytes = has[name] and read(root .. "/" .. name) or nil
       if not bytes then
         entry.present = false
-        nag("launcher-missing", name .. " is missing", repair())
+        nag("launcher-missing", name .. " is missing", repair(), nil, R)
       else
         local c = launcher.classify(kind, bytes, env.sha256)
         entry.generation, entry.releases = c.status, c.releases
@@ -180,14 +239,17 @@ function M.run_checks(root, env)
               if d.severity == "breaks" then broken[#broken + 1] = d.text end
             end
             nag("launcher-defect", name .. " is the launcher written by lw " .. c.releases .. ": " ..
-              join_list(broken), repair(), table.concat(texts, "; "))
+              join_list(broken), repair(), table.concat(texts, "; "), R)
           else
             info("launcher-older", name .. " is the launcher written by lw " .. c.releases ..
               ", older than this lw's: " .. join_list(texts) .. "; refresh it with " ..
               (repair():gsub("^run ", "")))
           end
         elseif c.status == "unknown" then
-          info("launcher-unknown", name .. " differs from every launcher lw wrote (local edits?)")
+          local force = M.cmd(invoked, (pin_only and "bootstrap install --force" or "bootstrap install --force"))
+          nag("launcher-unknown", name .. " differs from every launcher lw wrote (local edits?)",
+            "if the edits are not intended, `" .. force .. "` restores the generated launcher",
+            nil, { command = force, why = "restore the generated " .. name .. " (drops the local edits)" })
         end
       end
     end
@@ -210,16 +272,38 @@ function M.run_checks(root, env)
     local c1, stage = git(root, args({ "ls-files", "--stage" }))
     local modes = c1 == 0 and launcher.parse_ls_stage(stage) or nil
     g.modes = modes
-    if modes then
-      local untracked = {}
-      for _, f in ipairs(files) do
-        if not modes[f] and has[f] then untracked[#untracked + 1] = f end
+    -- not committed yet: untracked, staged-only, modified or deleted vs HEAD,
+    -- over the pin, the launchers and the metadata files install writes
+    local watch = pin_only and { "lw.pin", ".gitattributes" }
+      or { "lw.sh", "lw.cmd", "lw.pin", ".gitignore", ".gitattributes" }
+    local sargs = { "status", "--porcelain=v1", "--untracked-files=all", "--" }
+    for _, f in ipairs(watch) do sargs[#sargs + 1] = f end
+    local cs, sout = git(root, sargs)
+    if cs == 0 then
+      local st = M.parse_porcelain(sout)
+      local prefix = ""
+      if lower_if_win(root) ~= lower_if_win(top) and under(root, top) then prefix = root:sub(#top + 2) .. "/" end
+      local list, names = {}, {}
+      for _, f in ipairs(watch) do
+        local state = st[prefix .. f] or st[f]
+        if state then
+          list[#list + 1] = f .. " (" .. state .. ")"
+          names[#names + 1] = f
+        end
       end
-      if #untracked > 0 then info("untracked", join_list(untracked) .. " not committed yet") end
+      g.uncommitted = names
+      if #names > 0 then
+        nag("uncommitted", "not committed yet: " .. join_list(list),
+          "commit them: `" .. M.commit_cmd(names) .. "` - contributors and CI only get what is committed",
+          nil, { command = M.commit_cmd(names), commit_files = names,
+            why = "commit them - contributors and CI only get what is committed" })
+      end
+    end
+    if modes then
       if not pin_only and modes["lw.sh"] and modes["lw.sh"] ~= "100755" then
         nag("exec-bit", "lw.sh is not executable in git (mode " .. modes["lw.sh"] ..
           ") - CI on Linux/macOS cannot run it",
-          repair() .. ", or `git update-index --chmod=+x lw.sh`; then commit")
+          repair() .. ", or `git update-index --chmod=+x lw.sh`; then commit", nil, R)
       end
     end
     -- attributes (the user's global attributes file does not count)
@@ -234,7 +318,40 @@ function M.run_checks(root, env)
       if #bad > 0 then
         nag("attributes", "no line-ending rule for " .. join_list(bad) .. " in .gitattributes", repair(),
           pin_only and "lw.pin needs `text eol=lf`"
-          or "lw.sh and lw.pin need `text eol=lf`, lw.cmd `text eol=crlf`")
+          or "lw.sh and lw.pin need `text eol=lf`, lw.cmd `text eol=crlf`", R)
+      end
+      -- the rules that ARE effective must come from committed content: the
+      -- attributes as HEAD's tree gives them (git >= 2.40; older: skipped)
+      local good = {}
+      for _, f in ipairs(files) do
+        if launcher.attrs_ok(f, a[f]) then good[#good + 1] = f end
+      end
+      if #good > 0 then
+        local uncommitted
+        local ch = git(root, { "rev-parse", "--verify", "-q", "HEAD" })
+        if ch ~= 0 then
+          uncommitted = good                        -- no commit yet
+        else
+          local hargs = { "-c", "core.attributesFile=", "check-attr", "--source", "HEAD", "text", "eol", "--" }
+          for _, f in ipairs(good) do hargs[#hargs + 1] = f end
+          local ch2, hout = git(root, hargs)
+          if ch2 == 0 then
+            local ha = launcher.parse_check_attr(hout)
+            uncommitted = {}
+            for _, f in ipairs(good) do
+              if not launcher.attrs_ok(f, ha[f]) then uncommitted[#uncommitted + 1] = f end
+            end
+          end
+        end
+        g.attrs_uncommitted = uncommitted
+        if uncommitted and #uncommitted > 0 then
+          nag("attributes-uncommitted", "line-ending rules for " .. join_list(uncommitted) ..
+            " are not committed yet (.gitattributes)",
+            "commit them: `" .. M.commit_cmd({ ".gitattributes" }) .. "`",
+            "others check the files out with whatever line endings their git config gives",
+            { command = M.commit_cmd({ ".gitattributes" }), commit_files = { ".gitattributes" },
+              why = "commit the line-ending rules" })
+        end
       end
     end
     -- committed + checked-out line endings
@@ -258,26 +375,34 @@ function M.run_checks(root, env)
       if #committed > 0 then
         nag("eol-committed", "committed with CR LF line endings: " .. join_list(committed),
           "once the attributes are in place: `git add --renormalize " .. table.concat(files, " ") ..
-          "`, then commit")
+          "`, then commit", nil,
+          { command = "git add --renormalize " .. table.concat(files, " ") .. " && git commit",
+            why = "store the files with LF (once the attributes are in place)" })
       end
       if #checkout > 0 then
         nag("eol-checkout", "wrong line endings in this checkout: " .. join_list(checkout) ..
-          (pin_only and " - the pin will be misread" or " - the launcher will fail"), repair())
+          (pin_only and " - the pin will be misread" or " - the launcher will fail"), repair(), nil, R)
       end
     end
     -- ignore rule: a committed .gitignore of the repo, not a personal one
     if not pin_only then
-      local by_repo = M.cache_ignored_by_repo(root, top, git)
+      local by_repo, src = M.cache_ignored_by_repo(root, top, git)
       if by_repo == true then
         g.ignore = "repo"
+      elseif by_repo == false and src then
+        g.ignore, g.ignore_source = "uncommitted", src
+        nag("ignore", ".nvim/cache/ is ignored only by an uncommitted rule in " .. src ..
+          " - others will see downloaded binaries as untracked until it is committed",
+          "commit it: `" .. M.commit_cmd({ src }) .. "`", nil,
+          { command = M.commit_cmd({ src }), commit_files = { src }, why = "commit the ignore rule" })
       elseif by_repo == false then
         local probe = launcher.CACHE_DIR .. "/lw.marker"
         local c5 = git(root, { "check-ignore", "-q", "--no-index", "--", probe })
         g.ignore = c5 == 0 and "personal" or "none"
         nag("ignore", c5 == 0
-          and ".nvim/cache/ is ignored only by your personal gitignore - others will see downloaded binaries as untracked"
+          and ".nvim/cache/ is ignored only by an uncommitted or personal rule (your global gitignore or .git/info/exclude) - others will see downloaded binaries as untracked"
           or ".nvim/cache/ is not ignored - downloaded binaries show as untracked",
-          repair())
+          repair(), nil, R)
       end
     end
   end

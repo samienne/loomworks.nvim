@@ -195,8 +195,12 @@ local INSTALL_ONLY = { "--version", "--latest", "--channel", "--pin-only", "--fo
 --- @param args string[] the arguments (host flags already peeled), including
 ---   the command word itself
 --- @param command "bootstrap"|"update"
+--- @param popts? { invoked?: string } how lw was run, so messages name commands
+---   in that form (boot.launcher_check.cmd)
 --- @return table|nil opts { sub, version?, latest?, channel?, pin_only?, force?, json?, check?, require_pin? }, string|nil usage_error
-function M.parse_bootstrap_args(args, command)
+function M.parse_bootstrap_args(args, command, popts)
+  local invoked = popts and popts.invoked
+  local function C(rest) return require("boot.launcher_check").cmd(invoked, rest) end
   local o = { flags = {} }
   local seen_command, positional = false, {}
   local i = 1
@@ -225,7 +229,7 @@ function M.parse_bootstrap_args(args, command)
     elseif v == "--check" then o.check = true; o.flags[v] = true
     elseif M.GLOBAL_FLAGS[v] then -- tolerated
     elseif type(v) == "string" and v:sub(1, 1) == "-" then
-      return nil, "unknown option '" .. v .. "' for `lw " .. command .. "`"
+      return nil, "unknown option '" .. v .. "' for `" .. C(command) .. "`"
     elseif not seen_command and v == command then
       seen_command = true
     else
@@ -239,8 +243,8 @@ function M.parse_bootstrap_args(args, command)
     -- `lw update --version X` = install --version X; it still needs a pin.
     if #positional > 0 then return nil, "unexpected argument '" .. positional[1] .. "'" end
     for _, f in ipairs({ "--latest", "--pin-only", "--channel", "--json", "--check" }) do
-      if o.flags[f] then return nil, f .. " is not an option of the deprecated `lw update`;" ..
-        " use `lw bootstrap install " .. f .. "`" end
+      if o.flags[f] then return nil, f .. " is not an option of the deprecated `" .. C("update") .. "`;" ..
+        " use `" .. C("bootstrap install " .. f) .. "`" end
     end
     o.sub = "install"
     o.latest = o.version == nil
@@ -254,21 +258,22 @@ function M.parse_bootstrap_args(args, command)
     for _, f in ipairs(INSTALL_ONLY) do
       if o.flags[f] then
         local example = f == "--version" and ("--version " .. tostring(o.version)) or f
-        return nil, "`lw bootstrap` only reports; to write the pin and launchers run" ..
-          " `lw bootstrap install " .. example .. "`"
+        return nil, "`" .. C("bootstrap") .. "` only reports; to write the pin and launchers run" ..
+          " `" .. C("bootstrap install " .. example) .. "`"
       end
     end
     return o
   end
   if sub ~= "install" and sub ~= "upgrade" then
-    return nil, "unknown `lw bootstrap` sub-command '" .. sub .. "' (install, upgrade)"
+    return nil, "unknown `" .. C("bootstrap") .. "` sub-command '" .. sub .. "' (install, upgrade)"
   end
   if o.json or o.check then
-    return nil, (o.json and "--json" or "--check") .. " belongs to the status page (`lw bootstrap`)"
+    return nil, (o.json and "--json" or "--check") .. " belongs to the status page (`" .. C("bootstrap") .. "`)"
   end
   o.sub = sub
   if sub == "upgrade" then
-    if o.version then return nil, "`lw bootstrap upgrade` takes no --version; use `lw bootstrap install --version <x.y.z>`" end
+    if o.version then return nil, "`" .. C("bootstrap upgrade") .. "` takes no --version; use `" ..
+      C("bootstrap install --version <x.y.z>") .. "`" end
     o.latest = true
   end
   if o.version and o.latest then return nil, "--version and --latest cannot be combined" end

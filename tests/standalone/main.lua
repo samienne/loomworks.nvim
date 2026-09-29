@@ -1301,12 +1301,12 @@ do
   for _, l in ipairs(up or {}) do
     ok(not l:find("%([^)]*%("), "no nested parentheses: " .. l)
   end
-  -- A run that moves nothing but still changes something (here: a launcher
-  -- rewritten) leads with the same "already at" wording as a no-op.
+  -- A run that keeps the pin but changes something else (here: a launcher
+  -- rewritten) says "kept at", distinct from the no-op's "already at".
   put(repo .. "/lw.sh", (launcher.render("sh"):gsub("\n", "\r\n")))
   local same = bootstrap.install(repo, { version = V2 })
-  ok(same and same[1] == "lw.pin already at " .. V2 .. "; hashes from the signed SHA256SUMS, signature verified",
-    "pin unchanged + other changes: the same 'already at' line  (" .. show(same) .. ")")
+  ok(same and same[1] == "lw.pin kept at " .. V2 .. "; hashes from the signed SHA256SUMS, signature verified",
+    "pin unchanged + other changes: 'kept at'  (" .. show(same) .. ")")
   local hint = bootstrap.install(repo, { version = V1, self_version = "1.0.0-test" })
   ok(hint and not has(hint, "once more"), "no older-host hint when the host is the target")
   local hint2 = bootstrap.install(repo, { version = V2, self_version = "1.0.0-test" })
@@ -1459,7 +1459,9 @@ do
     put(cache .. "/lw-0.5.0-lw-linux-x86_64/inner", "i")
     local outside = sb .. "/outside-lw-0.4.0-lw-linux-x86_64"; put(outside, "o")
     local rr = bootstrap.install(repo, { version = V2, running_exe = running })
-    ok(has(rr, "removed 2 old pinned lw binaries"), "prune reports what it removed  (" .. show(rr) .. ")")
+    ok(has(rr, "removed old pinned lw " .. V1 .. " (lw-" .. V1 .. "-lw-linux-x86_64, 0.0 MB) from .nvim/cache")
+      and has(rr, "removed old pinned lw 0.9.0 (lw-0.9.0-lw-windows-x86_64.exe"),
+      "prune names each binary it removed  (" .. show(rr) .. ")")
     ok(not uv.fs_stat(old) and not uv.fs_stat(old_win), "older cached binaries removed")
     ok(uv.fs_stat(keep) ~= nil, "the pinned version's binary is kept")
     ok(uv.fs_stat(running) ~= nil, "the running executable is never pruned")
@@ -1470,7 +1472,7 @@ do
     -- a no-op update still prunes (a binary busy last time is collected later)
     put(old, "old")
     local rn = bootstrap.install(repo, { version = V2, running_exe = running })
-    ok(not uv.fs_stat(old) and has(rn, "removed 1 old pinned lw binary"),
+    ok(not uv.fs_stat(old) and has(rn, "removed old pinned lw " .. V1),
       "a no-op update prunes too  (" .. show(rn) .. ")")
 
     -- a cache dir that is a link/junction out of the repo is never pruned
@@ -1763,6 +1765,7 @@ do
     check.cache_ignored_by_repo = function(...) calls = calls + 1; return saved(...) end
     local r = sb .. "/ign"; git_init(r)
     put(r .. "/.gitignore", "/.nvim/**\n")
+    git(r, "add", ".gitignore"); git(r, "commit", "-q", "-m", "x")
     local rm = require("boot.repo_meta")
     local writer = rm.cache_ignored_by_repo(r, rm.toplevel(r))
     put(r .. "/lw.pin", "version = 1.0.0\n"); put(r .. "/lw.sh", launcher.render("sh"))
@@ -1792,25 +1795,227 @@ do
       if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" then env[#env + 1] = k .. "=" .. v end
     end
     for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
-    local logf = work .. "/out.txt"
-    local fd = assert(uv.fs_open(logf, "w", 420))
-    local done, code = false, nil
-    local rel = "../../../../lua"   -- luvi joins a bundle path onto its cwd
-    local h = uv.spawn(uv.exepath(), { args = { rel, "--", "bootstrap", "--check" }, cwd = repo, env = env,
-      stdio = { nil, fd, fd } }, function(c) code = c; done = true end)
-    ok(h ~= nil, "spawned a source-run host in pinned context")
-    if h then
-      local t = uv.new_timer()
-      t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
-      while not done do uv.run("once") end
-      t:stop(); t:close(); h:close()
+    local function run_host(args, extra)
+      local e2 = {}
+      for _, kv in ipairs(env) do e2[#e2 + 1] = kv end
+      for _, kv in ipairs(extra or {}) do e2[#e2 + 1] = kv end
+      local logf = work .. "/out.txt"
+      local fd = assert(uv.fs_open(logf, "w", 420))
+      local done, code = false, nil
+      local argv = { "../../../../lua", "--" }   -- luvi joins a bundle path onto its cwd
+      for _, a2 in ipairs(args) do argv[#argv + 1] = a2 end
+      local h = uv.spawn(uv.exepath(), { args = argv, cwd = repo, env = e2,
+        stdio = { nil, fd, fd } }, function(c) code = c; done = true end)
+      if h then
+        local t = uv.new_timer()
+        t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+        while not done do uv.run("once") end
+        t:stop(); t:close(); h:close()
+      end
+      uv.fs_close(fd)
+      return code, slurp(logf) or "", h ~= nil
     end
-    uv.fs_close(fd)
-    local out = slurp(logf) or ""
+    local code, out, spawned = run_host({ "bootstrap", "--check" })
+    ok(spawned, "spawned a source-run host in pinned context")
     ok(not out:find("could not provision pinned bundle", 1, true),
       "`./lw.sh bootstrap` does not provision the pinned bundle  (" .. out:sub(1, 300) .. ")")
     ok(out:find("lw.pin -> lw " .. V1, 1, true) and out:find("./lw.sh bootstrap", 1, true),
       "it prints the status page in the launcher form (exit " .. tostring(code) .. ")")
+    -- E: the launcher names itself; lw.cmd gets .\lw.cmd commands, never ./lw.sh
+    local _, cout = run_host({ "bootstrap" }, { "LOOMWORKS_LAUNCHER=lw.cmd" })
+    ok(cout:find(".\\lw.cmd bootstrap install", 1, true) and not cout:find("./lw.sh", 1, true),
+      "run from lw.cmd, every command reads .\\lw.cmd  (" .. cout:sub(-400) .. ")")
+    local _, sout = run_host({ "bootstrap" }, { "LOOMWORKS_LAUNCHER=lw.sh" })
+    ok(sout:find("./lw.sh bootstrap install", 1, true) and not sout:find("lw.cmd bootstrap", 1, true),
+      "run from lw.sh, commands read ./lw.sh only")
+    -- F: usage errors and the deprecation line use the invoked form too
+    local ucode, uout = run_host({ "bootstrap", "--version", "1.2.3" }, { "LOOMWORKS_LAUNCHER=lw.cmd" })
+    ok(ucode == 2 and uout:find(".\\lw.cmd bootstrap install --version 1.2.3", 1, true),
+      "an old-flag usage error names the invoked form  (" .. uout .. ")")
+    local _, dout = run_host({ "update", "--version", "9.9.9-nope" }, { "LOOMWORKS_LAUNCHER=lw.sh" })
+    ok(dout:find("`./lw.sh update` is deprecated; use `./lw.sh bootstrap upgrade`", 1, true),
+      "the deprecation line names the invoked form  (" .. dout:sub(1, 200) .. ")")
+  end
+
+  uv.os_unsetenv("LOOMWORKS_RELEASE_URL")
+  paths.rm_rf(sb)
+end
+
+print("boot.bootstrap — beta.2 fixes: committed attribution, uncommitted state, --check, prerelease pins (§16.24)")
+do
+  local bootstrap = require("boot.bootstrap")
+  local launcher = require("boot.launcher")
+  local check = require("boot.launcher_check")
+  local pin = require("boot.pin")
+  local rm = require("boot.repo_meta")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function sign(data) return priv:sign(data, "sha256") end
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+  local function has(lines, needle)
+    for _, l in ipairs(lines or {}) do
+      if l:find(needle, 1, true) then return true end
+    end
+    return false
+  end
+  local function show(lines) return table.concat(lines or {}, " | ") end
+  local function G(c, a) return rm._git(c, a) end
+  local function checks(r) return check.run_checks(r, { git = G, sha256 = verify.sha256_hex }) end
+  local function finding(res, id)
+    for _, f in ipairs(res.findings) do if f.id == id then return f end end
+  end
+  local function commit(r) git(r, "add", "-A"); git(r, "commit", "-q", "-m", "x") end
+
+  local sb = root .. "/tests/.tmp-bsbeta2"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  local lines = {}
+  local function stage(version)
+    for _, a in ipairs({ "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe",
+        pin.bundle_asset(version) }) do
+      local body = version .. ":" .. a .. "\n"
+      put(mirror .. "/" .. a, body)
+      lines[#lines + 1] = verify.sha256_hex(body) .. "  " .. a
+    end
+    local sums = table.concat(lines, "\n") .. "\n"
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", sign(sums))
+  end
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  local V1, V2, VB = "3.0.0-test", "3.1.0-test", "3.2.0-beta.1"
+  stage(V1); stage(V2); stage(VB)
+  local function newest(map) return function(o) return map[o.channel or "stable"] end end
+
+  -- ---- A: "committed" means a TRACKED ignore / attributes file, committed content
+  do
+    local r = sb .. "/a"; git_init(r)
+    local excl = sb .. "/personal-excludes"; put(excl, ".nvim\n")
+    git(r, "config", "core.excludesFile", excl)
+    bootstrap.install(r, { version = V1 })
+    git(r, "reset", "-q")                       -- nothing staged: all untracked
+    put(r .. "/.gitignore", ".nvim/\n")         -- the repo's own rule, not committed
+    local res = checks(r)
+    ok(res.git.ignore ~= "repo", "an UNTRACKED .gitignore is not a committed rule  (got " .. tostring(res.git.ignore) .. ")")
+    local ig = finding(res, "ignore")
+    ok(ig and ig.kind == "suggestion" and ig.title:find("uncommitted", 1, true),
+      "reported as ignored only by an uncommitted rule  (" .. tostring(ig and ig.title) .. ")")
+    local at = finding(res, "attributes-uncommitted")
+    ok(at and at.kind == "suggestion" and at.title:find(".gitattributes", 1, true),
+      "line-ending rules from an untracked .gitattributes are reported  (" .. tostring(at and at.title) .. ")")
+    git(r, "add", ".gitignore", ".gitattributes")   -- staged, never committed
+    res = checks(r)
+    ok(res.git.ignore ~= "repo", "a staged-only .gitignore is not committed either")
+    commit(r)
+    res = checks(r)
+    eq(res.git.ignore, "repo", "once committed, the rule counts")
+    ok(not finding(res, "attributes-uncommitted") and not finding(res, "ignore"), "and nothing is reported")
+    -- a committed .gitignore whose matching line is only in the working copy
+    put(r .. "/.gitignore", "build/\n"); commit(r)
+    put(r .. "/.gitignore", "build/\n.nvim/\n")
+    res = checks(r)
+    ok(res.git.ignore ~= "repo", "a rule only in the uncommitted part of a tracked .gitignore does not count")
+    -- the writer stays idempotent: its own (uncommitted) line is not appended twice
+    local before = slurp(r .. "/.gitignore")
+    bootstrap.install(r, {})
+    eq(slurp(r .. "/.gitignore"), before, "install does not re-append an existing, uncommitted rule")
+  end
+
+  -- ---- B: uncommitted pin / launchers / metadata -----------------------------
+  do
+    local r = sb .. "/b"; git_init(r)
+    local rep = bootstrap.install(r, { version = V1 })
+    ok(rep[#rep]:find("git add ", 1, true) and rep[#rep]:find("lw.pin", 1, true)
+      and rep[#rep]:find(".gitattributes", 1, true) and rep[#rep]:find("&& git commit", 1, true),
+      "install ends with a commit hint naming the files  (" .. rep[#rep] .. ")")
+    local res = checks(r)
+    local u = finding(res, "uncommitted")
+    ok(u and u.kind == "suggestion" and u.title:find("not committed yet:", 1, true)
+      and u.title:find("lw.pin", 1, true) and u.title:find(".gitignore", 1, true)
+      and u.title:find("lw.sh (staged", 1, true),
+      "untracked + staged-only files are one 'not committed yet' finding  (" .. tostring(u and u.title) .. ")")
+    local st = bootstrap.status(r, { resolve_newest = newest({ stable = V1 }) })
+    local t = table.concat(st.lines, "\n")
+    ok(t:find("git add ", 1, true) and t:find("&& git commit", 1, true),
+      "the status page suggests committing them  (" .. t .. ")")
+    commit(r)
+    ok(not finding(checks(r), "uncommitted"), "committed: no finding")
+    bootstrap.install(r, { version = V2 })
+    u = finding(checks(r), "uncommitted")
+    ok(u and u.title:find("lw.pin (modified)", 1, true), "a re-pinned, uncommitted lw.pin is reported  (" .. tostring(u and u.title) .. ")")
+    -- C: --check fails on it
+    eq(bootstrap.status(r, { check = true, resolve_newest = newest({ stable = V2 }) }).exit, 1,
+      "--check exits 1 for an uncommitted lw.pin")
+    commit(r)
+    eq(bootstrap.status(r, { check = true, resolve_newest = newest({ stable = V2 }) }).exit, 0,
+      "--check exits 0 once committed")
+    -- C: an unrecognised launcher fails --check, and the remedy restores it
+    put(r .. "/lw.sh", "#!/bin/sh\necho mine\n"); commit(r)
+    local res2 = checks(r)
+    local lu = finding(res2, "launcher-unknown")
+    ok(lu and lu.kind == "suggestion" and lu.remedy and lu.remedy:find("bootstrap install --force", 1, true),
+      "an unrecognised launcher is actionable, naming install --force  (" .. tostring(lu and lu.remedy) .. ")")
+    eq(bootstrap.status(r, { check = true, resolve_newest = newest({ stable = V2 }) }).exit, 1,
+      "--check exits 1 for an unrecognised launcher")
+    -- a newer release or an offline check never fails --check
+    bootstrap.install(r, { force = true }); commit(r)
+    eq(bootstrap.status(r, { check = true, resolve_newest = newest({ stable = VB }) }).exit, 0,
+      "a newer release does not fail --check")
+    eq(bootstrap.status(r, { check = true, resolve_newest = function() return nil, "offline" end }).exit, 0,
+      "an offline release check does not fail --check")
+  end
+
+  -- ---- D: a prerelease / ahead pin -------------------------------------------------
+  do
+    local r = sb .. "/d"; git_init(r)
+    bootstrap.install(r, { version = VB }); commit(r)
+    local st = bootstrap.status(r, { resolve_newest = newest({ stable = V2, unstable = VB }) })
+    local t = table.concat(st.lines, "\n")
+    ok(t:find("pinned prerelease " .. VB .. "; newest stable: " .. V2, 1, true)
+      and not t:find("is the newest on the stable channel", 1, true),
+      "a prerelease pin ahead of stable is described truthfully  (" .. t .. ")")
+    eq(st.doc.update.status, "ahead", "JSON status: ahead")
+    eq(st.doc.update.newest_unstable, VB, "JSON carries the newest unstable release")
+    local VB2 = "3.2.0-beta.2"; stage(VB2)
+    local st2 = bootstrap.status(r, { resolve_newest = newest({ stable = V2, unstable = VB2 }) })
+    local t2 = table.concat(st2.lines, "\n")
+    ok(t2:find("newest unstable: " .. VB2, 1, true) and t2:find("bootstrap upgrade --channel unstable", 1, true),
+      "a newer prerelease is named, with the command to take it  (" .. t2 .. ")")
+    -- install/upgrade --channel unstable says what the newest unstable release is
+    local rep = bootstrap.install(r, { latest = true, channel = "unstable", resolve_newest = newest({ unstable = VB }) })
+    ok(rep and rep[1] == "newest unstable release: " .. VB and pin.read(r).version == VB,
+      "--latest --channel unstable names the newest unstable release even when nothing changes  (" .. show(rep) .. ")")
+  end
+
+  -- ---- E: launcher self-identification (a new launcher generation) ------------------
+  do
+    ok(launcher.render("sh"):find("LOOMWORKS_LAUNCHER=lw.sh", 1, true) ~= nil, "lw.sh names itself to the host")
+    ok(launcher.render("cmd"):find('set "LOOMWORKS_LAUNCHER=lw.cmd"', 1, true) ~= nil, "lw.cmd names itself to the host")
+    ok(not launcher.LW_SH:find("lw update", 1, true) and not launcher.LW_CMD:find("lw update", 1, true),
+      "the templates no longer name the deprecated `lw update`")
+    local c36sh = launcher.GENERATIONS.sh["1fe5b9caafc2872e26eb971b4cea89411a08b8f9a3bc0f09db3ac7292c91b696"]
+    local c36cmd = launcher.GENERATIONS.cmd["bb21d2287961a73e5946474b02ab24dd2378466b1531c568e3a4599370e577e3"]
+    eq(c36sh and c36sh.releases, "0.1.36-beta.1-0.1.37-beta.1", "the previous lw.sh generation is catalogued")
+    eq(c36cmd and c36cmd.releases, "0.1.36-beta.2-0.1.37-beta.1", "the previous lw.cmd generation is catalogued")
+    eq(check.cmd("lw.cmd", "bootstrap"), ".\\lw.cmd bootstrap", "invoked form: lw.cmd")
+    eq(check.cmd("lw.sh", "bootstrap"), "./lw.sh bootstrap", "invoked form: lw.sh")
+    eq(check.cmd("global", "bootstrap"), "lw bootstrap", "invoked form: global")
+    -- no line of lw.cmd ends in a space; system tools stay absolute
+    local trailing = false
+    for line in (launcher.LW_CMD .. "\n"):gmatch("([^\n]*)\n") do
+      if line:find(" $") then trailing = true end
+    end
+    ok(not trailing, "lw.cmd: no trailing spaces")
+  end
+
+  -- ---- F: usage errors in the invoked form -------------------------------------
+  do
+    local _, e = pin.parse_bootstrap_args({ "bootstrap", "--force" }, "bootstrap", { invoked = "lw.cmd" })
+    ok(e and e:find(".\\lw.cmd bootstrap install --force", 1, true), "old-flag error in the lw.cmd form  (" .. tostring(e) .. ")")
+    eq(bootstrap.deprecation_line("lw.sh"),
+      "lw: `./lw.sh update` is deprecated; use `./lw.sh bootstrap upgrade` (or `./lw.sh bootstrap install --version <x.y.z>`)",
+      "the deprecation line in the invoked form")
   end
 
   uv.os_unsetenv("LOOMWORKS_RELEASE_URL")

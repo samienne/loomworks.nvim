@@ -66,7 +66,7 @@ function M.report(start)
         stale = function(rt, version)
             return require("boot.repo_meta").stale_cache(rt, version, assets, pin.valid_version)
         end,
-        invoked = (os.getenv("LOOMWORKS_PINNED") or "") ~= "" and "launcher" or "global",
+        invoked = check.invoked(),
     })
     local items = {}
     for _, f in ipairs(r.findings) do

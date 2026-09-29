@@ -122,7 +122,9 @@ Pin this repository to a fixed, verified lw release, with committed launchers
                     repository and outside a loomworks workspace.
      --json           one JSON document instead of the page
      --check          exit 1 when there is no pin or any finding needs action
-                      (a CI guard); without it the page always exits 0
+                      - files not committed, a launcher lw did not write, a
+                      missing rule (a CI guard); a newer release never fails
+                      it. Without --check the page always exits 0
   install           make the repository correct, from any start: no pin, pin
                     only, stale or edited launchers, missing rules. Idempotent -
                     a second run changes nothing.
@@ -156,7 +158,9 @@ of the release bundle), lw.sh and lw.cmd, and the repository metadata:
                   is staged as executable (mode 100755) - the only file lw
                   stages; commit the rest yourself
 It reports only what it changed (`lw.pin already at X - no changes` when
-nothing did) and removes old pinned lw binaries from .nvim/cache/.
+nothing did, `lw.pin kept at X` when only other files changed), names the old
+pinned lw binaries it removes from .nvim/cache/, and ends with the `git add ...
+&& git commit` for the files it wrote. It never commits.
 
 Which launcher: `./lw.sh <cmd>` in a POSIX shell - Linux, macOS, and Git Bash /
 MSYS2 on Windows; `.\lw.cmd <cmd>` in cmd.exe or PowerShell (the `.\` matters: a

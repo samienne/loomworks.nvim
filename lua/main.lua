@@ -182,6 +182,21 @@ end
 
 local host_command = (not help_requested) and command or nil
 
+-- How lw was run (spec §16.24 "Invoked form"): a repo launcher names itself in
+-- LOOMWORKS_LAUNCHER (lw.sh / lw.cmd); a pinned context without it is some
+-- launcher; otherwise the global lw. Kept for system Lua (health's remedies)
+-- in a global, and removed from the environment so a process this one starts
+-- (a build, a launched program) does not inherit it.
+local invoked_form
+do
+  local l = getenv("LOOMWORKS_LAUNCHER")
+  if l == "lw.sh" or l == "lw.cmd" then invoked_form = l
+  elseif pinned_sentinel then invoked_form = "launcher"
+  else invoked_form = "global" end
+  _G.__loomworks_invoked = invoked_form
+  if l then pcall(uv.os_unsetenv, "LOOMWORKS_LAUNCHER") end
+end
+
 -- ---- pin management (spec §16.24) -----------------------------------------
 -- `lw bootstrap [install|upgrade]` and the deprecated `lw update` run as the
 -- invoked host, never redirect, and need no system Lua — so they are handled
@@ -189,15 +204,16 @@ local host_command = (not help_requested) and command or nil
 -- offline and can repair a pin whose bundle entry is wrong.
 if host_command == "bootstrap" or host_command == "update" then
   local bootstrap = require("boot.bootstrap")
-  local o, perr = pin.parse_bootstrap_args(forwarded, command)
+  local invoked = invoked_form
+  local o, perr = pin.parse_bootstrap_args(forwarded, command, { invoked = invoked })
   local function usage(msg)
-    io.stderr:write("lw: " .. msg .. "\n    See `lw help bootstrap`.\n")
+    io.stderr:write("lw: " .. msg .. "\n    See `" ..
+      require("boot.launcher_check").cmd(invoked, "help bootstrap") .. "`.\n")
     exit(2)
   end
   if not o then usage(perr) end
   -- Where to look: the launcher-passed root, else the current directory.
   local start = paths.norm(getenv("LW_ROOT")) or (uv.cwd():gsub("\\", "/"):gsub("/+$", ""))
-  local invoked = pinned_sentinel and "launcher" or "global"
   -- The version a NEW pin defaults to: the running release (the bundle this
   -- host resolved, else the host's own release identity); nil for a dev build.
   local host_version = ((source_kind == "release" and luaroot) and luaroot:match("lua%-(.+)$"))
@@ -213,15 +229,14 @@ if host_command == "bootstrap" or host_command == "update" then
     exit(st.exit)
   end
   if command == "update" then
-    io.stderr:write("lw: `lw update` is deprecated; use `lw bootstrap upgrade` " ..
-      "(or `lw bootstrap install --version <x.y.z>`)\n")
+    io.stderr:write(bootstrap.deprecation_line(invoked) .. "\n")
   end
   -- The running executable is never pruned from the launcher cache (under
   -- `./lw.sh bootstrap install` it IS a cached binary, still executing).
   local okx, running_exe = pcall(uv.exepath)
   local report, err = bootstrap.install(start, {
     version = o.version, latest = o.latest, channel = o.channel, pin_only = o.pin_only,
-    force = o.force, require_pin = o.require_pin, host_version = host_version,
+    force = o.force, require_pin = o.require_pin, host_version = host_version, invoked = invoked,
     -- The launcher templates are the HOST's (boot.launcher), so the "written
     -- by an older lw" hint compares against the host's own release version
     -- (nil for a development build, whose templates are the newest).

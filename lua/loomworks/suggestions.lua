@@ -925,6 +925,14 @@ end
 --- asked for; this check is a side note of a report.
 M.UPDATE_CHECK_FETCH = { connect_timeout = 5, max_time = 10, attempts = 1 }
 
+--- The launcher form for a pinned-context remedy: the launcher that ran us
+--- when it named itself, else ./lw.sh (with .\lw.cmd noted).
+local function pinned_form()
+    local inv = require("boot.launcher_check").invoked()
+    if inv == "lw.sh" or inv == "lw.cmd" then return inv end
+    return "launcher"
+end
+
 --- Outcome of this process's last update check (`update_check_provider`), or
 --- nil when the check did not apply (not a versioned release source / unknown
 --- channel) or has not run.
@@ -992,7 +1000,8 @@ function M.update_check_provider(_workspace)
         -- takes its version from the pin, which `lw self-update` never changes:
         -- point at `lw bootstrap upgrade` (spec §16.24), which moves the pin to
         -- the newest release on the same channel compared against here. Pinned
-        -- context means run through a launcher, so name the launcher form.
+        -- context means run through a launcher, so name the launcher form (the
+        -- one that ran, when it named itself).
         local luaroot = (_G.__loomworks_luaroot or ""):gsub("\\", "/")
         local pinned = (facts and facts.pinned)
             or luaroot:find("/%.nvim/cache/lua%-") ~= nil
@@ -1001,8 +1010,8 @@ function M.update_check_provider(_workspace)
             title = "Update available",
             detail = current .. " → " .. newest .. " on the " .. channel .. " channel",
             remedy = pinned
-                and ("run `./lw.sh bootstrap upgrade` (`.\\lw.cmd bootstrap upgrade` from"
-                    .. " cmd/PowerShell) to move this repo's lw.pin to " .. newest
+                and (require("boot.launcher_check").run(pinned_form(), "bootstrap upgrade")
+                    .. " to move this repo's lw.pin to " .. newest
                     .. " - the pin sets the version here, not `lw self-update`")
                 or "run `lw self-update`",
         }
