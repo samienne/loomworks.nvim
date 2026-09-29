@@ -218,6 +218,24 @@ release host before its first acquisition, §16.13) still answers every help
 request with exit 0 — the host-level commands' own help for those commands,
 and otherwise a short usage listing the host-level commands — stating that
 full help needs the bundle and naming the acquisition operation.
+The help a host gives for its **own** commands is their complete help, identical
+to what the bundle's help prints for them (one source of the text, owned by the
+host), so it carries no "full help needs the bundle" note; that note appears
+only for a command the host cannot document. Inside a repository that carries a
+version pin (§16.21) the note names the **repo launcher** as the way to reach
+full help (it runs the pinned release, whose bundle it provisions), not the
+machine-global acquisition — a user of a pinned repository has no reason to
+install a global bundle. Answering help never fetches anything.
+
+**Host-level output is ASCII.** Everything printed before system Lua is loaded
+— the repo launchers (§16.22), the host-level commands (version reporting,
+self-update, installation, pin management), redirect and provisioning notices
+(§16.23) — uses ASCII only (e.g. `-`, `->`, `...`, `|`), because it runs before
+the runner can set the console's output encoding and it is the output most
+often captured into CI logs and consoles with a legacy code page. Data it
+relays (paths, versions) is printed as-is. Output produced by system Lua, which
+sets a UTF-8 console output encoding on Windows before printing, is not bound
+by this rule.
 A sub-command's help (`lw help <command> <sub-command>`, or `--help` after the
 sub-command) prints only that sub-command's part of the command's help, with a
 pointer to the whole; a sub-command the help does not document falls back to
@@ -378,6 +396,21 @@ intercepted channel is accepted if and only if its signature verifies. A
 development source (§16.11) is exempt from verification — it is local,
 explicit, and caller-owned. The component that performs verification is part
 of the host, never part of the bundle it verifies.
+
+The trusted key carried by the host is the **production release public key in
+every build**, including a host built from a working tree: the committed
+source embeds it (a public key is not secret), so a development build verifies
+official releases exactly as a release build does and can author or update a
+pin (§16.24) or self-update against them. A test suite that verifies
+test-signed artifacts supplies its test key **explicitly** (a parameter, or a
+host fused for the test with that key); no environment value, setting or
+repository content can change the key a host trusts. The release build
+asserts that the key it embeds is the committed production key, so the
+source and the released hosts cannot drift. A signature that does not verify
+is reported as such, naming the key the host trusts (a short fingerprint) and
+whether that is the production key, and suggesting the likely causes (a
+corrupt or non-official artifact; a mirror serving other files) — never only
+"does not verify".
 
 ### 16.13 Acquisition and activation
 
@@ -737,6 +770,19 @@ committed. Everything the **host** provisions or caches for a pinned run — the
 pinned bundle (§16.22) and the host binary a redirect runs (§16.23) — lives in
 the **per-user data directory**, never inside the repository (§16.22).
 
+The launchers are committed with fixed line endings and the POSIX launcher
+with its executable bit: the POSIX launcher and the pin use LF, the Windows
+launcher uses CRLF, recorded as the repository's own line-ending attributes so
+every checkout on every platform gets them regardless of the user's line-ending
+configuration (§16.24). Which launcher to use depends on the shell, not the
+operating system: a POSIX shell — including the Unix-style shells on Windows
+(Git Bash, MSYS2, Cygwin) — runs the POSIX launcher by relative path
+(`./lw.sh`), which selects the Windows host binary there; the native Windows
+command interpreters run the Windows launcher by explicit relative path
+(`.\lw.cmd`), since a bare launcher name can resolve to a same-named file
+elsewhere on the search path. Help and authoring output always show the
+relative form.
+
 The pin declares a release **version** and, for every host binary and for the
 release bundle, the **content hash** of that artifact. It is a trivially
 parseable key/value list (not JSON) so a launcher can read it with a system
@@ -760,6 +806,36 @@ transport (§16.12) but on the independent, mandatory hash check; relaxing the
 hash check is never permitted. A launcher MAY additionally run a stronger
 provenance check when that tooling is present, and MUST degrade gracefully —
 with a note, not a failure — when it is absent.
+
+**Download behavior (both launchers, identically).** A download is **quiet
+and bounded**:
+
+- before fetching, the launcher prints exactly one line naming the pinned
+  version, the asset, and the pin it read (e.g. `lw: fetching pinned lw 0.1.35
+  (lw-linux-x86_64) for ./lw.pin...`), so a user can tell which pin and which
+  launcher ran; the downloader's own progress display is suppressed (it renders
+  as noise in CI logs and some consoles), while its error messages are kept.
+  A run that finds the binary already cached and verified prints nothing of its
+  own — the launcher adds no output to an ordinary run;
+- a failed transfer is **retried**: at most three attempts, with an increasing
+  delay between them (on the order of 1 s, then 2 s), each attempt starting
+  from an empty file; a definitive client error (an HTTP 4xx other than 408 and
+  429) MAY end the attempts early, matching the rule the host applies to its
+  own acquisition downloads. The hash check applies to the final
+  file exactly as before — a retry never relaxes it. A local-path mirror is a
+  copy and is not retried;
+- after all attempts fail, one line names the URL and that the attempts were
+  exhausted, and the launcher exits non-zero with nothing left in the cache.
+
+The host's own downloads (acquisition, self-update, pin provisioning and the
+redirect, pin management) already retry transient failures with backoff and
+are unchanged; the health update check keeps its bounded, no-retry probe
+(§16.31).
+
+The launcher's cache directory holds only artifacts it can re-fetch: the
+cached host binaries (one per pinned version and asset) and a marker naming
+the last one fetched. Older cached binaries are pruned by pin management
+(§16.24), never by the launcher itself.
 
 Because a host binary carries only the runtime bootstrap and not the behavioral
 system Lua (§16.11), a host running in **pinned context** — launched by the repo
@@ -856,21 +932,109 @@ management, they never redirect (§16.23).
 **Bootstrap** installs the launcher scripts and the pin into the repository —
 defaulting to the running host's release version, or an explicit version — and
 populates the pin with the content hashes of every host binary and of the bundle
-for that release. It appends the machine-local cache directory to the
-repository's ignore file idempotently, creating that file if absent, and never
-rewrites or discards unrelated ignore content. Re-running it MAY refresh the
-scripts and pin, but MUST NOT silently destroy user edits.
+for that release. Re-running it MAY refresh the scripts and pin, but MUST NOT
+silently destroy user edits (below).
 
 **Update** rewrites the pin to a target version — explicit, or the latest release
 — fetching that release's hashes; it MUST validate that the target release is
 fetchable before writing, failing cleanly otherwise, and refreshes the launcher
-scripts when their format has changed.
+scripts when their content differs from what the running host would write.
+Update with the pin's current version is the **repair** form: it re-verifies
+the hashes and brings the launchers and repository metadata below up to date
+without moving the pin.
 
 Both obtain the per-artifact hashes from the release's **signed** hash list
 (§16.15) and verify that signature before trusting any hash, so the pin's
 committed hashes are themselves anchored to the release key at authoring time.
 Runtime provisioning (§16.22) then trusts the committed pin hash directly, since
 the pin has itself reached the runner through the repository.
+
+**Repository metadata.** Both operations, on every run, make sure the
+repository will carry the files correctly, each step idempotent and
+append-only toward files the user also edits:
+
+- **Ignore rule.** The launcher cache directory must be ignored **by the
+  repository's own ignore rules**. When version control can answer which rule
+  ignores a path, a rule in a committed ignore file of the repository that
+  already covers the cache directory (for example one ignoring the whole
+  workspace-state directory) satisfies this and nothing is appended; a match
+  that comes only from the user's personal or repository-local, uncommitted
+  exclude rules does **not** count, since teammates and CI do not have them.
+  Otherwise — or when version control is unavailable and no line of the root
+  ignore file names the cache directory or an ancestor of it — the cache
+  directory is appended to the root ignore file, creating it if absent. Existing
+  content is never rewritten or reordered.
+- **Line-ending attributes.** The root attributes file must give the POSIX
+  launcher and the pin `text eol=lf` and the Windows launcher `text eol=crlf`
+  (§16.21). The check uses the **effective** attributes when version control can
+  report them (so an equivalent rule already present, e.g. a pattern covering
+  the files, suffices), else the presence of the exact lines. A missing or
+  contrary rule is fixed by appending the three rules at the end of the root
+  attributes file (creating it if absent), where they take precedence over
+  earlier lines of that file; existing content is never rewritten. A contrary
+  rule the operation cannot override from there (a repository-local, uncommitted
+  attributes file) is reported, not edited.
+- **Executable bit.** Inside a version-controlled working tree, the POSIX
+  launcher must be recorded as executable (mode `100755`). On a platform or
+  checkout that does not track the bit through the file system (Windows), the
+  bit exists only in the index, so: an untracked launcher is added to the index
+  with the executable mode, and a tracked one recorded without it has its index
+  mode set. This is the **only** staging either operation performs, and it is
+  reported; the pin, the Windows launcher and the attribute/ignore files are
+  left for the user to stage and commit. Outside version control, and on file
+  systems that carry the bit, the file mode is set directly.
+
+**Launcher generations and user edits.** The host knows the exact content of
+every launcher it or an earlier release has written (a catalogue of launcher
+**generations**, compared after normalizing line endings, each noting the
+defects it is known to have). Before overwriting a launcher, pin management
+classifies the file on disk: identical to what it would write → left alone and
+not reported as refreshed; a known earlier generation → replaced; **not a known
+generation** (edited by hand, or written by a newer host) → **not** overwritten:
+the operation completes the rest of its work, reports the launcher as kept, and
+names the explicit overwrite flag that replaces it. The pin itself is fully
+determined by the target release and is always rewritten.
+
+**Reporting.** Pin management reports what it changed and nothing else:
+
+- a run that changes nothing reports that the pin is already at `<version>`
+  and that nothing changed;
+- a moved pin reports `lw.pin: <old> -> <new>`, a re-verified unchanged
+  version reports it as unchanged, and both state that the release's signed hash
+  list was verified;
+- each launcher is reported as refreshed only when its content changed, and as
+  kept (with the overwrite flag) when it was not a known generation;
+- each metadata step reports only an action it took (rule appended, executable
+  bit staged) or a problem it could not fix;
+- bootstrap closes with how to run the launchers (`./lw.sh <cmd>`, `.\lw.cmd
+  <cmd>`) and which files to commit.
+
+**Pruning the launcher cache.** After a successful run (including a run that
+changed nothing, so a binary that was in use by the previous run is collected
+later), pin management removes cached host binaries of **other** versions from
+the launcher cache directory of that repository. Deletion is confined as
+follows: the directory is exactly `<pin root>/<cache dir>`, resolved and checked
+to lie under the pin root with a separator-bounded prefix comparison; only
+**regular files directly in it** (never a directory, never a symbolic link or
+junction, never recursion) whose name is exactly a cached-binary name — the
+cache's prefix, a version that passes the safe-version rule (§16.23), and a
+known host-binary asset name — are candidates; the binary for the pin's
+version is never a candidate, nor is the running executable. A failure to
+remove one (e.g. a binary still executing on Windows) is skipped silently and
+retried by the next run; pruning never fails the operation. Legacy
+repository-local bundle directories (§16.22) and the per-user pinned cache,
+which other repositories may share, are not pruned.
+
+**Updating through the launcher.** Pin management is a host command, so it runs
+on whichever host is invoked. Run through the repository's launcher
+(`./lw.sh update`) it runs as the **currently pinned** release — the path that
+needs no global install, and the one that works when the global host is a
+development build. That host moves the pin but can only write **its own**
+launcher generation; when the target release is newer than the host running
+the update, the report says the launchers were written by `<running version>`
+and that running the update once more through the launcher (now executing the
+new release) refreshes them — a run that is otherwise a no-op. A global host
+(release or development build, §16.12) can equally update the pin directly.
 
 ### 16.25 Working-copy pull across checkouts
 
@@ -1502,6 +1666,77 @@ provider is **report-only**: its items are not written to the health cache
 be invalidated), and — spawning processes — it never runs on the passive
 `N suggestions` path.
 
+**Provider #4 — repo launcher and pin (on-demand, report-only).** When a
+version pin (§16.21) is found — by the same upward pin-root discovery the
+redirect uses (§16.23), from the workspace root or, outside a workspace, the
+current directory — health checks that the launcher files will work for every
+contributor and CI runner. It **reports and never fixes**: every remedy is a
+command the user runs, usually the repair form of the pin update (§16.24,
+`lw update --version <pinned>`, which keeps the pin), shown in the launcher form
+when a launcher is present. It is **pin-scoped**: it runs whenever a pin root is
+found, with or without a workspace, and is silent when none is.
+
+File checks (local reads, no process spawned):
+
+- **pin** — it parses, its version is safe, and it carries a hash for every
+  published host-binary asset and for the bundle; a missing hash is
+  **actionable** ("lw.pin has no hash for `<asset>`": that platform cannot run
+  the launcher);
+- **launchers present** — both launchers exist beside the pin; a missing one is
+  **actionable**;
+- **launcher generation** — each launcher is classified against the catalogue of
+  launcher generations (§16.24): the running host's own generation → fine; an
+  earlier generation with a known **defect** that breaks runs (e.g. the Windows
+  launcher that resolved system tools through the search path, §16.22) →
+  **actionable**, naming the defect in a few words; an earlier generation whose
+  known differences are only cosmetic or robustness (no retry, noisy progress)
+  → **informational** ("older launcher; refresh with …"); **not a known
+  generation** → **informational** ("lw.cmd differs from every launcher lw
+  wrote (local edits?)"), never a nag about content the user may own. A
+  generation newer than the running host is reported as not recognized, never
+  as defective.
+
+Version-control checks, only when the pin root is inside a git working tree
+and `git` is available (else silently skipped). A few local queries, each under
+a timeout, run without optional locks (never refreshing the index):
+
+- **tracked** — each of the three files is tracked; an untracked one is
+  **informational** ("lw.sh, lw.pin not committed yet");
+- **executable bit** — the POSIX launcher's **index** mode is `100755`; `100644`
+  is **actionable** ("lw.sh is not executable in git — CI on Linux/macOS cannot
+  run it"; remedy: the repair update, or `git update-index --chmod=+x lw.sh`,
+  then commit);
+- **line-ending attributes** — the effective attributes give the POSIX launcher
+  and the pin `text eol=lf` and the Windows launcher `text eol=crlf`; a missing
+  or contrary rule is **actionable** (remedy: the repair update);
+- **committed line endings** — the index copy of each file is LF-only (a text
+  file stored with CR LF or mixed endings will be checked out wrongly on some
+  platform) → otherwise **actionable** (remedy: `git add --renormalize lw.sh
+  lw.cmd lw.pin` once the attributes are in place, then commit); and the
+  working copy has the ending its launcher needs (POSIX launcher and pin LF,
+  Windows launcher CRLF) → otherwise **actionable** ("lw.sh has CRLF line
+  endings in this checkout — sh will fail"; remedy: re-checkout the file once
+  the attributes are in place);
+- **ignore rule** — the launcher cache directory is ignored by a committed
+  ignore rule of the repository, not only by a personal or repository-local
+  exclude (the same test pin management applies, §16.24); otherwise
+  **actionable** ("`.nvim/cache/` is ignored only by your personal gitignore —
+  others will see downloaded binaries as untracked").
+
+When every check passes, one **informational** line affirms it ("launcher: lw
+`<version>` pinned; lw.sh / lw.cmd current, modes and line endings ok"). Stale
+cached binaries in the launcher cache are **informational** ("N old pinned
+binaries in .nvim/cache (`<size>`) — removed by the next lw update").
+
+Items follow the report's conventions: one terse line each under a
+`launcher:` prefix, grouped, the detail and remedies in the verbose report and
+the machine-readable document, the explanation in a help topic (`lw help
+launcher`, also reachable as `lw help pin`). Being **report-only** (it spawns
+processes and reads files outside resolved state), it never runs on the passive
+`N suggestions` path and writes nothing to the health cache; its actionable
+items are listed with the report's other actionable items but, like provider
+#3's, never reach the passive count.
+
 **Health runs without a workspace.** A provider is either **workspace-scoped**
 (it inspects the resolved workspace — e.g. the compiler-cache provider) or
 **workspace-independent** (it ignores the workspace — the update-availability and
@@ -1525,8 +1760,10 @@ A host built from a release carries that release's **version identity**,
 fixed into the binary when it is built. A host built from a working tree (a
 development build) carries none. The version-reporting host operation reports
 the host's release version alongside its capability version (§16.14), the
-system-Lua source (§16.11), the active bundle, and the channel (§16.29). A
-host with no release version never reports a guessed version: a development
+system-Lua source (§16.11), the active bundle, and the channel (§16.29); in
+pinned context (§16.22) it also names the pin file it runs under, so a user who
+invoked a launcher can confirm which pin and which binary answered. The report
+is ASCII (§16.7). A host with no release version never reports a guessed version: a development
 build reports that it is one, and a release host with no version identity
 (released before identity existed) reports its release as unknown. The
 distinction uses the same development-build determination as host
