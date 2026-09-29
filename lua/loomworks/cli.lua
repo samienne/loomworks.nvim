@@ -3215,9 +3215,12 @@ end
 --- require error.
 local function require_boot_modules()
   local ok, mods = pcall(require, "boot.modules")
-  if not ok then
-    die("`lw module` is a feature of the standalone lw binary; it is not "
-      .. "available in the nvim-hosted fallback.")
+  local okp, paths = pcall(require, "boot.paths")
+  if not ok or not okp or type(paths.installed_modules) ~= "function" then
+    -- boot.modules / paths.installed_modules first ship in the v0.1.4 host.
+    die("`lw module` is a feature of the standalone lw binary (v0.1.4 or later); "
+      .. "it is not available in the nvim-hosted fallback or an older lw binary. "
+      .. "Install the current lw binary as in the README's \"Installing lw\".")
   end
   local host_api = require("loomworks.api_versions").module
   return mods, host_api
@@ -7940,7 +7943,7 @@ function M.cmd_complete(cword, words)
     -- it to the user rather than stall the shell.
     if n == 2 and has({ "update", "remove", "rm", "upgrade" }, sub) then
       local ok, paths = pcall(require, "boot.paths")
-      if ok then
+      if ok and type(paths) == "table" and type(paths.installed_modules) == "function" then
         local names = {}
         for _, m in ipairs(paths.installed_modules()) do names[#names + 1] = m.name end
         if sub == "update" or sub == "upgrade" then names[#names + 1] = "--all" end
@@ -9153,10 +9156,21 @@ both fetched sources and compiled objects.]],
 }
 
 -- The host commands' help is owned by the host (boot.help, spec §16.7): the
--- same complete text with or without a bundle.
-for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "update" }) do
-  HELP[k] = require("boot.help").TOPICS[k]
-end
+-- same complete text with or without a bundle. boot.help first ships in the
+-- v0.1.34 host, and an older host runs this bundle after `lw self-update`, so a
+-- missing boot.help must not break loading the CLI: those topics then get a
+-- short "host too old" note. (An immediately-invoked function, not a `do`
+-- block: this main chunk is at LuaJIT's 200-local limit.)
+;(function()
+  local ok, bh = pcall(require, "boot.help")
+  local topics = ok and type(bh) == "table" and type(bh.TOPICS) == "table" and bh.TOPICS or {}
+  for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "update" }) do
+    HELP[k] = topics[k]
+      or ("lw " .. k .. ": this lw binary (host) is too old to document this command.\n"
+        .. "Install the current lw binary as in the README's \"Installing lw\"; "
+        .. "`lw self-update` keeps it current from then on.")
+  end
+end)()
 
 --- Command aliases → their canonical help topic.
 local HELP_ALIASES = {

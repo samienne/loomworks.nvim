@@ -165,8 +165,26 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # Gate: the bundle from this tag must still run under released hosts
+  # (spec §16.14) — an old host that `lw self-update`s runs it with its own,
+  # older boot modules. See scripts/ci/old-host-compat.sh.
+  old-host-compat:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run the bundle under released hosts
+        shell: bash
+        env:
+          REPO_SLUG: ${{ github.repository }}
+        run: bash scripts/ci/old-host-compat.sh
+
   publish:
-    needs: [hosts, bundle]
+    needs: [hosts, bundle, old-host-compat]
     runs-on: ubuntu-latest
     permissions:
       contents: write       # create the release

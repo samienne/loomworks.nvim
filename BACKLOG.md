@@ -218,6 +218,22 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   it after an `install` — e.g. until the next successful install/self-update,
   or behind `lw install --rollback` — so replacing a working lw with a broken
   pre-release is one step to undo.
+- **A real host/bundle compatibility contract (spec-first, §16.14).** The
+  v0.1.36 bundle broke every bundle-routed command on hosts older than v0.1.34
+  (an unguarded top-level `require("boot.help")`; a user's CI on the v0.1.2 host
+  + `lw self-update`). Hotfix `fix/old-host-compat`: every boot use in
+  `lua/loomworks/**` degrades on an old host, a static guard
+  (`tests/old_host_compat_spec.lua`, floor v0.1.2) and a CI job running the
+  bundle under released hosts (`scripts/ci/old-host-compat.sh`, also a release
+  gate). Still open: §16.14 says a bundle declares the minimum host it needs,
+  but every release declares `min_host_version = 1` and `HOST_VERSION` has been
+  1 in every tag, so the declaration protects nothing. Wanted: the bundle
+  checks the host's release version or a host capability list at load time and
+  degrades or refuses with "update the lw binary"; releases declare a correct
+  `min_host`; and self-update keeps the host from installing a bundle it
+  cannot run. Decide the capability model in the spec first (release version
+  vs capability names), then retire the per-call guards where the contract
+  covers them.
 
 ---
 

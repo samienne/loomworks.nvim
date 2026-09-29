@@ -928,9 +928,23 @@ M.UPDATE_CHECK_FETCH = { connect_timeout = 5, max_time = 10, attempts = 1 }
 --- The launcher form for a pinned-context remedy: the launcher that ran us
 --- when it named itself, else ./lw.sh (with .\lw.cmd noted).
 local function pinned_form()
-    local inv = require("boot.launcher_check").invoked()
+    local ok, lc = pcall(require, "boot.launcher_check")
+    local inv = ok and type(lc) == "table" and type(lc.invoked) == "function" and lc.invoked() or nil
     if inv == "lw.sh" or inv == "lw.cmd" then return inv end
     return "launcher"
+end
+
+--- "run `<launcher> <rest>`" for a pinned-context remedy. boot.launcher_check
+--- first ships in the v0.1.37 host; an older host running this bundle gets the
+--- same wording for the generic launcher form.
+--- @param rest string
+--- @return string
+local function launcher_run(rest)
+    local ok, lc = pcall(require, "boot.launcher_check")
+    if ok and type(lc) == "table" and type(lc.run) == "function" then
+        return lc.run(pinned_form(), rest)
+    end
+    return "run `./lw.sh " .. rest .. "` (`.\\lw.cmd " .. rest .. "` from cmd/PowerShell)"
 end
 
 --- Outcome of this process's last update check (`update_check_provider`), or
@@ -963,9 +977,21 @@ end
 function M.update_check_provider(_workspace)
     M._update_check = nil
     local ok, update = pcall(require, "boot.update")
-    if not ok then return {} end
+    if not ok or type(update) ~= "table" then return {} end
     local current = M._current_release_version()
     if not current then return {} end -- dev/fused/editor: nothing to compare
+
+    -- The check needs the host's update-channel and newest-version API
+    -- (resolve_channel: v0.1.26 host, resolve_newest_version: v0.1.29). An older
+    -- host runs this bundle after `lw self-update` but cannot itself be
+    -- replaced by it: its one actionable item is the host's own
+    -- ("predates self-update - reinstall once"), which needs no network.
+    if type(update.resolve_channel) ~= "function"
+        or type(update.resolve_newest_version) ~= "function" then
+        local okf, facts = pcall(M._host_facts)
+        local okh, host = pcall(host_item, okf and facts or nil, nil)
+        return (okh and host) and { host } or {}
+    end
 
     local channel = update.resolve_channel({})
     if not channel then return {} end -- unknown channel → stay silent
@@ -1010,7 +1036,7 @@ function M.update_check_provider(_workspace)
             title = "Update available",
             detail = current .. " → " .. newest .. " on the " .. channel .. " channel",
             remedy = pinned
-                and (require("boot.launcher_check").run(pinned_form(), "bootstrap upgrade")
+                and (launcher_run("bootstrap upgrade")
                     .. " to move this repo's lw.pin to " .. newest
                     .. " - the pin sets the version here, not `lw self-update`")
                 or "run `lw self-update`",
@@ -1033,8 +1059,12 @@ end
 --- @return loomworks.Suggestion[]
 function M.channel_override_provider(_workspace)
     local ok, update = pcall(require, "boot.update")
-    if not ok then return {} end
-    local override = update.url_override and update.url_override({})
+    if not ok or type(update) ~= "table" then return {} end
+    -- url_override / resolve_channel / DEFAULT_CHANNEL: v0.1.26 host and later.
+    if type(update.url_override) ~= "function" or type(update.resolve_channel) ~= "function" then
+        return {}
+    end
+    local override = update.url_override({})
     if not override then return {} end -- default origin: channel is honored
     local channel = update.resolve_channel({})
     -- Only worth flagging when a NON-default channel is being overridden — a

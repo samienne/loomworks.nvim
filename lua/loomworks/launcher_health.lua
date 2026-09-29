@@ -53,8 +53,16 @@ end
 --- @param start string directory to search upward from
 --- @return { root: string, version: string|nil, mode: string, items: loomworks.Suggestion[] }|nil
 function M.report(start)
-    local pin = require("boot.pin")
-    local check = require("boot.launcher_check")
+    -- boot.launcher_check first ships in the v0.1.37 host (boot.repo_meta in
+    -- v0.1.36, boot.pin in v0.1.6). An older host running this bundle has no
+    -- launcher checks to run, so there is nothing to report.
+    local okp, pin = pcall(require, "boot.pin")
+    local okc, check = pcall(require, "boot.launcher_check")
+    local okm, repo_meta = pcall(require, "boot.repo_meta")
+    if not (okp and okc and okm and type(pin) == "table" and type(check) == "table"
+            and type(repo_meta) == "table" and type(check.run_checks) == "function") then
+        return nil
+    end
     local root = start and pin.find_pin_root(start)
     if not root then return nil end
     local assets = {}
@@ -64,7 +72,7 @@ function M.report(start)
         sha256 = function(s) return vim.fn.sha256(s) end,
         exists = function(path) return uv.fs_stat(path) ~= nil end,
         stale = function(rt, version)
-            return require("boot.repo_meta").stale_cache(rt, version, assets, pin.valid_version)
+            return repo_meta.stale_cache(rt, version, assets, pin.valid_version)
         end,
         invoked = check.invoked(),
     })
