@@ -37,16 +37,64 @@ Core §18 ([spec/core/remote-exec.md](spec/core/remote-exec.md)) v1 runs named
 foreign executables (`lw run`, `lw test --target`) on a device through an SDK
 provider's device runner. Deferred:
 
+- **PRIORITY — a hard kill of `lw` orphans the device program.** Found testing
+  v0.1.34 on a Mate 60 Pro. Ctrl-C works (exit 130, the remote program is
+  stopped), but CTRL_BREAK_EVENT or closing the console window ends `lw` with
+  0xC000013A and no cleanup: the remote `sh -c … ./prog` and the program keep
+  running on the device, and `<serial>.lock` is left behind (the next run
+  reclaims the stale lock fine). Options, not exclusive: handle CTRL_BREAK and
+  CTRL_CLOSE like Ctrl-C; tie the remote process lifetime to the transport
+  session (the program dies when the hdc shell does); or have the next run on
+  that device kill leftovers it tracked by the `__LW_PID_<n>=` pid line
+  (persisted beside the lock).
+- **`lw device list` outside a workspace** fails with "no loomworks.json
+  found". Listing devices needs only the SDK runners, not a workspace.
+- **Staging "N removed" is opaque.** When the program changes, staging reports
+  "N removed" without saying what; name the removed files, or say they are the
+  previous program's per-run files.
+- **Native executables in a harmony project** could run through the same ohos
+  device runner (not needed yet).
 - **ctest-registered tests on a device** — static listing via
   `ctest --show-only=json-v1` turned into exec requests (§18.6, cmake §15.3).
 - **`cpp_compiler` device runners** — cross gcc/clang kits whose programs run on
   a networked board (cmake §15.1).
 - **Device-farm lock interop** — `LOOMWORKS_DEVICE_LOCK_DIR` relocates the lock
   directory; lock-file format compatibility is validated with a concrete farm
-  (§18.7).
-- **Generic device-log view** — move hilog parsing/filtering out of
-  `device_log.lua` into the ohos plugin; the view takes a format table from the
-  module/runner (§18.13 "Later").
+  (§18.7). Prior art: the farm harness takes a farm-wide per-serial lock
+  (`~/util_locks/<serial>.lock`) through its own library.
+- **Generic device-log view (`device_log_format` hook)** — §18.13 "Later"; the
+  ohos plugin's harmony.md §6.5 points here. Core's `device_log.lua` claims a
+  module can supply its own parser and prefilter but hard-codes hilog
+  (`parse_line`, `make_prefilter`, `match_filter`, level ranks, renderers), and
+  `session_tracker.lua` calls `device_log.make_prefilter` itself. Meanwhile the
+  plugin's `hilog.lua` already holds a copy for the runner's `receive` /
+  `display`. The step:
+  - **Moves to the plugin's `hilog.lua`:** `parse_line` + record shape;
+    `LEVEL_RANK`, `HILOG_LEVELS`, `LEVEL_HL`, the level cycle
+    (`off → I → W → E`) and `set_level` semantics; `proc_matches_bundle` +
+    `make_prefilter`; the field half of `match_filter` (`pid`, `proc`, `tag`,
+    `level`); `render_compact` / `render_verbose`; option validation and
+    defaults.
+  - **Stays in core** (a generic record view): the streaming task, singleton,
+    `start` / `stop` / `toggle` / `show` / `hide`; `LogView` (ring buffer 5000,
+    batched flush 250 ms / 200 per flush / 2000 pending cap, autoscroll, pause,
+    clear, header, raw records, help window); the free-text pattern filter over
+    the rendered line; `sanitize_line` (hilog.lua may reuse it).
+  - **New seam** (spec change to core §11.2 when implemented): `start{}` takes
+    a `format` table — `{ parse(line) → record|nil, prefilter(record) → bool,
+    match(filter, record, rendered) → bool, render(record, layout) → string,
+    highlight(record) → group|nil, filter_keys = { { lhs, desc,
+    fn(filter) → filter } … }, default_filter }` — supplied by an optional
+    module hook `device_log_format(tool_data, { pid, bundle, options })`. It
+    replaces `device_log_options` and the direct `make_prefilter` call in
+    `session_tracker`. `set_level` becomes a generic `update_filter(patch)`;
+    harmony's `set_device_log_level` / `:LoomworksDeviceLogLevel` call it with
+    `{ level = … }`.
+  - **UX unchanged:** the view still owns the filter table and re-renders from
+    the ring buffer on every change, asking the format only to judge and render.
+    The level-cycle key (`cl`) and any tag/proc keys become hilog's
+    `filter_keys`, so keymaps and the help window stay the same, and CLI and
+    editor filter through the same `hilog.lua` functions.
 - **Editor launch chain** for foreign targets (§18.11: build → deploy → stage →
   execute from the editor, output + device log views, stop = cancel). v1 is
   headless only; the editor refuses a foreign target via `foreign.check_local`.
@@ -81,6 +129,11 @@ Follow-ups to workspace trust (spec §17, `lw help trust`), not done:
   has no `.nvim` state, and `lw trust --yes` covers a restored cache.
 - Explicit `lw nuke` does not take build-directory locks (the cache it resets is
   untrusted, so its directories are unknown); it deletes `.nvim/build/` wholesale.
+- **Tester/dev recipe vs `trust.key`.** With `LOOMWORKS_DATA_DIR` pointed at a
+  separate dev data dir and no `trust.key` in the stable data dir, a fresh key
+  is created in the dev dir, and existing workspaces then report
+  ".nvim/loomworks.user.json is not signed by this machine". Document it in the
+  recipe, or copy / hard-link the stable key into the dev dir when it exists.
 
 Also noted during the hotfix: the loomtest runner (independent of loomworks)
 spawns its test commands through overseer without `loomworks.exe` resolution
@@ -105,9 +158,13 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   v0.1.0, installed from its GitHub codeload archive. Remaining thoughts:
   whether the editor grows an index-aware installer too, and provenance/signing
   for module artifacts beyond the index-pinned hash.
-- **Project-committed wrapper.** `lw init` writing `./lw` +
-  `wrapper.properties` into a project, with project-pin-wins version
-  resolution. v1 is system-wide (per-user, on PATH) only.
+- ~~**Project-committed wrapper.**~~ DONE as `lw bootstrap` (`lw.sh` /
+  `lw.cmd` / `lw.pin`, spec §16.21–16.24); polish follow-ups in "Bootstrap /
+  pinned-launcher polish" below.
+- **`lw build <profile> -- <target>` hint.** Args after `--` go verbatim to
+  `cmake --build`, so a bare target name fails with cmake's "Unknown argument
+  X" (`-- --target X` works). When an arg after `--` looks like a target name
+  (matches a known target, no leading `-`), hint `--target X`.
 - **`lw run` device targets.** Non-debug launch is DONE — `lw run <profile>
   [target]` builds then executes a launch target, and `lw launch` manages the
   configs (spec §16.17). Plain cross-built executables now run on a device
@@ -161,6 +218,54 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   it after an `install` — e.g. until the next successful install/self-update,
   or behind `lw install --rollback` — so replacing a working lw with a broken
   pre-release is one step to undo.
+
+---
+
+## Bootstrap / pinned-launcher polish (next release)
+
+Found on the first real use of `lw bootstrap` (samienne/reactive#165, pin
+0.1.35). Planned together as the "bootstrap polish" release.
+
+- **Repo hygiene written by `lw bootstrap`:**
+  - no `.gitattributes`: add `lw.sh text eol=lf`, `lw.cmd text eol=crlf`,
+    `lw.pin text eol=lf` (with `core.autocrlf=true` git warns on the LF
+    `lw.pin`);
+  - `.nvim/cache/` is appended to `.gitignore` even when `.nvim/` is already
+    ignored;
+  - bootstrapped on Windows, `lw.sh` is not committed as mode 100755: run
+    `git update-index --add --chmod=+x lw.sh`.
+- **`lw health` checks the bootstrap files** (user request): inside a
+  workspace, verify the `.gitattributes` eol rules for `lw.sh` / `lw.cmd` /
+  `lw.pin`, the committed exec bit on `lw.sh`, the committed line endings, and
+  that pin and launchers agree.
+- **Launchers:**
+  - no download retry (reactive wraps the first call in a 3-try loop);
+  - `lw.cmd` shows curl's full progress meter, garbled in cmd / PowerShell / CI
+    logs: use `-sS` or `--progress-bar`;
+  - a bare `lw.cmd` (vs `.\lw.cmd`) can silently resolve to another `lw.cmd` on
+    PATH: docs and bootstrap output should say `.\lw.cmd`; the launcher could
+    print which pin it runs.
+- **Source-built `lw` can't bootstrap or update.** It embeds the TEST public key
+  (`lua/boot/verify.lua`; release builds swap in the production key via
+  `scripts/release/fuse_host.sh`), so bootstrap/update fail with a bare
+  "SHA256SUMS signature: signature does not verify". Plan: embed the production
+  public key in source; at minimum hint at the cause. Related: bumping the pin
+  when the global lw is a source build — document (or verify) `./lw.sh update`
+  as the path.
+- **`lw update` output:**
+  - prints "refreshed lw.sh / lw.cmd" even when nothing changed: say "already
+    at X" / "no changes";
+  - no old → new version summary and no "SHA256SUMS signature verified" line.
+- **Help:**
+  - `lw help ci` still describes the old curl + sha + `lw install` flow; point
+    it at `lw bootstrap` / `./lw.sh`;
+  - say which launcher to use on Windows under Git Bash (`./lw.sh` works);
+  - `lw help update` on a bare release binary says full help needs the bundle /
+    `lw self-update` — confusing in the pinned-launcher workflow.
+- **Old pinned binaries in `.nvim/cache`** (~5.7 MB each) are never pruned
+  after a re-pin (compare the pinned-cache GC note under Workspace trust).
+- **`--version` output uses non-ASCII `—` / `·`**, which comes out as mojibake
+  in some Windows consoles / logs.
 
 ---
 

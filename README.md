@@ -731,7 +731,19 @@ directly under the project by an earlier version is still read and moves into
 the module section the next time loomworks saves the file.
 
 Files keep their build-tree layout on the device, so a program that loads
-`plugins/*.so` beside itself or reads `../../assets` finds them. `archive` sets
+`plugins/*.so` beside itself or reads `../../assets` finds them. For the block
+above, the device-side staging root holds:
+
+```
+test/unittest/api_unit_test/LumeSceneAPITestRunner   (the program, made executable)
+test/unittest/api_unit_test/libc++_shared.so         (platform runtime from the runner)
+test/unittest/api_unit_test/libAGPEngineDLL.so       (stage)
+test/unittest/api_unit_test/plugins/*.so             (stage)
+test/assets/test_data/…                              (archive, sent as one tar)
+```
+
+and the loader path is every directory holding a staged `.so`
+(`api_unit_test` and `api_unit_test/plugins`). `archive` sets
 travel as one archive, unpacked on the device (large data trees). Only changed
 files are re-sent (the device is checked when the runner can digest files);
 `--fresh` re-sends everything. A launch configuration's own `device` block
