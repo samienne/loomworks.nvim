@@ -1319,6 +1319,18 @@ otherwise it prints the original error plus manual steps and exits 1.
 `scripts/ci/host-self-update-e2e.sh` fuses a real old and new host and
 self-updates against a signed local mirror (CI cli-e2e job, all three OSes).
 
+**Old hosts run new bundles.** Self-update installs the newest bundle on any
+host, and hosts before v0.1.29 never replace themselves, so bundle code
+(`lua/loomworks/**`) must not assume a `boot.*` module or function newer than
+the oldest host in use (v0.1.2): such uses go through `pcall(require, …)` /
+`type(mod.fn) == "function"` and degrade. `tests/old_host_compat_spec.lua`
+enforces it statically (its `BOOT_API` table records each boot module/function
+the bundle uses with its first host release — update it when adding one), and
+`scripts/ci/old-host-compat.sh` runs the checkout's bundle under released
+v0.1.2 / v0.1.28 / v0.1.33 / v0.1.37 hosts (verified against each release's
+signed `SHA256SUMS`, sandboxed `LOOMWORKS_DATA_DIR`) — CI on all three OSes
+and a gate before the release `publish` job.
+
 ### Module acquisition
 
 `lw module install|update|remove|list` extends the host's module set from a
