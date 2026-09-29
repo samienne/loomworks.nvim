@@ -223,14 +223,14 @@ function M.install(opts)
   -- 1. place the binary
   local existing = (norm(exe) ~= norm(dest)) and M.describe_binary(dest) or nil
   if norm(exe) == norm(dest) then
-    say("· binary already installed at " .. dest)
+    say("- binary already installed at " .. dest)
   elseif existing and same_content(exe, dest) then
-    say("· binary already installed at " .. dest .. " (identical to this one)")
+    say("- binary already installed at " .. dest .. " (identical to this one)")
   elseif existing then
     -- A different lw is installed — maybe a dev build, maybe a newer release.
     -- Never replace it silently: say what is there and get a yes.
     if opts.dry_run then
-      say("· would replace existing " .. dest .. " (" .. existing .. ") with " .. exe)
+      say("- would replace existing " .. dest .. " (" .. existing .. ") with " .. exe)
     else
       local yes = confirm(opts, "lw is already installed at " .. dest ..
         "\n    (" .. existing .. ").\nReplace it with " .. exe .. "?")
@@ -243,22 +243,22 @@ function M.install(opts)
       end
       local ok, err = M.copy_binary(exe, dest)
       if not ok then return nil, err end
-      say("✓ replaced " .. dest .. " (was " .. existing .. ")")
+      say("+ replaced " .. dest .. " (was " .. existing .. ")")
     end
   elseif opts.dry_run then
-    say("· would copy " .. exe .. " -> " .. dest)
+    say("- would copy " .. exe .. " -> " .. dest)
   else
     local ok, err = M.copy_binary(exe, dest)
     if not ok then return nil, err end
-    say("✓ installed binary -> " .. dest)
+    say("+ installed binary -> " .. dest)
   end
 
   -- 2. PATH
   if M.dir_on_path(bindir) then
-    say("· PATH: " .. bindir .. " already on PATH")
+    say("- PATH: " .. bindir .. " already on PATH")
   elseif paths.is_windows then
     -- WindowsApps is normally on PATH by default; if not, it's a user setting.
-    say("! PATH: " .. bindir .. " is not on this PATH — it is normally added by")
+    say("! PATH: " .. bindir .. " is not on this PATH - it is normally added by")
     say("        Windows automatically; open a new terminal, or add it in Settings.")
   elseif opts.no_modify_path then
     say("! PATH: not modified (--no-modify-path). Add manually:")
@@ -267,13 +267,13 @@ function M.install(opts)
     local rc = M.shell_rc()
     local line = 'export PATH="' .. bindir .. ':$PATH"'
     if opts.dry_run then
-      say("· would add to " .. rc .. ":  " .. line)
+      say("- would add to " .. rc .. ":  " .. line)
     else
       local ok = confirm(opts, "Add " .. bindir .. " to PATH in " .. rc .. "?")
       if ok == true then
         local added, e = M.append_path_line(rc, line)
         if added == nil then return nil, e end
-        say((added and "✓ PATH: added to " or "· PATH: already in ") .. rc ..
+        say((added and "+ PATH: added to " or "- PATH: already in ") .. rc ..
           " (restart your shell)")
       else
         say("! PATH: not modified" .. (ok == nil and " (non-interactive; pass -y)" or "") ..
@@ -286,13 +286,13 @@ function M.install(opts)
   -- 3. fetch the first bundle so the tool is immediately usable
   local bundle_err
   if opts.no_bundle then
-    say("· bundle: skipped (--no-bundle). Run `lw self-update` when ready.")
+    say("- bundle: skipped (--no-bundle). Run `lw self-update` when ready.")
   elseif opts.dry_run then
-    say("· would run self-update to fetch the current release bundle")
+    say("- would run self-update to fetch the current release bundle")
   else
     local res, err = update.self_update({})
     if res then
-      say((res.updated and "✓ fetched loomworks " or "· loomworks already at ") .. res.version)
+      say((res.updated and "+ fetched loomworks " or "- loomworks already at ") .. res.version)
     else
       -- An install without a bundle produces a binary that cannot run any
       -- workspace command — it fails later with "no loomworks release is
@@ -300,7 +300,7 @@ function M.install(opts)
       -- failure here, and let the caller exit non-zero: a CI job must not be
       -- told an install succeeded when the result is unusable.
       bundle_err = tostring(err)
-      say("✗ bundle: self-update failed (" .. bundle_err .. ").")
+      say("x bundle: self-update failed (" .. bundle_err .. ").")
       say("        The binary is installed but has no release to run. Retry")
       say("        with `lw self-update`, or use `--no-bundle` to install the")
       say("        binary alone on purpose.")

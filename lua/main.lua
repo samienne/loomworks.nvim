@@ -216,7 +216,9 @@ if host_command == "version" then
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
-  io.write(upd.version_line(info, channel) .. "\n")
+  -- In pinned context (a launcher / the redirect set the sentinel), name the pin.
+  local pin_file = (pinned_sentinel and pin_root) and (pin_root .. "/lw.pin") or nil
+  io.write(upd.version_line(info, channel, pin_file) .. "\n")
   exit(0)
 elseif host_command == "self-update" then
   if source_kind == "dev" then
@@ -242,7 +244,7 @@ elseif host_command == "self-update" then
       fused_system_lua = fused_system_lua(),
     }
   end
-  io.write("lw: checking for updates…\n")
+  io.write("lw: checking for updates...\n")
   local res, err, info = require("boot.update").self_update({ force = force, channel = channel ~= "" and channel or nil })
   if not res and info and info.host_incompatible then
     -- The (verified) release needs a newer host than this one. Replace the
@@ -283,7 +285,7 @@ elseif host_command == "self-update" then
   end
   if res.channel_overridden then
     io.stderr:write("lw: --channel " .. res.channel_overridden ..
-      " is ignored — a release-url override is in effect (LOOMWORKS_RELEASE_URL / " ..
+      " is ignored - a release-url override is in effect (LOOMWORKS_RELEASE_URL / " ..
       "the `release-url` setting). The channel governs only the default origin; " ..
       "unset the override to use channels.\n")
   end
@@ -406,7 +408,7 @@ do
     -- Machine-local (never the repo's .nvim/cache): a clone could ship a
     -- binary there together with a pin naming its hash (spec §16.22/§16.23).
     local bin = require("boot.update").pinned_binary_path(p.version, asset)
-    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it…\n")
+    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
     io.stdout:flush()
     local ok, err = require("boot.update").ensure_host_binary(
       p.version, asset, p.hashes[asset], bin)
@@ -476,7 +478,9 @@ else
   -- works: a user must be able to learn what `install` / `self-update` do
   -- before either has run (host usage + per-host-command help, exit 0).
   if not bundle.readfile("loomworks/cli.lua") then
-    local help_text = require("boot.help").for_args(forwarded)
+    -- In a pinned repository the full-help note names the launcher (which
+    -- runs the pinned release and provisions its bundle), not self-update.
+    local help_text = require("boot.help").for_args(forwarded, { pinned = pin_root ~= nil })
     if help_text then
       io.write(help_text .. "\n")
       exit(0)

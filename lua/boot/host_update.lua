@@ -175,7 +175,7 @@ function M.swap(exe, new, opts)
   local okb, eb = mv(old, exe)
   if not okb then
     return nil, "move new host into place: " .. tostring(e2) ..
-      "; ROLLBACK FAILED (" .. tostring(eb) .. ") — the previous host is at " ..
+      "; ROLLBACK FAILED (" .. tostring(eb) .. ") - the previous host is at " ..
       old .. "; rename it back to " .. exe, true
   end
   return nil, "move new host into place: " .. tostring(e2)
@@ -263,7 +263,7 @@ function M.update_host(o)
   if not list[own] then
     return { status = "error", manual = manual,
       message = "SHA256SUMS is not release " .. target .. "'s hash list (no '" ..
-        own .. "' entry — a replayed or mismatched list)" }
+        own .. "' entry - a replayed or mismatched list)" }
   end
   local sha = list[asset]
   if not sha then

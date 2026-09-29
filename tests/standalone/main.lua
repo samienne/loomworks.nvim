@@ -253,6 +253,14 @@ do
   ok(line2:find("host: 0.1.29 (v1)", 1, true) ~= nil
     and line2:find("channel: unstable", 1, true) ~= nil,
     "version line leads with the embedded release version")
+  -- `—` / `·` came out as mojibake in Windows consoles: the host prints this
+  -- before system Lua sets the console encoding (spec §16.7).
+  ok(line2:match("^[%w%p ]+$") ~= nil, "version line is ASCII  (got " .. line2 .. ")")
+  ok(line2:find("pin:", 1, true) == nil, "no pin field outside pinned context")
+  local pline = update.version_line({ host_version = 1, release_version = "0.1.29",
+    source = "release", bundle = "0.1.29" }, "stable", "/repo/lw.pin")
+  ok(pline:find("| pin: /repo/lw.pin", 1, true) ~= nil,
+    "pinned context: the version line names the pin  (got " .. pline .. ")")
 
   -- A release host with NO bundle installed (and no system Lua fused in) used
   -- to claim "bundle: bundled (fused)" while every other command said "no
@@ -392,8 +400,27 @@ do
     end
     local inst = t({ "install", "--help" }) or ""
     ok(inst:find("lw install [-y]", 1, true) and inst:find("--dry-run", 1, true)
-      and inst:find("--no-bundle", 1, true) and inst:find(HINT, 1, true),
+      and inst:find("--no-bundle", 1, true),
       "`lw install --help` prints install's host help  (got " .. inst .. ")")
+    -- A host command's help IS its full help (the CLI reuses it), so it carries
+    -- no "full help needs the bundle" note — which confused pinned-launcher users.
+    for _, cmd in ipairs({ "install", "self-update", "version", "bootstrap", "update" }) do
+      local s = t({ "help", cmd }) or ""
+      ok(s ~= "" and not s:find("Full help needs", 1, true) and not s:find("full help", 1, true),
+        "`lw help " .. cmd .. "` is complete, with no bundle note")
+      ok(s:match("^[%w%p%s]*$") ~= nil, "`lw help " .. cmd .. "` is ASCII")
+    end
+    local upd = t({ "help", "update" }) or ""
+    ok(upd:find("./lw.sh update", 1, true) and upd:find("--force", 1, true)
+      and upd:find("already", 1, true), "`lw help update` covers the launcher path, --force, no-op output")
+    local bs = t({ "help", "bootstrap" }) or ""
+    ok(bs:find(".\\lw.cmd <cmd>", 1, true) and bs:find("Git Bash", 1, true)
+      and bs:find(".gitattributes", 1, true), "`lw help bootstrap` says which launcher to use + the metadata")
+    -- In a pinned repository, the note for a bundle command names the launcher.
+    local pinned = help.for_args({ "build", "--help" }, { pinned = true }) or ""
+    ok(pinned:find("./lw.sh help <command>", 1, true) and pinned:find(".\\lw.cmd help <command>", 1, true)
+      and not pinned:find(HINT, 1, true),
+      "pinned repo: the full-help note names the launcher, not self-update  (got " .. pinned .. ")")
     local su = t({ "help", "self-update" }) or ""
     ok(su:find("lw self-update [--force] [--channel", 1, true) and su:find("--no-host", 1, true),
       "`lw help self-update` prints self-update's host help")
@@ -409,6 +436,66 @@ do
     ok(t({}) == nil, "bare lw -> nil")
     ok(t({ "run", "app", "--", "--help" }) == nil, "--help after `--` belongs to the program")
   end
+end
+
+print("host-level output is ASCII (spec §16.7): no non-ASCII in host string literals")
+do
+  -- The host prints before system Lua sets the console encoding, so every
+  -- string literal in main.lua and boot/*.lua (what the host can print) must be
+  -- ASCII. Comments may use anything. A small Lua lexer: comments, quoted and
+  -- long-bracket strings.
+  local function string_literals(src)
+    local out, i, n = {}, 1, #src
+    while i <= n do
+      local c = src:sub(i, i)
+      if src:sub(i, i + 1) == "--" then
+        local eq = src:match("^%-%-%[(=*)%[", i)
+        if eq then
+          local _, e = src:find("]" .. eq .. "]", i + 4 + #eq, true)
+          i = (e or n) + 1
+        else
+          local e = src:find("\n", i, true)
+          i = (e or n) + 1
+        end
+      elseif src:match("^%[=*%[", i) then
+        local eq = src:match("^%[(=*)%[", i)
+        local s0 = i + 2 + #eq
+        local _, e = src:find("]" .. eq .. "]", s0, true)
+        out[#out + 1] = src:sub(s0, (e or n) - 2 - #eq)
+        i = (e or n) + 1
+      elseif c == '"' or c == "'" then
+        local j = i + 1
+        while j <= n do
+          local d = src:sub(j, j)
+          if d == "\\" then j = j + 2
+          elseif d == c or d == "\n" then break
+          else j = j + 1 end
+        end
+        out[#out + 1] = src:sub(i + 1, j - 1)
+        i = j + 1
+      else
+        i = i + 1
+      end
+    end
+    return out
+  end
+  local files = { root .. "/lua/main.lua" }
+  local h = uv.fs_scandir(root .. "/lua/boot")
+  while h do
+    local name = uv.fs_scandir_next(h)
+    if not name then break end
+    if name:match("%.lua$") then files[#files + 1] = root .. "/lua/boot/" .. name end
+  end
+  local bad = {}
+  for _, f in ipairs(files) do
+    for _, lit in ipairs(string_literals(readfile(f))) do
+      if lit:find("[\128-\255]") then
+        bad[#bad + 1] = f:match("[^/]+$") .. ": " .. lit:sub(1, 60)
+      end
+    end
+  end
+  ok(#files > 5 and #bad == 0, "host string literals are ASCII" ..
+    (#bad > 0 and (" -- " .. table.concat(bad, " | ")) or ""))
 end
 
 print("boot.install — replacing an existing installed binary asks first")

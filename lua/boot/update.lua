@@ -337,7 +337,7 @@ function M.check_legacy_pinned_bundle(legacy_dir, verified_dir)
   if not want then return nil, "verified bundle missing at " .. verified_dir end
   local mismatch = function(rel, why)
     return nil, legacy_dir .. " does not match the pinned release (" .. rel .. ": " .. why ..
-      "); it is a cache — delete it and re-run"
+      "); it is a cache - delete it and re-run"
   end
   for rel in pairs(got) do
     if not want[rel] then return mismatch(rel, "not part of the release") end
@@ -530,15 +530,21 @@ end
 --- development build (`info.dev_build`, from host_update.dev_build — the same
 --- predicate self-update uses), else `unknown release` (a release host built
 --- before version identity existed, which self-update does replace).
+--- ASCII only (spec §16.7): it prints before system Lua can set the console
+--- encoding. In pinned context it also names the pin file (§16.32), so a user
+--- who ran a launcher can confirm which pin and binary answered.
 --- @param info { host_version: integer, release_version?: string, dev_build?: boolean, source: string, bundle: string }
 --- @param channel string the resolved update channel
+--- @param pin_file? string the lw.pin this invocation runs under (pinned context)
 --- @return string line
-function M.version_line(info, channel)
+function M.version_line(info, channel, pin_file)
   local label = info.release_version
     or (info.dev_build and "dev build" or "unknown release")
   local host = label .. " (v" .. info.host_version .. ")"
-  return string.format("lw — host: %s · source: %s · bundle: %s · channel: %s",
+  local line = string.format("lw - host: %s | source: %s | bundle: %s | channel: %s",
     host, info.source, info.bundle, channel)
+  if pin_file then line = line .. " | pin: " .. pin_file end
+  return line
 end
 
 --- Describe the resolved runtime for `lw version`.
