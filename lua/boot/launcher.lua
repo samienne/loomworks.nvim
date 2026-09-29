@@ -16,12 +16,14 @@ local M = {}
 M.LW_SH = [==[#!/bin/sh
 # loomworks repo-local launcher. Committed alongside lw.pin. Fetches the pinned,
 # verified lw host binary into .nvim/cache/ and execs it; the host provisions the
-# pinned bundle itself. Regenerate with `lw update`. See `lw help bootstrap`.
+# pinned bundle itself. Regenerate with `lw bootstrap install`. See
+# `lw help bootstrap`. LOOMWORKS_LAUNCHER tells lw which launcher ran it, so the
+# commands it prints read ./lw.sh.
 set -eu
 
 # Dev / test-at-head override: run a named binary, bypassing the pin entirely.
 if [ -n "${LOOMWORKS_LW:-}" ]; then
-  exec "$LOOMWORKS_LW" "$@"
+  LOOMWORKS_LAUNCHER=lw.sh exec "$LOOMWORKS_LW" "$@"
 fi
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -160,20 +162,23 @@ if [ "$do_verify" = "1" ]; then
 fi
 
 # --- exec the pinned host; it provisions the pinned bundle itself ----------
-LOOMWORKS_PINNED="$version" LW_ROOT="$PWD" exec "$bin" "$@"
+LOOMWORKS_LAUNCHER=lw.sh LOOMWORKS_PINNED="$version" LW_ROOT="$PWD" exec "$bin" "$@"
 ]==]
 
 M.LW_CMD = [==[@echo off
 setlocal EnableExtensions EnableDelayedExpansion
 rem loomworks repo-local launcher (Windows). Committed alongside lw.pin. Fetches
 rem the pinned, verified lw host binary into .nvim\cache\ and runs it; the host
-rem provisions the pinned bundle itself. Regenerate with `lw update`.
+rem provisions the pinned bundle itself. Regenerate with `lw bootstrap install`.
 rem Run it as .\lw.cmd: a bare lw.cmd can resolve to another one on PATH.
+rem LOOMWORKS_LAUNCHER tells lw which launcher ran it, so the commands it prints
+rem read .\lw.cmd.
 rem Messages are `1>&2 echo text`: a trailing ` 1>&2` would leave a space at the
 rem end of every line.
 rem Windows system tools (find, findstr, certutil, curl, where, ping) are called
 rem by their absolute %SystemRoot%\System32 path: a bare name can resolve to a
 rem same-named tool earlier on PATH (Git's usr/bin/find under Git Bash / CI).
+set "LOOMWORKS_LAUNCHER=lw.cmd"
 
 if not "%LOOMWORKS_LW%"=="" (
   "%LOOMWORKS_LW%" %*
@@ -341,6 +346,13 @@ end
 -- one fixes.
 M.GENERATIONS = {
   sh = {
+    -- v0.1.36-beta.1 .. v0.1.37-beta.1
+    ["1fe5b9caafc2872e26eb971b4cea89411a08b8f9a3bc0f09db3ac7292c91b696"] = {
+      gen = 2, releases = "0.1.36-beta.1-0.1.37-beta.1",
+      defects = {
+        { severity = "minor", text = "does not tell lw which launcher ran it; names the deprecated `lw update`" },
+      },
+    },
     -- v0.1.6 .. v0.1.35 (lw.sh unchanged by v0.1.35)
     ["c457cda8832d502450951c5f9756a05929bf01aa679426e14c9719319217e635"] = {
       gen = 1, releases = "0.1.6-0.1.35",
@@ -364,6 +376,14 @@ M.GENERATIONS = {
       gen = 3, releases = "0.1.36-beta.1",
       defects = {
         { severity = "minor", text = "messages end in a trailing space" },
+      },
+    },
+    -- v0.1.36-beta.2 .. v0.1.37-beta.1
+    ["bb21d2287961a73e5946474b02ab24dd2378466b1531c568e3a4599370e577e3"] = {
+      gen = 4, releases = "0.1.36-beta.2-0.1.37-beta.1",
+      defects = {
+        { severity = "minor", text = "does not tell lw which launcher ran it (lw then prints ./lw.sh commands);" ..
+          " names the deprecated `lw update`" },
       },
     },
     -- v0.1.35

@@ -7707,7 +7707,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "update", "trust", "nuke", "device", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -7748,8 +7748,18 @@ function M.cmd_complete(cword, words)
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
     return 0
-  elseif cmd == "bootstrap" or cmd == "update" then
-    if n == 1 then emit({ "--version" }) end
+  elseif cmd == "bootstrap" then
+    if n == 1 then emit({ "install", "upgrade", "--json", "--check" }); return 0 end
+    if sub == "install" then
+      if a[n] == "--channel" then emit({ "stable", "unstable" }); return 0 end
+      emit({ "--version", "--latest", "--channel", "--pin-only", "--force" })
+    elseif sub == "upgrade" then
+      if a[n] == "--channel" then emit({ "stable", "unstable" }); return 0 end
+      emit({ "--channel", "--pin-only", "--force" })
+    end
+    return 0
+  elseif cmd == "update" then
+    if n == 1 then emit({ "--version", "--force" }) end
     return 0
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
@@ -8579,8 +8589,8 @@ current, newest?, detail?}`, absent for a development build — and still exits 
 (CI can test `summary.required_missing > 0`).]],
   launcher = [[lw help launcher — repo launcher checks in `lw health`   (also: pin)
 
-In a repository with a version pin (lw.pin, written by `lw bootstrap`), `lw
-health` checks that lw.sh / lw.cmd / lw.pin will work for every contributor
+In a repository with a version pin (lw.pin, written by `lw bootstrap install`),
+`lw health` checks that lw.sh / lw.cmd / lw.pin will work for every contributor
 and CI runner. It reports and never fixes; lines start with `launcher:`.
 
   lw.pin           parses, and has a hash for every platform's lw binary and
@@ -8588,23 +8598,35 @@ and CI runner. It reports and never fixes; lines start with `launcher:`.
   lw.sh / lw.cmd   present, and the launcher this lw writes. An older one
                    with a defect that breaks runs is a suggestion; one that
                    is only older (no download retry, noisy progress) is a
-                   note; content lw never wrote is a note (local edits?)
+                   note; content lw never wrote is a suggestion (local edits?
+                   `lw bootstrap install --force` restores it)
+  committed        lw.pin, lw.sh, lw.cmd, .gitignore and .gitattributes are
+                   committed - untracked, staged-only or modified files are
+                   listed with the `git add ... && git commit` to run
   exec bit         lw.sh is committed as mode 100755 (bootstrapped on Windows
                    it may not be: CI on Linux/macOS then cannot run it)
-  .gitattributes   lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`
-                   (your global attributes file does not count)
+  .gitattributes   lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`,
+                   from committed content (your global attributes file, or
+                   rules not committed yet, do not count)
   line endings     committed LF-only; in this checkout lw.sh / lw.pin LF and
                    lw.cmd CR LF (a CR LF lw.sh fails under sh)
-  .nvim/cache/     ignored by a .gitignore of the repository - a rule only in
-                   your personal gitignore does not count (teammates and CI do
-                   not have it)
+  .nvim/cache/     ignored by a committed .gitignore of the repository - a rule
+                   only in your personal gitignore, or in a .gitignore not
+                   committed yet, does not count (teammates and CI do not have
+                   it)
   old binaries     cached lw binaries of other versions (removed by the next
-                   `lw update`)
+                   `lw bootstrap install`)
 
-The usual remedy is the repair form of the pin update, which rewrites the
-launchers and adds the missing rules without moving the pin:
+In a pin-only repository (lw.pin without lw.sh / lw.cmd, written by `lw
+bootstrap install --pin-only`) the missing launchers are intended: only the
+lw.pin checks run.
 
-  ./lw.sh update --version <pinned version>     (.\lw.cmd from cmd/PowerShell)
+The usual remedy is the repair, which rewrites the launchers and adds the
+missing rules without moving the pin (add --pin-only in a pin-only repository):
+
+  lw bootstrap install        (./lw.sh bootstrap install through the launcher)
+
+`lw bootstrap` shows the same checks as a status page, with what to do next.
 
 Line endings already committed wrong need `git add --renormalize lw.sh lw.cmd
 lw.pin` once the attributes are in place. Git checks need git and a git work
@@ -9097,7 +9119,7 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
 `lw help agent` for the non-interactive contract.
 
 1. Get lw on the runner: commit a pinned launcher once
-   On a dev machine, once: `lw bootstrap` (see `lw help bootstrap`), then commit
+   On a dev machine, once: `lw bootstrap install` (see `lw help bootstrap`), then commit
    lw.sh, lw.cmd, lw.pin (+ .gitattributes / .gitignore). Every job then runs the
    pinned, hash-verified lw straight from the checkout - no install step, no
    `lw self-update`, the same release on every runner:
@@ -9107,11 +9129,13 @@ command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
    `cmd` runs .\lw.cmd (keep the `.\`: a bare lw.cmd can pick up another one
    on PATH). The first run downloads the lw binary into .nvim/cache/ (retrying
    a failed download) and the release bundle into the per-user data dir; cache
-   them keyed on lw.pin to skip that. Move the pin with `./lw.sh update` and
-   commit the result; `lw health` checks the launcher files (`lw help
-   launcher`). Air-gapped runner: point LOOMWORKS_RELEASE_URL at a local mirror
-   directory. (A global install also works - `lw help install` - and honors
-   the pin for build/run/test/clean.)
+   them keyed on lw.pin to skip that. Move the pin with `./lw.sh bootstrap
+   upgrade` and commit the result; `lw bootstrap --check` fails a job when the
+   launcher files need attention (`lw bootstrap` shows why). Air-gapped
+   runner: point LOOMWORKS_RELEASE_URL at a local mirror directory. (A global
+   install also works - `lw help install` - and honors the pin for
+   build/run/test/clean; `lw bootstrap install --pin-only` commits just the
+   pin for that setup.)
    Below, `lw` stands for ./lw.sh or .\lw.cmd.
 
 Gitignore `.nvim/`: it holds the working copy (loomworks.user.json), the cache,
@@ -9250,8 +9274,7 @@ Usage: lw [command] [args]
   version           host version + which system-Lua source is in use
   install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release (bundle + lw binary)
-  bootstrap         install a repo-local launcher + version pin (lw.sh/.cmd/.pin)
-  update            repoint lw.pin at a target/latest release
+  bootstrap [install|upgrade]  repo-local launcher + version pin: status / write / bump
   help  [command]   this help, or details for a command
 
 Quickstart (empty dir -> first build -> shared config):

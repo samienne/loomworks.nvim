@@ -1,5 +1,5 @@
 -- Host-level help: the help of the HOST's own commands (version, self-update,
--- install, bootstrap, update) — the single source of that text (spec §16.7):
+-- install, bootstrap and the deprecated update) — the single source of that text (spec §16.7):
 -- the bundle's CLI reuses these topics for `lw help <host command>`, so the
 -- answer is the same with or without a bundle. Also what `lw help` / `-h` /
 -- `--help` / `lw <cmd> --help` print when no loomworks system Lua is available
@@ -64,8 +64,8 @@ install itself) - from the release page for your platform, e.g.:
     && echo "<sha256>  /tmp/lw" | sha256sum -c \
     && chmod +x /tmp/lw && /tmp/lw install
 
-For a repository, `lw bootstrap` (a committed, pinned launcher) needs no
-install at all - see `lw help bootstrap`.
+For a repository, `lw bootstrap install` (a committed, pinned launcher)
+needs no install at all - see `lw help bootstrap`.
 
 A host command (handled by lw itself).]],
 
@@ -109,39 +109,80 @@ else the built-in default. A local directory works as an offline mirror and is
 used as-is (it supersedes the channel - no release-API query).
 Not applicable to a development source. A host command (handled by lw itself).]],
 
-  bootstrap = [[lw bootstrap [--version <x.y.z>] [--force]
+  bootstrap = [==[lw bootstrap [--json] [--check]
+lw bootstrap install [--version <x.y.z> | --latest [--channel <name>]] [--pin-only] [--force]
+lw bootstrap upgrade [--channel <name>] [--pin-only] [--force]
 
-Install a repo-local launcher + version pin so contributors and CI run a fixed,
-verified lw without a prior global install. Writes three committed files at the
-repo root - lw.sh, lw.cmd and lw.pin - and makes sure the repository carries
-them correctly:
+Pin this repository to a fixed, verified lw release, with committed launchers
+(lw.sh, lw.cmd) so contributors and CI need no install at all - or just the pin
+(lw.pin), which a globally installed lw honours.
+
+  (no sub-command)  show the pin, the launchers and the repository metadata,
+                    then what you can do. Writes nothing. Works outside a git
+                    repository and outside a loomworks workspace.
+     --json           one JSON document instead of the page
+     --check          exit 1 when there is no pin or any finding needs action
+                      - files not committed, a launcher lw did not write, a
+                      missing rule (a CI guard); a newer release never fails
+                      it. Without --check the page always exits 0
+  install           make the repository correct, from any start: no pin, pin
+                    only, stale or edited launchers, missing rules. Idempotent -
+                    a second run changes nothing.
+     --version <x.y.z>  pin this release
+     --latest           pin the newest release on your update channel (never
+                        moves the pin backwards; --channel stable|unstable for
+                        this run)
+     --pin-only         write only lw.pin (and its .gitattributes rule): no
+                        launcher scripts; launchers already there are left alone
+     --force            replace an lw.sh / lw.cmd that is not a launcher lw wrote
+                        (by default such a file - e.g. with local edits - is kept)
+  upgrade           the same as `install --latest`: move the pin to the newest
+                    release
+
+Which version install pins: --version / --latest when given; otherwise the
+pinned version (so plain `install` in a pinned repository only repairs - it
+never moves the pin); in a repository with no pin, this lw's own release (a
+development build has none: pass --version or --latest). The hashes come from
+the release's SIGNED SHA256SUMS (the signature is checked against the key built
+into lw before any hash is trusted), and the release is checked to be
+fetchable before anything is written.
+
+What install writes: lw.pin (the version and the SHA-256 of every lw binary and
+of the release bundle), lw.sh and lw.cmd, and the repository metadata:
   .gitignore      .nvim/cache/ ignored - appended unless a committed rule of the
                   repo already covers it (your personal gitignore does not
                   count: teammates and CI do not have it)
   .gitattributes  lw.sh and lw.pin `text eol=lf`, lw.cmd `text eol=crlf`,
                   appended when missing
   exec bit        in a git repo that does not track file modes (Windows), lw.sh
-                  is staged as executable (mode 100755) - the only file
-                  bootstrap stages; commit the rest yourself
-
-The pin records the release version and the SHA-256 of every host binary and of
-the release bundle, taken from that release's SIGNED SHA256SUMS (its signature
-is verified against the key built into lw before any hash is trusted). Defaults
-to this host's release version; pass --version to pin a different release (a
-development build has no release version, so it needs --version).
-
-  --version <x.y.z>   pin this release instead of the running host's version
-  --force             replace an lw.sh / lw.cmd that is not a launcher lw wrote
-                      (by default such a file - e.g. with local edits - is kept)
+                  is staged as executable (mode 100755) - the only file lw
+                  stages; commit the rest yourself
+It reports only what it changed (`lw.pin already at X - no changes` when
+nothing did, `lw.pin kept at X` when only other files changed), names the old
+pinned lw binaries it removes from .nvim/cache/, and ends with the `git add ...
+&& git commit` for the files it wrote. It never commits.
 
 Which launcher: `./lw.sh <cmd>` in a POSIX shell - Linux, macOS, and Git Bash /
 MSYS2 on Windows; `.\lw.cmd <cmd>` in cmd.exe or PowerShell (the `.\` matters: a
 bare `lw.cmd` can run another lw.cmd found on PATH). The launcher downloads the
-pinned host binary into .nvim/cache/ (quietly, retrying a failed download up to
-3 times), verifies its sha256 against the pin, and runs it - the host then
-provisions (downloads + verifies) the pinned bundle into your per-user data dir,
-never into the repository. So a clean checkout goes from `./lw.sh build` to
-building, reproducibly. `./lw.sh version` names the pin it runs.
+pinned lw binary into .nvim/cache/ (quietly, retrying a failed download up to
+3 times), verifies its sha256 against the pin, and runs it - that lw then
+provisions (downloads + verifies) the pinned bundle into your per-user data
+dir, never into the repository. So a clean checkout goes from `./lw.sh build`
+to building, reproducibly. `./lw.sh version` names the pin it runs.
+
+Pin only (--pin-only): no scripts are committed; a globally installed lw runs
+the pinned release (fetching + verifying it) for build, run, test, configure
+and clean, so everyone - CI included - needs lw installed (`lw help install`).
+`lw bootstrap` and `lw health` then treat the missing launchers as intended.
+A later plain `lw bootstrap install` adds the launchers, keeping the pin. The
+editor plugin is not governed by the pin.
+
+Upgrading through the launcher: `./lw.sh bootstrap upgrade` needs no global lw -
+it runs as the currently pinned release. That release writes ITS launchers, so
+after moving to a newer release run `./lw.sh bootstrap install` once more to
+take the new release's launchers (upgrade says so). A global lw can run
+`lw bootstrap upgrade` directly too.
 
 Proxies: the launcher honors HTTPS_PROXY/HTTP_PROXY. `--insecure` (or
 LOOMWORKS_INSECURE=1) relaxes TLS for an intercepting proxy - safe only because
@@ -149,34 +190,24 @@ the sha256 check is independent and always enforced. `--verify` additionally
 runs `gh attestation verify` when gh is present (skipped with a note otherwise).
 Air-gapped: point LOOMWORKS_RELEASE_URL at a local mirror directory.
 
-A globally-installed `lw` also honors the pin: for build/run/test/clean it runs
-the pinned release (fetching + verifying it), unless the pin matches itself.
-Bypass with `--no-pin`, or LOOMWORKS_LW=<path> to run a specific binary (the
-dev / test-at-head override). `lw health` checks the launcher files (`lw help
-launcher`). A host command (handled by lw itself).]],
+Bypass the pin with `--no-pin`, or LOOMWORKS_LW=<path> to run a specific binary
+(the dev / test-at-head override). `lw health` checks the launcher files too
+(`lw help launcher`). Before lw 0.1.37 plain `lw bootstrap` wrote the files; it
+now only reports - use `lw bootstrap install`. A host command (handled by lw
+itself); never redirected by an existing pin.]==],
 
-  update = [[lw update [--version <x.y.z>] [--force]
+  update = [==[lw update [--version <x.y.z>] [--force]      (deprecated)
 
-Repoint lw.pin at a target release (default: the latest), rewriting its version
-and per-artifact SHA-256 hashes from that release's signed SHA256SUMS. It also
-refreshes lw.sh / lw.cmd when they differ from this lw's launchers and applies
-the same .gitignore / .gitattributes / exec-bit steps and --force rule as
-`lw bootstrap`. Validates the target release is fetchable before touching the
-pin, so a bad version fails cleanly. Prints only what changed - `lw.pin already
-at X - no changes`, or `lw.pin: A -> B` plus each file it rewrote - and removes
-old pinned binaries from .nvim/cache/. Run it in a repo set up with
-`lw bootstrap`.
+`lw update` is deprecated and will be removed in a later release. It still
+works, printing a one-line notice, and does exactly what these do:
 
-  --version <x.y.z>   pin this release instead of the latest; the CURRENT pin's
-                      version repairs the launcher files without moving the pin
-  --force             replace an lw.sh / lw.cmd that is not a launcher lw wrote
+  lw update                    ->  lw bootstrap install --latest   (= lw bootstrap upgrade)
+  lw update --version <x.y.z>  ->  lw bootstrap install --version <x.y.z>
+  --force                      ->  the same --force
 
-Through the launcher - `./lw.sh update` (or `.\lw.cmd update`) - no global lw is
-needed: it runs as the currently pinned release. That release writes ITS
-launchers, so after moving to a newer release run `./lw.sh update` once more to
-take the new release's launchers (update says so). A global lw - a release or a
-build from source - can run `lw update` directly too. A host command (handled by
-lw itself); like bootstrap it is never redirected by an existing pin.]],
+Like before it needs a repository that already has an lw.pin. `--latest` now
+follows your update channel (`lw help self-update`); on the default stable
+channel nothing changes. See `lw help bootstrap`.]==],
 }
 
 local USAGE = [[lw - loomworks standalone runner
@@ -189,10 +220,12 @@ are available:
                  download + verify the current release (bundle + lw binary)
   install [-y] [--no-modify-path] [--no-bundle] [--dry-run]
                  install this lw for the current user + fetch the bundle
-  bootstrap [--version <x.y.z>] [--force]
-                 write a repo-local launcher + version pin (lw.sh/.cmd/.pin)
-  update [--version <x.y.z>] [--force]
-                 repoint lw.pin at a release
+  bootstrap [--json] [--check]
+                 this repo's lw pin + launchers: status and what to do
+  bootstrap install [--version <x.y.z> | --latest] [--pin-only] [--force]
+                 pin this repo to an lw release (lw.pin, lw.sh, lw.cmd)
+  bootstrap upgrade
+                 move the pin to the newest release
 
 `lw <command> --help` shows details for one of these.]]
 
@@ -220,9 +253,40 @@ end
 --- @param topic string|nil
 --- @param ctx? { pinned?: boolean }
 --- @return string
-function M.text(topic, ctx)
-  if topic and M.TOPICS[topic] then return M.TOPICS[topic] end
+function M.text(topic, ctx, sub)
+  if topic and M.TOPICS[topic] then return M.subcommand(topic, sub) or M.TOPICS[topic] end
   return M.usage(topic, ctx)
+end
+
+--- Only `sub`'s part of a host command's help (spec §16.7): its entry — a line
+--- `  <sub> ...` indented two, with its continuation lines indented three or
+--- more — plus a pointer to the whole. nil when the help does not document it.
+--- The same shape the CLI's sub-command help uses.
+--- @param topic string
+--- @param sub string|nil
+--- @return string|nil
+function M.subcommand(topic, sub)
+  local text = M.TOPICS[topic]
+  if not text or type(sub) ~= "string" or not sub:match("^%a[%w_-]*$") then return nil end
+  local lines = {}
+  for l in (text .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = l end
+  local entry
+  for i, l in ipairs(lines) do
+    if l:match("^  %S") and l:sub(3, 2 + #sub) == sub
+        and (#l == 2 + #sub or l:sub(3 + #sub, 3 + #sub):match("%s")) then
+      entry = { "lw " .. topic .. " " .. (l:sub(3):gsub("%s+$", "")) }
+      for j = i + 1, #lines do
+        local c = lines[j]
+        if c:match("^%s*$") or not c:match("^   ") then break end
+        entry[#entry + 1] = c
+      end
+      break
+    end
+  end
+  if not entry then return nil end
+  entry[#entry + 1] = ""
+  entry[#entry + 1] = "`lw help " .. topic .. "` for the whole command."
+  return table.concat(entry, "\n")
 end
 
 --- The help an argument list asks for, or nil when it asks for none. Help is
@@ -241,8 +305,8 @@ function M.for_args(args, ctx)
       words[#words + 1] = v
     end
   end
-  if words[1] == "help" then return M.text(words[2], ctx) end
-  if flag then return M.text(words[1], ctx) end
+  if words[1] == "help" then return M.text(words[2], ctx, words[3]) end
+  if flag then return M.text(words[1], ctx, words[2]) end
   return nil
 end
 

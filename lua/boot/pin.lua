@@ -181,4 +181,104 @@ function M.decide(o)
   return "redirect", "pinned version " .. tostring(o.pin.version)
 end
 
+-- ---------------------------------------------------------------------------
+-- Pin management argument grammar (spec §16.24). Pure.
+-- ---------------------------------------------------------------------------
+
+--- Global flags the CLI accepts anywhere; tolerated (and ignored) here.
+M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
+  ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true }
+
+local INSTALL_ONLY = { "--version", "--latest", "--channel", "--pin-only", "--force" }
+
+--- Parse `lw bootstrap [install|upgrade] …` / `lw update …` arguments.
+--- @param args string[] the arguments (host flags already peeled), including
+---   the command word itself
+--- @param command "bootstrap"|"update"
+--- @param popts? { invoked?: string } how lw was run, so messages name commands
+---   in that form (boot.launcher_check.cmd)
+--- @return table|nil opts { sub, version?, latest?, channel?, pin_only?, force?, json?, check?, require_pin? }, string|nil usage_error
+function M.parse_bootstrap_args(args, command, popts)
+  local invoked = popts and popts.invoked
+  local function C(rest) return require("boot.launcher_check").cmd(invoked, rest) end
+  local o = { flags = {} }
+  local seen_command, positional = false, {}
+  local i = 1
+  local function value(flag)
+    local v = args[i + 1]
+    if v == nil or v:sub(1, 1) == "-" then return nil, flag .. " needs a value" end
+    i = i + 1
+    return v
+  end
+  while i <= #args do
+    local v = args[i]
+    local eqv
+    if type(v) == "string" and v:sub(1, 2) == "--" and v:find("=", 1, true) then
+      v, eqv = v:match("^([^=]+)=(.*)$")
+    end
+    if v == "--version" or v == "--channel" then
+      local val, err = eqv, nil
+      if val == nil then val, err = value(v) end
+      if not val or val == "" then return nil, err or (v .. " needs a value") end
+      if v == "--version" then o.version = val else o.channel = val end
+      o.flags[v] = true
+    elseif v == "--latest" then o.latest = true; o.flags[v] = true
+    elseif v == "--pin-only" then o.pin_only = true; o.flags[v] = true
+    elseif v == "--force" then o.force = true; o.flags[v] = true
+    elseif v == "--json" then o.json = true; o.flags[v] = true
+    elseif v == "--check" then o.check = true; o.flags[v] = true
+    elseif M.GLOBAL_FLAGS[v] then -- tolerated
+    elseif type(v) == "string" and v:sub(1, 1) == "-" then
+      return nil, "unknown option '" .. v .. "' for `" .. C(command) .. "`"
+    elseif not seen_command and v == command then
+      seen_command = true
+    else
+      positional[#positional + 1] = v
+    end
+    i = i + 1
+  end
+
+  if command == "update" then
+    -- Deprecated alias (spec §16.24): `lw update` = install --latest,
+    -- `lw update --version X` = install --version X; it still needs a pin.
+    if #positional > 0 then return nil, "unexpected argument '" .. positional[1] .. "'" end
+    for _, f in ipairs({ "--latest", "--pin-only", "--channel", "--json", "--check" }) do
+      if o.flags[f] then return nil, f .. " is not an option of the deprecated `" .. C("update") .. "`;" ..
+        " use `" .. C("bootstrap install " .. f) .. "`" end
+    end
+    o.sub = "install"
+    o.latest = o.version == nil
+    o.require_pin = true
+    return o
+  end
+
+  local sub = positional[1]
+  if #positional > 1 then return nil, "unexpected argument '" .. positional[2] .. "'" end
+  if sub == nil then
+    for _, f in ipairs(INSTALL_ONLY) do
+      if o.flags[f] then
+        local example = f == "--version" and ("--version " .. tostring(o.version)) or f
+        return nil, "`" .. C("bootstrap") .. "` only reports; to write the pin and launchers run" ..
+          " `" .. C("bootstrap install " .. example) .. "`"
+      end
+    end
+    return o
+  end
+  if sub ~= "install" and sub ~= "upgrade" then
+    return nil, "unknown `" .. C("bootstrap") .. "` sub-command '" .. sub .. "' (install, upgrade)"
+  end
+  if o.json or o.check then
+    return nil, (o.json and "--json" or "--check") .. " belongs to the status page (`" .. C("bootstrap") .. "`)"
+  end
+  o.sub = sub
+  if sub == "upgrade" then
+    if o.version then return nil, "`" .. C("bootstrap upgrade") .. "` takes no --version; use `" ..
+      C("bootstrap install --version <x.y.z>") .. "`" end
+    o.latest = true
+  end
+  if o.version and o.latest then return nil, "--version and --latest cannot be combined" end
+  if o.channel and not o.latest then return nil, "--channel applies only with --latest (or `upgrade`)" end
+  return o
+end
+
 return M

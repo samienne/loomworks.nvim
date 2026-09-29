@@ -161,9 +161,19 @@ local function is_array(t)
   return true
 end
 
+--- Mark `t` (default a new table) as a JSON array, so an EMPTY one encodes
+--- as `[]` rather than `{}`.
+function M.array(t)
+  return setmetatable(t or {}, { __jsonarray = true })
+end
+
 local function encode_value(v)
   local ty = type(v)
   if v == M.null then return "null" end
+  if ty == "table" and #v == 0 and next(v) == nil then
+    local mt = getmetatable(v)
+    if mt and mt.__jsonarray then return "[]" end
+  end
   if ty == "string" then return encode_string(v) end
   if ty == "boolean" then return v and "true" or "false" end
   if ty == "number" then

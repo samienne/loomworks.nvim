@@ -1,6 +1,6 @@
 -- Hints that must match the context they are printed in (v0.1.30):
 --   * in a pinned context (repo lw.pin — LOOMWORKS_PINNED / a bundle under
---     `.nvim/cache/lua-<ver>`) "Update available" points at `lw update` (which
+--     `.nvim/cache/lua-<ver>`) "Update available" points at `lw bootstrap upgrade` (which
 --     moves the pin), not `lw self-update` (which the pin overrides);
 --   * `lw config add` suggests `lw publish` only when the new configuration
 --     would actually reach the shared loomworks.json.
@@ -40,34 +40,34 @@ describe("update-available hint in a pinned context", function()
     suggestions._host_facts = saved_facts
   end)
 
-  it("a bundle under .nvim/cache/lua-<ver> suggests `lw update`, not `lw self-update`", function()
+  it("a bundle under .nvim/cache/lua-<ver> suggests `lw bootstrap upgrade`, not `lw self-update`", function()
     _G.__loomworks_luaroot = "C:\\repo\\.nvim\\cache\\lua-0.1.0"
     suggestions._host_facts = function() return nil end
     local out = suggestions.update_check_provider({})
     assert.equals(1, #out)
     assert.equals("Update available", out[1].title)
-    assert.matches("run `lw update`", out[1].remedy, 1, true)
+    assert.matches("run `./lw.sh bootstrap upgrade`", out[1].remedy, 1, true)
     assert.matches("lw.pin", out[1].remedy, 1, true)
     assert.is_nil(out[1].remedy:find("run `lw self-update`", 1, true))
   end)
 
-  it("a bundle in the machine-local pinned cache suggests `lw update`", function()
+  it("a bundle in the machine-local pinned cache suggests `lw bootstrap upgrade`", function()
     _G.__loomworks_luaroot = "C:/Users/u/AppData/Local/loomworks/pinned/"
         .. string.rep("ab", 32) .. "/lua-0.1.0"
     suggestions._host_facts = function() return nil end
     local out = suggestions.update_check_provider({})
     assert.equals(1, #out)
-    assert.matches("run `lw update`", out[1].remedy, 1, true)
+    assert.matches("run `./lw.sh bootstrap upgrade`", out[1].remedy, 1, true)
   end)
 
-  it("a pinned host (LOOMWORKS_PINNED) suggests `lw update` too", function()
+  it("a pinned host (LOOMWORKS_PINNED) suggests `lw bootstrap upgrade` too", function()
     _G.__loomworks_luaroot = "/data/loomworks/lua-0.1.0"
     suggestions._host_facts = function()
       return { release_version = "0.1.0", self_update = true, pinned = true, exe = "/opt/lw" }
     end
     local out = suggestions.update_check_provider({})
     assert.equals(1, #out)
-    assert.matches("run `lw update`", out[1].remedy, 1, true)
+    assert.matches("run `./lw.sh bootstrap upgrade`", out[1].remedy, 1, true)
   end)
 
   it("an unpinned bundle keeps `lw self-update`", function()

@@ -156,7 +156,7 @@ execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 `lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
-pruning by `lw bootstrap` / `lw update`)) **must** be reviewed for
+pruning by `lw bootstrap install` / `upgrade` and the deprecated `lw update`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -422,16 +422,20 @@ These are implementation-specific details not covered by the spec or architectur
   Workspace cancels all tasks, enters error state, status page shows nuke
   option. Orphaned objects (project removed from config but cache still
   references it) are NOT errors — they are handled gracefully.
-- **Repo-local launcher + version pin** (spec §16.21–16.24): `lw bootstrap`
-  commits `lw.sh`/`lw.cmd`/`lw.pin` so a repo runs a pinned, verified `lw` with
-  no prior install. `boot/pin.lua` is pure (parse/serialize `lw.pin`, asset
+- **Repo-local launcher + version pin** (spec §16.21–16.24): `lw bootstrap
+  install` commits `lw.sh`/`lw.cmd`/`lw.pin` (or only the pin, `--pin-only`) so
+  a repo runs a pinned, verified `lw` with no prior install; plain `lw
+  bootstrap` is the read-only status page, `upgrade` = `install --latest`,
+  `lw update` a deprecated alias (all dispatched in `main.lua` BEFORE pinned
+  bundle provisioning). `boot/launcher_check.lua` is the ONE implementation of
+  the launcher/pin checks, shared by the status page and health provider #4
+  (`loomworks/launcher_health.lua` is only an adapter). `boot/pin.lua` is pure (parse/serialize `lw.pin`, asset
   selection via `HOST_ASSETS`, `decide{}` redirect action); `boot/bootstrap.lua`
   authors the pin from a release's SIGNED `SHA256SUMS`; `boot/launcher.lua`
   (pure) holds the launcher templates + the GENERATIONS catalogue (add the OLD
   content's LF-normalized sha256 there whenever a template changes) + git-output
   parsers; `boot/repo_meta.lua` does the .gitignore / .gitattributes / lw.sh
-  exec-bit steps and cache pruning; `loomworks/launcher_health.lua` is health
-  provider #4; `boot/update.lua` adds `ensure_host_binary` + `ensure_version`
+  exec-bit steps and cache pruning; `boot/update.lua` adds `ensure_host_binary` + `ensure_version`
   (bundle → machine-local `<data>/pinned/<sha256>/lua-<ver>/`, never a
   repo-local dir — a clone can ship one; the redirect also refuses when a
   legacy `.nvim/cache/lua-<ver>/` differs from the verified bundle). `main.lua` provisions on the

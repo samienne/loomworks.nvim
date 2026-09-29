@@ -256,13 +256,13 @@ Open follow-ups:
 - **Redundant `.nvim/cache/` line.** A repo bootstrapped before the
   "committed rule already covers it" check can carry a `.nvim/cache/` line
   that a broader `.nvim/` rule makes redundant. Neither bootstrap/update nor
-  the health launcher check notices it or offers its removal.
+  the launcher checks (`lw bootstrap` / `lw health`) notice it or offer its removal.
 - **Pin path printed three ways.** The fetch line and `lw version` show the
   pin as `/c/...` (MSYS, from `lw.sh` under Git Bash), `C:\...` (from
   `lw.cmd`) and `C:/...` (from the host). One normalized form would read
   better; the launcher can only print what its shell gives it.
-- **Cached binaries pruned only by `lw update`.** Old `lw-<ver>-<asset>`
-  binaries in `.nvim/cache/` are removed by `lw bootstrap` / `lw update` only;
+- **Cached binaries pruned only by `lw bootstrap install`.** Old `lw-<ver>-<asset>`
+  binaries in `.nvim/cache/` are removed by `lw bootstrap install` / `upgrade` only;
   a checkout that switches branches between pins (or a launcher-only user who
   never runs update) keeps accumulating them. Health reports them; the
   launcher could prune on a fresh fetch.
@@ -272,6 +272,65 @@ CI on Linux only, so the dynamic `lw.cmd` tests (retry, PATH shadowing) run only
 when the suite is run on Windows locally - a Windows standalone CI job would
 cover them.
 
+
+### Bootstrap command restructure (feature/bootstrap-commands)
+
+`lw bootstrap` = read-only status page (shared checks with `lw health`),
+`lw bootstrap install` = one converge command, `--pin-only`, `upgrade` alias,
+`lw update` deprecated (spec §16.24). Fixed along the way: plain `lw bootstrap`
+re-pinned a pinned repo to the running host's version; `lw update` ignored the
+update channel; `./lw.sh update` provisioned the pinned bundle first (so a pin
+with a bad bundle hash could not be repaired through the launcher); two
+implementations of the committed-ignore rule. Follow-ups:
+
+- **Remove `lw update`** one release after the deprecation (help topic,
+  parser branch, README row, tests).
+- ~~**Launcher template comment** still says "Regenerate with `lw update`".~~
+  Done in 0.1.37-beta.2 with the launcher self-identification generation
+  (`LOOMWORKS_LAUNCHER`).
+- **J. Repair needs the network.** A plain repair `install` re-fetches the
+  signed SHA256SUMS on every run, so it fails offline even when the pin is
+  unchanged. Idea: skip the fetch when the pin is kept and every required hash
+  is present (nothing to download), verifying only when the pin moves.
+- **K. Old hosts and plain `bootstrap`.** An old `lw.cmd` / global `lw` (0.1.36
+  and earlier) treats plain `lw bootstrap` as the old write and can fail with
+  "no version to pin" (seen through a 0.1.36-pinned `.\lw.cmd`). Only the docs
+  can mitigate that for old hosts (README "Changed in 0.1.37").
+- **Pin-only is inferred** (pin + neither launcher). Deleting both launchers
+  by hand therefore reads as pin-only; a recorded mode was considered and
+  declined.
+- **0.1.37-beta.2 field-test leftovers** (reactive, minor):
+  1. After `upgrade` moved `lw.pin`, the follow-up `install` that refreshed
+     the launchers hinted `git add lw.sh lw.cmd` and left out the equally
+     uncommitted `lw.pin`: the install commit hint should list every
+     uncommitted launcher/pin/metadata file, not only those this run wrote.
+  2. Prerelease version ranges read badly with a hyphen
+     ("lw 0.1.36-beta.1-0.1.37-beta.1"); use "0.1.36-beta.1 to 0.1.37-beta.1".
+  3. In a fresh repo the combined "not committed yet" finding is joined by the
+     overlapping ".gitattributes rules not committed" and ".gitignore rule
+     uncommitted" findings, each with its own partial `git add`; fold them
+     into the combined one.
+  4. The personal-rule message is generic; `git check-ignore -v` names the
+     exact source (e.g. `c:/Users/…/.gitignore:10`), so show it.
+  5. The `tools` hint still prints `lw profile create …` when run via
+     `./lw.sh` (invoked form not applied there).
+  6. "line endings ok" is reported for untracked files whose index form
+     cannot be checked yet; say "not checked until committed".
+  7. `lw update` on a prerelease pin prints two near-duplicate lines
+     ("newer than the newest stable … - kept", then "already at … - no
+     changes"); print one.
+  8. Run as the plain exe right after writing launchers, the tail points at
+     `lw bootstrap`; `./lw.sh bootstrap` is the better pointer then.
+
+## Flaky tests
+
+- `tests/meson_spec.lua:229` ("configure command uses meson setup with
+  --buildtype") calls the real `builder()`, which `mkdir -p`s a fixed
+  `/root/.nvim/build/App\Debug` — on Windows CI this intermittently fails with
+  E739 "file already exists". Use a temp root / stub the mkdir.
+- `tests/cli_worktree_add_spec.lua` "a main with no working config is
+  'nothing to pull'" failed once in a full local run ("not in a git
+  repository") and passes alone; likely cwd/env leakage from another spec.
 
 ### `lw health fix <n>` (deferred, user idea)
 
