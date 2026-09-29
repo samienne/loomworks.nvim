@@ -216,9 +216,11 @@ if host_command == "version" then
   -- The update channel is a self-update preference; show it so `lw version` is
   -- the one place a user confirms whether they follow stable or unstable.
   local channel = upd.resolve_channel({}) or upd.DEFAULT_CHANNEL
-  -- In pinned context (a launcher / the redirect set the sentinel), name the pin.
-  local pin_file = (pinned_sentinel and pin_root) and (pin_root .. "/lw.pin") or nil
-  io.write(upd.version_line(info, channel, pin_file) .. "\n")
+  -- In pinned context (a launcher / the redirect set the sentinel) the pin, not
+  -- the channel setting, decides what runs: name it instead of the channel.
+  local pinned = (pinned_sentinel and pin_root)
+    and { file = pin_root .. "/lw.pin", version = pinned_sentinel } or nil
+  io.write(upd.version_line(info, channel, pinned) .. "\n")
   exit(0)
 elseif host_command == "self-update" then
   if source_kind == "dev" then

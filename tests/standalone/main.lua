@@ -256,11 +256,23 @@ do
   -- `—` / `·` came out as mojibake in Windows consoles: the host prints this
   -- before system Lua sets the console encoding (spec §16.7).
   ok(line2:match("^[%w%p ]+$") ~= nil, "version line is ASCII  (got " .. line2 .. ")")
-  ok(line2:find("pin:", 1, true) == nil, "no pin field outside pinned context")
-  local pline = update.version_line({ host_version = 1, release_version = "0.1.29",
-    source = "release", bundle = "0.1.29" }, "stable", "/repo/lw.pin")
-  ok(pline:find("| pin: /repo/lw.pin", 1, true) ~= nil,
-    "pinned context: the version line names the pin  (got " .. pline .. ")")
+  ok(line2:find("pinned", 1, true) == nil, "no pin field outside pinned context")
+  -- In pinned context the PIN decides what runs, not the channel setting: the
+  -- beta.1 field test showed `channel: stable` for a repo pinned to a
+  -- prerelease. The line names the pin, says prerelease, and drops the channel.
+  local pline = update.version_line({ host_version = 1, release_version = "0.1.36-beta.1",
+    source = "release", bundle = "0.1.36-beta.1" }, "stable",
+    { file = "/repo/lw.pin", version = "0.1.36-beta.1" })
+  ok(pline:find("| pinned: 0.1.36-beta.1 (prerelease) by /repo/lw.pin", 1, true) ~= nil,
+    "pinned context: names the pinned version, prerelease, and the pin  (got " .. pline .. ")")
+  ok(pline:find("channel", 1, true) == nil, "pinned context: no channel  (got " .. pline .. ")")
+  local sline = update.version_line({ host_version = 1, release_version = "0.1.35",
+    source = "release", bundle = "0.1.35" }, "unstable", { file = "/repo/lw.pin", version = "0.1.35" })
+  ok(sline:find("| pinned: 0.1.35 by /repo/lw.pin", 1, true) ~= nil and not sline:find("prerelease", 1, true)
+    and not sline:find("channel", 1, true), "a release pin: no prerelease mark, no channel  (got " .. sline .. ")")
+  ok(paths.is_prerelease("0.1.36-beta.1") and paths.is_prerelease("1.0.0-rc.1+b")
+    and not paths.is_prerelease("0.1.35") and not paths.is_prerelease("1.2.3+build.4"),
+    "is_prerelease: a semver pre-release identifier (build metadata ignored)")
 
   -- A release host with NO bundle installed (and no system Lua fused in) used
   -- to claim "bundle: bundled (fused)" while every other command said "no

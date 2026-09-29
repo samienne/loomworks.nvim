@@ -126,6 +126,14 @@ local function compare_versions(a, b)
 end
 M.compare_versions = compare_versions
 
+--- Is `v` a pre-release (a semver `-identifier` before any `+build` metadata)?
+--- @param v string|nil
+--- @return boolean
+function M.is_prerelease(v)
+  if type(v) ~= "string" then return false end
+  return (v:gsub("%+.*$", "")):find("-", 1, true) ~= nil
+end
+
 --- Compare versions (semver-aware, §16.29). True when `a` is strictly newer than
 --- `b`. A pre-release (`0.2.0-beta.1`) is older than its release (`0.2.0`); the
 --- numeric core still orders "1.10.0" > "1.9.0".
