@@ -1155,7 +1155,7 @@ local function run_build_steps(profile, ws, opts)
     -- a build that would clobber a still-`built` unit's shared artifact unless
     -- forced. Evaluated at compile-start — for a configure→build chain the
     -- configure step (below) already populated this unit's artifact set, so
-    -- the set is known here. `--force` and `--no-interaction` alike just
+    -- the set is known here. `--force` and `--no-input` alike just
     -- refuse with exit 1; force is the only bypass, never a prompt.
     if step.kind == "build" and step.unit and ws.artifact_conflict_block then
       local block = ws:artifact_conflict_block(step.unit, opts.force or false)
@@ -8963,6 +8963,9 @@ Keys:
                   verified release bundle.
   release-url     override where releases are fetched from (a local directory
                   works as an offline mirror); LOOMWORKS_RELEASE_URL wins.
+  module-index    where `lw module install` / `lw module update` read the
+                  module index from (a URL or a local path);
+                  LOOMWORKS_MODULE_INDEX wins. See `lw help module`.
   channel         `stable` (default) or `unstable`. The update channel
                   `lw self-update` follows. `unstable` includes
                   pre-releases; both are equally signature/hash-verified.
@@ -9069,41 +9072,23 @@ own profile — profiles are per-machine and need not be committed. Run every
 command with --no-input (or LW_NO_INPUT=1 / the conventional CI env var); see
 `lw help agent` for the non-interactive contract.
 
-1. Bootstrap lw on the runner
-   Download a PINNED binary for the platform, verify it by hash, then let the
-   verified binary install itself (details + one-liner in `lw help install`):
-     curl -fsSL <url>/lw-linux-x86_64 -o /tmp/lw \
-       && echo "<sha256>  /tmp/lw" | sha256sum -c \
-       && chmod +x /tmp/lw && /tmp/lw install -y
-   Pin the version by using a specific release URL + sha256 and NOT running
-   `lw self-update`. Air-gapped runner: point LOOMWORKS_RELEASE_URL (or the
-   `release-url` settings key) at a local mirror directory.
-
-2. Pick a toolchain deterministically (per matrix cell)
-   Pin a toolchain COARSELY — by major version, or without an edition — and it
-   resolves to the best installed match, so the job never names the exact patch
-   or the runner image's VS edition:
-     lw --no-input profile create Debug ninja-clang-18
-   Key shapes differ per MODULE, so run `lw tools` on the runner to see the
-   real keys before writing the matrix:
-     cmake   generator + compiler:  ninja-clang-18 · ninja-gcc-12 ·
-             msvc-17 (any edition) · ninja-msvc-17
-     meson   compiler only (no generator):  clang-18 · gcc-12
-   A truncated pin never crosses a boundary, so `clang-1` matches nothing.
-
-3. Build and test with machine-readable output
-     lw --no-input build Debug:ninja-clang-18
-     lw --no-input test  Debug:ninja-clang-18 --junit results.xml -- -j 4
-   `--junit <file>` writes JUnit XML for your reporter (one file per test unit);
-   everything after `--` forwards to the native runner (ctest `-j N`, meson
-   `--num-processes N`). The exit code is real: 0 iff build + every test passed.
-   The profile selector (`ninja-clang-18`) resolves the same here as on create.
-
-4. Collect build artifacts
-     BD=$(lw --no-input profile query Debug:ninja-clang-18 app build-dir)
-     cp "$BD/app" out/
-   The build directory is deterministic and known BEFORE building. Fields:
-   build-dir | config | state | tool | cache (see `lw help profile`).
+1. Get lw on the runner: commit a pinned launcher once
+   On a dev machine, once: `lw bootstrap` (see `lw help bootstrap`), then commit
+   lw.sh, lw.cmd, lw.pin (+ .gitattributes / .gitignore). Every job then runs the
+   pinned, hash-verified lw straight from the checkout - no install step, no
+   `lw self-update`, the same release on every runner:
+     ./lw.sh --no-input build Debug:ninja-clang-18    Linux, macOS, Git Bash
+     .\lw.cmd --no-input build Debug:ninja-clang-18   cmd, PowerShell
+   GitHub Actions on Windows: `shell: bash` runs ./lw.sh; `shell: pwsh` or
+   `cmd` runs .\lw.cmd (keep the `.\`: a bare lw.cmd can pick up another one
+   on PATH). The first run downloads the lw binary into .nvim/cache/ (retrying
+   a failed download) and the release bundle into the per-user data dir; cache
+   them keyed on lw.pin to skip that. Move the pin with `./lw.sh update` and
+   commit the result; `lw health` checks the launcher files (`lw help
+   launcher`). Air-gapped runner: point LOOMWORKS_RELEASE_URL at a local mirror
+   directory. (A global install also works - `lw help install` - and honors
+   the pin for build/run/test/clean.)
+   Below, `lw` stands for ./lw.sh or .\lw.cmd.
 
 Gitignore `.nvim/`: it holds the working copy (loomworks.user.json), the cache,
 and the build trees — all machine-local. If it isn't in the repo's .gitignore,

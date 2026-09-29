@@ -328,6 +328,9 @@ elseif host_command == "install" then
     return e ~= nil and e ~= "" and e ~= "0" and e:lower() ~= "false"
   end
   if env_truthy("LW_NO_INPUT") or env_truthy("CI") then opts.no_input = true end
+  -- A host with its system Lua fused in (a `make install` development build)
+  -- gets no "run lw self-update" advice for a skipped bundle.
+  opts.fused_system_lua = fused_system_lua()
   -- install may report progress AND fail: the binary can be placed while the
   -- bundle fetch dies. Print whatever it got done, then honour the error —
   -- exiting 0 on a partial install is what leaves a job to fail later with a

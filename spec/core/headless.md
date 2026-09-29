@@ -338,7 +338,7 @@ clears it. Naming a variable not declared in the project's `variables`, or a
 profile that does not exist, is rejected. These fill values are per-machine
 working-copy state and are never published (§2.4). Filling a profile's blank
 variables this way is the non-interactive path through the build gate (§5):
-under `--no-interaction` a build refuses while any blank remains, naming the
+under `--no-input` a build refuses while any blank remains, naming the
 variable and profile to fill.
 
 ### 16.10 Toolchains outside the search paths
@@ -812,7 +812,7 @@ and bounded**:
 
 - before fetching, the launcher prints exactly one line naming the pinned
   version, the asset, and the pin it read (e.g. `lw: fetching pinned lw 0.1.35
-  (lw-linux-x86_64) for ./lw.pin...`), so a user can tell which pin and which
+  (lw-linux-x86_64) for /home/me/repo/lw.pin...`), so a user can tell which pin and which
   launcher ran; the downloader's own progress display is suppressed (it renders
   as noise in CI logs and some consoles), while its error messages are kept.
   A run that finds the binary already cached and verified prints nothing of its
@@ -993,7 +993,8 @@ not reported as refreshed; a known earlier generation → replaced; **not a know
 generation** (edited by hand, or written by a newer host) → **not** overwritten:
 the operation completes the rest of its work, reports the launcher as kept, and
 names the explicit overwrite flag that replaces it. The pin itself is fully
-determined by the target release and is always rewritten.
+determined by the target release, so it is never "kept": it is rewritten
+whenever its content or its line endings differ from what the release gives.
 
 **Reporting.** Pin management reports what it changed and nothing else:
 
@@ -1197,7 +1198,7 @@ artifacts (`resolve_artifacts` absent or empty — e.g. the shell module, which
 has no targets) contributes nothing to the index, so its units are never in a
 conflict; this is graceful degradation, not a special case (§8.4).
 
-Under `--no-interaction` the refusal is **never a prompt**: the build simply
+Under `--no-input` the refusal is **never a prompt**: the build simply
 declines with exit 1, exactly as the blank-variable gate does (§16.9). Forcing
 in a non-interactive run is possible only by passing `--force` explicitly. In an
 interactive editor host the same conflict is surfaced through a confirmation

@@ -355,6 +355,19 @@ do
   local rep = install.install({ exe_path = sb .. "/lw", dry_run = true, no_bundle = true, no_modify_path = true })
   ok(type(rep) == "table" and #rep > 0, "install --dry-run returns a report")
   ok(not io.open(install.target_path(), "rb"), "install --dry-run wrote no binary")
+  local rjoined = table.concat(rep or {}, "\n")
+  ok(rjoined:find("Run `lw self-update` when ready", 1, true) ~= nil,
+    "--no-bundle on a release host: fetch the bundle later with self-update")
+  -- `make install` fuses the whole tree and installs with --no-bundle: telling
+  -- that build to "run lw self-update when ready" was wrong — self-update never
+  -- replaces a development build, and a release bundle it installs takes
+  -- precedence over the fused code.
+  local drep = install.install({ exe_path = sb .. "/lw", dry_run = true, no_bundle = true,
+    no_modify_path = true, fused_system_lua = true })
+  local djoined = table.concat(drep or {}, "\n")
+  ok(djoined:find("carries its own system Lua", 1, true) ~= nil
+    and djoined:find("when ready", 1, true) == nil,
+    "--no-bundle on a fused dev build: no self-update advice  (got " .. djoined .. ")")
 
   -- A failed bundle fetch must FAIL the install. Exiting 0 here leaves a
   -- binary that cannot run anything, and the job dies later at an unrelated

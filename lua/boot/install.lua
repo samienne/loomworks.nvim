@@ -198,7 +198,9 @@ end
 --- Install the running host. opts:
 ---   assume_yes (`-y`: replace an existing binary / edit PATH without asking),
 ---   no_input (non-interactive: never ask — refuse what needs a yes),
----   no_modify_path, no_bundle, dry_run; exe_path / ask are test seams.
+---   no_modify_path, no_bundle, dry_run; fused_system_lua (the host carries its
+---   system Lua - a development build: no self-update advice); exe_path / ask
+---   are test seams.
 --- Returns a list of human-readable report lines (prefixed with the outcome),
 --- or nil, err.
 function M.install(opts)
@@ -285,7 +287,14 @@ function M.install(opts)
 
   -- 3. fetch the first bundle so the tool is immediately usable
   local bundle_err
-  if opts.no_bundle then
+  if opts.no_bundle and opts.fused_system_lua then
+    -- A development build (`make install`): its system Lua is fused in.
+    -- self-update never replaces a development build, and a release bundle it
+    -- installed would take precedence over the fused code (spec §16.11).
+    say("- bundle: skipped (--no-bundle): this lw carries its own system Lua (a development")
+    say("  build); update it by rebuilding it (make install), not with `lw self-update`,")
+    say("  whose release bundle would take precedence over the fused code.")
+  elseif opts.no_bundle then
     say("- bundle: skipped (--no-bundle). Run `lw self-update` when ready.")
   elseif opts.dry_run then
     say("- would run self-update to fetch the current release bundle")

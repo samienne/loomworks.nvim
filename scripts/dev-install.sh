@@ -29,5 +29,10 @@ esac
 "$out" install -y --no-bundle "$@"
 
 echo
+echo "This is a development build: \`lw self-update\` never replaces it (re-run"
+echo "\`make install\` instead), and a release bundle already installed in the data"
+echo "dir takes precedence over its fused code. It carries the release key, so"
+echo "\`lw bootstrap --version <x.y.z>\` and \`lw update\` work against real releases."
+echo
 echo "Point --dev at this checkout (once):"
 echo "  lw settings set dev-lua $repo/lua"

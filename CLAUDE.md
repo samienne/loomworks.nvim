@@ -155,7 +155,8 @@ _validate_build_dir, delete_cached_configs, reset_cached_configs,
 execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 `lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
-`clean`) and `lw device clean`) **must** be reviewed for
+`clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
+pruning by `lw bootstrap` / `lw update`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -180,6 +181,13 @@ directory safety before merging:
    `manifest.device_path_under` (separator boundary, no `.`/`..` segments);
    the staging base itself only with `rmdir`. `prune_runs` removes only
    timestamp-named children of a non-link `<build_dir>/.device-runs`.
+8. **Launcher cache** (spec §16.24): `prune_cache` unlinks only regular files
+   directly in `<pin root>/.nvim/cache` whose name is exactly
+   `lw-<valid version>-<HOST_ASSETS value>` (`boot.launcher.cached_binary_version`),
+   never the pinned version's or the running executable; `.nvim` and
+   `.nvim/cache` must be real directories (lstat, not links/junctions) whose
+   realpath lies under the pin root's (separator-bounded). No recursion, no
+   rm_rf; a failed unlink is skipped.
 
 ## Implementation Notes
 
@@ -418,8 +426,12 @@ These are implementation-specific details not covered by the spec or architectur
   commits `lw.sh`/`lw.cmd`/`lw.pin` so a repo runs a pinned, verified `lw` with
   no prior install. `boot/pin.lua` is pure (parse/serialize `lw.pin`, asset
   selection via `HOST_ASSETS`, `decide{}` redirect action); `boot/bootstrap.lua`
-  authors the pin from a release's SIGNED `SHA256SUMS` and holds the launcher
-  templates; `boot/update.lua` adds `ensure_host_binary` + `ensure_version`
+  authors the pin from a release's SIGNED `SHA256SUMS`; `boot/launcher.lua`
+  (pure) holds the launcher templates + the GENERATIONS catalogue (add the OLD
+  content's LF-normalized sha256 there whenever a template changes) + git-output
+  parsers; `boot/repo_meta.lua` does the .gitignore / .gitattributes / lw.sh
+  exec-bit steps and cache pruning; `loomworks/launcher_health.lua` is health
+  provider #4; `boot/update.lua` adds `ensure_host_binary` + `ensure_version`
   (bundle → machine-local `<data>/pinned/<sha256>/lua-<ver>/`, never a
   repo-local dir — a clone can ship one; the redirect also refuses when a
   legacy `.nvim/cache/lua-<ver>/` differs from the verified bundle). `main.lua` provisions on the
