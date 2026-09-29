@@ -990,7 +990,9 @@ function M.update_check_provider(_workspace)
         -- and runs the bundle from the pinned cache `<data>/pinned/<sha256>/
         -- lua-<ver>`; hosts before v0.1.32 used the repo's `.nvim/cache/lua-<ver>`)
         -- takes its version from the pin, which `lw self-update` never changes:
-        -- point at `lw update`, which moves the pin.
+        -- point at `lw bootstrap upgrade` (spec §16.24), which moves the pin to
+        -- the newest release on the same channel compared against here. Pinned
+        -- context means run through a launcher, so name the launcher form.
         local luaroot = (_G.__loomworks_luaroot or ""):gsub("\\", "/")
         local pinned = (facts and facts.pinned)
             or luaroot:find("/%.nvim/cache/lua%-") ~= nil
@@ -999,8 +1001,9 @@ function M.update_check_provider(_workspace)
             title = "Update available",
             detail = current .. " → " .. newest .. " on the " .. channel .. " channel",
             remedy = pinned
-                and ("run `lw update` to move this repo's lw.pin to " .. newest
-                    .. " (the pin sets the version here, not `lw self-update`)")
+                and ("run `./lw.sh bootstrap upgrade` (`.\\lw.cmd bootstrap upgrade` from"
+                    .. " cmd/PowerShell) to move this repo's lw.pin to " .. newest
+                    .. " - the pin sets the version here, not `lw self-update`")
                 or "run `lw self-update`",
         }
         -- self-update replaces a self-updating host too; only a host it cannot
