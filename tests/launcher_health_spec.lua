@@ -124,7 +124,7 @@ describe("launcher health (§16.31 provider #4)", function()
             return i
         end
         local p = nag("lw.pin has no hash for lw-macos-arm64")
-        assert.matches("./lw.sh update --version 1.2.3", p.remedy, 1, true)
+        assert.matches("run `lw bootstrap install`, which keeps the pin", p.remedy, 1, true)
         nag("lw.cmd is the launcher written by lw 0.0.1-0.0.2: calls find by bare name")
         local x = nag("lw.sh is not executable in git (mode 100644)")
         assert.matches("git update-index --chmod=+x lw.sh", x.remedy, 1, true)
@@ -196,6 +196,50 @@ describe("launcher health (§16.31 provider #4)", function()
         assert.is_truthy(m, t)
         assert.equals("suggestion", m.kind)
         assert.is_nil(find(items, "executable in git"), t)
+        vim.fn.delete(r, "rf")
+    end)
+
+    it("pin-only: absent launchers are intended; only the pin's checks run", function()
+        if not git_ok then pending("git not available") return end
+        local r = tmpdir()
+        git(r, "init", "-q")
+        git(r, "config", "core.autocrlf", "false")
+        git(r, "config", "core.excludesFile", r .. "/.git/no-such-excludes")
+        git(r, "config", "core.attributesFile", r .. "/.git/no-such-attributes")
+        write(r .. "/lw.pin", pin_text())
+        local items = lh.provider({ root = r })
+        local t = titles(items)
+        assert.is_nil(find(items, "is missing"), t)
+        assert.is_nil(find(items, ".nvim/cache/"), t)
+        local a = find(items, "no line-ending rule for lw.pin in .gitattributes")
+        assert.is_truthy(a, t)
+        assert.matches("lw bootstrap install --pin-only", a.remedy, 1, true)
+        write(r .. "/.gitattributes", "lw.pin text eol=lf\n")
+        git(r, "add", "lw.pin", ".gitattributes")
+        git(r, "commit", "-q", "-m", "x")
+        items = lh.provider({ root = r })
+        assert.equals(1, #items, titles(items))
+        assert.matches("launcher: lw 1.2.3 pinned (pin only, no launchers); lw.pin line endings ok",
+            items[1].title, 1, true)
+        vim.fn.delete(r, "rf")
+    end)
+
+    it("uses the shared checks (boot.launcher_check), the same the status page runs", function()
+        local check = require("boot.launcher_check")
+        local saved = check.run_checks
+        local seen
+        check.run_checks = function(root, env)
+            seen = env
+            return { mode = "launchers", version = "9.9.9", findings = {
+                { id = "x", kind = "suggestion", title = "from the shared checks", remedy = "do it" } } }
+        end
+        local r = tmpdir()
+        write(r .. "/lw.pin", pin_text())
+        local items = lh.provider({ root = r })
+        check.run_checks = saved
+        assert.equals("launcher: from the shared checks", items[1].title)
+        assert.equals("do it", items[1].remedy)
+        assert.equals("global", seen.invoked)
         vim.fn.delete(r, "rf")
     end)
 
