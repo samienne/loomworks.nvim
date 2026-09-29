@@ -802,6 +802,23 @@ do
   eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
+-- A throwaway git repository for tests of pin management's git steps. Its
+-- config pins the Windows-like behaviour (no file-mode tracking) so the
+-- index-only exec-bit path runs on every platform, and no autocrlf noise.
+local function git(dir, ...)
+  local code, out, err = require("boot.repo_meta")._git(dir, { ... })
+  return code, out or "", err or ""
+end
+local function git_init(dir)
+  paths.mkdirp(dir)
+  git(dir, "init", "-q")
+  git(dir, "config", "core.filemode", "false")
+  git(dir, "config", "core.autocrlf", "false")
+  git(dir, "config", "user.email", "t@example.com")
+  git(dir, "config", "user.name", "t")
+  git(dir, "config", "commit.gpgsign", "false")
+end
+
 local function slurp(p)
   local f = io.open(p, "rb"); if not f then return nil end
   local s = f:read("*a"); f:close(); return s
@@ -994,6 +1011,9 @@ do
   local sb = root .. "/tests/.tmp-bootstrap"; paths.rm_rf(sb); paths.mkdirp(sb)
   local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
   local repo = sb .. "/repo"; paths.mkdirp(repo)
+  -- Its own git repository: bootstrap stages lw.sh (exec bit), which must
+  -- never reach the loomworks checkout the suite runs in.
+  git_init(repo)
   local ver = "3.4.5-test"
 
   local function stage(version, tag)
@@ -1076,6 +1096,231 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.bootstrap — repository metadata, launcher generations, reporting, pruning (§16.24)")
+do
+  local bootstrap = require("boot.bootstrap")
+  local launcher = require("boot.launcher")
+  local repo_meta = require("boot.repo_meta")
+  local pin = require("boot.pin")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function sign(data) return priv:sign(data, "sha256") end
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+  local function has(lines, needle)
+    for _, l in ipairs(lines or {}) do
+      if l:find(needle, 1, true) then return true end
+    end
+    return false
+  end
+  local function show(lines) return table.concat(lines or {}, " | ") end
+
+  local sb = root .. "/tests/.tmp-bsmeta"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+  -- One flat mirror serving every staged version's hashes.
+  local lines = {}
+  local function stage(version)
+    for _, a in ipairs({ "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe",
+        pin.bundle_asset(version) }) do
+      local body = version .. ":" .. a .. "\n"
+      put(mirror .. "/" .. a, body)
+      lines[#lines + 1] = verify.sha256_hex(body) .. "  " .. a
+    end
+    local sums = table.concat(lines, "\n") .. "\n"
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", sign(sums))
+  end
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  local V1, V2 = "1.0.0-test", "1.1.0-test"
+  stage(V1)
+
+  -- ---- bootstrap in a git repo (Windows-like: core.filemode=false) ---------
+  local repo = sb .. "/repo"; git_init(repo)
+  local rep, err = bootstrap.bootstrap(repo, nil, { version = V1 })
+  ok(rep ~= nil, "bootstrap succeeds" .. (err and (" — " .. err) or ""))
+  ok(has(rep, "signature verified"), "bootstrap says the signed hash list was verified  (" .. show(rep) .. ")")
+  ok(has(rep, "./lw.sh <cmd>") and has(rep, ".\\lw.cmd <cmd>"),
+    "bootstrap output names ./lw.sh and .\\lw.cmd")
+  local ga = slurp(repo .. "/.gitattributes") or ""
+  ok(ga:find("lw.sh text eol=lf", 1, true) and ga:find("lw.cmd text eol=crlf", 1, true)
+    and ga:find("lw.pin text eol=lf", 1, true), "bootstrap writes the three eol rules to .gitattributes")
+  local _, stg = git(repo, "ls-files", "--stage", "--", "lw.sh", "lw.cmd", "lw.pin")
+  local modes = launcher.parse_ls_stage(stg)
+  eq(modes["lw.sh"], "100755", "bootstrap stages lw.sh as executable (index-only exec bit)")
+  ok(modes["lw.cmd"] == nil and modes["lw.pin"] == nil, "lw.cmd and lw.pin are NOT staged")
+  ok(has(rep, "staged lw.sh as executable"), "the staging is reported")
+  local _, attr = git(repo, "check-attr", "text", "eol", "--", "lw.sh", "lw.cmd", "lw.pin")
+  local a = launcher.parse_check_attr(attr)
+  ok(launcher.attrs_ok("lw.sh", a["lw.sh"]) and launcher.attrs_ok("lw.cmd", a["lw.cmd"])
+    and launcher.attrs_ok("lw.pin", a["lw.pin"]), "git sees the effective eol attributes")
+
+  -- a re-run appends nothing (idempotent) and reports no metadata change
+  local ga_before, gi_before = slurp(repo .. "/.gitattributes"), slurp(repo .. "/.gitignore")
+  local rep2 = bootstrap.bootstrap(repo, nil, { version = V1 })
+  eq(slurp(repo .. "/.gitattributes"), ga_before, "re-bootstrap leaves .gitattributes alone")
+  eq(slurp(repo .. "/.gitignore"), gi_before, "re-bootstrap leaves .gitignore alone")
+  ok(rep2 and has(rep2, "lw.pin already at " .. V1) and not has(rep2, "wrote lw.sh"),
+    "re-bootstrap reports nothing rewritten  (" .. show(rep2) .. ")")
+
+  -- ---- update: change-only reporting ---------------------------------------
+  local noop = bootstrap.update(repo, { version = V1 })
+  ok(noop and #noop == 1 and noop[1]:find("already at " .. V1 .. " - no changes", 1, true)
+    and noop[1]:find("signature verified", 1, true),
+    "a no-op update says 'already at X - no changes' and nothing else  (" .. show(noop) .. ")")
+  stage(V2)
+  local up = bootstrap.update(repo, { version = V2 })
+  ok(up and up[1] == "lw.pin: " .. V1 .. " -> " .. V2 ..
+    " (hashes from the release's signed SHA256SUMS (signature verified))",
+    "a moved pin reports old -> new + signature verified  (" .. show(up) .. ")")
+  ok(not has(up, "refreshed") and not has(up, "wrote lw"),
+    "unchanged launchers are not reported as refreshed")
+  ok(up and up[1]:match("^[%w%p ]+$") ~= nil, "update output is ASCII")
+  local hint = bootstrap.update(repo, { version = V1, self_version = "1.0.0-test" })
+  ok(hint and not has(hint, "once more"), "no older-host hint when the host is the target")
+  local hint2 = bootstrap.update(repo, { version = V2, self_version = "1.0.0-test" })
+  ok(hint2 and has(hint2, "once more to take " .. V2),
+    "an older host moving the pin says to run the update once more  (" .. show(hint2) .. ")")
+
+  -- ---- launcher generations -------------------------------------------------
+  -- a known earlier generation is refreshed and says which one it was
+  local old_cmd = "@echo off\r\nrem an old launcher\r\n"
+  launcher.GENERATIONS.cmd[verify.sha256_hex(launcher.normalize(old_cmd))] =
+    { gen = 0, releases = "9.9-test", defects = { { severity = "breaks", text = "x" } } }
+  put(repo .. "/lw.cmd", old_cmd)
+  local r1 = bootstrap.update(repo, { version = V2 })
+  ok(has(r1, "refreshed lw.cmd (was the launcher from lw 9.9-test)"),
+    "a known generation is refreshed  (" .. show(r1) .. ")")
+  eq(slurp(repo .. "/lw.cmd"), launcher.render("cmd"), "lw.cmd rewritten to the current template")
+  -- content that is no known generation is kept unless --force
+  put(repo .. "/lw.sh", "#!/bin/sh\necho my own launcher\n")
+  local r2 = bootstrap.update(repo, { version = V2 })
+  ok(has(r2, "kept lw.sh") and has(r2, "--force"), "an unknown lw.sh is kept, naming --force  (" .. show(r2) .. ")")
+  eq(slurp(repo .. "/lw.sh"), "#!/bin/sh\necho my own launcher\n", "the hand-edited lw.sh is untouched")
+  local r3 = bootstrap.update(repo, { version = V2, force = true })
+  ok(has(r3, "replaced lw.sh (--force)"), "--force replaces it")
+  eq(slurp(repo .. "/lw.sh"), launcher.render("sh"), "lw.sh is the current template again")
+  -- the current template with CRLF endings is rewritten with LF
+  put(repo .. "/lw.sh", (launcher.render("sh"):gsub("\n", "\r\n")))
+  local r4 = bootstrap.update(repo, { version = V2 })
+  ok(has(r4, "rewrote lw.sh with LF line endings"), "a CRLF lw.sh is rewritten with LF  (" .. show(r4) .. ")")
+  ok(not (slurp(repo .. "/lw.sh") or ""):find("\r", 1, true), "lw.sh is LF again")
+  -- classify
+  eq(launcher.classify("sh", launcher.LW_SH, verify.sha256_hex).status, "current", "classify: current")
+  local c1 = launcher.classify("cmd", "x", verify.sha256_hex)
+  eq(c1.status, "unknown", "classify: unknown content")
+
+  -- ---- exec bit on a TRACKED lw.sh committed without it ---------------------
+  do
+    local r = sb .. "/tracked"; git_init(r)
+    put(r .. "/lw.sh", launcher.render("sh"))
+    git(r, "add", "--", "lw.sh"); git(r, "commit", "-q", "-m", "x")
+    local _, s0 = git(r, "ls-files", "--stage", "--", "lw.sh")
+    eq(launcher.parse_ls_stage(s0)["lw.sh"], "100644", "(setup) lw.sh committed as 100644")
+    local rr = bootstrap.bootstrap(r, nil, { version = V2 })
+    local _, s1 = git(r, "ls-files", "--stage", "--", "lw.sh")
+    eq(launcher.parse_ls_stage(s1)["lw.sh"], "100755", "bootstrap sets +x on a tracked 100644 lw.sh")
+    ok(has(rr, "set lw.sh executable in the git index"), "and reports it  (" .. show(rr) .. ")")
+  end
+
+  -- ---- .gitignore coverage: committed rules count, personal ones do not -----
+  do
+    local r = sb .. "/ign1"; git_init(r)
+    put(r .. "/.gitignore", "/.nvim/**\n")
+    bootstrap.bootstrap(r, nil, { version = V2 })
+    eq(slurp(r .. "/.gitignore"), "/.nvim/**\n",
+      "a committed rule already ignoring .nvim/ (any form git accepts) -> nothing appended")
+
+    local r2 = sb .. "/ign2"; git_init(r2)
+    put(r2 .. "/.git/info/exclude", ".nvim/\n")
+    local excl = sb .. "/personal-excludes"; put(excl, ".nvim/\n")
+    git(r2, "config", "core.excludesFile", excl)
+    local rr = bootstrap.bootstrap(r2, nil, { version = V2 })
+    ok((slurp(r2 .. "/.gitignore") or ""):find(".nvim/cache/", 1, true) ~= nil,
+      "an ignore rule only in info/exclude or core.excludesFile does not count -> appended")
+    ok(has(rr, "added .nvim/cache/ to .gitignore"), "the append is reported")
+
+    local r3 = sb .. "/ign3"; git_init(r3)
+    put(r3 .. "/.gitattributes", "*.sh text eol=lf\n*.cmd text eol=crlf\n*.pin text eol=lf\n")
+    local rr3 = bootstrap.bootstrap(r3, nil, { version = V2 })
+    eq(slurp(r3 .. "/.gitattributes"), "*.sh text eol=lf\n*.cmd text eol=crlf\n*.pin text eol=lf\n",
+      "equivalent pattern rules satisfy the attributes check -> nothing appended")
+    ok(not has(rr3, "line-ending rules"), "nothing reported for attributes  (" .. show(rr3) .. ")")
+  end
+
+  -- ---- no git: textual fallbacks, no staging --------------------------------
+  do
+    local saved = repo_meta._git
+    repo_meta._git = function() return nil, "git not found" end
+    local r = sb .. "/nogit"; paths.mkdirp(r)
+    put(r .. "/.gitignore", ".nvim/\n")
+    local rr, e = bootstrap.bootstrap(r, nil, { version = V2 })
+    repo_meta._git = saved
+    ok(rr ~= nil, "bootstrap works without git" .. (e and (" — " .. e) or ""))
+    eq(slurp(r .. "/.gitignore"), ".nvim/\n", "without git, a `.nvim/` line covers the cache -> nothing appended")
+    ok((slurp(r .. "/.gitattributes") or ""):find("lw.cmd text eol=crlf", 1, true) ~= nil,
+      "without git, the attribute rules are still written")
+    ok(not has(rr, "staged"), "without git, nothing is staged")
+  end
+
+  -- ---- pruning the launcher cache --------------------------------------------
+  do
+    local cache = repo .. "/.nvim/cache"
+    local old = cache .. "/lw-" .. V1 .. "-lw-linux-x86_64"
+    local old_win = cache .. "/lw-0.9.0-lw-windows-x86_64.exe"
+    local keep = cache .. "/lw-" .. V2 .. "-lw-linux-x86_64"
+    local running = cache .. "/lw-0.8.0-lw-macos-arm64"
+    put(old, "old"); put(old_win, "oldw"); put(keep, "keep"); put(running, "run")
+    put(cache .. "/lw.marker", "m")
+    put(cache .. "/lw-0.7.0-lw-bogus-asset", "b")           -- unknown asset
+    put(cache .. "/lw-0.6.0-lw-linux-x86_64.dl.123", "p")    -- partial download
+    paths.mkdirp(cache .. "/lw-0.5.0-lw-linux-x86_64")       -- a directory
+    put(cache .. "/lw-0.5.0-lw-linux-x86_64/inner", "i")
+    local outside = sb .. "/outside-lw-0.4.0-lw-linux-x86_64"; put(outside, "o")
+    local rr = bootstrap.update(repo, { version = V2, running_exe = running })
+    ok(has(rr, "removed 2 old pinned lw binaries"), "prune reports what it removed  (" .. show(rr) .. ")")
+    ok(not uv.fs_stat(old) and not uv.fs_stat(old_win), "older cached binaries removed")
+    ok(uv.fs_stat(keep) ~= nil, "the pinned version's binary is kept")
+    ok(uv.fs_stat(running) ~= nil, "the running executable is never pruned")
+    ok(uv.fs_stat(cache .. "/lw.marker") and uv.fs_stat(cache .. "/lw-0.7.0-lw-bogus-asset")
+      and uv.fs_stat(cache .. "/lw-0.6.0-lw-linux-x86_64.dl.123")
+      and uv.fs_stat(cache .. "/lw-0.5.0-lw-linux-x86_64/inner") and uv.fs_stat(outside),
+      "only exact cached-binary names that are regular files are candidates")
+    -- a no-op update still prunes (a binary busy last time is collected later)
+    put(old, "old")
+    local rn = bootstrap.update(repo, { version = V2, running_exe = running })
+    ok(not uv.fs_stat(old) and has(rn, "removed 1 old pinned lw binary"),
+      "a no-op update prunes too  (" .. show(rn) .. ")")
+
+    -- a cache dir that is a link/junction out of the repo is never pruned
+    local r = sb .. "/linked"; paths.mkdirp(r .. "/.nvim")
+    local target = sb .. "/elsewhere"; put(target .. "/lw-0.1.0-lw-linux-x86_64", "t")
+    local okl = uv.fs_symlink(target, r .. "/.nvim/cache", { junction = true, dir = true })
+    if okl then
+      local n = repo_meta.prune_cache(r, V2, nil)
+      eq(n, 0, "prune refuses a linked cache dir")
+      ok(uv.fs_stat(target .. "/lw-0.1.0-lw-linux-x86_64") ~= nil, "nothing outside the repo removed")
+    else
+      ok(true, "(symlink/junction not creatable here; linked-cache check skipped)")
+    end
+    eq(repo_meta.prune_cache(nil, V2), 0, "prune with a nil root does nothing")
+    eq(repo_meta.prune_cache(sb .. "/does-not-exist", V2), 0, "prune without a cache dir does nothing")
+  end
+
+  -- cached_binary_version (the name rule)
+  local assets = {}
+  for _, a2 in pairs(pin.HOST_ASSETS) do assets[#assets + 1] = a2 end
+  eq(launcher.cached_binary_version("lw-0.1.33-beta.3-lw-linux-x86_64", assets, pin.valid_version),
+    "0.1.33-beta.3", "cached name with a pre-release version")
+  eq(launcher.cached_binary_version("lw-..-lw-linux-x86_64", assets, pin.valid_version), nil,
+    "an unsafe version in a cached name is not a candidate")
+  eq(launcher.cached_binary_version("lw-1.0.0-lw-linux-x86_64.dl.9", assets, pin.valid_version), nil,
+    "a partial download is not a candidate")
+
+  paths.rm_rf(sb)
+end
+
 print("boot.bootstrap — lw.cmd calls Windows system tools by absolute path (PATH-shadowing)")
 do
   local bootstrap = require("boot.bootstrap")
@@ -1084,7 +1329,7 @@ do
   -- %SystemRoot%\System32 path, never by a bare name that PATH could shadow
   -- (Git's usr/bin/find ahead of System32 broke the download in CI).
   local SYS32 = [[%SystemRoot%\System32\]]
-  local tools = { "find", "findstr", "certutil", "curl", "where" }
+  local tools = { "find", "findstr", "certutil", "curl", "where", "ping" }
   local bare = {}
   for line in (bootstrap.LW_CMD .. "\n"):gmatch("([^\n]*)\n") do
     if not line:match("^%s*rem[%s$]") and not line:match("^%s*rem$") then
@@ -1175,6 +1420,158 @@ do
 
     paths.rm_rf(sb)
   end
+end
+
+print("boot.launcher — launchers retry a failed download, fetch quietly, name the pin (§16.22)")
+do
+  local bootstrap = require("boot.bootstrap")
+  local pin = require("boot.pin")
+  local is_win = package.config:sub(1, 1) == "\\"
+
+  -- A local HTTP server that answers the first `fail_first` requests with 503.
+  local function flaky_server(body, fail_first)
+    local srv = uv.new_tcp()
+    assert(srv:bind("127.0.0.1", 0))
+    local port = srv:getsockname().port
+    local state = { hits = 0 }
+    srv:listen(16, function()
+      local c = uv.new_tcp(); srv:accept(c)
+      local buf = ""
+      c:read_start(function(_, data)
+        if not data then if not c:is_closing() then c:close() end return end
+        buf = buf .. data
+        if buf:find("\r\n\r\n", 1, true) then
+          c:read_stop()
+          state.hits = state.hits + 1
+          local resp
+          if state.hits <= fail_first then
+            resp = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+          else
+            resp = "HTTP/1.1 200 OK\r\nContent-Length: " .. #body .. "\r\nConnection: close\r\n\r\n" .. body
+          end
+          c:write(resp, function() c:shutdown(function() if not c:is_closing() then c:close() end end) end)
+        end
+      end)
+    end)
+    return port, state, srv
+  end
+
+  -- Spawn a launcher and pump the loop until it exits (the server lives in the
+  -- same loop, so a plain uv.run() would never return).
+  local function run(file, argv, env, cwd)
+    local out = {}
+    local stdout, stderr = uv.new_pipe(false), uv.new_pipe(false)
+    local code
+    local h = uv.spawn(file, { args = argv, env = env, cwd = cwd, stdio = { nil, stdout, stderr } },
+      function(c) code = c end)
+    local function rd(_, d) if d then out[#out + 1] = d end end
+    stdout:read_start(rd); stderr:read_start(rd)
+    while code == nil do uv.run("once") end
+    for _ = 1, 50 do if not uv.run("nowait") then break end end
+    if h and not h:is_closing() then h:close() end
+    if not stdout:is_closing() then stdout:close() end
+    if not stderr:is_closing() then stderr:close() end
+    return code, table.concat(out)
+  end
+  local function base_env(extra)
+    local env = {}
+    for k, v in pairs(uv.os_environ()) do
+      local uk = k:upper()
+      if uk ~= "LOOMWORKS_LW" and uk ~= "LOOMWORKS_RELEASE_URL" then env[#env + 1] = k .. "=" .. v end
+    end
+    for _, kv in ipairs(extra) do env[#env + 1] = kv end
+    return env
+  end
+
+  local sb = root .. "/tests/.tmp-lwretry"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local ver = "5.6.7-test"
+
+  if is_win then
+    local sysroot = (os.getenv("SystemRoot") or [[C:\Windows]])
+    local cmdexe = sysroot .. [[\System32\cmd.exe]]
+    local asset = "lw-windows-x86_64.exe"
+    local body = readfile(cmdexe) -- the "pinned host binary": forwarding is observable
+    local want = verify.sha256_hex(body)
+    local function setup(repo)
+      paths.mkdirp(repo)
+      local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(bootstrap.LW_CMD); f:close()
+      f = assert(io.open(repo .. "/lw.pin", "wb"))
+      f:write("version=" .. ver .. "\nsha256_" .. asset .. "=" .. want .. "\n"); f:close()
+    end
+
+    local port, state, srv = flaky_server(body, 2)
+    local repo = sb .. "/ok"; setup(repo)
+    local code, out = run(cmdexe, { "/d", "/c", (repo:gsub("/", "\\")) .. [[\lw.cmd]], "/c", "exit", "7" },
+      base_env({ "LOOMWORKS_RELEASE_URL=http://127.0.0.1:" .. port }), repo)
+    srv:close()
+    eq(code, 7, "lw.cmd: two 503s, then success -> fetched, verified and forwarded")
+    eq(state.hits, 3, "lw.cmd: three attempts")
+    ok(out:find("download attempt 1 failed; retrying", 1, true)
+      and out:find("download attempt 2 failed; retrying", 1, true),
+      "lw.cmd: each retry is announced  (" .. out .. ")")
+    ok(out:find("fetching pinned lw " .. ver .. " (" .. asset .. ") for ", 1, true)
+      and out:find("lw.pin...", 1, true), "lw.cmd: the fetch line names the pin")
+    ok(not out:find("% Total", 1, true) and not out:find("Dload", 1, true),
+      "lw.cmd: no curl progress meter")
+    ok(out:match("^[%w%p%s]*$") ~= nil, "lw.cmd: output is ASCII")
+    -- a second run finds the cached, verified binary and prints nothing of its own
+    local code2, out2 = run(cmdexe, { "/d", "/c", (repo:gsub("/", "\\")) .. [[\lw.cmd]], "/c", "exit", "3" },
+      base_env({ "LOOMWORKS_RELEASE_URL=http://127.0.0.1:1" }), repo)
+    eq(code2, 3, "lw.cmd: cached run forwards")
+    eq(out2, "", "lw.cmd: a cached run adds no output")
+
+    local port2, state2, srv2 = flaky_server(body, 99)
+    local repo2 = sb .. "/fail"; setup(repo2)
+    local code3, out3 = run(cmdexe, { "/d", "/c", (repo2:gsub("/", "\\")) .. [[\lw.cmd]], "/c", "exit", "0" },
+      base_env({ "LOOMWORKS_RELEASE_URL=http://127.0.0.1:" .. port2 }), repo2)
+    srv2:close()
+    ok(code3 ~= 0, "lw.cmd: a download that keeps failing exits non-zero")
+    eq(state2.hits, 3, "lw.cmd: gives up after three attempts")
+    ok(out3:find("download failed after 3 attempts", 1, true) ~= nil,
+      "lw.cmd: says the attempts were exhausted  (" .. out3 .. ")")
+    ok(not uv.fs_stat(repo2 .. "/.nvim/cache/lw-" .. ver .. "-" .. asset)
+      and not uv.fs_stat(repo2 .. "/.nvim/cache/lw-" .. ver .. "-" .. asset .. ".dl"),
+      "lw.cmd: nothing left in the cache")
+  else
+    local asset = assert(pin.detect_asset())
+    local body = "#!/bin/sh\nexit 7\n"
+    local want = verify.sha256_hex(body)
+    local sh = require("boot.exe").resolve("sh")
+    local function setup(repo)
+      paths.mkdirp(repo)
+      local f = assert(io.open(repo .. "/lw.sh", "wb")); f:write(require("boot.launcher").render("sh")); f:close()
+      f = assert(io.open(repo .. "/lw.pin", "wb"))
+      f:write("version = " .. ver .. "\nsha256_" .. asset .. " = " .. want .. "\n"); f:close()
+    end
+    local port, state, srv = flaky_server(body, 2)
+    local repo = sb .. "/ok"; setup(repo)
+    local code, out = run(sh, { repo .. "/lw.sh" },
+      base_env({ "LOOMWORKS_RELEASE_URL=http://127.0.0.1:" .. port }), repo)
+    srv:close()
+    eq(code, 7, "lw.sh: two 503s, then success -> fetched, verified and exec'd")
+    eq(state.hits, 3, "lw.sh: three attempts")
+    ok(out:find("download attempt 1 failed; retrying", 1, true)
+      and out:find("download attempt 2 failed; retrying", 1, true),
+      "lw.sh: each retry is announced  (" .. out .. ")")
+    ok(out:find("fetching pinned lw " .. ver .. " (" .. asset .. ") for " .. repo, 1, true) ~= nil,
+      "lw.sh: the fetch line names the pin")
+    ok(not out:find("% Total", 1, true) and not out:find("Dload", 1, true), "lw.sh: no progress meter")
+    local code2, out2 = run(sh, { repo .. "/lw.sh" }, base_env({}), repo)
+    eq(code2, 7, "lw.sh: cached run execs")
+    eq(out2, "", "lw.sh: a cached run adds no output")
+
+    local port2, state2, srv2 = flaky_server(body, 99)
+    local repo2 = sb .. "/fail"; setup(repo2)
+    local code3, out3 = run(sh, { repo2 .. "/lw.sh" },
+      base_env({ "LOOMWORKS_RELEASE_URL=http://127.0.0.1:" .. port2 }), repo2)
+    srv2:close()
+    ok(code3 ~= 0, "lw.sh: a download that keeps failing exits non-zero")
+    eq(state2.hits, 3, "lw.sh: gives up after three attempts")
+    ok(out3:find("download failed after 3 attempts", 1, true) ~= nil,
+      "lw.sh: says the attempts were exhausted  (" .. out3 .. ")")
+    ok(not uv.fs_stat(repo2 .. "/.nvim/cache/lw-" .. ver .. "-" .. asset), "lw.sh: nothing left in the cache")
+  end
+  paths.rm_rf(sb)
 end
 
 print("SECURITY — malicious lw.pin version cannot redirect the fetch or rm outside cache")

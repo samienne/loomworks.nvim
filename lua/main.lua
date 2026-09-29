@@ -342,11 +342,23 @@ elseif host_command == "install" then
 elseif host_command == "bootstrap" or host_command == "update" then
   -- Pin management (spec §16.24): runs as the global host, never redirected.
   local bootstrap = require("boot.bootstrap")
-  local ver_opt
-  for i, v in ipairs(forwarded) do if v == "--version" then ver_opt = forwarded[i + 1] end end
+  local ver_opt, force = nil, false
+  for i, v in ipairs(forwarded) do
+    if v == "--version" then ver_opt = forwarded[i + 1] end
+    if v == "--force" then force = true end
+  end
   local self_version = (source_kind == "release" and luaroot)
     and luaroot:match("lua%-(.+)$") or nil
   local root = paths.norm(getenv("LW_ROOT")) or (uv.cwd():gsub("\\", "/"):gsub("/+$", ""))
+  -- The running executable is never pruned from the launcher cache (under
+  -- `./lw.sh update` it IS a cached binary, still executing).
+  local okx, running_exe = pcall(uv.exepath)
+  -- The launcher templates are the HOST's (boot.launcher), so the "written by
+  -- an older lw" hint compares against the host's own release version (nil
+  -- for a development build, whose templates are the newest).
+  local bopts = { version = ver_opt, force = force,
+    self_version = require("boot.verify").RELEASE_VERSION,
+    running_exe = okx and running_exe or nil }
   local report, err
   if command == "update" then
     -- Update rewrites an existing pin; it must already be bootstrapped.
@@ -355,9 +367,9 @@ elseif host_command == "bootstrap" or host_command == "update" then
       io.stderr:write("lw: no lw.pin found (run `lw bootstrap` first)\n")
       exit(1)
     end
-    report, err = bootstrap.update(existing, { version = ver_opt })
+    report, err = bootstrap.update(existing, bopts)
   else
-    report, err = bootstrap.bootstrap(root, self_version, { version = ver_opt })
+    report, err = bootstrap.bootstrap(root, self_version, bopts)
   end
   if report then for _, line in ipairs(report) do io.write(line .. "\n") end end
   if err then
