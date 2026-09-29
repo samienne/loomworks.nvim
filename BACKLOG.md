@@ -242,11 +242,55 @@ Found on the first real use of `lw bootstrap` (samienne/reactive#165, pin
 - ~~Old pinned binaries in `.nvim/cache` never pruned.~~
 - ~~`--version` output non-ASCII (mojibake).~~
 
-Left open: the per-user pinned cache (`<data>/loomworks/pinned/`) is still
-never GC'd (see the note under Workspace trust). The standalone suite runs in
+The v0.1.36-beta.1 field test (reactive re-pinned 0.1.35 -> 0.1.36-beta.1)
+added fixes shipped in beta.2 on the same branch: appends to
+`.gitattributes` / `.gitignore` keep the file's line endings (a CRLF working
+copy under `core.autocrlf=true` got LF lines, "w/mixed"); no duplicate
+attributes header; no trailing space in `lw.cmd` messages; flat report wording
+(no nested parentheses, one "already at" message, per-file generation labels);
+`lw version` names the pin instead of the channel in pinned context; `lw
+health` prints ASCII.
+
+Open follow-ups:
+
+- **Redundant `.nvim/cache/` line.** A repo bootstrapped before the
+  "committed rule already covers it" check can carry a `.nvim/cache/` line
+  that a broader `.nvim/` rule makes redundant. Neither bootstrap/update nor
+  the health launcher check notices it or offers its removal.
+- **Pin path printed three ways.** The fetch line and `lw version` show the
+  pin as `/c/...` (MSYS, from `lw.sh` under Git Bash), `C:\...` (from
+  `lw.cmd`) and `C:/...` (from the host). One normalized form would read
+  better; the launcher can only print what its shell gives it.
+- **Cached binaries pruned only by `lw update`.** Old `lw-<ver>-<asset>`
+  binaries in `.nvim/cache/` are removed by `lw bootstrap` / `lw update` only;
+  a checkout that switches branches between pins (or a launcher-only user who
+  never runs update) keeps accumulating them. Health reports them; the
+  launcher could prune on a fresh fetch.
+- The per-user pinned cache (`<data>/loomworks/pinned/`) is still never GC'd
+  (see the note under Workspace trust). The standalone suite runs in
 CI on Linux only, so the dynamic `lw.cmd` tests (retry, PATH shadowing) run only
 when the suite is run on Windows locally - a Windows standalone CI job would
 cover them.
+
+
+### `lw health fix <n>` (deferred, user idea)
+
+`lw health` numbers the issues that have an automatic fix; `lw health fix <n>`
+(or `--all`) applies fix n from the **last** health report, read from the
+cached report, so the numbers stay stable until health runs again. Before
+applying, re-verify that the issue is still present. Each fix runs exactly the
+command health printed; there is no second repair path. Show the command and
+ask for confirmation unless `--yes`. Only loomworks-owned, safe repairs
+(launcher/pin repair, cache prune, tool rescan): never commits, never deletes
+outside `.nvim/`, never touches trust. The printed-command remedies stay as they
+are until then.
+
+Open questions:
+
+- Outside a workspace, health deliberately caches nothing (user decision), so
+  the last report needs a per-user location.
+- Meanwhile, `lw health --json` should expose an `id` and a `fix_command` per
+  issue.
 
 ---
 

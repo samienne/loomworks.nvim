@@ -968,12 +968,20 @@ append-only toward files the user also edits:
   launcher and the pin `text eol=lf` and the Windows launcher `text eol=crlf`
   (§16.21). The check uses the **effective** attributes when version control can
   report them (so an equivalent rule already present, e.g. a pattern covering
-  the files, suffices), else the presence of the exact lines. A missing or
-  contrary rule is fixed by appending the three rules at the end of the root
-  attributes file (creating it if absent), where they take precedence over
-  earlier lines of that file; existing content is never rewritten. A contrary
-  rule the operation cannot override from there (a repository-local, uncommitted
-  attributes file) is reported, not edited.
+  the files, suffices), else the presence of the exact lines. Only the missing
+  rules are added: when the file already names some of the launcher files, the
+  missing rule lines go right after the last of those lines, with no comment
+  header of their own (the repository's own comment already introduces them);
+  otherwise they are appended at the end under one header comment, creating the
+  file if absent. Later lines of a file take precedence over earlier ones, so a
+  rule added there wins over an earlier contrary line; existing content is never
+  rewritten. A contrary rule the operation cannot override from there (a
+  repository-local, uncommitted attributes file) is reported, not edited.
+- **Line endings of the files it edits.** Every line added to the ignore or
+  attributes file uses that file's existing line ending (CR LF when it already
+  has CR LF lines, else LF), so an edit never leaves a file with mixed endings;
+  a file being created uses what version control would check it out with (CR LF
+  under an automatic CR LF conversion setting, else LF).
 - **Executable bit.** Inside a version-controlled working tree, the POSIX
   launcher must be recorded as executable (mode `100755`). On a platform or
   checkout that does not track the bit through the file system (Windows), the
@@ -998,12 +1006,16 @@ whenever its content or its line endings differ from what the release gives.
 
 **Reporting.** Pin management reports what it changed and nothing else:
 
-- a run that changes nothing reports that the pin is already at `<version>`
-  and that nothing changed;
-- a moved pin reports `lw.pin: <old> -> <new>`, a re-verified unchanged
-  version reports it as unchanged, and both state that the release's signed hash
-  list was verified;
-- each launcher is reported as refreshed only when its content changed, and as
+- an unchanged pin is always reported with the same words, whichever host runs
+  the operation (`lw.pin already at <version>`), followed by ` - no changes`
+  when nothing else changed either;
+- a moved pin reports `lw.pin: <old> -> <new>`;
+- the pin line always states that the release's signed hash list was verified,
+  as one flat clause (`; hashes from the signed SHA256SUMS, signature
+  verified`); report lines never nest parentheses;
+- each launcher is reported as refreshed only when its content changed, naming
+  the generation it replaced the same way everywhere (`replaced the launcher
+  written by lw <releases>`, the release range being that file's own), and as
   kept (with the overwrite flag) when it was not a known generation;
 - each metadata step reports only an action it took (rule appended, executable
   bit staged) or a problem it could not fix;
@@ -1342,7 +1354,13 @@ only actionable items contribute to the compact `N suggestions` count (§16.18,
 lists the actionable items first and then the informational ones, which it
 renders distinctly — a different bullet, as positive status rather than a
 warning — so the bullets a reader counts as suggestions match the count even
-without color.
+without color. The text report is **ASCII** — `*` for an actionable item, `-`
+for an informational one, `+` / `x` / `-` / `?` for an inventory entry that is
+found / missing and required / missing / unknown, and no typographic dashes or
+arrows — because it is read in consoles whose code page renders anything else
+as garbage. Item text shared with the editor keeps its own characters there;
+only the terminal report folds them. The machine-readable document carries the
+item text unchanged.
 
 **Provider #1 — compiler cache.** When the workspace has one or more C/C++
 projects (a project whose module reports the caching-relevant language), the
@@ -1691,7 +1709,9 @@ File checks (local reads, no process spawned):
   launcher that resolved system tools through the search path, §16.22) →
   **actionable**, naming the defect in a few words; an earlier generation whose
   known differences are only cosmetic or robustness (no retry, noisy progress)
-  → **informational** ("older launcher; refresh with …"); **not a known
+  → **informational** ("lw.cmd is the launcher written by lw `<releases>`,
+  older than this lw's: …; refresh it with …"; the defective case reads "…
+  written by lw `<releases>`: `<defect>`"); **not a known
   generation** → **informational** ("lw.cmd differs from every launcher lw
   wrote (local edits?)"), never a nag about content the user may own. A
   generation newer than the running host is reported as not recognized, never
@@ -1761,9 +1781,14 @@ A host built from a release carries that release's **version identity**,
 fixed into the binary when it is built. A host built from a working tree (a
 development build) carries none. The version-reporting host operation reports
 the host's release version alongside its capability version (§16.14), the
-system-Lua source (§16.11), the active bundle, and the channel (§16.29); in
-pinned context (§16.22) it also names the pin file it runs under, so a user who
-invoked a launcher can confirm which pin and which binary answered. The report
+system-Lua source (§16.11), the active bundle, and the channel (§16.29). In
+pinned context (§16.22) the **pin**, not the channel setting, decides what runs,
+so the report shows the pinned version, marked as a prerelease when it is one,
+and the pin file it runs under (`pinned: 0.1.36-beta.1 (prerelease) by
+<root>/lw.pin`) instead of the channel; a user who invoked a launcher can so
+confirm which pin and which binary answered. The environment inventory's entry
+for the running release (§16.33) likewise reads "pinned by lw.pin" (plus
+"prerelease"). The report
 is ASCII (§16.7). A host with no release version never reports a guessed version: a development
 build reports that it is one, and a release host with no version identity
 (released before identity existed) reports its release as unknown. The
