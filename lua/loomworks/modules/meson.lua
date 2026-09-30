@@ -49,6 +49,10 @@ M.has_keyed_tools = true
 M.has_options = true
 M.languages = { "c++", "c" }
 
+--- Language-server integrations whose configurations `lsp_configs` can emit
+--- (core §8.4) — health lists these servers in a workspace using this module.
+M.lsp_servers = { "clangd" }
+
 --- Program-bearing type_config keys (core §8.4 / §17.6; meson spec §13).
 M.trust_fields = { type_config = { "clangd" } }
 

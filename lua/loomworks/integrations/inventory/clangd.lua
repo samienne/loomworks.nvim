@@ -10,6 +10,11 @@
 
 local M = {}
 
+--- Languages this tool serves: a plain `lw health` lists it only in a workspace
+--- with one of them (or, for a language server, one whose modules name it in
+--- `lsp_servers`) — core §16.36.
+M.languages = { "c", "c++" }
+
 --- @param _ctx loomworks.InventoryContext
 --- @return loomworks.InventoryDeclaration[]
 function M.health_inventory(_ctx)
