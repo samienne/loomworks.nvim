@@ -297,11 +297,15 @@ local function edit_launch_config(project, launch_name)
         profile = ws and lw.get_active_profile() or nil,
         workspace = ws,
         launch_project = project,
+        original_name = launch_name,
         validate = function(result)
-            if result.name ~= (launch_name or "")
-                    and project.launch
-                    and project.launch[result.name] then
-                return false, "launch config '" .. result.name .. "' already exists"
+            if result.name ~= (launch_name or "") then
+                if project.launch and project.launch[result.name] then
+                    return false, "launch config '" .. result.name .. "' already exists"
+                end
+                -- A new name must be valid (spec §8.7).
+                local vok, verr = require("loomworks.project").validate_launch_name(result.name)
+                if not vok then return false, verr end
             end
             return true
         end,
@@ -1017,21 +1021,28 @@ return function(tree, ctx)
             if #launches > 0 or not proj.orphaned then
                 local project = proj  -- capture for closure
                 tree:group("Launch:", "LoomworksSection", function()
+                    -- {name}  {summary}  {runs} (ui §1.8): summary column before
+                    -- the open-ended command line, which is cut to the window.
+                    local rows = helpers.launch_row_chunks(launches,
+                        (tree.width or 100) - vim.fn.strdisplaywidth(tree:_pad()))
                     for _, lc in ipairs(launches) do
                         local lname = lc.name
-                        local desc = lc.config.command or ""
-                        if lc.config.args and #lc.config.args > 0 then
-                            desc = desc .. " " .. table.concat(lc.config.args, " ")
-                        end
-                        tree:item({
-                            { lname,           "LoomworksVariant" },
-                            { "  " .. desc,   "Comment" },
-                        }, {
+                        local handle = helpers.launch_handle(project, lname)
+                        local cfg = lc.config or {}
+                        local full = (cfg.target and ("target:" .. cfg.target) or (cfg.command or ""))
+                            .. ((type(cfg.args) == "table" and #cfg.args > 0)
+                                and (" " .. table.concat(cfg.args, " ")) or "")
+                        local opts = helpers.with_description({
                             hl = "LoomworksVariant",
                             enter_label = "Edit launch config",
                             on_enter = function() edit_launch_config(project, lname) end,
                             on_delete = function() delete_launch_config(project, lname) end,
-                        })
+                        }, handle)
+                        -- The summary is rendered as a column above, not appended.
+                        opts.description = nil
+                        -- K: the full description, else the full command line.
+                        if not handle.description then opts.hover = full end
+                        tree:item(rows[lname], opts)
                     end
                     tree:item("▸ Add launch config", {
                         hl = "LoomworksAdd",

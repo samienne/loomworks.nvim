@@ -1476,10 +1476,15 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     config.deploy = (data.deploy and next(data.deploy)) and data.deploy or nil
     config.debug = (data.debug and #data.debug > 0) and data.debug or nil
 
-    -- If renamed, delete old first
+    -- A name change is a rename (spec §8.7): the atomic operation that moves
+    -- the whole launch and re-points every profile's default target — never
+    -- a delete plus re-create. The edited fields are then saved on the new name.
     if old_name and old_name ~= new_name then
-        local ok, err = project:delete_launch_config(old_name)
-        if not ok then return false, err end
+        local changed, err = project:rename_launch_config(old_name, new_name)
+        if changed == nil then return false, err end
+    elseif not old_name then
+        local vok, verr = require("loomworks.project").validate_launch_name(new_name)
+        if not vok then return false, "invalid launch name: " .. verr end
     end
 
     return project:save_launch_config(new_name, config)

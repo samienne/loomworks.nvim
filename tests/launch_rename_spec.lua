@@ -283,3 +283,67 @@ describe("launch descriptions and trust (§17.6)", function()
     assert.is_nil(msg:find("\27", 1, true))
   end)
 end)
+
+describe("editor: launch rows, launch editor rename and description", function()
+  local helpers = require("loomworks.ui.helpers")
+  local wv = require("loomworks.workspace_view")
+
+  it("a name change in the launch editor is the atomic rename (fields + default targets)", function()
+    local root = make_ws()
+    launch(root, "add", "App", "editor", "--from-target", "editor", "--x", "--description", "Plain")
+    point_all_profiles_at(root, "editor")
+    local ws = load(root)
+    local proj = find_project(ws, "App")
+    proj.launch.editor.device = { stage = { "a/**" } }
+    assert.is_true(ws:_save_user())
+    local ok, err = wv.execute_save_launch_config(proj, "editor", "main",
+      { command = "", args = { "--x" } })
+    assert.is_true(ok, err)
+    local u = user_json(root)
+    assert.is_nil(u.projects.App.launch.editor)
+    local cfg = u.projects.App.launch.main
+    assert.equals("editor", cfg.target)
+    assert.equals("Plain", cfg.description)
+    assert.same({ stage = { "a/**" } }, cfg.device)
+    for _, d in pairs(u.default_target) do assert.equals("main", d.launch) end
+  end)
+
+  it("the launch editor refuses an invalid new name", function()
+    local root = make_ws()
+    local ws = load(root)
+    local proj = find_project(ws, "App")
+    local ok, err = wv.execute_save_launch_config(proj, nil, "-bad", { command = "node" })
+    assert.is_false(ok)
+    assert.is_truthy(tostring(err):find("invalid launch name", 1, true))
+  end)
+
+  it("launch rows: summary column before the command line, cut to the width", function()
+    local rows = helpers.launch_row_chunks({
+      { name = "editor", config = { target = "ed" } },
+      { name = "schema", config = { target = "ed", args = { "--use-scene-json-schema", "D:/long/path/here" },
+        description = "Schema test data\n\nbody" } },
+    }, 50)
+    local function text(ch) local t = {} for _, c in ipairs(ch) do t[#t + 1] = c[1] end return table.concat(t) end
+    local a, b = text(rows.editor), text(rows.schema)
+    assert.is_truthy(b:find("Schema test data  target:ed", 1, true))
+    assert.equals(a:find("target:ed", 1, true), b:find("target:ed", 1, true)) -- aligned
+    assert.is_true(vim.fn.strdisplaywidth(b) <= 50)
+    assert.is_truthy(b:find("…", 1, true))
+    assert.is_nil(b:find("body", 1, true))
+  end)
+
+  it("the launch handle edits the description through the project", function()
+    local root = make_ws()
+    launch(root, "add", "App", "demo", "node", "x.js")
+    local ws = load(root)
+    local proj = find_project(ws, "App")
+    local h = helpers.launch_handle(proj, "demo")
+    assert.is_nil(h.description)
+    assert.is_true(h:set_description("From the editor"))
+    assert.equals("From the editor", h.description)
+    assert.equals("From the editor", user_json(root).projects.App.launch.demo.description)
+    local kind, label = require("loomworks.ui.description_editor").describe_item(h)
+    assert.equals("launch configuration", kind)
+    assert.equals("App:demo", label)
+  end)
+end)
