@@ -398,8 +398,11 @@ elseif host_command == "self-update" then
     if note then io.write("lw: note: " .. note .. "\n") end
   end
   -- What changed since the previous bundle, from the NEW bundle's release notes
-  -- (spec §16.32, §16.37). Never affects the exit status.
-  if res.updated then
+  -- (spec §16.32, §16.37). Never affects the exit status. Printed LAST, after
+  -- the host-binary line, so it is the final thing the user sees.
+  local function print_whats_new()
+  if not res.updated then return end
+  do
     pcall(function()
       local wn = require("boot.whats_new")
       local function env_truthy(name)
@@ -421,6 +424,7 @@ elseif host_command == "self-update" then
       if #lines > 0 then wn.record_seen(paths.data_dir(), res.version) end
     end)
   end
+  end
   -- Then the host binary itself (spec §16.32): host-side fixes never ship in the
   -- bundle, so a bundle-only update would leave them stranded. Same release as
   -- the bundle just resolved; verified against the signed SHA256SUMS before any
@@ -438,8 +442,9 @@ elseif host_command == "self-update" then
     io.stderr:write("lw: " .. label .. ": host binary not updated: " .. h.message .. "\n")
     if h.manual then io.stderr:write("    To update it manually, " .. h.manual .. ".\n") end
     io.stderr:write("    The bundle update above still stands.\n")
-    if h.status == "error" then exit(1) end
+    if h.status == "error" then print_whats_new(); exit(1) end
   end
+  print_whats_new()
   exit(0)
 elseif host_command == "install" then
   local opts = { dry_run = false, no_modify_path = false, no_bundle = false }

@@ -26,6 +26,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+### Changed
+- `lw self-update` prints its "what's new" lines last, after the host-binary
+  line. (#87)
+
 ## 0.1.41 - 2026-09-30
 
 Release notes are now built in: `lw release-notes` shows what changed, offline,
