@@ -324,7 +324,12 @@ name (configuration-set mappings, profile mappings, and derived profile keys),
 so the model stays consistent without a rebuild; an invalid or colliding new
 name is rejected by the same validation the editor applies. Renaming a
 configuration is confined to **user** configurations — a module-generated or
-preset variant has no user-owned name to change.
+preset variant has no user-owned name to change. A rename carries every field
+the configuration declares, including its description (§1.10), never a fixed
+subset.
+
+A management host MAY also **set, replace or clear the description** (§1.10) of
+a project, a user configuration, a configuration set or a profile (§16.35).
 
 A management host MAY also **declare or remove a project variable** (§1.3.1),
 addressed by `(project, variable)`. Declaring accepts a `type` (`string` or
@@ -2464,4 +2469,141 @@ lw: staging on FMR0225108000951: 3 changed files (1.2 MB), 51 MB archive unchang
 [  PASSED  ] 12 tests.
 $ echo $?
 0
+```
+
+### 16.35 Descriptions
+
+Every describable item (§1.10) has one **describe** operation. It reads the
+description by default, and writes it when given text or asked to clear.
+Writing is a management operation (§16.9). It never runs during a build, and it
+lands in the working copy under the working-copy model (§2.4).
+
+**Command shape.** `describe` is a sub-command of each item's command group, so
+it takes the same operand as that group's other sub-commands:
+
+```
+lw project   describe <project>          [<text> | -m <para>... | -F <file> | -F - | - | -e | --clear]
+lw config    describe <project> <config> [same]
+lw configset describe <set>              [same]
+lw profile   describe <profile>          [same]
+```
+
+- `<profile>` resolves like every profile operand (§16.3: list number, exact
+  key, unique substring). It is **required**. `describe` never defaults to the
+  active profile, so a description cannot land on the wrong profile by accident.
+- `lw config set <project> <config> description <text>` and
+  `lw config unset <project> <config> description` are accepted as well.
+  `description` is a generic field of the configuration param grammar (§16.9),
+  so they behave exactly like `describe` with `<text>` and `--clear`.
+- Item-creating verbs (`project add`, `config add`, `configset create`,
+  `profile create`) accept `-m <para>` (repeatable) to create the item already
+  described.
+
+**Reading.** With no text source and no `--clear`, `describe` prints the full
+description (summary, blank line, body) and exits 0. An item without a
+description prints nothing on stdout and says `<kind> '<name>' has no
+description` on stderr, and also exits 0. A generated configuration prints its
+read-only default description (§1.10) and marks it as coming from the project
+files. Reading is read-only and allowed in a non-interactive host. `--json`
+prints the item as an object instead:
+
+```
+{ "kind": "profile", "name": "Debug:ninja-gcc-12",
+  "description": "…full text…", "summary": "…", "source": "workspace" }
+```
+
+`description` and `summary` are `null` when there is none. `source` is
+`"workspace"`, or `"project-files"` for a generated configuration's default.
+JSON strings carry the text exactly (JSON-escaped), so scripts get the stored
+bytes, not the terminal rendering.
+
+**Text sources for writing.** They follow git, and exactly one is allowed:
+
+| Source | Meaning |
+|--|--|
+| `<text>` | The whole description, one operand. Newlines inside it (shell quoting) are kept |
+| `-m <para>` | Repeatable. Each `-m` is one paragraph, and paragraphs are joined by a blank line. The first `-m` is therefore the summary |
+| `-F <file>` | Read the description from a file |
+| `-F -`, or a lone `-` operand | Read the description from standard input, to EOF |
+| `-e`, `--edit` | Open an editor (below) |
+| `--clear` | Remove the description |
+
+Combining two sources, or `--clear` with a source, is a usage error. `-e` may be
+combined with `-m`, `-F` or `<text>`, which then pre-fill the editor, as in git.
+
+**Editor.** `-e` opens `$VISUAL`, then `$EDITOR`, on a temporary file. The file
+is pre-filled with the current description (or the pre-fill), followed by
+comment lines starting with `#` that name the item and explain the format. On
+save, the `#` lines are removed (the stored text is never commented) and the
+result is normalised (§1.10). If the editor exits non-zero, the edit is aborted
+and nothing is written. If neither variable is set, the command is an error that
+names the scriptable forms. In a non-interactive host (§16.3: `--no-input`,
+`LW_NO_INPUT`, `CI`, or stdin not a terminal), `-e` is an error that names the
+scriptable forms. `-m`, `-F`, `<text>` and `--clear` work non-interactively.
+Reading standard input with `-F -` is data, not a prompt, so it is allowed under
+`--no-input`.
+
+**Writing.**
+
+- The text is normalised (§1.10). If the result is empty, the description is
+  **removed**: `""`, `-m ""`, empty stdin and an editor saved empty all clear it,
+  exactly like `--clear`. A write that changes nothing writes nothing and says so
+  (`(unchanged)` / `… has no description`), then exits 0 (§16.9).
+- A description containing a control character other than LF and TAB, or longer
+  than 4096 bytes, is refused. It exits 1 and writes nothing.
+- A generated configuration is refused, with a pointer to
+  `lw config add <project> <name> <generated-config>` (§1.10).
+- Describing a `shared` item materialises it (§2.4, implicit cascade on use).
+  The publish reminder is printed only when the change reaches the published
+  snapshot, as for every other edit (§16.9).
+
+**Display in one-line views.** Every listing and status row that names a
+describable item shows its **summary** after the row's existing fields, dimmed
+on a colour terminal. This covers the status overview's profile, configuration
+set and project rows (§16.18), `lw profile list`, `lw project list`,
+`lw config list` and `lw configset list`. The summary is fitted to the space
+left on the line:
+
+- **Available width.** The width is the terminal width (§16.18, the same source
+  as other fitted columns), minus the row's other columns and a two-column gap,
+  and **at most 60 columns**. When standard output is not a terminal, the cap
+  alone applies (60 columns).
+- **Truncation.** The summary is measured and cut in **display columns**
+  (code points, with wide characters counted as two), never bytes. When it is
+  cut, it ends in `…`. When fewer than 16 columns remain, the summary moves
+  onto a continuation line beneath the row, indented and also capped at 60
+  columns. It is never dropped silently.
+- **List layouts.** A listing whose rows already span two lines
+  (`lw profile list`) puts the summary at the end of the first line. A listing
+  whose last column is itself open-ended (`lw configset list`, the mappings)
+  always uses the continuation line.
+
+**Display in detail views.** `lw project show`, `lw config show`,
+`lw configset show` and `lw profile show` print the **full** description, one
+output line per description line, indented under a `description` label. It comes
+right after the item's header or identity lines, and a detail view never
+truncates it. `lw profile show` also shows its configuration set's summary on
+the configuration-set line. `lw config show` no longer lists a description as a
+module field. All output follows §16.7 and §17.11.
+
+`lw profile query` is unchanged: its fields are per `(profile, project)` build
+facts, and a description is neither per-project nor a build fact. Scripts read
+descriptions with `describe --json`.
+
+Example:
+
+```
+$ lw profile describe dev-clang -m "Clang debug build with ASan" \
+      -m "Use this one for the nightly sanitizer run; needs clang >= 18."
+profile 'Debug:ninja-clang-18.1.0' described
+  run `lw publish` to share it          (only when the profile is published)
+
+$ lw profile list
+* 1  Debug:ninja-clang-18.1.0   Clang debug build with ASan
+       set=Debug tools=[ninja-clang-18.1.0]
+  2  Release:ninja-gcc-12       Optimised build used for release packagi…
+       set=Release tools=[ninja-gcc-12]
+
+$ lw profile describe 1 --clear
+profile 'Debug:ninja-clang-18.1.0': description removed
 ```

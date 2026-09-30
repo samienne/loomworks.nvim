@@ -50,7 +50,7 @@ The status page uses a foldable tree widget with two-level nesting.
 **Node types**:
 - `leaf` — plain text line, no interaction. Accepts either `(text, hl)` or
   a list of `{text, hl}` chunks for mixed highlights on one line.
-- `node` — foldable line with children, toggle via `<Tab>`
+- `node` — foldable line with children, opened with `l` and closed with `h`
 - `item` — interactive line with actions, no folding
 - `group` — labeled sub-section that increases indentation. Accepts either
   `(label, hl, children_fn)` or `(chunks, children_fn)` for mixed highlights.
@@ -75,9 +75,13 @@ shown when `spinning = true`. Replaces the status marker for running items.
 
 | Key     | Action      | Behavior |
 |---------|-------------|----------|
-| `<Tab>` | toggle_fold | Toggle fold on the current node |
+| `<Tab>` | next_item   | Move the cursor to the next interactive line |
+| `<S-Tab>` | prev_item | Move the cursor to the previous interactive line |
+| `l`     | open_fold   | Open the fold on the current node |
+| `h`     | close_fold  | Close the fold on the current node |
 | `<CR>`  | enter       | Open action picker on nearest actionable node |
 | `b`     | build       | Build (walks up to nearest node with `on_build`) |
+| `<C-b>` | build_serial | Build serially (`-j1`), for readable error output (walks up like `b`) |
 | `c`     | configure   | Configure (walks up to nearest node with `on_configure`) |
 | `o`     | options     | Show build options float (on configured project nodes) |
 | `t`     | task        | Open overseer task output for nearest config (float) |
@@ -88,6 +92,8 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `L`     | load        | Load workspace from cwd / rescan tools |
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
+| `e`     | describe    | Edit the description (core §1.10) of the nearest describable item — profile, configuration set, project, or user configuration — in the description editor (§1.16) |
+| `K`     | hover       | Hover popup with the full content of the current line; on a describable item, its full description (§1.16) |
 | `U`     | delete_user | Delete user.json and reload (with confirmation); for a refused working copy (core §17.4) this is the discard action |
 | `T`     | trust       | Refused working copy (core §17.4): review its summary and trust (re-sign) it |
 | `:w`    | (write)     | Publish: regenerate loomworks.json from working copy |
@@ -96,8 +102,8 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `?`     | help        | Show help dialog |
 | `q`     | (close)     | Close the status page |
 
-**Action dispatch**: For `build`, `configure`, `rebuild`, `clean`, `delete`,
-`pin`, and `options`, the tree walks upward from the cursor line to find the
+**Action dispatch**: For `build`, `build_serial`, `configure`, `rebuild`, `clean`,
+`delete`, `options`, and `describe`, the tree walks upward from the cursor line to find the
 nearest node that has the corresponding `on_<action>` callback. This means pressing
 `b` on a child detail line triggers the build action of the parent node.
 
@@ -106,6 +112,8 @@ nearest node that has the corresponding `on_<action>` callback. This means press
 with the action list. The `enter` action label is context-dependent, set by
 the section renderer via the `enter_label` field on the widget:
 - Profile nodes: "Activate"
+(`describe` also appears in every describable node's action list as
+"Edit description", so it is discoverable without knowing `e`.)
 - Config set tool entries: "Activate"
 - Project config/tool nodes: "Open task output"
 
@@ -158,7 +166,7 @@ and the suffix uses `Comment` highlight (via `group` with chunks).
 |-------------|---------|-------------|
 | Projects: | Profiles | `[b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
 | Tools: | Configuration Sets | `[Enter] activate  [b] build  [c] configure  [R] rebuild  [C] clean  [D] delete` |
-| Configurations: | Projects | `[b] build  [c] configure  [p] pin  [o] options  [R] rebuild  [C] clean  [D] delete` |
+| Configurations: | Projects | `[b] build  [c] configure  [o] options  [R] rebuild  [C] clean  [D] delete` |
 
 ### 1.5 Profiles Section
 
@@ -167,7 +175,7 @@ here when they exist in the cache or are declared in the config.
 
 **Profile node display** (all profiles use the same rendering):
 ```
-{marker} {fold_char} {profile_key} [{tag}] ({status_label}) [{elapsed}] [— {op_message}]
+{marker} {fold_char} {profile_key} [{tag}] ({status_label}) [{elapsed}] [— {op_message}]  {summary}
 ```
 
 Where:
@@ -181,6 +189,8 @@ Where:
   "1 configuring, 1 failed build", "3 configured, 2 unconfigured")
 - `{elapsed}` = shown only when running (e.g., "1m23s")
 - `{op_message}` = last operation result (e.g., "built in 42s")
+- `{summary}` = the profile's description summary (§1.16), fitted to the
+  remaining width; omitted when the profile has none
 
 All profiles are displayed identically. A profile with key `"Debug:ninja-gcc"`
 appears like any other profile; it simply has fewer projects when expanded.
@@ -213,6 +223,8 @@ direct hotkey — only through the picker — because the destructive
 scope (profile-level) benefits from the explicit pick.
 
 **Profile children** (when unfolded):
+- Description (only when the profile has one) — the full description,
+  rendered per §1.16, as the first child
 - Set name (with warning if orphaned/stale) — only for set-based profiles
 - Toolchain — a single profile-level row. A toolchain is one decision
   (host tools or an SDK kit identity `(sdk, platform, arch)`) shared
@@ -367,11 +379,11 @@ Only appears when sets exist.
 
 **Set node display**:
 ```
-{fold_char} {modified_tag}{set_name}
+{fold_char} {modified_tag}{set_name}  {summary}
 ```
 
 Where `{modified_tag}` = "+" if the set is modified (see `specification.md` §2.4),
-empty otherwise. Shared-only sets (not in user.json) are dimmed (`Comment`).
+empty otherwise, and `{summary}` is the set's description summary (§1.16). Shared-only sets (not in user.json) are dimmed (`Comment`).
 
 Highlighted with `LoomworksActive` if the active profile belongs to this set,
 otherwise `LoomworksActionable` (or `Comment` if shared-only).
@@ -380,7 +392,8 @@ otherwise `LoomworksActionable` (or `Comment` if shared-only).
 
 | Action | Behavior |
 |--------|----------|
-| `<CR>` | Action picker: Edit mappings, Create profile from set, Delete |
+| `<CR>` | Action picker: Edit mappings, Edit description, Create profile from set, Delete |
+| `e`    | Edit description (§1.16) |
 | `D`    | Delete config set with confirmation dialog |
 
 **Config set editing** (`<CR>` on a set node):
@@ -408,6 +421,7 @@ immediate deletion of cache entries — the user cleans via "Clean all orphaned
 configs" in the Projects section.
 
 **Set children** (when unfolded):
+- Description (only when the set has one), rendered per §1.16
 - Projects sub-group: `project_key → variant`
 - Tools sub-group (if keyed tools detected): one item per detected tool
 
@@ -461,7 +475,7 @@ are sorted alphabetically with orphaned projects at the end.
 
 **Project node display**:
 ```
-{fold_char} {modified_tag}{project_key} [{type}] {orphan_tag} {refresh_tag}
+{fold_char} {modified_tag}{project_key} [{type}] {orphan_tag} {refresh_tag}  {summary}
 ```
 
 Where:
@@ -469,6 +483,7 @@ Where:
   (see `specification.md` §2.4), empty otherwise
 - `{orphan_tag}` = "(orphaned)" if in cache but not in config
 - `{refresh_tag}` = "!" if `needs_refresh` is true
+- `{summary}` = the project's description summary (§1.16)
 - Under a project's configuration/tool rows, a config unit whose built output
   was overwritten by a conflicting unit (`specification.md` §5.9) carries an
   `[overwritten]` tag (highlight `LoomworksConflict`), matching the profile-side
@@ -480,6 +495,7 @@ configurations are also dimmed. Dimmed items become normal on first
 interaction (auto-copied to user.json).
 
 **Project children** (when unfolded):
+- Description (only when the project has one), rendered per §1.16
 - Path
 - Refresh reasons (if any, with `!` prefix and `DiagnosticWarn` highlight)
 - Configurations sub-group
@@ -487,7 +503,8 @@ interaction (auto-copied to user.json).
 **Configuration display** (keyed-tool modules):
 Each configuration shows its available tools:
 ```
-{fold_char} {config_name} {brief}
+{fold_char} {config_name} {brief}  {summary}
+  Description …                           ← only when it has one (§1.16)
   {fold_char} {tool_label} {progress}     ← one per detected/cached tool
     Status: {status}
     Build dir: ...
@@ -501,7 +518,8 @@ Each configuration shows its available tools:
 
 **Configuration display** (non-keyed modules):
 ```
-{fold_char} {config_name} {brief}
+{fold_char} {config_name} {brief}  {summary}
+  Description …
   {fold_char} Status: {status} {progress}
     Build dir: ...
     ...
@@ -890,6 +908,97 @@ automatically when no spinners are active.
 
 ---
 
+### 1.16 Descriptions
+
+Projects, user configurations, configuration sets and profiles may carry a
+description (`specification.md` §1.10). The first line is the **summary** and
+the rest is the **body**. All description text is display-only and rendered
+inert (`specification.md` §17.11). Control characters are shown visibly, a
+buffer line never receives an embedded newline, and highlighting comes only
+from `LoomworksDescription` ranges the renderer applies, never from the text.
+
+**Summary on a node line.** The summary is appended after the node's existing
+text, separated by two spaces and highlighted `LoomworksDescription`. It is
+**fitted to the available width**:
+
+- The width is the status window's text width, minus the node line's display
+  width, minus the two-space gap and one column of margin, and **at most 60
+  display columns**.
+- The summary is cut in display columns (`strdisplaywidth`, never bytes) and ends
+  in `…` when cut. When fewer than 12 columns remain, it is omitted from the node
+  line; the expanded node and `K` still show it.
+- The fit is recomputed on every render. The page re-renders on window resize.
+
+Nodes that carry a summary: profile nodes (§1.5), configuration-set nodes
+(§1.7), project nodes (§1.8) and configuration rows (§1.8). A generated
+configuration with a module-provided default description (core §1.10) shows
+it the same way.
+
+**Expanded node.** The first child of an unfolded describable node is its
+description:
+
+- one `LoomworksDescription` leaf per description line, with the blank line
+  between summary and body kept;
+- each leaf cut to the window width with `…`;
+- at most **8 lines**, followed by a `… N more lines — [K] full description` leaf
+  when longer.
+
+A module-provided default is labelled `(from project files)` on its first leaf.
+
+**Hover (`K`).** On a describable node or any of its description leaves, `K`
+opens the existing hover popup with the **full** description. The popup is
+wrapped at its width, with no line or length cap. For a generated
+configuration, the popup notes that the text comes from the project files and
+cannot be edited here.
+
+**Pickers and dialogs.** Wherever a picker or dialog lists describable items,
+each entry shows `name  summary`, with the summary fitted to 40 display columns
+and passed as a plain string with no highlight markup. This covers:
+
+- the profile picker (`● key (status)  summary`);
+- create-profile step 1, the configuration-set choice;
+- the deletion confirmation dialog (§1.10), where the summary follows the
+  title line so the user can confirm which item is going;
+- the configuration-set editor and configuration editor dialogs. Each gains a
+  `Description ▸ <summary>` row, and `<CR>` on that row opens the description
+  editor.
+
+Notifications name items by key only and never include description text.
+
+**Description editor (`e`).** `e` on a describable node, or "Edit description"
+from its `<CR>` picker or from an editor dialog's `Description ▸` row, opens a
+floating scratch buffer in the style of a git commit message. The buffer
+settings are `buftype=acwrite`, `bufhidden=wipe`, `filetype=loomworks_description`
+and `textwidth=0`. The title is `Description — <kind> <name>`. Its content is:
+
+```
+<current description, or empty>
+
+# Describe profile 'Debug:ninja-clang-18.1.0'.
+# The first line is the summary shown in lists; add a blank line, then details.
+# Lines starting with '#' are ignored. Save an empty description to remove it.
+# :w saves · :q! discards
+```
+
+- `:w` (BufWriteCmd) removes the `#` lines, normalises the text (core §1.10) and
+  applies it:
+  - an empty result **removes** the description;
+  - an unchanged result writes nothing.
+
+  After a save the buffer is marked unmodified and `:q` closes it; `ZZ` / `:wq`
+  save and close.
+- A refused description (a control character, or more than 4096 bytes) is
+  reported inline as an error and the buffer stays modified.
+- Closing without saving (`:q!`) discards the edit.
+- The syntax highlights the summary line, marks the summary past 72 columns
+  (`WarningMsg`, advisory only), and dims `#` lines. It does not use the
+  `gitcommit` filetype, so commit-message plugins and ftplugins do not attach.
+- Saving an edit to a `shared` item materialises it (core §2.4). A published
+  item then shows `+`.
+- On a generated configuration, `e` does not open the editor. It notifies that
+  generated configurations take their description from the project files, and
+  that a user configuration inheriting it can carry its own.
+
 ## 2. Highlight Groups
 
 | Group                    | Default link      | Usage |
@@ -904,6 +1013,7 @@ automatically when no spinners are active.
 | `LoomworksUnknown`       | `DiagnosticWarn`  | Unknown state (partial deletion) |
 | `LoomworksActionable`    | `Normal`          | Actionable items (sets, configs) |
 | `LoomworksConflict`      | `DiagnosticWarn`  | Output-artifact conflict / overwritten unit (§1.5, §1.8) |
+| `LoomworksDescription`   | `Comment`         | Description summaries and description lines (§1.16) |
 | `LoomworksStale`         | `DiagnosticHint`  | `[stale — reconfigure]` hints, incl. the compiler-cache mismatch (§1.5); the `N suggestions` line (§1.1) |
 
 Users can override these by defining the highlight groups before plugin load.
@@ -931,7 +1041,8 @@ configuration names, tool and profile keys, status) is made inert before it
 reaches the statusline: control characters are removed and `%` is doubled to
 `%%`, so a name from a cloned `loomworks.json` cannot inject statusline items,
 highlight groups or expressions. The component's own highlight escapes, icons
-and join string are not affected.
+and join string are not affected. This is the display-text rule of `specification.md` §17.11. The
+component never shows descriptions.
 
 **Returns empty** when:
 - No workspace loaded

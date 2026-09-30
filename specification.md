@@ -66,6 +66,7 @@ local to each file and restart at §1.
 | How the system behaves when run outside the editor (headless / standalone) | `specification.md` §16 |
 | What a workspace's files may cause to execute; machine signatures on `.nvim/` state | `specification.md` §17 |
 | Running cross-built programs on a device: foreign-artifact detection, device runners, staging, remote run/test | `specification.md` §18 |
+| Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
@@ -279,6 +280,13 @@ belongs in the matching `spec/` file.
     platform (§18.1). A remote run's exit status is the program's, recovered
     explicitly; a transport that loses it reports a transport failure, never
     a program status (§18.5).
+
+20. **Descriptions are inert and optional**: A description (§1.10) is display
+    text only. It never influences what is built or run, is never expanded or
+    interpreted, never makes a unit stale, and is not part of any key. It is
+    rendered inert in every host (§17.11). Absence is the default: an empty
+    description is never stored, and loading, merging, publishing, reverting,
+    renaming and pulling never drop a present one (§1.10, §2.4).
 
 ---
 
