@@ -1,7 +1,9 @@
---- Tests for `lw health`'s environment-inventory rendering (headless §16.33):
---- outside a workspace (no split), inside (suggestion → Required → Other → lw),
---- `--verbose`, `--json`, and the passive `lw status` count reusing the cached
---- tier without probing. The probe is stubbed (`cli._probe_inventory`).
+--- Tests for `lw health`'s environment-inventory rendering (headless §16.33,
+--- §16.36): outside a workspace (lw only; `--all` = the machine inventory),
+--- inside (suggestion, then one section per area, relevant entries only, the
+--- hidden-count line; `--all` adds "not used here"), `--verbose`, `--json`,
+--- and the passive `lw status` count reusing the cached tier without probing.
+--- The probe is stubbed (`cli._probe_inventory`).
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 
@@ -58,30 +60,39 @@ describe("lw health inventory output", function()
         return root
     end
 
-    it("outside a workspace lists every category, one line per item", function()
+    it("outside a workspace plain health shows lw only and points at --all", function()
         local text = capture(function() assert.equals(0, cli.cmd_health(nil)) end)
+        assert.is_truthy(text:find("\nlw\n  lw  0.1.30", 1, true), text)
+        assert.is_nil(text:find("node", 1, true), text)
+        assert.is_truthy(text:find("Machine inventory not checked outside a workspace", 1, true))
+    end)
+
+    it("outside a workspace --all lists every category, one line per item", function()
+        local text = capture(function() assert.equals(0, cli.cmd_health(nil, { all = true })) end)
         assert.is_truthy(text:find("build tools", 1, true))
         assert.is_truthy(text:find("+ node 20.11.0", 1, true))
         assert.is_truthy(text:find("- npm", 1, true))
         assert.is_truthy(text:find("not found (install Node.js)", 1, true))
-        assert.is_nil(text:find("Required by this workspace", 1, true))
+        assert.is_truthy(text:find("\neditor\n", 1, true))
+        assert.is_nil(text:find("Machine inventory not checked", 1, true))
     end)
 
-    it("inside a workspace: the missing required item is a suggestion, then Required / Other / lw", function()
+    it("inside a workspace: the missing required item is a suggestion, then one section per area", function()
         local root = make_ws()
         local text = capture(function() assert.equals(0, cli.cmd_health(root)) end)
-        assert.is_truthy(text:find("* npm not found - needed by App", 1, true))
-        assert.is_truthy(text:find("Required by this workspace", 1, true))
+        assert.is_truthy(text:find("* npm not found - needed by App  [toolchains]", 1, true), text)
+        assert.is_truthy(text:find("\ntoolchains\n", 1, true))
         assert.is_truthy(text:find("x npm", 1, true))
         assert.is_truthy(text:find("+ node 20.11.0", 1, true))
-        assert.is_truthy(text:find("Other", 1, true))
-        assert.is_truthy(text:find("+ clangd 18.1.8", 1, true))
-        assert.is_truthy(text:find("\nlw  0.1.30", 1, true))
+        assert.is_truthy(text:find("\nlw\n  lw  0.1.30", 1, true))
+        -- clangd serves no language of this workspace: hidden and counted.
+        assert.is_nil(text:find("clangd", 1, true), text)
+        assert.is_truthy(text:find("1 other check not relevant here (editor 1) - lw health --all", 1, true), text)
         -- The whole report is ASCII (em-dashes, bullets and marks came out as
         -- mojibake in Windows consoles); only data could carry anything else.
         assert.is_nil(text:find("[\128-\255]"), text)
-        -- Required comes before Other.
-        assert.is_true(text:find("Required by this workspace", 1, true) < text:find("\nOther", 1, true))
+        -- Areas in their fixed order: lw before toolchains.
+        assert.is_true(text:find("\nlw\n", 1, true) < text:find("\ntoolchains\n", 1, true))
 
         -- The passive status count now includes it — without probing.
         cli._probe_inventory = function() error("status must not probe") end
@@ -90,10 +101,31 @@ describe("lw health inventory output", function()
         vim.fn.delete(root, "rf")
     end)
 
-    it("--verbose expands Other to one line per item with locations", function()
+    it("--all lists the unused entries under their area's not-used-here line", function()
         local root = make_ws()
-        local text = capture(function() cli.cmd_health(root, { verbose = true }) end)
+        local text = capture(function() cli.cmd_health(root, { all = true }) end)
+        assert.is_truthy(text:find("\neditor\n  not used here:\n", 1, true), text)
+        assert.is_truthy(text:find("+ clangd 18.1.8", 1, true))
+        assert.is_nil(text:find("not relevant here", 1, true))
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("--all --verbose expands them to one line per item with locations", function()
+        local root = make_ws()
+        local text = capture(function() cli.cmd_health(root, { verbose = true, all = true }) end)
         assert.is_truthy(text:find("/usr/bin/clangd", 1, true))
+        vim.fn.delete(root, "rf")
+    end)
+
+    it("an area selection shows only those areas", function()
+        local root = make_ws()
+        local text = capture(function() cli.cmd_health(root, { areas = { "editor" }, all = true }) end)
+        assert.is_truthy(text:find("+ clangd 18.1.8", 1, true))
+        assert.is_nil(text:find("npm", 1, true), text)
+        assert.is_nil(text:find("\nlw\n", 1, true), text)
+        -- An explicitly selected area with nothing prints so.
+        local t2 = capture(function() cli.cmd_health(root, { areas = { "sdks" } }) end)
+        assert.is_truthy(t2:find("\nsdks\n  nothing to report", 1, true), t2)
         vim.fn.delete(root, "rf")
     end)
 
@@ -104,14 +136,26 @@ describe("lw health inventory output", function()
         assert.equals(0, rc)
         local doc = vim.json.decode(text)
         assert.equals(1, doc.schema)
+        assert.equals("relevant", doc.scope)
         assert.equals(root, doc.workspace.root)
         local by = {}
         for _, e in ipairs(doc.inventory) do by[e.id] = e end
         assert.is_true(by["exe:npm"].required)
         assert.equals("missing", by["exe:npm"].status)
         assert.same({ "App" }, by["exe:npm"].required_by)
-        assert.is_false(by["lsp:clangd:path"].required)
+        assert.is_true(by["exe:npm"].relevant)
+        assert.equals("toolchains", by["exe:npm"].area)
+        assert.is_nil(by["lsp:clangd:path"]) -- not relevant: hidden, counted
+        assert.same({ editor = 1 }, doc.hidden)
         assert.equals("build tools", by["exe:node"].category)
+        local all = vim.json.decode(capture(function() cli.cmd_health(root, { json = true, all = true }) end))
+        assert.equals("all", all.scope)
+        assert.is_nil(all.hidden)
+        local clangd
+        for _, e in ipairs(all.inventory) do if e.id == "lsp:clangd:path" then clangd = e end end
+        assert.is_false(clangd.required)
+        assert.is_false(clangd.relevant)
+        assert.equals("editor", clangd.area)
         local found
         for _, s in ipairs(doc.suggestions) do
             if s.title == "npm not found — needed by App" then found = s end
@@ -123,8 +167,8 @@ describe("lw health inventory output", function()
 
     it("--json is stable: object keys sorted, byte-identical across runs, hint only where actionable", function()
         local root = make_ws()
-        local a = capture(function() cli.cmd_health(root, { json = true }) end)
-        local b = capture(function() cli.cmd_health(root, { json = true }) end)
+        local a = capture(function() cli.cmd_health(root, { json = true, all = true }) end)
+        local b = capture(function() cli.cmd_health(root, { json = true, all = true }) end)
         assert.equals(a, b)
         -- Re-encoding with the sorted encoder reproduces the output exactly:
         -- every object's keys are in sorted order at every depth.
@@ -143,9 +187,13 @@ describe("lw health inventory output", function()
 
     it("--json carries a summary of the counts", function()
         local root = make_ws()
-        local doc = vim.json.decode(capture(function() cli.cmd_health(root, { json = true }) end))
+        local doc = vim.json.decode(capture(function() cli.cmd_health(root, { json = true, all = true }) end))
         -- node, clangd, lw found; npm missing and required (the one actionable item).
         assert.same({ actionable = 1, found = 3, missing = 1, required_missing = 1, unknown = 0 }, doc.summary)
+        -- The relevant scope counts what its document holds (clangd hidden);
+        -- the missing required entry is always relevant.
+        local plain = vim.json.decode(capture(function() cli.cmd_health(root, { json = true }) end))
+        assert.same({ actionable = 1, found = 2, missing = 1, required_missing = 1, unknown = 0 }, plain.summary)
         vim.fn.delete(root, "rf")
     end)
 
@@ -194,7 +242,9 @@ describe("lw health inventory output", function()
     it("--json outside a workspace has no workspace field", function()
         local doc = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true }) end))
         assert.is_nil(doc.workspace)
-        assert.equals(4, #doc.inventory)
+        assert.equals(1, #doc.inventory) -- lw only
+        local all = vim.json.decode(capture(function() cli.cmd_health(nil, { json = true, all = true }) end))
+        assert.equals(4, #all.inventory)
     end)
 end)
 
@@ -236,7 +286,7 @@ describe("health / tools column widths", function()
                 },
             }
         end
-        local ok, text = pcall(capture, function() cli.cmd_health(nil) end)
+        local ok, text = pcall(capture, function() cli.cmd_health(nil, { all = true }) end)
         cli._probe_inventory = orig
         assert.is_true(ok, tostring(text))
         local cols = {}

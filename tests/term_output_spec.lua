@@ -89,7 +89,7 @@ describe("CLI output of workspace data", function()
                 } },
             }
         end
-        local text = capture(function() cli.cmd_health(nil, { verbose = true }) end)
+        local text = capture(function() cli.cmd_health(nil, { verbose = true, all = true }) end)
         cli._probe_inventory = orig
         assert.is_truthy(text:find("tool", 1, true))
         assert.is_nil(text:find(ESC, 1, true), text)

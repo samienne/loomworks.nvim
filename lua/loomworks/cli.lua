@@ -650,10 +650,13 @@ end
 
 --- Bootstrap a live, remerged Workspace headlessly. Waits for tool detection
 --- unless `wait_tools` is false (status only needs pinned info, not live tools).
+--- `opts.soft_trust` returns `nil, core, trust` for a refused working copy
+--- instead of exiting with the trust instructions (`lw health`, §16.36).
 --- @param root string
 --- @param wait_tools? boolean default true
---- @return table workspace, table core
-local function load_workspace(root, wait_tools)
+--- @param opts? { soft_trust?: boolean }
+--- @return table|nil workspace, table core, table|nil trust refusal
+local function load_workspace(root, wait_tools, opts)
   local lw = require("loomworks")
   local core = lw._core()
   -- Route notifications to stderr (warnings/errors only); the editor's
@@ -695,6 +698,8 @@ local function load_workspace(root, wait_tools)
   if not ws then
     if completion_mode then return nil end
     local e = core.get_setup_error and core:get_setup_error()
+    -- `lw health` reports a refused working copy as an item instead (§16.36).
+    if e and e.trust and opts and opts.soft_trust then return nil, core, e.trust end
     if e and e.trust then die(M._trust_refusal_message(e.trust)) end
     die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
   end
@@ -7192,10 +7197,12 @@ end
 
 --- Probe the environment inventory now (an explicit health run). A seam tests
 --- replace so they never depend on the host's tools.
+--- `opts` carries the run's scope and area selection (§16.36).
 --- @param ws loomworks.Workspace|nil
+--- @param opts? { scope?: "relevant"|"all", areas?: table<string, true> }
 --- @return table tier `inventory.probe_tier` result
-function M._probe_inventory(ws)
-  return require("loomworks.inventory").probe_tier(ws)
+function M._probe_inventory(ws, opts)
+  return require("loomworks.inventory").probe_tier(ws, opts)
 end
 
 --- Status mark for an inventory entry: + found, x missing+required, - missing,
@@ -7270,42 +7277,56 @@ local function inventory_name_width(longest, lead, tw)
 end
 M._inventory_name_width = inventory_name_width
 
---- Render `entries` one line per item. Without `with_needed` a left category
---- column names each category once; with it (the Required block) each line
---- ends with "- <who needs it>" — compacted (`names_phrase`), the full list
---- with `full_names` (`--verbose`).
---- @param pal table
---- @param entries table[] classified entries (category order)
---- @param indent string
---- @param with_needed boolean
---- @param full_names? boolean
-local function render_inventory_lines(pal, entries, indent, with_needed, full_names)
+--- Who needs an entry, for the end of its line: its active-scope `required_by`,
+--- or — relevant only through non-active profiles — "other profiles: …"
+--- (§16.36). Compacted (`names_phrase`); every name with `full`.
+--- @param e table scoped entry
+--- @param full? boolean
+--- @return string|nil
+function M._inv_needed(e, full)
   local inv = require("loomworks.inventory")
+  if #(e.required_by or {}) > 0 then
+    return inv.names_phrase(e.required_by, { full = full })
+  end
+  if e.used_by and #e.used_by > 0 then
+    return "other profiles: " .. inv.names_phrase(e.used_by, { full = full })
+  end
+  return nil
+end
+
+--- Render `entries` one line per item under a left category column that names
+--- each category once; a line ends with who needs it (`inv_needed`).
+--- @param pal table
+--- @param entries table[] entries (category order)
+--- @param indent string
+--- @param full_names? boolean every profile/project name (`--verbose`)
+local function render_inventory_lines(pal, entries, indent, full_names)
   local cat_w, longest = 0, 0
   for _, e in ipairs(entries) do
     cat_w = math.max(cat_w, uwidth(e.category))
     local name = e.label .. (e.version and (" " .. e.version) or "")
     longest = math.max(longest, uwidth(name))
   end
-  local name_w = inventory_name_width(longest, uwidth(indent) + (with_needed and 0 or (cat_w + 2)), term_width())
+  local name_w = inventory_name_width(longest, uwidth(indent) + cat_w + 2, term_width())
   local last_cat
   for _, e in ipairs(entries) do
     local cat = (e.category ~= last_cat) and e.category or ""
     last_cat = e.category
     local name = e.label .. (e.version and (" " .. e.version) or "")
-    local line = indent .. (with_needed and "" or (pal.title(upad(cat, cat_w)) .. "  "))
+    local line = indent .. pal.title(upad(cat, cat_w)) .. "  "
       .. inv_paint_mark(pal, e) .. " " .. upad(name, name_w) .. "  " .. inv_tail(pal, e)
-    if with_needed and #(e.required_by or {}) > 0 then
-      line = line .. pal.dim("  - " .. inv.names_phrase(e.required_by, { full = full_names }))
-    end
+    local who = M._inv_needed(e, full_names)
+    if who then line = line .. pal.dim("  - " .. who) end
     out((line:gsub("%s+$", "")))
   end
 end
 
---- Render the "Other" block compacted to one line per category.
+--- Render entries compacted to one line per category (the full scope's "not
+--- used here" block, §16.36). Found plugins are counted, not listed.
 --- @param pal table
---- @param entries table[] non-required entries (category order)
-local function render_inventory_compact(pal, entries)
+--- @param entries table[] (category order)
+--- @param indent string
+local function render_inventory_compact(pal, entries, indent)
   local cats, by_cat = {}, {}
   for _, e in ipairs(entries) do
     if not by_cat[e.category] then
@@ -7321,7 +7342,6 @@ local function render_inventory_compact(pal, entries)
     local loaded = 0
     for _, e in ipairs(by_cat[c]) do
       if c == "plugins" and e.status == "found" then
-        -- Loaded plugins are the norm: count them; list only the rejected.
         loaded = loaded + 1
       else
         local txt = e.label .. ((e.status == "found" and e.version) and (" " .. e.version) or "")
@@ -7330,26 +7350,30 @@ local function render_inventory_compact(pal, entries)
       end
     end
     if loaded > 0 then table.insert(items, 1, pal.active("+") .. " " .. loaded .. " loaded") end
-    out("  " .. pal.title(upad(c, cat_w)) .. "  " .. table.concat(items, pal.dim(" - ")))
+    out(indent .. pal.title(upad(c, cat_w)) .. "  " .. table.concat(items, pal.dim(" - ")))
   end
 end
 
---- The `lw health --json` document (§16.33): `{ schema, workspace?,
---- suggestions[], inventory[], summary, update? }`. An inventory entry carries
---- `hint` only when it is not found. `summary` counts the actionable suggestions
---- and the inventory entries by status (plus the missing required ones).
---- `update` is the update check's outcome (§16.31: `status` available / current
---- / unknown, channel, current, newest?, detail?), absent when it does not apply.
---- `cmd_health` encodes it with sorted object keys.
+--- The `lw health --json` document (§16.33, §16.36): `{ schema, scope,
+--- areas?, workspace?, suggestions[], inventory[], summary, hidden?, update?,
+--- submodules? }`. `entries` are the SHOWN inventory entries (the run's scope
+--- and area selection); `summary` counts what the document holds. Each
+--- suggestion carries its `area`; each entry its `area`, `relevant` and —
+--- relevant only through non-active profiles — `used_by`. An inventory entry
+--- carries `hint` only when it is not found. `cmd_health` encodes it with
+--- sorted object keys.
 --- @param ws loomworks.Workspace|nil
 --- @param suggestions loomworks.Suggestion[]
 --- @param entries table[]
+--- @param meta? { scope?: string, areas?: string[], hidden?: table<string, integer>, root?: string, trust?: table }
 --- @return table
-local function health_json(ws, suggestions, entries)
+local function health_json(ws, suggestions, entries, meta)
+  meta = meta or {}
   local inv = require("loomworks.inventory")
   local sugg = {}
   for _, s in ipairs(suggestions) do
-    sugg[#sugg + 1] = { kind = s.kind or "suggestion", title = s.title, detail = s.detail, remedy = s.remedy }
+    sugg[#sugg + 1] = { kind = s.kind or "suggestion", title = s.title, detail = s.detail,
+      remedy = s.remedy, area = s.area or "other" }
   end
   -- The submodule report (§16.31 provider #3), absent when it did not apply.
   local ok_sm, submodules = pcall(function()
@@ -7372,14 +7396,26 @@ local function health_json(ws, suggestions, entries)
       hint = e.status ~= "found" and e.hint or nil,
       required = e.required and true or false,
       required_by = e.required_by or {},
+      area = e.area or inv.area_of(e.category),
+      relevant = e.relevant and true or false,
+      used_by = (e.used_by and #e.used_by > 0) and e.used_by or nil,
     }
+  end
+  local workspace
+  if ws then
+    workspace = { name = ws.name, root = ws.root }
+  elseif meta.trust then
+    workspace = { root = meta.root, trust = "refused" }
   end
   return {
     schema = inv.JSON_SCHEMA,
-    workspace = ws and { name = ws.name, root = ws.root } or nil,
+    scope = meta.scope or "all",
+    areas = meta.areas,
+    workspace = workspace,
     suggestions = sugg,
     inventory = items,
     summary = summary,
+    hidden = (meta.hidden and next(meta.hidden)) and meta.hidden or nil,
     -- The update check's outcome (§16.31); absent when it does not apply.
     update = require("loomworks.suggestions").last_update_check(),
     submodules = ok_sm and submodules or nil,
@@ -7387,23 +7423,53 @@ local function health_json(ws, suggestions, entries)
 end
 M._health_json = health_json
 
---- `lw health` — list the workspace's advisory suggestions in full (headless
---- §16.31) and the environment inventory (§16.33). Read-only and advisory: it
---- performs no build, authors nothing (the health cache is an internal file),
---- and ALWAYS exits 0 (suggestions never gate). Never spawns a cache tool; the
---- inventory probes spawn version queries and the installation locator, which
---- is why they run only here.
+--- Validate `lw health` area arguments (§16.36): the known ones, deduplicated,
+--- in the order given. Returns nil and the offending name for an unknown one.
+--- @param names string[]
+--- @return string[]|nil areas, string|nil unknown
+function M._health_areas(names)
+  local inv = require("loomworks.inventory")
+  local known, seen, list = {}, {}, {}
+  for _, a in ipairs(inv.AREAS) do known[a] = true end
+  for _, n in ipairs(names or {}) do
+    if not known[n] then return nil, n end
+    if not seen[n] then
+      seen[n] = true
+      list[#list + 1] = n
+    end
+  end
+  return list
+end
+
+--- The actionable item for a refused working copy (§16.36).
+--- @param t table the setup error's trust table `{ kind, status }`
+--- @return loomworks.Suggestion
+function M._health_trust_item(t)
+  local why = (t and t.status == "unsigned") and "not signed by this machine" or "modified outside loomworks"
+  return {
+    kind = "suggestion", area = "workspace",
+    title = "working copy not trusted (.nvim/loomworks.user.json " .. why .. ")",
+    remedy = "review and trust it: lw trust   (or discard it: lw trust --discard; lw help trust)",
+  }
+end
+
+--- `lw health` — the workspace's advisory suggestions and the environment
+--- inventory (headless §16.31, §16.33), scoped to what the workspace makes
+--- relevant, or everything with `opts.all`, optionally narrowed to areas
+--- (§16.36). Read-only and advisory: it performs no build, authors nothing
+--- (the health cache is an internal file), and ALWAYS exits 0 (suggestions
+--- never gate; an unknown area is rejected by the dispatcher before this
+--- runs). Never spawns a cache tool; the inventory probes spawn version
+--- queries and the installation locator, which is why they run only here —
+--- and in the relevant scope only for what the workspace uses.
 ---
---- Works outside a workspace: the workspace-INDEPENDENT health providers (update
---- availability, channel override — §16.31) need no workspace, so with no `root`
---- it still reports them beneath the worktree hint, followed by the full
---- inventory (no required split, nothing cached). Inside a workspace the
---- inventory is split into "Required by this workspace" and a compact "Other"
---- (`opts.verbose` expands it), and its probe results are cached so the passive
---- `N suggestions` count can count missing required items without probing.
+--- Outside a workspace (or with a refused working copy, reported as an
+--- item) nothing but lw itself is relevant: plain health reports the lw and
+--- launcher areas and probes no toolchain, SDK or editor declaration; `--all`
+--- is the full machine inventory. Nothing is cached there.
 --- `opts.json` prints the machine-readable document instead.
 --- @param root string|nil workspace root
---- @param opts? { json?: boolean, verbose?: boolean }
+--- @param opts? { json?: boolean, verbose?: boolean, all?: boolean, areas?: string[] }
 --- @return integer exit code (always 0)
 function M.cmd_health(root, opts)
   opts = opts or {}
@@ -7422,11 +7488,25 @@ end
 --- @return integer
 function M._cmd_health(root, opts)
   local pal = status_palette((not opts.json) and stdout_supports_color())
-  local ws = root and load_workspace(root, false) or nil
   local inv = require("loomworks.inventory")
+  local scope = opts.all and "all" or "relevant"
+  local area_list = (opts.areas and #opts.areas > 0) and opts.areas or nil
+  local areas
+  if area_list then
+    areas = {}
+    for _, a in ipairs(area_list) do areas[a] = true end
+  end
+  local function selected(a) return areas == nil or areas[a] == true end
 
-  -- Probe first (the one expensive step); a failure leaves an empty inventory.
-  local ok_t, tier = pcall(M._probe_inventory, ws)
+  local ws, trust
+  if root then
+    local _
+    ws, _, trust = load_workspace(root, false, { soft_trust = true })
+  end
+
+  -- Probe first (the one expensive step) — only what the scope and selection
+  -- need (§16.36); a failure leaves an empty inventory.
+  local ok_t, tier = pcall(M._probe_inventory, ws, { scope = scope, areas = areas })
   if not ok_t or type(tier) ~= "table" then tier = nil end
 
   -- `collect_health` (not the passive `collect`) so the report includes the
@@ -7434,47 +7514,58 @@ function M._cmd_health(root, opts)
   -- deliberately kept out of the frequently-rendered `N suggestions` count. Pass
   -- whatever workspace we have (possibly nil); the workspace-independent
   -- providers run regardless, the workspace-scoped ones guard nil themselves.
-  -- The fresh inventory tier is cached and its missing-required items reported.
+  -- Only the selected areas' providers run, and only completed tiers are cached.
   local ok_s, suggestions = pcall(function()
     local sug = require("loomworks.suggestions")
     sug._update_check = nil -- only this run's outcome reaches --json
     require("loomworks.submodules")._last = nil
-    return sug.collect_health(ws, { inventory = tier })
+    return sug.collect_health(ws, { inventory = tier, areas = areas })
   end)
   if not ok_s or type(suggestions) ~= "table" then suggestions = {} end
+  if trust and selected("workspace") then table.insert(suggestions, 1, M._health_trust_item(trust)) end
 
-  local entries = {}
+  -- Entries: classified over every profile (relevance) with the active
+  -- profile's required split; then the scope decides what is shown.
+  local shown, hidden = {}, {}
   if tier then
-    local ok_c, res = pcall(function() return inv.classify(tier, inv.requirements(ws)) end)
-    if ok_c then entries = res end
+    for a, n in pairs(tier.skipped or {}) do hidden[a] = (hidden[a] or 0) + n end
+    local ok_c, entries = pcall(inv.scoped_entries, tier, ws)
+    for _, e in ipairs(ok_c and entries or {}) do
+      if not selected(e.area) then
+        -- Outside the selection: neither shown nor counted.
+      elseif scope == "relevant" and not e.relevant then
+        hidden[e.area] = (hidden[e.area] or 0) + 1
+      else
+        shown[#shown + 1] = e
+      end
+    end
   end
 
   if opts.json then
     -- Sorted object keys at every depth (arrays keep their defined order), so
     -- the document is byte-stable for agents and CI diffs.
-    out(require("loomworks.io").encode_sorted(health_json(ws, suggestions, entries)))
+    out(require("loomworks.io").encode_sorted(health_json(ws, suggestions, shown, {
+      scope = scope, areas = area_list, hidden = scope == "relevant" and hidden or nil,
+      root = root, trust = trust,
+    })))
     return 0
   end
 
   if ws then
     out(pal.title("loomworks health — " .. (ws.name or "?")) .. "  "
       .. pal.dim("(" .. ws.root .. ")"))
-  else
+  elseif not trust then
     -- No workspace here: lead with the worktree hint so the user knows why no
     -- project-scoped items appear, then still run the workspace-independent
     -- health providers below (they ignore the nil workspace).
     for _, line in ipairs(M._worktree_hint()) do out(line) end
-  end
-
-  -- With a workspace, say "no suggestions" explicitly; without one the hint
-  -- above already explains the emptiness, so don't pile on.
-  if #suggestions == 0 and ws then
-    out("")
-    out(pal.dim("No suggestions — nothing to flag."))
+  else
+    out(pal.title("loomworks health") .. "  " .. pal.dim("(" .. tostring(root) .. ")"))
   end
 
   -- Actionable items first ("*", the ones `lw status`'s N suggestions
-  -- counts), then informational notes with their own "-" bullet — so the
+  -- counts) with their area, then one section per area holding its
+  -- informational notes ("-") and inventory lines (§16.36) — so the "*"
   -- bullets a reader counts match that number, with or without color.
   local actionable, notes = {}, {}
   for _, s in ipairs(suggestions) do
@@ -7483,63 +7574,105 @@ function M._cmd_health(root, opts)
   -- A `detail_verbose` item's detail (e.g. the per-submodule lines) is shown
   -- only with --verbose; --json always carries it.
   local function show_detail(s) return s.detail and (not s.detail_verbose or opts.verbose) end
+  if #actionable == 0 and ws and not areas then
+    out("")
+    out(pal.dim("No suggestions — nothing to flag."))
+  end
   for _, s in ipairs(actionable) do
     out("")
-    out(pal.warn("* " .. s.title))
-    if show_detail(s) then out("  " .. s.detail) end
-    if s.remedy then out("  " .. pal.dim(s.remedy)) end
-  end
-  for _, s in ipairs(notes) do
-    out("")
-    -- Informational items (affirmative status) read as positive, not a warning.
-    out(pal.active("- " .. s.title))
+    out(pal.warn("* " .. s.title) .. "  " .. pal.dim("[" .. (s.area or "other") .. "]"))
     if show_detail(s) then out("  " .. s.detail) end
     if s.remedy then out("  " .. pal.dim(s.remedy)) end
   end
 
-  if #entries == 0 then return 0 end
-
-  if not ws then
-    -- No split outside a workspace: every category, one line per item.
-    out("")
-    render_inventory_lines(pal, entries, "", false)
-    return 0
-  end
-
-  local required, other, lw_entries = {}, {}, {}
-  for _, e in ipairs(entries) do
-    if e.required then
-      required[#required + 1] = e
-    elseif e.category == "lw" then
-      lw_entries[#lw_entries + 1] = e
-    else
-      other[#other + 1] = e
+  local order = {}
+  for _, a in ipairs(inv.AREAS) do order[#order + 1] = a end
+  order[#order + 1] = "other"
+  for _, area in ipairs(order) do
+    local area_notes, lw_entry, plugins, relevant, other = {}, nil, {}, {}, {}
+    for _, s in ipairs(notes) do
+      if (s.area or "other") == area then area_notes[#area_notes + 1] = s end
+    end
+    for _, e in ipairs(shown) do
+      if e.area == area then
+        if e.id == "lw" and e.category == "lw" then
+          lw_entry = e
+        elseif not e.relevant then
+          other[#other + 1] = e
+        elseif e.category == "plugins" and e.status == "found" and not e.required then
+          plugins[#plugins + 1] = e
+        else
+          relevant[#relevant + 1] = e
+        end
+      end
+    end
+    local empty = not lw_entry and #area_notes == 0 and #plugins == 0 and #relevant == 0 and #other == 0
+    if not empty or (areas and areas[area]) then
+      out("")
+      out(pal.title(area))
+      if lw_entry then
+        out("  " .. "lw  " .. (lw_entry.version or "")
+          .. (lw_entry.detail and pal.dim((lw_entry.version and " (" or "(") .. lw_entry.detail .. ")") or "")
+          .. (lw_entry.path and ("  " .. pal.dim(lw_entry.path)) or ""))
+      end
+      for _, s in ipairs(area_notes) do
+        -- Informational items (affirmative status) read as positive, not a warning.
+        out("  " .. pal.active("- " .. s.title))
+        if show_detail(s) then out("    " .. s.detail) end
+        if s.remedy then out("    " .. pal.dim(s.remedy)) end
+      end
+      -- Required entries first (the active profile's), then the other relevant ones.
+      local req_first = {}
+      for _, e in ipairs(relevant) do if e.required then req_first[#req_first + 1] = e end end
+      for _, e in ipairs(relevant) do if not e.required then req_first[#req_first + 1] = e end end
+      relevant = req_first
+      if #relevant > 0 then render_inventory_lines(pal, relevant, "  ", opts.verbose) end
+      if #plugins > 0 then
+        local names = {}
+        for _, e in ipairs(plugins) do names[#names + 1] = e.label end
+        out("  " .. pal.title("plugins") .. "  " .. pal.active("+") .. " " .. #plugins .. " loaded"
+          .. pal.dim(" (" .. table.concat(names, ", ") .. ")"))
+      end
+      if #other > 0 then
+        if not ws then
+          -- Outside a workspace --all is the machine inventory, one line each.
+          render_inventory_lines(pal, other, "  ", true)
+        else
+          out("  " .. pal.dim("not used here:"))
+          if opts.verbose then
+            render_inventory_lines(pal, other, "  ", true)
+          else
+            render_inventory_compact(pal, other, "  ")
+          end
+        end
+      end
+      if empty then out("  " .. pal.dim("nothing to report")) end
     end
   end
 
-  out("")
-  out(pal.title("Required by this workspace"))
-  if #required == 0 then
-    out("  " .. pal.dim("nothing beyond lw itself"))
-  else
-    render_inventory_lines(pal, required, "  ", true, opts.verbose)
-  end
-
-  if #other > 0 then
-    out("")
-    out(pal.title("Other") .. (opts.verbose and "" or pal.dim("  (lw health --verbose for locations)")))
-    if opts.verbose then
-      render_inventory_lines(pal, other, "  ", false)
+  if scope == "relevant" then
+    if not ws then
+      if selected("toolchains") or selected("cache") or selected("sdks") or selected("editor") then
+        out("")
+        out(pal.dim("Machine inventory not checked outside a workspace — lw health --all lists"))
+        out(pal.dim("toolchains, compiler caches, SDKs and editor tools."))
+      end
     else
-      render_inventory_compact(pal, other)
+      local total, parts = 0, {}
+      for _, a in ipairs(order) do
+        local n = hidden[a]
+        if n and n > 0 then
+          total = total + n
+          parts[#parts + 1] = a .. " " .. n
+        end
+      end
+      if total > 0 then
+        out("")
+        out(pal.dim(total .. " other check" .. (total == 1 and "" or "s") .. " not relevant here ("
+          .. table.concat(parts, ", ") .. ") — lw health "
+          .. (area_list and (table.concat(area_list, " ") .. " ") or "") .. "--all"))
+      end
     end
-  end
-
-  for _, e in ipairs(lw_entries) do
-    out("")
-    out(pal.title("lw") .. "  " .. (e.version or "")
-      .. (e.detail and pal.dim((e.version and " (" or "(") .. e.detail .. ")") or "")
-      .. (e.path and ("  " .. pal.dim(e.path)) or ""))
   end
   return 0
 end
@@ -8566,6 +8699,18 @@ function M.cmd_complete(cword, words)
   elseif cmd == "status" then
     if n == 1 then emit({ "--check", "--cache-stats" }) end
     return 0
+  elseif cmd == "health" then
+    -- The areas not yet given, then the flags (§16.36).
+    local given, c = {}, {}
+    for i = 2, n do given[a[i]] = true end
+    for _, v in ipairs(require("loomworks.inventory").AREAS) do
+      if not given[v] then c[#c + 1] = v end
+    end
+    for _, v in ipairs({ "--all", "--verbose", "--json" }) do
+      if not given[v] then c[#c + 1] = v end
+    end
+    emit(c)
+    return 0
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
     return 0
@@ -9359,17 +9504,44 @@ applies a launcher-only change in place (the first build then rebuilds objects
 to fill the cache); when the MSVC /Z7 settings move too it runs `cmake
 --fresh`; meson always re-runs `setup --wipe`. A build dir configured by an
 older lw takes one full reconfigure. `lw build --reconfigure` forces one.]],
-  health = [[lw health [--verbose] [--json]
+  health = [[lw health [<area>...] [--all] [--verbose] [--json]
 
 List the workspace's advisory suggestions — the detail behind the compact
 `N suggestions` line the status overview shows. Health is read-only: it runs
 no build and authors no project or build-system files, and it ALWAYS exits 0
-(a suggestion never gates an operation and is distinct from a diagnostic).
+(a suggestion never gates an operation and is distinct from a diagnostic) —
+only an unknown area is an error.
+
+SCOPE — plain `lw health` checks and shows only what THIS workspace uses (over
+all its profiles, not only the active one): its modules' build tools, the
+compilers and SDKs its profiles use, the compiler caches and editor tools for
+its languages, the repo launcher when pinned, submodule drift, and lw itself.
+Things it does not use are not probed (other modules' tools, SDKs no profile
+pins, editor tools for other languages) or not listed (other compilers the
+scan found); a last line counts them: "N other checks not relevant here (...)
+- lw health --all". `--all` checks and lists everything, each area's unused
+entries after its own under "not used here". Outside a workspace plain
+`lw health` shows only lw (and the launcher when a pin is found) and probes
+nothing; `lw health --all` there is the whole machine inventory.
+
+AREAS — the report has one section per area, in this order; name areas to
+check only those (combinable with --all; e.g. `lw health toolchains cache`):
+  lw          the running lw, update check, channel override, plugins
+  workspace   the workspace's own state (a refused working copy)
+  toolchains  build tools and compilers
+  cache       compiler caches and cache-compatibility findings
+  sdks        SDK installations
+  editor      language servers and debug adapters (editor only)
+  launcher    repo launcher and version pin (lw.pin, lw.sh, lw.cmd)
+  submodules  git submodule drift
+A narrowed run runs only those areas' checks (`lw health launcher` makes no
+network request).
 
 Each suggestion prints a one-line title and, when there is something to do, a
 short remedy (some add a line of detail). Actionable suggestions — the ones
-`lw status` counts as N suggestions — come first, marked "*"; informational
-notes (e.g. "using sccache") follow, marked "-". The report is plain ASCII. Providers are advisory and
+`lw status` counts as N suggestions — come first, marked "*" and tagged with
+their area; informational notes (e.g. "using sccache") follow in their area's
+section, marked "-". The report is plain ASCII. Providers are advisory and
 extensible; the compiler-cache one gives a one-line verdict for C/C++
 workspaces (using <tool> / available but not enabled / not found / not applied
 / /Zi findings) — `lw help cache` explains each. `lw health` additionally checks
@@ -9384,13 +9556,14 @@ skipped — offline or release server unreachable" (not counted). Health never
 spawns a cache tool — usage statistics live behind
 `lw status --cache-stats`.
 
-`lw health` never reuses an earlier result: every run re-checks everything —
+`lw health` never reuses an earlier result: every run re-checks what it covers —
 the local checks, the environment inventory and the network update check.
 Inside a workspace it then saves the results to `.nvim/loomworks.health.json`
 (an internal advisory cache, separate from the build cache) so the passive
 `N suggestions` count and the editor status page can show them without
-re-checking (they never probe and never touch the network). Outside a workspace
-nothing is saved.
+re-checking (they never probe and never touch the network). A run narrowed to
+areas saves only what it fully re-checked. Outside a workspace nothing is
+saved.
 
 ENVIRONMENT INVENTORY — health also lists what this machine has of everything
 loomworks knows how to use: build tools (cmake, ninja, make, meson, node, npm),
@@ -9401,13 +9574,14 @@ js-debug — on PATH or in Mason's install directory), SDKs, the module / SDK /
 integration plugins (a rejected one with the reason) and lw itself. Marks:
   + found (version, location)   x missing and required
   - missing, not required       ? unknown (the probe failed or timed out)
-Inside a workspace the list is split into "Required by this workspace" (what
-the active profile's projects and toolchains need — every profile's when none
-is active — each naming who needs it, compacted to e.g. "2 profiles (dev,
-asan)") and "Other", one line per category (`--verbose` lists every item with
-its location and every profile/project that needs it). Only a missing REQUIRED item
-is a suggestion (and counts toward `lw status`'s N suggestions); the rest is
-information. Minimum versions are not checked, and nothing is installed.
+Inside a workspace each area lists what is REQUIRED first (what the active
+profile's projects and toolchains need — every profile's when none is active —
+each naming who needs it, compacted to e.g. "2 profiles (dev, asan)"), then
+what only other profiles need ("other profiles: asan"); with --all the unused
+rest follows, one line per category (`--verbose` lists every item with its
+location and every profile/project that needs it). Only a missing REQUIRED
+item is a suggestion (and counts toward `lw status`'s N suggestions); the rest
+is information. Minimum versions are not checked, and nothing is installed.
 
 Probing runs version queries and the Visual Studio locator (a second or two),
 so it happens only here; the result is cached per workspace and the passive
@@ -9427,11 +9601,15 @@ checkouts off their recorded commit, pins behind their tracked branch (as of
 the last fetch), uninitialized submodules and remotes that do not answer. See
 `lw help submodules`; `--verbose` lists every submodule.
 
-`--json` prints one JSON document instead of the report — `{schema,
-workspace?, suggestions[], inventory[], summary, update?, submodules?}`, each inventory entry
-carrying id, label, category, status (found | missing | unknown), version,
-path, detail, hint, required and required_by (the full list); `summary` is
-`{required_missing, actionable, found, missing, unknown}`; `update` is the
+`--json` prints one JSON document instead of the report, with the same scope
+and areas — `{schema, scope (relevant | all), areas?, workspace?,
+suggestions[], inventory[], summary, hidden?, update?, submodules?}`; each
+suggestion carries its area, each inventory entry id, label, category, area,
+status (found | missing | unknown), version, path, detail, hint, required,
+required_by (the full list), relevant and used_by (other profiles needing
+it); `hidden` counts what the relevant scope left out, per area; `summary` is
+`{required_missing, actionable, found, missing, unknown}` over the document's
+entries (`--all --json` for every entry); `update` is the
 update check's outcome `{status (available | current | unknown), channel,
 current, newest?, detail?}`, absent for a development build — and still exits 0
 (CI can test `summary.required_missing > 0`).]],
@@ -10167,7 +10345,7 @@ Usage: lw [command] [args]
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
-  health            workspace suggestions + environment inventory (never fails)
+  health            what this workspace needs: suggestions + inventory (--all: everything)
   module <sub>      install | update | remove | list acquirable modules (mod)
   settings <...>    get/set lw's own settings (dev-lua, release-url, …)
   completion <shell> print a shell completion script (bash|zsh)
@@ -10332,12 +10510,20 @@ local function main()
   if command == "health" then
     -- (`--force`/`--refresh` from before health stopped reusing its cache are
     -- ignored like any other unknown flag: every run already re-checks all.)
-    local json, verbose = false, false
-    for _, v in ipairs(a) do
-      if v == "--json" then json = true end
-      if v == "--verbose" or v == "-v" then verbose = true end
+    -- Positional words are areas (§16.36); an unknown one is a usage error.
+    local json, verbose, all, names = false, false, false, {}
+    for i, v in ipairs(a) do
+      if v == "--json" then json = true
+      elseif v == "--verbose" or v == "-v" then verbose = true
+      elseif v == "--all" then all = true
+      elseif i > 1 and v:sub(1, 1) ~= "-" then names[#names + 1] = v end
     end
-    finish(M.cmd_health(root, { json = json, verbose = verbose }))
+    local areas, unknown = M._health_areas(names)
+    if not areas then
+      die("unknown health area '" .. unknown .. "' — areas: "
+        .. table.concat(require("loomworks.inventory").AREAS, ", ") .. " (lw help health)")
+    end
+    finish(M.cmd_health(root, { json = json, verbose = verbose, all = all, areas = areas }))
   end
 
   -- `pull` folds another checkout's working copy into this one; it works in a

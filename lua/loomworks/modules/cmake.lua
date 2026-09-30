@@ -241,6 +241,10 @@ M.has_options = true
 -- when they explicitly `project(... LANGUAGES CXX)`) still win.
 M.languages = { "c", "c++" }
 
+--- Language-server integrations whose configurations `lsp_configs` can emit
+--- (core §8.4) — health lists these servers in a workspace using this module.
+M.lsp_servers = { "clangd", "qmlls" }
+
 --- Program-bearing type_config keys (core §8.4 / §17.6): honored only from the
 --- signed working copy, ignored (with a diagnostic) in loomworks.json. Build
 --- inputs (options, toolchain, generator, presets) are the project's own build

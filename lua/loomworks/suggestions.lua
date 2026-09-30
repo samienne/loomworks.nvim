@@ -32,6 +32,7 @@ M._clock = function() return os.time() end
 --- @field remedy string|nil concrete action the user can take (nil for info items)
 --- @field kind? "suggestion"|"info" actionable (default) vs informational
 --- @field detail_verbose? boolean `detail` is shown only by the verbose report (and `--json`)
+--- @field area? string report area (§16.36); filled from the provider's registration when unset
 
 --- Registered **passive** provider functions: `(workspace) -> Suggestion[]`.
 --- These are side-effect-free and MUST NOT spawn tools or touch the network —
@@ -54,13 +55,22 @@ M._health_providers = {}
 --- @type table<function, true>
 M._report_only = {}
 
+--- Report area of each registered provider (§16.36), keyed by the provider
+--- function. A provider without one runs under every area selection and its
+--- items render under "other" (unless an item names its own area).
+--- @type table<function, string>
+M._areas = {}
+
 --- Register a **passive** suggestion provider. A provider inspects the resolved
 --- workspace and returns zero or more suggestions. It must be side-effect-free
 --- and must not spawn external tools or make network calls — it runs on every
---- passive status render.
+--- passive status render. `opts.area` is the report area of its items
+--- (§16.36); a health run narrowed to other areas does not run it.
 --- @param fn fun(workspace: loomworks.Workspace): loomworks.Suggestion[]
-function M.register(fn)
+--- @param opts? { area?: string }
+function M.register(fn, opts)
     M._providers[#M._providers + 1] = fn
+    if opts and opts.area then M._areas[fn] = opts.area end
 end
 
 --- Register a **health-only** suggestion provider — one permitted to make a
@@ -69,12 +79,23 @@ end
 --- `collect` the status count uses, so a status render never hits the network
 --- (§16.31).
 --- `opts.persist = false` makes it **report-only**: its items are never
---- written to the cached network tier.
+--- written to the cached network tier. `opts.area` as for `register`.
 --- @param fn fun(workspace: loomworks.Workspace): loomworks.Suggestion[]
---- @param opts? { persist?: boolean }
+--- @param opts? { persist?: boolean, area?: string }
 function M.register_health(fn, opts)
     M._health_providers[#M._health_providers + 1] = fn
     if opts and opts.persist == false then M._report_only[fn] = true end
+    if opts and opts.area then M._areas[fn] = opts.area end
+end
+
+--- Whether a provider runs under an area selection (`areas` nil = every area).
+--- @param provider function
+--- @param areas table<string, true>|nil
+--- @return boolean
+local function selected(provider, areas)
+    if not areas then return true end
+    local a = M._areas[provider]
+    return a == nil or areas[a] == true
 end
 
 --- Run `list` of providers against `workspace`, appending their suggestions to
@@ -83,21 +104,27 @@ end
 --- @param list (fun(workspace: loomworks.Workspace): loomworks.Suggestion[])[]
 --- @param workspace loomworks.Workspace
 --- @param out loomworks.Suggestion[]
-local function run_providers(list, workspace, out)
+local function run_providers(list, workspace, out, areas)
     for _, provider in ipairs(list) do
-        local ok, res = pcall(provider, workspace)
-        if ok and type(res) == "table" then
-            for _, s in ipairs(res) do out[#out + 1] = s end
+        if selected(provider, areas) then
+            local ok, res = pcall(provider, workspace)
+            if ok and type(res) == "table" then
+                for _, s in ipairs(res) do
+                    if type(s) == "table" and s.area == nil then s.area = M._areas[provider] end
+                    out[#out + 1] = s
+                end
+            end
         end
     end
 end
 
 --- Run the **passive**/local providers and return their flattened suggestions.
 --- @param workspace loomworks.Workspace|nil
+--- @param areas? table<string, true> area selection (§16.36); nil = all
 --- @return loomworks.Suggestion[]
-local function run_local(workspace)
+local function run_local(workspace, areas)
     local out = {}
-    run_providers(M._providers, workspace, out)
+    run_providers(M._providers, workspace, out, areas)
     return out
 end
 
@@ -105,13 +132,27 @@ end
 --- suggestions: those to persist in the network tier, and the report-only
 --- ones (`M._report_only`) that are shown but never cached.
 --- @param workspace loomworks.Workspace|nil
+--- @param areas? table<string, true> area selection (§16.36); nil = all
 --- @return loomworks.Suggestion[] persisted, loomworks.Suggestion[] report_only
-local function run_network(workspace)
+local function run_network(workspace, areas)
     local keep, only = {}, {}
     for _, provider in ipairs(M._health_providers) do
-        run_providers({ provider }, workspace, M._report_only[provider] and only or keep)
+        run_providers({ provider }, workspace, M._report_only[provider] and only or keep, areas)
     end
     return keep, only
+end
+
+--- Whether an area selection includes every provider of a tier — the tier is
+--- then computed completely and may be written (§16.36).
+--- @param list function[]
+--- @param areas table<string, true>|nil
+--- @return boolean
+local function complete(list, areas)
+    if not areas then return true end
+    for _, provider in ipairs(list) do
+        if M._report_only[provider] == nil and not selected(provider, areas) then return false end
+    end
+    return true
 end
 
 --- The caching backing for a workspace — its `.nvim/` root and an io dependency
@@ -142,12 +183,21 @@ end
 --- The environment inventory's actionable items (§16.33) for a cached
 --- inventory tier, re-derived against the CURRENT workspace — nothing when the
 --- tier is absent or was recorded for another environment. Never probes; a
---- failure contributes nothing (advisory).
+--- failure contributes nothing (advisory). With an area selection, only the
+--- items of the selected areas.
 --- @param workspace loomworks.Workspace|nil
 --- @param tier table|nil
+--- @param areas? table<string, true>
 --- @return loomworks.Suggestion[]
-local function inventory_items(workspace, tier)
+local function inventory_items(workspace, tier, areas)
     if not tier then return {} end
+    if areas then
+        local out = {}
+        for _, s in ipairs(inventory_items(workspace, tier)) do
+            if areas[s.area or "other"] then out[#out + 1] = s end
+        end
+        return out
+    end
     local ok, items = pcall(function()
         return require("loomworks.inventory").cached_suggestions(workspace, tier)
     end)
@@ -222,19 +272,27 @@ end
 --- its missing-required items are reported. Without it (a caller that skipped
 --- the probe), the inventory contributes nothing — health never reads a cached
 --- tier back.
+---
+--- `opts.areas` (a set of area names, §16.36) runs only the providers of those
+--- areas; a tier is then written only when every provider feeding it ran (the
+--- local tier needs the passive providers' areas, the network tier the
+--- health-only persisted providers'), and the inventory tier only when the
+--- run was not narrowed to areas — so a narrowed run never replaces a tier
+--- with an incomplete one.
 --- @param workspace loomworks.Workspace|nil
---- @param opts? { inventory?: table } a freshly probed inventory tier
+--- @param opts? { inventory?: table, areas?: table<string, true> }
 --- @return loomworks.Suggestion[]
 function M.collect_health(workspace, opts)
     opts = opts or {}
+    local areas = opts.areas
     local env = cache_env(workspace)
     if not env then
         local out = {}
-        append(out, run_local(workspace))
-        local net, only = run_network(workspace)
+        append(out, run_local(workspace, areas))
+        local net, only = run_network(workspace, areas)
         append(out, net)
         append(out, only)
-        append(out, inventory_items(workspace, opts.inventory))
+        append(out, inventory_items(workspace, opts.inventory, areas))
         return out
     end
 
@@ -250,17 +308,27 @@ function M.collect_health(workspace, opts)
     -- record, not persisted here), and the key must match what the next
     -- process — which reads the persisted state — computes.
     local key = M._local_key(workspace)
-    local local_items = run_local(workspace)
-    data.local_tier = { items = local_items, computed_at = now, key = key }
+    local local_items = run_local(workspace, areas)
+    if complete(M._providers, areas) then
+        data.local_tier = { items = local_items, computed_at = now, key = key }
+    end
 
     -- Network tier: always re-fetched (no reuse, however recent), keyed to the
     -- running version so the passive path can drop it after a self-update.
     -- Report-only providers' items are shown below but never stored.
-    local net_items, report_only = run_network(workspace)
-    data.network_tier = { items = net_items, computed_at = now, key = M._network_key() }
+    local net_items, report_only = run_network(workspace, areas)
+    if complete(M._health_providers, areas) then
+        data.network_tier = { items = net_items, computed_at = now, key = M._network_key() }
+    end
 
-    -- Inventory tier: replaced by the fresh probe when the caller ran one.
-    if opts.inventory then data.inventory_tier = opts.inventory end
+    -- Inventory tier: replaced by the fresh probe when the caller ran one over
+    -- every area (a partial relevant-scope tier records what it probed). The
+    -- per-run hidden counts (`skipped`) are report data, not cached.
+    if opts.inventory and not areas then
+        local tier = vim.deepcopy(opts.inventory)
+        tier.skipped = nil
+        data.inventory_tier = tier
+    end
 
     health_cache.write(env.io, env.root, data)
 
@@ -268,7 +336,7 @@ function M.collect_health(workspace, opts)
     append(out, local_items)
     append(out, net_items)
     append(out, report_only)
-    append(out, inventory_items(workspace, opts.inventory))
+    append(out, inventory_items(workspace, opts.inventory, areas))
     return out
 end
 
@@ -690,7 +758,7 @@ function M.compiler_cache_provider(workspace)
     return nag("No compiler cache found", install_remedy(tool, any_msvc))
 end
 
-M.register(M.compiler_cache_provider)
+M.register(M.compiler_cache_provider, { area = "cache" })
 
 --- The configured units carrying a recorded post-configure compatibility result
 --- (`module_info.cache_compat`), AS RECORDED: the active profile's units, in
@@ -808,7 +876,7 @@ function M.cache_compat_provider(workspace)
     return items
 end
 
-M.register(M.cache_compat_provider)
+M.register(M.cache_compat_provider, { area = "cache" })
 
 -- ---------------------------------------------------------------------------
 -- Provider #2 — update availability (HEALTH-ONLY, headless §16.31)
@@ -1082,8 +1150,8 @@ function M.channel_override_provider(_workspace)
     } }
 end
 
-M.register_health(M.update_check_provider)
-M.register_health(M.channel_override_provider)
+M.register_health(M.update_check_provider, { area = "lw" })
+M.register_health(M.channel_override_provider, { area = "lw" })
 
 -- ---------------------------------------------------------------------------
 -- Provider #3 — git submodule drift (HEALTH-ONLY, REPORT-ONLY, §16.31)
@@ -1100,7 +1168,7 @@ function M.submodule_provider(workspace)
     return require("loomworks.submodules").provider(workspace)
 end
 
-M.register_health(M.submodule_provider, { persist = false })
+M.register_health(M.submodule_provider, { persist = false, area = "submodules" })
 
 -- ---------------------------------------------------------------------------
 -- Provider #4 — repo launcher and pin (HEALTH-ONLY, REPORT-ONLY, §16.31)
@@ -1117,6 +1185,6 @@ function M.launcher_provider(workspace)
     return require("loomworks.launcher_health").provider(workspace)
 end
 
-M.register_health(M.launcher_provider, { persist = false })
+M.register_health(M.launcher_provider, { persist = false, area = "launcher" })
 
 return M
