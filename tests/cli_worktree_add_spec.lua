@@ -411,6 +411,9 @@ describe("git-required commands tolerate a slow git", function()
         local plan, err = cli._plan_pull({ cwd = path, source = main })
         exe.system = real_system
         assert.is_not_nil(plan, err)
-        assert.equals(path:lower(), plan.target_root:lower())
+        -- Realpath both: on Windows CI the temp dir can be the 8.3 short form
+        -- (RUNNER~1) while git reports the long one.
+        local function canon(p) return ((uv.fs_realpath(p) or p):gsub("\\", "/"):lower()) end
+        assert.equals(canon(path), canon(plan.target_root))
     end)
 end)
