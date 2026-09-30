@@ -1375,6 +1375,10 @@ Then anyone with a checkout runs the launcher — no global `lw` needed:
 
 Use the relative form `.\lw.cmd`: a bare `lw.cmd` can run another `lw.cmd`
 found on `PATH`. `./lw.sh version` names the `lw.pin` it runs under.
+Ctrl-C (or Ctrl-Break) during a run reaches `lw`, which stops, releases its
+locks and exits 130; `lw.cmd` returns that status without cmd.exe's "Terminate
+batch job (Y/N)?" prompt. A `lw.cmd` written by lw 0.1.39 or earlier still asks;
+`lw bootstrap install` refreshes it.
 
 The launcher selects the host binary for the platform, downloads it from the
 official release (**verifying its sha256 against the pin — always**), caches it

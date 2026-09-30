@@ -479,16 +479,12 @@ do
     -- our environment (uv.os_setenv is visible to spawned children).
     uv.os_setenv("LOOMWORKS_PINNED", p.version)
     uv.os_setenv("LW_ROOT", getenv("LW_ROOT") or uv.cwd())
-    local code
-    local handle = uv.spawn(bin, { args = forwarded, stdio = { 0, 1, 2 } },
-      function(c) code = c end)
-    if not handle then
+    local code = require("boot.exe").run_in_place(bin, forwarded)
+    if not code then
       io.stderr:write("lw: cannot exec pinned lw at " .. bin .. "\n")
       exit(1)
     end
-    uv.run()
-    handle:close()
-    exit(code or 0)
+    exit(code)
   end
 end
 
