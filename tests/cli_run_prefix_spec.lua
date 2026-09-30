@@ -211,6 +211,19 @@ describe("cli.cmd_run — --prefix / --print / --no-build parsing", function()
         assert.equals("sh", parse({ "run", "--no-build", "--dry-run", "app" }).opts.print_mode)
     end)
 
+    it("--dry-run implies --no-build and marks the run dry; --print does not", function()
+        local d = parse({ "run", "--dry-run", "app" }).opts
+        assert.is_true(d.no_build)
+        assert.is_true(d.dry_run)
+        assert.equals("sh", d.print_mode)
+        local dj = parse({ "run", "--dry-run=json", "app" }).opts
+        assert.is_true(dj.no_build)
+        assert.equals("json", dj.print_mode)
+        local p = parse({ "run", "--print", "app" }).opts
+        assert.is_false(p.no_build)
+        assert.is_falsy(p.dry_run)
+    end)
+
     it("parses --no-build", function()
         assert.is_true(parse({ "run", "--no-build", "app" }).opts.no_build)
     end)
@@ -233,6 +246,71 @@ describe("cli.cmd_run — --prefix / --print / --no-build parsing", function()
         local res = capture(function() return cli.cmd_run({ root = "/w" }, { "run", "--prefix" }) end)
         assert.equals(1, res.exit_code)
         assert.is_truthy(res.stderr:find("requires a wrapper command", 1, true))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- cmd_run end-to-end — --dry-run never builds, --print still builds
+-- ---------------------------------------------------------------------------
+
+describe("cli.cmd_run — build step under --print / --dry-run", function()
+    --- Drive cmd_run with the selection stubbed to a profile whose default
+    --- target resolves to `spec`, the build step recorded instead of run, and
+    --- the executor recorded. Returns { built, ran, res }.
+    local function drive(argv, spec)
+        local built, ran = 0, false
+        local lt = {}
+        function lt:is_valid() return true, {} end
+        function lt:requires_device() return false end
+        function lt:display_name() return "app: run" end
+        function lt:deploy_sync() self._deployed = true; return true end
+        function lt:resolve_launch_spec() return spec end
+        local real_sel, real_build, real_disp = cli._run_selection, cli._run_build_steps, cli._run_launch_target
+        cli._run_selection = function(ws)
+            return {
+                key = "p",
+                projects = function() return {} end,
+                default_target = function() return lt end,
+            }, nil, ws
+        end
+        cli._run_build_steps = function() built = built + 1 end
+        cli._run_launch_target = function(t, ws, opts)
+            return real_disp(t, ws, opts, { run_spec = function() ran = true; return 0 end })
+        end
+        local res = capture(function() return cli.cmd_run({ root = "/w" }, argv) end)
+        cli._run_selection, cli._run_build_steps, cli._run_launch_target = real_sel, real_build, real_disp
+        return { built = built, ran = ran, res = res, lt = lt }
+    end
+
+    it("--dry-run spawns no build step, no deploy, and prints the command", function()
+        local r = drive({ "run", "--dry-run" }, { cmd = "prog", args = { "a b" }, cwd = "/w" })
+        assert.equals(0, r.built)
+        assert.is_false(r.ran)
+        assert.is_nil(r.lt._deployed)
+        assert.equals("prog 'a b'\n", r.res.stdout)
+    end)
+
+    it("--dry-run=json spawns no build step and prints the json report", function()
+        local r = drive({ "run", "--dry-run=json" }, { cmd = "prog", args = {}, cwd = "/w" })
+        assert.equals(0, r.built)
+        assert.same({ "prog" }, vim.json.decode(r.res.stdout).cmd)
+    end)
+
+    it("--dry-run on a never-built artifact still prints it, noting it is not built", function()
+        local missing = vim.fn.tempname() .. "/app.exe"
+        local r = drive({ "run", "--dry-run" }, { cmd = missing, args = {}, cwd = "/w" })
+        assert.equals(0, r.built)
+        assert.is_true(r.res.ok)
+        assert.equals(0, r.res.ret)
+        assert.equals(cli._posix_sh_quote(missing) .. "\n", r.res.stdout)
+        assert.is_truthy(r.res.stderr:find("not built yet", 1, true))
+    end)
+
+    it("--print still builds first, then prints without running", function()
+        local r = drive({ "run", "--print" }, { cmd = "prog", args = {}, cwd = "/w" })
+        assert.equals(1, r.built)
+        assert.is_false(r.ran)
+        assert.equals("prog\n", r.res.stdout)
     end)
 end)
 

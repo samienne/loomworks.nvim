@@ -2452,9 +2452,12 @@ end
 ---                    gdb/valgrind work). Repeatable and shell-word split, so
 ---                    `--prefix 'valgrind --leak-check=full'` and
 ---                    `--prefix gdb --prefix --args` both give multiple tokens.
----   --print[=sh|json] resolve the launch but do NOT execute; report it and exit
----     / --dry-run     0 (read-only). `sh` (default) is a single POSIX-sh-quoted
----                     line; `json` is `{cmd:[argv], cwd, env:{overrides}}`.
+---   --print[=sh|json] build (quietly), then resolve the launch but do NOT
+---                     execute; report it and exit 0. `sh` (default) is a single
+---                     POSIX-sh-quoted line; `json` is `{cmd:[argv], cwd, env:{overrides}}`.
+---   --dry-run[=sh|json] like --print, but never builds or deploys (implies
+---                     --no-build): a pure read-only report. A program that is
+---                     not built yet is still reported, with a note on stderr.
 ---   --no-build        skip the build+deploy (inspect / run what is already built).
 function M.cmd_run(ws, args)
   -- Split on `--`: everything after is forwarded verbatim to the program.
@@ -2470,7 +2473,7 @@ function M.cmd_run(ws, args)
   -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
   -- the forwarded (post-`--`) args.
   local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
-  local prefix_tokens, print_mode, no_build = {}, nil, false
+  local prefix_tokens, print_mode, no_build, dry_run = {}, nil, false, false
   local dev_opts = DEV.new_device_opts()
   local i = 1
   while pre[i] do
@@ -2486,8 +2489,10 @@ function M.cmd_run(ws, args)
       end
       for _, tok in ipairs(shell_split(val)) do prefix_tokens[#prefix_tokens + 1] = tok end
       i = i + 2
-    elseif pre[i] == "--print" or pre[i] == "--dry-run" then print_mode = "sh"; i = i + 1
+    elseif pre[i] == "--print" or pre[i] == "--dry-run" then
+      print_mode, dry_run = "sh", dry_run or pre[i] == "--dry-run"; i = i + 1
     elseif pre[i]:match("^%-%-print=") or pre[i]:match("^%-%-dry%-run=") then
+      dry_run = dry_run or pre[i]:match("^%-%-dry%-run=") ~= nil
       local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
       if fmt ~= "sh" and fmt ~= "json" then
         die("--print format must be 'sh' or 'json' (got '" .. fmt .. "')")
@@ -2497,6 +2502,8 @@ function M.cmd_run(ws, args)
     elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
     else positionals[#positionals + 1] = pre[i]; i = i + 1 end
   end
+  -- --dry-run is the pure read-only report: it never builds or deploys.
+  if dry_run then no_build = true end
 
   if print_mode and #prefix_tokens > 0 then
     -- --print reports the bare resolved command; a wrapper is a run-execution
@@ -2513,14 +2520,14 @@ function M.cmd_run(ws, args)
 
   -- Build the profile first (configures + builds); dies on failure. Build
   -- targets and the default target's artifact resolve against the built tree.
-  -- `--no-build` skips build+deploy (inspect/run what is already built). Under
-  -- `--print` the build streams to stderr (quiet) so our stdout carries only the
-  -- report line. The build-dir lock is held only for the build — released
+  -- `--no-build` (and `--dry-run`, which implies it) skips build+deploy
+  -- (inspect/run what is already built). Under `--print` the build streams to
+  -- stderr (quiet) so our stdout carries only the report line. The build-dir lock is held only for the build — released
   -- before the launch, which just executes the artifact and may run
   -- indefinitely.
   if not no_build then
     with_build_locks(profile, "build", function()
-      run_build_steps(profile, ws, { quiet = print_mode ~= nil })
+      M._run_build_steps(profile, ws, { quiet = print_mode ~= nil })
     end)
   end
 
@@ -2566,6 +2573,7 @@ function M.cmd_run(ws, args)
     prefix_tokens = prefix_tokens,
     print_mode = print_mode,
     no_build = no_build,
+    dry_run = dry_run,
     extra_args = extra_args,
     cwd_override = cwd_override,
     device = dev_opts.device, fresh = dev_opts.fresh, timeout = dev_opts.timeout,
@@ -2580,6 +2588,8 @@ end
 ---   prefix_tokens string[]  wrapper tokens prepended to the argv (§16.17)
 ---   print_mode    "sh"|"json"|nil  report-and-exit instead of executing
 ---   no_build      boolean   skip deploy (paired with the skipped build)
+---   dry_run       boolean   --dry-run: note (stderr) when the reported program
+---                           does not exist yet (never built)
 ---   extra_args    string[]  post-`--` args forwarded to the program
 ---   cwd_override  string|nil per-invocation working dir
 --- `deps.run_spec` is injectable for tests.
@@ -2750,6 +2760,14 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
   -- --print / --dry-run: report the resolved invocation, never execute (§16.17
   -- "Command inspection").
   if opts.print_mode then
+    -- A dry run never built: a program that does not exist yet is still
+    -- reported (its path is known), with a note on stderr — never a failure.
+    -- Only an absolute path is checked; a bare command resolves via PATH.
+    local cmd = spec.cmd
+    if opts.dry_run and type(cmd) == "string" and (cmd:match("^[/\\]") or cmd:match("^%a:[/\\]"))
+      and not uv.fs_stat(cmd) then
+      errw("note: " .. cmd .. " is not built yet\n")
+    end
     return emit_run_print(spec, opts.print_mode, ws.root)
   end
 
@@ -9229,13 +9247,17 @@ Wrapping and inspecting the launch:
                         `--prefix gdb --prefix --args` both give many tokens.
                         This is the faithful way to run under a wrapper —
                         `valgrind $(lw run --print)` cannot carry the cwd/env.
-  --print[=sh|json]     resolve the launch but DO NOT run it; report it, exit 0.
-     --dry-run          `sh` (default) is one POSIX-sh-quoted `<cmd> <args>` line
+  --print[=sh|json]     build (+deploy) first, then resolve the launch but DO
+                        NOT run it; report it, exit 0. `sh` (default) is one
+                        POSIX-sh-quoted `<cmd> <args>` line
                         (for `$(lw run --print)`); `json` is
                         `{"cmd":[argv],"cwd":…,"env":{overrides-only}}` — the
                         portable form (e.g. on Windows). An unresolved build-
                         target artifact is reported as such (non-zero), never
                         guessed.
+  --dry-run[=sh|json]   like --print but NEVER builds, deploys or runs
+                        (implies --no-build). A program that is not built yet
+                        is still reported, with a note on stderr.
   --no-build            skip the build+deploy — run / inspect what is already
                         built.
 
@@ -9267,7 +9289,8 @@ device-side invocation and the staging manifest. The run announces
 says so, with the run folder.
 
 Output: build output goes to stdout like `lw build`, but to stderr under
---print / --print=json so stdout carries only the report.]],
+--print / --print=json so stdout carries only the report (--dry-run never
+builds).]],
   device = [[lw device <list|select|clean>
 
 Devices for running cross-built programs. An SDK plugin whose kits
