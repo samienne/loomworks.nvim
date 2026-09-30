@@ -105,6 +105,7 @@ interpreter.
 | `parse_exit(line, nonce)` | `integer\|nil`, `string\|nil` | Recognise the exit-status sentinel line for `nonce`. When the program's last output did not end in a line break, the connector delivers it on the sentinel's line; the runner returns that preceding text as the second value and core treats it as program output |
 | `parse_pid(line, nonce)` | `integer\|nil` | *(optional)* Recognise the line announcing the device-side process id of the program started with `nonce` |
 | `terminate(serial, nonce, pid?)` | spec | *(optional)* Stop the device-side program started by `exec` with `nonce` (`pid` when `parse_pid` reported one) |
+| `reap(serial, leftover)` | spec, `parse(lines) → "stopped"\|"gone"\|nil` | *(optional)* Stop a program that an **earlier, interrupted** run left on the device (§18.7). `leftover = { pid, nonce, program }`: the device-side process id `parse_pid` reported, that run's nonce, and the staged program's device-side path. The rendered command MUST stop the process only when it is still that run's program — it verifies, on the device, that the process's executable (or command line) is `program` before signalling it — so a process id the device has since reused for another process is never signalled. `parse` returns `"stopped"` (it was that program and is now stopped), `"gone"` (no such process, or another program now holds the id) or `nil` (the outcome is unknown) |
 | `crash_snapshot(serial)` | spec, `parse(lines) → set` | *(optional)* Identify the device's current crash reports |
 | `crash_collect(before, after, ctx?)` | remote path[] | *(optional)* Crash reports new since the snapshot. `ctx = { pid? }` carries the program's device-side process id when `parse_pid` reported one, so the runner can pick the reports of this run's process; a runner must accept the call without `ctx` |
 | `runtime_files(tool)` | `{ local, relative }[]` | *(optional)* Platform runtime files a program built by `tool` needs beside it (§18.4) |
@@ -321,6 +322,30 @@ holder once; a host option fails fast instead. The wait has no deadline; the
 operations performed under the lock do (§18.8). A stale lock (heartbeat lapsed)
 is reclaimed.
 
+**Leftover programs.** A run can end without its cleanup (§18.8) — the host
+killed it, a power loss, an interrupt the host gives no time to handle — and
+its program then keeps running on the device. So that the next run can stop
+it, a remote run records its program in its device lockfile as soon as
+`parse_pid` reports the process id: `{ device_pid, nonce, program }` (the
+staged device-side path), cleared again when the run's program has exited or
+been stopped. When core **reclaims** a stale device lock whose record names a
+program, it first — before staging (for `lw device clean`, before removing
+anything), still holding the new lock — asks the
+runner to `reap` it (§18.2), under the query timeout, and reports the outcome
+on its status channel:
+
+```
+lw: stopped leftover LumeSceneAPITestRunner (pid 12345) from an interrupted run on SER1
+```
+
+`"gone"` is reported only when the record was younger than a day
+(`leftover … (pid 12345) had already exited`) and otherwise silently dropped;
+an unknown outcome or a failed `reap` is a warning, never a run failure.
+Without a runner `reap`, core warns that the interrupted run's program may
+still be running (naming it, its pid and the device) and never signals a pid
+itself. `lw unlock --device` (which force-removes a lock whose holder may be
+alive) never reaps: it reports a recorded program instead, so the user decides.
+
 The lock directory can be relocated with the host environment variable
 `LOOMWORKS_DEVICE_LOCK_DIR`, so that loomworks processes on one host — or a
 device farm that serialises on `<dir>/<serial>.lock` — share one lock
@@ -343,14 +368,29 @@ ends the run as a transport failure. A caller MAY set an execution timeout. The
 runner log stream (§18.13) has no timeout of its own: it lives exactly as long
 as the run.
 
-Cancelling a remote run (interrupt in the CLI, stop in the editor) kills the
-host-side transport process, then runs `terminate` when the runner offers it, so
-the device-side program does not outlive the run, and stops the log stream.
+Cancelling a remote run (an interrupt in the CLI — any of those listed in
+§16.6, not only Ctrl-C — or stop in the editor) kills the host-side transport
+process, then runs `terminate` when the runner offers it, so the device-side
+program does not outlive the run, and stops the log stream. When the host
+leaves the process only a short grace period (a closed Windows console ends it
+about 5 s after the event), the stop is bounded below that period so the
+device lock is still released and the cancellation still reported.
 Staged files are kept. The cancellation is reported, never silent: whether the
 device program was stopped (`interrupted — stopped <program> on <serial>`), or
 the stop was only requested or is not available ("… the stop may not have
 completed" — e.g. when the interrupt handler cannot wait for it), followed by
-the run folder, whose saved output is flushed first.
+the run folder, whose saved output is flushed first. A run whose cleanup could
+not run at all leaves its program recorded in the device lock, where the next
+run on that device finds and stops it (§18.7, *Leftover programs*).
+
+**Later (not a contract change yet):** tying the device program's lifetime to
+the connector session — a runner-rendered device-side watchdog that stops the
+program when the connection closes — would stop a leftover without waiting
+for the next run. Connectors differ in whether the device side observes a
+host disconnect at all (a session without forwarded standard input, as here,
+notices only on its next write), so this stays runner-internal until a runner
+shows a reliable mechanism; the contract needs no hook for it unless the
+mechanism needs a connector line core must consume (e.g. a keep-alive).
 
 ### 18.9 The `device` block
 

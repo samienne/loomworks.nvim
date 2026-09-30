@@ -47,10 +47,12 @@ local term = require("loomworks.term")
 
 -- Cleanups run before any os.exit() (both finish() and die()), so a build-dir
 -- lock is always released even when a step fails and we bail out.
+-- An interrupt passes its context (`interrupt_context`) to every hook; a
+-- normal exit passes nothing.
 local _exit_hooks = {}
 local function on_exit(fn) _exit_hooks[#_exit_hooks + 1] = fn end
-local function run_exit_hooks()
-  for i = #_exit_hooks, 1, -1 do pcall(_exit_hooks[i]) end
+local function run_exit_hooks(ctx)
+  for i = #_exit_hooks, 1, -1 do pcall(_exit_hooks[i], ctx) end
   _exit_hooks = {}
 end
 
@@ -242,49 +244,117 @@ end
 -- Interrupt handling. In a terminal, Ctrl-C sends SIGINT to the WHOLE
 -- foreground process group — the build tool AND this `lw` process. lw's default
 -- SIGINT action terminates it before run_exit_hooks() runs, so every held
--- build-dir lock leaks until the ~STALE_SECONDS mtime reclaim. Installing a
--- handler routes an interrupt through the SAME run_exit_hooks() cleanup path
--- (so the release_all registered by with_build_locks fires) and then exits 130,
--- the conventional code for a SIGINT-terminated process.
+-- build-dir lock leaks until the ~STALE_SECONDS mtime reclaim, and a remote
+-- run (spec §18.8) leaves its device program running. Installing a handler
+-- routes an interrupt through the SAME run_exit_hooks() cleanup path (so the
+-- release_all registered by with_build_locks fires, and a remote run stops its
+-- device program) and then exits 130, the conventional code for a
+-- SIGINT-terminated process.
+--
+-- Every way a user or the system interrupts lw takes that path, not only
+-- Ctrl-C: libuv reports CTRL_BREAK_EVENT as sigbreak and a closed console
+-- window (CTRL_CLOSE_EVENT) as sighup on Windows; on POSIX a terminal hangup
+-- is sighup and a termination request sigterm. Unhandled, each of them ends
+-- the process at once (0xC000013A on Windows) with nothing cleaned up.
 --
 -- Handles are kept in this module-level table so they are not garbage-collected
 -- while started; each is :unref()'d so it never keeps the event loop alive on
 -- its own.
 local _signal_handles = {}
 
---- Build the guarded interrupt-cleanup callback (the body a SIGINT/SIGTERM
---- handler runs): release held build locks via run_exit_hooks, flush the output
---- streams, then exit with `code`. The returned closure fires the cleanup at
---- most once — a repeated Ctrl-C or a second signal is ignored. `exit_fn`
---- defaults to os.exit and is injectable so tests can drive the callback without
---- terminating the process.
+--- Signals routed through the interrupt cleanup. A name the platform does not
+--- support (sigbreak on POSIX) simply fails to install.
+M.INTERRUPT_SIGNALS = { "sigint", "sigbreak", "sighup", "sigterm" }
+
+--- Seconds a device stop may take while a Windows console is closing: the
+--- system ends the process about 5 s after CTRL_CLOSE_EVENT, so the stop is
+--- bounded below that and the device lock is still released in time.
+M.CLOSE_STOP_TIMEOUT = 3
+
+--- The context an interrupt passes to the exit hooks: the signal name and,
+--- for a Windows console close (sighup), the bounded device-stop time. Pure.
+--- @param signal string|nil
+--- @param windows boolean
+--- @return { signal: string|nil, stop_timeout: number|nil }
+local function interrupt_context(signal, windows)
+  local ctx = { signal = signal }
+  if windows and signal == "sighup" then ctx.stop_timeout = M.CLOSE_STOP_TIMEOUT end
+  return ctx
+end
+M._interrupt_context = interrupt_context
+
+--- Build the guarded interrupt-cleanup callback (the body a signal handler
+--- runs, called with the signal name): run the exit hooks with the interrupt
+--- context (releasing held build/device locks and stopping a remote run's
+--- device program), flush the output streams, then exit with `code`. The
+--- returned closure fires the cleanup at most once — a repeated Ctrl-C or a
+--- second signal is ignored. `exit_fn` defaults to os.exit and is injectable
+--- so tests can drive the callback without terminating the process.
 --- @param code integer
 --- @param exit_fn? fun(code: integer)
---- @return fun() callback
+--- @return fun(signal?: string) callback
 local function make_interrupt_cleanup(code, exit_fn)
   local fired = false
-  return function()
+  return function(signal)
     if fired then return end
     fired = true
-    run_exit_hooks()
+    run_exit_hooks(interrupt_context(type(signal) == "string" and signal or nil,
+      package.config:sub(1, 1) == "\\"))
     pcall(function() io.stdout:flush() end)
     pcall(function() io.stderr:flush() end)
     ;(exit_fn or os.exit)(code)
   end
 end
 
---- Install a best-effort SIGINT + SIGTERM handler that releases held build locks
---- and exits 130. libuv supports SIGINT on Windows consoles and accepts SIGTERM
---- in its API; a host/platform that cannot install one simply leaves the CLI
---- running normally (each install is pcall-guarded — a handler-install failure
---- must never break `lw`). `exit_fn` is injectable for tests.
+--- Whether SIGHUP was ignored when lw started (POSIX: `nohup lw …`). A handler
+--- would override that inherited disposition, so it is not installed then.
+--- Linux reports the ignored-signal mask in /proc/self/status (`SigIgn`, a hex
+--- mask; SIGHUP is bit 0). Elsewhere, where the mask is unknown, a hangup only
+--- concerns a terminal, so SIGHUP counts as ignored unless standard error is a
+--- terminal (nohup redirects it away from one). Both sources are injectable.
+--- @param status_text? string|false contents of /proc/self/status (false = unavailable)
+--- @param stderr_tty? boolean
+--- @return boolean
+local function posix_sighup_ignored(status_text, stderr_tty)
+  if status_text == nil then
+    local f = io.open("/proc/self/status", "r")
+    status_text = f and f:read("*a") or false
+    if f then f:close() end
+  end
+  local mask = status_text and status_text:match("\nSigIgn:%s*(%x+)")
+  if mask then
+    local last = tonumber(mask:sub(-1), 16)
+    return last ~= nil and last % 2 == 1
+  end
+  if stderr_tty == nil then
+    local ok, kind = pcall(uv.guess_handle, 2)
+    stderr_tty = ok and kind == "tty"
+  end
+  return not stderr_tty
+end
+M._posix_sighup_ignored = posix_sighup_ignored
+
+--- Install a best-effort handler for every M.INTERRUPT_SIGNALS entry that runs
+--- the interrupt cleanup and exits 130. A host/platform that cannot install
+--- one simply leaves the CLI running normally (each install is pcall-guarded —
+--- a handler-install failure must never break `lw`). On POSIX, SIGHUP is left
+--- alone when it was inherited as ignored (`posix_sighup_ignored`). `exit_fn`,
+--- the signal source `new_signal` (default uv.new_signal) and
+--- `opts.sighup_ignored` are injectable for tests.
 --- @param exit_fn? fun(code: integer)
---- @return fun() cleanup the shared guarded callback the handlers invoke
-local function install_interrupt_handler(exit_fn)
+--- @param new_signal? fun(): table
+--- @param opts? { sighup_ignored?: fun(): boolean }
+--- @return fun(signal?: string) cleanup the shared guarded callback the handlers invoke
+local function install_interrupt_handler(exit_fn, new_signal, opts)
+  new_signal = new_signal or uv.new_signal
+  local sighup_ignored = (opts and opts.sighup_ignored) or function()
+    return package.config:sub(1, 1) ~= "\\" and posix_sighup_ignored()
+  end
   local cleanup = make_interrupt_cleanup(130, exit_fn)
-  for _, sig in ipairs({ "sigint", "sigterm" }) do
+  for _, sig in ipairs(M.INTERRUPT_SIGNALS) do
     pcall(function()
-      local h = uv.new_signal()
+      if sig == "sighup" and sighup_ignored() then return end
+      local h = new_signal()
       if not h then return end
       h:start(sig, cleanup)
       h:unref()
@@ -1709,6 +1779,14 @@ function M.cmd_unlock(ws, args)
     end
     device_lock.force(device_serial)
     out("unlocked device " .. device_serial)
+    -- A recorded program is only reported, never reaped: the holder may be
+    -- alive and still running it (spec §18.7).
+    local left = device_lock.leftover_of(info)
+    if left then
+      errw("lw: the lock recorded " .. (left.program:match("([^/]+)$") or left.program)
+        .. " (pid " .. left.pid .. ") on " .. device_serial .. " (" .. left.program .. ")"
+        .. "; it was not stopped and may still be running there\n")
+    end
     return 0
   end
 
@@ -2041,6 +2119,13 @@ function M._device_clean(ws, args, deps)
   on_exit(function() device_lock.release(h) end)
   local transport = require("loomworks.remote.transport").new({
     runner = runner, serial = serial, backend = deps and deps.backend, timeouts = opts.timeouts })
+  -- A reclaimed stale lock may name a program an interrupted run left
+  -- running from the staging root about to be removed (spec §18.7).
+  if h.leftover then
+    require("loomworks.remote.run").reap_leftover(runner, serial, h.leftover, {
+      backend = deps and deps.backend, timeout = transport.timeouts.query,
+      note = function(s) errw("lw: " .. s .. "\n") end })
+  end
   local ok, err, base_removed = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
   device_lock.release(h)
   if not ok then die(err) end

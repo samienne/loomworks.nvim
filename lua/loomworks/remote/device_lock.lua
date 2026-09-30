@@ -8,6 +8,10 @@
 --- shared device is normal), printing the holder once; `wait = false` fails
 --- fast. The wait has no deadline; a stale lock (heartbeat lapsed) is
 --- reclaimed. `LOOMWORKS_DEVICE_LOCK_DIR` relocates the directory.
+---
+--- Leftover programs (§18.7): while a remote run's program runs, the lockfile
+--- also records `{ device_pid, nonce, program, program_started_at }`; a
+--- handle that reclaimed a stale lock carries that record as `leftover`.
 
 local build_lock = require("loomworks.build_lock")
 
@@ -52,6 +56,40 @@ local function holder(info, serial)
 end
 M.holder = holder
 
+--- The program recorded in a lock record, validated (a corrupted or hostile
+--- lockfile must never turn into a signal for an arbitrary pid or a path a
+--- runner would quote into a device command unchecked), or nil.
+--- @param info table|nil lock record
+--- @return { pid: integer, nonce: string, program: string, started_at: integer|nil }|nil
+function M.leftover_of(info)
+    if type(info) ~= "table" then return nil end
+    local pid, nonce, program = info.device_pid, info.nonce, info.program
+    if type(pid) ~= "number" or pid < 1 or pid ~= math.floor(pid) then return nil end
+    if type(nonce) ~= "string" or not nonce:match("^%w+$") then return nil end
+    if type(program) ~= "string" or not program:match("^/") or program:find("[%z\r\n]") then return nil end
+    for seg in program:gmatch("[^/]+") do
+        if seg == "." or seg == ".." then return nil end
+    end
+    local started = type(info.program_started_at) == "number" and info.program_started_at or nil
+    return { pid = pid, nonce = nonce, program = program, started_at = started }
+end
+
+--- Record the running program in a held lock (§18.7).
+--- @param handle table|nil
+--- @param p { pid: integer, nonce: string, program: string }
+function M.set_program(handle, p)
+    build_lock.update_record(handle, { device_pid = p.pid, nonce = p.nonce, program = p.program,
+        program_started_at = os.time() })
+end
+
+--- Clear the running-program record (the program exited or was stopped).
+--- @param handle table|nil
+function M.clear_program(handle)
+    if not handle or not handle.record or handle.record.device_pid == nil then return end
+    build_lock.update_record(handle, { device_pid = vim.NIL, nonce = vim.NIL, program = vim.NIL,
+        program_started_at = vim.NIL })
+end
+
 --- Acquire the device lock.
 --- opts:
 ---   wait       boolean (default true) — false fails fast naming the holder
@@ -71,6 +109,7 @@ function M.acquire(serial, opts)
         local h, info = build_lock.try_acquire_path(path, opts.action or "run", extra)
         if h then
             h.serial = serial
+            h.leftover = M.leftover_of(h.reclaimed)
             return h
         end
         local msg = holder(info, serial)
