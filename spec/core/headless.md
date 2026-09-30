@@ -2288,7 +2288,8 @@ old and the new version (newest first): the version and its summary, then its
 `Breaking` and `Upgrade notes` items (at most three per release, then a count
 of the rest); at most five releases (then a count of the rest), and a closing
 line naming the command for the full notes (`lw release-notes --since <old
-version>`). The lines are ASCII (§16.7) and wrapped to the terminal. When
+version>`), printed after the host-binary line so it is the last thing
+self-update prints. The lines are ASCII (§16.7) and wrapped to the terminal. When
 standard output is not a terminal, or the run is non-interactive, a single
 line is printed instead, naming the same command (`lw: what's new since <old>:
 lw release-notes --since <old>`). Nothing is printed for a first installation
