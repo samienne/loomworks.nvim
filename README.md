@@ -816,7 +816,12 @@ program itself (exit 124). Ctrl-C stops the program on the device too.
 **Sharing a device.** One run at a time per device on this machine: a second
 run waits (printing who holds it); `--no-wait` fails instead. `lw unlock
 --device <serial>` clears a stuck lock; `LOOMWORKS_DEVICE_LOCK_DIR` moves the
-lock directory (e.g. to one shared by several users of a lab machine).
+lock directory (e.g. to one shared by several users of a lab machine). If a run
+was killed so hard it could not clean up (e.g. `taskkill /F`), its program may
+still be running on the device: the next run on that device stops it first
+(`stopped leftover <program> (pid N) from an interrupted run`) when the SDK
+plugin supports it, and otherwise warns. `lw unlock --device` only reports
+such a program.
 
 **Clean up.** `lw device clean [--device <serial>]` removes this workspace's
 staged files from the device (and the staging directory itself once nothing

@@ -12,8 +12,8 @@
 ---   archive boolean, digest string[]|nil, combined_output boolean|nil,
 ---   timeouts { query?, transfer? }|nil (seconds)
 --- Required builders: list_devices, parse_devices, push, pull, exec,
---- parse_exit. Optional: parse_pid, terminate, crash_snapshot, crash_collect,
---- runtime_files, log_session, describe_device.
+--- parse_exit. Optional: parse_pid, terminate, reap, crash_snapshot,
+--- crash_collect, runtime_files, log_session, describe_device.
 
 local M = {}
 
@@ -33,6 +33,7 @@ local M = {}
 --- @field parse_exit fun(line: string, nonce: string): integer|nil, string|nil status, preceding program text on the same line
 --- @field parse_pid? fun(line: string, nonce: string): integer|nil
 --- @field terminate? fun(serial: string, nonce: string, pid?: integer): table
+--- @field reap? fun(serial: string, leftover: { pid: integer, nonce: string, program: string }): table, fun(lines: string[]): "stopped"|"gone"|nil
 --- @field crash_snapshot? fun(serial: string): table, fun(lines: string[]): table
 --- @field crash_collect? fun(before: table, after: table, ctx?: { pid?: integer }): string[]
 --- @field runtime_files? fun(tool: loomworks.Tool): { local: string, relative: string }[]
@@ -40,7 +41,7 @@ local M = {}
 --- @field describe_device? fun(serial: string): table, fun(lines: string[]): { display_name?: string, properties?: table<string, string> }|nil
 
 local REQUIRED = { "list_devices", "parse_devices", "push", "pull", "exec", "parse_exit" }
-local OPTIONAL = { "parse_pid", "terminate", "crash_snapshot", "crash_collect",
+local OPTIONAL = { "parse_pid", "terminate", "reap", "crash_snapshot", "crash_collect",
     "runtime_files", "log_session", "describe_device" }
 
 --- Validate a runner table's shape. Returns true or (false, reason).

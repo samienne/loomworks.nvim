@@ -232,6 +232,56 @@ end
 --- @field failed boolean
 --- @field exit_code integer
 
+--- A "gone" leftover is reported only while its record is younger than this
+--- (seconds); an older one is dropped silently (§18.7).
+M.LEFTOVER_REPORT_AGE = 86400
+
+--- Stop a program an interrupted run left on the device (spec §18.7), through
+--- the runner's `reap` (§18.2) — which verifies on the device that the pid is
+--- still that program. Never a run failure: an unknown outcome, a failing
+--- reap, or a runner without one is a warning on the status channel.
+--- @param runner loomworks.Runner
+--- @param serial string
+--- @param leftover { pid: integer, nonce: string, program: string, started_at: integer|nil }
+--- @param o { backend?: table, timeout?: number, note: fun(s: string), now?: integer }
+--- @return "stopped"|"gone"|"unknown"|"failed"|"unsupported"
+function M.reap_leftover(runner, serial, leftover, o)
+    local name = leftover.program:match("([^/]+)$") or leftover.program
+    local what = string.format("%s (pid %d)", name, leftover.pid)
+    local from = " from an interrupted run on " .. serial
+    if not runner.reap then
+        o.note("warning: an interrupted run may have left " .. what .. " running on " .. serial
+            .. "; this device runner cannot stop it")
+        return "unsupported"
+    end
+    local ok, spec, parse = pcall(runner.reap, serial,
+        { pid = leftover.pid, nonce = leftover.nonce, program = leftover.program })
+    if not ok or type(spec) ~= "table" or type(parse) ~= "function" then
+        o.note("warning: could not stop leftover " .. what .. from .. ": "
+            .. tostring(not ok and spec or "device runner reap returned no command"))
+        return "failed"
+    end
+    local job, fail = spec_exec.run(spec, { label = "stop leftover " .. name, timeout = o.timeout,
+        backend = o.backend })
+    if fail then
+        o.note("warning: could not stop leftover " .. what .. from .. ": " .. fail)
+        return "failed"
+    end
+    local pok, outcome = pcall(parse, job.lines)
+    if pok and outcome == "stopped" then
+        o.note("stopped leftover " .. what .. from)
+        return "stopped"
+    elseif pok and outcome == "gone" then
+        local age = leftover.started_at and ((o.now or os.time()) - leftover.started_at) or nil
+        if age and age < M.LEFTOVER_REPORT_AGE then
+            o.note("leftover " .. what .. from .. " had already exited")
+        end
+        return "gone"
+    end
+    o.note("warning: could not tell whether leftover " .. what .. from .. " was stopped")
+    return "unknown"
+end
+
 --- Execute a planned remote run.
 --- o:
 ---   ws               workspace (name, _device_sync, _save_cache) — may be a stub
@@ -308,6 +358,7 @@ function M.execute(o)
                 if fast then return "sent" end
                 local wok = pcall(job.wait, job)
                 local failed = not wok or (job.failure and job:failure())
+                if not failed then device_lock.clear_program(lock) end
                 return failed and "sent" or "stopped"
             end
         end
@@ -363,6 +414,11 @@ function M.execute(o)
             .. "' has no log stream; log options ignored"
     end
     local show = session and type(session.show) == "table" and session.show or { program = "live", log = "off" }
+
+    -- A program an interrupted run left on this device (§18.7): reaped
+    -- before staging, still holding the new lock.
+    if lock.leftover then M.reap_leftover(runner, serial, lock.leftover, { backend = o.backend,
+        timeout = t.timeouts.query, note = note }) end
 
     -- (2) Stage (§18.4).
     o.ws._device_sync = o.ws._device_sync or {}
@@ -489,6 +545,9 @@ function M.execute(o)
     exec_job, state = t:start_exec(req, {
         label = "run " .. plan.name .. " on " .. serial,
         on_pid = function(pid)
+            -- Recorded so a run that loses its cleanup leaves the next run a
+            -- program to reap (§18.7).
+            device_lock.set_program(lock, { pid = pid, nonce = plan.nonce, program = plan.program })
             note("running " .. plan.name .. " on " .. serial .. " (pid " .. tostring(pid) .. ")")
             start_log(pid)
         end,
@@ -537,6 +596,8 @@ function M.execute(o)
 
     exec_job:wait()
     stop_timer()
+    -- The program reported its exit: nothing left to reap.
+    if state.status ~= nil then device_lock.clear_program(lock) end
 
     -- (5) Exit status.
     if state.status ~= nil then
