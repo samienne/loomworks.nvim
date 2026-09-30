@@ -492,9 +492,15 @@ function FakeDevice:backend()
                 end
             elseif call.op == "kill" then
                 dev.killed[#dev.killed + 1] = { pid = a[2], nonce = a[3] }
-                -- the device-side program stops: release any hung exec
-                for _, p in ipairs(dev.live) do
-                    if p.nonce == a[3] and not p.finished then p.release() end
+                -- `kill_hangs`: the stop request never completes (a stuck
+                -- connector) — the program is not released either.
+                if dev.kill_hangs then
+                    hang = true
+                else
+                    -- the device-side program stops: release any hung exec
+                    for _, p in ipairs(dev.live) do
+                        if p.nonce == a[3] and not p.finished then p.release() end
+                    end
                 end
             elseif call.op == "exec" then
                 local req = vim.json.decode(a[2])

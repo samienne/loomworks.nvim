@@ -187,8 +187,11 @@ holds — in particular a reset (§16.30) cannot remove a directory the other is
 building, and a build cannot enter a directory a reset is removing. Acquisition
 is **fail-fast** (the loser reports the holder and declines rather than waiting). A stale lock is reclaimed automatically after
 the heartbeat window; `lw unlock` clears one immediately. The CLI also releases
-its build locks on interrupt (SIGINT/SIGTERM) as well as on normal exit, so an
-interrupted (Ctrl-C'd) build does not leave a lock for the stale-reclaim window.
+its build locks on interrupt as well as on normal exit, so an interrupted
+(Ctrl-C'd) build does not leave a lock for the stale-reclaim window. An
+**interrupt** is any of: SIGINT (Ctrl-C), SIGTERM, SIGHUP (a terminal hangup)
+and, on Windows, CTRL_BREAK_EVENT and CTRL_CLOSE_EVENT (the console window
+closed) — each takes the same cleanup path and exits 130.
 
 ### 16.7 Reporting
 

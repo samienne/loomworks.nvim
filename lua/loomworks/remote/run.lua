@@ -294,13 +294,14 @@ function M.execute(o)
         if live_timer then pcall(function() live_timer:stop(); live_timer:close() end); live_timer = nil end
     end
     --- Stop the device-side program. Returns "stopped" (the stop request
-    --- completed), "sent" (issued but not awaited, or it failed) or nil (the
-    --- runner cannot stop it).
-    local function terminate()
+    --- completed), "sent" (issued but not awaited, or it failed or outlived
+    --- `timeout`) or nil (the runner cannot stop it).
+    --- @param timeout? number seconds the stop may take (default 10)
+    local function terminate(timeout)
         if runner.terminate and state and plan.nonce then
             local ok, spec = pcall(runner.terminate, serial, plan.nonce, state.pid)
             if ok and spec then
-                local job = spec_exec.start(spec, { label = "terminate", timeout = 10, backend = o.backend })
+                local job = spec_exec.start(spec, { label = "terminate", timeout = timeout or 10, backend = o.backend })
                 -- From a signal handler (a fast libuv callback) nothing may
                 -- block: the stop request is sent and the process exits.
                 local fast = vim.in_fast_event and vim.in_fast_event()
@@ -312,13 +313,16 @@ function M.execute(o)
         end
         return nil
     end
-    local function cleanup(cancelled)
+    --- `ctx` is the interrupt context when an interrupt cancels the run
+    --- (`stop_timeout` bounds the device stop, e.g. while a Windows console
+    --- is closing and the process has only seconds left).
+    local function cleanup(cancelled, ctx)
         if cleaned then return end
         cleaned = true
         stop_timer()
         if cancelled and exec_job and not exec_job.done then
             exec_job:kill("cancel")
-            local how = terminate()
+            local how = terminate(type(ctx) == "table" and tonumber(ctx.stop_timeout) or nil)
             -- Interrupted mid-run (Ctrl-C in the CLI, stop in the editor):
             -- say what happened to the device program, and where the run's
             -- output was saved.
@@ -339,7 +343,7 @@ function M.execute(o)
         if live_job and not live_job.done then live_job:kill("cancel") end
         device_lock.release(lock)
     end
-    if o.on_cleanup then o.on_cleanup(function() cleanup(true) end) end
+    if o.on_cleanup then o.on_cleanup(function(ctx) cleanup(true, ctx) end) end
 
     local function fail_setup(err)
         cleanup(false)

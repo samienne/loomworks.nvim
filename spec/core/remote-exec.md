@@ -343,9 +343,13 @@ ends the run as a transport failure. A caller MAY set an execution timeout. The
 runner log stream (§18.13) has no timeout of its own: it lives exactly as long
 as the run.
 
-Cancelling a remote run (interrupt in the CLI, stop in the editor) kills the
-host-side transport process, then runs `terminate` when the runner offers it, so
-the device-side program does not outlive the run, and stops the log stream.
+Cancelling a remote run (an interrupt in the CLI — any of those listed in
+§16.6, not only Ctrl-C — or stop in the editor) kills the host-side transport
+process, then runs `terminate` when the runner offers it, so the device-side
+program does not outlive the run, and stops the log stream. When the host
+leaves the process only a short grace period (a closed Windows console ends it
+about 5 s after the event), the stop is bounded below that period so the
+device lock is still released and the cancellation still reported.
 Staged files are kept. The cancellation is reported, never silent: whether the
 device program was stopped (`interrupted — stopped <program> on <serial>`), or
 the stop was only requested or is not available ("… the stop may not have
