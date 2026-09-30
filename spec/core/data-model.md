@@ -851,9 +851,9 @@ Configuration overrides may include:
 
 ### 1.10 Descriptions
 
-A **project**, a **user configuration**, a **configuration set** and a
-**profile** MAY carry an optional **description**: free text written by a person
-for people. A description is **display text only**. It never changes what is
+A **project**, a **user configuration**, a **configuration set**, a
+**profile** and a **launch configuration** (§8.7) MAY carry an optional
+**description**: free text written by a person for people. A description is **display text only**. It never changes what is
 built, how it is built, or what runs. It is not expanded (no `${VAR}`, no
 built-in variables), not matched against anything, and not interpreted as
 markup, a format string or a command. It is not part of any item's identity or
@@ -868,6 +868,7 @@ user.json:
 | Configuration | `projects.<key>.<type>.configurations.<name>.description` |
 | Configuration set | `configuration_set_descriptions.<set_name>` (top-level sidecar, §1.9) |
 | Profile | `profiles.<key>.description` |
+| Launch configuration | `projects.<key>.launch.<name>.description` (inside the launch configuration's own table, §8.7) |
 
 The field is additive and optional. Absence means "no description", and there
 is no format-version bump. The loomworks.json file has no version, user.json
@@ -884,7 +885,8 @@ no configuration set is ignored, and the next write of that file drops it.
 
 Descriptions are **not inherited**. A configuration inheriting a base, a profile
 derived from a set, and a project's configurations each show only their own
-description.
+description. A target-backed launch configuration does not show a description of
+its build target; build targets have none.
 
 A writer (a command or the editor) normalises before storing. It refuses a
 description that contains a control character other than LF and TAB, and one
@@ -917,14 +919,19 @@ written to either file. It is not inherited by a user configuration that
 inherits the generated one.
 
 **Renames and moves.** A description belongs to its item and follows it
-everywhere the item goes: a project, configuration or configuration-set rename
-(§16.9), a profile-key re-derivation (a toolchain change or a set rename), a
-working-copy pull (§16.25), and publish or revert (§2.4). Deleting an item
+everywhere the item goes: a project, configuration, configuration-set or launch
+configuration rename (§16.9, §8.7), a profile-key re-derivation (a toolchain
+change or a set rename), a working-copy pull (§16.25), and publish or revert
+(§2.4). Deleting an item
 deletes its description, including the sidecar entry of a configuration set.
 
 **Domain objects.** `Project`, `Configuration`, `ConfigurationSet` and `Profile`
 each carry a first-class `description` field (a string or nil), set in `_apply`
-from the deserialised data. No raw table is retained. On `Configuration`,
+from the deserialised data. No raw table is retained. Launch configurations
+are not domain objects: a project holds them as tables keyed by name (§8.7). A
+launch configuration's description is the `description` key of that table,
+normalised on write. Its owning `Project` performs the mutations: setting the
+description, and renaming (§8.7). On `Configuration`,
 `description` is a **generic** field and never part of `module_config`, so a
 description change never makes a configured unit stale (§5.1) and never reaches
 the module's task context.

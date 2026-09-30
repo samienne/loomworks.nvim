@@ -197,6 +197,22 @@ loomworks.json, and a module's read-only default descriptions come from the
 project's own files. Both are untrusted **display** input and are rendered
 only under §17.11. The trust review (§17.4) does not list them.
 
+A launch configuration's description is honoured from loomworks.json whenever
+the launch itself is. A **target-backed** launch that names only a build target
+(no `command`, `args`, `env` or `working_dir`) is not program-bearing. It is
+used from loomworks.json, and so is its description. A launch that is ignored
+as a whole because it is program-bearing (above) is not in the model, so its
+description is not shown as a launch either. To help the user recognise the
+launch, the diagnostic that reports it appends the description's **summary**,
+rendered inert (§17.11):
+
+```
+loomworks.json sets projects.App.launch.schema-test (target = editor, args = --use-scene-json-schema …) "Editor with the scene JSON schema test data" — ignored: program settings are used only from your local config (lw help trust)
+```
+
+The description is written back at its place on publish with the rest of the
+ignored launch.
+
 ### 17.7 Executable paths come from detection
 
 Tool data recorded in the cache (§2.3) is a **record**, never a source of

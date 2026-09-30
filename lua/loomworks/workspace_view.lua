@@ -507,14 +507,10 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     local renamed = new_name ~= old_name
 
     if renamed then
-        -- Serialize object mappings to raw for rename
-        local raw = {}
-        for project, config in pairs(new_mappings) do
-            if config then raw[project.key] = config.name end
-        end
-        local ok, err = M.execute_rename_config_set(ws, cs, new_name, raw)
+        -- Rename in place first, then apply the mapping changes below: the
+        -- set keeps its description, intent and every other field.
+        local ok, err = M.execute_rename_config_set(ws, cs, new_name)
         if not ok then return false, err end
-        return true
     end
 
     -- Apply mapping changes to existing set
@@ -535,56 +531,25 @@ function M.execute_edit_config_set(cs, new_name, new_mappings, old_mappings)
     return true
 end
 
---- Rename a configuration set: create new, migrate cached profiles, remove old.
---- The new set gets the provided mappings (which may also have changed).
+--- Rename a configuration set in place (Workspace:rename_configuration_set,
+--- the same atomic mutation `lw configset rename` uses): the set object, its
+--- mappings, description and intent are kept and the profiles that reference
+--- it re-derive their keys. The active profile follows the rename.
 --- @param ws loomworks.Workspace
 --- @param cs loomworks.ConfigurationSet configuration set being renamed
 --- @param new_name string
---- @param mappings table<string, string|nil> final mappings for the new set
 --- @return boolean ok, string|nil err
-function M.execute_rename_config_set(ws, cs, new_name, mappings)
-    -- Filter nil mappings
-    local clean = {}
-    for k, v in pairs(mappings) do
-        if v then clean[k] = v end
-    end
-
-    local merge_mod = require("loomworks.merge")
-
-    -- Migrate cached profiles that reference old name (before removing old set).
-    -- Update _configuration_set_name — key re-derives automatically.
-    local old_name = cs.name
-    for _, profile in pairs(ws._profiles) do
-        if profile._configuration_set_name == old_name then
-            local old_key = profile.key
-            profile._configuration_set_name = new_name
-            profile:_derive_key()
-            -- Track active profile rename
-            if ws._active_profile_key == old_key then
-                ws._active_profile_key = profile.key
-            end
-        end
-    end
-
-    -- Remove old set first (avoids case-collision check blocking case-only renames)
-    local ok, err = ws:remove_configuration_set(cs)
+function M.execute_rename_config_set(ws, cs, new_name)
+    local old_keys = {}
+    for _, profile in pairs(ws._profiles) do old_keys[profile] = profile.key end
+    local ok, err = ws:rename_configuration_set(cs, new_name)
     if not ok then return false, err end
-
-    -- Create new set
-    local new_cs, add_err = ws:add_configuration_set(new_name, clean)
-    if not new_cs then return false, add_err end
-
-    -- Reconnect profiles to the new ConfigurationSet and rebuild PPs
-    for _, profile in pairs(ws._profiles) do
-        if profile._configuration_set_name == new_name then
-            profile._config_set_ref = new_cs
-            ws:_rebuild_profile_projects_for(profile)
+    for profile, old_key in pairs(old_keys) do
+        if ws._active_profile_key == old_key and profile.key ~= old_key then
+            ws._active_profile_key = profile.key
+            break
         end
     end
-    ws:_resolve_active_profile()
-    ws:_save_cache()
-    ws:_save_user()
-
     return true
 end
 
@@ -1328,6 +1293,15 @@ function M.compute_edit_configuration_context(project, config_name)
     local resolved_variables = {}
     local config_variable_overrides = {}
     local config_compiler_overrides = {}
+    -- This config's own variable overrides (not inherited). Always the
+    -- configuration's, even when the project declares no variables, since the
+    -- dialog's save writes back what it was given (execute_save_configuration).
+    if config_name then
+        local cfg_obj = project:get_configuration(config_name)
+        if cfg_obj and cfg_obj.variables then
+            config_variable_overrides = vim.deepcopy(cfg_obj.variables)
+        end
+    end
     if config_name and next(project_variables) then
         local cfg_obj = project:get_configuration(config_name)
         if cfg_obj then
@@ -1335,10 +1309,6 @@ function M.compute_edit_configuration_context(project, config_name)
             -- Thread the active profile so a blank variable's fill value
             -- (§1.3.1) shows in the editor; a still-blank one has value nil.
             resolved_variables = vars_mod.resolve(project, cfg_obj, active_family, active_profile)
-            -- Extract this config's own overrides (not inherited)
-            if cfg_obj.variables then
-                config_variable_overrides = vim.deepcopy(cfg_obj.variables)
-            end
             -- This config's own compiler-family overrides, shown read-only.
             if cfg_obj._overrides then
                 config_compiler_overrides = vim.deepcopy(cfg_obj._overrides)
@@ -1387,19 +1357,33 @@ function M.compute_edit_configuration_context(project, config_name)
     }
 end
 
---- Save a project configuration (create, edit, or rename).
+--- The configuration fields the configuration editor dialog edits. Saving
+--- from the dialog replaces exactly these; every other declared field of the
+--- configuration (env, overrides, description, role, other module fields, …)
+--- is carried over unchanged.
+local CONFIG_DIALOG_FIELDS = {
+    "inherits", "options", "variables", "languages", "toolchain", "generator",
+}
+
+--- Save a project configuration from the configuration editor dialog (create,
+--- edit, or rename). `edits` holds the dialog's fields (`CONFIG_DIALOG_FIELDS`;
+--- nil clears one); an existing user configuration's other declared fields
+--- are preserved, so the save changes only what the dialog edits.
 --- @param project loomworks.Project
 --- @param old_name string|nil nil for new
 --- @param new_name string
---- @param data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @param edits table { inherits?, options?, variables?, languages?, toolchain?, generator? }
 --- @return boolean ok, string|nil err
-function M.execute_save_configuration(project, old_name, new_name, data)
+function M.execute_save_configuration(project, old_name, new_name, edits)
+    local cfg = old_name and project:get_configuration(old_name) or nil
+    local data = (cfg and cfg.is_user) and cfg:declared_data() or {}
+    for _, field in ipairs(CONFIG_DIALOG_FIELDS) do
+        data[field] = edits[field]
+    end
+
     -- Rename: atomic propagation to config sets, cache entries, and profiles
-    if old_name and old_name ~= new_name then
-        local cfg = project:get_configuration(old_name)
-        if cfg and cfg.is_user then
-            return project:rename_configuration(old_name, new_name, data)
-        end
+    if old_name and old_name ~= new_name and cfg and cfg.is_user then
+        return project:rename_configuration(old_name, new_name, data)
     end
 
     return project:save_configuration(new_name, data)
@@ -1470,18 +1454,37 @@ end
 --- @param data { command: string, args: string[], working_dir: string, env: table<string, string>, deploy?: table, debug?: string[] }
 --- @return boolean ok, string|nil err
 function M.execute_save_launch_config(project, old_name, new_name, data)
-    -- Build config table (omit empty fields)
-    local config = { command = data.command }
-    if data.args and #data.args > 0 then config.args = data.args end
-    if data.working_dir and data.working_dir ~= "" then config.working_dir = data.working_dir end
-    if data.env and next(data.env) then config.env = data.env end
-    if data.deploy and next(data.deploy) then config.deploy = data.deploy end
-    if data.debug and #data.debug > 0 then config.debug = data.debug end
+    -- Start from the existing config so the fields the launch editor does not
+    -- show (the `device` block, spec §18.9, and any other declared field)
+    -- survive; replace only the editor's fields, omitting empty ones.
+    local existing = old_name and project.launch and project.launch[old_name]
+    local config = type(existing) == "table" and vim.deepcopy(existing) or {}
+    -- An empty command field means "no command": the key is absent, never
+    -- `""` (a target-backed launch carries only `target`). A command makes
+    -- this a command-type launch: it no longer runs a target (as
+    -- `lw launch set --command`).
+    if data.command and data.command ~= "" then
+        config.command = data.command
+        config.target = nil
+    else
+        config.command = nil
+    end
+    config.args = (data.args and #data.args > 0) and data.args or nil
+    config.working_dir = (data.working_dir and data.working_dir ~= "")
+        and data.working_dir or nil
+    config.env = (data.env and next(data.env)) and data.env or nil
+    config.deploy = (data.deploy and next(data.deploy)) and data.deploy or nil
+    config.debug = (data.debug and #data.debug > 0) and data.debug or nil
 
-    -- If renamed, delete old first
+    -- A name change is a rename (spec §8.7): the atomic operation that moves
+    -- the whole launch and re-points every profile's default target — never
+    -- a delete plus re-create. The edited fields are then saved on the new name.
     if old_name and old_name ~= new_name then
-        local ok, err = project:delete_launch_config(old_name)
-        if not ok then return false, err end
+        local changed, err = project:rename_launch_config(old_name, new_name)
+        if changed == nil then return false, err end
+    elseif not old_name then
+        local vok, verr = require("loomworks.project").validate_launch_name(new_name)
+        if not vok then return false, "invalid launch name: " .. verr end
     end
 
     return project:save_launch_config(new_name, config)

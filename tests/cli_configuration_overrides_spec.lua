@@ -103,10 +103,10 @@ end)
 
 describe("config_to_data overrides round-trip", function()
   it("copies a live Configuration's _overrides into the edit data", function()
-    local cfg = {
+    local cfg = setmetatable({
       module_config = { variant = "Debug" },
       _overrides = { clang = { warn = "-Wc" } },
-    }
+    }, require("loomworks.configuration"))
     local data = cli._config_to_data(cfg)
     assert.same({ clang = { warn = "-Wc" } }, data.overrides)
     -- A distinct copy (deepcopy), not the live table.
@@ -114,7 +114,8 @@ describe("config_to_data overrides round-trip", function()
   end)
 
   it("omits overrides when the config has none", function()
-    local data = cli._config_to_data({ module_config = {}, options = { A = "1" } })
+    local data = cli._config_to_data(setmetatable({ module_config = {}, options = { A = "1" } },
+      require("loomworks.configuration")))
     assert.is_nil(data.overrides)
   end)
 end)

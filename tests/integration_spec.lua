@@ -1168,8 +1168,7 @@ describe("config set rename", function()
             }
         )
 
-        local ok = wv.execute_rename_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"debug"), "Debug",
-            { App = "Debug", Frontend = "debug" })
+        local ok = wv.execute_rename_config_set(ws, h.find_config_set_in(ws:get_config_sets(),"debug"), "Debug")
         assert.is_true(ok)
 
         -- Old set gone, new set exists
