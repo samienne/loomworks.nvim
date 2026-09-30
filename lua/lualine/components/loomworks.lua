@@ -177,6 +177,19 @@ function M:init(options)
     end
 end
 
+--- Make workspace data inert in a statusline string: remove control
+--- characters and double every `%` so a name from a (possibly cloned)
+--- loomworks.json cannot inject statusline items, highlight groups or
+--- expressions (spec/ui.md §3). Applied to data only — never to the
+--- component's own `%#hl#…%*` escapes, icons or join string.
+--- @param s any
+--- @return string
+local function inert(s)
+    s = tostring(s):gsub("%c", "")
+    return (s:gsub("%%", "%%%%"))
+end
+M._inert = inert
+
 --- Prepend the configured icon (if any) to a field's rendered value.
 --- @param field string
 --- @param value string
@@ -235,40 +248,40 @@ function M:update_status()
     --   <status icon> <profile icon> <set name>.
     if self._show.set_name and status.set_name then
         local marker = self:_status_marker(status.profile_state)
-        parts[#parts + 1] = marker .. self:_with_icon("set_name", status.set_name)
+        parts[#parts + 1] = marker .. self:_with_icon("set_name", inert(status.set_name))
     end
 
     -- Project and configuration: "App/Debug" or just "App"
     local project_part
     if self._show.project and status.project then
         if self._show.configuration and status.configuration then
-            project_part = status.project .. "/" .. status.configuration
+            project_part = inert(status.project) .. "/" .. inert(status.configuration)
         else
-            project_part = status.project
+            project_part = inert(status.project)
         end
     elseif self._show.configuration and status.configuration then
-        project_part = status.configuration
+        project_part = inert(status.configuration)
     end
 
     -- Tool key in brackets appended to project: "App/Debug [ninja-gcc-12]"
     if project_part then
         if self._show.tool_key and status.tool_key then
-            project_part = project_part .. " [" .. status.tool_key .. "]"
+            project_part = project_part .. " [" .. inert(status.tool_key) .. "]"
         end
         local marker = self:_status_marker(status.status)
         parts[#parts + 1] = marker .. self:_with_icon("project", project_part)
     elseif self._show.tool_key and status.tool_key then
-        parts[#parts + 1] = self:_with_icon("tool_key", "[" .. status.tool_key .. "]")
+        parts[#parts + 1] = self:_with_icon("tool_key", "[" .. inert(status.tool_key) .. "]")
     end
 
     -- Profile key (full, not shown by default)
     if self._show.profile_key and status.profile_key then
-        parts[#parts + 1] = self:_with_icon("profile_key", status.profile_key)
+        parts[#parts + 1] = self:_with_icon("profile_key", inert(status.profile_key))
     end
 
     -- Status (not shown by default)
     if self._show.status and status.status then
-        parts[#parts + 1] = status.status
+        parts[#parts + 1] = inert(status.status)
     end
 
     return table.concat(parts, self.options.join)

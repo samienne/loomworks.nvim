@@ -926,6 +926,13 @@ spaces.
 - `"configuration"` — active configuration
 - `"tool_key"` — tool key (e.g., the active profile's `tool_key`)
 
+Every piece of workspace data the component inserts (set names, project keys,
+configuration names, tool and profile keys, status) is made inert before it
+reaches the statusline: control characters are removed and `%` is doubled to
+`%%`, so a name from a cloned `loomworks.json` cannot inject statusline items,
+highlight groups or expressions. The component's own highlight escapes, icons
+and join string are not affected.
+
 **Returns empty** when:
 - No workspace loaded
 - No active profile
