@@ -430,7 +430,7 @@ function M.execute_deploy_steps(deploy_dict, ctx, deploy_records, normalize, on_
             end
 
             local dest_dir = vim.fn.fnamemodify(step.dest_path, ":h")
-            vim.fn.mkdir(dest_dir, "p")
+            assert(require("loomworks.io").mkdir_p(dest_dir))
 
             local ok, copy_err = uv.fs_copyfile(step.source_path, step.dest_path)
             if not ok then

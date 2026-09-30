@@ -209,14 +209,47 @@ function M.write_json_signed(path, kind, tbl)
     return wok, werr, sign_err
 end
 
---- Ensure a directory exists (mkdir -p equivalent).
+--- The deepest existing directory on `path` (itself or an ancestor), or nil.
+local function deepest_existing_dir(path)
+    local p = path
+    while p and p ~= "" do
+        if vim.fn.isdirectory(p) == 1 then return p end
+        p = p:match("^(.*)[/\\][^/\\]*$")
+    end
+    return nil
+end
+
+--- mkdir -p that tolerates the concurrent-create race. `vim.fn.mkdir(p, "p")`
+--- checks, then creates, one component at a time: when another process (the
+--- CLI and the editor configuring two profiles that share a brand-new parent)
+--- creates a component in between, it throws E739 "file already exists" and
+--- stops there. A lost race is not a failure: if the directory now exists that
+--- is success, and if only an ancestor appeared (progress was made) the create
+--- is retried from there. A failure that makes no progress (a file in the way,
+--- no permission) is still reported.
+--- @param path string
+--- @return true|nil ok, string|nil err
+function M.mkdir_p(path)
+    local reached = deepest_existing_dir(path)
+    while true do
+        local ok, res = pcall(vim.fn.mkdir, path, "p")
+        if (ok and res ~= 0) or vim.fn.isdirectory(path) == 1 then return true end
+        if ok then return nil, "cannot create directory " .. path end
+        local now = deepest_existing_dir(path)
+        -- Terminates: each retry needs a strictly deeper existing ancestor.
+        if now == nil or (reached and #now <= #reached) then return nil, tostring(res) end
+        reached = now
+    end
+end
+
+--- Ensure a directory exists (mkdir -p equivalent; race-tolerant, see mkdir_p).
 --- @param path string
 --- @return boolean ok, string|nil err
 function M.ensure_dir(path)
     local stat = uv.fs_stat(path)
     if stat and stat.type == "directory" then return true, nil end
-    local ok, err = vim.fn.mkdir(path, "p")
-    if ok == 0 then return false, err end
+    local ok, err = M.mkdir_p(path)
+    if not ok then return false, err end
     return true, nil
 end
 
