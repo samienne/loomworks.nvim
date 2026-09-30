@@ -1454,7 +1454,9 @@ one ran it, so the commands it prints read `./lw.sh …` from `lw.sh` and
 `lw` with no command prints workspace status and the active profile. Every
 command has detail under `lw help <command>` (or `lw <command> --help`); a
 sub-command's own section under `lw help <command> <sub>` (or
-`lw <command> <sub> --help`, e.g. `lw profile query --help`).
+`lw <command> <sub> --help`, e.g. `lw profile query --help`). An option a
+command does not know is an error (exit 2, e.g. `lw run --dryrun`), never
+silently ignored; arguments for the program or build tool go after `--`.
 
 | Command | Description |
 |---|---|

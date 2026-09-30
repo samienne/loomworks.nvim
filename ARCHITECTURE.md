@@ -949,7 +949,10 @@ the build path.
 
 ### Entry point
 
-`lua/loomworks/cli.lua`: argument parse → root discovery (walk up from the
+`lua/loomworks/cli.lua`: argument parse (global options stripped, then
+`cli_options.find_unknown` refuses an option the command does not know —
+spec §16.7; `cli_options.lua` holds each command's known options and must
+track the parsers) → root discovery (walk up from the
 cwd for `loomworks.json` or `.nvim/loomworks.user.json` via `root_finder.lua`
 — the same search the editor's auto-load uses — stopping at a git
 working-tree boundary so a fresh worktree never binds to a parent checkout,

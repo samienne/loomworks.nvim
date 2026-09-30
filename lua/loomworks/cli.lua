@@ -10011,6 +10011,16 @@ local function main()
       end
     end
   end
+  -- An option the command does not know is a usage error (spec §16.7), checked
+  -- before any handler runs — so a mistyped option can never start a build.
+  -- Nothing after `--` is checked (a program's / native tool's arguments).
+  do
+    local bad, label = require("loomworks.cli_options").find_unknown(a)
+    if bad then
+      die("unknown option '" .. bad .. "' for `lw " .. label .. "` — see `lw help " .. label
+        .. "`\n    (arguments for the program or build tool go after `--`)", 2)
+    end
+  end
   -- `settings` edits lw's OWN user configuration (dev-lua, release-url, …). It
   -- is a global command (no workspace needed). NOTE: `config` no longer routes
   -- here — it is now the project-configuration command (see below).
