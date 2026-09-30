@@ -681,6 +681,16 @@ not a module field, and is serialized with the configuration. Inheritance uses C
 within the project. ConfigUnit carries `_configuration` reference. Accessor:
 `unit:configuration()`, `pp:configuration()`.
 
+**Launch configurations** stay tables in `Project.launch` (name → table, spec
+§8.7), not domain objects. `Project:set_launch_description(name, text)` and
+`Project:rename_launch_config(old, new)` are the mutations for their
+description and name. The rename moves the table as is, re-points every
+profile's `_default_target_descriptor` naming it, re-keys the unit target
+entries (`launch:<name>`), then saves with rollback. The launch editor and
+`lw launch rename` both call it; the editor no longer does a delete plus a
+save. The description editor edits a launch through a small handle
+(`{ description, set_description }`) bound to the project and name.
+
 **Descriptions** (spec §1.10). `Project`, `Configuration`, `ConfigurationSet`
 and `Profile` each hold a first-class `description` (string|nil), set by
 `_apply` from the deserialised data (already normalised by

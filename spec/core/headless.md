@@ -331,8 +331,16 @@ preset variant has no user-owned name to change. A rename carries every field
 the configuration declares, including its description (§1.10), never a fixed
 subset.
 
+A management host MAY also **rename a launch configuration** in place, addressed
+by `(project, old, new)`. The operation is the atomic rename of §8.7: the whole
+launch table moves, including `deploy`, `device`, `device_log`, `debug`,
+`description` and unknown fields, and every profile's default-target
+descriptor that names it follows. The same refusals apply: an invalid or
+colliding new name, or an unknown old name.
+
 A management host MAY also **set, replace or clear the description** (§1.10) of
-a project, a user configuration, a configuration set or a profile (§16.35).
+a project, a user configuration, a configuration set, a profile or a launch
+configuration (§16.35).
 
 A management host MAY also **declare or remove a project variable** (§1.3.1),
 addressed by `(project, variable)`. Declaring accepts a `type` (`string` or
@@ -2489,7 +2497,13 @@ lw project   describe <project>          [<text> | -m <para>... | -F <file> | -F
 lw config    describe <project> <config> [same]
 lw configset describe <set>              [same]
 lw profile   describe <profile>          [same]
+lw launch    describe <project> <name>   [same]
 ```
+
+- `lw launch describe` takes the launch as `<project> <name>` or as
+  `--project <p> --launch <n>`. The single-operand `[<project>:]<name>` form
+  that `launch show` / `set` / `remove` accept is **not** accepted here: a
+  following `<text>` operand would be ambiguous with it.
 
 - `<profile>` resolves like every profile operand (§16.3: list number, exact
   key, unique substring). It is **required**. `describe` never defaults to the
@@ -2501,6 +2515,10 @@ lw profile   describe <profile>          [same]
 - Item-creating verbs (`project add`, `config add`, `configset create`,
   `profile create`) accept `-m <para>` (repeatable) to create the item already
   described.
+- `lw launch add` takes the description as `--description <para>`
+  (repeatable, joined like `-m`). It does **not** take `-m`. Everything after a
+  launch's command operand is the program's own arguments, where `-m` is
+  common (`python -m http.server`), so `-m` there would change what runs.
 
 **Reading.** With no text source and no `--clear`, `describe` prints the full
 description (summary, blank line, body) and exits 0. An item without a
@@ -2600,8 +2618,23 @@ The summary is fitted as follows:
   counted as two), never bytes. A cut ends in `…`. A summary is never dropped
   silently.
 
+**Launch configurations and targets in one-line views.**
+- `lw launch list` follows the layout rule above. `PROJECT` and `NAME` are the
+  identity columns, then a `DESCRIPTION` column (the summary column; the header
+  appears only when some launch has a description), then `RUNS`.
+  - `RUNS` is the open-ended tail: `target:<t>` or the command, then the args.
+    On a terminal it is cut with `…` to the remaining width, instead of today's
+    fixed 46 bytes. When stdout is not a terminal it is printed in full.
+  - The full args are always in `lw launch show`.
+- `lw target list` rows (`* <project>:<name> (launch|exe)`) and the status
+  overview's and `lw profile show`'s Targets rows end in a bounded kind label,
+  so a launch's summary ends the row, fitted as above (at most 60 columns). A
+  build target (`exe`) has no description.
+- Messages that list candidates, such as an ambiguous `lw run` operand, keep
+  their `project:name (kind)` form without summaries.
+
 **Display in detail views.** `lw project show`, `lw config show`,
-`lw configset show` and `lw profile show` print the **full** description, one
+`lw configset show`, `lw profile show` and `lw launch show` print the **full** description, one
 output line per description line, indented under a `description` label. It comes
 right after the item's header or identity lines, and a detail view never
 truncates it. `lw profile show` also shows its configuration set's summary on
@@ -2610,7 +2643,20 @@ module field. All output follows §16.7 and §17.11.
 
 `lw profile query` is unchanged: its fields are per `(profile, project)` build
 facts, and a description is neither per-project nor a build fact. Scripts read
-descriptions with `describe --json`.
+descriptions with `describe --json`. For a launch configuration,
+`lw launch describe … --json` reports `"kind": "launch"`, `"project"`, `"name"`,
+`"description"`, `"summary"` and `"source": "workspace"`.
+
+`lw launch show <project> <name> --json` prints the launch configuration as one
+object, for scripts that need to tell launches apart:
+- `project`, `name` and `kind` (`"target"` or `"command"`);
+- `target` or `command`, `args` (an array, never joined), `working_dir`, `env`;
+- `deploy`, `device`, `device_log` and `debug` when set;
+- `description` and `summary` (`null` when absent).
+
+Values are as declared, not expanded. Its human form lists `description` first,
+then the fields it prints today, then `deploy`, `device` and `debug`, which it
+did not show before.
 
 Example:
 
@@ -2629,6 +2675,26 @@ $ lw profile list
 $ lw configset list
   Debug              Clang debug, ASan on CI     App→Debug, Lib→Debug
   Release            What CI ships               App→Release, Lib→Release, Tools→R…
+
+$ lw launch describe LumeEditor schema-test -m "Editor with the scene JSON schema test data"
+launch configuration 'LumeEditor:schema-test' described
+
+$ lw launch list
+Launch configs — pass PROJECT and NAME to `lw launch show|set`:
+
+  PROJECT     NAME         DESCRIPTION                          RUNS
+  LumeEditor  editor       Plain editor                         target:LumeEditor
+  LumeEditor  schema-test  Editor with the scene JSON schema t…  target:LumeEditor --use-scene-json-sc…
+  LumeEditor  theme-demo   Theme showcase scene                 target:LumeEditor --theme demo
+
+$ lw launch rename LumeEditor schema-test scene-schema
+renamed launch configuration 'LumeEditor:schema-test' -> 'LumeEditor:scene-schema'
+  default target updated in profiles: Debug:msvc-17, Release:msvc-17
+
+$ lw target
+* LumeEditor:editor (launch)        Plain editor
+  LumeEditor:scene-schema (launch)  Editor with the scene JSON schema test data
+  LumeEditor:LumeEditor (exe)
 
 $ lw profile describe 1 --clear
 profile 'Debug:ninja-clang-18.1.0': description removed
