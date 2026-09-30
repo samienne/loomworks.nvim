@@ -514,6 +514,10 @@ function FakeDevice:backend()
                 -- connector) — the program is not released either.
                 if dev.kill_hangs then
                     hang = true
+                elseif dev.kill_fails then
+                    -- `kill_fails`: the connector cannot reach the device
+                    emit("stderr", "[Fail]connect failed")
+                    exit_code = 1
                 else
                     -- the device-side program stops: release any hung exec
                     for _, p in ipairs(dev.live) do
