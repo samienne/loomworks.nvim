@@ -807,6 +807,7 @@ via `lw device select` (§18.3).
 | `projects` | Yes | Dict of project_key → project definition |
 | `configuration_sets` | No | Dict of set_name → { project_key → variant } |
 | `profiles` | No | Dict of profile_key → explicit profile definition |
+| `configuration_set_descriptions` | No | Dict of set_name → description (§1.10). A sidecar because a set's own table is a flat project → configuration map with no room for a field |
 
 **Project definition fields**:
 
@@ -819,6 +820,13 @@ via `lw device select` (§18.3).
 The type key (`cmake`, `meson`, `typescript`, etc.) is the only required field. Its
 value is a table passed to the module as `type_config`.
 
+The project's **description** (§1.10) is the core-owned key `description` inside
+the module section (`projects.<key>.<type>.description`), not a project-level
+key. Core lifts it out before the section reaches the module as `type_config`.
+(An older loomworks reads an unknown project-level key as a second module type
+and refuses the file; it keeps an unknown module-section field. This is the
+same placement rule as the `device` block, §18.9.)
+
 **CMake type_config fields**:
 
 | Field | Description |
@@ -830,6 +838,8 @@ value is a table passed to the module as `type_config`.
 Configuration overrides may include:
 - `toolchain`: path to CMake toolchain file (`${ENV_VAR}` expanded, no absolute paths)
 - `role`: `"compile_commands"` hides the configuration from UI
+- `description`: the configuration's description (§1.10), valid in every module's
+  configuration table; a generic field, not a module field
 
 **Explicit profile fields**:
 
@@ -837,6 +847,87 @@ Configuration overrides may include:
 |-------|-------------|
 | `configuration_set` | Name of a configuration set to derive mappings from |
 | `kit_id` | Tool key to use (e.g., `"ninja-clang-18.0.0"`) |
+| `description` | The profile's description (§1.10) |
+
+### 1.10 Descriptions
+
+A **project**, a **user configuration**, a **configuration set** and a
+**profile** MAY carry an optional **description**: free text written by a person
+for people. A description is **display text only**. It never changes what is
+built, how it is built, or what runs. It is not expanded (no `${VAR}`, no
+built-in variables), not matched against anything, and not interpreted as
+markup, a format string or a command. It is not part of any item's identity or
+key.
+
+**Location in the files.** The same locations apply in loomworks.json and in
+user.json:
+
+| Item | Location |
+|--|--|
+| Project | `projects.<key>.<type>.description` (inside the module section, §1.9) |
+| Configuration | `projects.<key>.<type>.configurations.<name>.description` |
+| Configuration set | `configuration_set_descriptions.<set_name>` (top-level sidecar, §1.9) |
+| Profile | `profiles.<key>.description` |
+
+The field is additive and optional. Absence means "no description", and there
+is no format-version bump. The loomworks.json file has no version, user.json
+stays at `_meta.version` 2, and the cache is unaffected. A sidecar entry naming
+no configuration set is ignored, and the next write of that file drops it.
+
+**Shape.** A description is a JSON string. It is stored **normalised**:
+
+1. Line endings are LF. CRLF and lone CR become LF.
+2. Trailing whitespace is removed from every line.
+3. Leading and trailing blank lines are removed.
+4. A description that is then empty is **absent**. The key is removed from the
+   file and never stored as `""`.
+
+Descriptions are **not inherited**. A configuration inheriting a base, a profile
+derived from a set, and a project's configurations each show only their own
+description.
+
+A writer (a command or the editor) normalises before storing. It refuses a
+description that contains a control character other than LF and TAB, and one
+longer than 4096 bytes after normalisation, and names the problem. A reader
+accepts any string. It normalises for display only and renders control
+characters visibly (§17.11). A non-string value is ignored and treated as
+absent, with a diagnostic on the item naming the field. It is written back
+unchanged unless the item's description is set or cleared.
+
+**Summary and body.** Descriptions follow git commit messages:
+
+- The **summary** is the first line.
+- The **body** is every line after it, with the blank lines that separate it
+  from the summary removed.
+
+The summary is what one-line views show (list rows, status-page nodes, picker
+entries), truncated with an ellipsis when too long. The full text (summary plus
+body) is what detail views show. The display rules are in §16.35 (CLI) and
+`spec/ui.md` §1.16 (editor).
+
+**Generated configurations.** An auto-generated configuration (§1.3) is never
+persisted, so it has no user-owned place for a description. A command or editor
+action that sets a description on one is refused. The refusal points at
+declaring a user configuration that inherits it. A module MAY supply a
+**read-only default description** for the configurations it generates, from the
+project's own files, through `info()` (§8.1). It is displayed like any other
+description, marked as coming from the project files, and is subject to the
+same display sanitisation (§17.11). It is regenerated on every load and never
+written to either file. It is not inherited by a user configuration that
+inherits the generated one.
+
+**Renames and moves.** A description belongs to its item and follows it
+everywhere the item goes: a project, configuration or configuration-set rename
+(§16.9), a profile-key re-derivation (a toolchain change or a set rename), a
+working-copy pull (§16.25), and publish or revert (§2.4). Deleting an item
+deletes its description, including the sidecar entry of a configuration set.
+
+**Domain objects.** `Project`, `Configuration`, `ConfigurationSet` and `Profile`
+each carry a first-class `description` field (a string or nil), set in `_apply`
+from the deserialised data. No raw table is retained. On `Configuration`,
+`description` is a **generic** field and never part of `module_config`, so a
+description change never makes a configured unit stale (§5.1) and never reaches
+the module's task context.
 
 ---
 

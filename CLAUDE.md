@@ -261,7 +261,7 @@ These are implementation-specific details not covered by the spec or architectur
 - **Multi-tool profile model**: CachedProfile stores `tools` dict keyed by
   module type (e.g. `{ cmake = { key, data, label } }`), not flat fields.
   Profile objects expose `profile.tools` dict and `profile:tool_for(mod_type)`.
-  Cache version 6. Unified rename via `compute_profile_renames(transform)` +
+  Cache version 8. Unified rename via `compute_profile_renames(transform)` +
   `apply_profile_renames(renames, transform)`.
 - **Bootstrap**: `create_workspace_config()` is a static function on the
   workspace module for creating a new `loomworks.json` on disk (no Workspace
