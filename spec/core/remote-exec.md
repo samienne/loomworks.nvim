@@ -105,7 +105,7 @@ interpreter.
 | `parse_exit(line, nonce)` | `integer\|nil`, `string\|nil` | Recognise the exit-status sentinel line for `nonce`. When the program's last output did not end in a line break, the connector delivers it on the sentinel's line; the runner returns that preceding text as the second value and core treats it as program output |
 | `parse_pid(line, nonce)` | `integer\|nil` | *(optional)* Recognise the line announcing the device-side process id of the program started with `nonce` |
 | `terminate(serial, nonce, pid?)` | spec | *(optional)* Stop the device-side program started by `exec` with `nonce` (`pid` when `parse_pid` reported one) |
-| `reap(serial, leftover)` | spec, `parse(lines) → "stopped"\|"gone"\|nil` | *(optional)* Stop a program that an **earlier, interrupted** run left on the device (§18.7). `leftover = { pid, nonce, program }`: the device-side process id `parse_pid` reported, that run's nonce, and the staged program's device-side path. The rendered command MUST stop the process only when it is still that run's program — it verifies, on the device, that the process's executable (or command line) is `program` before signalling it — so a process id the device has since reused for another process is never signalled. `parse` returns `"stopped"` (it was that program and is now stopped), `"gone"` (no such process, or another program now holds the id) or `nil` (the outcome is unknown) |
+| `reap(serial, leftover)` | spec, `parse(lines) → "stopped"\|"gone"\|nil` | *(optional)* Stop a program that an **earlier, interrupted** run left on the device (§18.7). `leftover = { pid, nonce, program }`: the device-side process id `parse_pid` reported, that run's nonce, and the staged program's device-side path. The rendered command MUST stop the process only when it is still that run's program — it verifies, on the device, before signalling it, that the process's executable is `program`, **or** that the process's environment carries the run-unique token the runner's `exec` rendering placed there for this `nonce` (below) and its executable name is `program`'s base name — so a process id the device has since reused for another process is never signalled; when neither can be read, the outcome is unknown and nothing is signalled. It MAY also stop that run's own device-side wrapper (the command the connector ran for that `exec`), identified the same way by the `nonce` it carries, never by process id alone. `parse` returns `"stopped"` (it was that program and is now stopped), `"gone"` (no such process, or another program now holds the id) or `nil` (the outcome is unknown) |
 | `crash_snapshot(serial)` | spec, `parse(lines) → set` | *(optional)* Identify the device's current crash reports |
 | `crash_collect(before, after, ctx?)` | remote path[] | *(optional)* Crash reports new since the snapshot. `ctx = { pid? }` carries the program's device-side process id when `parse_pid` reported one, so the runner can pick the reports of this run's process; a runner must accept the call without `ctx` |
 | `runtime_files(tool)` | `{ local, relative }[]` | *(optional)* Platform runtime files a program built by `tool` needs beside it (§18.4) |
@@ -130,6 +130,12 @@ core generates per execution. The rendered command MUST:
   `nonce` and that carries the program's exit status, so the status is
   recovered even when the connector does not propagate it. A line that merely
   resembles a sentinel without the nonce is program output.
+
+A runner that offers `reap` MAY add **one** environment variable of its own
+carrying the `nonce` to the program's environment (a run-unique token that
+identifies the process later, §18.7, even when its executable path can no
+longer be resolved); it is the only variable a runner adds, and it never
+replaces a requested one.
 
 Sentinel and process-id lines are connector lines: core consumes them and never
 shows or saves them as program output.
@@ -346,6 +352,23 @@ still be running (naming it, its pid and the device) and never signals a pid
 itself. `lw unlock --device` (which force-removes a lock whose holder may be
 alive) never reaps: it reports a recorded program instead, so the user decides.
 
+**Leftover record.** A run can also end *with* its cleanup but without
+stopping its program: the transport failed or the status was lost (§18.5
+step 5, §18.8), or a cancellation's stop did not complete. Releasing the lock
+would drop the record, so in that case — the process id known, no exit status
+recovered and no completed `terminate` — core first writes the record to a
+per-device **leftover file** `<lock dir>/<serial>.leftover` beside the
+lockfile (§18.7 lock directory; the same serial-to-file-name mapping), then
+releases the lock. Every later acquisition of that device's lock (a run, a
+test, `lw device clean`) treats the leftover file like a reclaimed record:
+it reaps it with the same messages and the same warn-only rule without a
+runner `reap`. Core removes the leftover file — exactly that file, never
+anything else in the directory — after `"stopped"` or `"gone"`, after the
+warning when the runner has no `reap`, when its content is not a valid
+record, and when the record is older than a day; after an unknown or failed
+outcome it keeps it for the next acquisition. `lw unlock --device` reports a
+leftover file's program too and leaves the file in place.
+
 The lock directory can be relocated with the host environment variable
 `LOOMWORKS_DEVICE_LOCK_DIR`, so that loomworks processes on one host — or a
 device farm that serialises on `<dir>/<serial>.lock` — share one lock
@@ -382,6 +405,12 @@ completed" — e.g. when the interrupt handler cannot wait for it), followed by
 the run folder, whose saved output is flushed first. A run whose cleanup could
 not run at all leaves its program recorded in the device lock, where the next
 run on that device finds and stops it (§18.7, *Leftover programs*).
+
+A run that ends as a **transport failure without an exit status** (the
+connector died or lost the sentinel, §18.5 step 5) also runs `terminate` once,
+bounded by the query timeout, since its program may still be running; the
+failure is reported as before. If that stop did not complete, the program is
+kept in the leftover record (§18.7).
 
 **Later (not a contract change yet):** tying the device program's lifetime to
 the connector session — a runner-rendered device-side watchdog that stops the
