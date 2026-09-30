@@ -84,6 +84,25 @@ function M._extract_device(key, def, ptype, type_config)
     return device, type_config
 end
 
+--- Lift a project's `description` (spec §1.10) out of its module section.
+--- It lives at `projects.<p>.<type>.description` for the same reason as the
+--- device block (an older lw keeps an unknown module field but refuses an
+--- unknown project-level key); core owns it, so the module never sees it in
+--- `type_config`. Returns the raw value (any type; the Project normalises it)
+--- and a copy of `type_config` without it (the raw table is never mutated).
+--- @param type_config table module section
+--- @return any description, table type_config
+function M._extract_description(type_config)
+    if type(type_config) ~= "table" or type_config.description == nil then
+        return nil, type_config
+    end
+    local description = type_config.description
+    local copy = {}
+    for k, v in pairs(type_config) do copy[k] = v end
+    copy.description = nil
+    return description, copy
+end
+
 --- Normalize raw project definitions into internal format.
 --- Extracts type from the inner key (e.g. { cmake = {} } -> type = "cmake").
 --- Does NOT validate path existence on disk.
@@ -105,8 +124,9 @@ function M.normalize_projects(raw_projects)
         if not is_known_type(ptype) then
             vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
-        local device
+        local device, description
         device, type_config = M._extract_device(key, def, ptype, type_config)
+        description, type_config = M._extract_description(type_config)
         projects[key] = {
             path = def.path or key,
             type = ptype,
@@ -116,6 +136,7 @@ function M.normalize_projects(raw_projects)
             variables = def.variables,
             deploy = def.deploy,
             device = device,
+            description = description,
         }
     end
     return projects, nil
@@ -145,8 +166,9 @@ function M.validate(raw, root)
             vim.notify("loomworks: project '" .. key .. "' has unknown type '" .. ptype .. "'", vim.log.levels.WARN)
         end
 
-        local device
+        local device, description
         device, type_config = M._extract_device(key, def, ptype, type_config)
+        description, type_config = M._extract_description(type_config)
 
         local project_path = def.path or key
         local abs_path = root .. "/" .. project_path
@@ -263,6 +285,7 @@ function M.validate(raw, root)
             variables = project_variables,
             deploy = def.deploy,
             device = device,
+            description = description,
         }
     end
 
@@ -331,7 +354,22 @@ function M.validate(raw, root)
                 kit_id = profile_def.kit_id,
                 -- back-compat: older files nested kit_id under `cmake`
                 cmake = profile_def.cmake,
+                description = profile_def.description,
             }
+        end
+    end
+
+    -- Configuration-set descriptions live in a top-level sidecar (spec §1.10):
+    -- a set's own table is a flat project -> configuration map. Entries are
+    -- kept as read (a non-string value is ignored by the set but written back
+    -- unchanged, spec §1.10); a non-table sidecar is ignored.
+    local set_descriptions = nil
+    if type(raw.configuration_set_descriptions) == "table" then
+        for set_name, text in pairs(raw.configuration_set_descriptions) do
+            if type(set_name) == "string" and text ~= nil then
+                set_descriptions = set_descriptions or {}
+                set_descriptions[set_name] = text
+            end
         end
     end
 
@@ -339,6 +377,7 @@ function M.validate(raw, root)
         name = raw.name,
         projects = projects,
         configuration_sets = raw.configuration_sets,
+        configuration_set_descriptions = set_descriptions,
         profiles = profiles,
     }, nil
 end

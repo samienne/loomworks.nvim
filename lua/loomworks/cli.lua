@@ -3901,6 +3901,10 @@ local function config_to_data(cfg)
   if cfg._overrides and next(cfg._overrides) then data.overrides = vim.deepcopy(cfg._overrides) end
   if cfg.languages and #cfg.languages > 0 then data.languages = vim.deepcopy(cfg.languages) end
   if cfg.role then data.role = cfg.role end
+  -- The description is kept through the edit round-trip (spec §1.10); it is
+  -- changed only by `describe`.
+  local desc = cfg.description_for_file and cfg:description_for_file()
+  if desc ~= nil then data.description = desc end
   return data
 end
 
@@ -7086,6 +7090,20 @@ function M._pull_merge(target, source)
     end
   end
 
+  -- Configuration-set descriptions (spec §1.10) live in a sidecar but belong
+  -- to their set: a pulled set brings its source entry, or its absence;
+  -- target-only sets keep theirs.
+  if type(source.configuration_sets) == "table" then
+    local dst = {}
+    if type(merged.configuration_set_descriptions) == "table" then
+      for k, v in pairs(merged.configuration_set_descriptions) do dst[k] = v end
+    end
+    local sd = type(source.configuration_set_descriptions) == "table"
+      and source.configuration_set_descriptions or {}
+    for name in pairs(source.configuration_sets) do dst[name] = sd[name] end
+    merged.configuration_set_descriptions = next(dst) and dst or nil
+  end
+
   if type(source.intent) == "table" then
     local dst = {}
     if type(merged.intent) == "table" then
@@ -7118,9 +7136,16 @@ local function pull_classify(target, source, map)
   local s = (type(source[map]) == "table") and source[map] or {}
   local t = (type(target[map]) == "table") and target[map] or {}
   local added, updated, unchanged, kept = {}, {}, {}, {}
+  -- A set's sidecar description is part of the set (spec §1.10).
+  local function same_sidecar(k)
+    if map ~= "configuration_sets" then return true end
+    local sd = type(source.configuration_set_descriptions) == "table" and source.configuration_set_descriptions or {}
+    local td = type(target.configuration_set_descriptions) == "table" and target.configuration_set_descriptions or {}
+    return vim.deep_equal(sd[k], td[k])
+  end
   for k, sv in pairs(s) do
     if t[k] == nil then added[#added + 1] = k
-    elseif vim.deep_equal(sv, t[k]) then unchanged[#unchanged + 1] = k
+    elseif vim.deep_equal(sv, t[k]) and same_sidecar(k) then unchanged[#unchanged + 1] = k
     else updated[#updated + 1] = k end
   end
   for k in pairs(t) do if s[k] == nil then kept[#kept + 1] = k end end

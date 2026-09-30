@@ -2,6 +2,8 @@
 --- Profile represents a configuration_set × kit combination.
 --- ProfileProject represents a single project within a profile.
 
+local description_mod = require("loomworks.description")
+
 -- ========================== ProfileProject ==========================
 
 --- @class loomworks.ProfileProject
@@ -163,6 +165,10 @@ end
 --- @field _sdk_key string|nil cached SDK key for runtime queries
 --- @field _default_target_descriptor table|nil user.json default target for this profile
 --- @field _device_serial string|nil selected device serial for this profile
+--- @field description string|nil normalised description (spec §1.10), stored at
+---        `profiles.<key>.description`; never part of the key
+--- @field _description_invalid any a non-string `description` value, ignored but
+---        written back unchanged until the description is set or cleared
 --- @field _profile_variables table<string, table<string, string>>|nil per-machine
 ---        fill values for blank project variables (§1.3.1), keyed
 ---        project_key → (variable name → value). user.json only; never published.
@@ -266,6 +272,7 @@ end
 --- @param data loomworks.ProfileDef
 function Profile:_apply(data)
     self._configuration_set_name = data.configuration_set
+    self.description, self._description_invalid = description_mod.from_file(data.description)
     self._tool_keys = read_tool_keys(data.tools)
     self._sdk_key = data.sdk or nil
     -- SDK domain object resolved during _sync_profiles or set_sdk()
@@ -452,7 +459,46 @@ function Profile:to_config_def()
     if self._default_target_descriptor then
         def.default_target = self._default_target_descriptor
     end
+    local desc = self:description_for_file()
+    if desc ~= nil then def.description = desc end
     return def
+end
+
+--- The value to write as this profile's `description`: the description, or
+--- a preserved non-string value (spec §1.10), or nil (no key).
+--- @return any
+function Profile:description_for_file()
+    if self.description ~= nil then return self.description end
+    return self._description_invalid
+end
+
+--- Set or clear (nil / blank) the profile's description (spec §1.10). The
+--- key is unaffected. Editing is use: a `shared` profile is materialised
+--- into the working copy. Writes nothing when the normalised text is
+--- unchanged.
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function Profile:set_description(text)
+    local ws = self._workspace
+    if self._removed then
+        return nil, "profile '" .. tostring(self.key) .. "' not found"
+    end
+    local ok, value, err = description_mod.prepare(text)
+    if not ok then return nil, err end
+    if value == self.description and self._description_invalid == nil then
+        return false
+    end
+    local old, old_invalid, old_intent = self.description, self._description_invalid, self._intent
+    self:_mark_user_owned()
+    self.description, self._description_invalid = value, nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self.description, self._description_invalid, self._intent = old, old_invalid, old_intent
+        return nil, save_err
+    end
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
 end
 
 --- Get the ToolRef for a specific module type. Compatibility shim

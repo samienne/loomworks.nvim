@@ -2,6 +2,7 @@
 --- Provides query methods for running/deleting/cached state.
 
 local Configuration = require("loomworks.configuration")
+local description_mod = require("loomworks.description")
 
 --- @class loomworks.Project
 --- @field key string project key
@@ -12,6 +13,10 @@ local Configuration = require("loomworks.configuration")
 --- @field deploy? table<string, table|table[]> project-level deploy steps
 --- @field device? { stage?: string[], archive?: string[], env?: table<string,string>, working_dir?: string } remote-execution block (spec §18.9); stored in the module section of the files (`projects.<p>.<type>.device`), never in `type_config`
 --- @field variables? table<string, { type: string, default: string }> user-defined variable declarations
+--- @field description string|nil normalised description (spec §1.10); stored in the
+---        module section of the files (`projects.<p>.<type>.description`), never in `type_config`
+--- @field _description_invalid any a non-string `description` value, ignored but
+---        written back unchanged until the description is set or cleared
 --- @field configuration? string active configuration name
 --- @field _module? loomworks.Module direct reference to Module domain object
 --- @field _tool? loomworks.Tool direct reference to Tool domain object
@@ -78,6 +83,7 @@ function Project:_update(data)
     self.launch = data.launch
     self.deploy = data.deploy
     self.device = data.device
+    self.description, self._description_invalid = description_mod.from_file(data.description)
     self.variables = data.variables or nil
     self.configuration = data.configuration
     -- Read pre-resolved Module and Tool domain objects (set by _sync_projects)
@@ -360,6 +366,7 @@ function Project:_refresh_configurations()
     local tc = self:_type_config_for_module()
     local mod_info = mod.info(abs_path, tc)
     if mod_info then
+        Configuration.adopt_declared_descriptions(mod_info.configurations, tc.configurations)
         self.configurations = mod_info.configurations or {}
         self.preset_configurations = mod_info.preset_configurations or nil
     end
@@ -541,6 +548,7 @@ function Project:save_configuration(config_name, config_data)
             overrides = existing._overrides,
             inherits_names = existing.inherits_names,
             module_config = vim.deepcopy(existing.module_config),
+            description = existing:description_for_file(),
         }
         existing:_update(clean)
         existing:_mark_user_owned()  -- editing a shared cfg materializes it
@@ -668,6 +676,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     old_cfg_snapshot.overrides = vim.deepcopy(target_cfg._overrides)
     old_cfg_snapshot.languages = vim.deepcopy(target_cfg.languages)
     old_cfg_snapshot._derived = target_cfg._derived
+    old_cfg_snapshot.description = target_cfg:description_for_file()
     if target_cfg.inherits_names and #target_cfg.inherits_names > 0 then
         old_cfg_snapshot.inherits = vim.deepcopy(target_cfg.inherits_names)
     end
@@ -911,6 +920,44 @@ function Project:save_device(block)
         self.device = old
         return false, err
     end
+    return true
+end
+
+--- The value to write as the module section's `description`: the
+--- description, or a preserved non-string value (spec §1.10), or nil.
+--- @return any
+function Project:description_for_file()
+    if self.description ~= nil then return self.description end
+    return self._description_invalid
+end
+
+--- Set or clear (nil / blank) the project's description (spec §1.10) in the
+--- working copy. Editing is use: a `shared` project is materialised. Writes
+--- nothing when the normalised text is unchanged.
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function Project:set_description(text)
+    local ws = self._workspace
+    if self._removed or self.orphaned then
+        return nil, "project '" .. self.key .. "' not found"
+    end
+    local ok, value, err = description_mod.prepare(text)
+    if not ok then return nil, err end
+    if value == self.description and self._description_invalid == nil then
+        return false
+    end
+    local old, old_invalid = self.description, self._description_invalid
+    local old_intent, old_source = self._intent, self._source
+    self:_mark_user_owned()
+    self.description, self._description_invalid = value, nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self.description, self._description_invalid = old, old_invalid
+        self._intent, self._source = old_intent, old_source
+        return nil, save_err
+    end
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
     return true
 end
 
