@@ -15,6 +15,17 @@ local function contains(list, item)
     return false
 end
 
+--- The description summary of a launch-config target (ui §1.5, §1.16), as
+--- "  <summary>" fitted to 40 columns; "" for a build target or none.
+--- @param lt loomworks.LaunchTarget
+--- @return string
+local function launch_target_summary(lt)
+    local project, name = lt._project, lt._launch_name
+    local cfg = project and name and project.launch and project.launch[name]
+    if type(cfg) ~= "table" then return "" end
+    return helpers.picker_summary(cfg.description)
+end
+
 --- Render profile details when expanded.
 --- @param tree loomworks.Tree
 --- @param profile loomworks.Profile
@@ -241,6 +252,7 @@ local function render_profile_details(tree, profile, lw)
     local target_display, target_hl
     if launch_target and launch_target:is_valid() then
         target_display = "Target: " .. launch_target:display_name()
+            .. launch_target_summary(launch_target)
         target_hl = "LoomworksTarget"
     elseif launch_target then
         target_display = "Target: " .. launch_target:display_name() .. " (stale)"
