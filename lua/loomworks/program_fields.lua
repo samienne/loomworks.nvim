@@ -328,6 +328,19 @@ function M.regraft(raw, ignored)
     return raw
 end
 
+--- For an ignored launch, its description's summary (spec §17.6), quoted and
+--- rendered inert (§17.11), so the user can tell which launch it is. "" for
+--- anything else or a launch without a description.
+--- @param e table ignored entry
+--- @return string
+local function launch_summary(e)
+    if e.kind ~= "launch" or type(e.value) ~= "table" then return "" end
+    local d = require("loomworks.description")
+    local sum = d.summary(d.normalize(e.value.description))
+    if not sum then return "" end
+    return " \"" .. d.fit(d.inert_line(sum), 60) .. "\""
+end
+
 --- Diagnostics for ignored shared values that the working copy does not supply.
 --- @param ignored table[]|nil
 --- @param merged table|nil merged config (internal shape) the model was built from
@@ -340,6 +353,7 @@ function M.diagnostics(ignored, merged)
                 severity = "warn",
                 source = e.project and ("Project/" .. e.project) or "Workspace",
                 message = "loomworks.json sets " .. e.label .. " (" .. e.detail .. ")"
+                    .. launch_summary(e)
                     .. " — ignored: program settings are used only from your local config (lw help trust)",
                 target_fold_key = e.project and ("project:" .. e.project) or nil,
             }
