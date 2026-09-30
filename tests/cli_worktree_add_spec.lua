@@ -78,7 +78,8 @@ local git_ok = vim.fn.executable("git") == 1
 
 --- Run a git command in `cwd`, asserting success. Setup-only.
 local function git(cwd, ...)
-    local cmd = { "git", "-C", cwd }
+    -- Isolated from the user's global config: no commit signing, no hooks.
+    local cmd = { "git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "-C", cwd }
     for _, a in ipairs({ ... }) do cmd[#cmd + 1] = a end
     local r = vim.system(cmd, { text = true }):wait()
     assert(r.code == 0, "git failed: " .. table.concat(cmd, " ") .. "\n" .. (r.stderr or ""))
@@ -336,5 +337,83 @@ describe("cli.cmd_worktree_add (real git worktrees)", function()
         -- No .gitignore was authored in main or the new worktree.
         assert.is_nil(uv.fs_stat(main .. "/.gitignore"))
         assert.is_nil(uv.fs_stat(main .. "/.worktrees/gi/.gitignore"))
+    end)
+end)
+
+-- ---------------------------------------------------------------------------
+-- A slow git is not an absent git. The git-REQUIRED commands (`lw worktree`,
+-- `lw worktree add`, `lw pull`) used the status hint's 1.5 s best-effort probe,
+-- so on a loaded machine (a parallel test run, an EDR-scanned Windows box) a
+-- git that answered in 2 s was reported as "git is not available" / "not in a
+-- git repository", or its toplevel silently fell back to the enclosing
+-- workspace. The real git binary runs here; only the matching calls' results
+-- are held back past the hint budget.
+-- ---------------------------------------------------------------------------
+
+describe("git-required commands tolerate a slow git", function()
+    local SLOW_MS = 2500 -- past the 1.5 s status-hint budget
+    local exe = require("loomworks.exe")
+    local base, real_system
+
+    --- Delay the completion of every git call whose argv contains `needle`.
+    local function slow_git(needle)
+        exe.system = function(cmd, opts, on_exit)
+            local slow = on_exit and table.concat(cmd, " "):find(needle, 1, true)
+            if not slow then return real_system(cmd, opts, on_exit) end
+            return real_system(cmd, opts, function(r)
+                local t = uv.new_timer()
+                t:start(SLOW_MS, 0, function() t:close(); on_exit(r) end)
+            end)
+        end
+    end
+
+    before_each(function()
+        base = tmpdir()
+        real_system = exe.system
+    end)
+    after_each(function()
+        exe.system = real_system
+        vim.fn.delete(base, "rf")
+    end)
+
+    it("worktree add: a slow `git --version` is not 'git is not available'", function()
+        if not git_ok then pending("git not available"); return end
+        local main = make_main(base)
+        slow_git("--version")
+        local res = capture(function()
+            return cli.cmd_worktree_add({ "worktree", "add", "slowver" }, { dir = main, color = false })
+        end)
+        exe.system = real_system
+        assert.is_true(res.ok, res.stderr)
+        assert.equals(0, res.ret)
+        assert.is_not_nil(uv.fs_stat(main .. "/.worktrees/slowver"))
+    end)
+
+    it("worktree list: a slow toplevel probe is not 'not in a git repository'", function()
+        if not git_ok then pending("git not available"); return end
+        local main = make_main(base)
+        slow_git("--show-toplevel")
+        local res = capture(function()
+            return cli.cmd_worktree({ "worktree" }, { dir = main, color = false })
+        end)
+        exe.system = real_system
+        assert.is_true(res.ok, res.stderr)
+        assert.equals(0, res.ret)
+        assert.is_truthy(res.stdout:find("1 worktree", 1, true))
+    end)
+
+    it("pull: a slow toplevel probe still targets the worktree, not the enclosing main", function()
+        if not git_ok then pending("git not available"); return end
+        local main = make_main(base)
+        local path = main .. "/.worktrees/slowpull"
+        git(main, "worktree", "add", "-q", "-b", "slowpull", path)
+        slow_git("--show-toplevel")
+        local plan, err = cli._plan_pull({ cwd = path, source = main })
+        exe.system = real_system
+        assert.is_not_nil(plan, err)
+        -- Realpath both: on Windows CI the temp dir can be the 8.3 short form
+        -- (RUNNER~1) while git reports the long one.
+        local function canon(p) return ((uv.fs_realpath(p) or p):gsub("\\", "/"):lower()) end
+        assert.equals(canon(path), canon(plan.target_root))
     end)
 end)

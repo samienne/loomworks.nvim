@@ -6364,7 +6364,7 @@ M._git_base_cmd = git_base_cmd
 --- that runs long past the timeout all collapse to nil. Returns trimmed stdout
 --- only on a clean (code 0) run. `cwd` nil runs git unanchored (for `--version`).
 local GIT_HINT_TIMEOUT_MS = 1500
-local function git_query(cwd, args)
+local function git_query(cwd, args, timeout_ms)
   local cmd = git_base_cmd()
   if cwd then cmd[#cmd + 1] = "-C"; cmd[#cmd + 1] = cwd end
   for _, a in ipairs(args) do cmd[#cmd + 1] = a end
@@ -6373,7 +6373,7 @@ local function git_query(cwd, args)
     res = r; done = true
   end)
   if not ok or not proc then return nil end
-  vim.wait(GIT_HINT_TIMEOUT_MS, function() return done end, 20)
+  vim.wait(timeout_ms or GIT_HINT_TIMEOUT_MS, function() return done end, 20)
   if not done then
     pcall(function() proc:kill(9) end)
     if proc.pid then pcall(uv.kill, proc.pid, 9) end
@@ -6381,6 +6381,19 @@ local function git_query(cwd, args)
   end
   if not res or res.code ~= 0 then return nil end
   return ((res.stdout or ""):gsub("%s+$", ""))
+end
+
+-- Budget for the read-only probes of the git-REQUIRED commands (`lw worktree`,
+-- `lw worktree add`, `lw pull`). Those commands cannot degrade: a probe that
+-- times out is reported as "git is not available" / "not in a git repository",
+-- or silently resolves the wrong checkout. The status hint's 1.5 s budget is
+-- right for a convenience line but routinely too short for a real answer on a
+-- loaded machine, so these use a generous one (30 s) — still bounded, never a
+-- hang. git_query with that budget; same `(cwd, args) -> stdout|nil` contract,
+-- so it is interchangeable with an injected test runner. (A module field, not a
+-- local: this chunk is at Lua's 200-local limit.)
+function M._git_query_required(cwd, args)
+  return git_query(cwd, args, 30000)
 end
 
 -- Timeout for the one MUTATING git call the CLI makes (`git worktree add`, via
@@ -7704,7 +7717,7 @@ end
 function M._plan_pull(opts)
   opts = opts or {}
   local cwd = opts.cwd or user_cwd()
-  local git = opts.git or git_query
+  local git = opts.git or M._git_query_required
   local user = require("loomworks.user")
 
   -- TARGET = the current checkout's root. Prefer the git worktree top (it
@@ -7932,7 +7945,7 @@ function M.cmd_worktree(args, opts)
     die("unknown worktree subcommand '" .. tostring(sub) ..
       "' — usage: lw worktree [list|add]")
   end
-  local git = opts.git or git_query
+  local git = opts.git or M._git_query_required
   local stat = opts.stat or uv.fs_stat
   local dir = opts.dir or user_cwd()
   local color = opts.color
@@ -8001,7 +8014,7 @@ end
 --- @param opts? table injectable `{ dir, git, git_exec, color }` for tests
 function M.cmd_worktree_add(args, opts)
   opts = opts or {}
-  local git = opts.git or git_query
+  local git = opts.git or M._git_query_required
   local git_run = opts.git_exec or git_exec
   local dir = opts.dir or user_cwd()
   local color = opts.color

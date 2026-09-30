@@ -4,8 +4,13 @@ INIT_FILE := tests/minimal_init.lua
 .PHONY: test test-file test-standalone test-all install dist
 
 ## Run all tests (nvim/busted suite)
+## Plenary starts every spec file at once and waits TEST_TIMEOUT ms for ALL of
+## them together (its default, 50 s, is a whole-suite budget, not per file). A
+## file still running at the deadline prints nothing and fails the run, so the
+## budget must cover the slowest file on a loaded machine.
+TEST_TIMEOUT := 600000
 test:
-	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedDirectory $(TESTS_DIR)/ {minimal_init = '$(INIT_FILE)'}"
+	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedDirectory $(TESTS_DIR)/ {minimal_init = '$(INIT_FILE)', timeout = $(TEST_TIMEOUT)}"
 
 ## Run a single test file: make test-file FILE=tests/config_spec.lua
 test-file:
