@@ -6905,11 +6905,11 @@ function M.cmd_status(root, opts)
   for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
   table.sort(sets, function(a, b) return a.name < b.name end)
   -- Name column sized to content and capped to the terminal; the mapping list
-  -- keeps truncating but its cap widens to fill whatever width remains (≥ 56).
+  -- takes the width that remains (never below 16), so the row fits.
   local cs_longest = 0
   for _, cs in ipairs(sets) do cs_longest = math.max(cs_longest, #tostring(cs.name)) end
   local cs_name_w = fit_column(cs_longest, tw, 2 + 1 + 56 + 4, 8)
-  local cs_map_w = math.max(56, tw - 2 - cs_name_w - 1 - 4)
+  local cs_map_w = math.max(16, tw - 2 - cs_name_w - 1 - 4)
   -- Summary column before the open-ended mappings, which take the truncation
   -- (spec §16.35).
   local cs_descs = {}
@@ -6930,20 +6930,27 @@ function M.cmd_status(root, opts)
   local projs = {}
   for _, p in ipairs(ws._projects or {}) do projs[#projs + 1] = p end
   table.sort(projs, function(a, b) return a.key < b.key end)
-  -- Name column sized to content and capped to the terminal; the config list
-  -- keeps truncating but its cap widens to fill whatever width remains (≥ 50).
-  -- Row layout: "  " + name + " " + type(%-6s) + " " + cfgstr.
-  local pj_longest = 0
-  for _, p in ipairs(projs) do pj_longest = math.max(pj_longest, #tostring(p.key)) end
-  local pj_name_w = fit_column(pj_longest, tw, 2 + 1 + 6 + 1 + 50 + 4, 8)
-  local pj_cfg_w = math.max(50, tw - 2 - pj_name_w - 1 - 6 - 1 - 4)
+  -- Name column sized to content and capped to the terminal; the type column
+  -- is as wide as the longest type shown; the config list takes the width
+  -- that remains (never below 16), so the row fits.
+  -- Row layout: "  " + name + " " + type + " " + cfgstr.
+  local function ptype(p) return tostring(p.type or (p._module and p._module.id) or "?") end
+  local pj_longest, pj_type_w = 0, 1
+  for _, p in ipairs(projs) do
+    pj_longest = math.max(pj_longest, #tostring(p.key))
+    pj_type_w = math.max(pj_type_w, #ptype(p))
+  end
+  local pj_name_w = fit_column(pj_longest, tw, 2 + 1 + pj_type_w + 1 + 50 + 4, 8)
+  local pj_cfg_w = math.max(16, tw - 2 - pj_name_w - 1 - pj_type_w - 1 - 4)
   -- Summary column before the open-ended configuration list (spec §16.35).
   local pj_descs = {}
   for i, p in ipairs(projs) do pj_descs[i] = p.description end
-  local pj_sum_w = M._summary_column(pj_descs, tw, 2 + pj_name_w + 1 + 6)
-  if pj_sum_w > 0 then pj_cfg_w = math.max(16, tw - 2 - pj_name_w - 1 - 6 - 1 - pj_sum_w - 3 - 4) end
+  local pj_sum_w = M._summary_column(pj_descs, tw, 2 + pj_name_w + 1 + pj_type_w)
+  if pj_sum_w > 0 then
+    pj_cfg_w = math.max(16, tw - 2 - pj_name_w - 1 - pj_type_w - 1 - pj_sum_w - 3 - 4)
+  end
   status_section(pal, "Projects", projs, MAX, function(p)
-    local t = p.type or (p._module and p._module.id) or "?"
+    local t = ptype(p)
     local names = {}
     for _, c in ipairs(p:get_configurations()) do names[#names + 1] = c.name end
     table.sort(names)
@@ -6951,7 +6958,7 @@ function M.cmd_status(root, opts)
     local head = { more = math.max(0, #names - 3) }
     for i = 1, math.min(#names, 3) do head[#head + 1] = names[i] end
     local cfgstr = (#names == 0) and "(no configs)" or head
-    local prefix = string.format("  %-" .. pj_name_w .. "s %-6s", trunc(p.key, pj_name_w), t)
+    local prefix = string.format("  %-" .. pj_name_w .. "s %-" .. pj_type_w .. "s", trunc(p.key, pj_name_w), t)
     return M._row_with_summary(prefix, p.description, pj_sum_w, cfgstr, pj_cfg_w, pal)
       .. inline_markers(pal, grouped.by_project[p.key])
   end, "lw project list", "add a project · lw project add <path> [type]")

@@ -353,6 +353,53 @@ describe("lw describe", function()
     vim.env.COLUMNS = saved
   end)
 
+  it("lw status project and set rows fit 60/80 columns with a typescript project", function()
+    local saved = vim.env.COLUMNS
+    cli._test_stdout_tty = true
+    for _, described in ipairs({ false, true }) do
+      local root = make_ws({ projects = {
+        App = { typescript = vim.empty_dict() },
+        LumeSceneRenderer = { typescript = vim.empty_dict() },
+      } })
+      vim.fn.mkdir(root .. "/LumeSceneRenderer", "p")
+      for _, proj in ipairs({ "App", "LumeSceneRenderer" }) do
+        for _, c in ipairs({ "OhosReleaseWithAddressSanitizer", "OhosDebugWithCoverage", "RelWithDebInfo" }) do
+          capture(function() cli.cmd_configuration("add", root, proj, c) end)
+        end
+      end
+      capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Ohos",
+        "App=OhosReleaseWithAddressSanitizer", "LumeSceneRenderer=OhosDebugWithCoverage" }) end)
+      -- A single entry wider than the row: the list must still fit.
+      local long = "AddressSanitizerReleaseWithCoverageInstrumentation"
+      capture(function() cli.cmd_configuration("add", root, "LumeSceneRenderer", long) end)
+      capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Asan",
+        "LumeSceneRenderer=" .. long }) end)
+      if described then
+        describe_cmd(root, "project", "LumeSceneRenderer", "Scene renderer: scene API, import pipeline and ECS glue")
+        describe_cmd(root, "configset", "Dev", "Development builds of every project in the tree")
+      end
+      for _, w in ipairs({ 60, 80 }) do
+        vim.env.COLUMNS = tostring(w)
+        local out = capture(function() return cli.cmd_status(root, {}) end).stdout
+        out = out:gsub("\27%[[%d;]*m", "") -- colour on a terminal
+        local proj_line = out:match("\n(  App +typescript[^\n]*)")
+        assert.is_truthy(proj_line, out) -- the type is shown whole
+        local section, checked = false, 0
+        for l in (out .. "\n"):gmatch("([^\n]*)\n") do
+          if l:find("^Configuration sets") or l:find("^Projects") then section = true
+          elseif l == "" then section = false
+          elseif section then
+            checked = checked + 1
+            assert.is_true(vim.fn.strdisplaywidth(l) <= w,
+              w .. " cols (described=" .. tostring(described) .. "): " .. l)
+          end
+        end
+        assert.is_true(checked >= 5, out)
+      end
+    end
+    vim.env.COLUMNS = saved
+  end)
+
   it("lw status shows each item's summary", function()
     local root = make_ws()
     describe_cmd(root, "configset", "Dev", "Set summary")
