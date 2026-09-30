@@ -71,6 +71,33 @@ describe("migrate: variant-inherits", function()
             "the declared variant must be gone from the persisted shape")
     end)
 
+    it("keeps every other declared field through the rewrite", function()
+        local ws, project = make_project({
+            Release = {
+                variant = "Release", options = { X = "1" },
+                env = { FOO = "bar" }, overrides = { gcc = { out = "z" } },
+                variables = { out = "y" }, languages = { "c" },
+                toolchain = "tc.cmake", myfield = "m", description = "Ships",
+            },
+        })
+        project.variables = { out = { type = "string" } }
+        local applied, err = migrate.apply(migrate.plan(ws))
+        assert.is_nil(err)
+        assert.equals(1, applied)
+
+        local entry = project:get_configuration("Release"):serialize_user_override()
+        assert.is_nil(entry.variant)
+        assert.equals("variant:Release", entry.inherits)
+        assert.same({ X = "1" }, entry.options)
+        assert.same({ FOO = "bar" }, entry.env)
+        assert.same({ gcc = { out = "z" } }, entry.overrides)
+        assert.same({ out = "y" }, entry.variables)
+        assert.same({ "c" }, entry.languages)
+        assert.equals("tc.cmake", entry.toolchain)
+        assert.equals("m", entry.myfield)
+        assert.equals("Ships", entry.description)
+    end)
+
     it("preserves meaning: the new base supplies the same variant", function()
         -- The module re-derives the concrete variant from the base on refresh
         -- (no module is wired in this harness, so assert the relationship

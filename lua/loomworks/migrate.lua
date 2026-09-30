@@ -58,21 +58,9 @@ end
 --- @param cfg loomworks.Configuration
 --- @return table
 local function config_data(cfg)
-    local data = {}
-    for k, v in pairs(cfg.module_config or {}) do
-        if not (cfg._derived and cfg._derived[k]) then data[k] = v end
-    end
-    if cfg.inherits_names and #cfg.inherits_names > 0 then
-        data.inherits = vim.deepcopy(cfg.inherits_names)
-    end
-    if cfg.options and next(cfg.options) then data.options = vim.deepcopy(cfg.options) end
-    if cfg.variables and next(cfg.variables) then data.variables = vim.deepcopy(cfg.variables) end
-    if cfg.languages and #cfg.languages > 0 then data.languages = vim.deepcopy(cfg.languages) end
-    if cfg.role then data.role = cfg.role end
-    -- Keep the description through the rewrite (spec §1.10).
-    local desc = cfg.description_for_file and cfg:description_for_file()
-    if desc ~= nil then data.description = desc end
-    return data
+    -- Every declared field (env, overrides, description, …) survives the
+    -- rewrite; derived values are left out (Configuration:declared_data).
+    return cfg:declared_data()
 end
 
 --- A configuration becomes concrete by inheriting a base that provides a
