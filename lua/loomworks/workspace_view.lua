@@ -1459,10 +1459,16 @@ function M.execute_save_launch_config(project, old_name, new_name, data)
     -- survive; replace only the editor's fields, omitting empty ones.
     local existing = old_name and project.launch and project.launch[old_name]
     local config = type(existing) == "table" and vim.deepcopy(existing) or {}
-    config.command = data.command
-    -- A command makes this a command-type launch: it no longer runs a target
-    -- (as `lw launch set --command`).
-    if data.command and data.command ~= "" then config.target = nil end
+    -- An empty command field means "no command": the key is absent, never
+    -- `""` (a target-backed launch carries only `target`). A command makes
+    -- this a command-type launch: it no longer runs a target (as
+    -- `lw launch set --command`).
+    if data.command and data.command ~= "" then
+        config.command = data.command
+        config.target = nil
+    else
+        config.command = nil
+    end
     config.args = (data.args and #data.args > 0) and data.args or nil
     config.working_dir = (data.working_dir and data.working_dir ~= "")
         and data.working_dir or nil

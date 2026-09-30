@@ -282,3 +282,22 @@ describe("configuration save rollback", function()
     assert.same({ "variant:Debug" }, dev.inherits_names)
   end)
 end)
+
+describe("launch save of a target-backed launch", function()
+  it("an empty command field stores no command; empty fields are absent", function()
+    local root = make_ws()
+    local ws = load(root)
+    local project = find_project(ws, "App")
+    assert(project:save_launch_config("tgt", { target = "app", args = { "-v" } }))
+    ws = load(root)
+    project = find_project(ws, "App")
+    local ctx = wv.compute_edit_launch_context(project, "tgt")
+    local ok, err = wv.execute_save_launch_config(project, "tgt", "tgt", {
+      command = ctx.command, args = {}, working_dir = "", env = {},
+      deploy = {}, debug = {},
+    })
+    assert.is_true(ok, err)
+    local l = read_user(root).projects.App.launch.tgt
+    assert.same({ target = "app" }, l)
+  end)
+end)
