@@ -84,7 +84,8 @@ M.COMMANDS = {
   publish = NONE,
   status = spec({ flags = { "--check", "--cache-stats" } }),
   -- `--force` / `--refresh` predate health re-checking everything; kept as no-ops.
-  health = spec({ flags = { "--json", "--verbose", "-v", "--force", "--refresh" } }),
+  -- Positional words are health areas (§16.36).
+  health = spec({ flags = { "--json", "--verbose", "-v", "--all", "--force", "--refresh" } }),
   init = spec({ valued = { "--name" } }),
   tools = spec({ flags = { "--cached" } }),
   trust = spec({ flags = { "-y", "--yes", "--discard" } }),
@@ -167,15 +168,20 @@ M.COMMANDS = {
       list = NONE,
       -- `<project> <name> <command> [args…]` / `--from-target <t> [args…]`:
       -- everything after the command (or the target) is the program's.
-      add = spec({ valued = { "--working-dir", "--cwd", "--env", "--from-target" },
-        frees = { "--from-target" }, free_after = 3 }),
+      add = spec({ valued = { "--working-dir", "--cwd", "--env", "--from-target", "--description" },
+        eq = { "--description=" }, frees = { "--from-target" }, free_after = 3 }),
       -- Every token `set` does not know becomes a program argument (its
       -- documented grammar), so there is nothing to refuse.
       set = PERMISSIVE,
-      show = LAUNCH_ADDR,
+      show = spec({ flags = { "--json" }, valued = { "--project", "--launch" } }),
       remove = LAUNCH_ADDR,
+      rename = NONE,
+      -- `<project> <name>` or `--project`/`--launch`, then the describe sources.
+      describe = spec({ flags = { "-e", "--edit", "--clear", "--json" },
+        valued = { "-m", "--message", "-F", "--file", "--project", "--launch" },
+        eq = { "-m=", "--message=" } }),
     },
-    aliases = { create = "add", edit = "set", rm = "remove" },
+    aliases = { create = "add", edit = "set", rm = "remove", mv = "rename" },
     default = NONE,
   },
   target = {
