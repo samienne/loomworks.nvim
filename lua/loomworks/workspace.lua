@@ -4940,7 +4940,8 @@ function Workspace:is_project_modified(project)
             local base = baseline_launch and baseline_launch[name]
             -- For now, all launch configs from published projects are published
             if project._intent ~= "local" then
-                if not vim.deep_equal(cur, base) then return true end
+                -- Descriptions compare normalised (spec §2.4 "Descriptions").
+                if not vim.deep_equal(with_norm_desc(cur), with_norm_desc(base)) then return true end
             end
         end
     end

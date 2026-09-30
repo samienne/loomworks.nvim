@@ -1059,6 +1059,134 @@ function Project:save_deploy(deploy)
     return true
 end
 
+--- Is `name` a valid NEW launch configuration name (spec §8.7)? Non-empty,
+--- no leading/trailing whitespace, no control character, no leading `-` (it
+--- would read as a command-line flag). `:` is allowed. Existing names that
+--- break the rule keep working; the rule applies when a name is created.
+--- @param name any
+--- @return boolean ok, string|nil err
+function Project.validate_launch_name(name)
+    if type(name) ~= "string" or name == "" then
+        return false, "a launch name cannot be empty"
+    end
+    if name:match("^%s") or name:match("%s$") then
+        return false, "a launch name cannot start or end with whitespace"
+    end
+    if name:find("[%z\1-\31\127]") then
+        return false, "a launch name cannot contain control characters"
+    end
+    if name:sub(1, 1) == "-" then
+        return false, "a launch name cannot start with '-' (it would read as a flag)"
+    end
+    return true, nil
+end
+
+--- Set or clear a launch configuration's description (spec §1.10, §8.7): the
+--- `description` key of the launch's own table, normalised; an empty text
+--- removes it. Implicit cascade on use (the project is materialised).
+--- @param launch_name string
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function Project:set_launch_description(launch_name, text)
+    local ws = self._workspace
+    local cfg = self.launch and self.launch[launch_name]
+    if type(cfg) ~= "table" then
+        return nil, "no launch config '" .. tostring(launch_name) .. "' on project '" .. self.key .. "'"
+    end
+    local d = require("loomworks.description")
+    local ok, value, err = d.prepare(text)
+    if not ok then return nil, err end
+    if value == cfg.description then return false end
+    local old = cfg.description
+    local old_intent, old_source = self._intent, self._source
+    self:_mark_user_owned()
+    cfg.description = value
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        cfg.description = old
+        self._intent, self._source = old_intent, old_source
+        return nil, save_err
+    end
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
+end
+
+--- Rename a launch configuration in place (spec §8.7): the whole table moves
+--- (every field, known or not), every profile's default-target descriptor
+--- `{ project = <this>, launch = old }` follows (other descriptor fields kept),
+--- and the per-unit `launch:<name>` target entries are re-keyed. Atomic: on a
+--- failed save everything is restored.
+--- @param old_name string
+--- @param new_name string
+--- @return boolean|nil changed true when renamed, false when unchanged, nil on refusal
+--- @return string|nil err
+--- @return string[]|nil profiles keys of the profiles whose default target followed
+function Project:rename_launch_config(old_name, new_name)
+    local ws = self._workspace
+    if self._removed then
+        return nil, "project '" .. self.key .. "' has been removed"
+    end
+    local cfg = self.launch and self.launch[old_name]
+    if type(cfg) ~= "table" then
+        return nil, "no launch config '" .. tostring(old_name) .. "' on project '" .. self.key .. "'"
+    end
+    if new_name == old_name then return false, nil, {} end
+    local valid, verr = Project.validate_launch_name(new_name)
+    if not valid then return nil, "invalid launch name: " .. verr end
+    if self.launch[new_name] ~= nil then
+        return nil, "launch config '" .. new_name .. "' already exists on project '" .. self.key .. "'"
+    end
+
+    local old_intent, old_source = self._intent, self._source
+    self:_mark_user_owned()
+    self.launch[new_name] = cfg
+    self.launch[old_name] = nil
+
+    -- Default targets that name this launch, in every profile.
+    local moved = {}
+    for _, profile in pairs(ws._profiles or {}) do
+        local d = profile._default_target_descriptor
+        if type(d) == "table" and d.project == self.key and d.launch == old_name then
+            d.launch = new_name
+            moved[#moved + 1] = profile
+        end
+    end
+    -- Runtime launch entries in the config units' target lists.
+    local rekeyed = {}
+    for _, unit in pairs(ws._config_units or {}) do
+        if unit._project == self and type(unit.targets) == "table" then
+            local t = unit.targets["launch:" .. old_name]
+            if t then
+                unit.targets["launch:" .. old_name] = nil
+                unit.targets["launch:" .. new_name] = t
+                if t.id ~= nil then t.id = "launch:" .. new_name end
+                rekeyed[#rekeyed + 1] = { unit = unit, t = t }
+            end
+        end
+    end
+
+    local ok, err = ws:_save_user()
+    if not ok then
+        self.launch[old_name] = cfg
+        self.launch[new_name] = nil
+        for _, profile in ipairs(moved) do profile._default_target_descriptor.launch = old_name end
+        for _, r in ipairs(rekeyed) do
+            r.unit.targets["launch:" .. new_name] = nil
+            r.unit.targets["launch:" .. old_name] = r.t
+            if r.t.id ~= nil then r.t.id = "launch:" .. old_name end
+        end
+        self._intent, self._source = old_intent, old_source
+        return nil, err
+    end
+
+    local keys = {}
+    for _, profile in ipairs(moved) do keys[#keys + 1] = profile.key end
+    table.sort(keys)
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true, nil, keys
+end
+
 --- Delete a launch configuration from this project.
 --- @param launch_name string
 --- @return boolean ok, string|nil err
