@@ -9,6 +9,9 @@
 local variables = require("loomworks.variables")
 local cpp = require("loomworks.cpp_compilers")
 local cmake = require("loomworks.modules.cmake")
+-- Real private root: configure builders mkdir the file-api query dir under
+-- it (a fake absolute root is a real, shared dir on Windows; see helpers).
+local ROOT = require("tests.helpers").temp_root()
 local h = require("tests.helpers")
 
 -- ---------------------------------------------------------------------------
@@ -237,11 +240,11 @@ describe("cmake option expansion with compiler overrides", function()
         return {
             name = "App",
             path = "App",
-            workspace_root = "/fake/root",
+            workspace_root = ROOT,
             configurations = { Debug = { variant = "Debug", generator = "Ninja" } },
             type_config = { options = { CMAKE_CXX_FLAGS = "${warn}" } },
             tool_data = { generator = "Ninja" },
-            cached_build_dir = "/fake/root/App/build",
+            cached_build_dir = ROOT .. "/App/build",
             resolved_variables = resolved_variables,
         }
     end

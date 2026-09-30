@@ -956,4 +956,26 @@ function M.cs_mapping(cs, project_key)
     end
 end
 
+--- A fresh, private, real workspace root for tests whose code under test
+--- touches the filesystem (module task builders `mkdir -p` the build dir and
+--- the cmake file-api query dir, and write meson's native file).
+---
+--- Never use a fake absolute root (`/root`, `/fake/root`, `/work`) for those:
+--- on Windows it resolves to `<drive>:\root...`, a real directory SHARED by
+--- every spec process of the parallel run (and left behind afterwards).
+--- Concurrent `vim.fn.mkdir(p, "p")` of the same fresh path is not atomic in
+--- Neovim (exists-check, then create), so a racing process fails with
+--- `E739: Cannot create directory ...: file already exists`.
+---
+--- Canonicalised with fs_realpath (Windows CI's temp dir is an 8.3 short path,
+--- `RUNNER~1`) and forward-slashed, so string assertions built from it are
+--- stable.
+--- @return string root
+function M.temp_root()
+    local uv = vim.uv or vim.loop
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    return ((uv.fs_realpath(root) or root):gsub("\\", "/"))
+end
+
 return M

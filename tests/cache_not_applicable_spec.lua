@@ -8,6 +8,9 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 
 local cmake = require("loomworks.modules.cmake")
+-- Real private root: configure builders mkdir the file-api query dir under
+-- it (a fake absolute root is a real, shared dir on Windows; see helpers).
+local ROOT = require("tests.helpers").temp_root()
 local cpp = require("loomworks.cpp_compilers")
 local h = require("tests.helpers")
 
@@ -86,10 +89,10 @@ describe("cmake tasks under a Visual Studio generator", function()
 
     local function vs_ctx(extra)
         local c = {
-            name = "App", path = "App", workspace_root = "/fake/root",
+            name = "App", path = "App", workspace_root = ROOT,
             configurations = { Debug = { variant = "Debug" } },
             type_config = {}, tool_data = VS,
-            cached_build_dir = "/fake/root/App/build",
+            cached_build_dir = ROOT .. "/App/build",
             compiler_cache = { tool = "sccache", path = "/x/sccache" },
         }
         for k, v in pairs(extra or {}) do c[k] = v end

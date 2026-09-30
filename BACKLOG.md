@@ -5,6 +5,43 @@ they don't get lost.
 
 ---
 
+## Variable rename: what should it cascade to?
+
+Found while fixing PR #75. Renaming a variable in the editor's variable editor
+is implemented as delete-old + add-new. Deleting the old variable removes every
+configuration's `variables.<old>` override, so those values are lost. The
+compiler-family `overrides.<family>.<old>` entries are *not* touched: they stay
+behind, pointing at a name that is no longer declared.
+
+So a rename silently drops per-configuration values and leaves dangling family
+overrides. Decide what a rename means (spec question, §1.3.1):
+- **Cascade**: rename `variables.<old>` in every configuration and
+  `overrides.<family>.<old>` in every family block along with the declaration
+  (like `rename_project_configuration` does for configurations).
+- **Refuse**: reject a rename while any override references the old name, and
+  say which ones.
+
+Either way, a plain delete should then also decide what happens to
+`overrides.<family>.<name>` (remove, or refuse), so no path leaves an override
+for an undeclared variable.
+
+---
+
+## `lw status` on narrow terminals
+
+At 60–80 columns the project rows of `lw status` have room for only about one
+configuration name: the description summary column takes up to 36 columns
+(§16.35) before the configuration list gets what remains. PR #74 stops names
+being cut mid-way, but does not win back any width.
+
+Options (needs a §16.35 spec change):
+- **A smaller summary cap on project rows** (or a cap that scales with the
+  terminal width), so the configuration list keeps a usable share.
+- **A continuation-line rule**: when the list does not fit, it wraps to an
+  indented continuation line instead of being cut with `…`.
+
+---
+
 ## Show unpublished changes in the CLI
 
 Found in the v0.1.39-beta.3 field test of descriptions. After `lw publish`,
