@@ -248,7 +248,8 @@ installation, pin management) keep their own parsing.
 **Host-level output is ASCII.** Everything printed before system Lua is loaded
 — the repo launchers (§16.22), the host-level commands (version reporting,
 self-update, installation, pin management), redirect and provisioning notices
-(§16.23) — uses ASCII only (e.g. `-`, `->`, `...`, `|`), because it runs before
+(§16.23), the "what's new" lines self-update prints from the release notes
+(§16.32, §16.37) — uses ASCII only (e.g. `-`, `->`, `...`, `|`), because it runs before
 the runner can set the console's output encoding and it is the output most
 often captured into CI logs and consoles with a legacy code page. Data it
 relays (paths, versions) is printed as-is. Output produced by system Lua, which
@@ -479,6 +480,12 @@ than fail unpredictably — and MUST report that a host update is required.
 Within its compatible range a single host build executes any bundle, so
 behavioral updates ship as bundles without replacing the host. Changes to the
 host itself reach an installed host through host self-update (§16.32).
+
+Besides system Lua, a bundle carries its release's **release notes** (§16.37)
+as a data file inside the signed archive; the manifest's hash over the archive
+covers them, so they need no signature of their own. A bundle's features that
+rely on the host — rather than on system Lua alone — degrade on an older host
+within the compatible range instead of failing; release notes rely on none.
 
 ### 16.15 Host acquisition integrity
 
@@ -1304,7 +1311,11 @@ user also edits. With `--pin-only` only the pin's attribute rule applies (above)
   changes`; an unchanged pin in a run that changed something else reads
   `lw.pin kept at <version>` — the same words whichever host runs it;
 - a moved pin reports `lw.pin: <old> -> <new>`, a first pin `wrote lw.pin:
-  version <version>`;
+  version <version>`; a pin moved to a **newer** release that carries release
+  notes (§16.37) adds one line naming the command, in the invoked form, that
+  shows what changed across the move (`what's new: ./lw.sh release-notes
+  --since <old>`) — a pointer, not the notes: the host has not acquired the new
+  bundle, and pin management never fetches more than it needs;
 - the pin line always states that the release's signed hash list was verified,
   as one flat clause (`; hashes from the signed SHA256SUMS, signature
   verified`); report lines never nest parentheses;
@@ -2268,6 +2279,25 @@ replacement follows these rules:
   a source tree likewise never replaces itself. In these cases the host step
   is skipped with a note; the bundle behavior is unchanged.
 
+**What's new.** When self-update installs a bundle newer than the one that was
+running, it then says what changed between the two, from the release notes the
+new bundle carries (§16.37) — never from the network, and never from notes the
+old bundle carries. The host reads the notes file and the renderer from the
+newly installed, already verified bundle and prints, per release between the
+old and the new version (newest first): the version and its summary, then its
+`Breaking` and `Upgrade notes` items (at most three per release, then a count
+of the rest); at most five releases (then a count of the rest), and a closing
+line naming the command for the full notes (`lw release-notes --since <old
+version>`). The lines are ASCII (§16.7) and wrapped to the terminal. When
+standard output is not a terminal, or the run is non-interactive, a single
+line is printed instead, naming the same command (`lw: what's new since <old>:
+lw release-notes --since <old>`). Nothing is printed for a first installation
+(no previous bundle), for a re-installation of the same version, or when
+release notes are silenced (§16.37); any failure to read or render the notes
+reduces the output to that single line and never changes the exit status. Printing any of it records the new version as seen (§16.37). This
+is host behavior (§16.11): a host that predates it prints nothing here, and
+the upgrade notice (§16.37) covers that update instead.
+
 Host replacement is a management operation (§16.9): it happens only on an
 explicit self-update, never as part of a build or any workspace operation.
 A host left stale — by an unwritable location, a no-host update, or because it
@@ -3089,3 +3119,180 @@ lw
 Machine inventory not checked outside a workspace - lw health --all lists
 toolchains, compiler caches, SDKs and editor tools.
 ```
+
+### 16.37 Release notes
+
+*(Proposed.)* Every release carries its own **release notes** — a
+human-written account of what changed, per version — and the runner shows
+them **offline**, from the bundle it is running. They reach the user three
+ways: on request (the release-notes command), right after an update
+(self-update's "what's new" lines, §16.32), and once on the first interactive
+run after an update the user was not told about (the **upgrade notice**).
+None of these ever prompts, fetches anything, or changes an exit status.
+
+**Source of truth.** The notes are one file at the root of the source tree,
+`CHANGELOG.md`, newest first: an optional **Unreleased** entry, then one entry
+per **full release**. A pre-release has no entry of its own: its changes are
+the Unreleased entry of the tree it was cut from, and they become the next full
+release's entry when that release is cut (*Release pipeline*, below). The file
+is written for people — it renders as ordinary Markdown — but is held to a
+strict grammar so that the runner, the release pipeline and the test suite read
+it identically:
+
+- anything before the first entry heading (title, introduction, comments) is
+  preamble and is ignored;
+- an entry starts at a level-2 heading: `## Unreleased` (at most one, and only
+  as the first entry) or `## <version> - <YYYY-MM-DD>`, where `<version>` is a
+  full release version (no pre-release suffix);
+- an entry opens with a **summary** — one short paragraph saying what the
+  release is about in a sentence or two (required for a released entry);
+- then **sections**, each a level-3 heading from a fixed set, at most once per
+  entry, in this order: `Breaking`, `Upgrade notes`, `Added`, `Changed`,
+  `Fixed`, `Security`, `Removed`;
+- a section holds **items**, each a `- ` bullet whose continuation lines are
+  indented by two spaces. An item is one change, ending in the number of the
+  change request that delivered it when there is one (`(#79)`);
+- the text is ASCII only (host-level code prints it, §16.7), has no control
+  characters, and uses Markdown only for `code spans`;
+- released entries are in strictly descending version order; no version
+  appears twice.
+
+The test suite validates the file against this grammar, so a malformed entry
+fails the change that introduces it, not the release. `Breaking` and
+`Upgrade notes` are what a reader must act on; the short forms below surface
+them, while the other sections appear in the full notes only.
+
+**Baking.** The release bundle (§16.12) carries the notes file verbatim,
+inside the bundle archive whose hash the signed manifest binds — so the notes a
+user reads are exactly the signed release's, and showing them needs no network.
+The notes are data of system Lua, never of the host: a host shows notes only by
+reading them from a bundle (§16.32). The whole history is carried (tens of
+kilobytes at most, compressed far smaller); nothing is truncated. A development
+source (§16.11) reads the file from its working tree. A build that carries no
+notes file (a development build with system Lua fused into the host) reports
+that release notes are not available in this build, exit 1. The reader and the
+renderer are pure functions over the file's text — no filesystem, process or
+editor access — so one implementation serves the release-notes command, the
+upgrade notice, and a host rendering a newly installed bundle's notes.
+
+**Visible entries.** The version whose notes are current is the running
+release bundle's version (the release source of §16.11; in pinned context, the
+pinned release). A development source has none. The entries **visible** to a
+run are:
+
+- running a full release `R`: the released entries with version `<= R`;
+- running a pre-release of `R` (e.g. `R-beta.2`): the released entries with
+  version `<= R` (which may already include `R`'s own entry), preceded by a
+  non-empty Unreleased entry presented under the running pre-release's version;
+- a development source: every entry, a non-empty Unreleased entry first.
+
+**Command.** `lw release-notes [<version> | --since <version> | --all | -n <N>]
+[--json]` prints release notes. It needs no workspace and works outside one.
+
+| Form | Shows |
+|--|--|
+| (none) | the three newest visible entries |
+| `<version>` | exactly that entry (a leading `v` is accepted) |
+| `--since <version>` | every visible entry newer than `<version>` — what changed after it |
+| `--all` | every visible entry |
+| `-n <N>` | the `N` newest visible entries (`N >= 1`) |
+
+At most one selection form may be given; a second one, a malformed version, or
+`N < 1` is a usage error (exit 2). A `<version>` without an entry is an error
+(exit 1) that points at `--all`. `--since` a version at or above the newest
+visible entry prints that nothing is newer, exit 0. The default is stateless —
+the same output on every machine running the same release; "what changed since
+I last looked" is the upgrade notice's job, and `--since` spells it
+explicitly. When visible entries older than those shown exist, a last line says
+how many and how to see them (`lw release-notes --all`).
+
+Rendering follows §16.7: notes are printed as text, never as control
+sequences. On a terminal they are wrapped to the terminal width (at most 100
+columns) and use the runner's usual coloring; when standard output is not a
+terminal nothing is wrapped, colored or cut — each item is one line, in full —
+so the output can be piped or captured. `--json` prints one document instead:
+
+```json
+{
+  "schema": 1,
+  "running": "0.1.40",
+  "entries": [
+    {
+      "version": "0.1.40",
+      "date": "2026-09-30",
+      "unreleased": false,
+      "summary": "...",
+      "sections": [ { "name": "Added", "items": ["...", "..."] } ]
+    }
+  ],
+  "more": 11
+}
+```
+
+`running` is null for a development source. An Unreleased entry has `version`
+set to the running pre-release's version (null for a development source),
+`date` null and `unreleased` true. `more` counts visible entries not shown.
+An item's text is its lines joined by single spaces, Markdown as written.
+
+The command documents itself (`lw help release-notes`, §16.7), follows the
+unknown-option rule (§16.7), and its completion offers its options and the
+versions the notes know.
+
+**Last-seen version.** The runner remembers, per user, the newest release whose
+notes the user has been pointed at — the **last-seen version**, kept in the
+per-user data directory beside the installed bundles. It is only ever raised,
+never lowered, and it is recorded when the release-notes command prints notes
+as text, when self-update prints its "what's new" lines (§16.32), and when the
+upgrade notice is shown. Failing to read or write it is silent.
+
+**Upgrade notice.** A command run from an installed release bundle — acquired
+by self-update or installation, not pinned (§16.21) — whose running version is
+newer than the last-seen version prints **one line** to standard error before
+the command's own output, then records the running version as seen:
+
+```
+lw: updated 0.1.39 -> 0.1.40 - see what's new: lw release-notes --since 0.1.39
+```
+
+The notice is shown only when standard error is a terminal and the run is
+interactive (§16.3's non-interactive switches); a redirected, captured or
+non-interactive run shows nothing and records nothing, so the notice waits for
+the next interactive run. The release-notes command (which records instead),
+help, completion, and the host commands never show it. It never changes the
+command's output or exit status. With no last-seen version recorded yet (an
+installation that predates the notice), the newest older installed bundle in
+the data directory stands in for it; with neither, the running version is
+recorded without a notice — a first installation has nothing to announce. A
+pinned run never shows the notice: the pin chose that version, and pin
+upgrades point at the notes themselves (§16.24).
+
+The notice and self-update's "what's new" lines are silenced — nothing printed,
+nothing recorded — by the `release-notes` setting set to `off`, or by the
+`LOOMWORKS_RELEASE_NOTES` environment variable set to `off`, `0` or `false`
+(which takes precedence over the setting). The release-notes command is never
+silenced.
+
+**Old hosts.** The command and the notice are system Lua and use no host (boot)
+interface — the last-seen version lives at a path derived from the running
+bundle's own location — so they work under every host the bundle supports
+(§16.14). A host that predates this section prints no "what's new" lines after
+its self-update; the upgrade notice on the next interactive run is how its
+user learns what changed.
+
+**Release pipeline.** Each change adds its items to the Unreleased entry.
+Cutting a **full release** renames Unreleased to that release's heading
+(`## <version> - <date>`), gives it its summary, and leaves an empty
+`## Unreleased` above it. The release pipeline enforces this before anything
+is published: a full-release tag whose version has no entry, whose entry lacks
+a summary or items, or whose tree still has items under Unreleased, fails the
+release with a message that names the file, what is missing, and the exact
+heading to add. A **pre-release** tag needs no entry of its own; when its
+Unreleased entry is empty the pipeline warns but does not fail. The release's
+published description is generated from the same text: the release's entry for
+a full release; for a pre-release, its Unreleased entry, or a line saying that
+none was written.
+
+**Modules and SDK providers.** These notes cover the core release only.
+Separately distributed modules and SDK providers (§16.20) keep their own; the
+grammar and reader are reusable for a per-module notes file, but the runner
+does not show module notes yet.
