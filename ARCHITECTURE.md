@@ -336,17 +336,17 @@ may import from its own layer or any layer below it, never above.
 | `ui/status.lua` | Wiring: creates Tree + View, assembles `ctx` from API, requires sections in order | Contain rendering logic; do I/O |
 | `ui/view.lua` | Window lifecycle via Snacks.win (open/close/toggle), keymap registration, event-driven refresh, animation timer | Know about section content; contain domain logic |
 | `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
-| `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering | Know about loomworks domain; do I/O |
+| `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering. **Descriptions** (ui §1.16): the render-only `description` opt appends the fitted summary (`_append_summary`, uses `tree.width`, set by the View from the window before each render); `Tree:description(desc, from_module)` renders the expanded leaves (8-line cap); `line_hover` maps a line to its `K` content (the render-only `hover` opt and description leaves) | Know about loomworks domain; do I/O |
 | `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog. Profile creation multi-step picker (`create_profile`) | Render tree nodes; own state |
 | `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via `ws:add_project()`/`ws:remove_project()`. Opens mapping_dialog when config sets exist | Own persistent state |
 | `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via `ws:map_variant()`, accepts/cancels atomically | Own persistent state |
 | `ui/config_set_editor.lua` | Edit dialog for config set mappings (create and edit). Editable name row with inline validation, project→variant picker rows. Used for both new and existing sets | Own persistent state |
-| `ui/description_editor.lua` | Git-commit-style description editor float (spec/ui.md §1.16): an `acwrite` scratch buffer with filetype `loomworks_description`, pre-filled with the text plus `#` help lines. BufWriteCmd → `description.strip_comments` → `item:set_description(text)`; an empty result clears. Refusals are shown inline. Opened by the status page `e` action, the `<CR>` picker's "Edit description" and the `Description ▸` rows of the config-set/configuration editor dialogs | Own persistent state |
+| `ui/description_editor.lua` | Git-commit-style description editor float (spec/ui.md §1.16): an `acwrite` scratch buffer with filetype `loomworks_description`, pre-filled with the text plus `#` help lines. BufWriteCmd → `description.strip_comments` → `item:set_description(text)`; an empty result clears. Refusals are shown inline. `open(item, { on_saved })`; `editable(item)` refuses generated configurations. Opened by the status page `e` action, the `<CR>` picker's "Edit description" and the `Description ▸` rows of the config-set/configuration editor dialogs | Own persistent state |
 | `ui/config_editor_dialog.lua` | Edit dialog for project configuration properties. Supports name, inherits (multi-base with reordering), options (unified view with inheritance sources), variables (override/clear with provenance), compiler-family `overrides` (read-only, marks the family active under the current profile's tool), toolchain, generator. Abstract mixin detection | Own persistent state |
 | `ui/launch_editor.lua` | Edit dialog for launch config properties: name, command, args, working_dir, env, deploy steps. Deploy entries open deploy_editor on enter | Own persistent state |
 | `ui/deploy_editor.lua` | Edit dialog for a single deploy step. Segment-based destination path builder (variable picker + literal text). Source picker for project, configuration, target (from domain objects). Resolved path preview | Own persistent state |
 | `ui/variable_editor.lua` | Edit dialog for a project variable declaration: name, type (string/path), default value | Own persistent state |
-| `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
+| `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution; description affordances (ui §1.16): `with_description(opts, item)` (summary + `hover` + `on_describe`), `picker_summary(desc, cols)`, `description_row(t, item, label, refresh)` for editor dialogs | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 
 ### Integrations
@@ -978,6 +978,16 @@ replaces it, which would drop `PATH`).
   and re-sign it (`trust.sign_file`), or delete it and its `.bak` with
   `--discard`. Never loads the workspace, so it works on a refused one;
   confirmation is mandatory (`--yes` when non-interactive).
+- `lw <project|config|configset|profile> describe` (spec §16.35) — `cli.cmd_describe`
+  resolves the item, `_describe_parse` / `_describe_source_text` take the text
+  source (`-m`, `-F`, stdin, `-e` via `_describe_edit` on `$VISUAL`/`$EDITOR`
+  through `run_spec`), and `_describe_item` reads or calls the item's
+  `set_description`. `lw config set/unset/get … description` route there;
+  `main()` strips `-m` from create verbs (`_extract_create_paras`) and the
+  creators call `_apply_create_description`. One-line views append
+  `_summary_suffix` (display-width fit, continuation line); show views print
+  `_describe_block`. All are `M.` fields: the main chunk is at the 200-local
+  limit.
 - `lw nuke [-y]` (spec §17.4) — reset the build state (`.nvim/build/`, the cache,
   the health cache) through `Core:_nuke_files`, the same deletion half as the
   editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the
