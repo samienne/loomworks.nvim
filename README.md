@@ -1219,7 +1219,10 @@ lw settings set channel unstable     # the same setting, without updating
 `--channel` saves the channel as your setting, so later `lw self-update` runs
 and `lw version` follow it (`LOOMWORKS_CHANNEL` still overrides it for a single
 run). This takes a host at v0.1.40 or later; an older `lw` binary applies
-`--channel` to that run only. A bundle never downgrades: switching back to
+`--channel` to that run only. So when moving from an `lw` binary older than
+0.1.40, the first `lw self-update --channel <c>` runs on the old binary and
+applies the channel to that run only — run it once more (or
+`lw settings set channel <c>`) to save it. A bundle never downgrades: switching back to
 `stable` while a newer prerelease is installed keeps that prerelease running
 until a newer stable release is published, and `lw self-update` says so.
 `lw version` marks a prerelease bundle, e.g. `bundle: 0.1.40-beta.1 (prerelease)`.
