@@ -2917,7 +2917,8 @@ function M.cmd_launch_list(ws, proj_name)
       if type(cfg) == "table" and cfg.args and #cfg.args > 0 then
         runs = runs .. " " .. table.concat(cfg.args, " ")
       end
-      rows[#rows + 1] = { project = p.key, name = n, runs = runs }
+      rows[#rows + 1] = { project = p.key, name = n, runs = runs,
+        description = type(cfg) == "table" and cfg.description or nil }
     end
   end
 
@@ -2934,13 +2935,32 @@ function M.cmd_launch_list(ws, proj_name)
     nw = math.max(nw, #r.name)
   end
   pw = math.min(pw, 20); nw = math.min(nw, 24)
-  local fmt = "  %-" .. pw .. "s  %-" .. nw .. "s  %s"
+  -- One layout rule (spec §16.35): PROJECT and NAME, then the DESCRIPTION
+  -- summary column, then RUNS — the open-ended tail, cut to the terminal
+  -- (both printed in full when piped).
+  local d = require("loomworks.description")
+  local descs = {}
+  for i, r in ipairs(rows) do descs[i] = r.description end
+  local prefix_w = 2 + pw + 1
+  local tw = M._term_width()
+  local sum_w = M._summary_column(descs, tw, prefix_w + 1 + nw, true)
+  local tail_w
+  if M._stdout_tty() then
+    local used = prefix_w + 1 + nw + 1 + (sum_w > 0 and (sum_w + 3) or 0)
+    tail_w = math.max(16, tw - used)
+  end
+  local function prefix(pv, nv)
+    return "  " .. pv .. string.rep(" ", pw - d.width(pv)) .. "  " .. nv .. string.rep(" ", nw - d.width(nv))
+  end
 
   out("Launch configs — pass PROJECT and NAME to `lw launch show|set`:")
   out("")
-  out(string.format(fmt, "PROJECT", "NAME", "RUNS"))
+  local head_sum = sum_w > 0 and ("DESCRIPTION" .. string.rep(" ", math.max(0, sum_w - 11))) or nil
+  out(head_sum and (prefix("PROJECT", "NAME") .. "  " .. head_sum .. "  RUNS")
+    or (prefix("PROJECT", "NAME") .. " RUNS"))
   for _, r in ipairs(rows) do
-    out(string.format(fmt, trunc(r.project, pw), trunc(r.name, nw), trunc(r.runs, 46)))
+    out(M._row_with_summary(prefix(d.fit(r.project, pw), d.fit(r.name, nw)), r.description,
+      sum_w, r.runs, tail_w))
   end
   return 0
 end
@@ -2957,11 +2977,23 @@ function M.cmd_launch_add(root, args)
   local ws = load_workspace(root, false)
   local project = resolve_project(ws, proj_name)
 
+  -- A new launch name must be valid (spec §8.7).
+  local vok, verr = require("loomworks.project").validate_launch_name(name)
+  if not vok then die("invalid launch name '" .. name .. "': " .. verr) end
+
+  -- `--description <para>` (repeatable) — not `-m`: everything after the
+  -- command is the program's own args, where `-m` is common (§16.35).
   local positionals, from_target, working_dir, env = {}, nil, nil, nil
+  local paras = {}
   local i = 5
   while args[i] do
     local v = args[i]
-    if v == "--working-dir" or v == "--cwd" then working_dir = args[i + 1]; i = i + 2
+    if v == "--description" then
+      if args[i + 1] == nil then die("--description needs a paragraph") end
+      paras[#paras + 1] = args[i + 1]; i = i + 2
+    elseif v:sub(1, 14) == "--description=" then
+      paras[#paras + 1] = v:sub(15); i = i + 1
+    elseif v == "--working-dir" or v == "--cwd" then working_dir = args[i + 1]; i = i + 2
     elseif v == "--from-target" then from_target = args[i + 1]; i = i + 2
     elseif v == "--env" then
       local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
@@ -2986,6 +3018,11 @@ function M.cmd_launch_add(root, args)
   end
   if working_dir then cfg.working_dir = working_dir end
   if env then cfg.env = env end
+  if #paras > 0 then
+    local dok, desc, derr = require("loomworks.description").prepare(table.concat(paras, "\n\n"))
+    if not dok then die("invalid --description: " .. tostring(derr)) end
+    cfg.description = desc
+  end
 
   local ok, err = project:save_launch_config(name, cfg)
   if not ok then die("could not save launch config: " .. tostring(err)) end
@@ -3120,6 +3157,14 @@ function launch_show_resolved(project, name)
   local cfg = project.launch and project.launch[name]
   if not cfg then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
   out("launch config '" .. name .. "'  (project " .. project.key .. ")")
+  if type(cfg.description) == "string" then
+    local d = require("loomworks.description")
+    local first = true
+    for line in (d.inert(cfg.description) .. "\n"):gmatch("([^\n]*)\n") do
+      if first then out("  description  " .. line); first = false
+      else out(line == "" and "" or ("               " .. line)) end
+    end
+  end
   if cfg.target then
     out("  target       " .. tostring(cfg.target) .. "  (runs the built artifact + run env)")
   else
@@ -3130,6 +3175,52 @@ function launch_show_resolved(project, name)
   if type(cfg.env) == "table" then
     for k, v in pairs(cfg.env) do out("  env." .. k .. " = " .. tostring(v)) end
   end
+  -- Fields `show` did not print before (spec §16.35).
+  if type(cfg.deploy) == "table" and next(cfg.deploy) then
+    local dests = {}
+    for dest in pairs(cfg.deploy) do dests[#dests + 1] = dest end
+    table.sort(dests)
+    for _, dest in ipairs(dests) do out("  deploy       " .. dest) end
+  end
+  if type(cfg.device) == "table" and next(cfg.device) then
+    local keys = {}
+    for k in pairs(cfg.device) do keys[#keys + 1] = k end
+    table.sort(keys)
+    out("  device       " .. table.concat(keys, ", "))
+  end
+  if type(cfg.debug) == "table" and #cfg.debug > 0 then
+    out("  debug        " .. table.concat(cfg.debug, ", "))
+  end
+  return 0
+end
+
+--- `lw launch show … --json` (spec §16.35): the whole launch as one object —
+--- values as declared (not expanded), args as an array.
+--- @param project table
+--- @param name string
+--- @return integer
+function M._launch_show_json(project, name)
+  local cfg = project.launch and project.launch[name]
+  if type(cfg) ~= "table" then die("no launch config '" .. name .. "' on project '" .. project.key .. "'") end
+  local d = require("loomworks.description")
+  local desc = type(cfg.description) == "string" and cfg.description or nil
+  local obj = {
+    project = project.key,
+    name = name,
+    kind = cfg.target and "target" or "command",
+    target = cfg.target,
+    command = cfg.command,
+    args = (type(cfg.args) == "table" and #cfg.args > 0) and cfg.args or nil,
+    working_dir = cfg.working_dir,
+    env = (type(cfg.env) == "table" and next(cfg.env)) and cfg.env or nil,
+    deploy = (type(cfg.deploy) == "table" and next(cfg.deploy)) and cfg.deploy or nil,
+    device = (type(cfg.device) == "table" and next(cfg.device)) and cfg.device or nil,
+    device_log = cfg.device_log,
+    debug = (type(cfg.debug) == "table" and #cfg.debug > 0) and cfg.debug or nil,
+    description = desc or vim.NIL,
+    summary = d.summary(desc) or vim.NIL,
+  }
+  out(vim.json.encode(obj))
   return 0
 end
 
@@ -3142,6 +3233,9 @@ function M.cmd_launch_show(root, args)
     die("usage: lw launch show [<project>] <name>  (also <project>:<name> / --project P --launch N)")
   end
   local project = resolve_project(ws, proj_name)
+  for _, a in ipairs(args) do
+    if a == "--json" then return M._launch_show_json(project, name) end
+  end
   return launch_show_resolved(project, name)
 end
 
@@ -3166,7 +3260,137 @@ function M.cmd_launch(sub, root, args)
   if sub == "set" or sub == "edit" then return M.cmd_launch_set(root, args) end
   if sub == "show" then return M.cmd_launch_show(root, args) end
   if sub == "remove" or sub == "rm" then return M.cmd_launch_remove(root, args) end
-  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove")
+  if sub == "rename" or sub == "mv" then return M.cmd_launch_rename(root, args) end
+  if sub == "describe" then return M.cmd_launch_describe(root, args) end
+  die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove|rename|describe")
+end
+
+--- The build-target names of `project` (ids and display names), for the
+--- launch-name clash warning (spec §8.7). Targets come from the project's
+--- configured units, scanned on demand like `lw target` does (a fresh `lw`
+--- process has not parsed them yet). Returns the name set, plus `true` when the
+--- project's module has build targets but no unit could be scanned (no
+--- configured build yet), so the check could not be made.
+--- @return table<string, boolean> names, boolean unscanned
+function M._project_build_target_names(ws, project)
+  local names, scanned = {}, false
+  for _, unit in pairs(ws._config_units or {}) do
+    if unit._project == project then
+      ensure_unit_targets(ws, unit)
+      if type(unit.targets) == "table" then
+        scanned = true
+        for id, t in pairs(unit.targets) do
+          if not id:match("^launch:") then
+            names[id] = true
+            local dn = t.display_name and t:display_name()
+            if dn then names[dn] = true end
+          end
+        end
+      end
+    end
+  end
+  local mod = project._module and project._module.impl
+  return names, (not scanned) and mod ~= nil and mod.parse_targets ~= nil
+end
+
+--- Rename a launch configuration (spec §8.7) and report it: the whole table
+--- moves and every profile's default target follows. Warns (never refuses)
+--- when the new name is also a build target of the project, since `lw run
+--- <name>` then needs `--launch` / `--target`; says so when the targets are
+--- not scanned yet. `opts.target_names` is a test seam; by default the
+--- project's build targets are scanned (`M._project_build_target_names`).
+--- @param ws table
+--- @param project table
+--- @param old string
+--- @param new string
+--- @param opts? { target_names?: table<string, boolean> }
+--- @return integer
+function M._launch_rename(ws, project, old, new, opts)
+  opts = opts or {}
+  local changed, err, moved = project:rename_launch_config(old, new)
+  if changed == nil then die("could not rename launch config: " .. tostring(err)) end
+  if changed == false then
+    out("launch configuration '" .. project.key .. ":" .. old .. "' (unchanged)")
+    return 0
+  end
+  out(string.format("renamed launch configuration '%s:%s' -> '%s:%s'", project.key, old, project.key, new))
+  if moved and #moved > 0 then
+    out("  default target updated in profiles: " .. table.concat(moved, ", "))
+  end
+  local names, unscanned = opts.target_names, false
+  if not names then
+    names, unscanned = M._project_build_target_names(ws, project)
+  end
+  if names[new] then
+    errw("lw: warning: '" .. new .. "' is also the name of a build target in '" .. project.key
+      .. "' - `lw run " .. new .. "` needs --launch or --target to choose\n")
+  elseif unscanned then
+    errw("lw: note: the build targets of '" .. project.key .. "' are not scanned yet (no configured "
+      .. "build) - could not check that '" .. new .. "' is not also a build target name; if it is, "
+      .. "`lw run " .. new .. "` needs --launch or --target to choose\n")
+  end
+  M._publish_hint(M._item_reaches_shared(ws, "projects", project, nil))
+  return 0
+end
+
+--- `lw launch rename <project> <old> <new>` (alias `mv`).
+function M.cmd_launch_rename(root, args)
+  local proj_name, old, new = args[3], args[4], args[5]
+  if not (proj_name and old and new) then
+    die("usage: lw launch rename <project> <old> <new>")
+  end
+  local ws = load_workspace(root, false)
+  return M._launch_rename(ws, resolve_project(ws, proj_name), old, new)
+end
+
+--- `lw launch describe <project> <name> [text | flags]` (also `--project P
+--- --launch N`): the §16.35 describe forms for a launch configuration. The
+--- single `[<project>:]<name>` operand is not accepted (a following <text>
+--- would be ambiguous with it).
+function M.cmd_launch_describe(root, args)
+  local usage = "usage: lw launch describe <project> <name> [<text> | -m <para>... | -F <file|-> | - | -e | --clear | --json]\n"
+    .. "   or: lw launch describe --project <p> --launch <n> [...]"
+  local proj_name, name, rest = nil, nil, {}
+  local i = 3
+  local pos = {}
+  while args[i] do
+    local v = args[i]
+    if v == "--project" then proj_name = args[i + 1]; i = i + 2
+    elseif v == "--launch" then name = args[i + 1]; i = i + 2
+    else
+      local need = (proj_name and 0 or 1) + (name and 0 or 1)
+      if #pos < need and not (v:sub(1, 1) == "-" and v ~= "-") then
+        pos[#pos + 1] = v
+      else
+        rest[#rest + 1] = v
+      end
+      i = i + 1
+    end
+  end
+  if not proj_name then proj_name = table.remove(pos, 1) end
+  if not name then name = table.remove(pos, 1) end
+  if not (proj_name and name) then die(usage) end
+  local o = M._describe_parse(rest, usage)
+  local ws = load_workspace(root, false)
+  local project = resolve_project(ws, proj_name)
+  local cfg = project.launch and project.launch[name]
+  if type(cfg) ~= "table" then
+    die("no launch config '" .. name .. "' on project '" .. project.key .. "'")
+  end
+  local handle = {
+    description = type(cfg.description) == "string"
+      and require("loomworks.description").normalize(cfg.description) or nil,
+    _json_extra = { project = project.key, name = name },
+    _shared_item = project,
+  }
+  function handle:set_description(text)
+    local changed, err = project:set_launch_description(name, text)
+    local c = project.launch and project.launch[name]
+    self.description = c and c.description or nil
+    return changed, err
+  end
+  return M._describe_item(ws, handle, "launch configuration", project.key .. ":" .. name,
+    "projects", nil, o)
 end
 
 --- loomworks.json is written later by `lw publish` (working-copy model).
@@ -3215,7 +3439,7 @@ function M.cmd_workspace(sub, root, args)
     local ok, err = ws:rename_workspace(new_name)
     if not ok then die("could not rename workspace: " .. tostring(err)) end
     out("workspace name set to '" .. ws.name .. "'")
-    out("`lw publish` to update the shared loomworks.json.")
+    if M._has_shared_file(ws) then out("`lw publish` to update the shared loomworks.json.") end
     return 0
   end
   die("unknown workspace subcommand '" .. tostring(sub) .. "' — use rename")
@@ -3512,13 +3736,25 @@ local function publish_item(ws, item, label)
   return 0
 end
 
+--- Does the workspace have a published loomworks.json? The publish reminder
+--- ("`lw publish` to update the shared loomworks.json.") is shown only when it
+--- does: a local-only workspace (spec §2.4, no loomworks.json yet) has no
+--- shared file to update, so every edit there stays quiet.
+--- @param ws table
+--- @return boolean
+function M._has_shared_file(ws)
+  local r = ws and ws.root
+  return type(r) == "string" and uv.fs_stat(r .. "/loomworks.json") ~= nil
+end
+
 --- Whether `item` — a project (`kind` "projects"), configuration ("configs",
 --- with its `proj`), configuration set ("config_sets") or profile ("profiles")
 --- — reaches the shared loomworks.json: it is in the effective-intent closure
 --- (§2.4: its own intent, or a published set/profile pulls it in), or a
 --- published copy of it already exists (so editing/removing it changes
 --- loomworks.json). Gates the "`lw publish` …" hint after a remove / rename /
---- (un)map: a never-published LOCAL item has nothing to publish. Evaluate it
+--- (un)map: a never-published LOCAL item has nothing to publish, and nothing
+--- reaches a loomworks.json that does not exist (`M._has_shared_file`). Evaluate it
 --- BEFORE a remove (the item leaves the closure once gone). Errs on the side of
 --- the hint when the closure cannot be computed.
 --- @param ws table
@@ -3527,6 +3763,7 @@ end
 --- @param proj? loomworks.Project the configuration's project (kind "configs")
 --- @return boolean
 local function item_reaches_shared(ws, kind, item, proj)
+  if not M._has_shared_file(ws) then return false end
   local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
   if not (ok_p and type(pub) == "table" and type(pub[kind]) == "table") then return true end
   if pub[kind][item] then return true end
@@ -3547,6 +3784,9 @@ end
 local function publish_hint(shared)
   if shared then out("`lw publish` to update the shared loomworks.json.") end
 end
+-- (Fields for callers defined above these locals; the chunk is at the 200-local limit.)
+M._publish_hint = publish_hint
+M._item_reaches_shared = item_reaches_shared
 
 -- ---------------------------------------------------------------------------
 -- Shared lookups + small formatting helpers
@@ -4228,6 +4468,7 @@ end
 --- @param name string
 --- @return boolean
 local function config_reaches_shared(ws, proj, name)
+  if not M._has_shared_file(ws) then return false end
   local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
   if not (ok_p and type(pub) == "table" and type(pub.configs) == "table") then return true end
   for _, c in ipairs(proj._configurations or {}) do
@@ -4599,7 +4840,7 @@ function M.cmd_cset_list(root)
   end
   local prefix_w = 2 + name_w
   local tw = M._term_width()
-  local sum_w = M._summary_column(descs, tw, prefix_w)
+  local sum_w = M._summary_column(descs, tw, prefix_w, true)
   local tail_w = nil
   if M._stdout_tty() then
     local used = prefix_w + 1 + (sum_w > 0 and (sum_w + 3) or 0)
@@ -4946,14 +5187,17 @@ function M._describe_item(ws, item, kind, name, shared_kind, proj, o)
   if text == nil and not o.edit and not o.clear then
     -- Read form.
     if o.json then
-      local json_kind = ({ ["configuration set"] = "configset", configuration = "config" })[kind] or kind
-      out(vim.json.encode({
+      local json_kind = ({ ["configuration set"] = "configset", configuration = "config",
+        ["launch configuration"] = "launch" })[kind] or kind
+      local obj = {
         kind = json_kind,
         name = name,
         description = current or vim.NIL,
         summary = d.summary(current) or vim.NIL,
         source = generated and "project-files" or "workspace",
-      }))
+      }
+      for k, v in pairs(item._json_extra or {}) do obj[k] = v end
+      out(vim.json.encode(obj))
       return 0
     end
     if not current then
@@ -4985,7 +5229,7 @@ function M._describe_item(ws, item, kind, name, shared_kind, proj, o)
   else
     out(kind .. " '" .. name .. "' described")
   end
-  publish_hint(item_reaches_shared(ws, shared_kind, item, proj))
+  publish_hint(item_reaches_shared(ws, shared_kind, item._shared_item or item, proj))
   return 0
 end
 
@@ -5033,11 +5277,16 @@ M._SUMMARY_TAIL_CAP = 36
 --- open-ended list (spec §16.35): as wide as the longest summary shown, at
 --- most 36 columns; 0 when no row has a description; -1 when fewer than 16
 --- columns would remain for it on this terminal (continuation lines instead).
+--- `full_when_piped`: a listing that prints its open-ended list in full when
+--- stdout is not a terminal (`lw launch list`, `lw configset list`) prints the
+--- summaries in full too — the column is then as wide as the longest summary,
+--- uncapped. The status overview keeps the cap (its lists stay cut).
 --- @param descs (string|nil)[] the rows' descriptions
 --- @param tw integer terminal width
 --- @param prefix_w integer display width of the widest identity/fixed prefix
+--- @param full_when_piped boolean|nil
 --- @return integer
-function M._summary_column(descs, tw, prefix_w)
+function M._summary_column(descs, tw, prefix_w, full_when_piped)
   local d = require("loomworks.description")
   local longest = 0
   for i = 1, #descs do
@@ -5045,8 +5294,10 @@ function M._summary_column(descs, tw, prefix_w)
     if sum then longest = math.max(longest, d.width(d.inert_line(sum))) end
   end
   if longest == 0 then return 0 end
+  if not M._stdout_tty() then
+    return full_when_piped and longest or math.min(longest, M._SUMMARY_TAIL_CAP)
+  end
   local w = math.min(longest, M._SUMMARY_TAIL_CAP)
-  if not M._stdout_tty() then return w end
   -- Room left after the prefix, two gaps and a 16-column minimum for the list.
   local avail = tw - prefix_w - 2 - 2 - 16
   if avail < 16 then return -1 end
@@ -5477,11 +5728,15 @@ local function collect_targets(ws, profile)
   for _, c in ipairs(cands) do
     local is_default = candidate_is_default(desc, c)
     if is_default then seen_default = true end
+    local lcfg = c.kind == "launch" and c.project.launch and c.project.launch[c.name]
     rows[#rows + 1] = {
       label = c.project.key .. ":" .. c.name,
       kind_label = target_kind_label(c.kind),
       is_default = is_default,
       cand = c,
+      -- A launch's description summary ends its row (spec §16.35).
+      description = type(lcfg) == "table" and type(lcfg.description) == "string"
+        and lcfg.description or nil,
     }
   end
   -- The default points at a target we couldn't enumerate (e.g. an unconfigured
@@ -5535,9 +5790,18 @@ local function print_target_list(ws, profile)
   if #info.rows == 0 then
     out("  (none" .. (info.incomplete and " yet)" or ")"))
   else
+    local lw_ = 0
     for _, r in ipairs(info.rows) do
-      out(string.format("  %s %s (%s)%s", r.is_default and "*" or " ",
-        r.label, r.kind_label, r.suffix or ""))
+      lw_ = math.max(lw_, require("loomworks.description").width(r.label .. " (" .. r.kind_label .. ")"))
+    end
+    for _, r in ipairs(info.rows) do
+      local cell = r.label .. " (" .. r.kind_label .. ")"
+      local line = string.format("  %s %s", r.is_default and "*" or " ", cell)
+      if r.description then
+        line = line .. string.rep(" ", lw_ - require("loomworks.description").width(cell))
+      end
+      out(line .. (r.suffix or "")
+        .. M._summary_suffix(require("loomworks.description").width(line), r.description))
     end
   end
   if info.incomplete then
@@ -6858,13 +7122,14 @@ function M.cmd_status(root, opts)
     status_section(pal, "Targets", tinfo.rows, MAX, function(r)
       local base = string.format("%s %-30s (%s)", r.is_default and "*" or " ",
         trunc(r.label, 30), r.kind_label)
+      local sum = M._summary_suffix(require("loomworks.description").width(base), r.description, nil, pal)
       if r.is_default then
-        local line = pal.active(base)
+        local line = pal.active(base) .. sum
         if default_cwd then line = line .. "   " .. pal.dim("cwd: " .. trunc(default_cwd, 30)) end
         if r.suffix then line = line .. pal.dim(r.suffix) end
         return line
       end
-      return base .. (r.suffix and pal.dim(r.suffix) or "")
+      return base .. sum .. (r.suffix and pal.dim(r.suffix) or "")
     end, "lw target", target_help)
   end
 
@@ -7501,13 +7766,14 @@ local function profile_show_rows(ws, profile, color)
     status_section(pal, "Targets", tinfo.rows, MAX, function(r)
       local base = string.format("%s %-30s (%s)", r.is_default and "*" or " ",
         trunc(r.label, 30), r.kind_label)
+      local sum = M._summary_suffix(require("loomworks.description").width(base), r.description, nil, pal)
       if r.is_default then
-        local line = pal.active(base)
+        local line = pal.active(base) .. sum
         if default_cwd then line = line .. "   " .. pal.dim("cwd: " .. trunc(default_cwd, 30)) end
         if r.suffix then line = line .. pal.dim(r.suffix) end
         return line
       end
-      return base .. (r.suffix and pal.dim(r.suffix) or "")
+      return base .. sum .. (r.suffix and pal.dim(r.suffix) or "")
     end, "lw target", target_help)
 
     -- 7. Footer help — profile-level actions not already surfaced by the
@@ -8434,13 +8700,15 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "launch" then
-    if n == 1 then emit({ "list", "add", "set", "show", "remove" }); return 0 end
-    if n == 2 and has({ "add", "create", "set", "edit", "show", "remove", "rm", "list" }, sub) then
+    if n == 1 then emit({ "list", "add", "set", "show", "remove", "rename", "describe" }); return 0 end
+    if n == 2 and has({ "add", "create", "set", "edit", "show", "remove", "rm", "list",
+        "rename", "mv", "describe" }, sub) then
       emit(comp_project_names(comp_ws(root))); return 0                     -- <project>
     end
-    if n == 3 and has({ "set", "edit", "show", "remove", "rm" }, sub) then
+    if n == 3 and has({ "set", "edit", "show", "remove", "rm", "rename", "mv", "describe" }, sub) then
       emit(comp_launch_names(comp_ws(root), a[3]))                         -- <name>
     end
+    if n >= 4 and sub == "describe" then emit({ "-m", "-F", "-e", "--clear", "--json" }) end
     return 0
   elseif cmd == "project" then
     if n == 1 then emit({ "add", "remove", "list", "show", "set", "unset", "describe", "publish" }); return 0 end
@@ -8929,7 +9197,7 @@ Disambiguating a name present more than once (on `set`):
 
 `lw launch` manages the launch-config declarations; `lw target` is the resolved
 runnable view over both kinds. `lw run` runs one.]],
-  launch = [[lw launch <list|add|show|remove>
+  launch = [[lw launch <list|add|set|show|remove|rename|describe>
 
 Define and manage a project's launch configurations (the runners `lw run`
 executes). A launch config is either **command-type** (a command, args, working
@@ -8939,9 +9207,14 @@ with the build-tree run environment (DLL paths) set up automatically, and your
 args/env/working-dir layered on top — no hand-written path.
 
   list [project]
-        List launch configs (all projects, or one).
-  add <project> <name> <command> [args…] [--working-dir D] [--env K=V]
+        List launch configs (all projects, or one): PROJECT, NAME, the
+        description summary (when any launch has one) and RUNS (the command
+        line, cut to the terminal; in full when piped).
+  add <project> <name> <command> [args…] [--working-dir D] [--env K=V] [--description <para>]
         Declare a command-type launch config. Repeat --env for more variables.
+        --description (repeatable, one paragraph each; the first is the
+        summary) describes it. There is no -m here: everything after the
+        command is the program's own args (python -m http.server).
         e.g. lw launch add app serve node server.js --env PORT=8080
   add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
         Declare a target-backed launch config from a build target (by name).
@@ -8953,8 +9226,18 @@ args/env/working-dir layered on top — no hand-written path.
           --command C | --from-target T   (switch kind)
           trailing args replace the arg list | --clear-args
         e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
-  show <project> <name>       Detail one config.
+  show <project> <name> [--json]
+        Detail one config: description, target/command, args, working dir,
+        env, deploy, device, debug. --json prints the whole config as one
+        object (args as an array, values as declared).
   remove <project> <name>     Delete one config.
+  rename <project> <old> <new>   (alias: mv)
+        Rename a config in place. Everything moves with it (args, env,
+        deploy, device, description, …), and every profile's default target
+        that named it follows. Warns when <new> is also a build target name.
+  describe <project> <name> [<text> | -m <para>… | -F <file|-> | - | -e | --clear | --json]
+        Print or set the config's description (see `lw help describe`).
+        Also `--project P --launch N` instead of <project> <name>.
 
 Configs live in the project's working copy; they reach loomworks.json when the
 project is published (`lw project publish <project>`).]],

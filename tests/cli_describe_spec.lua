@@ -252,17 +252,33 @@ describe("lw describe", function()
     assert.is_truthy(cl.stdout:find("  Dev               Set summary  App→Debug", 1, true))
   end)
 
-  it("configset list: summary column aligned, blank for undescribed sets, capped at 36", function()
+  it("configset list: summary column aligned, blank for undescribed sets, capped at 36 on a terminal", function()
     local root = make_ws()
     capture(function() cli.cmd_cset("create", root, { "configset", "create", "Bare", "App=Debug" }) end)
     describe_cmd(root, "configset", "Dev", string.rep("s", 50))
+    cli._test_stdout_tty = true
+    local saved = cli._term_width
+    cli._term_width = function() return 200 end
     local out = capture(function() cli.cmd_cset("list", root, { "configset", "list" }) end).stdout
+    cli._term_width = saved
     local lines = vim.split(out, "\n", { plain = true })
     -- Both mapping lists start in the same column.
     local function col(l) return vim.fn.strdisplaywidth(l:sub(1, l:find("App→Debug", 1, true) - 1)) end
     assert.equals(col(lines[1]), col(lines[2]))
     assert.is_truthy(lines[2]:find(string.rep("s", 35) .. "…", 1, true))
     assert.is_nil(out:find("\n      ", 1, true)) -- no continuation lines
+  end)
+
+  it("configset list piped: the summary is printed in full, like the mappings", function()
+    local root = make_ws()
+    capture(function() cli.cmd_cset("create", root, { "configset", "create", "Bare", "App=Debug" }) end)
+    describe_cmd(root, "configset", "Dev", string.rep("s", 50))
+    local out = capture(function() cli.cmd_cset("list", root, { "configset", "list" }) end).stdout
+    local lines = vim.split(out, "\n", { plain = true })
+    local function col(l) return vim.fn.strdisplaywidth(l:sub(1, l:find("App→Debug", 1, true) - 1)) end
+    assert.equals(col(lines[1]), col(lines[2]))
+    assert.is_truthy(lines[2]:find(string.rep("s", 50) .. "  App→Debug", 1, true), lines[2])
+    assert.is_nil(out:find("…", 1, true))
   end)
 
   it("configset list on a terminal cuts the mappings, not the summary", function()

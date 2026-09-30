@@ -389,6 +389,69 @@ function M.description_row(t, item, label, refresh)
     })
 end
 
+--- A description handle for a launch configuration (spec §8.7): launches are
+--- tables on their project, not domain objects, so the description editor and
+--- `with_description` get this `{ description, set_description }` stand-in.
+--- @param project loomworks.Project
+--- @param name string
+--- @return table
+function M.launch_handle(project, name)
+    local d = require("loomworks.description")
+    local cfg = project.launch and project.launch[name]
+    local h = {
+        description = type(cfg) == "table" and d.normalize(cfg.description) or nil,
+        _kind = "launch configuration",
+        _label = project.key .. ":" .. name,
+    }
+    function h:set_description(text)
+        local changed, err = project:set_launch_description(name, text)
+        local c = project.launch and project.launch[name]
+        self.description = type(c) == "table" and c.description or nil
+        return changed, err
+    end
+    return h
+end
+
+--- The chunks of a project's launch rows (spec/ui.md §1.8): `{name}  {summary}
+--- {runs}`, the summaries forming a column (at most 36 display columns, blank
+--- when absent) before the open-ended command line, which is cut to `width`.
+--- @param launches { name: string, config: table }[]
+--- @param width integer text width available after the row's indentation
+--- @return table<string, { [1]: string, [2]: string }[]> chunks per launch name
+function M.launch_row_chunks(launches, width)
+    local d = require("loomworks.description")
+    local name_w, sum_w = 0, 0
+    local sums = {}
+    for _, lc in ipairs(launches) do
+        name_w = math.max(name_w, d.width(lc.name))
+        local s = d.summary(type(lc.config) == "table" and d.normalize(lc.config.description) or nil)
+        if s then
+            s = d.inert_line(s)
+            sums[lc.name] = s
+            sum_w = math.max(sum_w, math.min(36, d.width(s)))
+        end
+    end
+    local out = {}
+    for _, lc in ipairs(launches) do
+        local cfg = type(lc.config) == "table" and lc.config or {}
+        local runs = cfg.target and ("target:" .. cfg.target) or (cfg.command or "")
+        if type(cfg.args) == "table" and #cfg.args > 0 then
+            runs = runs .. " " .. table.concat(cfg.args, " ")
+        end
+        local chunks = { { lc.name .. string.rep(" ", name_w - d.width(lc.name)), "LoomworksVariant" } }
+        local used = name_w
+        if sum_w > 0 then
+            local s = sums[lc.name] and d.fit(sums[lc.name], sum_w) or ""
+            chunks[#chunks + 1] = { "  " .. s .. string.rep(" ", sum_w - d.width(s)), "LoomworksDescription" }
+            used = used + 2 + sum_w
+        end
+        local room = math.max(8, width - used - 2)
+        chunks[#chunks + 1] = { "  " .. d.fit(d.inert_line(runs), room), "Comment" }
+        out[lc.name] = chunks
+    end
+    return out
+end
+
 --- Add the description affordances to a describable node's opts (spec/ui.md
 --- §1.16): the summary on the node line (`description`, render-only), `K`
 --- showing the full text (`hover`, only when there is one), and the `e` /

@@ -315,7 +315,10 @@ profile fill value that is not set, or setting one to the value it already
 has. A reminder to publish is printed only after
 an edit that **changed** a configuration reaching the published snapshot
 (§2.4 effective intent) — and, likewise, after creating a configuration only
-when it would reach the published snapshot. `get` returns the resolved string for the full path, or the
+when it would reach the published snapshot. "Reaching the published snapshot"
+requires a `loomworks.json` to exist: in a local-only workspace (no
+`loomworks.json` yet) no edit prints the `lw publish` reminder, for every
+management edit (set, describe, rename, map). `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and
 `overrides.<family>.env`. `show` lists the configuration's `env` alongside its
 `options`.
@@ -331,8 +334,21 @@ preset variant has no user-owned name to change. A rename carries every field
 the configuration declares, including its description (§1.10), never a fixed
 subset.
 
+A management host MAY also **rename a launch configuration** in place, addressed
+by `(project, old, new)`. The operation is the atomic rename of §8.7: the whole
+launch table moves, including `deploy`, `device`, `device_log`, `debug`,
+`description` and unknown fields, and every profile's default-target
+descriptor that names it follows. The same refusals apply: an invalid or
+colliding new name, or an unknown old name. When the new name is also the name
+of one of the project's build targets, the rename succeeds with a warning on
+stderr (`lw run <name>` then needs `--launch` / `--target`, §16.17). The
+targets are those of the project's configured builds, scanned on demand as
+`lw target` does. When none is configured yet, the check cannot be made and a
+note on stderr says so.
+
 A management host MAY also **set, replace or clear the description** (§1.10) of
-a project, a user configuration, a configuration set or a profile (§16.35).
+a project, a user configuration, a configuration set, a profile or a launch
+configuration (§16.35).
 
 A management host MAY also **declare or remove a project variable** (§1.3.1),
 addressed by `(project, variable)`. Declaring accepts a `type` (`string` or
@@ -2504,7 +2520,13 @@ lw project   describe <project>          [<text> | -m <para>... | -F <file> | -F
 lw config    describe <project> <config> [same]
 lw configset describe <set>              [same]
 lw profile   describe <profile>          [same]
+lw launch    describe <project> <name>   [same]
 ```
+
+- `lw launch describe` takes the launch as `<project> <name>` or as
+  `--project <p> --launch <n>`. The single-operand `[<project>:]<name>` form
+  that `launch show` / `set` / `remove` accept is **not** accepted here: a
+  following `<text>` operand would be ambiguous with it.
 
 - `<profile>` resolves like every profile operand (§16.3: list number, exact
   key, unique substring). It is **required**. `describe` never defaults to the
@@ -2516,6 +2538,10 @@ lw profile   describe <profile>          [same]
 - Item-creating verbs (`project add`, `config add`, `configset create`,
   `profile create`) accept `-m <para>` (repeatable) to create the item already
   described.
+- `lw launch add` takes the description as `--description <para>`
+  (repeatable, joined like `-m`). It does **not** take `-m`. Everything after a
+  launch's command operand is the program's own arguments, where `-m` is
+  common (`python -m http.server`), so `-m` there would change what runs.
 
 **Reading.** With no text source and no `--clear`, `describe` prints the full
 description (summary, blank line, body) and exits 0. An item without a
@@ -2572,8 +2598,9 @@ Reading standard input with `-F -` is data, not a prompt, so it is allowed under
 - A generated configuration is refused, with a pointer to
   `lw config add <project> <name> <generated-config>` (§1.10).
 - Describing a `shared` item materialises it (§2.4, implicit cascade on use).
-  The publish reminder is printed only when the change reaches the published
-  snapshot, as for every other edit (§16.9).
+  The publish reminder is printed only when a `loomworks.json` exists and the
+  change reaches it, as for every other edit (§16.9). A local-only workspace
+  never shows it.
 
 **Display in one-line views.** Every listing and status row that names a
 describable item shows its **summary**, dimmed on a colour terminal. This covers
@@ -2598,8 +2625,11 @@ The summary is fitted as follows:
   - When fewer than 16 columns would remain for the summary column, the
     summaries move onto continuation lines beneath their rows, indented and
     capped at 60 columns. The list then stays on the row.
-  - When standard output is not a terminal, the 36-column cap alone applies,
-    and `lw configset list` prints the mappings in full.
+  - When standard output is not a terminal, a listing that prints its
+    open-ended list in full (`lw configset list`, and `lw launch list`'s
+    `RUNS`) prints the summaries in full too: the column is as wide as the
+    longest summary, with no cap and no `…`. The status overview's rows, whose
+    lists stay cut, keep the 36-column cap.
 - **Rows without an open-ended tail** (`lw project list`, `lw config list`,
   `lw profile list`, the status overview's profile rows):
   - The summary ends the row. Its width is the terminal width (§16.18, the
@@ -2615,8 +2645,24 @@ The summary is fitted as follows:
   counted as two), never bytes. A cut ends in `…`. A summary is never dropped
   silently.
 
+**Launch configurations and targets in one-line views.**
+- `lw launch list` follows the layout rule above. `PROJECT` and `NAME` are the
+  identity columns, then a `DESCRIPTION` column (the summary column; the header
+  appears only when some launch has a description), then `RUNS`.
+  - `RUNS` is the open-ended tail: `target:<t>` or the command, then the args.
+    On a terminal it is cut with `…` to the remaining width, instead of today's
+    fixed 46 bytes. When stdout is not a terminal it is printed in full, and
+    so is the `DESCRIPTION` summary (no 36-column cap).
+  - The full args are always in `lw launch show`.
+- `lw target list` rows (`* <project>:<name> (launch|exe)`) and the status
+  overview's and `lw profile show`'s Targets rows end in a bounded kind label,
+  so a launch's summary ends the row, fitted as above (at most 60 columns). A
+  build target (`exe`) has no description.
+- Messages that list candidates, such as an ambiguous `lw run` operand, keep
+  their `project:name (kind)` form without summaries.
+
 **Display in detail views.** `lw project show`, `lw config show`,
-`lw configset show` and `lw profile show` print the **full** description, one
+`lw configset show`, `lw profile show` and `lw launch show` print the **full** description, one
 output line per description line, indented under a `description` label. It comes
 right after the item's header or identity lines, and a detail view never
 truncates it. `lw profile show` also shows its configuration set's summary on
@@ -2625,7 +2671,20 @@ module field. All output follows §16.7 and §17.11.
 
 `lw profile query` is unchanged: its fields are per `(profile, project)` build
 facts, and a description is neither per-project nor a build fact. Scripts read
-descriptions with `describe --json`.
+descriptions with `describe --json`. For a launch configuration,
+`lw launch describe … --json` reports `"kind": "launch"`, `"project"`, `"name"`,
+`"description"`, `"summary"` and `"source": "workspace"`.
+
+`lw launch show <project> <name> --json` prints the launch configuration as one
+object, for scripts that need to tell launches apart:
+- `project`, `name` and `kind` (`"target"` or `"command"`);
+- `target` or `command`, `args` (an array, never joined), `working_dir`, `env`;
+- `deploy`, `device`, `device_log` and `debug` when set;
+- `description` and `summary` (`null` when absent).
+
+Values are as declared, not expanded. Its human form lists `description` first,
+then the fields it prints today, then `deploy`, `device` and `debug`, which it
+did not show before.
 
 Example:
 
@@ -2644,6 +2703,26 @@ $ lw profile list
 $ lw configset list
   Debug              Clang debug, ASan on CI     App→Debug, Lib→Debug
   Release            What CI ships               App→Release, Lib→Release, Tools→R…
+
+$ lw launch describe LumeEditor schema-test -m "Editor with the scene JSON schema test data"
+launch configuration 'LumeEditor:schema-test' described
+
+$ lw launch list
+Launch configs — pass PROJECT and NAME to `lw launch show|set`:
+
+  PROJECT     NAME         DESCRIPTION                          RUNS
+  LumeEditor  editor       Plain editor                         target:LumeEditor
+  LumeEditor  schema-test  Editor with the scene JSON schema t…  target:LumeEditor --use-scene-json-sc…
+  LumeEditor  theme-demo   Theme showcase scene                 target:LumeEditor --theme demo
+
+$ lw launch rename LumeEditor schema-test scene-schema
+renamed launch configuration 'LumeEditor:schema-test' -> 'LumeEditor:scene-schema'
+  default target updated in profiles: Debug:msvc-17, Release:msvc-17
+
+$ lw target
+* LumeEditor:editor (launch)        Plain editor
+  LumeEditor:scene-schema (launch)  Editor with the scene JSON schema test data
+  LumeEditor:LumeEditor (exe)
 
 $ lw profile describe 1 --clear
 profile 'Debug:ninja-clang-18.1.0': description removed

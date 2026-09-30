@@ -22,6 +22,8 @@ local M = {}
 ---   profile: loomworks.Profile|nil — active profile for deploy target resolution
 ---   workspace: loomworks.Workspace|nil — for deploy destination preview
 ---   launch_project: loomworks.Project|nil — the project owning this launch config
+---   original_name: string|nil — the existing launch's name (edit mode): adds a
+---     `Description ▸` row; a changed name is a rename (spec §8.7)
 ---   debug: string[]|nil — debug languages (first = primary, rest = attach)
 ---   on_accept: fun(result: { name: string, command: string, args: string[], working_dir: string, env: table<string, string>, deploy: table<string, table>|nil })
 ---   on_cancel: fun()
@@ -88,6 +90,13 @@ function M.open(opts)
         })
         if name_error then
             t:leaf(name_error, "DiagnosticError")
+        end
+        -- Existing launch: its description (ui §1.8 / §1.16), saved by the
+        -- description editor itself.
+        if opts.launch_project and opts.original_name then
+            require("loomworks.ui.helpers").description_row(t,
+                require("loomworks.ui.helpers").launch_handle(opts.launch_project, opts.original_name),
+                "Description", function() if view then view:refresh() end end)
         end
 
         local cmd_val = command ~= "" and command or "(empty)"

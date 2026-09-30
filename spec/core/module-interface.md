@@ -816,6 +816,9 @@ workspace-root-relative and is variable-expanded in the launch context.
 
 **Command-type launches** (`launch` section in project config): Named launch
 configurations per project with command, args, env, working_dir, deploy.
+A launch configuration MAY also carry `description`, optional display text
+(§1.10). A description never affects how it runs, and it is not a
+program-bearing field (§17.6).
 
 A launch configuration is either **command-type** — it carries a `command` —
 or **target-backed** — it carries a `target` (a build target name/id) instead.
@@ -875,6 +878,62 @@ tasks and the most recent output available.
     }
 }
 ```
+
+**Renaming a launch configuration.** A launch configuration is renamed in
+place, within its project, by one atomic operation shared by every host
+(`lw launch rename`, §16.9, and the editor's launch editor, `spec/ui.md` §1.8):
+
+- **The whole table moves.** Every field the configuration declares is carried
+  to the new name unchanged: `command` / `target`, `args`, `env`, `working_dir`,
+  `deploy`, `device` (§18.9), `device_log` (§18.13), `debug`, `description`, and
+  any field a newer or older loomworks wrote that this version does not know.
+  The operation never rebuilds the table from a list of known fields.
+- **References follow.** Launch configurations are referenced by
+  `(project, name)`:
+  - **Default-target descriptors.** In **every** profile, a default-target
+    descriptor (§8.6) of the form `{ project = <p>, launch = <old> }` becomes
+    `launch = <new>`, and its other fields (e.g. `working_dir`) are kept. This
+    covers the working copy, and the published profile definitions on the next
+    publish (the descriptor is part of a published profile, §2.4).
+  - **Runtime.** The per-unit launch entries in a configuration unit's target
+    list are re-keyed, so pickers and `lw target` show the new name without a
+    reload.
+
+  Nothing else stores a launch name:
+  - deploy steps live inside the launch configuration and move with it;
+  - deploy freshness records are keyed by destination (§8.8);
+  - `lw run <name>` names a launch only at invocation.
+
+  A session that is running when the rename happens is unaffected; the next
+  launch uses the new name. Scripts that invoke the old name are outside the
+  workspace, so the operation reports the rename and every descriptor it
+  updated.
+- **Refusals.** The new name MUST be a valid launch name and MUST NOT name an
+  existing launch configuration of the same project in the working copy. The
+  old name MUST exist in the working copy. A launch configuration that exists
+  only in the shared snapshot is materialised first (§2.4, implicit cascade on
+  use). One that was ignored there as program-bearing (§17.6) is not in the
+  model and cannot be renamed. Renaming to the same name changes nothing and
+  says so. A case-only change is a rename.
+- **Valid launch name.** It is non-empty, contains no whitespace anywhere (no
+  space, tab or other white space), no control character, no `/` and no `\`,
+  and does not start with `-` (it would read as a command-line flag). Other
+  punctuation is allowed, including `:` as in today's `[<project>:]<name>`
+  addressing. The same rule applies when a launch configuration is created. A
+  refusal names what is allowed. Existing names that break it (for example one
+  with a space, written before this rule) keep working: they can be run,
+  shown, described and renamed away.
+- **Build-target clash warning.** A launch name may equal the name of one of
+  the project's build targets, but `lw run <name>` is then ambiguous (§16.17)
+  and needs `--launch` or `--target`. The rename succeeds and warns on stderr.
+  The check uses the build targets of the project's configured builds, scanned
+  on demand. When no build is configured yet, the targets are unknown, and a
+  note says the check could not be made.
+- **Publishing.** Launch configurations follow their project's intent (§2.4).
+  A rename in a published project makes the project show `+`. The next publish
+  writes the new name and removes the old one. A program-bearing launch that
+  loomworks.json holds and this machine ignores (§17.6) is not affected by a
+  rename, and is written back at its own name on publish.
 
 ### 8.8 Deploy Steps
 
