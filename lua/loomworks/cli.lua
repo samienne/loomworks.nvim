@@ -10562,7 +10562,7 @@ local function main()
   -- workspace (worktree hint) and never fails, so it runs before the guard.
   if command == "health" then
     -- (`--force`/`--refresh` from before health stopped reusing its cache are
-    -- ignored like any other unknown flag: every run already re-checks all.)
+    -- accepted as no-ops — cli_options — since every run re-checks all.)
     -- Positional words are areas (§16.36); an unknown one is a usage error.
     local json, verbose, all, names = false, false, false, {}
     for i, v in ipairs(a) do
