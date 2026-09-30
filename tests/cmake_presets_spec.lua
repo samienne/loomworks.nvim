@@ -10,6 +10,9 @@
 local cmake = require("loomworks.modules.cmake")
 local Project = require("loomworks.project").Project or require("loomworks.project")
 local h = require("tests.helpers")
+-- Real private workspace root: configure builders mkdir the file-api query
+-- dir under it (a fake absolute root is a real, shared dir on Windows).
+local ROOT = h.temp_root()
 local uv = vim.uv or vim.loop
 
 --- Remove a directory tree.
@@ -75,13 +78,13 @@ local function preset_ctx(dir, active_config, tool_data)
     return {
         name = "App",
         path = "App",
-        workspace_root = "/ws/root",
+        workspace_root = ROOT,
         configuration = active_config,
         configuration_key = active_config,
         configurations = configs,
         tool_data = tool_data,
         -- Directly-mapped preset build dir (part 3): its binaryDir.
-        cached_build_dir = "/ws/root/out/"
+        cached_build_dir = ROOT .. "/out/"
             .. (active_config:gsub("^preset:", "")),
     }
 end
@@ -160,8 +163,8 @@ describe("cmake CMakePresets fidelity", function()
             })
             local cfg = project:get_configuration("preset:dev")
             local bd = cmake.resolve_build_dir(
-                "App", "preset:dev", cfg.module_config, "/ws/root", nil)
-            assert.equals("/ws/root/out/dev", bd)
+                "App", "preset:dev", cfg.module_config, ROOT, nil)
+            assert.equals(ROOT .. "/out/dev", bd)
         end)
     end)
 
@@ -232,7 +235,7 @@ describe("cmake CMakePresets fidelity", function()
             local ctx = preset_ctx(dir, "preset:dev", nil)
             local tasks = cmake.tasks(ctx, "preset:dev")
             local build = find_task(tasks, "build")
-            assert.equals("/ws/root/out/dev", build.loomworks.build_dir)
+            assert.equals(ROOT .. "/out/dev", build.loomworks.build_dir)
         end)
 
         -- HARD RULE guard: a canonical `preset:*` string must never reach

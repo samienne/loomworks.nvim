@@ -11,6 +11,10 @@ _G.LOOMWORKS_CLI_NO_AUTORUN = true
 
 local Core = require("loomworks.core")
 local h = require("tests.helpers")
+-- Real private workspace root: planning a build runs the cmake configure
+-- builder, which mkdirs the file-api query dir under the build dir (a fake
+-- absolute root is a real, shared dir on Windows; see helpers.temp_root).
+local ROOT = h.temp_root()
 local overseer = require("loomworks.overseer")
 local real_modules = require("loomworks.modules")
 local config_env = require("loomworks.config_env")
@@ -159,7 +163,7 @@ local function make_ws(cfg_data, tool_env, project_vars)
     }
     local deps = h.make_test_deps(files, { modules = { get = modules_get }, cache = { save = function() return true end } })
     local core = Core.new(deps)
-    core:setup({ root = "/root" })
+    core:setup({ root = ROOT })
     core._workspace._tools_by_type = { cmake = { {
         tool_key = "ninja-gcc-12", tool_data = tool_data, tool_label = "gcc",
     } } }
@@ -188,14 +192,14 @@ describe("configuration env in the task context", function()
             { env = { SCCACHE_DIR = "${workspace_root}/c", CC = "x", SHARED = "cfg" } },
             { SHARED = "tool", TOOL_ONLY = "t" })
         local steps = plan(ws, profile, seen)
-        assert.same({ SCCACHE_DIR = "/root/c", SHARED = "cfg" }, seen.ctx.configuration_env)
-        assert.equals("/root/c", seen.ctx.env.SCCACHE_DIR)
+        assert.same({ SCCACHE_DIR = ROOT .. "/c", SHARED = "cfg" }, seen.ctx.configuration_env)
+        assert.equals(ROOT .. "/c", seen.ctx.env.SCCACHE_DIR)
         assert.equals("cfg", seen.ctx.env.SHARED)     -- config wins over tool
         assert.equals("t", seen.ctx.env.TOOL_ONLY)    -- tool env kept
         assert.is_nil(seen.ctx.env.CC) -- reserved: stripped by core
         local cfg_step
         for _, s in ipairs(steps) do if s.kind == "configure" then cfg_step = s end end
-        assert.equals("/root/c", cfg_step.env.SCCACHE_DIR)
+        assert.equals(ROOT .. "/c", cfg_step.env.SCCACHE_DIR)
     end)
 
     it("per-unit contexts compose the same way (resolve_task_env)", function()

@@ -6,6 +6,10 @@
 package.loaded["loomworks.modules.shell"] = nil
 local shell = require("loomworks.modules.shell")
 local uv = vim.uv or vim.loop
+-- Real private workspace root for task contexts: the configure builder
+-- mkdirs the build dir (a fake absolute root such as "/work" is a real,
+-- shared dir on Windows; see helpers.temp_root).
+local ROOT = require("tests.helpers").temp_root()
 
 local function make_tmp_dir()
     local tmp = vim.fn.tempname()
@@ -24,7 +28,7 @@ local function make_ctx(opts)
         configuration_key = opts.configuration_key or "default",
         configurations = opts.configurations or { default = { variant = "default" } },
         tool_data = opts.tool_data,
-        workspace_root = opts.workspace_root or "/work",
+        workspace_root = opts.workspace_root or ROOT,
         env = opts.env or {},
         cached_build_dir = opts.cached_build_dir,
         type_config = opts.type_config or {},
@@ -215,7 +219,7 @@ describe("shell module", function()
             })
             local tasks = shell.tasks(ctx, "default")
             local cfg_spec = tasks[1].builder()
-            assert.same({ "./build.sh", "-B", "/work/out/default" }, cfg_spec.cmd)
+            assert.same({ "./build.sh", "-B", ROOT .. "/out/default" }, cfg_spec.cmd)
         end)
 
         it("expands resolved_variables in commands", function()
@@ -238,7 +242,7 @@ describe("shell module", function()
 
         it("prefers cached_build_dir over re-expanding the template", function()
             local ctx = make_ctx({
-                cached_build_dir = "/cached/path",
+                cached_build_dir = ROOT .. "/cached/path",
                 type_config = {
                     build_dir = "${workspace_root}/out",
                     configure_cmd = { "echo", "${build_dir}" },
@@ -246,7 +250,7 @@ describe("shell module", function()
                 },
             })
             local tasks = shell.tasks(ctx, "default")
-            assert.same({ "echo", "/cached/path" }, tasks[1].builder().cmd)
+            assert.same({ "echo", ROOT .. "/cached/path" }, tasks[1].builder().cmd)
         end)
 
         it("emits no tasks when configure_cmd / build_cmd are missing", function()
@@ -268,7 +272,7 @@ describe("shell module", function()
             })
             local tasks = shell.tasks(ctx, "default")
             local spec = tasks[1].builder()
-            assert.equals("/work/out", spec.env.OUT)
+            assert.equals(ROOT .. "/out", spec.env.OUT)
         end)
     end)
 
@@ -285,7 +289,7 @@ describe("shell module", function()
             local tasks = shell.clean_tasks(ctx, "default")
             assert.equals(1, #tasks)
             local spec = tasks[1].builder()
-            assert.same({ "./script", "--clean", "/work/out" }, spec.cmd)
+            assert.same({ "./script", "--clean", ROOT .. "/out" }, spec.cmd)
         end)
 
         it("falls back to a core-performed wipe of the build dir when clean_cmd is absent", function()
@@ -302,7 +306,7 @@ describe("shell module", function()
             -- (substituted) build dir itself (spec §8.1 `wipe_build_dir`).
             assert.is_nil(tasks[1].builder)
             assert.is_true(tasks[1].loomworks.wipe_build_dir)
-            assert.equals("/work/out", tasks[1].loomworks.build_dir)
+            assert.equals(ROOT .. "/out", tasks[1].loomworks.build_dir)
         end)
     end)
 

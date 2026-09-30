@@ -7,6 +7,10 @@
 --- + legacy carve-out), and `module_info.cache_launcher` recording.
 
 local meson = require("loomworks.modules.meson")
+-- Real private workspace root: the configure builder mkdirs the build dir
+-- (a fake absolute root such as "/root" is a real, shared dir on Windows;
+-- see helpers.temp_root).
+local ROOT = require("tests.helpers").temp_root()
 
 local function has_arg(cmd, arg)
     for _, a in ipairs(cmd) do if a == arg then return true end end
@@ -36,7 +40,7 @@ local function ctx(overrides)
     local c = {
         name = "App",
         path = "app",
-        workspace_root = "/root",
+        workspace_root = ROOT,
         tool_data = {
             meson = { "/usr/bin/meson" },
             compiler_c_path = "/usr/bin/gcc",
@@ -114,7 +118,7 @@ describe("meson compiler pinning through tasks()", function()
 
     it("writes no native file when the tool pins no compiler", function()
         local c = {
-            name = "App", path = "app", workspace_root = "/root",
+            name = "App", path = "app", workspace_root = ROOT,
             tool_data = { meson = { "/usr/bin/meson" } },
             configurations = { Debug = { buildtype = "debug" } }, env = {},
         }

@@ -1,5 +1,9 @@
 local meson = require("loomworks.modules.meson")
 local uv = vim.uv or vim.loop
+-- Real private workspace root for task contexts: the configure builder
+-- mkdirs the build dir and writes the native file (a fake absolute root such
+-- as "/root" is a real, shared dir on Windows; see helpers.temp_root).
+local ROOT = require("tests.helpers").temp_root()
 
 local function make_tmp_dir()
     local tmp = vim.fn.tempname()
@@ -178,7 +182,7 @@ describe("meson module", function()
             local t = meson.tasks({
                 name = "App",
                 path = "app",
-                workspace_root = "/root",
+                workspace_root = ROOT,
                 tool_data = { meson = { "/usr/bin/meson" } },
                 configurations = cfgs,
                 env = {},
@@ -210,7 +214,7 @@ describe("meson module", function()
         local project = {
             name = "App",
             path = "app",
-            workspace_root = "/root",
+            workspace_root = ROOT,
             tool_data = { meson = { "/usr/bin/meson" } },
             configurations = {
                 Debug = { buildtype = "debug" },
@@ -329,7 +333,7 @@ describe("meson module", function()
     describe("clean_tasks", function()
         it("produces a single --clean task", function()
             local t = meson.clean_tasks({
-                name = "App", path = "app", workspace_root = "/root",
+                name = "App", path = "app", workspace_root = ROOT,
                 tool_data = { meson = { "/usr/bin/meson" } }, env = {},
             }, "Debug")
             assert.equals(1, #t)
