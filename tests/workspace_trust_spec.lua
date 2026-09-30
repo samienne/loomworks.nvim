@@ -278,6 +278,25 @@ describe("trust / discard / nuke from the CLI (§17.10)", function()
         assert.matches("lw trust --discard", r.stderr, 1, true)
     end)
 
+    it("lw health on the untrusted workspace reports the refusal as an item and exits 0 (§16.36)", function()
+        local orig = cli._probe_inventory
+        cli._probe_inventory = function() return { results = {}, declared = {}, key = "k", computed_at = 1 } end
+        local r = capture(function() return cli.cmd_health(root, {}) end)
+        cli._probe_inventory = orig
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.equals(0, r.ret)
+        assert.matches("* working copy not trusted", r.stdout, 1, true)
+        assert.matches("[workspace]", r.stdout, 1, true)
+        assert.matches("lw trust", r.stdout, 1, true)
+        -- Nothing of the refused file was read, and nothing was cached.
+        assert.is_nil(uv.fs_stat(root .. "/.nvim/loomworks.health.json"))
+        local j = capture(function() return cli.cmd_health(root, { json = true }) end)
+        local doc = vim.json.decode(j.stdout)
+        assert.equals(root, doc.workspace.root)
+        assert.equals("refused", doc.workspace.trust)
+        assert.equals("workspace", doc.suggestions[1].area)
+    end)
+
     it("lw trust shows the program settings and refuses without --yes when non-interactive", function()
         local r = capture(function() return cli.cmd_trust(root, { "trust" }) end)
         assert.equals(1, r.exit_code)

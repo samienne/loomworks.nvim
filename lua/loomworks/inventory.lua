@@ -40,6 +40,53 @@ M.CATEGORIES = {
 local CATEGORY_RANK = {}
 for i, c in ipairs(M.CATEGORIES) do CATEGORY_RANK[c] = i end
 
+--- The health report's **areas** (headless §16.36), in report order. Every
+--- health item — suggestion or inventory result — belongs to one; an
+--- unrecognized one renders under a trailing "other". CLI surface: adding an
+--- area is additive, renaming or removing one is not.
+--- @type string[]
+M.AREAS = { "lw", "workspace", "toolchains", "cache", "sdks", "editor", "launcher", "submodules" }
+
+--- One-line description per area (`lw help health`).
+M.AREA_DESCRIPTIONS = {
+    lw = "the running lw, update check, channel override, plugins",
+    workspace = "the workspace's own state (a refused working copy)",
+    toolchains = "build tools and compilers",
+    cache = "compiler caches and cache-compatibility findings",
+    sdks = "SDK installations",
+    editor = "language servers and debug adapters (editor only)",
+    launcher = "repo launcher and version pin (lw.pin, lw.sh, lw.cmd)",
+    submodules = "git submodule drift",
+}
+
+local AREA_RANK = {}
+for i, a in ipairs(M.AREAS) do AREA_RANK[a] = i end
+AREA_RANK.other = #M.AREAS + 1
+
+--- Default area of each inventory category (§16.36).
+M.CATEGORY_AREA = {
+    ["build tools"] = "toolchains", compilers = "toolchains",
+    ["compiler caches"] = "cache", ["language servers"] = "editor",
+    ["debug adapters"] = "editor", SDKs = "sdks", plugins = "lw", lw = "lw",
+}
+
+--- The area of an item: its explicit `area` when recognized, else its
+--- inventory category's default, else "other".
+--- @param category string|nil
+--- @param area string|nil
+--- @return string
+function M.area_of(category, area)
+    if area and AREA_RANK[area] then return area end
+    return M.CATEGORY_AREA[category or ""] or "other"
+end
+
+--- Sort rank of an area (unknown areas last).
+--- @param area string
+--- @return integer
+function M.area_rank(area)
+    return AREA_RANK[area] or (#M.AREAS + 1)
+end
+
 --- Per-probe timeout (ms). A probe still pending after it reads `unknown`.
 M.PROBE_TIMEOUT_MS = 5000
 
@@ -62,6 +109,9 @@ M.JSON_SCHEMA = 1
 --- @field category string one of `M.CATEGORIES`
 --- @field label string
 --- @field probe fun(ctx: loomworks.InventoryContext, done: fun(res: loomworks.InventoryResult|loomworks.InventoryResult[]))
+--- @field area? string report area overriding the category's default (§16.36)
+--- @field languages? string[] relevant only in a workspace with one of these languages (§16.36)
+--- @field contributors? string[] keys of every contributor declaring this id (filled by `declarations`)
 
 --- @class loomworks.InventoryRequirement
 --- @field id string inventory id the project needs
@@ -71,6 +121,7 @@ M.JSON_SCHEMA = 1
 --- @field alternatives? string[] other ids that satisfy the requirement equally
 ---   (tried in order when `id` is not found; the first found one is required instead)
 --- @field required_by string[] profile/project names needing it (filled by core)
+--- @field contributors? string[] keys of the contributors whose projects need it (filled by core)
 
 --- @class loomworks.InventoryContext
 --- @field platform "windows"|"macos"|"linux"
@@ -660,23 +711,171 @@ end
 function M.declarations(ctx)
     local contributors = M.contributors()
     local out, seen = {}, {}
-    local function add(list)
+    -- Each kept declaration records the keys of EVERY contributor that declared
+    -- its id (`contributors`), so the health scope (§16.36) treats a shared
+    -- executable as relevant when any of its declarers is.
+    local function add(list, ckey)
         for _, d in ipairs(type(list) == "table" and list or {}) do
-            if type(d) == "table" and type(d.id) == "string" and type(d.probe) == "function"
-                and not seen[d.id] then
-                seen[d.id] = true
-                out[#out + 1] = d
+            if type(d) == "table" and type(d.id) == "string" and type(d.probe) == "function" then
+                local first = seen[d.id]
+                if not first then
+                    seen[d.id] = d
+                    d.contributors = { ckey }
+                    out[#out + 1] = d
+                elseif not vim.tbl_contains(first.contributors, ckey) then
+                    first.contributors[#first.contributors + 1] = ckey
+                end
             end
         end
     end
     for _, c in ipairs(contributors) do
         if c.impl and type(c.impl.health_inventory) == "function" then
             local ok, list = pcall(c.impl.health_inventory, ctx)
-            if ok then add(list) end
+            if ok then add(list, M.contributor_key(c.kind, c.id)) end
         end
     end
-    add(core_declarations(ctx, contributors))
+    add(core_declarations(ctx, contributors), "core")
     return out
+end
+
+--- Key of a contributor in relevance sets and a tier's `contributors` list:
+--- `module:<id>`, `sdk:<id>`, `integration:<id>` (core's own is "core").
+--- @param kind string
+--- @param id string
+--- @return string
+function M.contributor_key(kind, id)
+    return kind .. ":" .. id
+end
+
+-- ---------------------------------------------------------------------------
+-- Health scope (§16.36): relevance of contributors, declarations and results
+-- ---------------------------------------------------------------------------
+
+--- @class loomworks.InventoryRelevance
+--- @field none boolean no workspace: only lw itself is relevant
+--- @field modules table<string, true> contributor keys of the modules projects use
+--- @field sdk_types table<string, true> SDK provider ids with a pinned installation
+--- @field plugin_ids table<string, true> plugin-registry ids the workspace uses
+--- @field languages table<string, true> the workspace languages (lower-cased)
+--- @field lsp_servers table<string, true> servers the workspace's modules name
+--- @field declares_lsp boolean some workspace module declares `lsp_servers`
+--- @field cxx boolean some project's module takes part in C/C++ compiler caching
+
+--- What the workspace makes relevant (§16.36) — pure: reads projects,
+--- configurations and profiles only (no spawn, no filesystem).
+--- @param workspace loomworks.Workspace|nil
+--- @return loomworks.InventoryRelevance
+function M.relevance(workspace)
+    local rel = { none = true, modules = {}, sdk_types = {}, plugin_ids = {}, languages = {},
+        lsp_servers = {}, declares_lsp = false, cxx = false }
+    if type(workspace) ~= "table" then return rel end
+    rel.none = false
+    local function lang(l) if type(l) == "string" and l ~= "" then rel.languages[l:lower()] = true end end
+    for _, project in pairs(workspace._projects or {}) do
+        if type(project) == "table" and not project.orphaned and not project._removed then
+            local mod = project._module
+            local mtype = (mod and mod.id) or project.type
+            if type(mtype) == "string" then
+                rel.modules[M.contributor_key("module", mtype)] = true
+                rel.plugin_ids[M.plugin_id("module", mtype)] = true
+            end
+            local impl = mod and mod.impl
+            if type(impl) == "table" then
+                for _, l in ipairs(type(impl.languages) == "table" and impl.languages or {}) do lang(l) end
+                if type(impl.lsp_servers) == "table" then
+                    rel.declares_lsp = true
+                    for _, s in ipairs(impl.lsp_servers) do rel.lsp_servers[s] = true end
+                end
+            end
+            if mod and type(mod.caches_cpp) == "function" and mod:caches_cpp() then rel.cxx = true end
+            for _, cfg in ipairs(project._configurations or {}) do
+                if type(cfg) == "table" and not cfg._removed and type(cfg.effective_languages) == "function" then
+                    local ok, list = pcall(cfg.effective_languages, cfg)
+                    for _, l in ipairs(ok and type(list) == "table" and list or {}) do lang(l) end
+                end
+            end
+        end
+    end
+    for _, pin in ipairs(pinned_sdks(workspace)) do
+        local t = pin.sdk and pin.sdk._type
+        if t then
+            rel.sdk_types[t] = true
+            rel.plugin_ids[M.plugin_id("sdk", t)] = true
+        end
+    end
+    -- Inventory companions the workspace uses are registry entries it uses too.
+    for _, c in ipairs(M.contributors()) do
+        if c.kind == "integration" and c.impl and M.companion_relevant(rel, c) then
+            rel.plugin_ids[M.plugin_id("integration", c.id)] = true
+        end
+    end
+    return rel
+end
+
+--- Whether `langs` (a declared list) meets the workspace languages.
+--- @param rel loomworks.InventoryRelevance
+--- @param langs any
+--- @return boolean
+local function meets_languages(rel, langs)
+    if type(langs) ~= "table" then return false end
+    for _, l in ipairs(langs) do
+        if type(l) == "string" and rel.languages[l:lower()] then return true end
+    end
+    return false
+end
+
+--- Whether an inventory companion is relevant (§16.36): a language-server
+--- companion when a workspace module names it in `lsp_servers` — or, when no
+--- workspace module declares `lsp_servers`, when its `languages` meet the
+--- workspace's; any other companion when its `languages` do. `is_lsp`
+--- defaults to whether a module anywhere names the companion as a server.
+--- @param rel loomworks.InventoryRelevance
+--- @param c loomworks.InventoryContributor
+--- @param is_lsp? boolean
+--- @return boolean
+function M.companion_relevant(rel, c, is_lsp)
+    if rel.none then return false end
+    local impl = c.impl or {}
+    if is_lsp == nil then is_lsp = rel.lsp_servers[c.id] == true end
+    if is_lsp and rel.declares_lsp then return rel.lsp_servers[c.id] == true end
+    return meets_languages(rel, impl.languages)
+end
+
+--- Whether a declaration is relevant (§16.36) — it is probed by a plain
+--- `lw health` — and whether ALL its results are (`whole`: the lw entry, a
+--- matched companion's results, the compiler-cache launchers). A declaration
+--- shared by several contributors is relevant when any of them makes it so.
+--- @param rel loomworks.InventoryRelevance
+--- @param d loomworks.InventoryDeclaration
+--- @return boolean relevant, boolean whole
+function M.declaration_relevant(rel, d)
+    if d.languages and not meets_languages(rel, d.languages) then return false, false end
+    if d.id == "lw" then return true, true end
+    if d.id == "plugins" then return true, false end
+    if rel.none then return false, false end
+    local by_key = {}
+    for _, c in ipairs(M.contributors()) do by_key[M.contributor_key(c.kind, c.id)] = c end
+    local relevant, whole = false, false
+    for _, ckey in ipairs(d.contributors or { "core" }) do
+        if ckey == "core" then
+            if d.category == "compiler caches" then
+                if rel.cxx then relevant, whole = true, true end
+            else
+                local t = type(d.id) == "string" and d.id:match("^sdks:(.+)$")
+                if t and rel.sdk_types[t] then relevant = true end
+            end
+        elseif ckey:match("^module:") then
+            if rel.modules[ckey] then relevant = true end
+        elseif ckey:match("^sdk:") then
+            if rel.sdk_types[ckey:sub(5)] then relevant = true end
+        elseif ckey:match("^integration:") then
+            local c = by_key[ckey]
+            if c and M.companion_relevant(rel, c, d.category == "language servers") then
+                relevant, whole = true, true
+            end
+        end
+    end
+    return relevant, whole
 end
 
 -- ---------------------------------------------------------------------------
@@ -711,7 +910,8 @@ function M.probe_all(decls, ctx)
     -- every probe would time out at once.
     pcall(uv.update_time)
     for i, d in ipairs(decls) do
-        declared[#declared + 1] = { id = d.id, category = d.category }
+        declared[#declared + 1] = { id = d.id, category = d.category, area = d.area,
+            contributors = d.contributors, relevant = d._relevant, whole = d._whole }
         local function unknown(why)
             return { { id = d.id, label = d.label, status = "unknown", detail = why } }
         end
@@ -765,7 +965,8 @@ end
 --- sees them. The key identifies the environment, not the running loomworks
 --- build (the editor and the CLI must agree on it, §16.33), so a change to core
 --- declaration ids or to how results are recorded bumps this instead.
-M.KEY_VERSION = 1
+--- 2: partial (relevant-scope) tiers with a `contributors` list (§16.36).
+M.KEY_VERSION = 2
 
 --- The executable search path as the environment key sees it (§16.33): the
 --- host-injected directories removed, so the editor and the CLI on the same
@@ -837,10 +1038,19 @@ function M.environment_key(workspace, opts)
 end
 
 --- Probe the environment now (an explicit health run) and return the tier to
---- cache: `{ results, declared, key, computed_at }`. Always re-probes: the
---- search-path index is rebuilt first.
+--- cache: `{ results, declared, key, computed_at, contributors?, skipped? }`.
+--- Always re-probes: the search-path index is rebuilt first.
+---
+--- Health scope (§16.36): `opts.scope == "relevant"` probes only the
+--- declarations the workspace makes relevant (`declaration_relevant`) and
+--- records the contributors it probed (`contributors` — a PARTIAL tier; a tier
+--- without it came from a full probe). `opts.areas` (a set of area names)
+--- probes only declarations of those areas. `skipped` counts, per area, the
+--- declarations left unprobed for being irrelevant (not those outside the
+--- selected areas); it is report data, never cached. Every declaration
+--- recorded in `declared` carries its relevance (`relevant`, `whole`).
 --- @param workspace loomworks.Workspace|nil
---- @param opts? { ctx?: table, clock?: fun(): integer }
+--- @param opts? { ctx?: table, clock?: fun(): integer, scope?: "relevant"|"all", areas?: table<string, true> }
 --- @return table tier
 function M.probe_tier(workspace, opts)
     opts = opts or {}
@@ -850,12 +1060,34 @@ function M.probe_tier(workspace, opts)
         require("loomworks.cpp_compilers")._path_index = nil
     end
     local ctx = M.context(workspace, opts.ctx)
-    local results, declared = M.probe_all(M.declarations(ctx), ctx)
+    local rel = M.relevance(workspace)
+    local partial = opts.scope == "relevant" or opts.areas ~= nil
+    local kept, skipped, probed_by = {}, {}, {}
+    for _, d in ipairs(M.declarations(ctx)) do
+        d._relevant, d._whole = M.declaration_relevant(rel, d)
+        local area = M.area_of(d.category, d.area)
+        if opts.areas and not opts.areas[area] then
+            -- Outside the selection: neither probed nor counted as hidden.
+        elseif opts.scope == "relevant" and not d._relevant then
+            skipped[area] = (skipped[area] or 0) + 1
+        else
+            kept[#kept + 1] = d
+            for _, ckey in ipairs(d.contributors or { "core" }) do probed_by[ckey] = true end
+        end
+    end
+    local results, declared = M.probe_all(kept, ctx)
+    local contributors
+    if partial then
+        contributors = vim.tbl_keys(probed_by)
+        table.sort(contributors)
+    end
     return {
         results = results,
         declared = declared,
         key = key,
         computed_at = (opts.clock or os.time)(),
+        contributors = contributors,
+        skipped = next(skipped) and skipped or nil,
     }
 end
 
@@ -864,10 +1096,13 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Profiles in scope: the active one, else every profile (sorted by key).
+--- `all` takes every profile even with an active one (the health scope's
+--- relevance, §16.36).
 --- @param workspace loomworks.Workspace
+--- @param all? boolean
 --- @return loomworks.Profile[]
-local function scope_profiles(workspace)
-    if workspace._active_profile then return { workspace._active_profile } end
+local function scope_profiles(workspace, all)
+    if workspace._active_profile and not all then return { workspace._active_profile } end
     local out = {}
     for _, p in pairs(workspace._profiles or {}) do out[#out + 1] = p end
     table.sort(out, function(a, b) return (a.key or "") < (b.key or "") end)
@@ -876,14 +1111,18 @@ end
 
 --- What the workspace requires (§16.33 "Required vs other"), merged by id, in
 --- first-appearance order. Pure: evaluates modules' `health_requirements` and
---- the profiles — no spawn, no filesystem access.
+--- the profiles — no spawn, no filesystem access. `opts.all_profiles`
+--- evaluates every profile even when one is active (relevance, §16.36). Each
+--- requirement records the contributors whose projects need it
+--- (`contributors`), for the not-checked rule of a partial tier.
 --- @param workspace loomworks.Workspace|nil
+--- @param opts? { all_profiles?: boolean }
 --- @return loomworks.InventoryRequirement[]
-function M.requirements(workspace)
+function M.requirements(workspace, opts)
     local out, by_id = {}, {}
     if type(workspace) ~= "table" then return out end
 
-    local function add(req, who)
+    local function add(req, who, ckey)
         if type(req) ~= "table" or type(req.id) ~= "string" then return end
         -- Merged by id AND alternatives: the same executable required with a
         -- fallback by one project and without by another stays two entries, so
@@ -894,9 +1133,12 @@ function M.requirements(workspace)
         local e = by_id[mkey]
         if not e then
             e = { id = req.id, label = req.label or req.id, hint = req.hint, via = req.via,
-                alternatives = alts, required_by = {}, _seen = {} }
+                alternatives = alts, required_by = {}, contributors = {}, _seen = {} }
             by_id[mkey] = e
             out[#out + 1] = e
+        end
+        if ckey and not vim.tbl_contains(e.contributors, ckey) then
+            e.contributors[#e.contributors + 1] = ckey
         end
         if who and not e._seen[who] then
             e._seen[who] = true
@@ -913,7 +1155,7 @@ function M.requirements(workspace)
             local ok_m, modules = pcall(require, "loomworks.modules")
             if ok_m and modules.rejected then rejected = modules.rejected()[mtype] end
             add({ id = M.plugin_id("module", mtype), label = mtype .. " module",
-                hint = module_hint(mtype, rejected), via = "plugins" }, who)
+                hint = module_hint(mtype, rejected), via = "plugins" }, who, "core")
             return
         end
         local impl = mod.impl
@@ -921,11 +1163,12 @@ function M.requirements(workspace)
         local ok, reqs = pcall(impl.health_requirements,
             { project = project, tool = tool, configuration = configuration })
         if ok and type(reqs) == "table" then
-            for _, r in ipairs(reqs) do add(r, who) end
+            local ckey = M.contributor_key("module", mod.id or tostring(project.type))
+            for _, r in ipairs(reqs) do add(r, who, ckey) end
         end
     end
 
-    local profiles = scope_profiles(workspace)
+    local profiles = scope_profiles(workspace, opts and opts.all_profiles)
     if #profiles == 0 then
         local projects = {}
         for _, p in pairs(workspace._projects or {}) do projects[#projects + 1] = p end
@@ -945,7 +1188,7 @@ function M.requirements(workspace)
                 label = sdk and sdk.display_name and sdk:display_name() or sdk_key,
                 hint = "declare or fix the SDK installation — lw sdk",
                 via = sdk and sdk._type and ("sdks:" .. sdk._type) or nil,
-            }, profile.key)
+            }, profile.key, sdk and sdk._type and M.contributor_key("sdk", sdk._type) or "core")
         end
         for _, pp in ipairs(type(profile.projects) == "function" and profile:projects() or {}) do
             local project = pp._project
@@ -975,6 +1218,12 @@ function M.classify(tier, reqs)
     for _, d in ipairs(type(tier) == "table" and tier.declared or {}) do
         if type(d) == "table" and d.id then declared[d.id] = d.category or "other" end
     end
+    -- A PARTIAL tier (relevant scope, §16.36) lists the contributors it probed.
+    local probed = nil
+    if type(tier) == "table" and type(tier.contributors) == "table" then
+        probed = {}
+        for _, k in ipairs(tier.contributors) do probed[k] = true end
+    end
     local by_id = {}
     local entries = {}
     for _, r in ipairs(results) do
@@ -1001,9 +1250,21 @@ function M.classify(tier, reqs)
                     status = "unknown"
                 end
             end
+            -- Not checked (§16.36): a partial tier that probed neither this id
+            -- nor any contributor needing it cannot say it is missing.
+            local unchecked = false
+            if probed and status == "missing" and not declared[req.id] then
+                unchecked = true
+                for _, k in ipairs(req.contributors or {}) do
+                    if probed[k] then unchecked = false break end
+                end
+            end
+            if unchecked then status = "unknown" end
             e = { id = req.id, label = req.label, status = status, hint = req.hint,
                 category = category, required_by = {} }
-            if status == "unknown" and not declared[req.via or ""] then
+            if unchecked then
+                e.detail = "not checked — lw health"
+            elseif status == "unknown" and not declared[req.via or ""] then
                 e.detail = "not probed yet — lw health"
             end
             by_id[req.id] = e
@@ -1026,6 +1287,43 @@ function M.classify(tier, reqs)
     end)
     for _, e in ipairs(entries) do e._i = nil end
     return entries
+end
+
+--- Entries for a health run's report (§16.36): `classify` against the
+--- requirements of EVERY profile (relevance) with `required` / `required_by`
+--- taken from the active-profile scope (§16.33, unchanged). Each entry gains
+--- `area`, `relevant` and — when relevant only through non-active profiles —
+--- `used_by`. A result is relevant when any profile requires it, when its
+--- declaration is relevant as a whole (`whole`: the lw entry, a matched
+--- companion, the compiler-cache launchers), or when it is a plugin-registry
+--- entry the workspace uses or a rejected plugin. Pure.
+--- @param tier table
+--- @param workspace loomworks.Workspace|nil
+--- @param rel? loomworks.InventoryRelevance
+--- @return table[] entries, in category order
+function M.scoped_entries(tier, workspace, rel)
+    rel = rel or M.relevance(workspace)
+    local union = M.classify(tier, M.requirements(workspace, { all_profiles = true }))
+    local active = {}
+    for _, e in ipairs(M.classify(tier, M.requirements(workspace))) do active[e.id] = e end
+    local decl = {}
+    for _, d in ipairs(type(tier) == "table" and tier.declared or {}) do
+        if type(d) == "table" and d.id then decl[d.id] = d end
+    end
+    for _, e in ipairs(union) do
+        local a = active[e.id]
+        local union_required, union_by = e.required, e.required_by
+        e.required = (a and a.required) or false
+        e.required_by = (a and a.required_by) or {}
+        if union_required and not e.required and #union_by > 0 then e.used_by = union_by end
+        local d = e.decl and decl[e.decl] or decl[e.id]
+        e.area = M.area_of(e.category, d and d.area)
+        local rejected = type(e.detail) == "string" and e.detail:match("^rejected") ~= nil
+        e.relevant = union_required or e.id == "lw" or (d ~= nil and d.whole == true)
+            or (e.category == "plugins" and (rel.plugin_ids[e.id] == true or rejected))
+            or false
+    end
+    return union
 end
 
 --- Budget (characters) for the names a compact `names_phrase` lists.
@@ -1080,6 +1378,7 @@ function M.suggestions_for(entries)
                 kind = "suggestion",
                 title = e.label .. " not found — needed by " .. M.names_phrase(e.required_by),
                 remedy = e.hint,
+                area = e.area or M.area_of(e.category),
             }
         end
     end

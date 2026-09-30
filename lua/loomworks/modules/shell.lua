@@ -15,6 +15,10 @@ M.has_options = false
 M.has_devices = false
 M.languages = { "c++" }
 
+--- Language-server integrations whose configurations `lsp_configs` can emit
+--- (core §8.4) — health lists these servers in a workspace using this module.
+M.lsp_servers = { "clangd" }
+
 --- Program-bearing type_config keys (core §8.4 / §17.6; shell spec §14): the
 --- module environment and the clangd binary / database argument. The
 --- configure/build/clean commands are the project's build description — run

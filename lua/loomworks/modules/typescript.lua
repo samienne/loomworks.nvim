@@ -6,6 +6,10 @@ M.has_keyed_tools = false
 M.has_options = false
 M.languages = { "typescript" }
 
+--- Language-server integrations whose configurations `lsp_configs` can emit
+--- (core §8.4) — health lists these servers in a workspace using this module.
+M.lsp_servers = {}
+
 local uv = vim.uv or vim.loop
 local io_mod = require("loomworks.io")
 

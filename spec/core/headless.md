@@ -2792,9 +2792,10 @@ no required split), grouped by area. Nothing is cached in either case
 
 **Refused working copy.** When the workspace's working copy is refused
 (§17.4), health does not stop at the refusal the way a workspace-requiring
-command does: it reports an **actionable** `workspace` item — "working copy
-not trusted — review it with lw trust (or discard it: lw trust --discard)" —
-and continues as outside a workspace (nothing of the refused file is read,
+command does: it reports an **actionable** `workspace` item — title "working
+copy not trusted (.nvim/loomworks.user.json <not signed by this machine |
+modified outside loomworks>)", remedy "review and trust it: lw trust (or
+discard it: lw trust --discard; lw help trust)" — and continues as outside a workspace (nothing of the refused file is read,
 §17.4; nothing is cached). A trusted workspace has no `workspace` item.
 
 **Rendering.** The report is, in order:
@@ -2806,7 +2807,9 @@ and continues as outside a workspace (nothing of the refused file is read,
 3. one **section per selected area**, in area order, headed by the area name,
    holding that area's informational items (`-`) and then its inventory lines.
    An area with nothing to show is omitted, except that an explicitly selected
-   area prints "nothing to report". The `lw` section always starts with the
+   area prints "nothing to report". The loaded plugins the workspace uses
+   are one line ("plugins + N loaded (<names>)"); a rejected or missing one
+   gets its own line. The `lw` section always starts with the
    release line. Required entries come first; a relevant entry that only
    non-active profiles need is marked like a non-required one (`+`, `-`, `?`)
    and names them ("- other profiles: asan"); `x` stays reserved for missing
