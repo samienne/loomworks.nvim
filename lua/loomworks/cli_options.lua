@@ -92,6 +92,8 @@ M.COMMANDS = {
   nuke = spec({ flags = { "-y", "--yes" } }),
   migrate = spec({ flags = { "--check", "-y", "--yes" } }),
   pull = spec({ flags = { "--dry-run", "-n" } }),
+  ["release-notes"] = spec({ flags = { "--all", "--json" }, valued = { "--since", "-n" },
+    eq = { "--since=", "-n=" } }),
   -- Topic / shell names only; their own parsers report anything else.
   help = PERMISSIVE,
   completion = PERMISSIVE,

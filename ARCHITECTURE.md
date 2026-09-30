@@ -285,6 +285,8 @@ may import from its own layer or any layer below it, never above.
 | `config_env.lua` | **Configuration environment resolution** (spec §1.3.3). `merged(configuration, family)` merges `env` across the inheritance chain (bases depth-first, then own; per level plain `env` then the matching `overrides[family].env`, so a nearer plain value shadows a farther family entry); `expansion_context(project, configuration, family, profile, root)` builds the built-ins + resolved-variable context shared with `ConfigUnit:resolved_option_fingerprint`; `resolve(...)` returns the expanded env with reserved compiler-driver names stripped (plus the stripped list, warned once; a `PATH` entry is kept but warned once too); `compose(tool_env, config_env, case_insensitive?)` layers it over the tool env (on Windows, by default, a configuration name replaces a tool name differing only in case). The single resolver for the task context (overseer), the configure snapshot and staleness (ConfigUnit), and test runs | Know about any module; do I/O |
 | `reserved_compiler.lua` | Single definition of the compiler keys owned by the tool: the `^CMAKE_.+_COMPILER$` cache-var pattern and the compiler-driver env set (`CC`, `CXX`, `FC`, `CUDACXX`, …). `is_reserved_option` / `is_reserved_env` (env names matched case-insensitively on every host) are consumed by `Project:save_configuration` (reject at edit), the cmake/meson task builders (strip at build), and `Configuration:compiler_override_warnings` (inline diagnostic). `is_path_env` (PATH, any case — not reserved) drives the `lw config set` warning and `config_env`'s one-time runtime warning. See spec §15 "The tool owns the compiler" | Know about any module; detect anything |
 | `term.lua` | **Terminal-safe CLI output** (headless §16.7): `render(s)` escapes every C0 control except TAB/LF (caret notation, `^[` for ESC), DEL and UTF-8 C1 controls (`\u00XX`), and turns only `sgr(code)` markers (NUL + per-process random nonce + SGR params) into `ESC[<code>m`. `ascii(s)` folds the report glyphs (bullets, marks, dashes, arrows) to ASCII for `lw health` (§16.31): `cmd_health` sets `M._ascii_out` so cli.lua's `out()` folds every line; provider strings stay Unicode for the editor, and `--json` is not folded. cli.lua's `out`/`note`/`die`/`errw`/prompts and the shim's `vim.notify` render every line; the status palette emits markers, never raw ESC. `format_argv(argv)` joins an argv into one readable command line for display only (logs, `lw build -v`; not re-executable quoting) | Color decisions (cli.lua's palette / tty gating) |
+| `release_notes.lua` | **Release notes reader + renderer** (headless §16.37). PURE: string in, tables/lines out; no `require`, no I/O, no `vim` — a host loads it from a freshly installed bundle into a sandbox (`boot.whats_new`). `parse(text)` reads `CHANGELOG.md` (preamble and `<!-- -->` comments skipped; `## Unreleased` / `## <ver> - <date>` entries, summary paragraph, `### <section>` bullets with 2-space continuations) and records grammar errors; `validate(doc, text)` adds the strict rules (ASCII, section set/order, summaries, descending unique full-release versions). `compare`/`normalize`/`is_pre_release` are a local semver copy (no `boot.paths`; named apart from boot functions the old-host static guard tracks). `visible(doc, running)` applies the running-version rules (prerelease: Unreleased under the running version + entries `<=` its base; dev: everything); `select(doc, running, sel)` implements default/`<version>`/`--since`/`--all`/`-n`; `render(result, {width, paint})` wraps only when given a width; `to_json(result, null)`; `whats_new(text, from, to, {width, max})` is the self-update block (summary + Breaking/Upgrade-notes items per version, capped) | Locate the file, know the running version, persist anything (that is `release_notice.lua`) |
+| `release_notice.lua` | **Release-notes glue** (headless §16.37). `read_text()` finds `CHANGELOG.md` beside this file (bundle: `loomworks/CHANGELOG.md`) or at the source tree root (`<lua>/../CHANGELOG.md`); `running_version()` from `_G.__loomworks_luaroot`'s `lua-<ver>` basename (nil for a dev source / the editor); `release_data_dir()` = that root's parent for a global install (nil when pinned: a `/pinned/` segment or `LOOMWORKS_PINNED`). Last-seen version in `<data>/release-notes-seen` (`read_seen` / raise-only atomic `write_seen`), `previous_installed` (newest older `lua-*` sibling) as the fallback baseline, `silenced(getenv, cfg)`, pure `decide{}` and `maybe_notice{}` for cli.lua's one-line upgrade notice. Uses no boot module, so it works under any old host | Render notes (that is `release_notes.lua`) |
 | `description.lua` | **Descriptions** (spec §1.10, §17.11). This is a pure module with no workspace access. `normalize(v) → string|nil` does CRLF/CR → LF, strips trailing whitespace per line and leading/trailing blank lines, and maps empty to nil. `validate(s) → ok, err` refuses control characters other than LF/TAB and anything over 4096 bytes. `summary(s)` / `body(s)` split git-style. `fit(s, cols)` truncates by display width with `…` (never bytes) for the CLI and the editor. `inert(s)` renders control characters and bidi overrides visibly for buffer lines and pickers. `statusline_escape(s)` escapes `%` → `%%` and drops control characters. `strip_comments(lines)` serves the `#`-comment editor buffers. It is used by the domain objects' `set_description`, the serialisers, cli.lua (`describe`, list rows, `show` views) and the UI | Workspace access; I/O |
 | `log.lua` | Workspace logger (`.nvim/loomworks.log`), shared by the editor and every `lw` invocation: append-only (never truncated), rotated to `loomworks.log.1` past `MAX_BYTES` (1 MB, one old file kept, best-effort rename). Levels ERROR/WARN/INFO/DEBUG; capture mode for tests | Truncate the log; render to the terminal |
 | `exe.lua` | **Program resolution** (spec §5.10): `resolve(name, env?, cwd?)` → absolute path from absolute PATH entries only (task env PATH first; PATHEXT on Windows; never the cwd or an empty/relative entry; an explicit relative path only against the given child `cwd`); `cmd`/`cmd.exe` → `%SystemRoot%\System32\cmd.exe` (`cmd_exe`). `harden_spec(spec)` resolves a task spec's `cmd[1]` and adds `NoDefaultCurrentDirectoryInExePath=1` to its env on Windows (nil + err ⇒ caller must not spawn); `system(cmd, opts, cb)` = `vim.system` over a resolved argv (unresolvable ⇒ synthetic code-127 result, nothing spawned); `resolve_server_cmd` for LSP `rpc.start` argv; `editor_exepath` filters a cwd hit out of `vim.fn.exepath` (Neovim < 0.12 searched the cwd on Windows). Used by overseer.lua (every `new_task`), cli.lua `run_spec`/git, the shim's `which`/`vim.system`, clangd/qmlls, inventory, ctest, msvc, meson. `boot/exe.lua` is the bootstrap's copy of the rule (curl), plus `run_in_place(bin, args)` — the redirect's re-exec (spec §16.23): shared stdio, waits for the pinned host and returns its status (128+signal when killed); interrupts are ignored on Windows (the console event reaches the child) and forwarded on POSIX, so the child's cleanup is never cut short (libuv's kill-on-close job would kill it if the parent exited) | Decide *which* tool to run (callers do); trust-gate configured paths |
@@ -996,6 +998,15 @@ replaces it, which would drop `PATH`).
   and re-sign it (`trust.sign_file`), or delete it and its `.bak` with
   `--discard`. Never loads the workspace, so it works on a refused one;
   confirmation is mandatory (`--yes` when non-interactive).
+- `lw release-notes [<version> | --since <v> | --all | -n <N>] [--json]` (spec
+  §16.37) — `cli.cmd_release_notes`: `release_notice.read_text` +
+  `release_notes.parse/select/render` (width only on a stdout tty, capped at
+  100; the status palette's `title`/`dim`), `--json` via
+  `release_notes.to_json(result, vim.NIL)`; records the running version as seen
+  (text output only). `main()` calls `M._release_notice(a, noninteractive)`
+  (pcall'd) before dispatching any command but `release-notes`, `help`,
+  `completion` and the host-command fallbacks: one stderr line when stderr is a
+  tty and the run is interactive, nothing for `--json`.
 - `lw <project|config|configset|profile> describe` (spec §16.35) — `cli.cmd_describe`
   resolves the item, `_describe_parse` / `_describe_source_text` take the text
   source (`-m`, `-F`, stdin, `-e` via `_describe_edit` on `$VISUAL`/`$EDITOR`
@@ -1280,7 +1291,9 @@ A GitHub Release (tag on `master`) carries:
 
 - the host binaries (above);
 - `loomworks-lua-<ver>.zip` — the system Lua (`lua/loomworks/**`, shim,
-  modules): everything *except* the bootstrap;
+  modules): everything *except* the bootstrap; `build_bundle.sh` also adds the
+  repository's `CHANGELOG.md` as `loomworks/CHANGELOG.md` (the release notes,
+  spec §16.37), so the manifest's archive hash covers them;
 - `manifest.json` — release version, `min_host_version`, and a SHA-256 for
   every asset;
 - `manifest.json.sig` — a detached **ECDSA P-256 + SHA-256** signature over the
@@ -1298,6 +1311,7 @@ expose. The verifier lives in `lua/boot/verify.lua`; see below.
 <data>/loomworks/            (%LOCALAPPDATA%\loomworks | ~/.local/share/loomworks)
   bin/lw[.exe]               the host binary (on PATH)
   lua-<ver>/                 verified, extracted release bundles (versioned)
+  release-notes-seen         last-seen release-notes version (spec §16.37; one line)
   modules/<name>/lua/**      acquired modules (spec §16.20); .module.json record
   cache/tools.json           machine-level tool cache (Windows; elsewhere it is
                              $XDG_CACHE_HOME/loomworks/tools.json, default ~/.cache)
@@ -1320,6 +1334,19 @@ running incompatible Lua (spec §16.14). Downloads are proxy-aware; because
 integrity rests on the signature, a MITM'd or cert-relaxed transport cannot
 inject code (spec §16.12). Self-update is a management operation and never
 runs as part of `lw build` (spec §16.9, §16.13).
+
+**What's new** (spec §16.32, §16.37). `main.lua` remembers the newest
+installed bundle before `update.self_update`; when the result installed a
+newer one it calls `boot.whats_new.report{}` (pcall'd): `load_renderer`
+loadstring's the NEW bundle's `loomworks/release_notes.lua` with `setfenv` to a
+table of pure builtins (no io/os/require/package), calls
+`whats_new(<its CHANGELOG.md text>, old, new, {width, max = 5})`, folds every
+line to ASCII (`sanitize`), and appends the `lw release-notes --since <old>`
+pointer; a non-tty / non-interactive run prints the pointer alone; silenced
+(setting `release-notes = off` / `LOOMWORKS_RELEASE_NOTES`) prints nothing.
+Printing records the new version in `<data>/release-notes-seen` (raise-only).
+`boot.bootstrap.install` adds `what's new: <cmd> release-notes --since <old>`
+after a pin moved up to a release `>= RELEASE_NOTES_SINCE`.
 
 **Update channels** (spec §16.29). `self_update` first resolves an update
 channel — `update.resolve_channel(opts)` with precedence `opts.channel`
@@ -1632,7 +1659,9 @@ binary self-replacement (spec §16.32), `install.lua`
 self-install (asks before replacing a *different* installed binary, which
 `describe_binary` identifies from its fused zip without executing it),
 `help.lua` host-level help (the only source of the host commands' help, with
-per-sub-command sections for `bootstrap`), `modules.lua` module acquisition, `pin.lua` pin parse / asset
+per-sub-command sections for `bootstrap`), `whats_new.lua` self-update's
+"what's new" lines rendered from the new bundle's notes (sandboxed load) + the
+last-seen record, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap` status page +
 `install`/`upgrade` (+ the deprecated `update`), `launcher.lua` the launcher
 templates, `launcher_check.lua` the shared launcher/pin checks), `lua/loomworks/shim/`, `modules.json` (the curated
@@ -1642,6 +1671,14 @@ commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
 system Lua at all (release host, no bundle yet) it answers help requests from
 `boot.help` instead of failing with "no loomworks release is installed"; `lw module` is
 a CLI command (system Lua) that calls into `boot.modules`.
+Release notes: `scripts/release/release_notes.py check|body <version>`
+(stdlib only) is the release gate and the release-page body — a full-release
+tag needs its `## <version> - <date>` entry with a summary and items and an
+empty Unreleased; a pre-release only warns when Unreleased is empty. `release.yml`
+runs it in a `notes` job that `bundle` and `publish` need, and publishes with
+`body_path`. The Lua reader in `release_notes.lua` is the runtime and test-suite
+implementation of the same grammar (`tests/release_notes_spec.lua` validates the
+real `CHANGELOG.md`).
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + release version + fuse
 one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix

@@ -110,6 +110,13 @@ downgrades: switching back to `stable` while a newer prerelease is installed
 keeps that prerelease running until a newer stable release arrives (lw says
 so). `lw version` marks such a bundle `(prerelease)`.
 
+What's new: after installing a newer release, self-update lists what changed
+since the previous one - each release's summary and anything you must act on -
+from the notes the new release carries, then names `lw release-notes --since
+<old>` for the full notes. Piped or non-interactive, it prints only that
+pointer. Silence it with `lw settings set release-notes off` or
+LOOMWORKS_RELEASE_NOTES=off.
+
 Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` settings key,
 else the built-in default. A local directory works as an offline mirror and is
 used as-is (it supersedes the channel - no release-API query).

@@ -67,6 +67,7 @@ local to each file and restart at §1.
 | What a workspace's files may cause to execute; machine signatures on `.nvim/` state | `specification.md` §17 |
 | Running cross-built programs on a device: foreign-artifact detection, device runners, staging, remote run/test | `specification.md` §18 |
 | What `lw health` checks and shows: providers, environment inventory, scope (relevant / `--all`), areas | `specification.md` §16.31, §16.33, §16.36; §8.4 / §9.3 for the optional relevance fields |
+| Release notes: the `CHANGELOG.md` grammar, `lw release-notes`, the upgrade notice, self-update's "what's new", the release gate | `specification.md` §16.37 (+ §16.32 for self-update, §16.24 for pin upgrades) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /

@@ -5,6 +5,8 @@
 #
 # Produces in <out_dir>:
 #   loomworks-lua-<version>.zip   the system Lua (lua/loomworks/** -> loomworks/…)
+#                                 + the release notes (CHANGELOG.md ->
+#                                 loomworks/CHANGELOG.md, spec §16.37)
 #   manifest.json                 version, min_host_version, bundle name, sha256s
 #   manifest.json.sig             ECDSA-P256+SHA-256 signature over manifest.json
 #
@@ -21,20 +23,24 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 mkdir -p "$out"
 bundle="loomworks-lua-${version}.zip"
 
+# The release notes ride inside the signed archive (spec §16.37).
+[ -f "$repo/CHANGELOG.md" ] || { echo "build_bundle.sh: $repo/CHANGELOG.md is missing" >&2; exit 1; }
+
 # Deterministic zip of lua/loomworks -> loomworks/… (fixed order + timestamps),
 # so identical input yields an identical hash. Python's zipfile is miniz-readable.
-python3 - "$repo/lua/loomworks" "$out/$bundle" <<'PY'
+python3 - "$repo/lua/loomworks" "$out/$bundle" "$repo/CHANGELOG.md" <<'PY'
 import sys, os, zipfile
-src, outzip = sys.argv[1], sys.argv[2]
+src, outzip, notes = sys.argv[1], sys.argv[2], sys.argv[3]
 base = os.path.dirname(src)  # .../lua
 files = []
 for r, _, fs in os.walk(src):
     for f in fs:
-        files.append(os.path.join(r, f))
+        p = os.path.join(r, f)
+        files.append((os.path.relpath(p, base).replace(os.sep, "/"), p))
+files.append(("loomworks/CHANGELOG.md", notes))
 files.sort()
 with zipfile.ZipFile(outzip, "w", zipfile.ZIP_DEFLATED) as z:
-    for p in files:
-        arc = os.path.relpath(p, base).replace(os.sep, "/")
+    for arc, p in files:
         zi = zipfile.ZipInfo(arc, date_time=(1980, 1, 1, 0, 0, 0))
         zi.compress_type = zipfile.ZIP_DEFLATED
         zi.external_attr = 0o644 << 16
