@@ -1059,24 +1059,31 @@ function Project:save_deploy(deploy)
     return true
 end
 
---- Is `name` a valid NEW launch configuration name (spec §8.7)? Non-empty,
---- no leading/trailing whitespace, no control character, no leading `-` (it
---- would read as a command-line flag). `:` is allowed. Existing names that
---- break the rule keep working; the rule applies when a name is created.
+--- Is `name` a valid NEW launch configuration name (spec §8.7)? Non-empty, no
+--- whitespace anywhere, no control character, no `/` or `\`, no leading `-`
+--- (it would read as a command-line flag). Other punctuation, including `:`,
+--- is allowed. Existing names that break the rule keep working (they can be
+--- run, described and renamed away); the rule applies when a name is created
+--- (add) or given (rename). Every refusal ends with what IS allowed.
 --- @param name any
 --- @return boolean ok, string|nil err
 function Project.validate_launch_name(name)
+    local allowed = " (allowed: letters, digits and punctuation such as - _ . : +;"
+        .. " no whitespace, no '/' or '\\', not starting with '-')"
     if type(name) ~= "string" or name == "" then
-        return false, "a launch name cannot be empty"
-    end
-    if name:match("^%s") or name:match("%s$") then
-        return false, "a launch name cannot start or end with whitespace"
+        return false, "a launch name cannot be empty" .. allowed
     end
     if name:find("[%z\1-\31\127]") then
-        return false, "a launch name cannot contain control characters"
+        return false, "a launch name cannot contain control characters" .. allowed
+    end
+    if name:find("%s") then
+        return false, "a launch name cannot contain whitespace" .. allowed
+    end
+    if name:find("[/\\]") then
+        return false, "a launch name cannot contain '/' or '\\'" .. allowed
     end
     if name:sub(1, 1) == "-" then
-        return false, "a launch name cannot start with '-' (it would read as a flag)"
+        return false, "a launch name cannot start with '-' (it would read as a flag)" .. allowed
     end
     return true, nil
 end

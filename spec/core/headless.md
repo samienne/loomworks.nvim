@@ -315,7 +315,10 @@ profile fill value that is not set, or setting one to the value it already
 has. A reminder to publish is printed only after
 an edit that **changed** a configuration reaching the published snapshot
 (§2.4 effective intent) — and, likewise, after creating a configuration only
-when it would reach the published snapshot. `get` returns the resolved string for the full path, or the
+when it would reach the published snapshot. "Reaching the published snapshot"
+requires a `loomworks.json` to exist: in a local-only workspace (no
+`loomworks.json` yet) no edit prints the `lw publish` reminder, for every
+management edit (set, describe, rename, map). `get` returns the resolved string for the full path, or the
 sub-dict for `env`, `overrides`, `overrides.<family>` and
 `overrides.<family>.env`. `show` lists the configuration's `env` alongside its
 `options`.
@@ -336,7 +339,12 @@ by `(project, old, new)`. The operation is the atomic rename of §8.7: the whole
 launch table moves, including `deploy`, `device`, `device_log`, `debug`,
 `description` and unknown fields, and every profile's default-target
 descriptor that names it follows. The same refusals apply: an invalid or
-colliding new name, or an unknown old name.
+colliding new name, or an unknown old name. When the new name is also the name
+of one of the project's build targets, the rename succeeds with a warning on
+stderr (`lw run <name>` then needs `--launch` / `--target`, §16.17). The
+targets are those of the project's configured builds, scanned on demand as
+`lw target` does. When none is configured yet, the check cannot be made and a
+note on stderr says so.
 
 A management host MAY also **set, replace or clear the description** (§1.10) of
 a project, a user configuration, a configuration set, a profile or a launch
@@ -2575,8 +2583,9 @@ Reading standard input with `-F -` is data, not a prompt, so it is allowed under
 - A generated configuration is refused, with a pointer to
   `lw config add <project> <name> <generated-config>` (§1.10).
 - Describing a `shared` item materialises it (§2.4, implicit cascade on use).
-  The publish reminder is printed only when the change reaches the published
-  snapshot, as for every other edit (§16.9).
+  The publish reminder is printed only when a `loomworks.json` exists and the
+  change reaches it, as for every other edit (§16.9). A local-only workspace
+  never shows it.
 
 **Display in one-line views.** Every listing and status row that names a
 describable item shows its **summary**, dimmed on a colour terminal. This covers
@@ -2601,8 +2610,11 @@ The summary is fitted as follows:
   - When fewer than 16 columns would remain for the summary column, the
     summaries move onto continuation lines beneath their rows, indented and
     capped at 60 columns. The list then stays on the row.
-  - When standard output is not a terminal, the 36-column cap alone applies,
-    and `lw configset list` prints the mappings in full.
+  - When standard output is not a terminal, a listing that prints its
+    open-ended list in full (`lw configset list`, and `lw launch list`'s
+    `RUNS`) prints the summaries in full too: the column is as wide as the
+    longest summary, with no cap and no `…`. The status overview's rows, whose
+    lists stay cut, keep the 36-column cap.
 - **Rows without an open-ended tail** (`lw project list`, `lw config list`,
   `lw profile list`, the status overview's profile rows):
   - The summary ends the row. Its width is the terminal width (§16.18, the
@@ -2624,7 +2636,8 @@ The summary is fitted as follows:
   appears only when some launch has a description), then `RUNS`.
   - `RUNS` is the open-ended tail: `target:<t>` or the command, then the args.
     On a terminal it is cut with `…` to the remaining width, instead of today's
-    fixed 46 bytes. When stdout is not a terminal it is printed in full.
+    fixed 46 bytes. When stdout is not a terminal it is printed in full, and
+    so is the `DESCRIPTION` summary (no 36-column cap).
   - The full args are always in `lw launch show`.
 - `lw target list` rows (`* <project>:<name> (launch|exe)`) and the status
   overview's and `lw profile show`'s Targets rows end in a bounded kind label,

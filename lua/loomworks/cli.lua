@@ -2937,13 +2937,13 @@ function M.cmd_launch_list(ws, proj_name)
   pw = math.min(pw, 20); nw = math.min(nw, 24)
   -- One layout rule (spec §16.35): PROJECT and NAME, then the DESCRIPTION
   -- summary column, then RUNS — the open-ended tail, cut to the terminal
-  -- (printed in full when piped).
+  -- (both printed in full when piped).
   local d = require("loomworks.description")
   local descs = {}
   for i, r in ipairs(rows) do descs[i] = r.description end
   local prefix_w = 2 + pw + 1
   local tw = M._term_width()
-  local sum_w = M._summary_column(descs, tw, prefix_w + 1 + nw)
+  local sum_w = M._summary_column(descs, tw, prefix_w + 1 + nw, true)
   local tail_w
   if M._stdout_tty() then
     local used = prefix_w + 1 + nw + 1 + (sum_w > 0 and (sum_w + 3) or 0)
@@ -3265,11 +3265,40 @@ function M.cmd_launch(sub, root, args)
   die("unknown launch subcommand '" .. tostring(sub) .. "' — use list|add|set|show|remove|rename|describe")
 end
 
+--- The build-target names of `project` (ids and display names), for the
+--- launch-name clash warning (spec §8.7). Targets come from the project's
+--- configured units, scanned on demand like `lw target` does (a fresh `lw`
+--- process has not parsed them yet). Returns the name set, plus `true` when the
+--- project's module has build targets but no unit could be scanned (no
+--- configured build yet), so the check could not be made.
+--- @return table<string, boolean> names, boolean unscanned
+function M._project_build_target_names(ws, project)
+  local names, scanned = {}, false
+  for _, unit in pairs(ws._config_units or {}) do
+    if unit._project == project then
+      ensure_unit_targets(ws, unit)
+      if type(unit.targets) == "table" then
+        scanned = true
+        for id, t in pairs(unit.targets) do
+          if not id:match("^launch:") then
+            names[id] = true
+            local dn = t.display_name and t:display_name()
+            if dn then names[dn] = true end
+          end
+        end
+      end
+    end
+  end
+  local mod = project._module and project._module.impl
+  return names, (not scanned) and mod ~= nil and mod.parse_targets ~= nil
+end
+
 --- Rename a launch configuration (spec §8.7) and report it: the whole table
 --- moves and every profile's default target follows. Warns (never refuses)
 --- when the new name is also a build target of the project, since `lw run
---- <name>` then needs `--launch` / `--target`. `opts.target_names` is a test
---- seam; by default the project's parsed build targets are consulted.
+--- <name>` then needs `--launch` / `--target`; says so when the targets are
+--- not scanned yet. `opts.target_names` is a test seam; by default the
+--- project's build targets are scanned (`M._project_build_target_names`).
 --- @param ws table
 --- @param project table
 --- @param old string
@@ -3288,24 +3317,17 @@ function M._launch_rename(ws, project, old, new, opts)
   if moved and #moved > 0 then
     out("  default target updated in profiles: " .. table.concat(moved, ", "))
   end
-  local names = opts.target_names
+  local names, unscanned = opts.target_names, false
   if not names then
-    names = {}
-    for _, unit in pairs(ws._config_units or {}) do
-      if unit._project == project and type(unit.targets) == "table" then
-        for id, t in pairs(unit.targets) do
-          if not id:match("^launch:") then
-            names[id] = true
-            local dn = t.display_name and t:display_name()
-            if dn then names[dn] = true end
-          end
-        end
-      end
-    end
+    names, unscanned = M._project_build_target_names(ws, project)
   end
   if names[new] then
     errw("lw: warning: '" .. new .. "' is also the name of a build target in '" .. project.key
       .. "' - `lw run " .. new .. "` needs --launch or --target to choose\n")
+  elseif unscanned then
+    errw("lw: note: the build targets of '" .. project.key .. "' are not scanned yet (no configured "
+      .. "build) - could not check that '" .. new .. "' is not also a build target name; if it is, "
+      .. "`lw run " .. new .. "` needs --launch or --target to choose\n")
   end
   M._publish_hint(M._item_reaches_shared(ws, "projects", project, nil))
   return 0
@@ -3417,7 +3439,7 @@ function M.cmd_workspace(sub, root, args)
     local ok, err = ws:rename_workspace(new_name)
     if not ok then die("could not rename workspace: " .. tostring(err)) end
     out("workspace name set to '" .. ws.name .. "'")
-    out("`lw publish` to update the shared loomworks.json.")
+    if M._has_shared_file(ws) then out("`lw publish` to update the shared loomworks.json.") end
     return 0
   end
   die("unknown workspace subcommand '" .. tostring(sub) .. "' — use rename")
@@ -3714,13 +3736,25 @@ local function publish_item(ws, item, label)
   return 0
 end
 
+--- Does the workspace have a published loomworks.json? The publish reminder
+--- ("`lw publish` to update the shared loomworks.json.") is shown only when it
+--- does: a local-only workspace (spec §2.4, no loomworks.json yet) has no
+--- shared file to update, so every edit there stays quiet.
+--- @param ws table
+--- @return boolean
+function M._has_shared_file(ws)
+  local r = ws and ws.root
+  return type(r) == "string" and uv.fs_stat(r .. "/loomworks.json") ~= nil
+end
+
 --- Whether `item` — a project (`kind` "projects"), configuration ("configs",
 --- with its `proj`), configuration set ("config_sets") or profile ("profiles")
 --- — reaches the shared loomworks.json: it is in the effective-intent closure
 --- (§2.4: its own intent, or a published set/profile pulls it in), or a
 --- published copy of it already exists (so editing/removing it changes
 --- loomworks.json). Gates the "`lw publish` …" hint after a remove / rename /
---- (un)map: a never-published LOCAL item has nothing to publish. Evaluate it
+--- (un)map: a never-published LOCAL item has nothing to publish, and nothing
+--- reaches a loomworks.json that does not exist (`M._has_shared_file`). Evaluate it
 --- BEFORE a remove (the item leaves the closure once gone). Errs on the side of
 --- the hint when the closure cannot be computed.
 --- @param ws table
@@ -3729,6 +3763,7 @@ end
 --- @param proj? loomworks.Project the configuration's project (kind "configs")
 --- @return boolean
 local function item_reaches_shared(ws, kind, item, proj)
+  if not M._has_shared_file(ws) then return false end
   local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
   if not (ok_p and type(pub) == "table" and type(pub[kind]) == "table") then return true end
   if pub[kind][item] then return true end
@@ -4433,6 +4468,7 @@ end
 --- @param name string
 --- @return boolean
 local function config_reaches_shared(ws, proj, name)
+  if not M._has_shared_file(ws) then return false end
   local ok_p, pub = pcall(function() return ws:_publishable_to_shared() end)
   if not (ok_p and type(pub) == "table" and type(pub.configs) == "table") then return true end
   for _, c in ipairs(proj._configurations or {}) do
@@ -4804,7 +4840,7 @@ function M.cmd_cset_list(root)
   end
   local prefix_w = 2 + name_w
   local tw = M._term_width()
-  local sum_w = M._summary_column(descs, tw, prefix_w)
+  local sum_w = M._summary_column(descs, tw, prefix_w, true)
   local tail_w = nil
   if M._stdout_tty() then
     local used = prefix_w + 1 + (sum_w > 0 and (sum_w + 3) or 0)
@@ -5241,11 +5277,16 @@ M._SUMMARY_TAIL_CAP = 36
 --- open-ended list (spec §16.35): as wide as the longest summary shown, at
 --- most 36 columns; 0 when no row has a description; -1 when fewer than 16
 --- columns would remain for it on this terminal (continuation lines instead).
+--- `full_when_piped`: a listing that prints its open-ended list in full when
+--- stdout is not a terminal (`lw launch list`, `lw configset list`) prints the
+--- summaries in full too — the column is then as wide as the longest summary,
+--- uncapped. The status overview keeps the cap (its lists stay cut).
 --- @param descs (string|nil)[] the rows' descriptions
 --- @param tw integer terminal width
 --- @param prefix_w integer display width of the widest identity/fixed prefix
+--- @param full_when_piped boolean|nil
 --- @return integer
-function M._summary_column(descs, tw, prefix_w)
+function M._summary_column(descs, tw, prefix_w, full_when_piped)
   local d = require("loomworks.description")
   local longest = 0
   for i = 1, #descs do
@@ -5253,8 +5294,10 @@ function M._summary_column(descs, tw, prefix_w)
     if sum then longest = math.max(longest, d.width(d.inert_line(sum))) end
   end
   if longest == 0 then return 0 end
+  if not M._stdout_tty() then
+    return full_when_piped and longest or math.min(longest, M._SUMMARY_TAIL_CAP)
+  end
   local w = math.min(longest, M._SUMMARY_TAIL_CAP)
-  if not M._stdout_tty() then return w end
   -- Room left after the prefix, two gaps and a 16-column minimum for the list.
   local avail = tw - prefix_w - 2 - 2 - 16
   if avail < 16 then return -1 end
