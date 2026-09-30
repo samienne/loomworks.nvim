@@ -105,6 +105,8 @@ Before merging ANY branch to master, verify:
    Domain object annotations live in the implementation file, not types.lua.
 6. **Comments** — comments near changed lines are still accurate
 7. **Tests pass** — `make test`
+8. **CHANGELOG.md** — user-visible changes are under `## Unreleased`, in the
+   right section, with the PR number
 
 **Do not merge if documentation is out of sync.** Fix the docs first, then
 merge. If the user does not ask for this check, remind them before merging.

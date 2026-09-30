@@ -1274,6 +1274,44 @@ naming one.
   [Installing `lw`](#installing-lw) (`lw health` flags such a binary); from then on `lw self-update` keeps the
   binary current.
 
+**Release notes** (spec §16.37). Every release carries its notes
+([CHANGELOG.md](CHANGELOG.md)) inside the signed bundle, so `lw release-notes`
+works offline and shows exactly what the release you run contains:
+
+```sh
+lw release-notes                  # the three newest releases up to yours
+lw release-notes --since 0.1.38   # everything that changed after 0.1.38
+lw release-notes 0.1.40           # one release
+lw release-notes --all            # every release (also -n <N>, --json)
+```
+
+After `lw self-update` installs a newer release it lists what changed since
+the version you had — each release's summary plus anything you must act on
+(breaking changes, upgrade notes) — and names `lw release-notes --since <old>`
+for the rest:
+
+```
+lw: installed loomworks 0.1.41
+What's new since 0.1.40:
+  0.1.41  Release notes are built in: lw release-notes, and self-update
+          says what changed.
+Full notes: lw release-notes --since 0.1.40
+lw: updated host binary 0.1.40 -> 0.1.41 (...)
+```
+
+Piped, in CI or with `--no-input`, it prints only the pointer line. An update
+made by an older `lw` binary (which does not know about release notes) is
+announced instead by one line on your next interactive command:
+
+```
+lw: updated 0.1.40 -> 0.1.41 - see what's new: lw release-notes --since 0.1.40
+```
+
+It is shown once, only on a terminal, never in scripts or under `--no-input`,
+and never for a repository-pinned release (`lw bootstrap upgrade` names the
+command instead). Turn both off with `lw settings set release-notes off` or
+`LOOMWORKS_RELEASE_NOTES=off`; `lw release-notes` itself always works.
+
 ### Installing `lw`
 
 `lw` installs itself: download the binary for your platform, **verify it**,
@@ -1578,7 +1616,8 @@ silently ignored; arguments for the program or build tool go after `--`.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw health [<area>...] [--all]` | List the workspace's advisory items in full (never fails) — only what this workspace uses; `--all` for everything, areas (`lw`, `workspace`, `toolchains`, `cache`, `sdks`, `editor`, `launcher`, `submodules`) to narrow it (see [Scope and areas](#scope-and-areas)). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, required items first, the unused ones only with `--all`; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
+| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, …) |
+| `lw release-notes [<version> \| --since <v> \| --all \| -n <N>] [--json]` | What changed in each release, offline, from the notes the running release carries (see "Release notes" under [Standalone `lw` runner](#standalone-lw-runner)) |
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
 | `lw bootstrap upgrade` | `lw bootstrap install --latest`: move the pin to the newest release |
