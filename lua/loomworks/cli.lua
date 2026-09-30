@@ -4519,12 +4519,29 @@ function M.cmd_cset_list(root)
   for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
   if #sets == 0 then out("(no configuration sets)"); return 0 end
   table.sort(sets, function(a, b) return a.name < b.name end)
+  -- One layout rule (spec §16.35): name, then the summary column, then the
+  -- open-ended mapping list, which takes the truncation on a terminal.
+  local d = require("loomworks.description")
+  local name_w, descs = 16, {}
+  for i, cs in ipairs(sets) do
+    name_w = math.max(name_w, d.width(cs.name))
+    descs[i] = cs.description
+  end
+  local prefix_w = 2 + name_w
+  local tw = M._term_width()
+  local sum_w = M._summary_column(descs, tw, prefix_w)
+  local tail_w = nil
+  if M._stdout_tty() then
+    local used = prefix_w + 1 + (sum_w > 0 and (sum_w + 3) or 0)
+    tail_w = math.max(16, tw - used)
+  end
   for _, cs in ipairs(sets) do
     local rows = {}
     for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
     table.sort(rows)
-    out(string.format("  %-16s %s", cs.name, next(rows) and table.concat(rows, ", ") or "(empty)")
-      .. M._summary_suffix(0, cs.description, nil, nil, true))
+    local prefix = "  " .. cs.name .. string.rep(" ", name_w - d.width(cs.name))
+    out(M._row_with_summary(prefix, cs.description, sum_w,
+      next(rows) and table.concat(rows, ", ") or "(empty)", tail_w))
   end
   return 0
 end
@@ -4931,12 +4948,69 @@ function M._summary_suffix(plain_w, desc, tw, pal, force_cont)
     if force_cont then return "\n" .. indent .. dim(d.fit(sum, 60)) end
     return "  " .. dim(d.fit(sum, 60))
   end
-  tw = tw or term_width()
+  tw = tw or M._term_width()
   local avail = tw - plain_w - 2
   if not force_cont and avail >= 16 then
     return "  " .. dim(d.fit(sum, math.min(60, avail)))
   end
   return "\n" .. indent .. dim(d.fit(sum, math.min(60, math.max(1, tw - #indent))))
+end
+
+--- Widest summary column in a row with an open-ended tail (spec §16.35).
+M._SUMMARY_TAIL_CAP = 36
+
+--- Width of the summary column for a listing whose rows end in an
+--- open-ended list (spec §16.35): as wide as the longest summary shown, at
+--- most 36 columns; 0 when no row has a description; -1 when fewer than 16
+--- columns would remain for it on this terminal (continuation lines instead).
+--- @param descs (string|nil)[] the rows' descriptions
+--- @param tw integer terminal width
+--- @param prefix_w integer display width of the widest identity/fixed prefix
+--- @return integer
+function M._summary_column(descs, tw, prefix_w)
+  local d = require("loomworks.description")
+  local longest = 0
+  for i = 1, #descs do
+    local sum = d.summary(descs[i])
+    if sum then longest = math.max(longest, d.width(d.inert_line(sum))) end
+  end
+  if longest == 0 then return 0 end
+  local w = math.min(longest, M._SUMMARY_TAIL_CAP)
+  if not M._stdout_tty() then return w end
+  -- Room left after the prefix, two gaps and a 16-column minimum for the list.
+  local avail = tw - prefix_w - 2 - 2 - 16
+  if avail < 16 then return -1 end
+  return math.min(w, avail)
+end
+
+--- Build a one-line row with an open-ended tail (spec §16.35): `prefix`, then
+--- the summary column (`sum_w` from `_summary_column`), then `tail` cut to
+--- `tail_w` display columns (nil = in full). With `sum_w == 0` the row is
+--- `prefix .. " " .. tail`; with `sum_w == -1` the summary goes on an indented
+--- continuation line.
+--- @param prefix string identity + fixed columns (already padded)
+--- @param desc string|nil
+--- @param sum_w integer
+--- @param tail string
+--- @param tail_w integer|nil
+--- @param pal table|nil status palette (summary dimmed)
+--- @return string
+function M._row_with_summary(prefix, desc, sum_w, tail, tail_w, pal)
+  local d = require("loomworks.description")
+  local dim = (pal and pal.dim) or function(x) return x end
+  local t = tail_w and d.fit(tail, math.max(1, tail_w)) or tail
+  local sum = d.summary(desc)
+  sum = sum and d.inert_line(sum) or nil
+  if sum_w == 0 then return prefix .. " " .. t end
+  if sum_w < 0 then
+    local row = prefix .. " " .. t
+    if not sum then return row end
+    local tw = M._stdout_tty() and M._term_width() or 66
+    return row .. "\n      " .. dim(d.fit(sum, math.min(60, math.max(1, tw - 6))))
+  end
+  local text = sum and d.fit(sum, sum_w) or ""
+  local padded = text .. string.rep(" ", math.max(0, sum_w - d.width(text)))
+  return prefix .. "  " .. (text ~= "" and dim(padded) or padded) .. "  " .. t
 end
 
 --- Print an item's full description in a detail view, under a `description`
@@ -6715,14 +6789,19 @@ function M.cmd_status(root, opts)
   for _, cs in ipairs(sets) do cs_longest = math.max(cs_longest, #tostring(cs.name)) end
   local cs_name_w = fit_column(cs_longest, tw, 2 + 1 + 56 + 4, 8)
   local cs_map_w = math.max(56, tw - 2 - cs_name_w - 1 - 4)
+  -- Summary column before the open-ended mappings, which take the truncation
+  -- (spec §16.35).
+  local cs_descs = {}
+  for i, cs in ipairs(sets) do cs_descs[i] = cs.description end
+  local cs_sum_w = M._summary_column(cs_descs, tw, 2 + cs_name_w)
+  if cs_sum_w > 0 then cs_map_w = math.max(16, tw - 2 - cs_name_w - 1 - cs_sum_w - 3 - 4) end
   status_section(pal, "Configuration sets", sets, MAX, function(cs)
     local rows = {}
     for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
     table.sort(rows)
-    local row = string.format("  %-" .. cs_name_w .. "s %s", trunc(cs.name, cs_name_w),
-      trunc(next(rows) and table.concat(rows, ", ") or "(empty)", cs_map_w))
-    return row
-      .. M._summary_suffix(require("loomworks.description").width(row), cs.description, tw, pal)
+    local prefix = string.format("  %-" .. cs_name_w .. "s", trunc(cs.name, cs_name_w))
+    return M._row_with_summary(prefix, cs.description, cs_sum_w,
+      next(rows) and table.concat(rows, ", ") or "(empty)", cs_map_w, pal)
       .. inline_markers(pal, grouped.by_key["set:" .. cs.name])
   end, "lw configset list", "create a set · lw configset create <name> [project=config …]")
 
@@ -6737,6 +6816,11 @@ function M.cmd_status(root, opts)
   for _, p in ipairs(projs) do pj_longest = math.max(pj_longest, #tostring(p.key)) end
   local pj_name_w = fit_column(pj_longest, tw, 2 + 1 + 6 + 1 + 50 + 4, 8)
   local pj_cfg_w = math.max(50, tw - 2 - pj_name_w - 1 - 6 - 1 - 4)
+  -- Summary column before the open-ended configuration list (spec §16.35).
+  local pj_descs = {}
+  for i, p in ipairs(projs) do pj_descs[i] = p.description end
+  local pj_sum_w = M._summary_column(pj_descs, tw, 2 + pj_name_w + 1 + 6)
+  if pj_sum_w > 0 then pj_cfg_w = math.max(16, tw - 2 - pj_name_w - 1 - 6 - 1 - pj_sum_w - 3 - 4) end
   status_section(pal, "Projects", projs, MAX, function(p)
     local t = p.type or (p._module and p._module.id) or "?"
     local names = {}
@@ -6746,10 +6830,8 @@ function M.cmd_status(root, opts)
     for i = 1, math.min(#names, 3) do head[#head + 1] = names[i] end
     local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
     if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
-    local row = string.format("  %-" .. pj_name_w .. "s %-6s %s",
-      trunc(p.key, pj_name_w), t, trunc(cfgstr, pj_cfg_w))
-    return row
-      .. M._summary_suffix(require("loomworks.description").width(row), p.description, tw, pal)
+    local prefix = string.format("  %-" .. pj_name_w .. "s %-6s", trunc(p.key, pj_name_w), t)
+    return M._row_with_summary(prefix, p.description, pj_sum_w, cfgstr, pj_cfg_w, pal)
       .. inline_markers(pal, grouped.by_project[p.key])
   end, "lw project list", "add a project · lw project add <path> [type]")
 
