@@ -79,6 +79,44 @@ function M.resolve_channel(opts)
   return c
 end
 
+--- Save `channel` as the host's update channel (§16.29) — what
+--- `lw self-update --channel <c>` does, writing the same `channel` key as
+--- `lw settings set channel <c>`. LOOMWORKS_CHANNEL still overrides it for a run.
+--- @param channel string
+--- @return { changed: boolean, channel: string, previous?: string, file: string }|nil result
+--- @return string|nil err
+function M.persist_channel(channel)
+  if not M.CHANNELS[channel] then
+    return nil, "unknown update channel '" .. tostring(channel) ..
+      "' (expected 'stable' or 'unstable')"
+  end
+  local cfg = paths.read_config()
+  local previous = cfg.channel
+  local file = paths.config_file()
+  if previous == channel then return { changed = false, channel = channel, file = file } end
+  cfg.channel = channel
+  local ok, err = paths.write_config(cfg)
+  if not ok then return nil, "could not save the update channel to " .. file .. ": " .. tostring(err) end
+  return { changed = true, channel = channel, previous = previous, file = file }
+end
+
+--- The note self-update prints when the newest installed bundle is newer than
+--- the release the channel resolved to — typically a prerelease kept after
+--- switching back to `stable`. Bundles never downgrade (§16.29: the newest
+--- installed bundle is the one that runs), so it stays active until a newer
+--- release reaches the channel. nil when there is nothing to say. ASCII (§16.7).
+--- @param installed string|nil newest installed bundle version
+--- @param target string the version the channel resolved to
+--- @return string|nil
+function M.newer_bundle_note(installed, target)
+  if type(installed) ~= "string" or type(target) ~= "string" then return nil end
+  if not paths.version_gt(installed, target) then return nil end
+  return "the installed bundle " .. installed
+    .. (paths.is_prerelease(installed) and " (prerelease)" or "")
+    .. " is newer than " .. target .. " and stays active - a bundle never downgrades;"
+    .. " it is replaced once a release newer than it reaches this channel"
+end
+
 --- Resolve the newest release version for the `unstable` channel (§16.29) by
 --- querying the releases API. The newest NON-DRAFT entry wins — pre-releases are
 --- INCLUDED (that is what `unstable` means). Returns the version (leading `v`
@@ -533,7 +571,8 @@ end
 --- ASCII only (spec §16.7): it prints before system Lua can set the console
 --- encoding. In pinned context (§16.32) the PIN decides what runs, not the
 --- update channel: the line names the pinned version (marked prerelease when it
---- is one) and the pin file, and carries no channel.
+--- is one) and the pin file, and carries no channel. A release bundle that is a
+--- prerelease is marked `(prerelease)` too.
 --- @param info { host_version: integer, release_version?: string, dev_build?: boolean, source: string, bundle: string }
 --- @param channel string the resolved update channel
 --- @param pinned? { file: string, version: string } the pin this invocation runs under
@@ -542,8 +581,12 @@ function M.version_line(info, channel, pinned)
   local label = info.release_version
     or (info.dev_build and "dev build" or "unknown release")
   local host = label .. " (v" .. info.host_version .. ")"
+  -- A prerelease bundle says so (a user following `stable` after trying
+  -- `unstable` keeps it until a newer stable arrives — §16.29).
+  local bundle = info.bundle
+  if info.source == "release" and paths.is_prerelease(bundle) then bundle = bundle .. " (prerelease)" end
   local line = string.format("lw - host: %s | source: %s | bundle: %s",
-    host, info.source, info.bundle)
+    host, info.source, bundle)
   if pinned then
     return line .. " | pinned: " .. pinned.version
       .. (paths.is_prerelease(pinned.version) and " (prerelease)" or "")
