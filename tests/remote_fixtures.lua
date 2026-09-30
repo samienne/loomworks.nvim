@@ -128,7 +128,7 @@ M.CONNECTOR = "/fake/sdk/bin/connector"
 --- A fake runner table implementing the full contract. `o`:
 ---   combined_output, archive (default true), digest (default {"fakesum"}),
 ---   runtime_file (host path staged as `librt.so` beside the artifact),
----   no_pid, no_log, no_crash, timeouts
+---   no_pid, no_log, no_crash, no_reap, timeouts
 function M.fake_runner_table(o)
     o = o or {}
     local C = M.CONNECTOR
@@ -184,6 +184,21 @@ function M.fake_runner_table(o)
     end
     function r.terminate(serial, nonce, pid)
         return { cmd = C, args = { "-t", serial, "kill", tostring(pid or 0), nonce } }
+    end
+    if not o.no_reap then
+        -- Leftover of an interrupted run (spec 18.2 reap): the fake device
+        -- verifies the pid is still `program` (dev.procs) before stopping it.
+        function r.reap(serial, leftover)
+            return { cmd = C, args = { "-t", serial, "reap", tostring(leftover.pid),
+                tostring(leftover.nonce), tostring(leftover.program) }, check_output = fail_check },
+                function(lines)
+                    for _, l in ipairs(lines) do
+                        local v = l:match("^REAP (%a+)$")
+                        if v == "stopped" or v == "gone" then return v end
+                    end
+                    return nil
+                end
+        end
     end
     if not o.no_crash then
         function r.crash_snapshot(serial)
@@ -282,6 +297,9 @@ function M.device(o)
         next_pid = 4000,
         killed = {},
         live = {},          -- running fake processes
+        procs = {},         -- device pid -> program path (for reap's identity check)
+        reaped = {},        -- reap calls: { pid, nonce, program }
+        reap_output = nil,  -- override the reap output line (e.g. garbage)
     }, FakeDevice)
     for serial, name in pairs(o.serials or { SER1 = "Board One" }) do
         self:add(serial, name)
@@ -501,6 +519,18 @@ function FakeDevice:backend()
                     for _, p in ipairs(dev.live) do
                         if p.nonce == a[3] and not p.finished then p.release() end
                     end
+                end
+            elseif call.op == "reap" then
+                local pid, program = tonumber(a[2]), a[4]
+                dev.reaped[#dev.reaped + 1] = { pid = pid, nonce = a[3], program = program }
+                if dev.reap_output then
+                    emit("stdout", dev.reap_output)
+                elseif dev.procs[pid] == program then
+                    dev.procs[pid] = nil
+                    emit("stdout", "REAP stopped")
+                else
+                    -- no such process, or the id now belongs to another program
+                    emit("stdout", "REAP gone")
                 end
             elseif call.op == "exec" then
                 local req = vim.json.decode(a[2])

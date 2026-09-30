@@ -329,7 +329,8 @@ it, a remote run records its program in its device lockfile as soon as
 `parse_pid` reports the process id: `{ device_pid, nonce, program }` (the
 staged device-side path), cleared again when the run's program has exited or
 been stopped. When core **reclaims** a stale device lock whose record names a
-program, it first — before staging, still holding the new lock — asks the
+program, it first — before staging (for `lw device clean`, before removing
+anything), still holding the new lock — asks the
 runner to `reap` it (§18.2), under the query timeout, and reports the outcome
 on its status channel:
 
