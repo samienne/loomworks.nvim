@@ -409,8 +409,10 @@ run on that device finds and stops it (§18.7, *Leftover programs*).
 A run that ends as a **transport failure without an exit status** (the
 connector died or lost the sentinel, §18.5 step 5) also runs `terminate` once,
 bounded by the query timeout, since its program may still be running; the
-failure is reported as before. If that stop did not complete, the program is
-kept in the leftover record (§18.7).
+failure is reported as before, and so is the stop's outcome: a completed stop
+as `the connection to <serial> was lost; stopped <program> (pid <n>) there`;
+otherwise the program is kept in the leftover record (§18.7) with a note that
+the next run on the device stops it.
 
 **Later (not a contract change yet):** tying the device program's lifetime to
 the connector session — a runner-rendered device-side watchdog that stops the

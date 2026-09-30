@@ -654,7 +654,11 @@ function M.execute(o)
         -- No exit status: the program may still be running (§18.8). Stop it
         -- once, bounded; an interrupt has already done so in its cleanup.
         if state.pid and state.status == nil and not exec_job.cancelled then
-            terminate(t.timeouts.query)
+            if terminate(t.timeouts.query) == "stopped" then
+                note("the connection to " .. serial .. " was lost; stopped " .. plan.name
+                    .. " (pid " .. tostring(state.pid) .. ") there")
+            end
+            -- (not stopped: cleanup keeps it in the leftover file and says so)
         end
     else
         local cfail = t:exec_failure(exec_job, state)
