@@ -651,8 +651,14 @@ valgrind $(lw run --print)     # compose your own wrapper (POSIX shells)
 environment. It is the portable form (use it on Windows). A command
 configuration's declared args and any post-`--` forwarded args are included; a
 build target whose artifact is not yet resolved is reported as unresolved
-(non-zero exit), never guessed. Build is on by default so the artifact resolves;
-`--no-build` inspects without building. Because the working directory and
+(non-zero exit), never guessed. `--print` builds first (quietly, on stderr) so
+the artifact resolves; `--no-build` inspects without building.
+
+`lw run --dry-run` (`--dry-run=json`) reports exactly like `--print` but **never
+builds, deploys or runs** — it implies `--no-build`. When the program has not
+been built yet, its resolved path is still printed and a note on stderr says so
+(exit 0). For a device target, whose report needs the built files for the
+staging manifest, an unbuilt artifact is reported as such. Because the working directory and
 environment are reported rather than applied, `--prefix` (above) is the faithful
 way to actually run under a wrapper.
 
@@ -1472,7 +1478,7 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
-| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print`/`--dry-run` (`=json`) report the resolved command without executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
+| `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` launch configurations. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
