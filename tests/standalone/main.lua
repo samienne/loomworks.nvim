@@ -2417,6 +2417,117 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.update — `self-update --channel` persists the channel (§16.29, v0.1.40-beta.2)")
+do
+  -- The beta.1 field test: `lw self-update --channel unstable` applied to that
+  -- run only, so `lw --version` then said `channel: stable`. The flag now
+  -- saves the channel (the same key `lw settings set channel` writes).
+  local sb = root .. "/tests/.tmp-channel-persist"; paths.rm_rf(sb); paths.mkdirp(sb)
+  uv.os_setenv("APPDATA", sb); uv.os_setenv("XDG_CONFIG_HOME", sb)
+  uv.os_setenv("LOOMWORKS_CHANNEL", "")
+  local okp = type(update.persist_channel) == "function"
+  ok(okp, "update.persist_channel exists")
+  if okp then
+    local r, e = update.persist_channel("unstable")
+    ok(r and r.changed == true and r.channel == "unstable", "persist unstable: changed  (" .. tostring(e) .. ")")
+    eq(paths.read_config().channel, "unstable", "the config file holds channel=unstable")
+    eq(update.resolve_channel({}), "unstable", "later runs resolve the saved channel")
+    local r2 = update.persist_channel("unstable")
+    ok(r2 and r2.changed == false, "persisting the same channel again changes nothing")
+    -- Other settings survive the write.
+    local cfg = paths.read_config(); cfg["release-url"] = "file:///mirror"
+    ok(paths.write_config(cfg), "write_config writes the settings")
+    local r3 = update.persist_channel("stable")
+    ok(r3 and r3.changed == true and r3.previous == "unstable", "switch back to stable")
+    eq(paths.read_config()["release-url"], "file:///mirror", "other settings are kept")
+    eq(paths.read_config().channel, "stable", "channel=stable saved")
+    uv.os_setenv("LOOMWORKS_CHANNEL", "unstable")
+    eq(update.resolve_channel({}), "unstable", "LOOMWORKS_CHANNEL still overrides the saved channel")
+    uv.os_setenv("LOOMWORKS_CHANNEL", "")
+    local bad, berr = update.persist_channel("bogus")
+    ok(bad == nil and tostring(berr):find("unknown update channel", 1, true) ~= nil,
+      "an unknown channel is refused and nothing is written")
+    eq(paths.read_config().channel, "stable", "the saved channel is unchanged after a refusal")
+  end
+  -- Switching back to stable while a newer prerelease bundle is installed: the
+  -- bundle never downgrades, so the prerelease stays until a newer stable.
+  local okn = type(update.newer_bundle_note) == "function"
+  ok(okn, "update.newer_bundle_note exists")
+  if okn then
+    local n = update.newer_bundle_note("0.1.40-beta.1", "0.1.39")
+    ok(n and n:find("0.1.40-beta.1 (prerelease)", 1, true) and n:find("stays active", 1, true)
+      and n:find("0.1.39", 1, true), "prerelease newer than stable: stays-active note  (got " .. tostring(n) .. ")")
+    ok(n and n:match("^[%w%p ]+$") ~= nil, "the note is ASCII")
+    eq(update.newer_bundle_note("0.1.40-beta.1", "0.1.40"), nil, "the release supersedes its prerelease: no note")
+    eq(update.newer_bundle_note("0.1.39", "0.1.39"), nil, "same version: no note")
+    eq(update.newer_bundle_note(nil, "0.1.39"), nil, "no installed bundle: no note")
+  end
+  paths.rm_rf(sb)
+end
+
+print("host — `lw self-update --channel unstable` saves it; `lw version` then shows it")
+do
+  local sb = root .. "/tests/.tmp-channel-e2e"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local env = {}
+  local override = { LOCALAPPDATA = sb, XDG_DATA_HOME = sb, APPDATA = sb, XDG_CONFIG_HOME = sb,
+    LOOMWORKS_RELEASE_URL = sb .. "/no-mirror", LOOMWORKS_CHANNEL = "" }
+  for k, v in pairs(uv.os_environ()) do
+    if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" and k ~= "LOOMWORKS_PINNED" then
+      env[#env + 1] = k .. "=" .. v
+    end
+  end
+  for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+  local function host(args)
+    local logf = sb .. "/out.txt"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local done, code = false, nil
+    local argv = { "lua", "--" }
+    for _, a in ipairs(args) do argv[#argv + 1] = a end
+    local h = uv.spawn(uv.exepath(), { args = argv, cwd = root, env = env, stdio = { nil, fd, fd } },
+      function(c) code = c; done = true end)
+    if h then
+      while not done do uv.run("once") end
+      h:close()
+    end
+    uv.fs_close(fd)
+    return code, slurp(logf) or ""
+  end
+  -- The child's settings file (config dir = sb on every OS here).
+  local function saved_channel()
+    local body = slurp(sb .. "/loomworks/config.json")
+    local cfg = body and json.decode(body)
+    return type(cfg) == "table" and cfg.channel or nil
+  end
+  local code, out = host({ "self-update", "--channel", "unstable", "--no-host" })
+  ok(out:find("update channel set to unstable", 1, true) ~= nil,
+    "self-update --channel says the channel was set  (exit " .. tostring(code) .. ": " .. out .. ")")
+  eq(saved_channel(), "unstable", "the channel is in the settings even though the fetch failed")
+  local _, vout = host({ "version" })
+  ok(vout:find("channel: unstable", 1, true) ~= nil, "lw version shows the saved channel  (got " .. vout .. ")")
+  local _, again = host({ "self-update", "--channel", "unstable", "--no-host" })
+  ok(again:find("update channel is already unstable", 1, true) ~= nil, "re-running says it is already set")
+  local bcode, bout = host({ "self-update", "--channel", "bogus" })
+  ok(bcode == 2 and bout:find("unknown update channel", 1, true) ~= nil,
+    "an unknown channel is a usage error (exit 2)  (got " .. tostring(bcode) .. ")")
+  eq(saved_channel(), "unstable", "a refused channel leaves the setting")
+  local _, sout = host({ "self-update", "--channel=stable", "--no-host" })
+  ok(sout:find("update channel set to stable", 1, true) ~= nil, "--channel=stable switches back")
+  paths.rm_rf(sb)
+end
+
+print("boot.update — the version line marks a prerelease bundle")
+do
+  local line = update.version_line({ host_version = 1, release_version = "0.1.40-beta.1",
+    source = "release", bundle = "0.1.40-beta.1" }, "stable")
+  ok(line:find("bundle: 0.1.40-beta.1 (prerelease) | channel: stable", 1, true) ~= nil,
+    "prerelease bundle is marked  (got " .. line .. ")")
+  local rline = update.version_line({ host_version = 1, release_version = "0.1.39",
+    source = "release", bundle = "0.1.39" }, "stable")
+  ok(rline:find("bundle: 0.1.39 | channel", 1, true) ~= nil, "a release bundle is not marked  (got " .. rline .. ")")
+  local dline = update.version_line({ host_version = 1, source = "dev", bundle = "dev (C:/src/x-1)" }, "stable")
+  ok(not dline:find("prerelease", 1, true), "a dev source is never marked  (got " .. dline .. ")")
+end
+
 print("boot.update — unstable resolution picks newest non-draft (incl. pre-release)")
 do
   local sb = root .. "/tests/.tmp-unstable"; paths.rm_rf(sb); paths.mkdirp(sb)

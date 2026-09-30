@@ -1493,6 +1493,13 @@ with no prior install (spec §16.21–16.24). Layers:
   at X - no changes"). `opts.pin_only` skips the launcher writes and every
   metadata step except the `lw.pin` attribute rule, and reports present
   launchers as kept as they are.
+- **`boot/update.lua` (channels)** — `persist_channel(c)` saves the channel
+  `lw self-update --channel` selects into the host config through
+  `boot/paths.write_config` (the key `lw settings set channel` writes; spec
+  §16.29), and `newer_bundle_note(installed, target)` words the "the newer
+  prerelease stays active" note after a switch back to stable. Both are
+  host-only (main.lua); the bundle never calls them, so old hosts are
+  unaffected. `version_line` marks a prerelease release bundle.
 - **`boot/update.lua`** — `ensure_host_binary` (fetch + pinned-hash-verify a
   host binary; the redirect caches it at `pinned_binary_path` =
   `<data>/pinned/lw-<ver>-<asset>`, re-verified on every use) and

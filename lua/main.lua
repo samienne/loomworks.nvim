@@ -317,8 +317,30 @@ elseif host_command == "self-update" then
       fused_system_lua = fused_system_lua(),
     }
   end
+  -- `--channel <c>` is persisted (spec §16.29): it becomes the update channel
+  -- for later runs too, exactly like `lw settings set channel <c>`.
+  if channel == "" then
+    io.stderr:write("lw: --channel needs a value: stable or unstable\n")
+    exit(2)
+  end
+  if channel then
+    local upd = require("boot.update")
+    local saved, serr = upd.persist_channel(channel)
+    if not saved then
+      io.stderr:write("lw: " .. tostring(serr) .. "\n")
+      exit(2)
+    end
+    io.write(saved.changed
+      and ("lw: update channel set to " .. channel .. " (saved in your lw settings; later runs follow it)\n")
+      or ("lw: update channel is already " .. channel .. "\n"))
+    local env_channel = getenv("LOOMWORKS_CHANNEL")
+    if env_channel and env_channel ~= "" and env_channel ~= channel then
+      io.write("lw: note: LOOMWORKS_CHANNEL=" .. env_channel .. " overrides the saved channel " ..
+        "in any run where it is set\n")
+    end
+  end
   io.write("lw: checking for updates...\n")
-  local res, err, info = require("boot.update").self_update({ force = force, channel = channel ~= "" and channel or nil })
+  local res, err, info = require("boot.update").self_update({ force = force, channel = channel })
   if not res and info and info.host_incompatible then
     -- The (verified) release needs a newer host than this one. Replace the
     -- host first — otherwise the first release raising min_host_version would
@@ -365,6 +387,13 @@ elseif host_command == "self-update" then
   io.write(res.updated
     and ("lw: installed loomworks " .. res.version .. "\n")
     or ("lw: already up to date (" .. res.version .. ")\n"))
+  -- Back on `stable` with a newer prerelease installed: bundles never
+  -- downgrade, so say which one keeps running, and until when.
+  do
+    local newest = paths.installed_releases()[1]
+    local note = require("boot.update").newer_bundle_note(newest and newest.ver, res.version)
+    if note then io.write("lw: note: " .. note .. "\n") end
+  end
   -- Then the host binary itself (spec §16.32): host-side fixes never ship in the
   -- bundle, so a bundle-only update would leave them stranded. Same release as
   -- the bundle just resolved; verified against the signed SHA256SUMS before any
