@@ -49,7 +49,7 @@ local function basename(p) return (tostring(p):match("([^/]+)$")) or tostring(p)
 --- @return string|nil dir, string|nil err
 function M.make_run_dir(build_dir, serial, now)
     local runs = manifest_mod.canon(build_dir) .. "/" .. manifest_mod.RUNS_DIR
-    vim.fn.mkdir(runs, "p")
+    assert(require("loomworks.io").mkdir_p(runs))
     local stamp = os.date("!%Y%m%dT%H%M%SZ", now or os.time())
     local base = stamp .. "-" .. manifest_mod.segment(serial)
     local dir = runs .. "/" .. base
@@ -58,8 +58,7 @@ function M.make_run_dir(build_dir, serial, now)
         n = n + 1
         dir = runs .. "/" .. base .. "-" .. n
     end
-    local ok = vim.fn.mkdir(dir, "p")
-    if ok == 0 and not uv().fs_stat(dir) then return nil, "cannot create run folder " .. dir end
+    if not require("loomworks.io").mkdir_p(dir) then return nil, "cannot create run folder " .. dir end
     return dir
 end
 
@@ -733,7 +732,7 @@ function M.execute(o)
                 if cok and type(paths) == "table" then
                     for _, rp in ipairs(paths) do
                         if type(rp) == "string" and not rp:find("[%z\r\n]") then
-                            vim.fn.mkdir(run_dir .. "/crash", "p")
+                            assert(require("loomworks.io").mkdir_p(run_dir .. "/crash"))
                             local lp = run_dir .. "/crash/" .. manifest_mod.segment(basename(rp))
                             local pulled, perr2 = t:pull(rp, lp)
                             if pulled then result.crashes[#result.crashes + 1] = lp

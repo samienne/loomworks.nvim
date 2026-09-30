@@ -417,7 +417,7 @@ function M.stage(o)
     -- sample of the unpacked members is what later runs verify.
     for _, pl in ipairs(archive_plan) do
         local tmp = o.tmp_dir .. "/archive-" .. pl.idx .. ".tar"
-        vim.fn.mkdir(o.tmp_dir, "p")
+        assert(require("loomworks.io").mkdir_p(o.tmp_dir))
         local ok, err = require("loomworks.remote.tar").write(tmp, pl.set.members)
         if not ok then return nil, err end
         if o.on_progress then o.on_progress("push archive " .. pl.set.key) end

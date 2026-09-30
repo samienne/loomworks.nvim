@@ -517,7 +517,7 @@ local function read_config()
 end
 
 local function write_config(cfg)
-  vim.fn.mkdir(config_dir(), "p")
+  assert(require("loomworks.io").mkdir_p(config_dir()))
   local encoded = (next(cfg) == nil) and "{}" or vim.json.encode(cfg)
   local f, err = io.open(config_path(), "w")
   if not f then return false, err end
@@ -593,7 +593,7 @@ local function write_tool_cache(tools_by_type, scanned_types)
     scanned[mod_type] = true
     tbt[mod_type] = tools_by_type[mod_type] -- nil clears a now-empty type
   end
-  vim.fn.mkdir(tool_cache_dir(), "p")
+  assert(require("loomworks.io").mkdir_p(tool_cache_dir()))
   local f = io.open(tool_cache_path(), "w")
   if not f then return end
   f:write(vim.json.encode({
@@ -2278,7 +2278,7 @@ function M.cmd_test(ws, args)
     -- to exist up front.
     if junit then
       local dir = junit:match("^(.*)/[^/]+$")
-      if dir then vim.fn.mkdir(dir, "p") end
+      if dir then assert(require("loomworks.io").mkdir_p(dir)) end
     end
 
     local failed, wrote = {}, {}
