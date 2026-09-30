@@ -583,6 +583,40 @@ function Configuration:serialize_user_override()
     return entry
 end
 
+--- This configuration's own declared data in `Project:save_configuration`'s
+--- input shape (module fields flat, generic fields by their data names), as a
+--- deep copy. It is the base of every read-modify-write edit — the editor
+--- dialog, `lw config set/unset`, migrations — so an edit changes only the
+--- fields it touches and every other declared field survives. Values the
+--- module derived from a base (`_derived`) and the computed
+--- `compile_commands_generated` are not this configuration's to restate and
+--- are left out (as `serialize_user_override` does).
+--- @return table
+function Configuration:declared_data()
+    local data = {}
+    for k, v in pairs(self.module_config or {}) do
+        if not (self._derived and self._derived[k])
+                and k ~= "compile_commands_generated" then
+            data[k] = vim.deepcopy(v)
+        end
+    end
+    if self.inherits_names and #self.inherits_names > 0 then
+        data.inherits = #self.inherits_names == 1 and self.inherits_names[1]
+            or vim.deepcopy(self.inherits_names)
+    end
+    if self.options and next(self.options) then data.options = vim.deepcopy(self.options) end
+    if self.variables and next(self.variables) then data.variables = vim.deepcopy(self.variables) end
+    if self.env and next(self.env) then data.env = vim.deepcopy(self.env) end
+    if self._overrides and next(self._overrides) then
+        data.overrides = vim.deepcopy(self._overrides)
+    end
+    if self.languages and #self.languages > 0 then data.languages = vim.deepcopy(self.languages) end
+    if self.role then data.role = self.role end
+    local desc = self:description_for_file()
+    if desc ~= nil then data.description = desc end
+    return data
+end
+
 --- The value to write as this configuration's `description`: the
 --- description, or a preserved non-string value (spec §1.10), or nil.
 --- @return any

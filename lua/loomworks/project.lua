@@ -411,6 +411,30 @@ local function user_update_data(config_data)
     return clean
 end
 
+--- Snapshot a configuration for rollback, in Configuration._update's input
+--- shape (module fields flat, generic fields by their data names), so a
+--- failed save or rename restores every field the configuration had.
+--- @param cfg loomworks.Configuration
+--- @return table
+local function rollback_snapshot(cfg)
+    local snap = vim.deepcopy(cfg.module_config or {})
+    snap.is_user = cfg.is_user
+    snap.is_default = cfg.is_default
+    snap.from_preset = cfg.from_preset
+    snap.role = cfg.role
+    snap.options = vim.deepcopy(cfg.options)
+    snap.variables = vim.deepcopy(cfg.variables)
+    snap.env = vim.deepcopy(cfg.env)
+    snap.overrides = vim.deepcopy(cfg._overrides)
+    snap.languages = vim.deepcopy(cfg.languages)
+    snap._derived = cfg._derived
+    snap.description = cfg:description_for_file()
+    if cfg.inherits_names and #cfg.inherits_names > 0 then
+        snap.inherits = vim.deepcopy(cfg.inherits_names)
+    end
+    return snap
+end
+
 --- Save a project configuration (create or update).
 --- @param config_name string configuration name
 --- @param config_data table { variant?, inherits?, options?, variables?, env?, overrides?, toolchain?, generator? }
@@ -536,20 +560,7 @@ function Project:save_configuration(config_name, config_data)
     local existing = self:get_configuration(config_name)
     local old_cfg_snapshot = nil
     if existing then
-        -- Snapshot for rollback
-        old_cfg_snapshot = {
-            is_user = existing.is_user,
-            is_default = existing.is_default,
-            from_preset = existing.from_preset,
-            role = existing.role,
-            options = existing.options,
-            variables = existing.variables,
-            env = existing.env,
-            overrides = existing._overrides,
-            inherits_names = existing.inherits_names,
-            module_config = vim.deepcopy(existing.module_config),
-            description = existing:description_for_file(),
-        }
+        old_cfg_snapshot = rollback_snapshot(existing)
         existing:_update(clean)
         existing:_mark_user_owned()  -- editing a shared cfg materializes it
         existing:_resolve_inherits()
@@ -662,24 +673,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
         return false, "invalid configuration name: " .. verr
     end
 
-    -- Snapshot for rollback, in Configuration._update's input shape (module
-    -- fields flat, generic fields by their data names) so a rollback restores
-    -- every field the configuration had.
-    local old_cfg_snapshot = vim.deepcopy(target_cfg.module_config or {})
-    old_cfg_snapshot.is_user = target_cfg.is_user
-    old_cfg_snapshot.is_default = target_cfg.is_default
-    old_cfg_snapshot.from_preset = target_cfg.from_preset
-    old_cfg_snapshot.role = target_cfg.role
-    old_cfg_snapshot.options = vim.deepcopy(target_cfg.options)
-    old_cfg_snapshot.variables = vim.deepcopy(target_cfg.variables)
-    old_cfg_snapshot.env = vim.deepcopy(target_cfg.env)
-    old_cfg_snapshot.overrides = vim.deepcopy(target_cfg._overrides)
-    old_cfg_snapshot.languages = vim.deepcopy(target_cfg.languages)
-    old_cfg_snapshot._derived = target_cfg._derived
-    old_cfg_snapshot.description = target_cfg:description_for_file()
-    if target_cfg.inherits_names and #target_cfg.inherits_names > 0 then
-        old_cfg_snapshot.inherits = vim.deepcopy(target_cfg.inherits_names)
-    end
+    local old_cfg_snapshot = rollback_snapshot(target_cfg)
     local old_name_snapshot = target_cfg.name
     local old_sibling_inherits = {} -- cfg -> old inherits_names snapshot
     for _, cfg in ipairs(self._configurations) do

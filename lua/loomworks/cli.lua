@@ -3978,31 +3978,10 @@ end
 --- Reconstruct the user-override data table (save_configuration's input shape)
 --- from a live Configuration, so set/unset can read-modify-write.
 local function config_to_data(cfg)
-  local data = {}
-  for k, v in pairs(cfg.module_config or {}) do
-    -- Values the module propagated from a base are not this config's to
-    -- restate: copying them into the edit round-trip would re-declare them
-    -- (freezing the base's value), which is exactly what `_derived` prevents
-    -- at serialization. The module re-derives them on the next refresh.
-    if not (cfg._derived and cfg._derived[k]) then data[k] = v end
-  end
-  if cfg.inherits_names and #cfg.inherits_names > 0 then
-    data.inherits = (#cfg.inherits_names == 1) and cfg.inherits_names[1]
-        or vim.deepcopy(cfg.inherits_names)
-  end
-  if cfg.options and next(cfg.options) then data.options = vim.deepcopy(cfg.options) end
-  if cfg.variables and next(cfg.variables) then data.variables = vim.deepcopy(cfg.variables) end
-  if cfg.env and next(cfg.env) then data.env = vim.deepcopy(cfg.env) end
-  -- Compiler-family variable overrides (family → { name → value }). Live field
-  -- is `_overrides` (see configuration.lua); save_configuration validates it.
-  if cfg._overrides and next(cfg._overrides) then data.overrides = vim.deepcopy(cfg._overrides) end
-  if cfg.languages and #cfg.languages > 0 then data.languages = vim.deepcopy(cfg.languages) end
-  if cfg.role then data.role = cfg.role end
-  -- The description is kept through the edit round-trip (spec §1.10); it is
-  -- changed only by `describe`.
-  local desc = cfg.description_for_file and cfg:description_for_file()
-  if desc ~= nil then data.description = desc end
-  return data
+  -- Every declared field, deep-copied; derived module values are left out
+  -- (Configuration:declared_data). The description is kept through the edit
+  -- round-trip (spec §1.10); it is changed only by `describe`.
+  return cfg:declared_data()
 end
 
 --- The accepted `lw config get/set/unset` param forms (§16.9), for errors.
