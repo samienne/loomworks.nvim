@@ -33,6 +33,8 @@ local M = {}
 ---   validate?: fun(result): boolean, string|nil
 ---   on_accept: fun(result)
 ---   on_cancel: fun()
+---   item?: loomworks.Configuration — the existing user configuration (edit
+---     mode): adds a `Description ▸` row that opens the description editor
 function M.open(opts)
     local name = opts.name
     local variant = opts.variant or ""
@@ -115,6 +117,9 @@ function M.open(opts)
                 end
             end
         end
+        -- Existing user configuration: its description (ui §1.16).
+        require("loomworks.ui.helpers").description_row(t, opts.item, "Description",
+            function() if view then view:refresh() end end)
 
         if not opts.is_default and #opts.available_configs > 0 then
             local is_abstract = #inherits == 0

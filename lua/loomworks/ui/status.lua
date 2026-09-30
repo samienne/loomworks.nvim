@@ -151,6 +151,7 @@ local view = View.new({
         ["D"]     = "delete",
         ["t"]     = "task",
         ["o"]     = "options",
+        ["e"]     = "describe",
         ["P"]     = "publish",
         ["N"]     = "create_workspace",
         ["L"]     = "load",

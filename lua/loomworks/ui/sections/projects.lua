@@ -459,6 +459,7 @@ local function edit_project_configuration(project, config_name)
     if not ctx then return end
 
     require("loomworks.ui.config_editor_dialog").open({
+        item = config_name and project:get_configuration(config_name) or nil,
         title = config_name
             and ('Edit "' .. config_name .. '" — ' .. project_key)
             or ("New configuration — " .. project_key),
@@ -647,7 +648,7 @@ return function(tree, ctx)
             row_chunks[#row_chunks + 1] = { refresh_tag, "DiagnosticWarn" }
         end
 
-        t:node(row_chunks, {
+        t:node(row_chunks, helpers.with_description({
             fold_key = "project:" .. key,
             spinning = proj_running ~= nil,
             hl = row_hl,
@@ -691,7 +692,8 @@ return function(tree, ctx)
                     end
                 end)
             end,
-        }, function()
+        }, proj), function()
+            tree:description(proj.description)
             tree:leaf("Path: " .. (proj.path or key), "Comment")
 
             if proj.needs_refresh and proj.refresh_reasons and #proj.refresh_reasons > 0 then
@@ -849,7 +851,7 @@ return function(tree, ctx)
                                 { " [overwritten]", "LoomworksConflict" }
                         end
 
-                        ct:node(config_chunks, {
+                        ct:node(config_chunks, helpers.with_description({
                             fold_key = "config:" .. key .. ":" .. cname,
                             spinning = not is_abstract and config_has_running or false,
                             hl = variant_hl,
@@ -882,7 +884,10 @@ return function(tree, ctx)
                             on_delete = has_user_entry
                                     and function() delete_project_configuration(project, cfg_name) end
                                     or nil,
-                        }, function()
+                        }, cname_cfg), function()
+                            if cname_cfg then
+                                tree:description(cname_cfg.description, cname_cfg._description_from_module)
+                            end
                             if is_abstract then
                                 tree:leaf("Abstract mixin — not directly buildable", "Comment")
                             end

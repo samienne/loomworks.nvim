@@ -93,7 +93,7 @@ shown when `spinning = true`. Replaces the status marker for running items.
 | `<C-n>` | nuke        | Reset workspace: delete `.nvim/build/` + cache, reload (destructive, with confirmation) |
 | `P`     | publish     | Cycle intent (`local` → `local+shared` → `shared`) on nearest publishable item |
 | `e`     | describe    | Edit the description (core §1.10) of the nearest describable item — profile, configuration set, project, or user configuration — in the description editor (§1.16) |
-| `K`     | hover       | Hover popup with the full content of the current line; on a describable item, its full description (§1.16) |
+| `K`     | hover       | Hover popup with the full content of the current line; a row may supply its own hover content (on a describable item, its full description, §1.16) |
 | `U`     | delete_user | Delete user.json and reload (with confirmation); for a refused working copy (core §17.4) this is the discard action |
 | `T`     | trust       | Refused working copy (core §17.4): review its summary and trust (re-sign) it |
 | `:w`    | (write)     | Publish: regenerate loomworks.json from working copy |
@@ -961,7 +961,9 @@ and passed as a plain string with no highlight markup. This covers:
   title line so the user can confirm which item is going;
 - the configuration-set editor and configuration editor dialogs. Each gains a
   `Description ▸ <summary>` row, and `<CR>` on that row opens the description
-  editor.
+  editor. The editor saves the description itself, independently of
+  the dialog's accept or cancel. The row is shown only for an existing set or
+  user configuration.
 
 Notifications name items by key only and never include description text.
 
