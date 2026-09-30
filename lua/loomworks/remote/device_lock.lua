@@ -90,6 +90,75 @@ function M.clear_program(handle)
         program_started_at = vim.NIL })
 end
 
+-- ---------------------------------------------------------------------------
+-- Leftover record file (§18.7): `<lock dir>/<serial>.leftover` keeps the
+-- program of a run that ended (lock released) without stopping it.
+-- ---------------------------------------------------------------------------
+
+--- Path of a serial's leftover file: the lockfile's name with `.leftover`
+--- in place of `.lock` (same serial-to-file-name mapping, same directory).
+--- @param serial string
+--- @return string
+function M.leftover_path(serial)
+    return (M.path(serial):gsub("%.lock$", ".leftover"))
+end
+
+--- Persist a run's program in the leftover file (atomic: temp + rename).
+--- Best-effort; returns true on success.
+--- @param serial string
+--- @param p { pid: integer, nonce: string, program: string, started_at?: integer }
+--- @return boolean
+function M.save_leftover(serial, p)
+    local rec = { device_pid = p.pid, nonce = p.nonce, program = p.program,
+        program_started_at = p.started_at or os.time(), serial = serial }
+    if not M.leftover_of(rec) then return false end
+    local uv = vim.uv or vim.loop
+    local path = M.leftover_path(serial)
+    pcall(vim.fn.mkdir, M.dir(), "p")
+    local tmp = path .. ".tmp." .. tostring(uv.os_getpid())
+    local fd = uv.fs_open(tmp, "w", tonumber("644", 8))
+    if not fd then return false end
+    local ok = pcall(uv.fs_write, fd, vim.json.encode(rec), 0)
+    uv.fs_close(fd)
+    if not ok or not uv.fs_rename(tmp, path) then
+        pcall(uv.fs_unlink, tmp)
+        return false
+    end
+    return true
+end
+
+--- Read a serial's leftover file. Returns the validated leftover, or nil and
+--- the state: "absent" (no file) or "invalid" (unreadable / not a record).
+--- @param serial string
+--- @return table|nil leftover, string|nil state
+function M.load_leftover(serial)
+    local uv = vim.uv or vim.loop
+    local path = M.leftover_path(serial)
+    local st = uv.fs_lstat(path)
+    if not st then return nil, "absent" end
+    if st.type ~= "file" then return nil, "invalid" end
+    local f = io.open(path, "rb")
+    if not f then return nil, "invalid" end
+    local data = f:read("*a")
+    f:close()
+    local ok, decoded = pcall(vim.json.decode, data or "")
+    local left = ok and M.leftover_of(decoded) or nil
+    if not left then return nil, "invalid" end
+    return left
+end
+
+--- Remove a serial's leftover file — exactly that file, only when it is a
+--- regular file (never a link or directory), nothing else in the directory.
+--- @param serial string
+--- @return boolean removed
+function M.remove_leftover(serial)
+    local uv = vim.uv or vim.loop
+    local path = M.leftover_path(serial)
+    local st = uv.fs_lstat(path)
+    if not st or st.type ~= "file" then return false end
+    return uv.fs_unlink(path) and true or false
+end
+
 --- Acquire the device lock.
 --- opts:
 ---   wait       boolean (default true) — false fails fast naming the holder
