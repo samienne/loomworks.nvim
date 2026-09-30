@@ -298,6 +298,7 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
                     configuration_set = profile.configuration_set,
                     tools = profile.tools,
                     sdk = profile.sdk,
+                    description = profile.description,
                 }
             elseif profile.kit_id then
                 -- Legacy format: resolve kit_id to tools dict
@@ -311,12 +312,14 @@ function M.get_all_profiles(config, cache, tools_by_type, user_data)
                     configuration_set = profile.configuration_set,
                     tools = tools,
                     sdk = profile.sdk,
+                    description = profile.description,
                 }
             else
                 -- Minimal format: just configuration_set (may have SDK)
                 profiles[pkey] = {
                     configuration_set = profile.configuration_set,
                     sdk = profile.sdk,
+                    description = profile.description,
                 }
             end
         end
@@ -421,6 +424,11 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             local ok, result = pcall(mod.info, abs_path, project.type_config)
             if ok and result then
                 mod_info = result
+                -- A user configuration's description is core-owned (spec §8.1):
+                -- read from the declared table, never from the module's echo.
+                require("loomworks.configuration").adopt_declared_descriptions(
+                    mod_info.configurations,
+                    project.type_config and project.type_config.configurations)
             else
                 vim.notify("loomworks: module '" .. (project.type or "?")
                     .. "' info() failed for " .. key .. ": " .. tostring(result),
@@ -498,6 +506,7 @@ function M.merge(config, active_profile_key_input, cache, root, tools_by_type, u
             launch = project.launch,
             deploy = project.deploy,
             device = project.device,
+            description = project.description,
             configuration = active_configuration,
             configuration_key = cache_config_key,
             tool_key = project_tool_key,

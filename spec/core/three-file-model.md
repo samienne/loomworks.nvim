@@ -44,6 +44,7 @@ metadata lives here. All UI mutations land here.
   "active_profile": "Debug:ninja-gcc-12",
   "projects": { ... },
   "configuration_sets": { ... },
+  "configuration_set_descriptions": { ... },
   "profiles": { ... },
   "intent": { ... },
   "default_target": { ... },
@@ -87,6 +88,12 @@ present only when the user has set one explicitly (`lw init --name`,
 root directory basename. Written to `loomworks.json` on publish.
 
 The `intent` field stores explicit per-item intent overrides (see §2.4).
+
+The `configuration_set_descriptions` field holds configuration-set descriptions
+(§1.10), keyed by set name. It has the same shape and meaning as in
+loomworks.json. A set's entry lives in whichever files the set itself lives in.
+Descriptions of projects, configurations and profiles sit inside those items'
+own tables (§1.10).
 
 The `lsp` field stores per-server option overrides. Keys are server
 names (e.g. `clangd`); values are option tables whose accepted shape
@@ -272,6 +279,54 @@ User wins per-key within:
 Project-level fields (`path`, `type`, `depends_on`, module settings like
 `compile_commands_from`) come from user.json if present, otherwise from
 shared.
+
+#### Descriptions
+
+A description (§1.10) is part of its item's **content**, never an item of its
+own. It has no intent of its own and follows every rule of this section with
+its item:
+
+- **Where it is written.** Exactly the files the item is written to:
+  - a `local` item's description stays in user.json;
+  - a published item's description is published with it;
+  - a `shared` item's description is read from loomworks.json and shown
+    dimmed like the rest of the item.
+
+  A configuration set's sidecar entry (`configuration_set_descriptions`) is
+  serialised alongside the set. It is written, removed, published and reverted
+  with the set, including by per-item publish, which leaves other sets' entries
+  in the file as they are.
+- **Editing is use.** Setting or clearing the description of a `shared` item
+  materialises it (implicit cascade on use, above) exactly like any other edit.
+  A description never changes an item's intent.
+- **Modified indicator.** A description change is a content change. An item
+  whose effective intent includes `shared` and whose description differs from
+  the baseline shows `+`. Comparisons use normalised text (§1.10), so a
+  difference only in line endings or trailing whitespace is not a change.
+  For a configuration set, the comparison covers its mappings **and** its
+  sidecar entry. For a profile, it covers the published profile definition
+  including `description`.
+- **Merge.** The per-key merge rules above apply unchanged:
+  - A project's description is a project-level field. It comes from user.json
+    when user.json declares the project, otherwise from loomworks.json.
+  - A configuration's description comes with the winning configuration table
+    (user wins per configuration name).
+  - A configuration set's and a profile's description come with the winning
+    set or profile, which are atomic per name.
+
+  A user.json item never inherits a description from its loomworks.json
+  counterpart field by field: the winning item's description, or its absence,
+  wins.
+- **External changes (auto-sync).** The "content matched the old baseline"
+  test includes the description. An untouched item picks up an upstream
+  description change, and an item whose description the user edited keeps it.
+  For a project, the auto-synced project-level fields are `path`, `type`,
+  `depends_on` and `description`.
+- **Revert.** `:e!` and per-item revert restore the baseline description. When
+  the baseline has none, they remove the item's description.
+- **Pull.** A working-copy pull (§16.25) carries each pulled item's
+  description, including a set's sidecar entry. The rule is the same
+  source-wins rule as the rest of the item.
 
 #### Saving (`:w`)
 

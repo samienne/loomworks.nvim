@@ -212,6 +212,8 @@ function View:refresh()
         end
     end
 
+    -- The widget fits description summaries to the window (spec/ui.md §1.16).
+    self._widget.width = vim.api.nvim_win_get_width(win)
     local lines, highlights, _, needs_frame = self._widget:render()
 
     vim.bo[self._bufnr].modifiable = true
@@ -433,6 +435,10 @@ function View:_setup_events()
         events.on(event_name, handler)
         self._event_handlers[#self._event_handlers + 1] = { event_name, handler }
     end
+    -- Re-fit description summaries when the window is resized (ui §1.16).
+    self._resize_autocmd = vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+        callback = function() self:schedule_refresh() end,
+    })
 end
 
 function View:_cleanup()
@@ -447,6 +453,10 @@ function View:_cleanup()
     if self._cursor_autocmd then
         pcall(vim.api.nvim_del_autocmd, self._cursor_autocmd)
         self._cursor_autocmd = nil
+    end
+    if self._resize_autocmd then
+        pcall(vim.api.nvim_del_autocmd, self._resize_autocmd)
+        self._resize_autocmd = nil
     end
     local events = require("loomworks.events")
     for _, entry in ipairs(self._event_handlers) do

@@ -265,6 +265,9 @@ local _reported_stale_mappings = {}
 --- @return table[] config_sets array
 local function sync_config_sets(ctx, workspace, config)
     local defs = config.configuration_sets or {}
+    -- Set descriptions come from the top-level sidecar (spec §1.10).
+    local descs = type(config.configuration_set_descriptions) == "table"
+        and config.configuration_set_descriptions or {}
 
     for name, cs in pairs(ctx.config_sets) do
         if not defs[name] then
@@ -305,9 +308,9 @@ local function sync_config_sets(ctx, workspace, config)
         end
         local existing = ctx.config_sets[name]
         if existing then
-            existing:_update(resolved)
+            existing:_update(resolved, descs[name])
         else
-            ctx.config_sets[name] = ConfigurationSet.new(workspace, name, resolved)
+            ctx.config_sets[name] = ConfigurationSet.new(workspace, name, resolved, descs[name])
         end
     end
 

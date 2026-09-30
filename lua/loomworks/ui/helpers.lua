@@ -353,4 +353,68 @@ function M.render_grouped(tree, items, render_fn)
     end
 end
 
+--- A description summary for a picker / dialog entry (spec/ui.md §1.16):
+--- "  <summary>" fitted to 40 display columns, rendered inert, as a plain
+--- string (no highlight markup). "" when there is no description.
+--- @param desc string|nil
+--- @param cols? integer default 40
+--- @return string
+function M.picker_summary(desc, cols)
+    local d = require("loomworks.description")
+    local sum = d.summary(desc)
+    if not sum then return "" end
+    return "  " .. d.fit(d.inert_line(sum), cols or 40)
+end
+
+--- Render a `Description ▸ <summary>` row in an editor dialog (spec/ui.md
+--- §1.16). `<CR>` opens the description editor for `item`; the description
+--- is saved by the editor itself (independently of the dialog's accept), and
+--- `refresh` re-renders the dialog afterwards. Nothing for a nil item (a set
+--- or configuration that does not exist yet) or a generated configuration.
+--- @param t loomworks.Tree
+--- @param item table|nil
+--- @param label string padded label, e.g. "Description"
+--- @param refresh fun()|nil
+function M.description_row(t, item, label, refresh)
+    if not item then return end
+    local editor = require("loomworks.ui.description_editor")
+    if not editor.editable(item) then return end
+    local summary = M.picker_summary(item.description)
+    t:item(label .. (summary ~= "" and summary or "  (none)") .. " ▸", {
+        hl = item.description and "LoomworksActionable" or "Comment",
+        direct = true,
+        on_enter = function()
+            editor.open(item, { on_saved = function() if refresh then refresh() end end })
+        end,
+    })
+end
+
+--- Add the description affordances to a describable node's opts (spec/ui.md
+--- §1.16): the summary on the node line (`description`, render-only), `K`
+--- showing the full text (`hover`, only when there is one), and the `e` /
+--- "Edit description" action (`on_describe`). Returns `opts`.
+--- @param opts table node/item opts
+--- @param item table|nil Project|Configuration|ConfigurationSet|Profile
+--- @return table opts
+function M.with_description(opts, item)
+    if not item then return opts end
+    local desc = item.description
+    opts.description = desc
+    if desc then
+        opts.hover = function()
+            local d = require("loomworks.description")
+            local out = vim.split(d.inert(desc), "\n", { plain = true })
+            if item._description_from_module then
+                out[#out + 1] = ""
+                out[#out + 1] = "(from the project files; edit them to change it)"
+            end
+            return out
+        end
+    end
+    opts.on_describe = function()
+        require("loomworks.ui.description_editor").open(item)
+    end
+    return opts
+end
+
 return M

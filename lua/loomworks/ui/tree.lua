@@ -8,6 +8,21 @@
 ---   tree:render()              → lines, highlights, line_meta, needs_frame
 ---   tree:on_key(action, line)  → { refresh?, restore_fold? }
 
+--- Hover content for a description (spec/ui.md §1.16): the full text, one
+--- entry per line, rendered inert; a module default says where it came from.
+--- @param desc string
+--- @param from_module boolean|nil
+--- @return string[]
+local function description_hover_lines(desc, from_module)
+    local d = require("loomworks.description")
+    local out = vim.split(d.inert(desc), "\n", { plain = true })
+    if from_module then
+        out[#out + 1] = ""
+        out[#out + 1] = "(from the project files; edit them to change it)"
+    end
+    return out
+end
+
 local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 
 --- Ordered list of actions for the Enter picker.
@@ -20,6 +35,7 @@ local ACTION_ORDER = {
     { action = "configure", label = "Configure  c" },
     { action = "task",      label = "Open task output  t" },
     { action = "options",   label = "Show build options  o" },
+    { action = "describe",  label = "Edit description  e" },
     { action = "move_up",   label = "Move up  <C-k>" },
     { action = "move_down", label = "Move down  <C-j>" },
     { action = "publish",   label = "Publish  P" },
@@ -32,7 +48,16 @@ local ACTION_ORDER = {
 }
 
 --- Fields consumed by the tree builder for rendering only.
-local RENDER_KEYS = { hl = true, spinning = true, marker = true, marker_hl = true, hover = true }
+local RENDER_KEYS = {
+    hl = true, spinning = true, marker = true, marker_hl = true, hover = true,
+    description = true,
+}
+
+--- Summary fit on a node line (spec/ui.md §1.16): at most this many display
+--- columns, omitted when fewer than MIN remain.
+local SUMMARY_MAX, SUMMARY_MIN = 60, 12
+--- Description lines shown under an expanded node before the "more" leaf.
+local DESCRIPTION_MAX_LINES = 8
 
 --- @class loomworks.Tree
 --- @field _render_fn fun(tree: loomworks.Tree)
@@ -43,6 +68,8 @@ local RENDER_KEYS = { hl = true, spinning = true, marker = true, marker_hl = tru
 --- @field lines string[]
 --- @field highlights table[]
 --- @field line_meta table<number, table>
+--- @field line_hover table<number, fun(): string|string[]> hover content for lines without a widget (description leaves)
+--- @field width number|nil text width of the window the tree renders into (set by the View)
 local Tree = {}
 Tree.__index = Tree
 
@@ -58,6 +85,7 @@ function Tree.new(render_fn)
         lines = {},
         highlights = {},
         line_meta = {},
+        line_hover = {},
     }, Tree)
 end
 
@@ -68,6 +96,7 @@ function Tree:render()
     self.lines = {}
     self.highlights = {}
     self.line_meta = {}
+    self.line_hover = {}
     self._needs_frame = false
     self._spinner_frame = (self._spinner_frame % #SPINNER_FRAMES) + 1
 
@@ -178,6 +207,11 @@ function Tree:on_key(action, line)
         -- not look at structural decoration again. Widgets can opt
         -- into richer hover content via a `hover` field on their
         -- opts table (string or `fun(): string|string[]`).
+        local lh = self.line_hover[line]
+        if lh then
+            local content = lh()
+            if content then return { hover = content } end
+        end
         local w = self.line_meta[line]
         if w and w.hover then
             local content = type(w.hover) == "function" and w.hover() or w.hover
@@ -273,8 +307,9 @@ function Tree:_show_help()
         "  b       Build",
         "  c       Configure",
         "  t       Open task output",
-        "  p       Pin configuration",
         "  o       Show build options",
+        "  e       Edit description",
+        "  K       Hover (full line / description)",
         "  L       Load / rescan workspace",
         "",
         "  N       Create new workspace",
@@ -518,6 +553,8 @@ function Tree:node(text, opts, children_fn)
         local prefix = has_marker and (marker .. fold_char) or fold_char
         self:_add(self:_pad() .. prefix .. text, opts.hl, self:_make_widget(opts))
     end
+    self:_append_summary(opts.description)
+    self:_set_hover(opts.hover)
 
     if not folded then
         local indent = slots + 1
@@ -554,6 +591,69 @@ function Tree:item(text, opts)
         }, self:_make_widget(opts))
     else
         self:_add(self:_pad() .. marker .. text, opts.hl, self:_make_widget(opts))
+    end
+    self:_append_summary(opts.description)
+    self:_set_hover(opts.hover)
+end
+
+--- Register `hover` content (string, list, or function) for the line just
+--- added, so `K` on it shows that instead of the raw line. (`hover` is a
+--- render-only key, never part of the line's widget.)
+--- @param hover string|string[]|fun(): string|string[]|nil
+function Tree:_set_hover(hover)
+    if hover == nil then return end
+    self.line_hover[#self.lines] = type(hover) == "function" and hover
+        or function() return hover end
+end
+
+--- Append a description's summary to the line just added (spec/ui.md §1.16):
+--- two spaces, then the summary fitted to the window's remaining width (at
+--- most 60 display columns), highlighted `LoomworksDescription`. Omitted when
+--- fewer than 12 columns remain or there is no description. The text is
+--- rendered inert (§17.11) and never interpreted.
+--- @param desc string|nil
+function Tree:_append_summary(desc)
+    local d = require("loomworks.description")
+    local sum = d.summary(desc)
+    if not sum then return end
+    sum = d.inert_line(sum)
+    local ln = #self.lines
+    local line = self.lines[ln]
+    local avail = (self.width or 100) - vim.fn.strdisplaywidth(line) - 3
+    if avail < SUMMARY_MIN then return end
+    local text = d.fit(sum, math.min(SUMMARY_MAX, avail))
+    local col = #line + 2
+    self.lines[ln] = line .. "  " .. text
+    self.highlights[#self.highlights + 1] = {
+        line = ln, col_start = col, col_end = col + #text, hl_group = "LoomworksDescription",
+    }
+end
+
+--- Render a description in full as leaves at the current indentation (the
+--- first child of an expanded describable node, spec/ui.md §1.16): one
+--- `LoomworksDescription` leaf per line (the blank line between summary and
+--- body kept), each cut to the window width, at most 8 lines, then a
+--- "… N more lines — [K] full description" leaf. `K` on any of these leaves
+--- shows the full text. Nothing is rendered for an absent description.
+--- @param desc string|nil
+--- @param from_module boolean|nil a module default (read-only)
+function Tree:description(desc, from_module)
+    if not desc then return end
+    local d = require("loomworks.description")
+    local lines = vim.split(d.inert(desc), "\n", { plain = true })
+    local pad = self:_pad()
+    local width = math.max(12, (self.width or 100) - vim.fn.strdisplaywidth(pad) - 1)
+    local full = function() return description_hover_lines(desc, from_module) end
+    local shown = math.min(#lines, DESCRIPTION_MAX_LINES)
+    for i = 1, shown do
+        local text = lines[i]
+        if i == 1 and from_module then text = text .. "  (from project files)" end
+        self:_add(pad .. d.fit(text, width), "LoomworksDescription")
+        self.line_hover[#self.lines] = full
+    end
+    if #lines > shown then
+        self:_add(pad .. "… " .. (#lines - shown) .. " more lines — [K] full description", "Comment")
+        self.line_hover[#self.lines] = full
     end
 end
 

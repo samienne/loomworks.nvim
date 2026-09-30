@@ -18,6 +18,40 @@ local Project = require("loomworks.project")
 local ConfigurationSet = require("loomworks.configuration_set")
 local Tool = require("loomworks.tool")
 local Module = require("loomworks.module")
+local description_mod = require("loomworks.description")
+
+--- A description value as compared and written (spec §1.10): normalised text
+--- for a string, a non-string value unchanged (written back as read), nil
+--- when absent.
+--- @param v any
+--- @return any
+local function desc_value(v)
+    local d, invalid = description_mod.from_file(v)
+    if d ~= nil then return d end
+    return invalid
+end
+
+--- An item's description as written to a file (`description_for_file`),
+--- tolerating plain-table stand-ins without the method.
+--- @param item table
+--- @return any
+local function item_description(item)
+    return item.description_for_file and item:description_for_file() or nil
+end
+
+--- Shallow copy of a raw item table with its `description` normalised, for
+--- baseline comparisons (a difference only in line endings or trailing
+--- whitespace is not a change). Non-tables and tables without a description
+--- are returned as is.
+--- @param t any
+--- @return any
+local function with_norm_desc(t)
+    if type(t) ~= "table" or t.description == nil then return t end
+    local c = {}
+    for k, v in pairs(t) do c[k] = v end
+    c.description = desc_value(t.description)
+    return c
+end
 
 -- ========================== Static helpers ==========================
 
@@ -194,6 +228,10 @@ local function merge_project(shared, user)
         depends_on = user.depends_on or shared.depends_on,
         launch = nil,
         variables = nil,
+        -- A description is a project-level field (spec §2.4 "Descriptions"):
+        -- the user.json declaration's presence or absence wins, never a
+        -- field-by-field fallback to the shared one.
+        description = user.description,
     }
     local prov = { user_project_fields = true }
 
@@ -340,6 +378,19 @@ function M.merge_configs(user_config, shared_config)
     if not next(merged.configuration_sets) then
         merged.configuration_sets = nil
     end
+
+    -- Configuration-set descriptions (sidecar, spec §1.10) travel with the
+    -- winning set: the user's entry (or its absence) for a user.json set,
+    -- otherwise the shared one.
+    local set_descs = {}
+    for name in pairs(merged.configuration_sets or {}) do
+        local src = user_cs_names[name] and user_config or shared_config
+        local sidecar = src and src.configuration_set_descriptions
+        if type(sidecar) == "table" and sidecar[name] ~= nil then
+            set_descs[name] = sidecar[name]
+        end
+    end
+    merged.configuration_set_descriptions = next(set_descs) and set_descs or nil
 
     -- Profiles: user wins per key (same pattern as config sets)
     local user_profile_keys = {}
@@ -907,6 +958,9 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
         user_overlay = {}
         if raw_user.projects then user_overlay.projects = raw_user.projects end
         if raw_user.configuration_sets then user_overlay.configuration_sets = raw_user.configuration_sets end
+        if type(raw_user.configuration_set_descriptions) == "table" then
+            user_overlay.configuration_set_descriptions = raw_user.configuration_set_descriptions
+        end
         if raw_user.profiles then user_overlay.profiles = raw_user.profiles end
         self._user_config_overlay = next(user_overlay) and user_overlay or nil
         user_data = raw_user
@@ -2165,6 +2219,41 @@ function Workspace:diagnostics()
     for _, d in ipairs(require("loomworks.program_fields").diagnostics(
             self._shared_ignored, self._merged_config)) do
         add(d)
+    end
+
+    -- A non-string `description` (spec §1.10) is ignored; say so on the item.
+    local function bad_description(item, what, source, fold_key)
+        if item._description_invalid == nil then return end
+        add({
+            severity = "warn",
+            source = source,
+            message = what .. ": \"description\" is not text ("
+                .. type(item._description_invalid) .. ") and is ignored",
+            target_fold_key = fold_key,
+        })
+    end
+    for _, project in pairs(self._projects) do
+        if not project.orphaned then
+            bad_description(project, "project '" .. project.key .. "'",
+                "Project/" .. project.key, "project:" .. project.key)
+            for _, cfg in ipairs(project._configurations or {}) do
+                if not cfg._removed then
+                    bad_description(cfg, "configuration '" .. project.key .. "/" .. cfg.name .. "'",
+                        "Project/" .. project.key .. "/" .. cfg.name,
+                        "config:" .. project.key .. ":" .. cfg.name)
+                end
+            end
+        end
+    end
+    for _, cs in pairs(self._config_sets) do
+        bad_description(cs, "configuration set '" .. cs.name .. "'",
+            "ConfigurationSet/" .. cs.name, "set:" .. cs.name)
+    end
+    for _, profile in pairs(self._profiles) do
+        if not profile._removed then
+            bad_description(profile, "profile '" .. tostring(profile.key) .. "'",
+                "Profile/" .. tostring(profile.key), "profile:" .. tostring(profile.key))
+        end
     end
 
     for _, profile in pairs(self._profiles) do
@@ -4195,16 +4284,19 @@ function Workspace:_config_from_objects()
                 launch = project.launch,
                 deploy = project.deploy,
                 device = project.device,
+                description = item_description(project),
                 variables = project.variables,
             }
         end
     end
 
     local configuration_sets = nil
+    local set_descs = {}
     if #self._config_sets > 0 then
         configuration_sets = {}
         for _, cs in pairs(self._config_sets) do
             configuration_sets[cs.name] = cs:raw_mappings()
+            set_descs[cs.name] = item_description(cs)
         end
     end
 
@@ -4218,6 +4310,7 @@ function Workspace:_config_from_objects()
         name = self.name,
         projects = projects,
         configuration_sets = configuration_sets,
+        configuration_set_descriptions = next(set_descs) and set_descs or nil,
         profiles = profiles,
     }
 end
@@ -4280,6 +4373,9 @@ function Workspace:_serialize_project_shared(project, publishable_configs)
     if project.device and next(project.device) then
         type_config.device = vim.deepcopy(project.device)
     end
+    -- So does the description (spec §1.10).
+    local desc = item_description(project)
+    if desc ~= nil then type_config.description = desc end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4322,6 +4418,9 @@ function Workspace:_serialize_project(project)
     if project.device and next(project.device) then
         type_config.device = vim.deepcopy(project.device)
     end
+    -- So does the description (spec §1.10).
+    local desc = item_description(project)
+    if desc ~= nil then type_config.description = desc end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -4490,14 +4589,17 @@ function Workspace:_serialize_config()
         end
     end
 
-    -- Configuration sets: include those publishable
-    local sets = {}
+    -- Configuration sets: include those publishable. A set's description
+    -- goes to the top-level sidecar alongside it (spec §1.10).
+    local sets, set_descs = {}, {}
     for _, cs in pairs(self._config_sets) do
         if pub.config_sets[cs] then
             sets[cs.name] = cs:raw_mappings()
+            set_descs[cs.name] = item_description(cs)
         end
     end
     if next(sets) then raw.configuration_sets = sets end
+    if next(set_descs) then raw.configuration_set_descriptions = set_descs end
 
     -- Profiles: those with effective intent shared. A profile pins
     -- a machine-specific tool, so config-sets are the primary shared unit and
@@ -4539,19 +4641,25 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
                 -- Compare project-level fields
                 local user_path = user_proj.path or pkey
                 local old_path = old_shared.path or pkey
+                -- The description is part of the declaration (spec §2.4).
                 local synced_decl = user_path == old_path
                         and user_proj.type == old_shared.type
+                        and vim.deep_equal(desc_value(user_proj.description),
+                            desc_value(old_shared.description))
 
                 if synced_decl and new_projects[pkey] then
                     local new_shared = new_projects[pkey]
                     -- Update project-level fields to match new shared
                     if user_proj.path ~= new_shared.path
-                            or user_proj.type ~= new_shared.type then
+                            or user_proj.type ~= new_shared.type
+                            or not vim.deep_equal(desc_value(user_proj.description),
+                                desc_value(new_shared.description)) then
                         changed = true
                     end
                     user_proj.path = new_shared.path
                     user_proj.type = new_shared.type
                     user_proj.depends_on = new_shared.depends_on
+                    user_proj.description = new_shared.description
                 end
 
                 -- Sync individual configurations
@@ -4566,7 +4674,7 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
 
                 for cname, user_cfg in pairs(user_configs) do
                     local old_cfg = old_configs[cname]
-                    if old_cfg and vim.deep_equal(user_cfg, old_cfg) then
+                    if old_cfg and vim.deep_equal(with_norm_desc(user_cfg), with_norm_desc(old_cfg)) then
                         -- User config was synced with old baseline
                         if new_configs[cname] then
                             -- Update to match new shared
@@ -4583,10 +4691,24 @@ function Workspace:_auto_sync_user_projects(new_config, user_data)
     if user_data.configuration_sets then
         local old_sets = old_baseline.configuration_sets or {}
         local new_sets = new_config.configuration_sets or {}
+        -- A set's sidecar description is part of its content (spec §2.4).
+        local function sidecar(t)
+            return type(t) == "table" and type(t.configuration_set_descriptions) == "table"
+                and t.configuration_set_descriptions or {}
+        end
+        local old_descs, new_descs = sidecar(old_baseline), sidecar(new_config)
+        local user_descs = sidecar(user_data)
         for sname, user_set in pairs(user_data.configuration_sets) do
             local old_set = old_sets[sname]
-            if old_set and vim.deep_equal(user_set, old_set) and new_sets[sname] then
+            if old_set and vim.deep_equal(user_set, old_set) and new_sets[sname]
+                    and vim.deep_equal(desc_value(user_descs[sname]), desc_value(old_descs[sname])) then
                 user_data.configuration_sets[sname] = vim.deepcopy(new_sets[sname])
+                if user_descs[sname] ~= new_descs[sname] then
+                    if type(user_data.configuration_set_descriptions) ~= "table" then
+                        user_data.configuration_set_descriptions = {}
+                    end
+                    user_data.configuration_set_descriptions[sname] = new_descs[sname]
+                end
                 changed = true
             end
         end
@@ -4645,19 +4767,22 @@ function Workspace:_user_config_from_objects()
                 launch = project.launch,
                 deploy = project.deploy,
                 device = project.device,
+                description = item_description(project),
                 variables = project.variables,
             }
         end
     end
     if next(projects) then overlay.projects = projects end
 
-    local config_sets = {}
+    local config_sets, set_descs = {}, {}
     for _, cs in pairs(self._config_sets) do
         if cs._intent ~= "shared" then
             config_sets[cs.name] = cs:raw_mappings()
+            set_descs[cs.name] = item_description(cs)
         end
     end
     if next(config_sets) then overlay.configuration_sets = config_sets end
+    if next(set_descs) then overlay.configuration_set_descriptions = set_descs end
 
     local profiles = {}
     for _, profile in pairs(self._profiles) do
@@ -4669,6 +4794,7 @@ function Workspace:_user_config_from_objects()
             if profile._tool_keys and #profile._tool_keys > 0 then
                 entry.tools = vim.list_extend({}, profile._tool_keys)
             end
+            entry.description = item_description(profile)
             profiles[profile.key] = entry
         end
     end
@@ -4697,6 +4823,15 @@ function Workspace:_baseline_config_set(cs_name)
     if not self._shared_baseline then return nil end
     local bcs = self._shared_baseline.configuration_sets
     return bcs and bcs[cs_name]
+end
+
+--- Get a config set's baseline sidecar description (raw, as read).
+--- @param cs_name string
+--- @return any
+function Workspace:_baseline_config_set_description(cs_name)
+    if not self._shared_baseline then return nil end
+    local d = self._shared_baseline.configuration_set_descriptions
+    return type(d) == "table" and d[cs_name] or nil
 end
 
 --- Check if a configuration exists in the shared baseline.
@@ -4730,7 +4865,7 @@ function Workspace:is_config_modified(project, config)
 
     -- Both published and in baseline, user has modified: compare content
     local current = config:serialize_user_override()
-    local baseline_val = baseline_configs[config.name]
+    local baseline_val = with_norm_desc(baseline_configs[config.name])
     -- Normalize: serialize_user_override returns nil for bare defaults,
     -- baseline may have {} for bare defaults
     if not current and (not baseline_val or not next(baseline_val)) then
@@ -4760,6 +4895,11 @@ function Workspace:is_project_decl_modified(project)
     if (project.path or project.key) ~= (bp.path or project.key) then return true end
     if project.type ~= bp.type then return true end
     if not vim.deep_equal(project._depends_on_keys, bp.depends_on) then return true end
+    -- The description is lifted out of the module section (spec §1.10), so
+    -- it is compared on its own, normalised.
+    if not vim.deep_equal(item_description(project), desc_value(bp.description)) then
+        return true
+    end
 
     -- Compare module settings (type_config minus configurations)
     local current_tc = project.type_config and vim.deepcopy(project.type_config) or {}
@@ -4827,9 +4967,11 @@ function Workspace:is_config_set_modified(cs)
     if not wants_shared and in_baseline then return true end
     if not wants_shared and not in_baseline then return false end
 
-    -- Compare mappings
+    -- Compare mappings and the sidecar description (spec §2.4)
     local current = cs:raw_mappings()
-    return not vim.deep_equal(current, baseline)
+    if not vim.deep_equal(current, baseline) then return true end
+    return not vim.deep_equal(item_description(cs),
+        desc_value(self:_baseline_config_set_description(cs.name)))
 end
 
 --- Check if a profile is modified.
@@ -4846,9 +4988,9 @@ function Workspace:is_profile_modified(profile)
     if not wants_shared and in_baseline then return true end
     if not wants_shared and not in_baseline then return false end
 
-    -- Compare definition
+    -- Compare definition (description normalised, spec §2.4)
     local current = profile:to_config_def()
-    local baseline = bp[profile.key]
+    local baseline = with_norm_desc(bp[profile.key])
     return not vim.deep_equal(current, baseline)
 end
 
@@ -4936,6 +5078,12 @@ function Workspace:publish_one(item)
         end
         existing.configuration_sets = existing.configuration_sets or {}
         existing.configuration_sets[cs.name] = cs:raw_mappings()
+        -- The set's sidecar entry travels with it; other sets' entries stay
+        -- as they are (spec §2.4 "Descriptions").
+        if type(existing.configuration_set_descriptions) ~= "table" then
+            existing.configuration_set_descriptions = {}
+        end
+        existing.configuration_set_descriptions[cs.name] = item_description(cs)
         -- Cascade: mapped projects/configs need to be present
         for project, cfg in pairs(cs.mappings or {}) do
             if not project.orphaned then
@@ -4974,6 +5122,17 @@ function Workspace:publish_one(item)
 
     if existing.projects and not next(existing.projects) then
         existing.projects = nil
+    end
+    -- A sidecar entry naming no configuration set is dropped on write (spec
+    -- §1.10); an empty sidecar is omitted.
+    if type(existing.configuration_set_descriptions) == "table" then
+        local sets = type(existing.configuration_sets) == "table" and existing.configuration_sets or {}
+        for name in pairs(existing.configuration_set_descriptions) do
+            if sets[name] == nil then existing.configuration_set_descriptions[name] = nil end
+        end
+        if not next(existing.configuration_set_descriptions) then
+            existing.configuration_set_descriptions = nil
+        end
     end
 
     -- Program-bearing values the shared layer carried (ignored at load, spec
@@ -5041,6 +5200,8 @@ function Workspace:revert_one(item)
             { projects = user_overlay.projects,
               configuration_sets = user_overlay.configuration_sets,
               profiles = user_overlay.profiles })
+        -- tbl_extend skips nil values: set the sidecar explicitly.
+        user_data.configuration_set_descriptions = user_overlay.configuration_set_descriptions
         self:remerge(baseline, nil, user_data)
         self:_save_user()
         self._core._deps.events.emit("active_set_changed", self._active_set)
@@ -5063,11 +5224,20 @@ function Workspace:revert_one(item)
         if user_overlay.configuration_sets
                 and user_overlay.configuration_sets[item.name] then
             user_overlay.configuration_sets[item.name] = vim.deepcopy(b)
+            -- Restore (or remove) the sidecar description too (spec §2.4).
+            local bd = self:_baseline_config_set_description(item.name)
+            if bd ~= nil or user_overlay.configuration_set_descriptions then
+                user_overlay.configuration_set_descriptions =
+                    user_overlay.configuration_set_descriptions or {}
+                user_overlay.configuration_set_descriptions[item.name] = bd
+            end
         end
         local user_data = vim.tbl_extend("force", self:_serialize_user(),
             { projects = user_overlay.projects,
               configuration_sets = user_overlay.configuration_sets,
               profiles = user_overlay.profiles })
+        -- tbl_extend skips nil values: set the sidecar explicitly.
+        user_data.configuration_set_descriptions = user_overlay.configuration_set_descriptions
         self:remerge(baseline, nil, user_data)
         self:_save_user()
         self._core._deps.events.emit("active_set_changed", self._active_set)
@@ -5104,6 +5274,8 @@ function Workspace:revert_one(item)
             { projects = user_overlay.projects,
               configuration_sets = user_overlay.configuration_sets,
               profiles = user_overlay.profiles })
+        -- tbl_extend skips nil values: set the sidecar explicitly.
+        user_data.configuration_set_descriptions = user_overlay.configuration_set_descriptions
         self:remerge(baseline, nil, user_data)
         self:_save_user()
         self._core._deps.events.emit("active_set_changed", self._active_set)
@@ -5163,6 +5335,10 @@ function Workspace:revert_to_baseline()
     if user_overlay.projects then
         for pkey, user_proj in pairs(user_overlay.projects) do
             local baseline_proj = baseline_projects[pkey]
+            -- The baseline description, or none (spec §2.4 "Revert").
+            if baseline_proj then
+                user_proj.description = baseline_proj.description
+            end
             if baseline_proj and user_proj.type_config
                     and user_proj.type_config.configurations then
                 local b_configs = baseline_proj.type_config
@@ -5178,10 +5354,23 @@ function Workspace:revert_to_baseline()
         end
     end
     if user_overlay.configuration_sets then
+        local baseline_descs = baseline and baseline.configuration_set_descriptions or {}
         for sname, _ in pairs(user_overlay.configuration_sets) do
             if baseline_sets[sname] then
                 user_overlay.configuration_sets[sname] =
                     vim.deepcopy(baseline_sets[sname])
+                user_overlay.configuration_set_descriptions =
+                    user_overlay.configuration_set_descriptions or {}
+                user_overlay.configuration_set_descriptions[sname] = baseline_descs[sname]
+            end
+        end
+    end
+    -- Profiles in the baseline get its description back (or none).
+    if user_overlay.profiles then
+        local baseline_profiles = baseline and baseline.profiles or {}
+        for pkey, entry in pairs(user_overlay.profiles) do
+            if baseline_profiles[pkey] then
+                entry.description = baseline_profiles[pkey].description
             end
         end
     end
@@ -5202,6 +5391,8 @@ function Workspace:revert_to_baseline()
         { projects = user_overlay.projects,
           configuration_sets = user_overlay.configuration_sets,
           profiles = user_overlay.profiles })
+    -- tbl_extend skips nil values: set the sidecar explicitly.
+    user_data.configuration_set_descriptions = user_overlay.configuration_set_descriptions
     self:remerge(baseline or { projects = {} }, nil, user_data)
 
     -- Persist working state.
@@ -5276,16 +5467,19 @@ function Workspace:_serialize_config_internal()
                 launch = project.launch,
                 deploy = project.deploy,
                 device = project.device,
+                description = item_description(project),
                 variables = project.variables,
             }
         end
     end
 
     local configuration_sets = nil
+    local set_descs = {}
     for _, cs in pairs(self._config_sets) do
         if cs._intent ~= "local" then
             if not configuration_sets then configuration_sets = {} end
             configuration_sets[cs.name] = cs:raw_mappings()
+            set_descs[cs.name] = item_description(cs)
         end
     end
 
@@ -5302,6 +5496,7 @@ function Workspace:_serialize_config_internal()
         name = self.name,
         projects = projects,
         configuration_sets = configuration_sets,
+        configuration_set_descriptions = next(set_descs) and set_descs or nil,
         profiles = profiles,
     }
 end
@@ -5341,6 +5536,9 @@ function Workspace:_serialize_project_partial(project, needed_config_names)
     if project.device and next(project.device) then
         type_config.device = vim.deepcopy(project.device)
     end
+    -- So does the description (spec §1.10).
+    local desc = item_description(project)
+    if desc ~= nil then type_config.description = desc end
     local entry = { [project.type] = next(type_config)
             and type_config or vim.empty_dict() }
     if project.path and project.path ~= project.key then
@@ -5442,19 +5640,23 @@ function Workspace:_serialize_user()
             if profile._tool_keys and #profile._tool_keys > 0 then
                 entry.tools = vim.list_extend({}, profile._tool_keys)
             end
+            entry.description = item_description(profile)
             user_profiles[profile.key] = entry
         end
     end
     if next(user_profiles) then data.profiles = user_profiles end
 
-    -- Config sets: include items with local or local+shared intent
-    local config_sets = {}
+    -- Config sets: include items with local or local+shared intent. Their
+    -- descriptions go to the top-level sidecar (spec §1.10), omitted when empty.
+    local config_sets, set_descs = {}, {}
     for _, cs in pairs(self._config_sets) do
         if cs._intent ~= "shared" then
             config_sets[cs.name] = cs:raw_mappings()
+            set_descs[cs.name] = item_description(cs)
         end
     end
     if next(config_sets) then data.configuration_sets = config_sets end
+    if next(set_descs) then data.configuration_set_descriptions = set_descs end
 
     -- Projects: include items with local or local+shared intent.
     -- Auto-gens are filtered out — they re-emit from the module on

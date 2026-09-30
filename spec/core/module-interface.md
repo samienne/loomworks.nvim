@@ -98,6 +98,20 @@ during merge to discover available configurations.
 
 - `configurations`: dict of config_name → config info (generator, binary_dir,
   toolchain_locked, toolchain)
+- A **generated** configuration's info MAY carry `description`, a string. It
+  is the read-only default description (§1.10), taken from the project's own
+  files, e.g. a preset's display name and description. Core normalises it,
+  shows it, and never persists it. Core ignores `description` on a
+  user-declared configuration's info, because a user configuration's
+  description is core-owned and read from the workspace files. This field is
+  additive and optional, so there is no `api_versions.module` bump (§8.0).
+
+`description` is a **core-reserved key** in two places: the module section
+(`type_config`), and every configuration table under
+`type_config.configurations`. Core removes the key from the module section
+before calling `validate`, `info` or `tasks`. A configuration's `description`
+is a generic configuration field and never part of `module_config`. A module
+MUST NOT define a field of its own named `description` in either place.
 
 **`tasks(project, active_config) → task_def[]`**
 

@@ -150,7 +150,8 @@ function M.delete_profile(profile)
         local wv = require("loomworks.workspace_view")
         local ws = require("loomworks").get_workspace()
         local plan = profile:plan_deletion()
-        local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan)
+        local ctx = wv.compute_delete_confirmation_context(ws, "Delete profile: " .. profile.key, plan,
+            profile.description)
         M._show_confirmation(ctx, function()
             require("loomworks").execute_deletion(plan, { deactivate_profile = profile }, function()
                 vim.notify("loomworks: profile '" .. profile.key .. "' removed", vim.log.levels.INFO)
@@ -221,8 +222,9 @@ function M.delete_config(unit)
         local ws = require("loomworks").get_workspace()
         local plan = unit:plan_deletion()
         local pkey, ckey = unit_display_keys(unit)
+        local cfg = unit.configuration and unit:configuration() or nil
         local ctx = wv.compute_delete_confirmation_context(ws,
-            "Delete: " .. pkey .. " / " .. ckey, plan)
+            "Delete: " .. pkey .. " / " .. ckey, plan, cfg and cfg.description)
         M._show_confirmation(ctx, function()
             unit:delete(function()
                 vim.notify("loomworks: configuration cleaned", vim.log.levels.INFO)
@@ -327,7 +329,8 @@ function M.create_profile(ctx)
                 if item.auto then
                     return item.name .. "  (" .. item.desc .. ")"
                 end
-                return item.name
+                return item.name .. require("loomworks.ui.helpers").picker_summary(
+                    item.cs and item.cs.description)
             end,
         }, function(choice)
             if not choice then return end

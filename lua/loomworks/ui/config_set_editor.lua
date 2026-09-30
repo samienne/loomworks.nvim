@@ -21,6 +21,8 @@ local M = {}
 ---   validate?: fun(result): boolean, string|nil — return false + error message to block accept
 ---   on_accept: fun(result: { name: string, mappings: table<loomworks.Project, loomworks.Configuration|nil> })
 ---   on_cancel: fun()
+---   item?: loomworks.ConfigurationSet — the existing set (edit mode): adds a
+---     `Description ▸` row that opens the description editor (ui §1.16)
 function M.open(opts)
     local projects = opts.projects
     local mappings = {}
@@ -85,6 +87,9 @@ function M.open(opts)
         if name_error then
             t:leaf(name_error, "DiagnosticError")
         end
+        require("loomworks.ui.helpers").description_row(t, opts.item,
+            "Description" .. string.rep(" ", math.max(0, max_name_len - 11)),
+            function() if view then view:refresh() end end)
 
         t:blank()
 

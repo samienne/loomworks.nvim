@@ -2,9 +2,15 @@
 --- Represents a named mapping of projects to configuration variants.
 --- Owns activation via find_profile() + activate().
 
+local description_mod = require("loomworks.description")
+
 --- @class loomworks.ConfigurationSet
 --- @field name string configuration set name
 --- @field mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration object
+--- @field description string|nil normalised description (spec §1.10); stored in
+---        the `configuration_set_descriptions` sidecar of the file the set lives in
+--- @field _description_invalid any a non-string sidecar value, ignored but
+---        written back unchanged until the description is set or cleared
 --- @field _workspace loomworks.Workspace back-reference
 --- @field _removed boolean
 --- @field _source "user"|"shared" provenance: "user" = from user.json, "shared" = from loomworks.json
@@ -17,8 +23,9 @@ ConfigurationSet.__index = ConfigurationSet
 --- @param workspace loomworks.Workspace
 --- @param name string
 --- @param resolved_mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration (pre-resolved)
+--- @param description_value? any the set's sidecar entry, as read
 --- @return loomworks.ConfigurationSet
-function ConfigurationSet.new(workspace, name, resolved_mappings)
+function ConfigurationSet.new(workspace, name, resolved_mappings, description_value)
     local self = setmetatable({}, ConfigurationSet)
     self._workspace = workspace
     self.name = name
@@ -27,7 +34,7 @@ function ConfigurationSet.new(workspace, name, resolved_mappings)
     -- _intent left nil; data_model.refresh assigns and then sticks. Mutation
     -- methods set it explicitly.
     self._intent = nil
-    self:_update(resolved_mappings)
+    self:_update(resolved_mappings, description_value)
     return self
 end
 
@@ -47,10 +54,51 @@ function ConfigurationSet:_mark_user_owned()
 end
 
 --- Update mappings in place (preserves table identity).
---- Receives pre-resolved { Project -> Configuration } from _sync_config_sets.
+--- Receives pre-resolved { Project -> Configuration } from _sync_config_sets,
+--- and the set's `configuration_set_descriptions` sidecar entry.
 --- @param resolved_mappings table<loomworks.Project, loomworks.Configuration> project -> Configuration
-function ConfigurationSet:_update(resolved_mappings)
+--- @param description_value? any sidecar entry as read (normalised here)
+function ConfigurationSet:_update(resolved_mappings, description_value)
     self.mappings = resolved_mappings or {}
+    self.description, self._description_invalid = description_mod.from_file(description_value)
+end
+
+--- The value to write to the sidecar for this set: the description, or a
+--- preserved non-string value (spec §1.10), or nil (no entry).
+--- @return any
+function ConfigurationSet:description_for_file()
+    if self.description ~= nil then return self.description end
+    return self._description_invalid
+end
+
+--- Set or clear (nil / blank) the set's description (spec §1.10). Editing is
+--- use: a `shared` set is materialised into the working copy (implicit
+--- cascade). Writes nothing when the normalised text is unchanged.
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function ConfigurationSet:set_description(text)
+    local ws = self._workspace
+    if self._removed then
+        return nil, "configuration set '" .. self.name .. "' not found"
+    end
+    local ok, value, err = description_mod.prepare(text)
+    if not ok then return nil, err end
+    if value == self.description and self._description_invalid == nil then
+        return false
+    end
+    local old, old_invalid = self.description, self._description_invalid
+    local old_intent, old_source = self._intent, self._source
+    self:_mark_user_owned()
+    self.description, self._description_invalid = value, nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self.description, self._description_invalid = old, old_invalid
+        self._intent, self._source = old_intent, old_source
+        return nil, save_err
+    end
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
 end
 
 function ConfigurationSet:__tostring()

@@ -1020,6 +1020,51 @@ and `lw status` (and `lw profile show`) flags it as a diagnostic that fails
 `lw status --check`. Editing a profile's fill value reconfigures on the next
 build, exactly like a variable default.
 
+### Descriptions
+
+Projects, configurations, configuration sets and profiles can carry an optional
+free-text **description**. It works like a git commit message: the first line
+is the **summary**, and the rest is the body.
+
+- The summary appears next to the item in `lw status`, the `list` commands, the
+  status page and pickers. It is cut with `…` when the line is too narrow.
+- The full text appears in `lw … show`, in `lw … describe`, when you expand the
+  item on the status page, and in `K` (hover).
+
+```sh
+lw profile describe dev -m "Clang debug build with ASan" -m "Used for the nightly sanitizer run."
+lw configset describe Release "What CI ships"
+lw config describe app asan -e                 # edit in $VISUAL / $EDITOR
+git log -1 --format=%B | lw project describe app -   # from stdin
+lw project describe app                        # print it
+lw project describe app --json                 # {"description": …, "summary": …}
+lw config describe app asan --clear            # remove it (so does "")
+```
+
+On the status page, press `e` on a profile, set, project or user configuration
+to edit its description in a scratch buffer. `:w` saves, `#` lines are ignored,
+and saving it empty removes the description.
+
+Descriptions are display text only. They never affect a build, and a
+description from a cloned `loomworks.json` is shown inert: control characters
+are made visible, and nothing is expanded or interpreted. A description is
+published and reverted with its item. It follows the item through renames, and
+changing it marks a published item `+`.
+
+Generated configurations (`variant:*`, `preset:*`) can't be described here. A
+CMake preset's own `displayName` / `description` is shown as its description.
+Describe a configuration that inherits the generated one if you need your own
+text.
+
+In the files, the description sits inside the item's table
+(`profiles.<key>.description`, `…configurations.<name>.description`). A
+project's description goes in its module section
+(`projects.App.cmake.description`). A configuration set's description goes in
+the top-level `configuration_set_descriptions` map, because a set's own table
+is a plain project → configuration map. An `lw` older than this feature keeps
+project and configuration descriptions. It drops set and profile descriptions
+when it rewrites the working copy.
+
 ## Concepts
 
 **Configuration set** — a cross-project mapping declared in `loomworks.json`.
@@ -1407,10 +1452,10 @@ sub-command's own section under `lw help <command> <sub>` (or
 |---|---|
 | `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
 | `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
-| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset`. `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
-| `lw config <sub>` | `add` \| `set` \| `get` \| `show` \| `rename` project configurations (aliases `configuration`, `cfg`). `rename <project> <old> <new>` (alias `mv`) renames a user configuration in place, updating every set mapping and profile that references it |
-| `lw configset <sub>` | `create` \| `map` \| `show` \| `rename` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
-| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset`. `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
+| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset` \| `describe`. `describe <project> [<text> \| -m … \| -F <file\|-> \| -e \| --clear] [--json]` prints or sets the [description](#descriptions). `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
+| `lw config <sub>` | `add` \| `set` \| `get` \| `show` \| `rename` \| `describe` project configurations (aliases `configuration`, `cfg`). `rename <project> <old> <new>` (alias `mv`) renames a user configuration in place, updating every set mapping and profile that references it |
+| `lw configset <sub>` | `create` \| `map` \| `show` \| `rename` \| `describe` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
+| `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset` \| `describe`. `describe <profile> [text/flags]` prints or sets the profile's [description](#descriptions) (the profile is required, never defaulted). `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchain installations: `types` \| `detect` \| `list` \| `add` \| `remove`. `add <type> <path>` declares an installation detection can't find; `add <type>` (no path) declares the one the provider detects — several → a picker, or under `--no-input` an error listing each as the explicit command. `detect [<type>]` lists what each provider finds on this host (read-only, no workspace needed) |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` (shared by the editor and every `lw` invocation: appended to, never truncated; rotated to `loomworks.log.1` past 1 MB, one old file kept) |
@@ -1591,17 +1636,20 @@ don't use this — install the module plugin the usual way.)
 
 | Key | Action |
 |---|---|
-| `<Tab>` | Toggle fold on the current node |
+| `<Tab>` / `<S-Tab>` | Next / previous item |
+| `l` / `h` | Open / close the fold on the current node |
 | `<CR>` | Activate profile (materializes if needed) |
 | `b` | Build profile or configuration |
+| `<C-b>` | Build serially (`-j1`) for readable errors |
 | `c` | Configure (cmake configure) |
-| `p` | Pin a configuration as a standalone profile |
 | `o` | Show build options (cmake cache variables) |
 | `R` | Clean + rebuild (destructive) |
 | `C` | Clean — reset to unconfigured, delete build dir (destructive) |
 | `D` | Delete profile or configuration (destructive, with confirmation) |
+| `P` | Cycle publish intent (`local` → `local+shared` → `shared`) |
 | `L` | Load workspace from cwd / rescan tools |
-| `K` | Hover popup with the full content of the current line (paths, diagnostic messages, etc.) |
+| `K` | Hover popup with the full content of the current line (paths, diagnostic messages, etc.); on a described item, its full description |
+| `e` | Edit the description of the profile / set / project / configuration under the cursor (scratch buffer; `:w` saves, empty removes) |
 | `<C-n>` | Reset workspace: delete `.nvim/build/` + cache, reload (destructive) |
 | `T` | Review & trust a refused working copy |
 | `U` | Discard the working copy (`.nvim/loomworks.user.json`) and reload (destructive, with confirmation) |

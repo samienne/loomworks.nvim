@@ -9,6 +9,7 @@ local hl = vim.api.nvim_set_hl
 
 -- Legacy status-as-color groups — still used by older sections.
 hl(0, "LoomworksActive",       { link = "DiagnosticOk",    default = true })
+hl(0, "LoomworksDescription",  { link = "Comment",         default = true })
 hl(0, "LoomworksBuilt",        { link = "DiagnosticOk",    default = true })
 hl(0, "LoomworksConfigured",   { link = "DiagnosticInfo",  default = true })
 hl(0, "LoomworksUnconfigured", { link = "Comment",         default = true })

@@ -285,6 +285,7 @@ may import from its own layer or any layer below it, never above.
 | `config_env.lua` | **Configuration environment resolution** (spec §1.3.3). `merged(configuration, family)` merges `env` across the inheritance chain (bases depth-first, then own; per level plain `env` then the matching `overrides[family].env`, so a nearer plain value shadows a farther family entry); `expansion_context(project, configuration, family, profile, root)` builds the built-ins + resolved-variable context shared with `ConfigUnit:resolved_option_fingerprint`; `resolve(...)` returns the expanded env with reserved compiler-driver names stripped (plus the stripped list, warned once; a `PATH` entry is kept but warned once too); `compose(tool_env, config_env, case_insensitive?)` layers it over the tool env (on Windows, by default, a configuration name replaces a tool name differing only in case). The single resolver for the task context (overseer), the configure snapshot and staleness (ConfigUnit), and test runs | Know about any module; do I/O |
 | `reserved_compiler.lua` | Single definition of the compiler keys owned by the tool: the `^CMAKE_.+_COMPILER$` cache-var pattern and the compiler-driver env set (`CC`, `CXX`, `FC`, `CUDACXX`, …). `is_reserved_option` / `is_reserved_env` (env names matched case-insensitively on every host) are consumed by `Project:save_configuration` (reject at edit), the cmake/meson task builders (strip at build), and `Configuration:compiler_override_warnings` (inline diagnostic). `is_path_env` (PATH, any case — not reserved) drives the `lw config set` warning and `config_env`'s one-time runtime warning. See spec §15 "The tool owns the compiler" | Know about any module; detect anything |
 | `term.lua` | **Terminal-safe CLI output** (headless §16.7): `render(s)` escapes every C0 control except TAB/LF (caret notation, `^[` for ESC), DEL and UTF-8 C1 controls (`\u00XX`), and turns only `sgr(code)` markers (NUL + per-process random nonce + SGR params) into `ESC[<code>m`. `ascii(s)` folds the report glyphs (bullets, marks, dashes, arrows) to ASCII for `lw health` (§16.31): `cmd_health` sets `M._ascii_out` so cli.lua's `out()` folds every line; provider strings stay Unicode for the editor, and `--json` is not folded. cli.lua's `out`/`note`/`die`/`errw`/prompts and the shim's `vim.notify` render every line; the status palette emits markers, never raw ESC. `format_argv(argv)` joins an argv into one readable command line for display only (logs, `lw build -v`; not re-executable quoting) | Color decisions (cli.lua's palette / tty gating) |
+| `description.lua` | **Descriptions** (spec §1.10, §17.11). This is a pure module with no workspace access. `normalize(v) → string|nil` does CRLF/CR → LF, strips trailing whitespace per line and leading/trailing blank lines, and maps empty to nil. `validate(s) → ok, err` refuses control characters other than LF/TAB and anything over 4096 bytes. `summary(s)` / `body(s)` split git-style. `fit(s, cols)` truncates by display width with `…` (never bytes) for the CLI and the editor. `inert(s)` renders control characters and bidi overrides visibly for buffer lines and pickers. `statusline_escape(s)` escapes `%` → `%%` and drops control characters. `strip_comments(lines)` serves the `#`-comment editor buffers. It is used by the domain objects' `set_description`, the serialisers, cli.lua (`describe`, list rows, `show` views) and the UI | Workspace access; I/O |
 | `log.lua` | Workspace logger (`.nvim/loomworks.log`), shared by the editor and every `lw` invocation: append-only (never truncated), rotated to `loomworks.log.1` past `MAX_BYTES` (1 MB, one old file kept, best-effort rename). Levels ERROR/WARN/INFO/DEBUG; capture mode for tests | Truncate the log; render to the terminal |
 | `exe.lua` | **Program resolution** (spec §5.10): `resolve(name, env?, cwd?)` → absolute path from absolute PATH entries only (task env PATH first; PATHEXT on Windows; never the cwd or an empty/relative entry; an explicit relative path only against the given child `cwd`); `cmd`/`cmd.exe` → `%SystemRoot%\System32\cmd.exe` (`cmd_exe`). `harden_spec(spec)` resolves a task spec's `cmd[1]` and adds `NoDefaultCurrentDirectoryInExePath=1` to its env on Windows (nil + err ⇒ caller must not spawn); `system(cmd, opts, cb)` = `vim.system` over a resolved argv (unresolvable ⇒ synthetic code-127 result, nothing spawned); `resolve_server_cmd` for LSP `rpc.start` argv; `editor_exepath` filters a cwd hit out of `vim.fn.exepath` (Neovim < 0.12 searched the cwd on Windows). Used by overseer.lua (every `new_task`), cli.lua `run_spec`/git, the shim's `which`/`vim.system`, clangd/qmlls, inventory, ctest, msvc, meson. `boot/exe.lua` is the bootstrap's copy of the rule (curl) | Decide *which* tool to run (callers do); trust-gate configured paths |
 | `nice.lua` | Linux nice/ionice cmd wrapper. `wrap_cmd(cmd)` prepends `ionice -c 3 nice -n 10` on Linux when both binaries exist, returns cmd unchanged otherwise. Probe is cached (`_reset_cache()` for tests). Used by `overseer.lua` for build/configure/clean tasks and `loomtest/runner.lua` for test runs | Know about specific commands or modules |
@@ -335,16 +336,17 @@ may import from its own layer or any layer below it, never above.
 | `ui/status.lua` | Wiring: creates Tree + View, assembles `ctx` from API, requires sections in order | Contain rendering logic; do I/O |
 | `ui/view.lua` | Window lifecycle via Snacks.win (open/close/toggle), keymap registration, event-driven refresh, animation timer | Know about section content; contain domain logic |
 | `ui/dialog.lua` | Snacks.win-based dialog helper for floating dialogs (help, confirm, options) | Domain logic |
-| `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering | Know about loomworks domain; do I/O |
+| `ui/tree.lua` | Foldable tree widget: node/leaf/item/group/blank primitives, fold state, action dispatch (walk-up with action picker on Enter), buffer rendering. **Descriptions** (ui §1.16): the render-only `description` opt appends the fitted summary (`_append_summary`, uses `tree.width`, set by the View from the window before each render); `Tree:description(desc, from_module)` renders the expanded leaves (8-line cap); `line_hover` maps a line to its `K` content (the render-only `hover` opt and description leaves) | Know about loomworks domain; do I/O |
 | `ui/actions.lua` | Action factories: capture context at render time, return closures for deferred execution. Deletion confirmation dialog. Profile creation multi-step picker (`create_profile`) | Render tree nodes; own state |
 | `ui/project_browser.lua` | Directory browser float for adding/removing projects. Async scanning via modules, lazy fold-to-scan, add/remove via `ws:add_project()`/`ws:remove_project()`. Opens mapping_dialog when config sets exist | Own persistent state |
 | `ui/mapping_dialog.lua` | Interactive Tree+View dialog for mapping a new project's configurations to existing config sets. Pre-fills via `ws:map_variant()`, accepts/cancels atomically | Own persistent state |
 | `ui/config_set_editor.lua` | Edit dialog for config set mappings (create and edit). Editable name row with inline validation, project→variant picker rows. Used for both new and existing sets | Own persistent state |
+| `ui/description_editor.lua` | Git-commit-style description editor float (spec/ui.md §1.16): an `acwrite` scratch buffer with filetype `loomworks_description`, pre-filled with the text plus `#` help lines. BufWriteCmd → `description.strip_comments` → `item:set_description(text)`; an empty result clears. Refusals are shown inline. `open(item, { on_saved })`; `editable(item)` refuses generated configurations. Opened by the status page `e` action, the `<CR>` picker's "Edit description" and the `Description ▸` rows of the config-set/configuration editor dialogs | Own persistent state |
 | `ui/config_editor_dialog.lua` | Edit dialog for project configuration properties. Supports name, inherits (multi-base with reordering), options (unified view with inheritance sources), variables (override/clear with provenance), compiler-family `overrides` (read-only, marks the family active under the current profile's tool), toolchain, generator. Abstract mixin detection | Own persistent state |
 | `ui/launch_editor.lua` | Edit dialog for launch config properties: name, command, args, working_dir, env, deploy steps. Deploy entries open deploy_editor on enter | Own persistent state |
 | `ui/deploy_editor.lua` | Edit dialog for a single deploy step. Segment-based destination path builder (variable picker + literal text). Source picker for project, configuration, target (from domain objects). Resolved path preview | Own persistent state |
 | `ui/variable_editor.lua` | Edit dialog for a project variable declaration: name, type (string/path), default value | Own persistent state |
-| `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution | Side effects; domain logic |
+| `ui/helpers.lua` | Shared formatting: progress strings, elapsed time, config status resolution; description affordances (ui §1.16): `with_description(opts, item)` (summary + `hover` + `on_describe`), `picker_summary(desc, cols)`, `description_row(t, item, label, refresh)` for editor dialogs | Side effects; domain logic |
 | `ui/sections/*.lua` | Pure render functions `(tree, ctx) → void`. Each section is a single function that calls tree methods | Call core directly; do I/O; hold state |
 
 ### Integrations
@@ -679,6 +681,37 @@ not a module field, and is serialized with the configuration. Inheritance uses C
 within the project. ConfigUnit carries `_configuration` reference. Accessor:
 `unit:configuration()`, `pp:configuration()`.
 
+**Descriptions** (spec §1.10). `Project`, `Configuration`, `ConfigurationSet`
+and `Profile` each hold a first-class `description` (string|nil), set by
+`_apply` from the deserialised data (already normalised by
+`description.normalize`). Each also has a `:set_description(text)` mutation
+method, following the rule that methods belong on domain objects. It normalises
+and validates the text, calls `_mark_user_owned` (implicit cascade, spec §2.4),
+sets the field and saves the working copy. It returns `changed, err`, and
+`Configuration:set_description` refuses generated configurations. The raw
+file shapes are handled only at the edges:
+- `config.normalize_projects` lifts `description` out of the module section,
+  as `_extract_device` does, so `type_config` never carries it.
+- `Configuration:_update` treats `description` as a generic key, never as
+  `module_config`, so it never enters the staleness fingerprint.
+- `config.validate` and `merge.get_all_profiles` pass the profile
+  `description` through.
+- `data_model` reads a set's description from the
+  `configuration_set_descriptions` sidecar.
+
+The serialisers (`_serialize_user`, `_serialize_config`,
+`_serialize_config_internal`, `_serialize_project_shared`,
+`_serialize_project_partial`, `_user_config_from_objects`,
+`Profile:to_config_def`, `Configuration:serialize_user_override`) write it
+back to the same places and emit the sidecar alongside sets. The
+modified/auto-sync comparisons (`is_config_set_modified`,
+`is_profile_modified`, `is_project_decl_modified`, `_auto_sync_user_projects`)
+include it. `Project:rename_configuration` carries every declared field
+instead of a fixed list. A module's default description for a generated
+configuration arrives in `info()` and is kept on the Configuration as
+`description` with `_description_from_module = true`. Generated configurations
+are never serialised, so it never reaches a file.
+
 Configuration names are canonical, two-tier:
 
 - **Auto-gen configs** carry `prefix:base` canonical names
@@ -945,6 +978,20 @@ replaces it, which would drop `PATH`).
   and re-sign it (`trust.sign_file`), or delete it and its `.bak` with
   `--discard`. Never loads the workspace, so it works on a refused one;
   confirmation is mandatory (`--yes` when non-interactive).
+- `lw <project|config|configset|profile> describe` (spec §16.35) — `cli.cmd_describe`
+  resolves the item, `_describe_parse` / `_describe_source_text` take the text
+  source (`-m`, `-F`, stdin, `-e` via `_describe_edit` on `$VISUAL`/`$EDITOR`
+  through `run_spec`), and `_describe_item` reads or calls the item's
+  `set_description`. `lw config set/unset/get … description` route there;
+  `main()` strips `-m` from create verbs (`_extract_create_paras`) and the
+  creators call `_apply_create_description`. One-line views follow one layout
+  rule: rows that end in a bounded column append `_summary_suffix` (fitted to
+  the terminal, or a continuation line); rows with an open-ended tail (the
+  configset list, and the status set and project rows) insert a summary
+  column (`_summary_column`, at most 36 columns) before the tail through
+  `_row_with_summary`, and the tail takes the truncation. Show views print
+  `_describe_block`. All are `M.` fields (the main chunk is at the 200-local
+  limit), and helpers defined above `term_width` call `M._term_width`.
 - `lw nuke [-y]` (spec §17.4) — reset the build state (`.nvim/build/`, the cache,
   the health cache) through `Core:_nuke_files`, the same deletion half as the
   editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the
@@ -1618,6 +1665,7 @@ loomworks.nvim/
 │   │   ├── session_tracker.lua       Unified launch/debug lifecycle manager
 │   │   ├── deploy.lua                Deploy step resolution, freshness, execution
 │   │   ├── variables.lua             Project variable resolution + validation (incl. reserved `cache` policy)
+│   │   ├── description.lua           Description normalise/validate/summary/fit/inert (spec §1.10, §17.11)
 │   │   ├── reserved_compiler.lua     Reserved compiler keys (tool owns the compiler)
 │   │   ├── compiler_cache.lua        Compiler-cache launcher resolution (policy→binary, PATH-gated)
 │   │   ├── suggestions.lua           Advisory suggestion framework (`lw health`, status count line)
@@ -1661,6 +1709,7 @@ loomworks.nvim/
 │   │       ├── path_editor.lua        Reusable segment-based path editor dialog
 │   │       ├── deploy_editor.lua     Deploy step editor (segment path + source picker)
 │   │       ├── variable_editor.lua   Variable declaration editor (name, type, default)
+│   │       ├── description_editor.lua  Git-commit-style description editor float (ui §1.16)
 │   │       ├── config_editor_dialog.lua  Configuration editor (inherits, options, variables)
 │   │       ├── project_browser.lua   Directory browser for adding projects
 │   │       ├── helpers.lua            Shared formatting

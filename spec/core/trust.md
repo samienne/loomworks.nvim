@@ -191,6 +191,12 @@ a debug-adapter language) or the compiler-cache policy — whose launcher is
 always one of the core-known launcher names, resolved from the search path
 (§1.3.2); an unknown policy value names no program.
 
+Descriptions (§1.10) are **not** program-bearing. They are display text that
+is never expanded, executed or interpreted. They are therefore honoured from
+loomworks.json, and a module's read-only default descriptions come from the
+project's own files. Both are untrusted **display** input and are rendered
+only under §17.11. The trust review (§17.4) does not list them.
+
 ### 17.7 Executable paths come from detection
 
 Tool data recorded in the cache (§2.3) is a **record**, never a source of
@@ -278,3 +284,35 @@ lw: .nvim/loomworks.user.json was modified outside loomworks (its signature does
 lw: .nvim/loomworks.cache.json was not written on this machine (its signature does not match).
   Reset the build cache (deletes .nvim/build and the cache): lw nuke
 ```
+
+### 17.11 Display text from untrusted sources
+
+Some workspace data exists only to be shown: descriptions (§1.10) and module
+default descriptions taken from project files. Item names (project keys,
+configuration and set names, profile keys) are displayed too. Such text can come
+from a cloned repository, so every host renders it **inert**:
+
+- **Never interpreted.** Display text is never expanded, evaluated, matched,
+  or used as a format string, highlight or markup. It is inserted only as a
+  literal value.
+- **Terminal.** The rule of §16.7 applies: every control character except TAB
+  and LF is rendered visibly (e.g. ESC as `^[`). Additionally, the Unicode
+  bidirectional-override and isolate controls (U+202A–U+202E,
+  U+2066–U+2069) are rendered visibly in description text (as `‮`), so a
+  description cannot visually reorder the text around it. A one-line view
+  shows the summary only, with each TAB rendered as a space. It never
+  contains an LF, so a description cannot forge additional output rows.
+  A multi-line view prints each line of the description separately, under
+  the host's own indentation, so a description line can never look like
+  the host's own output.
+- **Editor buffers.** A buffer line never receives an embedded newline. A
+  multi-line description becomes one buffer line per description line, or the
+  summary alone in a one-line context. Control characters are rendered visibly,
+  as in the terminal. Highlights come only from the host's own highlight
+  ranges, never from the text.
+- **Statusline, winbar and tabline.** Any such component that renders display
+  text escapes `%` as `%%`, so the text cannot inject statusline items,
+  highlight groups or expressions. It also removes control characters. This
+  applies to item names as well as descriptions.
+- **Notifications and pickers.** Only the summary is shown, with the same
+  sanitisation as a buffer line.

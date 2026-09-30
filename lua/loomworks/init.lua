@@ -684,7 +684,8 @@ function M.pick_profile()
         local status_label = profile:status()
         local marker = profile == active and "● " or "  "
         items[#items + 1] = {
-            label = marker .. profile.key .. " (" .. status_label .. ")",
+            label = marker .. profile.key .. " (" .. status_label .. ")"
+                .. require("loomworks.ui.helpers").picker_summary(profile.description),
             profile = profile,
         }
     end

@@ -365,3 +365,107 @@ describe("cmake preset cacheVariables shape + toolchain + binaryDir guard", func
         end)
     end)
 end)
+
+-- Default descriptions (cmake.md §3, core §1.10 / §8.1): a preset configuration
+-- carries a read-only description from its displayName/description after
+-- inheritance; the variant:* configurations carry none; nothing is persisted.
+describe("cmake preset default descriptions", function()
+    local dir
+
+    local DESC_PRESETS = [[
+{
+  "version": 3,
+  "configurePresets": [
+    { "name": "base", "hidden": true, "generator": "Ninja",
+      "displayName": "Base build", "description": "Shared settings" },
+    { "name": "both", "displayName": "Both fields", "description": "The long text\nover lines" },
+    { "name": "same", "displayName": "Identical", "description": "Identical  " },
+    { "name": "onlydesc", "description": "Just a description" },
+    { "name": "bare", "displayName": "bare", "description": "Named after itself" },
+    { "name": "plain" },
+    { "name": "odd", "displayName": 42, "description": { "x": 1 } },
+    { "name": "child", "inherits": "base", "displayName": "Child build" },
+    { "name": "heir", "inherits": "base" }
+  ]
+}
+]]
+
+    before_each(function()
+        dir = vim.fn.tempname()
+        vim.fn.mkdir(dir, "p")
+        write_file(dir, "CMakeLists.txt", "project(App)\n")
+        write_file(dir, "CMakePresets.json", DESC_PRESETS)
+    end)
+
+    after_each(function()
+        rm_rf(dir)
+    end)
+
+    local function desc(name)
+        local info = cmake.info(dir, {})
+        local entry = info.preset_configurations["preset:" .. name]
+        assert.is_not_nil(entry, "preset " .. name)
+        return entry.description
+    end
+
+    it("displayName is the summary and description the body", function()
+        assert.equals("Both fields\n\nThe long text\nover lines", desc("both"))
+    end)
+
+    it("identical fields (after normalisation) are used once", function()
+        assert.equals("Identical", desc("same"))
+    end)
+
+    it("only one field present is used on its own", function()
+        assert.equals("Just a description", desc("onlydesc"))
+    end)
+
+    it("a displayName equal to the bare preset name is skipped", function()
+        assert.equals("Named after itself", desc("bare"))
+    end)
+
+    it("no fields, or non-string fields, give no description", function()
+        assert.is_nil(desc("plain"))
+        assert.is_nil(desc("odd"))
+    end)
+
+    it("fields are read after preset inheritance", function()
+        assert.equals("Child build\n\nShared settings", desc("child"))
+        assert.equals("Base build\n\nShared settings", desc("heir"))
+    end)
+
+    it("the variant:* configurations carry no default description", function()
+        local info = cmake.info(dir, {})
+        for name, entry in pairs(info.configurations) do
+            if name:match("^variant:") then
+                assert.is_nil(entry.description, name)
+            end
+        end
+    end)
+
+    it("a Configuration keeps it read-only: flagged, generic, never serialised", function()
+        local Configuration = require("loomworks.configuration")
+        local info = cmake.info(dir, {})
+        local cfg = Configuration.new(nil, "preset:both", info.preset_configurations["preset:both"])
+        assert.equals("Both fields\n\nThe long text\nover lines", cfg.description)
+        assert.is_true(cfg._description_from_module)
+        assert.is_nil(cfg.module_config.description)
+        assert.is_nil(cfg:serialize_user_override())
+        local ok, err = cfg:set_description("x")
+        assert.is_nil(ok)
+        assert.is_truthy(err)
+    end)
+
+    it("a user configuration's description is the declared one, not the module's echo", function()
+        local info = cmake.info(dir, {
+            configurations = { Mine = { inherits = "variant:Debug", description = "Declared" } },
+        })
+        assert.equals("Declared", info.configurations.Mine.description)
+        local Configuration = require("loomworks.configuration")
+        local configs = { Mine = { is_user = true, description = "module says otherwise" } }
+        Configuration.adopt_declared_descriptions(configs, { Mine = { description = "Declared" } })
+        assert.equals("Declared", configs.Mine.description)
+        Configuration.adopt_declared_descriptions(configs, { Mine = {} })
+        assert.is_nil(configs.Mine.description)
+    end)
+end)

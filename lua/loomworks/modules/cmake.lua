@@ -1027,6 +1027,25 @@ local function compile_commands_generated_default(generator)
     return true
 end
 
+--- Read-only default description of a preset configuration (cmake.md §3,
+--- core §8.1), from the preset's `displayName` and `description` after
+--- inheritance: both → displayName, a blank line, description (one of them
+--- when identical after normalisation); a displayName equal to the bare
+--- preset name is skipped; non-strings are ignored. nil when there is none.
+--- @param preset table resolved configure preset
+--- @return string|nil
+function M._preset_description(preset)
+    local d = require("loomworks.description")
+    local display = d.normalize(preset.displayName)
+    if display == preset.name then display = nil end
+    local desc = d.normalize(preset.description)
+    if display and desc then
+        if display == desc then return display end
+        return display .. "\n\n" .. desc
+    end
+    return display or desc
+end
+
 --- Return what the module knows about the project from its own files.
 --- @param path string absolute project path
 --- @param config table type_config from loomworks.json
@@ -1060,6 +1079,8 @@ function M.info(path, config)
                 toolchain = toolchain,
                 from_preset = true,
                 is_default = true,  -- auto-gens from CMakePresets.json
+                -- Read-only default description (never persisted, §8.1).
+                description = M._preset_description(preset),
             }
         end
     end

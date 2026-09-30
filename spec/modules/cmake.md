@@ -145,6 +145,21 @@ full preset inheritance:
   compiler is preset-defined (or CMake-detected when the preset pins
   none). §5b governs only loomworks-managed `options`/`env`, never the
   preset file itself.
+- **Default description** (core §1.10, §8.1 `info()`). A preset configuration
+  carries a read-only default description built from the preset's own
+  `displayName` and `description` strings (both optional in the CMakePresets
+  schema). They are read after preset inheritance, like every other preset
+  field:
+  - When both are present, `displayName` is the summary and `description` is
+    the body, separated by a blank line. If they are identical after
+    normalisation, only one of them is used.
+  - When only one is present, it is used on its own.
+  - A `displayName` equal to the bare preset name adds nothing and is skipped.
+  - When neither is present, the configuration has no description.
+
+  Non-string values are ignored. The text is display-only (core §17.11) and is
+  never written to either workspace file. The built-in `variant:*`
+  configurations carry no default description.
 
 ## 4. CMake File API integration
 
