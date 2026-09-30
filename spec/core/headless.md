@@ -1543,7 +1543,10 @@ downgrades, switching back to `stable` while a newer pre-release bundle is
 installed leaves that pre-release running until a newer release reaches the
 channel; self-update says which bundle stays active and why. The saving
 behaviour is the host's (§16.11): a host older than the release that introduced
-it applies the selection to that run only. A pin (§16.21) is
+it applies the selection to that run only — so the first self-update from such a
+host, which itself runs on the old host, does not save the channel; selecting it
+again once the newer host is in place (or setting it through the settings
+command) saves it. A pin (§16.21) is
 independent of and takes precedence over channel resolution: a pinned
 invocation acquires exactly the pinned version+hash and consults no channel. An
 explicit release-source location override (a mirror) likewise supersedes
