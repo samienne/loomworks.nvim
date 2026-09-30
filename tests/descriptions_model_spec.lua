@@ -423,7 +423,9 @@ describe("descriptions: auto-sync and revert", function()
     s.configuration_set_descriptions.Dev = "Upstream set"
     local content = vim.json.encode(s)
     write_file(root .. "/loomworks.json", content)
-    ws:_on_file_changed(root .. "/loomworks.json", content)
+    -- ws.root, not the temp path: on a runner the temp dir can be an 8.3
+    -- short path that the workspace resolved to its long form.
+    ws:_on_file_changed(ws.root .. "/loomworks.json", content)
 
     project, _, cs = items(ws)
     assert.equals("Upstream project", project.description)
@@ -443,7 +445,9 @@ describe("descriptions: auto-sync and revert", function()
     s.projects.App.typescript.configurations.Debug.description = "Upstream debug"
     local content = vim.json.encode(s)
     write_file(root .. "/loomworks.json", content)
-    ws:_on_file_changed(root .. "/loomworks.json", content)
+    -- ws.root, not the temp path: on a runner the temp dir can be an 8.3
+    -- short path that the workspace resolved to its long form.
+    ws:_on_file_changed(ws.root .. "/loomworks.json", content)
     local project, cfg, cs = items(ws)
     assert.equals("Upstream set", cs.description)
     assert.equals("Upstream debug", cfg.description)
