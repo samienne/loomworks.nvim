@@ -8,6 +8,9 @@
 --- compiler-launcher keys is applied in place (re-passed, or `-U` retracted).
 
 local cmake = require("loomworks.modules.cmake")
+-- Real private root: configure builders mkdir the file-api query dir under
+-- it (a fake absolute root is a real, shared dir on Windows; see helpers).
+local ROOT = require("tests.helpers").temp_root()
 
 local function find_configure(tasks)
     for _, t in ipairs(tasks) do
@@ -41,11 +44,11 @@ local function ctx(overrides)
     local c = {
         name = "App",
         path = "App",
-        workspace_root = "/fake/root",
+        workspace_root = ROOT,
         configurations = { Debug = { variant = "Debug", generator = "Ninja" } },
         type_config = {},
         tool_data = GCC,
-        cached_build_dir = "/fake/root/App/build",
+        cached_build_dir = ROOT .. "/App/build",
     }
     for k, v in pairs(overrides or {}) do c[k] = v end
     return c
@@ -73,13 +76,13 @@ end
 
 local function preset_ctx(overrides)
     local c = {
-        name = "App", path = "App", workspace_root = "/fake/root",
+        name = "App", path = "App", workspace_root = ROOT,
         configurations = { ["preset:dev"] = {
             from_preset = true, base_name = "dev",
-            binary_dir = "/fake/root/App/out", variant = "Debug",
+            binary_dir = ROOT .. "/App/out", variant = "Debug",
         } },
         type_config = {}, tool_data = { generator = "Ninja", cmake_path = "/fake/cmake" },
-        cached_build_dir = "/fake/root/App/out", configuration_key = "preset:dev",
+        cached_build_dir = ROOT .. "/App/out", configuration_key = "preset:dev",
     }
     for k, v in pairs(overrides or {}) do c[k] = v end
     return c
@@ -354,7 +357,7 @@ describe("cmake faithful reconfigure: preset configurations", function()
         }))
         assert.is_false(has(cmd, "--fresh"))
         assert.same({ "CMakeCache.txt", "CMakeFiles" }, t.loomworks.pre_configure_reset)
-        assert.equals("/fake/root/App/out", t.loomworks.build_dir)
+        assert.equals(ROOT .. "/App/out", t.loomworks.build_dir)
     end)
 
     it("a preset unit configured before the record existed takes the full path", function()

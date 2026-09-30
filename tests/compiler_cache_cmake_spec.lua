@@ -7,6 +7,9 @@
 --- and `module_info.cache_launcher` recording.
 
 local cmake = require("loomworks.modules.cmake")
+-- Real private root: configure builders mkdir the file-api query dir under
+-- it (a fake absolute root is a real, shared dir on Windows; see helpers).
+local ROOT = require("tests.helpers").temp_root()
 
 local function find_configure(tasks)
     for _, t in ipairs(tasks) do
@@ -34,11 +37,11 @@ local function ninja_ctx(overrides)
     local ctx = {
         name = "App",
         path = "App",
-        workspace_root = "/fake/root",
+        workspace_root = ROOT,
         configurations = { Debug = { variant = "Debug", generator = "Ninja" } },
         type_config = {},
         tool_data = { generator = "Ninja", compiler_id = "gcc-13" },
-        cached_build_dir = "/fake/root/App/build",
+        cached_build_dir = ROOT .. "/App/build",
     }
     for k, v in pairs(overrides or {}) do ctx[k] = v end
     return ctx
@@ -209,18 +212,18 @@ describe("cmake compiler-cache preset non-goal", function()
         local ctx = {
             name = "App",
             path = "App",
-            workspace_root = "/fake/root",
+            workspace_root = ROOT,
             configurations = {
                 ["preset:dev"] = {
                     from_preset = true,
                     base_name = "dev",
-                    binary_dir = "/fake/root/App/out",
+                    binary_dir = ROOT .. "/App/out",
                     variant = "Debug",
                 },
             },
             type_config = {},
             tool_data = { generator = "Ninja" },
-            cached_build_dir = "/fake/root/App/out",
+            cached_build_dir = ROOT .. "/App/out",
             configuration_key = "preset:dev",
             compiler_cache = { tool = "ccache", path = "/usr/bin/ccache" },
         }
