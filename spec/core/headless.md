@@ -230,6 +230,21 @@ full help (it runs the pinned release, whose bundle it provisions), not the
 machine-global acquisition — a user of a pinned repository has no reason to
 install a global bundle. Answering help never fetches anything.
 
+**Unknown options.** An option (a token starting with `-`, other than a lone
+`-`) that the command does not know is a **usage error** (exit 2): it names the
+option and points at `lw help <command>`, and nothing runs — a mistyped option
+never falls through to a build or a launch. The global options (non-interactive
+control, create intent, source selection, pin bypass) are known to every
+command. The check stops at `--`: what follows belongs to a program or native
+tool and is passed through untouched. It also stops where a command's grammar
+hands the rest of the line to someone else or takes a value that may itself
+start with `-`: the program arguments after a launch configuration's command
+(or target), and a set-value operand (a configuration parameter's value, a
+project variable's default, a profile fill). Commands whose grammar turns every
+unrecognised token into a program argument (editing a launch configuration's
+arguments) and the host-level commands (version reporting, self-update,
+installation, pin management) keep their own parsing.
+
 **Host-level output is ASCII.** Everything printed before system Lua is loaded
 — the repo launchers (§16.22), the host-level commands (version reporting,
 self-update, installation, pin management), redirect and provisioning notices

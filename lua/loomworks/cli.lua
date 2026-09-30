@@ -10501,6 +10501,16 @@ local function main()
       end
     end
   end
+  -- An option the command does not know is a usage error (spec §16.7), checked
+  -- before any handler runs — so a mistyped option can never start a build.
+  -- Nothing after `--` is checked (a program's / native tool's arguments).
+  do
+    local bad, label = require("loomworks.cli_options").find_unknown(a)
+    if bad then
+      die("unknown option '" .. bad .. "' for `lw " .. label .. "` — see `lw help " .. label
+        .. "`\n    (arguments for the program or build tool go after `--`)", 2)
+    end
+  end
   -- `settings` edits lw's OWN user configuration (dev-lua, release-url, …). It
   -- is a global command (no workspace needed). NOTE: `config` no longer routes
   -- here — it is now the project-configuration command (see below).
@@ -10552,7 +10562,7 @@ local function main()
   -- workspace (worktree hint) and never fails, so it runs before the guard.
   if command == "health" then
     -- (`--force`/`--refresh` from before health stopped reusing its cache are
-    -- ignored like any other unknown flag: every run already re-checks all.)
+    -- accepted as no-ops — cli_options — since every run re-checks all.)
     -- Positional words are areas (§16.36); an unknown one is a usage error.
     local json, verbose, all, names = false, false, false, {}
     for i, v in ipairs(a) do
