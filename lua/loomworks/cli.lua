@@ -718,7 +718,9 @@ local function profile_list_rows(ws, color)
     local indent = 2 + num_w + 2
     local l1 = string.format("%s%" .. num_w .. "d  %s", mark, n, p.key)
     local l2 = string.rep(" ", indent) .. string.format("set=%s  tools=[%s]%s", set, tools, status)
+    local l1_w = require("loomworks.description").width(l1)
     if is_active then l1, l2 = pal.active(l1), pal.active(l2) end
+    l1 = l1 .. M._summary_suffix(l1_w, p.description, nil, pal)
     lines[#lines + 1] = l1
     lines[#lines + 1] = l2
   end
@@ -3622,6 +3624,7 @@ function M.cmd_project_add(root, path_arg, type_arg, name_arg)
   if not project then die("could not add project: " .. tostring(err)) end
   project._intent = created_intent()
   ws:_save_user()
+  M._apply_create_description(project, "project '" .. key .. "'")
   out(string.format("added project '%s' (%s) at %s  [%s]", key, mtype, store_path or key, project._intent))
   out("")
   if project._intent == "local" then
@@ -3681,7 +3684,8 @@ function M.cmd_project_list(root)
   table.sort(sorted, function(a, b) return a.key < b.key end)
   for _, p in ipairs(sorted) do
     local t = p.type or (p._module and p._module.id) or "?"
-    out(string.format("  %-20s %-10s %s", p.key, t, p.path or "."))
+    local row = string.format("  %-20s %-10s %s", p.key, t, p.path or ".")
+    out(row .. M._summary_suffix(require("loomworks.description").width(row), p.description))
   end
   return 0
 end
@@ -3706,6 +3710,7 @@ function M.cmd_project_show(root, name)
   local proj = resolve_project(ws, name)
   local t = proj.type or (proj._module and proj._module.id) or "?"
   out(string.format("%s  (%s)", proj.key, t))
+  M._describe_block(proj.description)
   out("  path            " .. (proj.path or "."))
   if proj._intent then out("  intent          " .. proj._intent) end
 
@@ -3869,9 +3874,10 @@ function M.cmd_project(sub, root, a3, a4, a5, argv)
   if sub == "set" then return M.cmd_project_set(root, argv) end
   if sub == "unset" then return M.cmd_project_unset(root, a3, a4) end
   if sub == "publish" then return M.cmd_project_publish(root, a3) end
+  if sub == "describe" then return M.cmd_describe("project", root, argv) end
   if sub == nil or sub == "list" then return M.cmd_project_list(root) end
   die("unknown project subcommand '" .. tostring(sub) ..
-    "' — use add|remove|rename|list|show|set|unset|publish")
+    "' — use add|remove|rename|list|show|set|unset|describe|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -4102,8 +4108,9 @@ function M.cmd_configuration_list(root, proj_name)
       for _, c in ipairs(cfgs) do
         local kind = c.is_user and "user" or (c:is_auto_gen() and "auto" or "preset")
         local variant = c.module_config and c.module_config.variant
-        out(string.format("%s%-22s %-7s%s", pad, c.name, kind,
-          variant and ("  variant=" .. variant) or ""))
+        local row = string.format("%s%-22s %-7s%s", pad, c.name, kind,
+          variant and ("  variant=" .. variant) or "")
+        out(row .. M._summary_suffix(require("loomworks.description").width(row), c.description))
       end
     end
   end
@@ -4212,6 +4219,7 @@ function M.cmd_configuration_add(root, proj_name, name, bases)
   end
   local ok, err = proj:save_configuration(name, data)
   if not ok then die("could not add configuration: " .. tostring(err)) end
+  M._apply_create_description(proj:get_configuration(name), "configuration '" .. proj.key .. "/" .. name .. "'")
   out(string.format("added configuration '%s' to project '%s'%s", name, proj.key,
     #resolved > 0 and ("  (inherits " .. table.concat(resolved, ", ") .. ")") or ""))
   if not data.inherits then
@@ -4237,6 +4245,7 @@ function M.cmd_configuration_show(root, proj_name, cfg_name)
   local cfg = resolve_config(proj, cfg_name, false)
   local kind = cfg.is_user and "user" or (cfg:is_auto_gen() and "module-generated" or "preset")
   out(string.format("%s / %s", proj.key, cfg.name))
+  M._describe_block(cfg.description, cfg._description_from_module)
   out("  kind            " .. kind .. (cfg._source_missing and "  (source missing)" or ""))
   if cfg._intent then out("  intent          " .. cfg._intent) end
   local variant = cfg.module_config and cfg.module_config.variant
@@ -4281,6 +4290,10 @@ function M.cmd_configuration_get(root, proj_name, cfg_name, param)
   end
   local ws = load_workspace(root, false)
   local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
+  if param == "description" then
+    if cfg.description then M._describe_print(cfg.description) else out("(unset)") end
+    return 0
+  end
   local v = get_param(cfg, param)
   if v == nil then
     out("(unset)")
@@ -4361,6 +4374,10 @@ function M.cmd_configuration_set(root, proj_name, cfg_name, param, value)
       "         (family ∈ clang|gcc|msvc) | <module field>\n" ..
       "  (use `lw config unset` to clear a value)")
   end
+  -- `description` is a generic field (spec §1.10): same rules as `describe`.
+  if param == "description" then
+    return M.cmd_describe("config", root, { "config", "describe", proj_name, cfg_name, value })
+  end
   return edit_configuration(root, proj_name, cfg_name, param, value, "set")
 end
 
@@ -4371,6 +4388,9 @@ function M.cmd_configuration_unset(root, proj_name, cfg_name, param)
       "  param: inherits | languages | options.<KEY> | variables.<NAME> | env.<NAME>\n" ..
       "         | overrides.<family>.<NAME> | overrides.<family>.env.<NAME>\n" ..
       "         (family ∈ clang|gcc|msvc) | <module field>")
+  end
+  if param == "description" then
+    return M.cmd_describe("config", root, { "config", "describe", proj_name, cfg_name, "--clear" })
   end
   return edit_configuration(root, proj_name, cfg_name, param, nil, "unset")
 end
@@ -4461,6 +4481,7 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == "rename" or sub == "mv" then return M.cmd_configuration_rename(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
   if sub == "publish" then return M.cmd_configuration_publish(root, a3, a4) end
+  if sub == "describe" then return M.cmd_describe("config", root, argv) end
   die("unknown config subcommand '" .. tostring(sub) ..
     "' — use list|add|show|get|set|unset|rename|remove|publish")
 end
@@ -4502,7 +4523,8 @@ function M.cmd_cset_list(root)
     local rows = {}
     for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
     table.sort(rows)
-    out(string.format("  %-16s %s", cs.name, next(rows) and table.concat(rows, ", ") or "(empty)"))
+    out(string.format("  %-16s %s", cs.name, next(rows) and table.concat(rows, ", ") or "(empty)")
+      .. M._summary_suffix(0, cs.description, nil, nil, true))
   end
   return 0
 end
@@ -4513,6 +4535,7 @@ function M.cmd_cset_show(root, name)
   local ws = load_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   out(cs.name)
+  M._describe_block(cs.description)
   if cs._intent then out("  intent          " .. cs._intent) end
   out("  Mappings:")
   local rows = {}
@@ -4579,6 +4602,7 @@ function M.cmd_cset_create(root, args)
   if not cs then die("could not create configuration set: " .. tostring(err)) end
   cs._intent = created_intent()
   ws:_save_user()
+  M._apply_create_description(cs, "configuration set '" .. cs.name .. "'")
   out("created configuration set '" .. cs.name .. "'  [" .. cs._intent .. "]" ..
     (next(raw) and "" or " (empty)"))
   if not next(raw) then
@@ -4676,8 +4700,340 @@ function M.cmd_cset(sub, root, args)
   if sub == "rename" or sub == "mv" then return M.cmd_cset_rename(root, args[3], args[4]) end
   if sub == "remove" or sub == "rm" then return M.cmd_cset_remove(root, args[3]) end
   if sub == "publish" then return M.cmd_cset_publish(root, args[3]) end
+  if sub == "describe" then return M.cmd_describe("configset", root, args) end
   die("unknown configset subcommand '" .. tostring(sub) ..
-    "' — use list|show|create|map|unmap|rename|remove|publish")
+    "' — use list|show|create|map|unmap|rename|describe|remove|publish")
+end
+
+-- ---------------------------------------------------------------------------
+-- Descriptions: `lw <project|config|configset|profile> describe` (spec §16.35)
+-- (Helpers are M. fields: this chunk is at Lua's 200-local limit.)
+-- ---------------------------------------------------------------------------
+
+--- Parse a `describe` argument tail (everything after the item operands).
+--- Exactly one text source: `<text>`, `-m <para>` (repeatable), `-F <file>`,
+--- `-F -` / a lone `-` (stdin), `--clear`; `-e`/`--edit` opens an editor and
+--- may be combined with a text source (pre-fill). `--json` selects the JSON
+--- read form. Usage errors die.
+--- @param rest string[]
+--- @param usage string
+--- @return table opts { paras?, text?, file?, stdin?, edit?, clear?, json? }
+function M._describe_parse(rest, usage)
+  local o = {}
+  local sources = 0
+  local i = 1
+  while i <= #rest do
+    local v = rest[i]
+    if v == "-m" or v == "--message" then
+      local p = rest[i + 1]
+      if p == nil then die("-m needs a paragraph\n" .. usage) end
+      if not o.paras then o.paras = {}; sources = sources + 1 end
+      o.paras[#o.paras + 1] = p
+      i = i + 2
+    elseif v:sub(1, 3) == "-m=" or v:sub(1, 10) == "--message=" then
+      if not o.paras then o.paras = {}; sources = sources + 1 end
+      o.paras[#o.paras + 1] = v:match("^[^=]+=(.*)$")
+      i = i + 1
+    elseif v == "-F" or v == "--file" then
+      local f = rest[i + 1]
+      if f == nil then die("-F needs a file (or - for stdin)\n" .. usage) end
+      if f == "-" then o.stdin = true else o.file = f end
+      sources = sources + 1
+      i = i + 2
+    elseif v == "-" then
+      o.stdin = true; sources = sources + 1; i = i + 1
+    elseif v == "-e" or v == "--edit" then
+      o.edit = true; i = i + 1
+    elseif v == "--clear" then
+      o.clear = true; i = i + 1
+    elseif v == "--json" then
+      o.json = true; i = i + 1
+    elseif v:sub(1, 1) == "-" and v ~= "" then
+      die("unknown option '" .. v .. "'\n" .. usage)
+    else
+      if o.text ~= nil then die("give the description as one quoted argument\n" .. usage) end
+      o.text = v; sources = sources + 1; i = i + 1
+    end
+  end
+  if sources > 1 then die("give the description one way only (<text>, -m, -F or -)\n" .. usage) end
+  if o.clear and (sources > 0 or o.edit) then die("--clear takes no description\n" .. usage) end
+  if o.json and (sources > 0 or o.edit or o.clear) then
+    die("--json prints the description; it does not set one\n" .. usage)
+  end
+  return o
+end
+
+--- The text a write form supplies (before normalisation), or nil for the read
+--- form. `-m` paragraphs join with a blank line (git).
+--- @param o table parsed options
+--- @return string|nil
+function M._describe_source_text(o)
+  if o.paras then return table.concat(o.paras, "\n\n") end
+  if o.text ~= nil then return o.text end
+  if o.stdin then return (M._describe_read_stdin or function() return io.read("*a") end)() or "" end
+  if o.file then
+    local f, ferr = io.open(o.file, "rb")
+    if not f then die("cannot read " .. o.file .. ": " .. tostring(ferr)) end
+    local s = f:read("*a") or ""
+    f:close()
+    return s
+  end
+  return nil
+end
+
+--- Open $VISUAL / $EDITOR on a temporary file pre-filled with `prefill` plus
+--- `#` help lines; return the saved text with the `#` lines removed, or nil
+--- when the editor failed (aborted: nothing is written).
+--- @param prefill string
+--- @param what string e.g. "profile 'Debug:gcc'"
+--- @param root string
+--- @return string|nil
+function M._describe_edit(prefill, what, root)
+  if not interactive() then
+    die("--edit needs an interactive terminal; give the description with -m, "
+      .. "-F <file>, -F - (stdin) or as an argument")
+  end
+  local editor = os.getenv("VISUAL")
+  if not editor or editor == "" then editor = os.getenv("EDITOR") end
+  if not editor or editor == "" then
+    die("no editor: set $VISUAL or $EDITOR, or give the description with -m, "
+      .. "-F <file>, -F - or as an argument")
+  end
+  local path = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-describe-"
+    .. require("loomworks.remote.transport").nonce() .. ".txt"
+  local f = io.open(path, "wb")
+  if not f then die("cannot create a temporary file for the editor") end
+  f:write((prefill or "") .. "\n\n"
+    .. "# Describe " .. what .. ".\n"
+    .. "# The first line is the summary shown in lists; add a blank line, then details.\n"
+    .. "# Lines starting with '#' are ignored. Save an empty description to remove it.\n")
+  f:close()
+  local argv = shell_split(editor)
+  argv[#argv + 1] = path
+  local code = (M._describe_run_editor or run_spec)({ cmd = argv }, root)
+  local text
+  if code == 0 then
+    local rf = io.open(path, "rb")
+    if rf then
+      local lines = {}
+      for line in ((rf:read("*a") or "") .. "\n"):gmatch("([^\n]*)\n") do
+        lines[#lines + 1] = (line:gsub("\r$", ""))
+      end
+      rf:close()
+      text = require("loomworks.description").strip_comments(lines)
+    end
+  end
+  os.remove(path)
+  if code ~= 0 then
+    note("lw: the editor exited with status " .. tostring(code) .. " - description unchanged")
+    return nil
+  end
+  return text or ""
+end
+
+--- Print a description in full, one output line per description line,
+--- optionally indented (§16.7 / §17.11 rendering).
+--- @param desc string
+--- @param indent? string
+function M._describe_print(desc, indent)
+  local d = require("loomworks.description")
+  for line in (d.inert(desc) .. "\n"):gmatch("([^\n]*)\n") do
+    out(line == "" and "" or ((indent or "") .. line))
+  end
+end
+
+--- Run `describe` on a resolved item.
+--- @param ws table
+--- @param item table Project|Configuration|ConfigurationSet|Profile
+--- @param kind string "project"|"configuration"|"configuration set"|"profile"
+--- @param name string display name
+--- @param shared_kind string item_reaches_shared kind
+--- @param proj table|nil owning project (configurations)
+--- @param o table parsed options
+--- @return integer
+function M._describe_item(ws, item, kind, name, shared_kind, proj, o)
+  local d = require("loomworks.description")
+  local current = item.description
+  local generated = item._description_from_module == true
+  local text = M._describe_source_text(o)
+  if text == nil and not o.edit and not o.clear then
+    -- Read form.
+    if o.json then
+      local json_kind = ({ ["configuration set"] = "configset", configuration = "config" })[kind] or kind
+      out(vim.json.encode({
+        kind = json_kind,
+        name = name,
+        description = current or vim.NIL,
+        summary = d.summary(current) or vim.NIL,
+        source = generated and "project-files" or "workspace",
+      }))
+      return 0
+    end
+    if not current then
+      note(kind .. " '" .. name .. "' has no description")
+      return 0
+    end
+    if generated then note("(from the project files; read-only)") end
+    M._describe_print(current)
+    return 0
+  end
+  if o.edit then
+    text = M._describe_edit(text or current or "", kind .. " '" .. name .. "'", ws.root)
+    if text == nil then return 0 end
+  end
+  if o.clear then text = nil end
+  local was = current
+  local changed, err = item:set_description(text)
+  if changed == nil then die("cannot describe " .. kind .. " '" .. name .. "': " .. tostring(err)) end
+  if changed == false then
+    if was == nil then
+      out(kind .. " '" .. name .. "' has no description")
+    else
+      out(kind .. " '" .. name .. "': description (unchanged)")
+    end
+    return 0
+  end
+  if item.description == nil then
+    out(kind .. " '" .. name .. "': description removed")
+  else
+    out(kind .. " '" .. name .. "' described")
+  end
+  publish_hint(item_reaches_shared(ws, shared_kind, item, proj))
+  return 0
+end
+
+--- Is stdout a terminal? (Test seam: `M._test_stdout_tty`.)
+--- @return boolean
+function M._stdout_tty()
+  if M._test_stdout_tty ~= nil then return M._test_stdout_tty end
+  local ok, h = pcall(uv.guess_handle, 1)
+  return ok and h == "tty"
+end
+
+--- The summary placed after a one-line row (spec §16.35): "  <summary>"
+--- fitted to what the terminal leaves (at most 60 columns; 60 when stdout is
+--- not a terminal), or a continuation line "\n      <summary>" when fewer than
+--- 16 columns remain or `force_cont`. "" when there is no description.
+--- @param plain_w integer display width of the row's visible text
+--- @param desc string|nil
+--- @param tw integer|nil terminal width (default: term_width())
+--- @param pal table|nil status palette (summary is dimmed)
+--- @param force_cont boolean|nil always use the continuation line
+--- @return string
+function M._summary_suffix(plain_w, desc, tw, pal, force_cont)
+  local d = require("loomworks.description")
+  local sum = d.summary(desc)
+  if not sum then return "" end
+  sum = d.inert_line(sum)
+  local dim = (pal and pal.dim) or function(x) return x end
+  local indent = "      "
+  if not M._stdout_tty() then
+    if force_cont then return "\n" .. indent .. dim(d.fit(sum, 60)) end
+    return "  " .. dim(d.fit(sum, 60))
+  end
+  tw = tw or term_width()
+  local avail = tw - plain_w - 2
+  if not force_cont and avail >= 16 then
+    return "  " .. dim(d.fit(sum, math.min(60, avail)))
+  end
+  return "\n" .. indent .. dim(d.fit(sum, math.min(60, math.max(1, tw - #indent))))
+end
+
+--- Print an item's full description in a detail view, under a `description`
+--- label aligned with the other `  label           value` rows (spec §16.35).
+--- @param desc string|nil
+--- @param generated boolean|nil module default (read-only)
+function M._describe_block(desc, generated)
+  if not desc then return end
+  local d = require("loomworks.description")
+  local first = true
+  for line in (d.inert(desc) .. "\n"):gmatch("([^\n]*)\n") do
+    if first then
+      out("  description     " .. line .. (generated and "   (from the project files)" or ""))
+      first = false
+    else
+      out(line == "" and "" or ("                  " .. line))
+    end
+  end
+end
+
+M._DESCRIBE_USAGE = {
+  project = "usage: lw project describe <project> [<text> | -m <para>... | -F <file|-> | - | -e | --clear | --json]",
+  config = "usage: lw config describe <project> <config> [<text> | -m <para>... | -F <file|-> | - | -e | --clear | --json]",
+  configset = "usage: lw configset describe <set> [<text> | -m <para>... | -F <file|-> | - | -e | --clear | --json]",
+  profile = "usage: lw profile describe <profile> [<text> | -m <para>... | -F <file|-> | - | -e | --clear | --json]",
+}
+
+--- `lw <kind> describe ...` - resolve the item from `args` (the full argv,
+--- where args[1] is the command and args[2] is `describe`) and run it.
+--- @param kind "project"|"config"|"configset"|"profile"
+--- @param root string
+--- @param args string[]
+--- @return integer
+function M.cmd_describe(kind, root, args)
+  local usage = M._DESCRIBE_USAGE[kind]
+  local n_ops = (kind == "config") and 2 or 1
+  local ops, rest = {}, {}
+  for i = 3, #args do
+    if #ops < n_ops then
+      if args[i]:sub(1, 1) == "-" and args[i] ~= "-" then die(usage) end
+      ops[#ops + 1] = args[i]
+    else
+      rest[#rest + 1] = args[i]
+    end
+  end
+  if #ops < n_ops then die(usage) end
+  local o = M._describe_parse(rest, usage)
+  local ws = load_workspace(root, false)
+  if kind == "project" then
+    local proj = resolve_project(ws, ops[1])
+    return M._describe_item(ws, proj, "project", proj.key, "projects", nil, o)
+  elseif kind == "config" then
+    local proj = resolve_project(ws, ops[1])
+    local cfg = resolve_config(proj, ops[2], false)
+    return M._describe_item(ws, cfg, "configuration", proj.key .. "/" .. cfg.name, "configs", proj, o)
+  elseif kind == "configset" then
+    local cs = resolve_config_set(ws, ops[1])
+    return M._describe_item(ws, cs, "configuration set", cs.name, "config_sets", nil, o)
+  end
+  local profile = resolve_profile(ws, ops[1])
+  return M._describe_item(ws, profile, "profile", profile.key, "profiles", nil, o)
+end
+
+--- `-m <para>` on an item-creating verb (spec §16.35): main() strips the
+--- pairs from argv into `M._create_paras`; the create command calls this on
+--- the new item after saving it.
+--- @param item table
+--- @param what string display label
+function M._apply_create_description(item, what)
+  local paras = M._create_paras
+  if not paras or not item or not item.set_description then return end
+  M._create_paras = nil
+  local changed, err = item:set_description(table.concat(paras, "\n\n"))
+  if changed == nil then
+    errw("lw: warning: " .. what .. " created, but its description was refused: " .. tostring(err) .. "\n")
+  end
+end
+
+--- Strip `-m <para>` / `-m=<para>` pairs from a create command's argv (in
+--- place) into `M._create_paras`.
+--- @param a string[]
+function M._extract_create_paras(a)
+  local kept, paras = {}, {}
+  local i = 1
+  while i <= #a do
+    local v = a[i]
+    if (v == "-m" or v == "--message") and a[i + 1] ~= nil then
+      paras[#paras + 1] = a[i + 1]; i = i + 2
+    elseif v:sub(1, 3) == "-m=" or v:sub(1, 10) == "--message=" then
+      paras[#paras + 1] = v:match("^[^=]+=(.*)$"); i = i + 1
+    else
+      kept[#kept + 1] = v; i = i + 1
+    end
+  end
+  for k = #a, 1, -1 do a[k] = nil end
+  for k, v in ipairs(kept) do a[k] = v end
+  M._create_paras = #paras > 0 and paras or nil
 end
 
 --- Clear the active profile (`lw profile select --none`). Idempotent: with no
@@ -4897,6 +5253,7 @@ function M.cmd_profile_create(root, args)
   -- into the shared contract that other machines may not have.
   profile._intent = created_intent("local")
   if activate then profile:activate() else ws:_save_user() end
+  M._apply_create_description(profile, "profile '" .. profile.key .. "'")
 
   out((existed and "profile already exists: " or "created profile: ") .. profile.key ..
     "  [" .. profile._intent .. "]" .. (activate and "  (active)" or ""))
@@ -5590,6 +5947,9 @@ function M.cmd_profile(sub, root, args)
   if sub == "publish" then
     return M.cmd_profile_publish(root, args[3])
   end
+  if sub == "describe" then
+    return M.cmd_describe("profile", root, args)
+  end
   if sub == "show" then
     return M.cmd_profile_show(root, args[3])
   end
@@ -5597,7 +5957,7 @@ function M.cmd_profile(sub, root, args)
     return M.cmd_profiles(load_workspace(root))
   end
   die("unknown profile subcommand '" .. tostring(sub) ..
-    "' — use list|show|select|create|remove|publish|query|set|unset (target moved to `lw target`)")
+    "' — use list|show|select|create|remove|publish|query|set|unset|describe (target moved to `lw target`)")
 end
 
 --- The value a settings key falls back to when unset, so `lw settings get` can
@@ -6077,6 +6437,7 @@ local function status_profile_rows(pal, plist, active_key, grouped, tw, numbers)
     local row = string.format(fmt, is_active and "*" or " ", tostring(numbers[p.key] or ""),
       trunc(p.key, name_w), trunc(p._configuration_set_name or "?", PROFILE_SET_W))
     rows[#rows + 1] = (is_active and pal.active(row) or row)
+      .. M._summary_suffix(require("loomworks.description").width(row), p.description, tw, pal)
       .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
   end
   return rows, name_w
@@ -6358,8 +6719,10 @@ function M.cmd_status(root, opts)
     local rows = {}
     for project, cfg in pairs(cs.mappings or {}) do rows[#rows + 1] = project.key .. "→" .. cfg.name end
     table.sort(rows)
-    return string.format("  %-" .. cs_name_w .. "s %s", trunc(cs.name, cs_name_w),
+    local row = string.format("  %-" .. cs_name_w .. "s %s", trunc(cs.name, cs_name_w),
       trunc(next(rows) and table.concat(rows, ", ") or "(empty)", cs_map_w))
+    return row
+      .. M._summary_suffix(require("loomworks.description").width(row), cs.description, tw, pal)
       .. inline_markers(pal, grouped.by_key["set:" .. cs.name])
   end, "lw configset list", "create a set · lw configset create <name> [project=config …]")
 
@@ -6383,8 +6746,10 @@ function M.cmd_status(root, opts)
     for i = 1, math.min(#names, 3) do head[#head + 1] = names[i] end
     local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
     if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
-    return string.format("  %-" .. pj_name_w .. "s %-6s %s",
+    local row = string.format("  %-" .. pj_name_w .. "s %-6s %s",
       trunc(p.key, pj_name_w), t, trunc(cfgstr, pj_cfg_w))
+    return row
+      .. M._summary_suffix(require("loomworks.description").width(row), p.description, tw, pal)
       .. inline_markers(pal, grouped.by_project[p.key])
   end, "lw project list", "add a project · lw project add <path> [type]")
 
@@ -6848,6 +7213,7 @@ local function profile_show_rows(ws, profile, color)
     local name = trunc(profile.key, nw)
     local painted_name = active and pal.active("* " .. name) or ("  " .. name)
     out(pal.title("Profile") .. " " .. num .. "  " .. painted_name .. suffix)
+    M._describe_block(profile.description)
     -- The profile's resolved compiler cache (§16.18) — the same `Cache` line
     -- `lw status` renders under the active profile; nothing for a profile with
     -- no C/C++-caching project.
@@ -6859,6 +7225,8 @@ local function profile_show_rows(ws, profile, color)
     -- 3. Configuration set — the set name and its project→configuration mappings.
     out("")
     out(pal.title("Configuration set") .. " " .. pal.dim("(" .. (set_name or "none") .. ")")
+      .. M._summary_suffix(#"Configuration set" + 3 + require("loomworks.description").width(set_name or "none"),
+        cs and cs.description, tw, pal)
       .. inline_markers(pal, set_name and grouped.by_key["set:" .. set_name] or nil))
     if cs and cs.mappings and next(cs.mappings) then
       local map_rows = {}
@@ -7873,7 +8241,11 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "project" then
-    if n == 1 then emit({ "add", "remove", "list", "show", "set", "unset", "publish" }); return 0 end
+    if n == 1 then emit({ "add", "remove", "list", "show", "set", "unset", "describe", "publish" }); return 0 end
+    if sub == "describe" then
+      if n == 2 then emit(comp_project_names(comp_ws(root))) else emit({ "-m", "-F", "-e", "--clear", "--json" }) end
+      return 0
+    end
     if sub == "add" or sub == "create" then
       if n == 2 then out("__dirs__") -- <path>
       elseif n == 3 then emit(require("loomworks.modules").list()) end -- [type]
@@ -7890,7 +8262,11 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "profile" then
-    if n == 1 then emit({ "list", "show", "select", "create", "publish", "query", "remove", "set", "unset" }); return 0 end
+    if n == 1 then emit({ "list", "show", "select", "create", "publish", "query", "remove", "set", "unset", "describe" }); return 0 end
+    if sub == "describe" then
+      if n == 2 then emit(comp_profile_names(comp_ws(root))) else emit({ "-m", "-F", "-e", "--clear", "--json" }) end
+      return 0
+    end
     if sub == "create" then
       if n == 2 then emit(comp_set_names(comp_ws(root)))       -- <config-set>
       elseif n >= 3 then                                       -- [tool ...] / --activate
@@ -7933,19 +8309,21 @@ function M.cmd_complete(cword, words)
     end
     return 0
   elseif cmd == "config" or cmd == "configuration" or cmd == "cfg" then
-    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "rename", "remove", "publish" }); return 0 end
+    if n == 1 then emit({ "list", "add", "show", "get", "set", "unset", "rename", "describe", "remove", "publish" }); return 0 end
     if n == 2 then emit(comp_project_names(comp_ws(root))); return 0 end -- <project>
-    if n == 3 and has({ "show", "get", "set", "unset", "rename", "mv", "remove", "publish" }, sub) then
+    if n >= 4 and sub == "describe" then emit({ "-m", "-F", "-e", "--clear", "--json" }); return 0 end
+    if n == 3 and has({ "show", "get", "set", "unset", "rename", "mv", "remove", "publish", "describe" }, sub) then
       emit(comp_config_names(comp_ws(root), a[3])); return 0            -- <config>
     end
     if n == 4 and has({ "get", "set", "unset" }, sub) then
-      emit({ "variant", "inherits", "languages", "toolchain", "generator",
+      emit({ "variant", "inherits", "languages", "toolchain", "generator", "description",
         "options.", "variables.", "overrides." })                       -- <param>
     end
     return 0
   elseif cmd == "configset" or cmd == "configuration-set" or cmd == "cs" then
-    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "rename", "remove", "publish" }); return 0 end
-    if n == 2 and has({ "show", "map", "unmap", "rename", "mv", "remove", "publish" }, sub) then
+    if n == 1 then emit({ "list", "show", "create", "map", "unmap", "rename", "describe", "remove", "publish" }); return 0 end
+    if n >= 3 and sub == "describe" then emit({ "-m", "-F", "-e", "--clear", "--json" }); return 0 end
+    if n == 2 and has({ "show", "map", "unmap", "rename", "mv", "remove", "publish", "describe" }, sub) then
       emit(comp_set_names(comp_ws(root))); return 0                      -- <name>
     end
     if n == 3 and (sub == "map" or sub == "unmap") then
@@ -8824,7 +9202,7 @@ Inspect or create the git worktrees of the current repository.
 Requires git: unlike the status hint, `lw worktree` errors (non-zero) when git
 is unavailable or the current directory is not a git repository, rather than
 degrading silently. An unknown subcommand is an error.]],
-  project = [[lw project <add|remove|rename|list|show|set|unset|publish>
+  project = [[lw project <add|remove|rename|list|show|set|unset|describe|publish>
 
 Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
 `lw publish` writes the shared ones to loomworks.json.
@@ -8854,6 +9232,8 @@ Manage the workspace's projects in the working copy (.nvim/loomworks.user.json);
         --type may come before or after the optional <default>.
   unset <project> <variable>
         Remove a variable declaration (and any configuration overrides of it).
+  describe <project> [<text> | -m <para>... | -F <file> | -F - | - | -e | --clear | --json]
+        Print or set the project's description (see `lw help describe`).
   set <project> device.stage|device.archive <glob>...
   set <project> device.working_dir <dir>
   set <project> device.env.<NAME> <value>
@@ -8874,7 +9254,7 @@ Examples:
   lw project set  App sdk_root --type path      # blank; fill with `lw profile set`
   lw project set  App port 8080                 # string (the default type)
   lw project unset App out_dir]],
-  config = [[lw config <list|add|show|get|set|unset|rename|remove>   (aliases: configuration, cfg)
+  config = [[lw config <list|add|show|get|set|unset|rename|describe|remove>   (aliases: configuration, cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
 shares the result. Configs are addressed by name (an unambiguous base name
@@ -8885,6 +9265,10 @@ variant:Release, …) that you can map into a set directly — `add` is only for
 custom variants.
 
   list [project]                     configs for one project, or all
+  describe <project> <config> [<text> | -m <para>... | -F <file> | -F - | - | -e | --clear | --json]
+                                     print or set the configuration's
+                                     description (`lw help describe`); also
+                                     `set/unset <project> <config> description`
   add <project> <name> [base...]     create a user configuration, inheriting
                                      the given bases (e.g. variant:Release
                                      asan). Several bases form a mixin chain
@@ -8933,7 +9317,7 @@ Examples:
   lw config get   App Debug overrides.clang.warn_flags
   lw config unset App Debug overrides.clang.warn_flags
   lw config rename App Debug Debug-asan]],
-  configset = [[lw configset <list|show|create|map|unmap|rename|remove>   (aliases: configuration-set, cs)
+  configset = [[lw configset <list|show|create|map|unmap|rename|describe|remove>   (aliases: configuration-set, cs)
 
 A configuration set maps each project to one of its configurations — the
 cross-project selection a profile builds. Managed in the working copy;
@@ -8947,13 +9331,45 @@ cross-project selection a profile builds. Managed in the working copy;
   rename <old> <new>                  (alias: mv) rename the set; re-derives the
                                       keys of profiles that reference it
   remove <name>                       delete the set
+  describe <name> [<text> | -m <para>... | -F <file> | -F - | - | -e | --clear | --json]
+                                      print or set the set's description
+                                      (`lw help describe`)
 
 <config> is a configuration name (an unambiguous base name works, so `Debug`
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.
 
 Examples:
   lw configset rename Dev Development]],
-  profile = [[lw profile <list|show|select|create|remove|publish|query|set|unset>
+  describe = [[lw <project|config|configset|profile> describe <item> [text | flags]
+
+Projects, configurations, configuration sets and profiles can carry an
+optional description. It reads like a git commit message: the first line is
+the summary (shown, shortened with …, next to the item in `lw status` and the
+list commands), the rest is the body (shown by `show` and by `describe`).
+
+  lw project describe <project>             print it (nothing if none)
+  lw project describe <project> --json      {"kind","name","description","summary","source"}
+  lw project describe <project> "text"      set it (quote it as one argument)
+  lw project describe <project> -m <para>   set it; repeat -m for more paragraphs
+                                            (the first -m is the summary)
+  lw project describe <project> -F <file>   read it from a file
+  lw project describe <project> -F -        read it from stdin (also a lone -)
+  lw project describe <project> -e          edit it in $VISUAL / $EDITOR; lines
+                                            starting with # are ignored
+  lw project describe <project> --clear     remove it
+
+The same forms work for `lw config describe <project> <config>`,
+`lw configset describe <set>` and `lw profile describe <profile>`. An empty
+description ("" or an empty file) removes it too. Descriptions are display text
+only: they never change a build. Generated configurations (variant:*,
+preset:*) cannot be described; a CMake preset's own displayName/description
+is shown instead. `-m <para>` also works on `add`/`create`. -e needs a
+terminal; under --no-input use -m, -F or a text argument.
+
+Examples:
+  lw profile describe dev -m "Clang debug build with ASan" -m "For the nightly sanitizer run."
+  git log -1 --format=%B | lw configset describe Release -]],
+  profile = [[lw profile <list|show|select|create|remove|publish|query|set|unset|describe>
   (`lw profiles` is an alias for `lw profile list`)
 
   list      list the workspace's profiles and their buildability
@@ -9004,6 +9420,9 @@ Examples:
               variables  resolved project variables (name=value lines);
                          variables.<name> prints one
             e.g. BD=$(lw profile query Debug:ninja-clang-18 app build-dir)
+  describe <profile> [<text> | -m <para>... | -F <file> | -F - | - | -e | --clear | --json]
+            Print or set the profile's description (`lw help describe`).
+            <profile> is required (never the active profile by default).
   set [<profile>] <project> <variable> <value>
             Set this profile's machine-local fill value for a BLANK project
             variable (one declared with no default — an SDK path, a device
@@ -9508,6 +9927,14 @@ local function main()
   end
   if command == "nuke" then
     finish(M.cmd_nuke(root, a))
+  end
+
+  -- `-m <para>` on an item-creating verb describes the new item (§16.35).
+  if (command == "project" or command == "config" or command == "configuration"
+        or command == "cfg" or command == "configset" or command == "configuration-set"
+        or command == "cs" or command == "profile")
+      and (a[2] == "add" or a[2] == "create") then
+    M._extract_create_paras(a)
   end
 
   -- `profile` manages its own workspace load (select skips tool detection).
