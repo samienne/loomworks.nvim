@@ -513,6 +513,9 @@ local function edit_project_configuration(project, config_name)
             return true
         end,
         on_accept = function(result)
+            -- The dialog does not edit the description yet; keep the
+            -- existing one through the save (spec §1.10).
+            local existing_cfg = config_name and project:get_configuration(config_name)
             local ok, err = workspace_view.execute_save_configuration(
                 project, config_name, result.name, {
                     variant = result.variant,
@@ -522,6 +525,8 @@ local function edit_project_configuration(project, config_name)
                     toolchain = result.toolchain,
                     generator = result.generator,
                     languages = result.languages,
+                    description = existing_cfg and existing_cfg.is_user
+                        and existing_cfg:description_for_file() or nil,
                 })
             if ok then
                 local verb = config_name and "updated" or "created"

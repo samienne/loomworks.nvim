@@ -3,6 +3,8 @@
 --- Created from module.info() output + loomworks.json user overrides.
 --- Owned by Project._configurations registry.
 
+local description_mod = require("loomworks.description")
+
 --- Build the canonical name for a configuration from a (prefix, base)
 --- pair. Prefixed canonical names take the form `prefix:base` and
 --- identify auto-generated configurations (module-emitted). User
@@ -65,6 +67,14 @@ end
 ---        Determines which tools in `profile.tools` are "in scope"
 ---        for ConfigUnits derived from this configuration.
 --- @field role string|nil special role (e.g., "compile_commands")
+--- @field description string|nil normalised description (spec §1.10). A generic
+---        field — never part of `module_config`, so it never enters the
+---        staleness fingerprint or the module's task context
+--- @field _description_from_module boolean|nil true when `description` is a
+---        module's read-only default for a generated configuration (§8.1);
+---        never written to either file
+--- @field _description_invalid any a non-string `description` in a declared
+---        configuration, ignored but written back unchanged until set or cleared
 --- @field _detected_languages string[]|nil languages actually enabled
 ---        by the last successful configure (filled by
 ---        `module.detect_languages` post-configure). Runtime-only
@@ -177,6 +187,22 @@ function Configuration.canonicalize(auto_configs, user_overrides, module_id)
     return result
 end
 
+--- Make the description of every user-declared configuration in a module's
+--- `info().configurations` the declared one (spec §8.1: a user
+--- configuration's description is core-owned; whatever the module echoed is
+--- ignored). Generated entries keep the module's read-only default.
+--- @param configurations table<string, table>|nil info().configurations (mutated)
+--- @param declared table<string, table>|nil type_config.configurations
+function Configuration.adopt_declared_descriptions(configurations, declared)
+    if type(configurations) ~= "table" then return end
+    for name, entry in pairs(configurations) do
+        if type(entry) == "table" and entry.is_user then
+            local d = type(declared) == "table" and declared[name] or nil
+            entry.description = type(d) == "table" and d.description or nil
+        end
+    end
+end
+
 --- Update configuration data in place (preserves table identity).
 --- @param data table configuration data from module.info()
 function Configuration:_update(data)
@@ -185,6 +211,17 @@ function Configuration:_update(data)
     self.is_user = data.is_user or false
     self.from_preset = data.from_preset or false
     self.role = data.role or nil
+
+    -- Description (generic, spec §1.10). A generated configuration's comes
+    -- from the module (read-only default, §8.1); a user configuration's from
+    -- the workspace files.
+    self.description, self._description_invalid = description_mod.from_file(data.description)
+    if self.is_user then
+        self._description_from_module = nil
+    else
+        self._description_invalid = nil
+        self._description_from_module = self.description ~= nil or nil
+    end
 
     -- Store raw inherits names for deferred resolution
     if data.inherits then
@@ -253,6 +290,7 @@ function Configuration:_update(data)
         role = true, inherits = true, options = true, variables = true,
         env = true, overrides = true, languages = true,
         prefix = true, base_name = true, _derived = true,
+        description = true,
     }
     for k, v in pairs(data) do
         if not generic[k] then
@@ -534,9 +572,66 @@ function Configuration:serialize_user_override()
     if self._overrides and next(self._overrides) then entry.overrides = self._overrides end
     if self.languages and #self.languages > 0 then entry.languages = self.languages end
     if self.role then entry.role = self.role end
+    -- A user configuration's own description; a generated configuration's
+    -- default comes from the module and is never persisted (spec §1.10).
+    if not self._description_from_module then
+        local desc = self:description_for_file()
+        if desc ~= nil then entry.description = desc end
+    end
     -- Only emit if there's something beyond the bare default
     if not next(entry) then return nil end
     return entry
+end
+
+--- The value to write as this configuration's `description`: the
+--- description, or a preserved non-string value (spec §1.10), or nil.
+--- @return any
+function Configuration:description_for_file()
+    if self.description ~= nil then return self.description end
+    return self._description_invalid
+end
+
+--- Set or clear (nil / blank) a user configuration's description (spec
+--- §1.10). A generated configuration is never persisted, so it is refused
+--- with a pointer at declaring a user configuration that inherits it.
+--- Editing is use: a `shared` configuration (and its project) is
+--- materialised. Writes nothing when the normalised text is unchanged. Never
+--- makes a configured unit stale (description is not in `module_config`).
+--- @param text string|nil
+--- @return boolean|nil changed true when saved, false when unchanged, nil on refusal
+--- @return string|nil err
+function Configuration:set_description(text)
+    local project = self._project
+    local ws = project and project._workspace
+    if self._removed or not ws then
+        return nil, "configuration '" .. self.name .. "' not found"
+    end
+    if self:is_auto_gen() or not self.is_user or self._source_missing then
+        return nil, "configuration '" .. self.name .. "' is generated by the "
+            .. (project.type or "project's") .. " module and is not stored, so it "
+            .. "cannot have a description; declare a configuration that inherits it "
+            .. "(e.g. `lw config add " .. project.key .. " <name> " .. self.name
+            .. "`) and describe that one"
+    end
+    local ok, value, err = description_mod.prepare(text)
+    if not ok then return nil, err end
+    if value == self.description and self._description_invalid == nil then
+        return false
+    end
+    local old, old_invalid = self.description, self._description_invalid
+    local old_intent = self._intent
+    local old_p_intent, old_p_source = project._intent, project._source
+    self:_mark_user_owned()
+    project:_mark_user_owned()
+    self.description, self._description_invalid = value, nil
+    local saved, save_err = ws:_save_user()
+    if not saved then
+        self.description, self._description_invalid, self._intent = old, old_invalid, old_intent
+        project._intent, project._source = old_p_intent, old_p_source
+        return nil, save_err
+    end
+    ws._core._deps.events.emit("active_set_changed", ws._active_set)
+    return true
 end
 
 function Configuration:__tostring()

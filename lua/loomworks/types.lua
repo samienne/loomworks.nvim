@@ -61,19 +61,23 @@
 --- @field name? string workspace name override (falls back to dir name)
 --- @field projects table<string, loomworks.ConfigProject>
 --- @field configuration_sets? table<string, table<string, string>> set_name -> { project_key -> variant }
+--- @field configuration_set_descriptions? table<string, string> set_name -> description
+---     (top-level sidecar, spec §1.10; a non-string entry is kept as read)
 --- @field profiles? table<string, loomworks.ConfigProfileDef>
 
 --- Project entry in loomworks.json.
 --- @class loomworks.ConfigProject
 --- @field path string relative path from workspace root
 --- @field type string module type ("cmake", "typescript")
---- @field type_config table module-specific configuration from loomworks.json (without `device`)
+--- @field type_config table module-specific configuration from loomworks.json (without `device` and `description`)
 --- @field depends_on? string[]
 --- @field device? table remote-execution block (spec §18.9), lifted out of the module section
+--- @field description? any project description (spec §1.10), lifted out of the module section as read
 
 --- Explicit profile definition in loomworks.json.
 --- @class loomworks.ConfigProfileDef
 --- @field configuration_set string
+--- @field description? string profile description (spec §1.10)
 --- @field module_info? table opaque module-specific project-level info
 --- @field default_target? table
 
@@ -85,6 +89,8 @@
 --- @field default_target? table<string, table> profile_key -> descriptor
 --- @field lsp? table<string, table> per-server option overrides
 ---     (server name -> options; schema is server-specific).
+--- @field configuration_set_descriptions? table<string, string> set_name -> description
+---     (sidecar, spec §1.10), for the sets this file holds
 
 --- Parsed loomworks.cache.json structure.
 --- @class loomworks.CacheData
@@ -174,6 +180,7 @@
 --- @class loomworks.ProfileDef
 --- @field configuration_set? string nil for pinned profiles
 --- @field tools? table<string, { key: string, data?: table, label?: string }>
+--- @field description? string profile description as read (spec §1.10)
 --- @field _tool_objects? table<loomworks.Module, loomworks.Tool> pre-resolved tools
 --- @field _config_set_ref? loomworks.ConfigurationSet pre-resolved reference
 
@@ -207,6 +214,7 @@
 --- @field path? string relative path
 --- @field type_config? table module-specific configuration
 --- @field device? table remote-execution block (spec §18.9)
+--- @field description? any project description as read (spec §1.10)
 --- @field configuration? string active configuration name
 --- @field configuration_key? string cache key for active configuration
 --- @field tool_key? string cache key suffix
@@ -234,6 +242,7 @@
 --- @field toolchain? string toolchain file path
 --- @field from_preset? boolean derived from CMakePresets.json
 --- @field role? string e.g. "compile_commands"
+--- @field description? string generic field (spec §1.10): a generated configuration's read-only module default (§8.1); a user configuration's declared description (core-owned)
 --- @field compile_commands_generated? boolean cmake §12: effective flag for whether loomworks reconstructs compile_commands.json (Visual Studio / Xcode generators, which CMake doesn't emit one for). Computed default, not user-authored — not serialized.
 
 --- Cmake's project-level module_info shape (documented as an example; core treats it as opaque).

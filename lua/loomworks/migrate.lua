@@ -69,6 +69,9 @@ local function config_data(cfg)
     if cfg.variables and next(cfg.variables) then data.variables = vim.deepcopy(cfg.variables) end
     if cfg.languages and #cfg.languages > 0 then data.languages = vim.deepcopy(cfg.languages) end
     if cfg.role then data.role = cfg.role end
+    -- Keep the description through the rewrite (spec §1.10).
+    local desc = cfg.description_for_file and cfg:description_for_file()
+    if desc ~= nil then data.description = desc end
     return data
 end
 
