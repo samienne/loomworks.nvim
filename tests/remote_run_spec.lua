@@ -325,6 +325,94 @@ describe("lw run on a foreign target", function()
         assert.truthy(all:find("may not have completed", 1, true), all)
     end)
 
+    -- A hard interrupt other than Ctrl-C — CTRL_BREAK (sigbreak), closing the
+    -- console window (libuv reports CTRL_CLOSE as sighup; POSIX: terminal
+    -- hangup) or a termination request (sigterm) — is an interrupt too
+    -- (§18.8): it must take the same path as Ctrl-C, stopping the device
+    -- program and freeing the device lock, never exiting with neither done.
+    -- The signal source is injected, so no real signal is raised.
+    for _, sig in ipairs({ "sigint", "sigbreak", "sighup", "sigterm" }) do
+        it(sig .. " stops the device program and frees the lock, like Ctrl-C", function()
+            local handlers = {}
+            local function fake_new_signal()
+                return {
+                    start = function(_, name, cb) handlers[name] = cb end,
+                    unref = function() end,
+                }
+            end
+            local exit_code
+            cli._install_interrupt_handler(function(c) exit_code = c end, fake_new_signal,
+                { sighup_ignored = function() return false end })
+            assert.is_function(handlers[sig], "no handler installed for " .. sig)
+            dev.behaviors.Runner = function()
+                return { out = { "running" }, hang = true, after = function()
+                    vim.schedule(function() handlers[sig](sig) end)
+                end }
+            end
+            local res = run()
+            assert.equals(130, exit_code)
+            assert.equals(1, #dev.killed) -- terminate ran for the device-side program
+            assert.is_nil(require("loomworks.remote.device_lock").read("SER1"))
+            assert.truthy(res.stderr:find("interrupted — stopped Runner on SER1", 1, true), res.stderr)
+        end)
+    end
+
+    it("an interrupt with a stop budget bounds the stop and still frees the lock", function()
+        -- Closing a Windows console leaves the process ~5 s; a device stop
+        -- that hangs must not eat that window before the lock is released.
+        local cancel
+        dev.kill_hangs = true
+        dev.behaviors.Runner = function()
+            return { out = { "running" }, hang = true, after = function()
+                vim.schedule(function() cancel({ stop_timeout = 0.3 }) end)
+            end }
+        end
+        local notes = {}
+        local man = assert(require("loomworks.remote.manifest").build({ build_dir = root,
+            artifact = root .. "/test/unit/Runner", unit = unit, target = target, runner = runner }))
+        local t0 = vim.uv.hrtime()
+        remote_run.execute({
+            ws = ws, runner = runner, unit = unit, manifest = man, device = {}, args = {},
+            backend = dev:backend(), liveness_ms = 100000,
+            write_out = function() end, write_err = function() end,
+            note = function(s) notes[#notes + 1] = s end,
+            on_cleanup = function(fn) cancel = fn end,
+        })
+        local elapsed = (vim.uv.hrtime() - t0) / 1e9
+        assert.is_true(elapsed < 5, "stop was not bounded: " .. elapsed .. "s")
+        assert.equals(1, #dev.killed)
+        assert.is_nil(require("loomworks.remote.device_lock").read("SER1"))
+        local all = table.concat(notes, "\n")
+        assert.truthy(all:find("may not have completed", 1, true), all)
+    end)
+
+    it("an inherited ignored SIGHUP (nohup) is left alone; its detection", function()
+        local handlers = {}
+        cli._install_interrupt_handler(function() end, function()
+            return { start = function(_, name, cb) handlers[name] = cb end, unref = function() end }
+        end, { sighup_ignored = function() return true end })
+        assert.is_nil(handlers.sighup)
+        assert.is_function(handlers.sigint)
+        assert.is_function(handlers.sigterm)
+        -- Linux: SigIgn mask, SIGHUP = bit 0.
+        local st = "Name:\tlw\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000001\nSigCgt:\t0\n"
+        assert.is_true(cli._posix_sighup_ignored(st, true))
+        st = "Name:\tlw\nSigIgn:\t0000000000001000\n"
+        assert.is_false(cli._posix_sighup_ignored(st, false))
+        -- No mask available: only a terminal can hang up.
+        assert.is_false(cli._posix_sighup_ignored(false, true))
+        assert.is_true(cli._posix_sighup_ignored(false, false))
+    end)
+
+    it("the interrupt context bounds the device stop only for a Windows console close", function()
+        assert.same({ signal = "sighup", stop_timeout = cli.CLOSE_STOP_TIMEOUT },
+            cli._interrupt_context("sighup", true))
+        assert.same({ signal = "sighup" }, cli._interrupt_context("sighup", false))
+        assert.same({ signal = "sigbreak" }, cli._interrupt_context("sigbreak", true))
+        assert.same({ signal = "sigint" }, cli._interrupt_context("sigint", true))
+        assert.is_true(cli.CLOSE_STOP_TIMEOUT < 5)
+    end)
+
     it("parses run/test device options", function()
         local o = cli._new_device_opts()
         local argv = { "--device", "S", "--fresh", "--timeout", "30", "--query-timeout", "5",
