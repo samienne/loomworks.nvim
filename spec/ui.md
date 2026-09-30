@@ -266,6 +266,9 @@ scope (profile-level) benefits from the explicit pick.
   `[stale — reconfigure]` hint on the affected project row under the profile
   (alongside the `(status)` suffix), so the user sees which configs will
   reconfigure.
+- Default target, shown as `Target: <project>:<name>`, or `(stale)`, or
+  `(no target set)`. `<CR>` opens the Build / Switch target picker. For a
+  launch configuration, the row appends its description summary (§1.16).
 - Device selection (only when the profile contains a project from a
   device-capable module) — shows `Device: <name> (<serial>)` (online),
   `Device: <serial> (offline)` (offline/stale), or
@@ -575,11 +578,21 @@ project's active configuration.
 After the configurations group, each non-orphaned project shows a
 "Launch:" group listing its launch configurations.
 
-Each launch config item shows `{name}  {command} {args}`. Actions:
+Each launch config item shows `{name}  {summary}  {runs}`:
+- `{summary}` is the launch's description summary (§1.16). The launch items of
+  a project form a summary column, at most 36 display columns and blank for
+  launches without a description. This is the same layout rule as the CLI
+  (core §16.35).
+- `{runs}` is the open-ended tail: `target:<t>` or the command, then the args.
+  It is dimmed and cut with `…` to the window width.
+
+Actions:
 
 | Action | Behavior |
 |--------|----------|
 | `<CR>` | Edit launch config (opens launch editor dialog) |
+| `e`    | Edit description (§1.16) |
+| `K`    | Full description, or the full command line when there is none |
 | `D`    | Delete launch config with confirmation |
 
 A "Add launch config" sentinel opens the launch editor for a new config.
@@ -587,7 +600,17 @@ A "Add launch config" sentinel opens the launch editor for a new config.
 The **launch editor dialog** edits: name, command, args (space-separated),
 working directory, and environment variables (key=value pairs). Env vars
 can be added (`▸ Add variable`) and removed (`D`). Inline name validation
-prevents duplicates. Accepts with `y`, cancels with `q`.
+prevents duplicates and invalid launch names (core §8.7). Accepts with `y`,
+cancels with `q`.
+- **Fields it does not show are kept.** Saving never drops `target`, `device`,
+  `device_log`, `description` or any field it does not edit.
+- **Description.** For an existing launch it shows a `Description ▸ <summary>`
+  row that opens the description editor (§1.16). The description editor saves
+  independently of the dialog's accept.
+- **Rename.** Changing the name and accepting is a **rename** (core §8.7): the
+  same atomic operation as `lw launch rename`. Every field moves, and every
+  profile's default target that named the launch follows. It is never a delete
+  plus re-create.
 
 **Sentinel: Add project**
 
@@ -930,7 +953,12 @@ text, separated by two spaces and highlighted `LoomworksDescription`. It is
 - The fit is recomputed on every render. The page re-renders on window resize.
 
 Nodes that carry a summary: profile nodes (§1.5), configuration-set nodes
-(§1.7), project nodes (§1.8) and configuration rows (§1.8). A generated
+(§1.7), project nodes (§1.8), configuration rows (§1.8) and launch config
+items (§1.8, as a column before the command line). Launch targets also show
+their summary:
+- on a profile's `Target:` row (§1.5);
+- in the target picker and the launch picker (`name (launch)  summary`);
+- in the launch editor's `Description ▸` row. A generated
 configuration with a module-provided default description (core §1.10) shows
 it the same way.
 
@@ -966,6 +994,9 @@ and passed as a plain string with no highlight markup. This covers:
   user configuration.
 
 Notifications name items by key only and never include description text.
+
+The description editor's item kinds include **launch configuration**. Its title
+is `Description — launch configuration <project>:<name>`.
 
 **Description editor (`e`).** `e` on a describable node, or "Edit description"
 from its `<CR>` picker or from an editor dialog's `Description ▸` row, opens a

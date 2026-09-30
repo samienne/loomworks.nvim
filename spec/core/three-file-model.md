@@ -305,7 +305,9 @@ its item:
   difference only in line endings or trailing whitespace is not a change.
   For a configuration set, the comparison covers its mappings **and** its
   sidecar entry. For a profile, it covers the published profile definition
-  including `description`.
+  including `description`. For a launch configuration, it covers the launch
+  table, whose `description` is compared normalised. A launch change shows on
+  its project, as every launch change does today.
 - **Merge.** The per-key merge rules above apply unchanged:
   - A project's description is a project-level field. It comes from user.json
     when user.json declares the project, otherwise from loomworks.json.
@@ -313,6 +315,8 @@ its item:
     (user wins per configuration name).
   - A configuration set's and a profile's description come with the winning
     set or profile, which are atomic per name.
+  - A launch configuration's description comes with the winning launch table
+    (user wins per launch name).
 
   A user.json item never inherits a description from its loomworks.json
   counterpart field by field: the winning item's description, or its absence,
