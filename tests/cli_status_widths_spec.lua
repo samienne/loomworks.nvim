@@ -142,11 +142,80 @@ describe("summary column before an open-ended tail", function()
   end)
 
   it("keeps the tail aligned and cuts the tail, not the summary", function()
-    local a = cli._row_with_summary("  Dev", "Set summary", 11, "App→Debug, Lib→Release", 12)
+    local a = cli._row_with_summary("  Dev", "Set summary", 11, { "App→Debug", "Lib→Release" }, 13)
     local b = cli._row_with_summary("  Bar", nil, 11, "App→Release", 12)
     local function col(l, s) return vim.fn.strdisplaywidth(l:sub(1, l:find(s, 1, true) - 1)) end
     assert.equals(col(a, "App→"), col(b, "App→"))
-    assert.is_truthy(a:find("Set summary  App→Debug, …", 1, true))
+    assert.is_truthy(a:find("Set summary  App→Debug …+1", 1, true), a)
     assert.equals("  Dev App→Debug", cli._row_with_summary("  Dev", "Set summary", 0, "App→Debug", nil))
+  end)
+end)
+
+-- The open-ended list takes the truncation at whole-entry boundaries (spec
+-- §16.35): never an entry cut mid-way while at least one whole entry fits.
+describe("fit_list (open-ended tail at whole entries)", function()
+  local names = { "OhosRelease", "variant:Debug", "variant:Release" }
+
+  it("prints the list in full when it fits, or without a width", function()
+    assert.equals("OhosRelease, variant:Debug, variant:Release", cli._fit_list(names, 0, 60))
+    assert.equals("OhosRelease, variant:Debug, variant:Release +2", cli._fit_list(names, 2, nil))
+    assert.equals("OhosRelease, variant:Debug, variant:Release +2", cli._fit_list(names, 2, 46))
+  end)
+
+  it("keeps whole names and counts every hidden one after …+", function()
+    -- The field report: 38 columns used to show "…, variant:R…".
+    assert.equals("OhosRelease, variant:Debug …+1", cli._fit_list(names, 0, 38))
+    assert.equals("OhosRelease, variant:Debug …+3", cli._fit_list(names, 2, 38))
+    assert.equals("OhosRelease …+2", cli._fit_list(names, 0, 16))
+    assert.equals("OhosRelease …+4", cli._fit_list(names, 2, 25))
+  end)
+
+  it("falls back to a display-column cut only when no whole name fits", function()
+    local r = cli._fit_list({ "AVeryLongConfigurationName", "Debug" }, 0, 16)
+    assert.equals(16, vim.fn.strdisplaywidth(r))
+    assert.is_truthy(r:find("…$"))
+    assert.equals("AVeryLongConfi…", cli._fit_list({ "AVeryLongConfigurationName" }, 0, 15))
+  end)
+
+  it("measures display columns, not bytes", function()
+    assert.equals("App→Debug …+1", cli._fit_list({ "App→Debug", "Lib→Release" }, 0, 13))
+  end)
+end)
+
+describe("status project and set rows at several widths", function()
+  local saved_tty
+  before_each(function() saved_tty = cli._test_stdout_tty end)
+  after_each(function() cli._test_stdout_tty = saved_tty end)
+
+  -- Mirrors cmd_status's project-row math: 2 + name + 1 + type(6) + 1 +
+  -- summary column + gaps + 4 marker columns.
+  local function project_row(tw)
+    cli._test_stdout_tty = true
+    local desc = "LumeScene plugin: scene API, import pipeline and ECS glue"
+    local name_w = 9
+    local sum_w = cli._summary_column({ desc }, tw, 2 + name_w + 1 + 6)
+    local cfg_w = math.max(50, tw - 2 - name_w - 1 - 6 - 1 - 4)
+    if sum_w > 0 then cfg_w = math.max(16, tw - 2 - name_w - 1 - 6 - 1 - sum_w - 3 - 4) end
+    local head = { "OhosRelease", "variant:Debug", "variant:Release", more = 0 }
+    return cli._row_with_summary("  LumeScene cmake ", desc, sum_w, head, cfg_w)
+  end
+
+  for _, tw in ipairs({ 60, 80, 100, 140 }) do
+    it("never cuts a configuration name mid-way at " .. tw .. " columns", function()
+      local row = project_row(tw)
+      local first = vim.split(row, "\n", { plain = true })[1]
+      local tail = first:sub(first:find("OhosRelease", 1, true))
+      -- Every entry shown is a whole name.
+      local list = tail:gsub(" …%+%d+$", "")
+      for entry in (list .. ", "):gmatch("(.-), ") do
+        assert.is_truthy(({ OhosRelease = 1, ["variant:Debug"] = 1, ["variant:Release"] = 1 })[entry],
+          "cut entry '" .. entry .. "' in: " .. first)
+      end
+    end)
+  end
+
+  it("shows all names on a wide terminal and whole names + count at 100", function()
+    assert.is_truthy(project_row(140):find("OhosRelease, variant:Debug, variant:Release", 1, true))
+    assert.is_truthy(project_row(100):find("OhosRelease, variant:Debug …+1", 1, true))
   end)
 end)

@@ -4632,7 +4632,7 @@ function M.cmd_cset_list(root)
     table.sort(rows)
     local prefix = "  " .. cs.name .. string.rep(" ", name_w - d.width(cs.name))
     out(M._row_with_summary(prefix, cs.description, sum_w,
-      next(rows) and table.concat(rows, ", ") or "(empty)", tail_w))
+      next(rows) and rows or "(empty)", tail_w))
   end
   return 0
 end
@@ -5074,22 +5074,52 @@ function M._summary_column(descs, tw, prefix_w)
   return math.min(w, avail)
 end
 
+--- Fit an open-ended list to `width` display columns (spec §16.35) without
+--- cutting an entry mid-way: the entries joined with ", " (then " +more" for
+--- entries the caller already left out) when that fits; otherwise the most
+--- leading whole entries that fit, then " …+N" for every entry not shown. Only
+--- when not even the first entry fits whole is the list cut in display columns
+--- with `…`. `width == nil` prints the list in full.
+--- @param items string[]
+--- @param more integer|nil entries already left out by the caller (counted in +N)
+--- @param width integer|nil
+--- @return string
+function M._fit_list(items, more, width)
+  local d = require("loomworks.description")
+  more = more or 0
+  local full = table.concat(items, ", ") .. (more > 0 and (" +" .. more) or "")
+  if not width or d.width(full) <= width then return full end
+  local total = #items + more
+  for k = #items - 1, 1, -1 do
+    local s = table.concat(items, ", ", 1, k) .. " …+" .. (total - k)
+    if d.width(s) <= width then return s end
+  end
+  return d.fit(full, math.max(1, width))
+end
+
 --- Build a one-line row with an open-ended tail (spec §16.35): `prefix`, then
 --- the summary column (`sum_w` from `_summary_column`), then `tail` cut to
---- `tail_w` display columns (nil = in full). With `sum_w == 0` the row is
+--- `tail_w` display columns (nil = in full). A `tail` given as a list of
+--- entries (optional `more` field: entries already left out) is fitted at
+--- whole-entry boundaries by `_fit_list`. With `sum_w == 0` the row is
 --- `prefix .. " " .. tail`; with `sum_w == -1` the summary goes on an indented
 --- continuation line.
 --- @param prefix string identity + fixed columns (already padded)
 --- @param desc string|nil
 --- @param sum_w integer
---- @param tail string
+--- @param tail string|string[]
 --- @param tail_w integer|nil
 --- @param pal table|nil status palette (summary dimmed)
 --- @return string
 function M._row_with_summary(prefix, desc, sum_w, tail, tail_w, pal)
   local d = require("loomworks.description")
   local dim = (pal and pal.dim) or function(x) return x end
-  local t = tail_w and d.fit(tail, math.max(1, tail_w)) or tail
+  local t
+  if type(tail) == "table" then
+    t = M._fit_list(tail, tail.more, tail_w and math.max(1, tail_w))
+  else
+    t = tail_w and d.fit(tail, math.max(1, tail_w)) or tail
+  end
   local sum = d.summary(desc)
   sum = sum and d.inert_line(sum) or nil
   if sum_w == 0 then return prefix .. " " .. t end
@@ -6892,7 +6922,7 @@ function M.cmd_status(root, opts)
     table.sort(rows)
     local prefix = string.format("  %-" .. cs_name_w .. "s", trunc(cs.name, cs_name_w))
     return M._row_with_summary(prefix, cs.description, cs_sum_w,
-      next(rows) and table.concat(rows, ", ") or "(empty)", cs_map_w, pal)
+      next(rows) and rows or "(empty)", cs_map_w, pal)
       .. inline_markers(pal, grouped.by_key["set:" .. cs.name])
   end, "lw configset list", "create a set · lw configset create <name> [project=config …]")
 
@@ -6917,10 +6947,10 @@ function M.cmd_status(root, opts)
     local names = {}
     for _, c in ipairs(p:get_configurations()) do names[#names + 1] = c.name end
     table.sort(names)
-    local head = {}
+    -- First three names, then +K; the row cuts at whole names (§16.35).
+    local head = { more = math.max(0, #names - 3) }
     for i = 1, math.min(#names, 3) do head[#head + 1] = names[i] end
-    local cfgstr = (#names == 0) and "(no configs)" or table.concat(head, ", ")
-    if #names > 3 then cfgstr = cfgstr .. " +" .. (#names - 3) end
+    local cfgstr = (#names == 0) and "(no configs)" or head
     local prefix = string.format("  %-" .. pj_name_w .. "s %-6s", trunc(p.key, pj_name_w), t)
     return M._row_with_summary(prefix, p.description, pj_sum_w, cfgstr, pj_cfg_w, pal)
       .. inline_markers(pal, grouped.by_project[p.key])
