@@ -1769,9 +1769,19 @@ function M.cmd_unlock(ws, args)
   -- `lw unlock --device <serial>` clears a device lock (spec §18.7).
   if device_serial then
     local device_lock = require("loomworks.remote.device_lock")
+    -- A recorded program (in the lock or the leftover file) is only
+    -- reported, never reaped: the holder may be alive and still running it
+    -- (spec §18.7). The leftover file stays for the next acquisition.
+    local function report(left, where)
+      errw("lw: " .. where .. " recorded " .. (left.program:match("([^/]+)$") or left.program)
+        .. " (pid " .. left.pid .. ") on " .. device_serial .. " (" .. left.program .. ")"
+        .. "; it was not stopped and may still be running there\n")
+    end
+    local file_left = device_lock.load_leftover(device_serial)
     local info = device_lock.read(device_serial)
     if not info then
       out("no device lock for " .. device_serial)
+      if file_left then report(file_left, "an earlier run that lost its connection") end
       return 0
     end
     if not info.stale then
@@ -1779,13 +1789,10 @@ function M.cmd_unlock(ws, args)
     end
     device_lock.force(device_serial)
     out("unlocked device " .. device_serial)
-    -- A recorded program is only reported, never reaped: the holder may be
-    -- alive and still running it (spec §18.7).
     local left = device_lock.leftover_of(info)
-    if left then
-      errw("lw: the lock recorded " .. (left.program:match("([^/]+)$") or left.program)
-        .. " (pid " .. left.pid .. ") on " .. device_serial .. " (" .. left.program .. ")"
-        .. "; it was not stopped and may still be running there\n")
+    if left then report(left, "the lock") end
+    if file_left and not (left and left.nonce == file_left.nonce) then
+      report(file_left, "an earlier run that lost its connection")
     end
     return 0
   end
@@ -2119,13 +2126,12 @@ function M._device_clean(ws, args, deps)
   on_exit(function() device_lock.release(h) end)
   local transport = require("loomworks.remote.transport").new({
     runner = runner, serial = serial, backend = deps and deps.backend, timeouts = opts.timeouts })
-  -- A reclaimed stale lock may name a program an interrupted run left
-  -- running from the staging root about to be removed (spec §18.7).
-  if h.leftover then
-    require("loomworks.remote.run").reap_leftover(runner, serial, h.leftover, {
-      backend = deps and deps.backend, timeout = transport.timeouts.query,
-      note = function(s) errw("lw: " .. s .. "\n") end })
-  end
+  -- A reclaimed stale lock or the leftover file may name a program an
+  -- interrupted run left running from the staging root about to be removed
+  -- (spec §18.7).
+  require("loomworks.remote.run").reap_on_acquire(runner, serial, h, {
+    backend = deps and deps.backend, timeout = transport.timeouts.query,
+    note = function(s) errw("lw: " .. s .. "\n") end })
   local ok, err, base_removed = require("loomworks.remote.staging").clean(transport, ws_prefix, runner.staging_base)
   device_lock.release(h)
   if not ok then die(err) end
