@@ -15,12 +15,19 @@ stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 out="$stage/lw"
 
+# Fuse a staged copy of lua/ with the release notes beside the loomworks tree,
+# where a release bundle carries them (loomworks/CHANGELOG.md), so
+# `lw release-notes` works in a dev build too.
+src="$stage/src"
+cp -R "$repo/lua" "$src"
+[ -f "$repo/CHANGELOG.md" ] && cp "$repo/CHANGELOG.md" "$src/loomworks/CHANGELOG.md"
+
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     out="$stage/lw.exe"
-    luvi "$(cygpath -w "$repo/lua")" --output "$(cygpath -w "$out")" ;;
+    luvi "$(cygpath -w "$src")" --output "$(cygpath -w "$out")" ;;
   *)
-    luvi "$repo/lua" --output "$out" ;;
+    luvi "$src" --output "$out" ;;
 esac
 
 # Install the freshly-fused host (skip the release-bundle fetch: it's fused).
