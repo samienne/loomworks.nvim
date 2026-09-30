@@ -288,7 +288,7 @@ function M.tasks(project, active_config)
         tasks[#tasks + 1] = {
             name = project.name .. ": configure",
             builder = function()
-                vim.fn.mkdir(build_dir, "p")
+                assert(require("loomworks.io").mkdir_p(build_dir))
                 return { cmd = configure_cmd, cwd = abs_path, env = env }
             end,
             loomworks = {

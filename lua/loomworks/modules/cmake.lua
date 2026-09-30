@@ -1611,7 +1611,7 @@ function M.tasks(project, active_config)
         builder = function()
             -- Ensure file-api query markers exist so cmake writes reply data
             local query_dir = build_dir .. "/.cmake/api/v1/query"
-            vim.fn.mkdir(query_dir, "p")
+            assert(io_mod.mkdir_p(query_dir))
             -- toolchains-v1 gives per-language compiler paths, used to
             -- reconstruct compile_commands.json for non-emitting generators
             -- (Visual Studio / Xcode). See §12.

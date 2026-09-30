@@ -1036,7 +1036,7 @@ function M.tasks(project, active_config)
             else
                 cmd = configure_cmd
             end
-            vim.fn.mkdir(build_dir, "p")
+            assert(io_mod.mkdir_p(build_dir))
             -- Write the generated native file (compiler + optional launcher) so
             -- meson reads it at setup; a sibling of build_dir, survives --wipe.
             if native_file and native_file_body then

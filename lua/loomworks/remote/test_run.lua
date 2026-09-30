@@ -125,7 +125,7 @@ end
 --- @return boolean ok, string|nil err
 function M.write_file(path, content)
     local dir = path:match("^(.*)[/\\][^/\\]+$")
-    if dir then vim.fn.mkdir(dir, "p") end
+    if dir then assert(require("loomworks.io").mkdir_p(dir)) end
     local f, err = io.open(path, "wb")
     if not f then return false, tostring(err) end
     f:write(content)

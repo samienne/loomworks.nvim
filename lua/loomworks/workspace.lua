@@ -152,7 +152,7 @@ function M.init_workspace(root, name, write_json)
     -- Ensure .nvim directory exists
     local nvim_dir = root .. "/.nvim"
     if not uv.fs_stat(nvim_dir) then
-        vim.fn.mkdir(nvim_dir, "p")
+        assert(require("loomworks.io").mkdir_p(nvim_dir))
     end
 
     local data = { _meta = { version = 2 } }
