@@ -217,3 +217,41 @@ describe("lw configset rename (on-disk)", function()
     assert.is_truthy(r.stderr:find("usage: lw configset rename", 1, true))
   end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- A rename carries every field the configuration declares (spec §16.9), not a
+-- fixed subset. Regression: Project:rename_configuration rebuilt the config
+-- from variant/inherits/options/env/toolchain/generator only, silently dropping
+-- variables, compiler-family overrides, languages, role and any other module
+-- field.
+-- ---------------------------------------------------------------------------
+describe("lw config rename keeps every declared field", function()
+  it("variables, overrides, languages, env and module fields survive", function()
+    local root = make_ws()
+    local function ok(fn)
+      local r = capture(fn)
+      assert.is_nil(r.exit_code, r.stderr)
+    end
+    ok(function()
+      cli.cmd_project("set", root, nil, nil, nil, { "project", "set", "App", "port", "8080" })
+    end)
+    ok(function() cli.cmd_configuration("set", root, "App", "Debug", "variables.port", "9090") end)
+    ok(function() cli.cmd_configuration("set", root, "App", "Debug", "overrides.clang.port", "7070") end)
+    ok(function() cli.cmd_configuration("set", root, "App", "Debug", "languages", "typescript") end)
+    ok(function() cli.cmd_configuration("set", root, "App", "Debug", "env.FOO", "bar") end)
+    ok(function() cli.cmd_configuration("set", root, "App", "Debug", "custom_field", "custom-value") end)
+
+    local before = read_user(root).projects.App.typescript.configurations.Debug
+    assert.equals("9090", before.variables.port)
+    assert.equals("7070", before.overrides.clang.port)
+    assert.equals("custom-value", before.custom_field)
+
+    ok(function() cli.cmd_configuration("rename", root, "App", "Debug", "DebugX") end)
+
+    local cfgs = read_user(root).projects.App.typescript.configurations
+    assert.is_nil(cfgs.Debug)
+    local after = cfgs.DebugX
+    assert.is_truthy(after)
+    assert.same(before, after)
+  end)
+end)

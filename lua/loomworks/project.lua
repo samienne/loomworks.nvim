@@ -366,6 +366,44 @@ function Project:_refresh_configurations()
     self:_sync_configurations()
 end
 
+--- Build the data table for Configuration._update (user override format)
+--- from a caller's declared-configuration data. Generic fields get their
+--- empty-aware handling; every other key is a module-specific field (cmake:
+--- variant/toolchain/generator; other modules define their own) and is
+--- forwarded generically — no hardcoded field list, so every field the caller
+--- declares survives (save and rename share this, spec §16.9).
+--- @param config_data table
+--- @return table
+local function user_update_data(config_data)
+    local clean = { is_user = true }
+    if config_data.inherits then clean.inherits = config_data.inherits end
+    if config_data.options and next(config_data.options) then
+        clean.options = config_data.options
+    end
+    if config_data.variables and next(config_data.variables) then
+        clean.variables = config_data.variables
+    end
+    if type(config_data.env) == "table" and next(config_data.env) then
+        clean.env = config_data.env
+    end
+    if config_data.overrides and next(config_data.overrides) then
+        clean.overrides = config_data.overrides
+    end
+    -- Languages: non-nil array = explicit override, nil = inherit
+    -- from module. We pass through whatever the caller produced.
+    if config_data.languages ~= nil then clean.languages = config_data.languages end
+    if config_data.role ~= nil then clean.role = config_data.role end
+    local generic_keys = {
+        is_user = true, is_default = true, from_preset = true, role = true,
+        inherits = true, options = true, variables = true, env = true,
+        overrides = true, languages = true, prefix = true, base_name = true,
+    }
+    for k, v in pairs(config_data) do
+        if not generic_keys[k] then clean[k] = v end
+    end
+    return clean
+end
+
 --- Save a project configuration (create or update).
 --- @param config_name string configuration name
 --- @param config_data table { variant?, inherits?, options?, variables?, env?, overrides?, toolchain?, generator? }
@@ -485,37 +523,7 @@ function Project:save_configuration(config_name, config_data)
         end
     end
 
-    -- Build the data table for Configuration._update (user override format).
-    -- Generic fields get their empty-aware handling; every other key is a
-    -- module-specific field (cmake: variant/toolchain/generator; other
-    -- modules define their own) and is forwarded generically — no hardcoded
-    -- field list, so callers can set any module field the module understands.
-    local clean = { is_user = true }
-    if config_data.inherits then clean.inherits = config_data.inherits end
-    if config_data.options and next(config_data.options) then
-        clean.options = config_data.options
-    end
-    if config_data.variables and next(config_data.variables) then
-        clean.variables = config_data.variables
-    end
-    if type(config_data.env) == "table" and next(config_data.env) then
-        clean.env = config_data.env
-    end
-    if config_data.overrides and next(config_data.overrides) then
-        clean.overrides = config_data.overrides
-    end
-    -- Languages: non-nil array = explicit override, nil = inherit
-    -- from module. We pass through whatever the caller produced.
-    if config_data.languages ~= nil then clean.languages = config_data.languages end
-    if config_data.role ~= nil then clean.role = config_data.role end
-    local generic_keys = {
-        is_user = true, is_default = true, from_preset = true, role = true,
-        inherits = true, options = true, variables = true, env = true,
-        overrides = true, languages = true, prefix = true, base_name = true,
-    }
-    for k, v in pairs(config_data) do
-        if not generic_keys[k] then clean[k] = v end
-    end
+    local clean = user_update_data(config_data)
 
     -- Create or update Configuration domain object
     local existing = self:get_configuration(config_name)
@@ -611,7 +619,7 @@ end
 --- creating new objects. Old build_dir is preserved as an orphaned cache entry.
 --- @param old_name string current configuration name
 --- @param new_name string desired new name
---- @param config_data table { variant?, inherits?, options?, toolchain?, generator? }
+--- @param config_data table the configuration's full declared data (save_configuration's input shape)
 --- @return boolean ok, string|nil err
 function Project:rename_configuration(old_name, new_name, config_data)
     local ws = self._workspace
@@ -646,17 +654,24 @@ function Project:rename_configuration(old_name, new_name, config_data)
         return false, "invalid configuration name: " .. verr
     end
 
-    -- Snapshot for rollback
-    local old_cfg_snapshot = {
-        name = target_cfg.name,
-        is_user = target_cfg.is_user,
-        is_default = target_cfg.is_default,
-        from_preset = target_cfg.from_preset,
-        role = target_cfg.role,
-        options = target_cfg.options,
-        inherits_names = vim.deepcopy(target_cfg.inherits_names),
-        module_config = vim.deepcopy(target_cfg.module_config),
-    }
+    -- Snapshot for rollback, in Configuration._update's input shape (module
+    -- fields flat, generic fields by their data names) so a rollback restores
+    -- every field the configuration had.
+    local old_cfg_snapshot = vim.deepcopy(target_cfg.module_config or {})
+    old_cfg_snapshot.is_user = target_cfg.is_user
+    old_cfg_snapshot.is_default = target_cfg.is_default
+    old_cfg_snapshot.from_preset = target_cfg.from_preset
+    old_cfg_snapshot.role = target_cfg.role
+    old_cfg_snapshot.options = vim.deepcopy(target_cfg.options)
+    old_cfg_snapshot.variables = vim.deepcopy(target_cfg.variables)
+    old_cfg_snapshot.env = vim.deepcopy(target_cfg.env)
+    old_cfg_snapshot.overrides = vim.deepcopy(target_cfg._overrides)
+    old_cfg_snapshot.languages = vim.deepcopy(target_cfg.languages)
+    old_cfg_snapshot._derived = target_cfg._derived
+    if target_cfg.inherits_names and #target_cfg.inherits_names > 0 then
+        old_cfg_snapshot.inherits = vim.deepcopy(target_cfg.inherits_names)
+    end
+    local old_name_snapshot = target_cfg.name
     local old_sibling_inherits = {} -- cfg -> old inherits_names snapshot
     for _, cfg in ipairs(self._configurations) do
         if cfg ~= target_cfg and cfg.inherits_names then
@@ -682,19 +697,9 @@ function Project:rename_configuration(old_name, new_name, config_data)
 
     -- Step 2: Rename the Configuration object and update its data
     target_cfg.name = new_name
-    local update_data = { is_user = true }
-    if config_data.variant then update_data.variant = config_data.variant end
-    if config_data.inherits then update_data.inherits = config_data.inherits end
-    if config_data.options and next(config_data.options) then
-        update_data.options = config_data.options
-    end
-    -- The configuration environment (spec §1.3.3) survives a rename.
-    if type(config_data.env) == "table" and next(config_data.env) then
-        update_data.env = config_data.env
-    end
-    if config_data.toolchain then update_data.toolchain = config_data.toolchain end
-    if config_data.generator then update_data.generator = config_data.generator end
-    target_cfg:_update(update_data)
+    -- Every declared field survives a rename (spec §16.9) — the same builder
+    -- save_configuration uses, never a fixed field list.
+    target_cfg:_update(user_update_data(config_data))
     target_cfg:_resolve_inherits()
 
     -- Step 3: CS mappings already hold a ref to target_cfg — the name mutation
@@ -710,7 +715,7 @@ function Project:rename_configuration(old_name, new_name, config_data)
     local ok, err = ws:_save_user()
     if not ok then
         -- Rollback: restore name, data, and sibling inherits
-        target_cfg.name = old_cfg_snapshot.name
+        target_cfg.name = old_name_snapshot
         target_cfg:_update(old_cfg_snapshot)
         target_cfg:_resolve_inherits()
         for cfg, old_inh in pairs(old_sibling_inherits) do
