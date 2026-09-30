@@ -5,6 +5,37 @@ they don't get lost.
 
 ---
 
+## Show unpublished changes in the CLI
+
+Found in the v0.1.39-beta.3 field test of descriptions. After `lw publish`,
+the tester changed a project's description locally, and neither `lw status`
+nor `lw project list` showed that the item now differed from loomworks.json.
+
+The editor shows this: its status page marks an item with `+` when its working
+copy differs from the published baseline, plus a separate "removed upstream"
+marker (spec §2.4, `spec/ui.md`). The CLI shows nothing, for any kind of
+change, not just descriptions. `describe --json`'s `"source"` field is
+unrelated: it says where the text comes from (workspace files vs. a module's
+project-file default), not whether it is published.
+
+Ideas:
+- **The same `+`** on the rows of `lw status` and the list commands
+  (`project`, `config`, `configset`, `profile`), driven by the existing
+  predicates `Workspace:is_project_modified` / `is_config_modified` /
+  `is_config_set_modified` / `is_profile_modified`, so the editor and the CLI
+  agree by construction. Also a removed-upstream marker where it applies.
+- **`"modified": true`** per item in `--json` output (`describe --json` today,
+  and any future list `--json`).
+- **Optional summary line** in `lw status`: "N items have unpublished changes -
+  `lw publish`". This is a guard for agents and scripts that edit through the
+  CLI and forget to publish.
+
+It needs a small spec addition: §2.4 defines `+` for the editor only, and §16
+has no publish-state marker. Low priority, because it only matters for
+repositories that commit loomworks.json.
+
+---
+
 ## Extra source roots for a project
 
 Reported by a user of a superproject setup (local repro repos:
