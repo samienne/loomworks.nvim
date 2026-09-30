@@ -607,11 +607,17 @@ function M.compute_delete_config_set_context(ws, cs)
 
     local lines = {
         "  Delete configuration set: " .. set_name,
-        "",
     }
     local highlights = {
         { line = 1, hl_group = "DiagnosticWarn" },
     }
+    -- The set's description summary (spec/ui.md §1.16).
+    local summary = require("loomworks.ui.helpers").picker_summary(cs.description, 70)
+    if summary ~= "" then
+        lines[#lines + 1] = "  " .. summary
+        highlights[#highlights + 1] = { line = #lines, hl_group = "Comment" }
+    end
+    lines[#lines + 1] = ""
 
     if #affected_profiles > 0 then
         lines[#lines + 1] = "  Profiles that will become orphaned:"
@@ -1047,8 +1053,9 @@ end
 --- @param ws loomworks.Workspace
 --- @param title string
 --- @param plan loomworks.DeletionPlan
+--- @param description? string|nil the item's description; its summary follows the title
 --- @return { lines: string[], highlights: table[] }
-function M.compute_delete_confirmation_context(ws, title, plan)
+function M.compute_delete_confirmation_context(ws, title, plan, description)
     local items = plan.items
     local lines = {}
     local highlights = {}
@@ -1061,6 +1068,10 @@ function M.compute_delete_confirmation_context(ws, title, plan)
     end
 
     add("  " .. title, "DiagnosticWarn")
+    -- The item's description summary, so the user can confirm which item is
+    -- going (spec/ui.md §1.16).
+    local summary = require("loomworks.ui.helpers").picker_summary(description, 70)
+    if summary ~= "" then add("  " .. summary, "Comment") end
     add("")
 
     local running_tasks = ws:find_running_tasks_for_items(items)

@@ -63,6 +63,7 @@ local function edit_config_set(cs)
 
     require("loomworks.ui.config_set_editor").open({
         title = "Edit configuration set",
+        item = cs,
         name = set_name,
         projects = ctx.projects,
         mappings = ctx.mappings,
@@ -276,7 +277,7 @@ return function(tree, ctx)
         local sname = cs.name
         local cs_modified = ws and ws:is_config_set_modified(cs) and "+" or ""
 
-        t:node(cs_modified .. cs.name, {
+        t:node(cs_modified .. cs.name, helpers.with_description({
             fold_key = "set:" .. cs.name,
             hl = set_hl,
             enter_label = "Edit mappings",
@@ -311,7 +312,8 @@ return function(tree, ctx)
                 actions._create_profile_step2(cs, sname, all_tool_entries, is_first)
             end,
             on_delete = function() delete_config_set(cs) end,
-        }, function()
+        }, cs), function()
+            t:description(cs.description)
             render_set_details(t, cs,
                 tool_entries[cs.name] or {}, active_profile, lw)
         end)

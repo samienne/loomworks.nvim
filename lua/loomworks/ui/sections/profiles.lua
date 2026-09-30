@@ -20,6 +20,7 @@ end
 --- @param profile loomworks.Profile
 --- @param lw table loomworks API
 local function render_profile_details(tree, profile, lw)
+    tree:description(profile.description)
     if profile.orphaned_set then
         tree:leaf("Set '" .. (profile._configuration_set_name or "?")
             .. "' removed from loomworks.json", "DiagnosticWarn")
@@ -524,7 +525,7 @@ return function(tree, ctx)
             display = head .. tail
         end
 
-        t:node(display, {
+        t:node(display, helpers.with_description({
             fold_key = "profile:" .. profile.key,
             marker = marker,
             marker_hl = marker_hl,
@@ -555,7 +556,7 @@ return function(tree, ctx)
                     n, profile.key))
             end or nil,
             on_delete = actions.delete_profile(profile),
-        }, function()
+        }, profile), function()
             render_profile_details(t, profile, lw)
         end)
     end)
