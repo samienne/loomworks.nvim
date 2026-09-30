@@ -248,8 +248,79 @@ describe("lw describe", function()
 
     describe_cmd(root, "configset", "Dev", "Set summary")
     local cl = capture(function() cli.cmd_cset("list", root, { "configset", "list" }) end)
-    -- The configset list always puts the summary on a continuation line.
-    assert.is_truthy(cl.stdout:find("\n      Set summary", 1, true))
+    -- One layout rule (§16.35): name, summary column, then the mappings.
+    assert.is_truthy(cl.stdout:find("  Dev               Set summary  App→Debug", 1, true))
+  end)
+
+  it("configset list: summary column aligned, blank for undescribed sets, capped at 36", function()
+    local root = make_ws()
+    capture(function() cli.cmd_cset("create", root, { "configset", "create", "Bare", "App=Debug" }) end)
+    describe_cmd(root, "configset", "Dev", string.rep("s", 50))
+    local out = capture(function() cli.cmd_cset("list", root, { "configset", "list" }) end).stdout
+    local lines = vim.split(out, "\n", { plain = true })
+    -- Both mapping lists start in the same column.
+    local function col(l) return vim.fn.strdisplaywidth(l:sub(1, l:find("App→Debug", 1, true) - 1)) end
+    assert.equals(col(lines[1]), col(lines[2]))
+    assert.is_truthy(lines[2]:find(string.rep("s", 35) .. "…", 1, true))
+    assert.is_nil(out:find("\n      ", 1, true)) -- no continuation lines
+  end)
+
+  it("configset list on a terminal cuts the mappings, not the summary", function()
+    local root = make_ws()
+    describe_cmd(root, "configset", "Dev", "Set summary")
+    cli._test_stdout_tty = true
+    local saved = cli._term_width
+    cli._term_width = function() return 58 end
+    local out = capture(function() cli.cmd_cset("list", root, { "configset", "list" }) end).stdout
+    cli._term_width = saved
+    for _, l in ipairs(vim.split(out, "\n", { plain = true, trimempty = true })) do
+      assert.is_true(vim.fn.strdisplaywidth(l) <= 58, l)
+    end
+    assert.is_truthy(out:find("Set summary  App", 1, true), out)
+    -- The mappings take the truncation when the terminal is tight.
+    local row = cli._row_with_summary("  Dev", "Set summary", 11,
+      "App→Debug, Lib→Release, Tools→Debug", 16)
+    assert.is_truthy(row:find("Set summary  App→Debug, Lib→…", 1, true))
+  end)
+
+  it("configset list on a narrow terminal moves summaries to continuation lines", function()
+    local root = make_ws()
+    describe_cmd(root, "configset", "Dev", "Set summary")
+    cli._test_stdout_tty = true
+    local saved = cli._term_width
+    cli._term_width = function() return 40 end
+    local out = capture(function() cli.cmd_cset("list", root, { "configset", "list" }) end).stdout
+    cli._term_width = saved
+    assert.is_truthy(out:find("App→Debug\n      Set summary", 1, true))
+  end)
+
+  it("project list on a terminal fits the inline summary to the width", function()
+    local root = make_ws()
+    describe_cmd(root, "project", "App", string.rep("p", 80))
+    cli._test_stdout_tty = true
+    local saved = cli._term_width
+    cli._term_width = function() return 70 end
+    local out = capture(function() cli.cmd_project("list", root) end).stdout
+    cli._term_width = saved
+    local line = vim.split(out, "\n", { plain = true })[1]
+    assert.is_truthy(line:find("…", 1, true))
+    assert.is_true(vim.fn.strdisplaywidth(line) <= 70)
+  end)
+
+  it("lw status: the summary comes before the open-ended list in set and project rows", function()
+    local root = make_ws()
+    describe_cmd(root, "configset", "Dev", "Set summary")
+    describe_cmd(root, "project", "App", "Project summary")
+    local saved = vim.env.COLUMNS
+    vim.env.COLUMNS = "100"
+    local out = capture(function() return cli.cmd_status(root, {}) end).stdout
+    vim.env.COLUMNS = saved
+    local set_line = out:match("\n(  Dev[^\n]*)")
+    assert.is_truthy(set_line)
+    assert.is_true(set_line:find("Set summary", 1, true) < set_line:find("App→Debug", 1, true))
+    local proj_line = out:match("\n(  App +typescript[^\n]*)")
+    assert.is_truthy(proj_line)
+    assert.is_true(proj_line:find("Project summary", 1, true) < proj_line:find("Debug", 1, true))
   end)
 
   it("lw status shows each item's summary", function()

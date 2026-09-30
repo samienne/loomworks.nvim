@@ -2558,25 +2558,44 @@ Reading standard input with `-F -` is data, not a prompt, so it is allowed under
   snapshot, as for every other edit (§16.9).
 
 **Display in one-line views.** Every listing and status row that names a
-describable item shows its **summary** after the row's existing fields, dimmed
-on a colour terminal. This covers the status overview's profile, configuration
-set and project rows (§16.18), `lw profile list`, `lw project list`,
-`lw config list` and `lw configset list`. The summary is fitted to the space
-left on the line:
+describable item shows its **summary**, dimmed on a colour terminal. This covers
+the status overview's profile, configuration set and project rows (§16.18),
+`lw profile list`, `lw project list`, `lw config list` and
+`lw configset list`. Every such row follows **one layout rule**:
 
-- **Available width.** The width is the terminal width (§16.18, the same source
-  as other fitted columns), minus the row's other columns and a two-column gap,
-  and **at most 60 columns**. When standard output is not a terminal, the cap
-  alone applies (60 columns).
-- **Truncation.** The summary is measured and cut in **display columns**
-  (code points, with wide characters counted as two), never bytes. When it is
-  cut, it ends in `…`. When fewer than 16 columns remain, the summary moves
-  onto a continuation line beneath the row, indented and also capped at 60
-  columns. It is never dropped silently.
-- **List layouts.** A listing whose rows already span two lines
-  (`lw profile list`) puts the summary at the end of the first line. A listing
-  whose last column is itself open-ended (`lw configset list`, the mappings)
-  always uses the continuation line.
+1. identity and fixed-width columns first;
+2. then the summary;
+3. then any **open-ended list**, which takes the truncation. Examples of such
+   a list are a set's project→configuration mappings and a project's
+   configuration names.
+
+The summary is fitted as follows:
+
+- **Rows with an open-ended tail** (`lw configset list`, and the status
+  overview's configuration-set and project rows):
+  - The summaries form one column, as wide as the longest summary shown and
+    **at most 36 columns**. Rows without a description leave it blank, so the
+    lists after it stay aligned.
+  - On a terminal, the list is cut with `…` to the width that remains.
+  - When fewer than 16 columns would remain for the summary column, the
+    summaries move onto continuation lines beneath their rows, indented and
+    capped at 60 columns. The list then stays on the row.
+  - When standard output is not a terminal, the 36-column cap alone applies,
+    and `lw configset list` prints the mappings in full.
+- **Rows without an open-ended tail** (`lw project list`, `lw config list`,
+  `lw profile list`, the status overview's profile rows):
+  - The summary ends the row. Its width is the terminal width (§16.18, the
+    same source as other fitted columns) minus the row's other columns and a
+    two-column gap, and **at most 60 columns**. When standard output is not a
+    terminal, the cap alone applies.
+  - When fewer than 16 columns remain, the summary moves onto a continuation
+    line beneath the row, indented and capped at 60 columns.
+  - A listing whose rows already span two lines (`lw profile list`) puts it at
+    the end of the first line.
+- **Truncation.** The summary, and the open-ended list it precedes, are
+  measured and cut in **display columns** (code points, with wide characters
+  counted as two), never bytes. A cut ends in `…`. A summary is never dropped
+  silently.
 
 **Display in detail views.** `lw project show`, `lw config show`,
 `lw configset show` and `lw profile show` print the **full** description, one
@@ -2603,6 +2622,10 @@ $ lw profile list
        set=Debug tools=[ninja-clang-18.1.0]
   2  Release:ninja-gcc-12       Optimised build used for release packagi…
        set=Release tools=[ninja-gcc-12]
+
+$ lw configset list
+  Debug              Clang debug, ASan on CI     App→Debug, Lib→Debug
+  Release            What CI ships               App→Release, Lib→Release, Tools→R…
 
 $ lw profile describe 1 --clear
 profile 'Debug:ninja-clang-18.1.0': description removed
