@@ -131,6 +131,10 @@ for v in $hosts; do
   check "$lw" "v$v" "0" help self-update
   case "$LAST_OUT" in *self-update*) ok "v$v: help self-update has text" ;;
     *) bad "v$v: help self-update empty: $LAST_OUT" ;; esac
+  # Release notes (spec §16.37) are bundle-only: they must work on every host.
+  check "$lw" "v$v" "0" release-notes -n 1
+  case "$LAST_OUT" in *"loomworks "*) ok "v$v: release-notes prints the bundle's notes" ;;
+    *) bad "v$v: release-notes printed no notes: $LAST_OUT" ;; esac
   check "$lw" "v$v" "0" tools
   check "$lw" "v$v" "0" status
   # health exits non-zero when it reports actionable items; either is fine here.

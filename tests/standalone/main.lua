@@ -1301,6 +1301,9 @@ do
   for _, l in ipairs(up or {}) do
     ok(not l:find("%([^)]*%("), "no nested parentheses: " .. l)
   end
+  -- A pin moved up names the release-notes command (spec §16.24, §16.37).
+  eq(up and up[2], "what's new: lw release-notes --since " .. V1,
+    "a moved-up pin points at the release notes for the range")
   -- A run that keeps the pin but changes something else (here: a launcher
   -- rewritten) says "kept at", distinct from the no-op's "already at".
   put(repo .. "/lw.sh", (launcher.render("sh"):gsub("\n", "\r\n")))
@@ -3454,6 +3457,61 @@ do
   ok(okq, "qmlls integration loads without vim.filetype" .. (okq and "" or (" — " .. tostring(qerr))))
   local okc, cerr = pcall(require, "loomworks.integrations.lsp.clangd")
   ok(okc, "clangd integration loads under the shim" .. (okc and "" or (" — " .. tostring(cerr))))
+end
+
+print("boot.whats_new — self-update's what's new lines (spec §16.32, §16.37)")
+do
+  local wn = require("boot.whats_new")
+  local tmp = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/")
+  local dir = tmp .. "/lw-wn-" .. tostring(os.time()) .. "-" .. tostring(math.random(1000000))
+  local bdir = dir .. "/lua-0.1.40"
+  paths.mkdirp(bdir .. "/loomworks")
+  local function put(p, s) local f = assert(io.open(p, "wb")); f:write(s); f:close() end
+  local function copy(from, to) put(to, readfile(from)) end
+  copy(root .. "/CHANGELOG.md", bdir .. "/loomworks/CHANGELOG.md")
+  copy(root .. "/lua/loomworks/release_notes.lua", bdir .. "/loomworks/release_notes.lua")
+
+  local lines = wn.report({ bundle_dir = bdir, from = "0.1.39", to = "0.1.40", interactive = true, width = 79 })
+  eq(lines[2], "What's new since 0.1.39:", "the block starts with the range")
+  eq(lines[#lines], "Full notes: lw release-notes --since 0.1.39", "and ends with the full-notes pointer")
+  local ascii, fits = true, true
+  for _, l in ipairs(lines) do
+    if l:find("[\128-\255%c]") then ascii = false end
+    if #l > 79 then fits = false end
+  end
+  ok(ascii and fits, "every line is ASCII and fits the width")
+  local ni = wn.report({ bundle_dir = bdir, from = "0.1.39", to = "0.1.40", interactive = false })
+  ok(#ni == 1 and ni[1] == "lw: what's new since 0.1.39: lw release-notes --since 0.1.39",
+    "non-interactive: the pointer line only  (" .. tostring(ni[1]) .. ")")
+  eq(#wn.report({ bundle_dir = bdir, from = "0.1.40", to = "0.1.40", interactive = true }), 0,
+    "nothing for a reinstall of the same version")
+  eq(#wn.report({ bundle_dir = bdir, from = nil, to = "0.1.40", interactive = true }), 0,
+    "nothing for a first installation")
+  eq(#wn.report({ bundle_dir = bdir, from = "0.1.39", to = "0.1.40", interactive = true, silenced = true }), 0,
+    "nothing when silenced")
+  -- A bundle without notes (an older release): the pointer only.
+  local old = dir .. "/lua-0.1.39"
+  paths.mkdirp(old .. "/loomworks")
+  local nb = wn.report({ bundle_dir = old, from = "0.1.38", to = "0.1.39", interactive = true })
+  ok(#nb == 1 and nb[1]:find("lw release-notes --since 0.1.38", 1, true) ~= nil,
+    "a bundle without notes: the pointer only")
+  -- The renderer runs in a sandbox: no io, os or require.
+  local evil = dir .. "/lua-9.9.9"
+  paths.mkdirp(evil .. "/loomworks")
+  put(evil .. "/loomworks/CHANGELOG.md", "## 9.9.9 - 2026-01-01\n\nS.\n\n### Fixed\n- a\n")
+  put(evil .. "/loomworks/release_notes.lua",
+    "local M = {} function M.whats_new() return { tostring(io) .. tostring(os) .. tostring(require) } end return M")
+  local ev = wn.block(evil, "0.1.0", "9.9.9")
+  eq(ev and ev[1], "nilnilnil", "the renderer sees no io, os or require")
+  eq(wn.sanitize("a\27[31mb\226\128\148"), "a?[31mb???", "sanitize folds controls and non-ASCII")
+  ok(wn.silenced(function() return "off" end, {})
+    and not wn.silenced(function() return "on" end, { ["release-notes"] = "off" })
+    and wn.silenced(function() return nil end, { ["release-notes"] = "off" }),
+    "silenced: env off; env on beats the setting; setting off")
+  wn.record_seen(dir, "0.1.40")
+  wn.record_seen(dir, "0.1.39")
+  eq((readfile(dir .. "/release-notes-seen"):gsub("%s+", "")), "0.1.40", "record_seen never lowers")
+  paths.rm_rf(dir)
 end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

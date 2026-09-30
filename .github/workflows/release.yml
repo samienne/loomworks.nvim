@@ -21,6 +21,49 @@ env:
   LUVI_VERSION: v2.15.0
 
 jobs:
+  # Release notes gate (spec §16.37): a full release needs its CHANGELOG.md
+  # entry — checked first, so a missing entry fails in seconds with the fix
+  # spelled out, before anything is built or published. A prerelease only warns.
+  # Also renders the release page's description from the same text.
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: v
+        shell: bash
+        # Untrusted input goes through env, never interpolated into the script.
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check the release notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: python3 scripts/release/release_notes.py check "$VERSION" CHANGELOG.md
+
+      - name: Render the release description
+        shell: bash
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          mkdir -p notes
+          python3 scripts/release/release_notes.py body "$VERSION" notes/release-body.md CHANGELOG.md
+          cat notes/release-body.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes/release-body.md
+          if-no-files-found: error
+
   # One host binary per platform. `luvi --output` fuses the *running* luvi, so
   # each leg must run on its own OS/arch (no cross-fusing).
   hosts:
@@ -116,8 +159,10 @@ jobs:
           path: ${{ matrix.out }}
           if-no-files-found: error
 
-  # The platform-independent, signed system-Lua bundle + manifest.
+  # The platform-independent, signed system-Lua bundle + manifest (it carries
+  # CHANGELOG.md, so it waits for the notes gate).
   bundle:
+    needs: [notes]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -184,7 +229,7 @@ jobs:
         run: bash scripts/ci/old-host-compat.sh
 
   publish:
-    needs: [hosts, bundle, old-host-compat]
+    needs: [notes, hosts, bundle, old-host-compat]
     runs-on: ubuntu-latest
     permissions:
       contents: write       # create the release
@@ -203,6 +248,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
+          # The rendered description is not a release asset.
+          mv incoming/release-notes/release-body.md release-body.md
+          rm -rf incoming/release-notes
           find incoming -type f -exec cp {} release/ \;
           ls -la release
 
@@ -269,6 +317,7 @@ jobs:
         with:
           files: release/*
           fail_on_unmatched_files: true
+          body_path: release-body.md
           prerelease: ${{ steps.rel.outputs.prerelease }}
           draft: true
 

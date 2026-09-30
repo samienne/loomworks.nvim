@@ -340,6 +340,9 @@ elseif host_command == "self-update" then
     end
   end
   io.write("lw: checking for updates...\n")
+  -- The bundle that was newest before this update: "what's new" is measured
+  -- from it (spec §16.32).
+  local prev_bundle = (paths.installed_releases()[1] or {}).ver
   local res, err, info = require("boot.update").self_update({ force = force, channel = channel })
   if not res and info and info.host_incompatible then
     -- The (verified) release needs a newer host than this one. Replace the
@@ -393,6 +396,30 @@ elseif host_command == "self-update" then
     local newest = paths.installed_releases()[1]
     local note = require("boot.update").newer_bundle_note(newest and newest.ver, res.version)
     if note then io.write("lw: note: " .. note .. "\n") end
+  end
+  -- What changed since the previous bundle, from the NEW bundle's release notes
+  -- (spec §16.32, §16.37). Never affects the exit status.
+  if res.updated then
+    pcall(function()
+      local wn = require("boot.whats_new")
+      local function env_truthy(name)
+        local e = getenv(name)
+        return e ~= nil and e ~= "" and e ~= "0" and e:lower() ~= "false"
+      end
+      local noninteractive = env_truthy("LW_NO_INPUT") or env_truthy("CI")
+      for _, v in ipairs(forwarded) do
+        if v == "--no-input" or v == "--non-interactive" then noninteractive = true end
+      end
+      local width = wn.stdout_width()
+      local lines = wn.report({
+        bundle_dir = res.dir, from = prev_bundle, to = res.version,
+        interactive = width ~= nil and not noninteractive,
+        width = width and (width - 1) or nil,
+        silenced = wn.silenced(getenv, cfg),
+      })
+      for _, l in ipairs(lines) do io.write(l .. "\n") end
+      if #lines > 0 then wn.record_seen(paths.data_dir(), res.version) end
+    end)
   end
   -- Then the host binary itself (spec §16.32): host-side fixes never ship in the
   -- bundle, so a bundle-only update would leave them stranded. Same release as

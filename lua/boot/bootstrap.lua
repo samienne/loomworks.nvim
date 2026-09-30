@@ -294,6 +294,11 @@ end
 -- One flat clause, no nested parentheses (spec §16.24 "Reporting").
 local SIGNED = "hashes from the signed SHA256SUMS, signature verified"
 
+--- The first release that carries release notes and the release-notes command
+--- (spec §16.37). A pin moved up to it or later names the command that shows
+--- what changed; an older target release could not run it.
+M.RELEASE_NOTES_SINCE = "0.1.41-0"
+
 -- ---------------------------------------------------------------------------
 -- Operations
 -- ---------------------------------------------------------------------------
@@ -392,6 +397,11 @@ function M.install(start, opts)
     out[#out + 1] = "lw.pin kept at " .. version .. "; " .. SIGNED
   elseif old_v and old_v ~= version then
     out[#out + 1] = "lw.pin: " .. old_v .. " -> " .. version .. "; " .. SIGNED
+    -- A pointer, not the notes: the new bundle is not acquired here (§16.24).
+    if pin.valid_version(old_v) and paths.version_gt(version, old_v)
+        and not paths.version_gt(M.RELEASE_NOTES_SINCE, version) then
+      out[#out + 1] = "what's new: " .. cmd(opts.invoked, "release-notes --since " .. old_v)
+    end
   elseif old_v then
     out[#out + 1] = "lw.pin: " .. version .. " hashes updated; " .. SIGNED
   else

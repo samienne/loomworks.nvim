@@ -6469,6 +6469,9 @@ function M.cmd_settings(sub, key, value)
     if key == "channel" and value ~= "stable" and value ~= "unstable" then
       die("invalid channel '" .. value .. "' — use 'stable' or 'unstable'")
     end
+    if key == "release-notes" and value ~= "on" and value ~= "off" then
+      die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'")
+    end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
     local ok, err = write_config(cfg)
@@ -8722,7 +8725,8 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "--no-input",
+  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes",
+  "--no-input",
 }
 
 --- `lw __complete <cword> <word0..N>` — emit newline-separated candidates for
@@ -8775,6 +8779,9 @@ function M.cmd_complete(cword, words)
   elseif cmd == "tools" then
     if n == 1 then emit({ "--cached" }) end
     return 0
+  elseif cmd == "release-notes" then
+    emit(M._release_notes_completions(a, n))
+    return 0
   elseif cmd == "bootstrap" then
     if n == 1 then emit({ "install", "upgrade", "--json", "--check" }); return 0 end
     if sub == "install" then
@@ -8791,8 +8798,9 @@ function M.cmd_complete(cword, words)
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
-      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel" })
+      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes" })
     end
+    if n == 3 and sub == "set" and a[3] == "release-notes" then emit({ "on", "off" }) end
     return 0
   elseif cmd == "build" and n >= 2 and a[n] == "--target" then
     -- `lw build <profile> --target <TAB>`: the named profile's parsed build
@@ -9023,6 +9031,125 @@ complete -F _lw_complete lw]])
 end
 
 -- ---------------------------------------------------------------------------
+-- Release notes (spec §16.37)
+-- ---------------------------------------------------------------------------
+
+--- Parse `lw release-notes` arguments (a[1] is the command). Returns the
+--- selection and whether `--json` was given, or nil + a usage message.
+--- @param a string[]
+--- @return table|nil sel, boolean|string json_or_err
+function M._release_notes_args(a)
+  local rn = require("loomworks.release_notes")
+  local sel, json, i = nil, false, 2
+  local function set(s)
+    if sel then return false end
+    sel = s
+    return true
+  end
+  local function need_version(v, what)
+    local nv = rn.normalize(v)
+    if not nv then return nil, "invalid version '" .. tostring(v) .. "'" .. (what or "") .. " (want x.y.z)" end
+    return nv
+  end
+  local conflict = "give only one of <version>, --since, --all, -n"
+  while a[i] ~= nil do
+    local v = a[i]
+    if v == "--json" then
+      json = true
+    elseif v == "--all" then
+      if not set({ kind = "all" }) then return nil, conflict end
+    elseif v == "--since" or v:sub(1, 8) == "--since=" then
+      local val = v == "--since" and a[i + 1] or v:sub(9)
+      if v == "--since" then i = i + 1 end
+      if val == nil then return nil, "--since needs a version" end
+      local nv, e = need_version(val, " for --since")
+      if not nv then return nil, e end
+      if not set({ kind = "since", version = nv }) then return nil, conflict end
+    elseif v == "-n" or v:sub(1, 3) == "-n=" then
+      local val = v == "-n" and a[i + 1] or v:sub(4)
+      if v == "-n" then i = i + 1 end
+      local n = tonumber(val)
+      if not n or n < 1 or n ~= math.floor(n) then return nil, "-n needs a count of 1 or more" end
+      if not set({ kind = "count", n = n }) then return nil, conflict end
+    else
+      local nv, e = need_version(v)
+      if not nv then return nil, e end
+      if not set({ kind = "version", version = nv }) then return nil, conflict end
+    end
+    i = i + 1
+  end
+  return sel or { kind = "default" }, json
+end
+
+--- `lw release-notes [<version> | --since <v> | --all | -n <N>] [--json]`.
+function M.cmd_release_notes(a)
+  local rn = require("loomworks.release_notes")
+  local notice = require("loomworks.release_notice")
+  local sel, json = M._release_notes_args(a)
+  if not sel then die(json .. " — see `lw help release-notes`", 2) end
+  local text
+  if M._test_release_notes_text ~= nil then text = M._test_release_notes_text else text = notice.read_text() end
+  if not text then
+    errw("lw: release notes are not available in this build (no CHANGELOG.md)\n")
+    return 1
+  end
+  local running = notice.running_version()
+  local res, err = rn.select(rn.parse(text), running, sel)
+  if not res then
+    errw("lw: " .. err .. "\n")
+    return 1
+  end
+  if json then
+    out(vim.json.encode(rn.to_json(res, vim.NIL)))
+    return 0
+  end
+  local tty = M._stdout_tty()
+  local pal = status_palette(tty and stdout_supports_color())
+  -- One column short of the terminal: a line of exactly its width makes some
+  -- consoles wrap an empty line after it.
+  local width = tty and math.max(40, term_width() - 1) or nil
+  for _, l in ipairs(rn.render(res, { width = width, paint = pal })) do out(l) end
+  notice.mark_seen()
+  return 0
+end
+
+--- Completion candidates after `lw release-notes ...`: the known versions after
+--- `--since` / as the operand, then the options not yet given.
+function M._release_notes_completions(a, n)
+  local versions = {}
+  pcall(function()
+    local rn = require("loomworks.release_notes")
+    local text = require("loomworks.release_notice").read_text()
+    for _, e in ipairs(text and rn.parse(text).entries or {}) do
+      if e.version then versions[#versions + 1] = e.version end
+    end
+  end)
+  if a[n] == "--since" then return versions end
+  if a[n] == "-n" then return {} end
+  local given, c = {}, {}
+  for i = 2, n do given[a[i]] = true end
+  for _, v in ipairs({ "--since", "--all", "-n", "--json" }) do
+    if not given[v] then c[#c + 1] = v end
+  end
+  if n == 1 then for _, v in ipairs(versions) do c[#c + 1] = v end end
+  return c
+end
+
+--- The one-line upgrade notice (§16.37), before a command runs: only on a
+--- terminal stderr in an interactive run, never for `--json` output.
+function M._release_notice(a, noninteractive)
+  for _, v in ipairs(a) do if v == "--json" then return end end
+  local interactive = M._test_notice_interactive
+  if interactive == nil then
+    local ok, h = pcall(uv.guess_handle, 2)
+    interactive = (not noninteractive) and ok and h == "tty"
+  end
+  local line = require("loomworks.release_notice").maybe_notice({
+    interactive = interactive, cfg = read_config() })
+  if line then note(line) end
+end
+
+-- ---------------------------------------------------------------------------
 -- Help
 -- ---------------------------------------------------------------------------
 
@@ -9056,6 +9183,28 @@ configuration set, or project.
   --cache-stats   also run the resolved cache tool's own stats query
                   (`ccache -s` / `sccache --show-stats`) and fold it in. Off by
                   default because it spawns the tool.]],
+  ["release-notes"] = [[lw release-notes [<version> | --since <version> | --all | -n <N>] [--json]
+
+What changed in each release, from the notes the running release carries (no
+network needed).
+
+  (no argument)        the three newest releases up to the one you run
+  <version>            exactly that release's notes (e.g. 0.1.40)
+  --since <version>    every release after <version>: what changed since then
+  --all                every release
+  -n <N>               the N newest releases
+  --json               one JSON document (schema 1) instead of text
+
+Each release lists a short summary, then its changes under Breaking, Upgrade
+notes, Added, Changed, Fixed, Security and Removed. On a terminal the text is
+wrapped to its width; piped or redirected, every change is one full line.
+A prerelease shows the changes it carries that are not released yet.
+
+After `lw self-update` installs a newer release it lists what changed since
+your previous one; the first interactive run after an update that did not
+(an update made by an older lw binary) prints one line pointing here. Turn
+both off with `lw settings set release-notes off` or LOOMWORKS_RELEASE_NOTES=off;
+this command always works.]],
   tools = [[lw tools [--cached]
 
 List the toolchains detected on this machine, grouped by module (cmake,
@@ -10418,6 +10567,7 @@ Usage: lw [command] [args]
   version           host version + which system-Lua source is in use
   install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release (bundle + lw binary)
+  release-notes     what changed in each release (--since <version>, --all)
   bootstrap [install|upgrade]  repo-local launcher + version pin: status / write / bump
   help  [command]   this help, or details for a command
 
@@ -10545,6 +10695,16 @@ local function main()
   end
   if command == "completion" then
     finish(M.cmd_completion(a[2]))
+  end
+  if command == "release-notes" then
+    finish(M.cmd_release_notes(a))
+  end
+  -- The one-line "updated - see what's new" notice (§16.37): the first
+  -- interactive run after an update nobody was told about. Never fails a command.
+  if command ~= "version" and command ~= "--version" and command ~= "-v"
+      and command ~= "self-update" and command ~= "install"
+      and command ~= "bootstrap" and command ~= "update" then
+    pcall(M._release_notice, a, force_noninteractive)
   end
   -- `module` acquires third-party modules — no workspace needed.
   if command == "module" or command == "mod" then
