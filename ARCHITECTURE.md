@@ -984,10 +984,14 @@ replaces it, which would drop `PATH`).
   through `run_spec`), and `_describe_item` reads or calls the item's
   `set_description`. `lw config set/unset/get … description` route there;
   `main()` strips `-m` from create verbs (`_extract_create_paras`) and the
-  creators call `_apply_create_description`. One-line views append
-  `_summary_suffix` (display-width fit, continuation line); show views print
-  `_describe_block`. All are `M.` fields: the main chunk is at the 200-local
-  limit.
+  creators call `_apply_create_description`. One-line views follow one layout
+  rule: rows that end in a bounded column append `_summary_suffix` (fitted to
+  the terminal, or a continuation line); rows with an open-ended tail (the
+  configset list, and the status set and project rows) insert a summary
+  column (`_summary_column`, at most 36 columns) before the tail through
+  `_row_with_summary`, and the tail takes the truncation. Show views print
+  `_describe_block`. All are `M.` fields (the main chunk is at the 200-local
+  limit), and helpers defined above `term_width` call `M._term_width`.
 - `lw nuke [-y]` (spec §17.4) — reset the build state (`.nvim/build/`, the cache,
   the health cache) through `Core:_nuke_files`, the same deletion half as the
   editor's `<C-n>`; the remedy for a cache signed on another machine. Keeps the

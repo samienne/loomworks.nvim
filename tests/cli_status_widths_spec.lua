@@ -119,3 +119,34 @@ describe("status_profile_rows (name column sizing)", function()
     assert.is_nil(rows[1]:find("…", 1, true))
   end)
 end)
+
+-- One layout rule for rows with an open-ended tail (spec §16.35): identity and
+-- fixed columns, then the summary column, then the open-ended list, which takes
+-- the truncation.
+describe("summary column before an open-ended tail", function()
+  local saved_tty
+  before_each(function() saved_tty = cli._test_stdout_tty end)
+  after_each(function() cli._test_stdout_tty = saved_tty end)
+
+  it("sizes the column to the longest summary, capped at 36; 0 without descriptions", function()
+    cli._test_stdout_tty = false
+    assert.equals(0, cli._summary_column({ nil, nil }, 100, 10))
+    assert.equals(5, cli._summary_column({ "Short\n\nbody", nil }, 100, 10))
+    assert.equals(36, cli._summary_column({ string.rep("x", 80) }, 100, 10))
+  end)
+
+  it("on a terminal, gives up the column (-1) when fewer than 16 columns would remain", function()
+    cli._test_stdout_tty = true
+    assert.equals(-1, cli._summary_column({ "Summary text" }, 40, 18))
+    assert.equals(12, cli._summary_column({ "Summary text" }, 80, 18))
+  end)
+
+  it("keeps the tail aligned and cuts the tail, not the summary", function()
+    local a = cli._row_with_summary("  Dev", "Set summary", 11, "App→Debug, Lib→Release", 12)
+    local b = cli._row_with_summary("  Bar", nil, 11, "App→Release", 12)
+    local function col(l, s) return vim.fn.strdisplaywidth(l:sub(1, l:find(s, 1, true) - 1)) end
+    assert.equals(col(a, "App→"), col(b, "App→"))
+    assert.is_truthy(a:find("Set summary  App→Debug, …", 1, true))
+    assert.equals("  Dev App→Debug", cli._row_with_summary("  Dev", "Set summary", 0, "App→Debug", nil))
+  end)
+end)
