@@ -9190,10 +9190,12 @@ network needed).
 
   (no argument)        the three newest releases up to the one you run
   <version>            exactly that release's notes (e.g. 0.1.40)
-  --since <version>    every release after <version>: what changed since then
+  --since <version>    every release newer than <version> (not <version>
+                       itself): what changed since then
   --all                every release
   -n <N>               the N newest releases
-  --json               one JSON document (schema 1) instead of text
+  --json               one JSON document (schema 1) instead of text; the
+                       not-yet-released entry has "summary": null
 
 Each release lists a short summary, then its changes under Breaking, Upgrade
 notes, Added, Changed, Fixed, Security and Removed. On a terminal the text is

@@ -26,6 +26,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.41 - 2026-09-30
+
+Release notes are now built in: `lw release-notes` shows what changed, offline,
+and `lw self-update` tells you what is new after an update.
+
 ### Added
 - `lw release-notes` prints what changed in each release, offline, from the
   release you run: the three newest by default, `--since <version>`, `--all`,
