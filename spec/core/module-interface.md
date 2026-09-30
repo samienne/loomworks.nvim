@@ -932,12 +932,20 @@ place, within its project, by one atomic operation shared by every host
   use). One that was ignored there as program-bearing (§17.6) is not in the
   model and cannot be renamed. Renaming to the same name changes nothing and
   says so. A case-only change is a rename.
-- **Valid launch name.** It is non-empty, has no leading or trailing
-  whitespace, contains no control character, and does not start with `-` (it
-  would read as a command-line flag). `:` is allowed, as in today's
-  `[<project>:]<name>` addressing. The same rule applies when a launch
-  configuration is created. Existing names that break it keep working and can
-  be renamed away.
+- **Valid launch name.** It is non-empty, contains no whitespace anywhere (no
+  space, tab or other white space), no control character, no `/` and no `\`,
+  and does not start with `-` (it would read as a command-line flag). Other
+  punctuation is allowed, including `:` as in today's `[<project>:]<name>`
+  addressing. The same rule applies when a launch configuration is created. A
+  refusal names what is allowed. Existing names that break it (for example one
+  with a space, written before this rule) keep working: they can be run,
+  shown, described and renamed away.
+- **Build-target clash warning.** A launch name may equal the name of one of
+  the project's build targets, but `lw run <name>` is then ambiguous (§16.17)
+  and needs `--launch` or `--target`. The rename succeeds and warns on stderr.
+  The check uses the build targets of the project's configured builds, scanned
+  on demand. When no build is configured yet, the targets are unknown, and a
+  note says the check could not be made.
 - **Publishing.** Launch configurations follow their project's intent (§2.4).
   A rename in a published project makes the project show `+`. The next publish
   writes the new name and removes the old one. A program-bearing launch that

@@ -155,6 +155,66 @@ describe("launch rename", function()
     assert.is_truthy(r.stderr:find("also the name of a build target", 1, true))
   end)
 
+  -- Regression (beta.1 field test): the real CLI path loads a fresh workspace
+  -- whose units have not parsed their targets yet, so the warning never fired.
+  -- A configured unit's targets are scanned on demand (like `lw target`).
+  --- Make App's module introspectable and its units configured, so targets
+  --- can be scanned; returns the loaded ws + project.
+  local function with_scannable_targets(root, targets, configured)
+    local ws = load(root)
+    local proj = find_project(ws, "App")
+    local impl = proj._module.impl
+    proj._module.impl = setmetatable({
+      parse_targets = function() return targets end,
+    }, { __index = impl })
+    for _, unit in pairs(ws._config_units) do
+      if unit._project == proj then
+        unit.targets = nil
+        if configured then
+          unit.state_value = "configured"
+          unit.build_dir_value = root .. "/build"
+        end
+      end
+    end
+    return ws, proj, function() proj._module.impl = impl end
+  end
+
+  it("warns (real target scan) when the new name is a build target, exe or not", function()
+    local root = make_ws()
+    launch(root, "add", "App", "demo", "node", "x.js")
+    local ws, proj, restore = with_scannable_targets(root, {
+      App = { type = "executable" }, AppCore = { type = "static_library" },
+    }, true)
+    local r = capture(function() return cli._launch_rename(ws, proj, "demo", "App") end)
+    assert.is_nil(r.exit_code, r.stderr)
+    assert.is_truthy(r.stderr:find("'App' is also the name of a build target", 1, true), r.stderr)
+    assert.is_truthy(r.stderr:find("--launch", 1, true))
+    r = capture(function() return cli._launch_rename(ws, proj, "App", "AppCore") end)
+    restore()
+    assert.is_truthy(r.stderr:find("'AppCore' is also the name of a build target", 1, true), r.stderr)
+  end)
+
+  it("says the check was skipped when the build targets are not scanned yet", function()
+    local root = make_ws()
+    launch(root, "add", "App", "demo", "node", "x.js")
+    local ws, proj, restore = with_scannable_targets(root, { App = { type = "executable" } }, false)
+    local r = capture(function() return cli._launch_rename(ws, proj, "demo", "App") end)
+    restore()
+    assert.is_nil(r.exit_code, r.stderr)
+    assert.is_nil(r.stderr:find("is also the name of a build target", 1, true))
+    assert.is_truthy(r.stderr:find("not scanned yet", 1, true), r.stderr)
+  end)
+
+  it("no warning or note when the targets are scanned and the name is free", function()
+    local root = make_ws()
+    launch(root, "add", "App", "demo", "node", "x.js")
+    local ws, proj, restore = with_scannable_targets(root, { App = { type = "executable" } }, true)
+    local r = capture(function() return cli._launch_rename(ws, proj, "demo", "demo2") end)
+    restore()
+    assert.is_nil(r.exit_code, r.stderr)
+    assert.equals("", r.stderr, r.stderr)
+  end)
+
   it("a rename in a published project marks it modified", function()
     local root = make_ws()
     launch(root, "add", "App", "demo", "--from-target", "editor")
@@ -237,6 +297,23 @@ describe("launch add --description / describe", function()
     assert.is_truthy(line:find("D:/src/dres_schema_test", 1, true)) -- not cut when piped
   end)
 
+  it("launch list piped: a summary longer than 36 columns is printed in full", function()
+    local root = make_ws()
+    local long = "Editor with the scene JSON schema test data loaded from the repo"
+    launch(root, "add", "App", "plain", "--from-target", "editor", "--description", "Short")
+    launch(root, "add", "App", "schema", "--from-target", "editor", "--description", long)
+    cli._test_stdout_tty = false
+    local out = launch(root, "list").stdout
+    cli._test_stdout_tty = nil
+    local line = out:match("\n(  App +schema [^\n]*)")
+    assert.is_truthy(line, out)
+    assert.is_truthy(line:find(long .. "  target:editor", 1, true), line)
+    assert.is_nil(out:find("…", 1, true))
+    -- RUNS stays aligned across rows.
+    local plain = out:match("\n(  App +plain [^\n]*)")
+    assert.equals(plain:find("target:editor", 1, true), line:find("target:editor", 1, true))
+  end)
+
   it("launch list without descriptions keeps the old header", function()
     local root = make_ws()
     launch(root, "add", "App", "plain", "--from-target", "editor")
@@ -248,6 +325,78 @@ describe("launch add --description / describe", function()
   it("new launch names are validated on add", function()
     local root = make_ws()
     assert.equals(1, launch(root, "add", "App", "-bad", "node").exit_code)
+  end)
+
+  -- Tightened rule (v0.1.40-beta.2, spec §8.7): no whitespace anywhere and no
+  -- '/' or '\' in a NEW name, on add and on rename; the error says what is allowed.
+  local BAD = { "bad name", "a/b", "a\\b", "tab\tname", "", "-lead", " padded" }
+
+  it("add refuses whitespace, slashes, empty and a leading '-', naming what is allowed", function()
+    local root = make_ws()
+    for _, bad in ipairs(BAD) do
+      local r = launch(root, "add", "App", bad, "node", "x.js")
+      assert.equals(1, r.exit_code, "accepted " .. vim.inspect(bad))
+      assert.is_truthy(r.stderr:find("invalid launch name", 1, true), r.stderr)
+      assert.is_truthy(r.stderr:find("allowed", 1, true), r.stderr)
+    end
+    local l = (user_json(root).projects.App or {}).launch or {}
+    assert.is_nil(next(l))
+    -- Other punctuation stays allowed (':' as in <project>:<name> addressing).
+    assert.is_nil(launch(root, "add", "App", "demo:v2.1_x+y", "node", "x.js").exit_code)
+  end)
+
+  it("rename refuses the same names; the old one is kept", function()
+    local root = make_ws()
+    launch(root, "add", "App", "a", "node", "x.js")
+    for _, bad in ipairs(BAD) do
+      local r = launch(root, "rename", "App", "a", bad)
+      assert.equals(1, r.exit_code, "accepted " .. vim.inspect(bad))
+      assert.is_truthy(r.stderr:find("allowed", 1, true), r.stderr)
+    end
+    assert.is_truthy(user_json(root).projects.App.launch.a)
+  end)
+
+  it("end to end: `lw launch add/rename` with an empty new name is refused", function()
+    local root = make_ws()
+    local function run_main(...)
+      local saved_arg, saved_root = _G.arg, vim.env.LW_ROOT
+      _G.arg = { ... }
+      vim.env.LW_ROOT = root
+      local r = capture(function() cli.main() end)
+      _G.arg, vim.env.LW_ROOT = saved_arg, saved_root
+      return r
+    end
+    local r = run_main("launch", "add", "App", "", "node", "x.js")
+    assert.equals(1, r.exit_code, r.stdout)
+    assert.is_truthy(r.stderr:find("cannot be empty", 1, true), r.stderr)
+    assert.is_nil(run_main("launch", "add", "App", "a", "node", "x.js").exit_code == 1 or nil)
+    r = run_main("launch", "rename", "App", "a", "")
+    assert.equals(1, r.exit_code, r.stdout)
+    assert.is_truthy(r.stderr:find("cannot be empty", 1, true), r.stderr)
+    assert.is_truthy(user_json(root).projects.App.launch.a)
+  end)
+
+  it("an existing name with a space still resolves, shows, describes and renames away", function()
+    local root = make_ws()
+    launch(root, "add", "App", "old", "node", "x.js")
+    -- A name written before the rule (hand-edited / older loomworks).
+    local ws = load(root)
+    local proj = find_project(ws, "App")
+    proj.launch["my demo"] = proj.launch.old
+    proj.launch.old = nil
+    assert.is_true(ws:_save_user())
+    ws = load(root)
+    local profile
+    for _, p in pairs(ws._profiles) do if p.key:find("Dev", 1, true) == 1 then profile = p end end
+    local m = cli._match_targets(ws, profile, "my demo", nil, nil)
+    assert.equals(1, #m)
+    assert.equals("launch", m[1].kind)
+    assert.is_nil(launch(root, "show", "App", "my demo").exit_code)
+    assert.is_nil(launch(root, "describe", "App", "my demo", "Still works").exit_code)
+    assert.equals("Still works", user_json(root).projects.App.launch["my demo"].description)
+    assert.is_nil(launch(root, "rename", "App", "my demo", "my-demo").exit_code)
+    local l = user_json(root).projects.App.launch
+    assert.is_nil(l["my demo"]); assert.equals("Still works", l["my-demo"].description)
   end)
 end)
 
