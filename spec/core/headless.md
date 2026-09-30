@@ -1638,7 +1638,9 @@ Providers are advisory only — an item never gates a build, never fails
 `--check` (§16.18), and is distinct from a **diagnostic** (a structural problem
 that does gate operations). The framework is the general surface; individual
 providers ship independently, and the health report aggregates whatever providers
-are registered.
+are registered. Each provider declares, when it registers, the report **area**
+its items belong to (§16.36); a health run narrowed to some areas runs only
+their providers.
 
 **Actionable vs informational items.** An item is one of two **kinds**. An
 **actionable** item is a nag: something the user can act on, carrying a `remedy`.
@@ -1646,8 +1648,8 @@ An **informational** item affirms a healthy state (for example, that a compiler
 cache is in use) and carries no remedy. Both appear in the full health report, but
 only actionable items contribute to the compact `N suggestions` count (§16.18,
 `spec/ui.md` §1.1) — an affirmative note never inflates the nag total. The report
-lists the actionable items first and then the informational ones, which it
-renders distinctly — a different bullet, as positive status rather than a
+lists the actionable items first and then the informational ones — grouped
+into one section per area (§16.36) — which it renders distinctly — a different bullet, as positive status rather than a
 warning — so the bullets a reader counts as suggestions match the count even
 without color. The text report is **ASCII** — `*` for an actionable item, `-`
 for an informational one, `+` / `x` / `-` / `?` for an inventory entry that is
@@ -1814,8 +1816,11 @@ The two refresh tiers, over that one cache, are:
   (the network tier — back-to-back health runs each make the update check) and
   re-probes the inventory (§16.33), and reports exactly what it just computed.
   The cache is the health run's **output**, not its input: inside a workspace
-  it then writes all three tiers for the passive consumers. There is no flag to
-  force a refresh — every health run is one.
+  it then writes, for the passive consumers, every tier it computed
+  **completely** — all three for an unnarrowed run; a run narrowed to some
+  areas leaves the tiers it did not compute as they were, and the relevant
+  scope writes a partial inventory tier that records what it probed
+  (§16.36). There is no flag to force a refresh — every health run is one.
 
 **First run and resilience.** With no cache present, a passive collect computes
 only the local tier (never the network); a health run computes everything, as
@@ -2091,7 +2096,11 @@ providers still run and report; the workspace-scoped ones simply contribute
 nothing. So `lw health` in a plain directory still surfaces an available update or
 a channel override — it does not fall silent merely because no workspace is
 loaded. The report leads with the same worktree/init hint the status overview
-shows (§16.18) so the absence of project-scoped items is explained.
+shows (§16.18) so the absence of project-scoped items is explained. Outside a
+workspace plain `lw health` reports only the `lw` and `launcher` areas and
+probes no toolchain, SDK or editor declaration; the machine inventory is
+`lw health --all` (§16.36). A refused working copy (§17.4) is reported as an
+actionable item and health continues as outside a workspace (§16.36).
 
 **Builds are unaffected and need no new flags.** A headless build honors the same
 `cache` policy resolution and launcher staleness as the editor (§1.3.2, §5): the
@@ -2208,7 +2217,9 @@ The health report (§16.31) also answers "is this machine ready?": an
 each reported **found** (with its version and location when known), **missing**,
 or **unknown** (the probe failed or timed out — never guessed either way). Like
 the rest of health it is read-only and authors nothing (§16.9): it installs
-nothing and changes no selection.
+nothing and changes no selection. The whole inventory is the **full** scope
+(`lw health --all`); plain `lw health` probes and lists only what the
+workspace makes relevant, and either can be narrowed to areas (§16.36).
 
 **Contributors.** Core owns no knowledge of particular tools. The inventory is
 the union of **declarations** from:
@@ -2238,7 +2249,9 @@ that use the same executable declare the same id) and are **probed once**.
 `category` is one of a fixed, core-owned set that also fixes the report order:
 *build tools*, *compilers*, *compiler caches*, *language servers*, *debug
 adapters*, *SDKs*, *plugins*, *lw*; an unrecognized category renders under
-*other*. `probe(ctx, done)` resolves to one or more **results** — an enumerating
+*other*. Each category maps to a report **area** (§16.36). A declaration may
+also carry, optionally, an `area` (overriding the mapping) and `languages` (it
+is then relevant only in a workspace with one of those languages, §16.36). `probe(ctx, done)` resolves to one or more **results** — an enumerating
 declaration (every installed toolchain, every SDK installation) yields one
 result per installation found, or a single `missing` result. A result is
 `{ id, label, status = "found"|"missing"|"unknown", version?, path?, detail?,
@@ -2270,7 +2283,9 @@ A workspace with no profiles at all scopes its requirements to every project
 The requirement scope follows the compiler-cache provider (§16.31): the **active
 profile's** projects and tools, or — with **no active profile** — the union over
 **every profile**, each requirement naming the profiles and projects that need
-it. Compiler-cache launchers are never listed as required here — whether a
+it. What non-active profiles need is not *required* but is still **relevant**
+(§16.36): relevance is evaluated over every profile. Compiler-cache launchers
+are never listed as required here — whether a
 missing launcher is actionable is decided by the compiler-cache provider alone,
 so it is never reported twice. Language servers and debug adapters are never
 required either, in either host: no headless operation uses them, and an editor
@@ -2324,6 +2339,13 @@ The tier is added without a health-cache schema bump: a cache written before it
 existed simply has no inventory tier (the inventory then counts nothing until
 the next health run), and an older reader ignores it.
 
+A relevant-scope health run (§16.36) writes a **partial** tier: the results of
+the declarations it probed and the list of **contributors** it probed (a tier
+without that list was written by a full probe). A requirement of a contributor
+the tier did not probe reads as **not checked** — neither missing nor counted.
+The partial tier came with a bump of the inventory key version, so neither
+reader trusts a tier recorded under the other meaning.
+
 A passive collect (§16.31) **never probes**. When the cached inventory tier's
 environment key matches, it derives the required split afresh from the current
 workspace — a pure evaluation of `health_requirements` and the profiles, no
@@ -2344,7 +2366,11 @@ machine, with the per-probe timeout (a few seconds) as the ceiling. The passive
 path's added cost is one digest of in-process strings plus the pure requirement
 evaluation.
 
-**Rendering.** Terse, one line per result: a status mark — `✓` found, `✗`
+**Rendering.** *(The layout below is superseded by the area sections of
+§16.36: the Required / Other split becomes, per area, required and relevant
+entries first and — in the full scope only — a compacted "not used here"
+line; the line format and marks are unchanged.)* Terse, one line per result:
+a status mark — `✓` found, `✗`
 missing and required, `–` missing and not required, `?` unknown — the label,
 version, and location — or, for a missing result, its `hint`. Inside a workspace the
 actionable suggestions come first (§16.31), then **Required by this workspace**
@@ -2388,7 +2414,11 @@ only — it never affects `summary`. Object keys are emitted in
 sorted order at every depth and arrays in their defined order (inventory: category
 order, then declaration order), so the same data prints byte-identically — stable
 for scripts and CI diffs. It carries the same data as the text report, is
-versioned by `schema`, and exits 0 like the report — health never fails. There
+versioned by `schema`, and exits 0 like the report — health never fails. The
+document follows the run's scope and area selection and carries, additively
+under the same `schema`, `scope`, `areas?`, `hidden?`, each suggestion's
+`area` and each inventory entry's `area`, `relevant` and `used_by?`
+(§16.36); `summary` counts what the document holds. There
 is no check mode that exits non-zero on a missing required item in this version
 (suggestions are advisory, §16.31); CI can test `required && status ==
 "missing"` in the JSON (or `summary.required_missing`).
@@ -2632,4 +2662,300 @@ $ lw configset list
 
 $ lw profile describe 1 --clear
 profile 'Debug:ninja-clang-18.1.0': description removed
+```
+
+### 16.36 Health scope and areas
+
+*(Proposed — amends §16.31 and §16.33.)* A health run has a **scope** and an
+optional **area selection**. Plain `lw health` reports only what concerns the
+current workspace (the **relevant** scope); `lw health --all` reports every
+check (the **full** scope — the report §16.31 and §16.33 describe), with the
+workspace-relevant items still marked. Either scope can be narrowed to one or
+more **areas**.
+
+**Areas.** Every health item — a suggestion (§16.31) or an inventory result
+(§16.33) — belongs to exactly one **area**, from a fixed, core-owned set that
+also fixes the report order:
+
+| Area | Contents |
+|--|--|
+| `lw` | the running `lw` release and host binary, the update check, the channel override, the plugin registry (inventory categories *lw*, *plugins*) |
+| `workspace` | the workspace's own state: a refused working copy (below) and any future workspace-level provider |
+| `toolchains` | build-system executables and compilers (inventory categories *build tools*, *compilers*) |
+| `cache` | compiler caches: the compiler-cache and cache-compatibility providers (§16.31) and the *compiler caches* inventory category |
+| `sdks` | SDK installations (inventory category *SDKs*) |
+| `editor` | language servers and debug adapters (inventory categories *language servers*, *debug adapters*) — used only by the editor |
+| `launcher` | the repo launcher and pin checks (§16.31 provider #4) |
+| `submodules` | the submodule drift report (§16.31 provider #3) |
+
+An inventory result's area follows from its declaration's `category` by the
+table above, unless the declaration names an `area` itself (§8.4); an
+unrecognized category or area renders under a trailing `other` area. The
+inventory `category` keeps its meaning (§16.33): a finer grouping *within* an
+area, shown as the label column of the area's lines. A suggestion provider
+declares its area when it registers (an item may override it); a provider
+registered without one runs under every selection and renders under `other`.
+The area names are CLI surface: adding an area is additive, renaming or
+removing one is not.
+
+**Relevance.** Relevance is computed over the **whole workspace** — every
+profile, not only the active one (with no profiles, every project) — so that
+switching the active profile never turns a needed item irrelevant. The
+active-profile scope of *required* (§16.33) is unchanged. A **contributor**
+(§16.33) is relevant when it is:
+
+- a **module** that some project of the workspace has as its type (a project
+  whose module is not loaded makes that module's plugin-registry entry
+  relevant, as its requirement already does, §16.33);
+- an **SDK provider** of which some profile pins an installation;
+- a **language-server inventory companion** whose server some module of the
+  workspace names in its `lsp_servers` (§8.4) — or, when none of the
+  workspace's modules declares `lsp_servers`, whose declared `languages`
+  (§9.3) intersect the **workspace languages**: the effective languages (§1)
+  of every configuration of every project;
+- a **debug-adapter inventory companion** whose declared `languages`
+  intersect the workspace languages;
+- **core** — its `lw` and plugin-registry declarations always; its
+  compiler-cache launcher declarations when the workspace has a project whose
+  module reports the caching-relevant language (the compiler-cache provider's
+  own predicate, §16.31); its SDK-provider declaration under the SDK-provider
+  rule above.
+
+A declaration that carries `languages` (§8.4) is relevant only when they also
+intersect the workspace languages, whatever its contributor.
+
+An inventory **result** is relevant when it is **required under the whole
+workspace** (the §16.33 requirement evaluation over every profile, an
+alternative that binds included); or it comes from a declaration relevant as a
+whole — the `lw` entry, a matched companion's results, the compiler-cache
+launchers; or it is a plugin-registry entry that the workspace uses or that is
+**rejected** (a rejected plugin is a problem of the installation, reported
+wherever `lw` runs). Every other result of a relevant declaration is
+**hidden**: an installation an enumerating declaration found that no profile
+uses (another compiler, another toolchain installation, an SDK installation
+detected but not pinned), a loaded plugin the workspace does not use.
+
+Every **suggestion** a provider emits is relevant: providers are self-scoping
+— they return nothing when their subject is absent (no project with the
+caching-relevant language, no pin, no submodule declaration file, no
+workspace). A **missing required** item is therefore always relevant: the
+relevant scope never hides an actionable item that the full scope shows,
+except through an area selection that excludes its area.
+
+**Selection syntax.** `lw health [<area>...] [--all] [--verbose] [--json]`.
+Areas are positional, in any order, deduplicated; with none given, every area
+is selected. An unknown area is a usage error naming the valid ones — the one
+case in which `lw health` exits non-zero, because nothing was checked. Shell
+completion offers the areas not yet given plus the flags; `lw help health`
+lists the areas, one line each.
+
+**What runs.** Scope and selection decide what is computed, not only what is
+printed:
+
+- **skipped** (never probed, never run): in the relevant scope, every
+  declaration of a contributor that is not relevant — an unused module's
+  executables, the installation enumeration of an SDK provider nothing pins, a
+  companion for a server or language the workspace does not use, the
+  compiler-cache launchers in a workspace without the caching-relevant
+  language; under an area selection, every provider and declaration outside
+  the selected areas — so `lw health launcher` makes no network request and
+  probes nothing;
+- **hidden** (run, not shown): the non-relevant results of a relevant
+  enumerating declaration — the scan that finds the compiler a profile uses
+  finds the others too; they are counted, not listed;
+- **always run** when their area is selected: the local providers (cheap and
+  self-scoping), the update check and the channel override (they concern the
+  running release, which every workspace uses), and the launcher and submodule
+  providers when their subject exists.
+
+Declarations are still **built** for every contributor — building is cheap by
+contract (§8.4: no spawn, no scan) — so the hidden count includes the skipped
+ones.
+
+**Hidden count.** Without `--all`, the report ends with one line counting what
+the relevant scope left out, per area in area order: "N other checks not
+relevant here (<area> n, …) — lw health --all" (with the area selection
+repeated in the pointer when one was given). A skipped declaration counts
+once; a hidden result counts once. The line is omitted when nothing was left
+out.
+
+**Outside a workspace** — and with a refused working copy, below — nothing is
+relevant but `lw` itself. Plain `lw health` then reports, after the worktree
+hint (§16.31), the `lw` area (the running release, the update check, the
+channel override, rejected plugins) and the `launcher` area when a pin is
+found from the current directory. It probes **no** toolchain, SDK or editor
+declaration and ends with "Machine inventory not checked outside a workspace
+— lw health --all lists toolchains, compiler caches, SDKs and editor tools."
+`lw health --all` outside a workspace is the full machine inventory (§16.33,
+no required split), grouped by area. Nothing is cached in either case
+(§16.31).
+
+**Refused working copy.** When the workspace's working copy is refused
+(§17.4), health does not stop at the refusal the way a workspace-requiring
+command does: it reports an **actionable** `workspace` item — "working copy
+not trusted — review it with lw trust (or discard it: lw trust --discard)" —
+and continues as outside a workspace (nothing of the refused file is read,
+§17.4; nothing is cached). A trusted workspace has no `workspace` item.
+
+**Rendering.** The report is, in order:
+
+1. the heading (workspace name and root) or the worktree hint;
+2. the **actionable** items of every selected area, each ending with its area
+   in brackets (`* No compiler cache found  [cache]`) — still first and still
+   the only `*` bullets, so they match the `N suggestions` count (§16.31);
+3. one **section per selected area**, in area order, headed by the area name,
+   holding that area's informational items (`-`) and then its inventory lines.
+   An area with nothing to show is omitted, except that an explicitly selected
+   area prints "nothing to report". The `lw` section always starts with the
+   release line. Required entries come first; a relevant entry that only
+   non-active profiles need is marked like a non-required one (`+`, `-`, `?`)
+   and names them ("- other profiles: asan"); `x` stays reserved for missing
+   **required**;
+4. in the full scope, each area's non-relevant entries follow its relevant
+   ones, compacted to one line per inventory category under "not used here"
+   (`--verbose` lists them one per line with locations), so relevance stays
+   visible in `--all`;
+5. the hidden-count line (relevant scope only).
+
+**Exit status.** Unchanged: `lw health` exits 0 whatever it finds (§16.31,
+§16.33); only a usage error exits non-zero. There is still no check mode. A
+hidden item contributes to no count — not the `summary`, not the passive
+`N suggestions` count; should a check mode be added later, it considers the
+shown items only.
+
+**Machine-readable output.** `--json` follows the same scope and selection as
+the text report. Its document gains, additively and without a `schema` bump
+(§16.33):
+
+- `scope` — `"relevant"` or `"all"`;
+- `areas` — the selected area names, present only when a selection was given;
+- on every suggestion, `area`; on every inventory entry, `area`, `relevant`
+  (boolean) and — for a relevant entry that only non-active profiles need —
+  `used_by` (those profiles/projects, never compacted);
+- `hidden` — `{ <area>: count }`, the hidden-count line's figures, present
+  only in the relevant scope and only when something was left out.
+
+`summary` counts what is **in the document** (so a script need not recount
+what it received). `summary.required_missing` is the same in both scopes,
+since a missing required entry is always relevant — unless an area selection
+excludes its area. A consumer that needs every entry uses `--all --json`.
+
+**Caching.** A health run still never reads the health cache (§16.31). A tier
+is written only when this run computed it **completely**, and is otherwise
+left as it was:
+
+- the **local tier** when the `cache` area was selected (its providers ran);
+- the **network tier** when the `lw` area was selected (the update check ran);
+- the **inventory tier** when no area selection was given — the full scope
+  writes every result, as before; the relevant scope writes the results of
+  the relevant declarations together with the **contributors it probed**. An
+  area-selected run writes no inventory tier.
+
+A passive collect evaluating a partial inventory tier (§16.33) reads a
+requirement whose contributor that tier did not probe as **not checked** —
+neither missing nor counted — so a project added since the last health run,
+of a module nothing probed, never produces a false "not found"; the next
+`lw health` probes it (it is relevant then). A tier with no contributor list
+was written by a full probe. The inventory key version (§16.33) is bumped with
+this change, so a tier recorded under the old meaning is not trusted by a new
+reader, nor a partial tier by an old one (it then counts nothing until the
+next health run).
+
+**Plugin contract.** The relevance inputs are optional, static and additive: a
+declaration's `area` and `languages` (§8.4), a module's `lsp_servers` (§8.4),
+an inventory companion's `languages` (§9.3). A plugin that declares none keeps
+working — its module declarations are relevant whenever the module is used; a
+companion without `languages` that no module names is shown only in the full
+scope. None of them bumps `api_versions` (§8.0). Modules and SDK providers
+contribute to health only through declarations and requirements; the
+suggestion-provider registration (§16.31) is core-internal and not a plugin
+contract.
+
+**Editor.** The editor has no health rendering of its own (§16.33); its status
+page's count reads the cache through the passive collect (§16.31,
+`spec/ui.md` §1.1), which this section changes only through the not-checked
+rule above. Scope and area selection are CLI concerns; the providers and the
+relevance evaluation are host-neutral, so a future editor rendering applies
+the same rules.
+
+```
+Example — a cmake workspace on Windows: profiles `dev` (active; Ninja + MSVC,
+projects app and lib) and `asan` (Ninja + clang-cl); a version pin and three
+submodules; meson, typescript and shell modules, an SDK provider and a
+js-debug companion installed but unused.
+
+$ lw health
+loomworks health - myapp  (C:\src\myapp)
+
+* No compiler cache found                                           [cache]
+  install sccache, then opt in for MSVC-style compilers (lw help cache)
+
+lw
+  lw 0.1.39  C:\Users\me\.local\bin\lw.exe
+  - update check skipped - offline or release server unreachable
+toolchains
+  build tools  + cmake 3.30.2             C:\Program Files\CMake\bin\cmake.exe  - dev (2 projects)
+               + ninja 1.12.1             C:\tools\ninja.exe  - dev (2 projects)
+  compilers    + MSVC 14.40 (VS 2022)     C:\Program Files\Microsoft Visual Studio\2022\Community  - dev (2 projects)
+               + clang-cl 18.1.8          C:\Program Files\LLVM\bin\clang-cl.exe  - other profiles: asan
+cache
+  compiler caches  - sccache   not found (lw help cache)
+                   - ccache    not found (lw help cache)
+editor
+  language servers  + clangd 18.1.8       C:\Program Files\LLVM\bin\clangd.exe
+                    - qmlls               not found (install Qt's qmlls, or set type_config.qmlls)
+  debug adapters    + codelldb 1.10.0     (Mason)
+                    - cppdbg              not found (:MasonInstall cpptools)
+launcher
+  - launcher: lw 0.1.39 pinned; lw.sh / lw.cmd current, modes and line endings ok
+submodules
+  - submodules: 3 in sync with their recorded commits
+
+14 other checks not relevant here (lw 5, toolchains 7, sdks 1, editor 1) - lw health --all
+
+$ lw health --all
+  (the same sections, each followed by what the workspace does not use:)
+lw
+  lw 0.1.39  C:\Users\me\.local\bin\lw.exe
+  - update check skipped - offline or release server unreachable
+  plugins  + 3 used here - not used here: + 5 loaded
+toolchains
+  ...the relevant lines above...
+  not used here:
+  build tools  - make - - meson - + node 20.11.1 - + npm 10.2.4
+  compilers    + gcc 13.2.0 - + clang 18.1.8 - + MSVC 14.29 (VS 2019)
+sdks
+  not used here:
+  SDKs  + HarmonyOS SDK 5.0.0
+editor
+  ...the relevant lines above...
+  not used here:
+  debug adapters  - js-debug
+
+$ lw health toolchains
+loomworks health - myapp  (C:\src\myapp)
+
+toolchains
+  build tools  + cmake 3.30.2             C:\Program Files\CMake\bin\cmake.exe  - dev (2 projects)
+               + ninja 1.12.1             C:\tools\ninja.exe  - dev (2 projects)
+  compilers    + MSVC 14.40 (VS 2022)     C:\Program Files\Microsoft Visual Studio\2022\Community  - dev (2 projects)
+               + clang-cl 18.1.8          C:\Program Files\LLVM\bin\clang-cl.exe  - other profiles: asan
+
+7 other checks not relevant here (toolchains 7) - lw health toolchains --all
+
+$ cd C:\tmp
+$ lw health
+loomworks - no workspace here.
+
+  lw init    start a workspace here
+
+* Update available                                                  [lw]
+  0.1.39 -> 0.1.40 on the stable channel
+  lw self-update
+
+lw
+  lw 0.1.39  C:\Users\me\.local\bin\lw.exe
+
+Machine inventory not checked outside a workspace - lw health --all lists
+toolchains, compiler caches, SDKs and editor tools.
 ```

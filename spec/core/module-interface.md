@@ -703,6 +703,23 @@ shared across modules is declared through the shared helper core provides, so
 the declarations agree. Absent hook = the module contributes no inventory. Additive and optional: no
 `api_versions.module` bump (§8.0).
 
+A declaration may carry two optional fields for the health scope (§16.36):
+`area` — the report area its results belong to, when the category's default
+area is not the right one — and `languages` — the declaration is relevant only
+in a workspace whose projects have one of those languages. The module's
+declarations are otherwise relevant exactly when some project of the workspace
+has this module's type; a plain `lw health` probes nothing of a module no
+project uses. Additive and optional: no `api_versions.module` bump (§8.0).
+
+**`lsp_servers`** *(optional static property)*
+
+`string[]` — the names of the language-server integrations (§9.3) whose
+configurations this module's `lsp_configs` can emit. Used only by the health
+scope (§16.36): a language-server inventory companion is relevant to a
+workspace when one of its modules names it here. Absent = the module's
+language servers are matched by language instead. Additive and optional: no
+`api_versions.module` bump (§8.0).
+
 **`health_requirements(ctx) → { id, label, hint?, via?, alternatives? }[]`** *(optional)*
 
 The inventory ids a project needs to configure and build under a given tool
