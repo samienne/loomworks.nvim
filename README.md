@@ -424,8 +424,9 @@ The update and channel-override checks concern the `lw` release itself, not the
 workspace, so `lw health` reports them **even outside a configured workspace** —
 run it in a plain directory and it still tells you an update is available.
 
-`lw health` never reuses an earlier result: every run re-checks everything —
-the local checks, the environment inventory and the network update check. Inside
+`lw health` never reuses an earlier result: every run re-checks what it covers —
+the local checks, the environment inventory and the network update check (a run
+narrowed to [areas](#scope-and-areas) saves only what it fully re-checked). Inside
 a workspace it then saves the results to `.nvim/loomworks.health.json` (an
 internal advisory cache, separate from the build cache) for the passive
 `N suggestions` count and the editor status page, which read it and never
@@ -439,9 +440,73 @@ not by itself refresh the passive `N suggestions` count — the next `lw health`
 does. Outside a workspace nothing is saved anywhere. The cache is self-healing:
 if it is missing or corrupt it is simply recomputed.
 
+#### Scope and areas
+
+Plain `lw health` checks and shows only what **this workspace** uses — over all
+of its profiles, not just the active one: the build tools and compilers its
+profiles use, its pinned SDKs, the compiler caches and editor tools
+(language servers, debug adapters) for its languages, the repo launcher when the
+repository is pinned, submodule drift, and `lw` itself. What it does not use is
+not even probed (another module's tools, an SDK no profile pins, editor tools for
+other languages) or, when a scan finds it anyway (other compilers), not listed;
+a last line counts it. `lw health --all` checks and lists everything, with each
+area's unused entries after its own under **not used here**:
+
+```text
+$ lw health
+loomworks health - myapp  (C:/src/myapp)
+
+* No compiler cache found  [cache]
+  install sccache, then opt in - lw help cache
+
+lw
+  lw  0.1.40  C:/Users/me/.local/bin/lw.exe
+  plugins  + 5 loaded (cmake module, clangd integration, codelldb integration, cppdbg integration, qmlls integration)
+
+toolchains
+  build tools  + cmake 3.31.6                           C:/Program Files/CMake/bin/cmake.exe  - dev/app
+               + ninja 1.12.1                           C:/tools/ninja.exe  - dev/app
+  compilers    + MSVC 17 2022 (Enterprise) 14.43.34808  C:/Program Files/Microsoft Visual Studio/2022/Enterprise (VS 17.13.4)  - dev/app
+               + Clang 18.1.7                           C:/Program Files/LLVM/bin/clang++.exe  - other profiles: asan/app
+
+cache
+  compiler caches  - ccache   not found (lw help cache)
+                   - sccache  not found (lw help cache)
+
+editor
+  language servers  + clangd 18.1.7   C:/Program Files/LLVM/bin/clangd.exe
+                    - qmlls           not found (ships in a Qt kit's bin directory - put it on PATH)
+  debug adapters    + codelldb 1.12.1 .../mason/packages/codelldb/extension/adapter/codelldb.exe (Mason)
+
+21 other checks not relevant here (lw 7, toolchains 11, sdks 2, editor 1) - lw health --all
+```
+
+The report has one section per **area**; name areas to check only those, alone
+or with `--all` (`lw health toolchains`, `lw health launcher`, `lw health editor
+--all`) — a narrowed run runs only those checks, so `lw health launcher` makes no
+network request:
+
+| Area | What |
+|--|--|
+| `lw` | the running `lw`, the update check, the channel override, plugins |
+| `workspace` | the workspace's own state (a working copy that is not trusted) |
+| `toolchains` | build tools and compilers |
+| `cache` | compiler caches and cache-compatibility findings |
+| `sdks` | SDK installations |
+| `editor` | language servers and debug adapters (used only by the editor) |
+| `launcher` | the repo launcher and version pin |
+| `submodules` | git submodule drift |
+
+Outside a workspace nothing but `lw` is relevant: plain `lw health` shows the
+`lw` area (and the launcher checks when a pin is found) and probes nothing
+else; `lw health --all` there is the full machine inventory below. In a
+workspace whose working copy is not trusted (see `lw help trust`), health
+reports that as an item — `* working copy not trusted ... [workspace]` — and
+continues as outside a workspace.
+
 #### Environment inventory
 
-`lw health` is also an "is this machine ready?" check. It lists everything
+`lw health --all` is also an "is this machine ready?" check. It lists everything
 loomworks knows how to use — build tools (cmake, ninja, make, meson, node/npm),
 compilers (gcc/clang incl. versioned names, Visual Studio installs, clang-cl),
 compiler caches, language servers (clangd, qmlls), debug adapters (codelldb,
@@ -450,21 +515,22 @@ installed module/SDK plugins, and `lw` itself — each as found (version, path)
 or missing:
 
 ```text
-$ lw health            # in a plain directory
-Not a loomworks workspace - lw init to create one.
+$ lw health --all      # in a plain directory
+loomworks - no workspace here.
 
-build tools      + cmake 3.30.2   C:\Program Files\CMake\bin\cmake.exe
-                 + ninja 1.12.1   C:\tools\ninja.exe
-                 - meson          not found (pip install meson)
-compilers        + MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/.../Community (VS 17.11.2)
-                 + clang-cl 18.1.8
-                 - gcc / clang    none on PATH
+toolchains
+  build tools  + cmake 3.30.2   C:/Program Files/CMake/bin/cmake.exe
+               + ninja 1.12.1   C:/tools/ninja.exe
+               - meson          not found (pip install meson)
+  compilers    + MSVC 17 2022 (Community) 14.44.35207  C:/Program Files/.../Community (VS 17.11.2)
+               + clang-cl 18.1.8
 ...
 ```
 
-Inside a workspace the list is split into **Required by this workspace** — what
-the active profile's projects and tools need (every profile's, when none is
-active) — and **Other**, compacted to one line per category. A Ninja build with
+Inside a workspace each area lists first what is **required** — what the
+active profile's projects and tools need (every profile's, when none is
+active), naming who needs it — then what only other profiles need
+(`- other profiles: asan/app`). A Ninja build with
 an MSVC / clang-cl tool runs inside `vcvarsall`, which appends the cmake and
 ninja Visual Studio bundles to `PATH`, so for such a profile those count: with
 none on your own `PATH` the requirement shows the VS-bundled copy as found
@@ -475,21 +541,26 @@ everything else is information. Probing runs tool version queries and the Visual
 Studio locator, so it happens **only** on `lw health` (a second or two); the
 result is cached, and `lw status` — and the editor's status page — reuse it
 without probing, until your `PATH` or the installed plugins change, when the
-count simply stops including it until the next `lw health`. (Directories only
+count simply stops including it until the next `lw health`. (A requirement of a
+project added since the last run, of a module that run did not probe, reads as
+*not checked* — never as missing. Directories only
 Neovim adds to its own `PATH` — Mason's `bin`, Neovim's own install directory —
-do not count as a change, so the editor and `lw` agree.) `lw health --verbose` expands **Other** to one line per
+do not count as a change, so the editor and `lw` agree.) `lw health --all --verbose` expands **not used here** to one line per
 item. The text report is plain ASCII (`*` actionable, `-` informational, `+` / `x` / `-` / `?`
 found / missing-required / missing / unknown), so it reads in any console code page;
-`lw health --json` prints the same data for scripts and CI
-(`{schema, workspace, suggestions[], inventory[], summary, update}`; inventory entries
-carry `status`, `version`, `path`, `required`, the full `required_by`, and a
-`hint` when not found; `summary` counts `required_missing`, `actionable`,
-`found`, `missing` and `unknown`; `update` is the update check's outcome —
+`lw health --json` prints the same data, with the same scope and areas, for scripts and CI
+(`{schema, scope, areas, workspace, suggestions[], inventory[], summary, hidden, update}`;
+suggestions carry their `area`; inventory entries
+carry `area`, `status`, `version`, `path`, `required`, the full `required_by`,
+`relevant`, `used_by` (the other profiles needing it) and a
+`hint` when not found; `hidden` counts what the relevant scope left out, per
+area; `summary` counts `required_missing`, `actionable`,
+`found`, `missing` and `unknown` over the document's entries (`--all --json`
+has every entry); `update` is the update check's outcome —
 `status` `available`, `current` or `unknown` (with the failure reason in
 `detail`) — absent for a development build; object keys are sorted, so the output diffs
 cleanly) and, like the text report, always exits 0 — a CI gate can test
-`summary.required_missing > 0`. In the text report actionable suggestions are
-marked `•` and informational notes `·`; a Visual Studio install shows the MSVC
+`summary.required_missing > 0`. A Visual Studio install shows the MSVC
 toolset version its builds use (the VS product version is in its detail); who
 needs a required item is compacted (e.g. `2 profiles (dev, asan)` — `--verbose`
 lists them all).
@@ -1482,7 +1553,7 @@ sub-command's own section under `lw help <command> <sub>` (or
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
-| `lw health` | List the workspace's advisory items in full (never fails). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, split inside a workspace into *Required by this workspace* vs *Other*; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
+| `lw health [<area>...] [--all]` | List the workspace's advisory items in full (never fails) — only what this workspace uses; `--all` for everything, areas (`lw`, `workspace`, `toolchains`, `cache`, `sdks`, `editor`, `launcher`, `submodules`) to narrow it (see [Scope and areas](#scope-and-areas)). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, required items first, the unused ones only with `--all`; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
 | `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, …) |
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
