@@ -854,6 +854,14 @@ redirect, pin management) already retry transient failures with backoff and
 are unchanged; the health update check keeps its bounded, no-retry probe
 (§16.31).
 
+**Interrupts.** An interrupt (§16.6) while the host runs is the host's to
+handle: it reaches the host, which cleans up and exits 130, and the launcher
+then exits with the host's status — it adds no prompt, no output and no wait of
+its own. In particular the Windows launcher MUST NOT leave the command
+interpreter asking whether to terminate the batch job after a Ctrl-C or
+Ctrl-Break (it clears the interpreter's pending interrupt once the host has
+exited), so the console returns at once and a calling script sees status 130.
+
 The launcher's cache directory holds only artifacts it can re-fetch: the
 cached host binaries (one per pinned version and asset) and a marker naming
 the last one fetched. Older cached binaries are pruned by pin management
@@ -913,7 +921,14 @@ the running host's own release version it runs the operation **in-process**: no
 download and no redirect (the fast path). When they differ it MUST acquire and
 verify the pinned host binary, provision the pinned bundle (§16.22), and
 **re-exec** the pinned binary with the same arguments, so the operation runs
-under exactly the pinned release.
+under exactly the pinned release. Where the re-exec is a child process rather
+than a replacement of the process, it MUST behave as a replacement would: the
+redirecting host shares its standard streams with the pinned host, waits for it
+and exits with its status (128 + the signal number when a signal ended it). It
+never acts on an interrupt (§16.6) itself — the pinned host handles it and
+cleans up, and the redirecting host neither dies nor exits before the pinned
+host has finished; an interrupt addressed to the redirecting host alone (a
+POSIX signal sent to its process only) is forwarded to the pinned host.
 
 Redirection applies only to workspace operations. **Host and management
 operations** — reporting the host version, self-update, install, and pin

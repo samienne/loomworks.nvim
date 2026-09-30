@@ -178,10 +178,13 @@ rem end of every line.
 rem Windows system tools (find, findstr, certutil, curl, where, ping) are called
 rem by their absolute %SystemRoot%\System32 path: a bare name can resolve to a
 rem same-named tool earlier on PATH (Git's usr/bin/find under Git Bash / CI).
+rem lw runs as `... & call :status`: Ctrl-C / Ctrl-Break reach lw, which cleans
+rem up and exits 130, but cmd.exe sees the same event and would then ask
+rem "Terminate batch job (Y/N)?" and wait. A `call` on the same line clears that.
 set "LOOMWORKS_LAUNCHER=lw.cmd"
 
 if not "%LOOMWORKS_LW%"=="" (
-  "%LOOMWORKS_LW%" %*
+  "%LOOMWORKS_LW%" %* & call :status
   exit /b !ERRORLEVEL!
 )
 
@@ -302,8 +305,11 @@ set "fwd=%fwd% %1"
 shift
 goto peel
 :peeled
-"%PINBIN%"%fwd%
+"%PINBIN%"%fwd% & call :status
 exit /b %ERRORLEVEL%
+
+:status
+exit /b
 
 :sha
 set "got="
@@ -384,6 +390,14 @@ M.GENERATIONS = {
       defects = {
         { severity = "minor", text = "does not tell lw which launcher ran it (lw then prints ./lw.sh commands);" ..
           " names the deprecated `lw update`" },
+      },
+    },
+    -- v0.1.37-beta.2 .. v0.1.39
+    ["b1880aae46c5d5920e181b537939c94f362cb881becc668c91a9ca82b2af05fc"] = {
+      gen = 5, releases = "0.1.37-beta.2-0.1.39",
+      defects = {
+        { severity = "minor", text = "after Ctrl-C / Ctrl-Break, cmd.exe asks \"Terminate batch job (Y/N)?\"" ..
+          " and waits, although lw already stopped" },
       },
     },
     -- v0.1.35

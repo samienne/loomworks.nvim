@@ -79,4 +79,62 @@ function M.resolve(name)
   return nil, name .. " not found on PATH"
 end
 
+--- Interrupts the re-exec'ing host outlives (see run_in_place).
+M.INTERRUPT_SIGNALS = { "sigint", "sigbreak", "sighup", "sigterm" }
+
+--- Run `bin` with `args` in this process's place — the redirect's re-exec
+--- (spec §16.23) — sharing standard input/output/error, and wait for it.
+--- Returns its exit status (128 + signal when a signal ended it), or nil + err
+--- when it cannot be started.
+---
+--- The child is the one that handles an interrupt (spec §16.6: it releases its
+--- locks, stops a remote run, exits 130), so this process must neither die on
+--- one nor end first: libuv puts spawned children in a kill-on-close job on
+--- Windows, so an early exit would kill the child mid-cleanup, and a shell would
+--- take the terminal back while the child still writes to it. Windows delivers
+--- a console event (Ctrl-C, Ctrl-Break, close) to every process on the console,
+--- the child included, so it is only ignored here. On POSIX a terminal's
+--- SIGINT/SIGHUP reach the whole process group, but a signal sent to this pid
+--- alone (kill, a supervisor's SIGTERM) would not reach the child: each is
+--- forwarded — the child's cleanup runs once however many arrive.
+--- @param bin string
+--- @param args string[]
+--- @param opts? { is_windows?: boolean, new_signal?: fun(): table }
+--- @return integer|nil code, string|nil err
+function M.run_in_place(bin, args, opts)
+  opts = opts or {}
+  local windows = opts.is_windows
+  if windows == nil then windows = M.is_windows end
+  local new_signal = opts.new_signal or uv.new_signal
+  local handle
+  -- Installed before the spawn, so no interrupt falls between the two.
+  local watchers = {}
+  for _, sig in ipairs(M.INTERRUPT_SIGNALS) do
+    pcall(function()
+      local w = new_signal()
+      if not w then return end
+      w:start(sig, function()
+        if not windows and handle then pcall(uv.process_kill, handle, sig) end
+      end)
+      w:unref()
+      watchers[#watchers + 1] = w
+    end)
+  end
+  local function close_watchers()
+    for _, w in ipairs(watchers) do
+      pcall(function() w:stop(); w:close() end)
+    end
+  end
+  local code, signal
+  local err
+  handle, err = uv.spawn(bin, { args = args, stdio = { 0, 1, 2 } },
+    function(c, s) code, signal = c, s end)
+  if not handle then close_watchers(); return nil, tostring(err) end
+  uv.run()
+  handle:close()
+  close_watchers()
+  if (code or 0) == 0 and (signal or 0) ~= 0 then return 128 + signal end
+  return code or 0
+end
+
 return M

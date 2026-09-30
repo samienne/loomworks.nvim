@@ -2302,6 +2302,210 @@ do
   paths.rm_rf(sb)
 end
 
+print("interrupts: lw.cmd adds no batch prompt; the redirect waits for the pinned host (§16.22/§16.23)")
+do
+  local launcher = require("boot.launcher")
+  local exe = require("boot.exe")
+
+  -- Static: every line of lw.cmd that runs lw ends in `& call :status`. On
+  -- Ctrl-C / Ctrl-Break, cmd.exe (sharing lw's console) would otherwise ask
+  -- "Terminate batch job (Y/N)?" at its next batch line and wait on the
+  -- console after lw already cleaned up and exited 130; a `call` on the same
+  -- line clears that pending interrupt. `:status` returns the errorlevel as is.
+  local lines, runs, bare = {}, 0, {}
+  for line in (launcher.LW_CMD .. "\n"):gmatch("([^\n]*)\n") do
+    lines[#lines + 1] = line
+    if line:match('^%s*"%%PINBIN%%"') or line:match('^%s*"%%LOOMWORKS_LW%%"') then
+      runs = runs + 1
+      if not line:match(" & call :status$") then bare[#bare + 1] = line end
+    end
+  end
+  eq(runs, 2, "lw.cmd runs lw on two lines (pinned binary, LOOMWORKS_LW override)")
+  ok(#bare == 0, "every line that runs lw ends in `& call :status`" ..
+    (#bare > 0 and (" -- " .. table.concat(bare, " | ")) or ""))
+  local status_body
+  for i, line in ipairs(lines) do
+    if line == ":status" then status_body = lines[i + 1] end
+  end
+  eq(status_body, "exit /b", "lw.cmd `:status` is a bare `exit /b` (keeps lw's exit status)")
+
+  -- A luvi app that runs `boot.exe.run_in_place(<args...>)` — the redirect's
+  -- re-exec — then records its status and whether the child's cleanup marker
+  -- existed by then, and exits with that status.
+  local function write_helper(dir)
+    paths.mkdirp(dir)
+    local f = assert(io.open(dir .. "/main.lua", "wb"))
+    f:write([[
+package.path = os.getenv("LW_TEST_ROOT") .. "/lua/?.lua;" .. package.path
+local argv = { ... }
+local prog = table.remove(argv, 1)
+local code = require("boot.exe").run_in_place(prog, argv)
+local m = io.open(os.getenv("FAKE_MARKER"), "rb")
+local f = assert(io.open(os.getenv("HELPER_RESULT"), "wb"))
+f:write("code=" .. tostring(code) .. " marker=" .. (m and "yes" or "no")); f:close()
+if m then m:close() end
+os.exit(code or 1)
+]]); f:close()
+  end
+
+  -- Run `file args` to completion (at most `limit` s), output to a log file.
+  local function sync(file, args, env, cwd, limit)
+    local logf = cwd .. "/sync.log"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local done, code = false, nil
+    local h = uv.spawn(file, { args = args, env = env, cwd = cwd, stdio = { nil, fd, fd } },
+      function(c) code = c; done = true end)
+    if h then
+      local t = uv.new_timer()
+      t:start((limit or 90) * 1000, 0, function() if not done then pcall(uv.process_kill, h, "sigkill") end end)
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+    end
+    uv.fs_close(fd)
+    return code, slurp(logf) or ""
+  end
+
+  local function clean_env(extra)
+    local env = {}
+    local drop = { LOOMWORKS_LW = true, LOOMWORKS_RELEASE_URL = true, LOOMWORKS_PINNED = true,
+      LW_ROOT = true, LOOMWORKS_LAUNCHER = true, FAKE_MARKER = true, HELPER_RESULT = true }
+    for k, v in pairs(uv.os_environ()) do
+      if not drop[k:upper()] then env[#env + 1] = k .. "=" .. v end
+    end
+    for _, kv in ipairs(extra) do env[#env + 1] = kv end
+    return env
+  end
+
+  local sb = root .. "/tests/.tmp-interrupt"; paths.rm_rf(sb); paths.mkdirp(sb)
+  write_helper(sb .. "/helper")
+  local result = sb .. "/helper-result"
+
+  if package.config:sub(1, 1) == "\\" then
+    -- Dynamic (Windows): a real console. tests/fixtures/console_ctrl/driver.cs
+    -- runs a command line in a new console and sends it CTRL_C_EVENT /
+    -- CTRL_BREAK_EVENT like a key press; fakelw.cs stands in for lw (handles
+    -- the event, writes a cleanup marker, exits 130). Both are compiled with
+    -- the .NET Framework's csc.exe, present on Windows.
+    local sysroot = os.getenv("SystemRoot") or [[C:\Windows]]
+    local csc = sysroot .. [[\Microsoft.NET\Framework64\v4.0.30319\csc.exe]]
+    local wsb = sb:gsub("/", "\\")
+    local fx = (root .. "/tests/fixtures/console_ctrl/"):gsub("/", "\\")
+    local built = uv.fs_stat(csc) ~= nil
+    if built then
+      for _, n in ipairs({ "driver", "fakelw" }) do
+        local c, out = sync(csc, { "-nologo", "-out:" .. wsb .. "\\" .. n .. ".exe", fx .. n .. ".cs" },
+          clean_env({}), sb)
+        built = built and c == 0
+        if c ~= 0 then print("  csc " .. n .. ": " .. out) end
+      end
+    end
+    if not built then
+      print("  skip: csc.exe unavailable -- console interrupt tests not run")
+    else
+      local asset = "lw-windows-x86_64.exe"
+      local fake = wsb .. "\\fakelw.exe"
+      local mirror = sb .. "/mirror"; paths.mkdirp(mirror)
+      local body = readfile(sb .. "/fakelw.exe")
+      do local f = assert(io.open(mirror .. "/" .. asset, "wb")); f:write(body); f:close() end
+      local repo = sb .. "/repo"; paths.mkdirp(repo)
+      do local f = assert(io.open(repo .. "/lw.cmd", "wb")); f:write(launcher.render("cmd")); f:close() end
+      do local f = assert(io.open(repo .. "/lw.pin", "wb"))
+         f:write("version=7.8.9-test\nsha256_" .. asset .. "=" .. verify.sha256_hex(body) .. "\n"); f:close() end
+      do local f = assert(io.open(sb .. "/plain.cmd", "wb"))
+         f:write('@echo off\r\n"%~dp0fakelw.exe" %*\r\nexit /b %ERRORLEVEL%\r\n'); f:close() end
+      local cmdexe = '"' .. sysroot .. [[\System32\cmd.exe"]]
+      local wrepo = repo:gsub("/", "\\")
+
+      -- Send `ev` to a new console running `cmdline`; the parsed report.
+      local function drive(tag, ev, cmdline, extra)
+        local marker = wsb .. "\\m-" .. tag
+        os.remove(result)
+        sync(sb .. "/driver.exe", { tostring(ev), marker, cmdline }, clean_env(extra or {}), sb, 120)
+        local rep = slurp(marker .. ".report") or ""
+        local r = { raw = rep }
+        for k, v in rep:gmatch("(%w+)=([^\r\n]*)") do if r[k] == nil then r[k] = v end end
+        return r
+      end
+      local env = { "LOOMWORKS_RELEASE_URL=" .. mirror }
+      local function check(cond, name, r)
+        ok(cond, name .. (cond and "" or ("  (" .. (r.raw:gsub("\r?\n", " | ")) .. ")")))
+      end
+
+      -- Control: a plain batch that runs the stand-in DOES get the prompt, so
+      -- the harness can see it (otherwise the checks below prove nothing).
+      local c = drive("plain", 0, cmdexe .. ' /d /s /c ""' .. wsb .. '\\plain.cmd" run"')
+      check(c.cleanup == "ev=0" and c.prompt == "1" and c.exited == "0",
+        "control: a plain batch leaves cmd.exe asking \"Terminate batch job (Y/N)?\"", c)
+
+      for _, ev in ipairs({ 0, 1 }) do
+        local what = ev == 0 and "Ctrl-C" or "Ctrl-Break"
+        local r = drive("pin" .. ev, ev, cmdexe .. ' /d /s /c ""' .. wrepo .. '\\lw.cmd" run x"', env)
+        check(r.cleanup == "ev=" .. ev, "lw.cmd, " .. what .. ": the pinned lw got the event and cleaned up", r)
+        check(r.prompt == "0" and r.exited == "1" and r.code == "130",
+          "lw.cmd, " .. what .. ": no batch prompt; the launcher exits with lw's 130", r)
+      end
+      local k = drive("pink", 0, cmdexe .. ' /d /k ""' .. wrepo .. '\\lw.cmd" run x"', env)
+      check(k.cleanup == "ev=0" and k.prompt == "0" and k.raw:find(">\n", 1, true) ~= nil,
+        "lw.cmd in an interactive cmd.exe, Ctrl-C: back at the command prompt, no batch prompt", k)
+      local o = drive("ovr", 0, cmdexe .. ' /d /s /c ""' .. wrepo .. '\\lw.cmd" run x"', { "LOOMWORKS_LW=" .. fake })
+      check(o.cleanup == "ev=0" and o.prompt == "0" and o.exited == "1" and o.code == "130",
+        "lw.cmd with LOOMWORKS_LW, Ctrl-C: no batch prompt; exits 130", o)
+
+      -- The redirect (§16.23): a host that re-execs the pinned host shares its
+      -- console; it must outlive the child's cleanup and exit with its status.
+      for _, ev in ipairs({ 0, 1 }) do
+        local what = ev == 0 and "Ctrl-C" or "Ctrl-Break"
+        local r = drive("redir" .. ev, ev, '"' .. uv.exepath() .. '" helper -- "' .. fake .. '"',
+          { "LW_TEST_ROOT=" .. root, "HELPER_RESULT=" .. result })
+        check(r.cleanup == "ev=" .. ev and r.exited == "1" and r.code == "130",
+          "redirect, " .. what .. ": the re-exec'ing host exits 130, after the pinned host", r)
+        eq(slurp(result), "code=130 marker=yes",
+          "redirect, " .. what .. ": it waited for the pinned host's cleanup")
+      end
+    end
+  else
+    -- Dynamic (POSIX): an interrupt addressed to the re-exec'ing host alone
+    -- (kill -INT <pid>, a supervisor's SIGTERM) is forwarded to the pinned
+    -- host, whose cleanup the host waits for before exiting with its status.
+    local sh = assert(exe.resolve("sh"))
+    local marker = sb .. "/m-posix"
+    local script = 'echo started > "$FAKE_MARKER.started"; ' ..
+      'trap \'sleep 0.3; echo cleaned > "$FAKE_MARKER"; exit 130\' INT TERM; ' ..
+      'i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done'
+    local function helper_run(child_args, sig)
+      os.remove(marker); os.remove(marker .. ".started"); os.remove(result)
+      local env = clean_env({ "LW_TEST_ROOT=" .. root, "HELPER_RESULT=" .. result, "FAKE_MARKER=" .. marker })
+      local args = { "helper", "--", sh }
+      for _, a in ipairs(child_args) do args[#args + 1] = a end
+      local done, code, signal = false, nil, nil
+      local h = uv.spawn(uv.exepath(), { args = args, env = env, cwd = sb },
+        function(c, s) code, signal, done = c, s, true end)
+      if not h then return nil end
+      local t = uv.new_timer()
+      t:start(30000, 0, function() if not done then pcall(uv.process_kill, h, "sigkill") end end)
+      if sig then
+        local waited = 0
+        while not uv.fs_stat(marker .. ".started") and waited < 10000 and not done do
+          uv.sleep(50); waited = waited + 50
+        end
+        uv.sleep(200)
+        pcall(uv.process_kill, h, sig)
+      end
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+      return code, signal
+    end
+    for _, sig in ipairs({ "sigint", "sigterm" }) do
+      local code, signal = helper_run({ "-c", script }, sig)
+      eq(code, 130, "redirect, " .. sig .. " to the re-exec'ing host: it exits 130  (signal " .. tostring(signal) .. ")")
+      eq(slurp(result), "code=130 marker=yes", "redirect, " .. sig .. ": forwarded, and it waited for the cleanup")
+    end
+    local code = helper_run({ "-c", "kill -TERM $$" })
+    eq(code, 143, "redirect: a pinned host killed by a signal is reported as 128+signal")
+  end
+  paths.rm_rf(sb)
+end
+
 print("SECURITY — malicious lw.pin version cannot redirect the fetch or rm outside cache")
 do
   local pin = require("boot.pin")

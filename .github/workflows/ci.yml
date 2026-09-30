@@ -51,6 +51,26 @@ jobs:
       - name: Run standalone suite
         run: ./luvi tests/standalone
 
+  standalone-windows:
+    name: Standalone bootstrap tests (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The Windows-only sections: lw.cmd against real cmd.exe (PATH-shadowed
+      # system tools, download retry, console Ctrl-C / Ctrl-Break with no
+      # "Terminate batch job" prompt) and the redirect's re-exec under a
+      # console interrupt.
+      - name: Fetch luvi
+        shell: bash
+        run: |
+          curl -fsSL -o luvi.exe \
+            https://github.com/luvit/luvi/releases/download/v2.15.0/luvi-Windows-amd64-luajit-regular.exe
+
+      - name: Run standalone suite
+        shell: bash
+        run: ./luvi.exe tests/standalone
+
   cli-e2e:
     name: CLI e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
