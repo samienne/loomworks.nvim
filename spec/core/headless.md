@@ -2596,7 +2596,7 @@ Example:
 $ lw profile describe dev-clang -m "Clang debug build with ASan" \
       -m "Use this one for the nightly sanitizer run; needs clang >= 18."
 profile 'Debug:ninja-clang-18.1.0' described
-  run `lw publish` to share it          (only when the profile is published)
+`lw publish` to update the shared loomworks.json.   (only when it reaches loomworks.json)
 
 $ lw profile list
 * 1  Debug:ninja-clang-18.1.0   Clang debug build with ASan
