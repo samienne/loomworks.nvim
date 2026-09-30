@@ -788,7 +788,8 @@ folder `<build>/.device-runs/<time>-<serial>/` (the last 10 are kept) with
 device's own log as the runner keeps it), pulled results and any **crash
 reports** that appeared during the run — a crash fails the run. `lw` prints
 `running <program> on <serial> (pid N)` when the program starts; Ctrl-C stops
-it on the device, says so, and names the run folder. `--print` shows the
+it on the device, says so, and names the run folder — as do Ctrl-Break, closing
+the console window, a terminal hangup and a termination request. `--print` shows the
 device-side command and the staging list without running anything (the build
 before it then logs to stderr, so stdout holds only the report).
 
@@ -815,7 +816,14 @@ program itself (exit 124). Ctrl-C stops the program on the device too.
 **Sharing a device.** One run at a time per device on this machine: a second
 run waits (printing who holds it); `--no-wait` fails instead. `lw unlock
 --device <serial>` clears a stuck lock; `LOOMWORKS_DEVICE_LOCK_DIR` moves the
-lock directory (e.g. to one shared by several users of a lab machine).
+lock directory (e.g. to one shared by several users of a lab machine). If a run
+was killed so hard it could not clean up (e.g. `taskkill /F`), its program may
+still be running on the device: the next run on that device stops it first
+(`stopped leftover <program> (pid N) from an interrupted run`) when the SDK
+plugin supports it, and otherwise warns. The same happens when a run loses
+its connection to the device (no exit status) and cannot stop the program:
+it says so, and the next run on that device stops it. `lw unlock --device`
+only reports such a program.
 
 **Clean up.** `lw device clean [--device <serial>]` removes this workspace's
 staged files from the device (and the staging directory itself once nothing

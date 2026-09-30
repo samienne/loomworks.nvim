@@ -65,9 +65,9 @@ function M.read(build_dir)
     return M.read_path(lock_path(build_dir))
 end
 
---- Write a fresh lock file exclusively. Returns true on success, else nil + the
---- fs error (e.g. "EEXIST").
---- @return boolean|nil ok, string|nil err
+--- Write a fresh lock file exclusively. Returns the written record on
+--- success, else nil + the fs error (e.g. "EEXIST").
+--- @return table|nil record, string|nil err
 local function create_locked(path, action, extra)
     local fd, err = uv.fs_open(path, "wx", tonumber("644", 8))
     if not fd then return nil, err end
@@ -76,7 +76,7 @@ local function create_locked(path, action, extra)
     local body = vim.json.encode(rec)
     uv.fs_write(fd, body)
     uv.fs_close(fd)
-    return true
+    return rec
 end
 
 --- Build the "busy" reason string from lock info.
@@ -91,7 +91,9 @@ local function busy_reason(info)
 end
 
 --- Try once to take the lockfile at `path` (path-level API shared with the
---- device lock, spec §18.7). A stale (crashed) holder's lock is reclaimed.
+--- device lock, spec §18.7). A stale (crashed) holder's lock is reclaimed;
+--- the handle then carries that holder's record as `handle.reclaimed` (the
+--- device lock reads a leftover program from it, §18.7).
 --- Returns a handle, or `(nil, info)` with the live holder's lock info.
 --- @param path string
 --- @param action string
@@ -101,9 +103,9 @@ function M.try_acquire_path(path, action, extra)
     local parent = path:match("^(.*)[/\\][^/\\]+$")
     if parent then pcall(vim.fn.mkdir, parent, "p") end
 
-    local ok = create_locked(path, action, extra)
-    local info
-    if not ok then
+    local rec = create_locked(path, action, extra)
+    local info, reclaimed
+    if not rec then
         info = M.read_path(path)
         if info and info.stale then
             -- Atomic reclaim: only the process whose rename wins removes the
@@ -111,17 +113,39 @@ function M.try_acquire_path(path, action, extra)
             local tmp = path .. ".stale." .. this_pid()
             if uv.fs_rename(path, tmp) then
                 pcall(uv.fs_unlink, tmp)
-                ok = create_locked(path, action, extra)
+                rec = create_locked(path, action, extra)
+                if rec then reclaimed = info end
             end
         end
-        if not ok then return nil, info or {} end
+        if not rec then return nil, info or {} end
     end
 
     local timer = uv.new_timer()
     timer:start(M.HEARTBEAT_MS, M.HEARTBEAT_MS, function()
         pcall(uv.fs_utime, path, now(), now())
     end)
-    return { path = path, timer = timer }
+    return { path = path, timer = timer, record = rec, reclaimed = reclaimed }
+end
+
+--- Merge `fields` into a HELD lock's record and rewrite its lockfile (a
+--- `vim.NIL` value removes the field). A released handle is a no-op: the
+--- lockfile may belong to another process by now. Best-effort — a failed
+--- write leaves the previous record.
+--- @param handle table|nil
+--- @param fields table
+function M.update_record(handle, fields)
+    if not handle or handle.released or not handle.record then return end
+    for k, v in pairs(fields or {}) do
+        if v == vim.NIL then handle.record[k] = nil else handle.record[k] = v end
+    end
+    local body = vim.json.encode(handle.record)
+    -- "r+" (never "w"): a lockfile that vanished (forced off by `lw unlock`)
+    -- is not recreated behind another process's back.
+    local fd = uv.fs_open(handle.path, "r+", tonumber("644", 8))
+    if not fd then return end
+    pcall(uv.fs_ftruncate, fd, 0)
+    pcall(uv.fs_write, fd, body, 0)
+    uv.fs_close(fd)
 end
 
 --- Acquire the lock for `build_dir`. Fail-fast: returns a handle on
