@@ -27,11 +27,14 @@ jobs:
           $dest = "$env:LOCALAPPDATA\nvim-data\lazy\plenary.nvim"
           git clone --depth 1 https://github.com/nvim-lua/plenary.nvim $dest
 
+      # Plenary runs every spec file concurrently under ONE whole-suite budget
+      # (default 50 s); a file still running at the deadline prints no summary
+      # and fails the job. Size it for a loaded 4-core runner (see Makefile).
       - name: Run test suite
         shell: pwsh
         run: |
           nvim --headless -u tests/minimal_init.lua `
-            -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+            -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua', timeout = 600000}"
 
   standalone:
     name: Standalone bootstrap tests (Linux)
