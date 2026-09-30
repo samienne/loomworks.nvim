@@ -1575,7 +1575,21 @@ reduced verification — an unverified or hash-mismatched bundle MUST NOT execut
 regardless of channel.
 
 Channel selection is a host concern with precedence: an explicit per-invocation
-override, then host configuration, then the default (stable). A pin (§16.21) is
+override, then host configuration, then the default (stable). Selecting a
+channel **on self-update** (§16.32) also **saves** it into the host
+configuration — the same setting the settings command writes — and says so, so
+later self-updates and the version report follow it; re-selecting the saved
+channel says it is already set, and an unknown channel is a usage error that
+saves nothing. The environment override (`LOOMWORKS_CHANNEL`) still overrides
+the saved channel for any run where it is set; when it differs from the channel
+just saved, self-update notes that. Other operations that take a channel for
+one resolution (pin management's newest-release pin, §16.24) do not save it.
+Because the newest installed bundle is the one that runs and a bundle never
+downgrades, switching back to `stable` while a newer pre-release bundle is
+installed leaves that pre-release running until a newer release reaches the
+channel; self-update says which bundle stays active and why. The saving
+behaviour is the host's (§16.11): a host older than the release that introduced
+it applies the selection to that run only. A pin (§16.21) is
 independent of and takes precedence over channel resolution: a pinned
 invocation acquires exactly the pinned version+hash and consults no channel. An
 explicit release-source location override (a mirror) likewise supersedes
@@ -2160,7 +2174,8 @@ A host built from a release carries that release's **version identity**,
 fixed into the binary when it is built. A host built from a working tree (a
 development build) carries none. The version-reporting host operation reports
 the host's release version alongside its capability version (§16.14), the
-system-Lua source (§16.11), the active bundle, and the channel (§16.29). In
+system-Lua source (§16.11), the active bundle (marked as a pre-release when it
+is one, e.g. `bundle: 0.1.40-beta.1 (prerelease)`), and the channel (§16.29). In
 pinned context (§16.22) the **pin**, not the channel setting, decides what runs,
 so the report shows the pinned version, marked as a prerelease when it is one,
 and the pin file it runs under (`pinned: 0.1.36-beta.1 (prerelease) by

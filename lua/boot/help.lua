@@ -26,7 +26,8 @@ M.TOPICS = {
 Print the host's release version (with its capability version in
 parentheses; `dev build` for a host built from a source tree, `unknown
 release` for a release host without an embedded version), the active
-bundle, the update channel, and which system-Lua source is active - one of:
+bundle (marked `(prerelease)` when it is one), the update channel, and which
+system-Lua source is active - one of:
   dev      a checked-out tree (--dev / default-source=dev / LOOMWORKS_LUA)
   release  a verified release bundle (lua-<ver>/ under the data dir)
   fused    the copy bundled into the lw binary (a full-fused/dev build)
@@ -95,14 +96,19 @@ first and self-update exits non-zero asking you to re-run it for the bundle.
   --force              reinstall the bundle even if that version is already
                        present (does NOT force a reinstall of the lw binary -
                        that is replaced only by a newer release)
-  --channel <name>     `stable` (default) or `unstable` for this run only
+  --channel <name>     `stable` (default) or `unstable`; SAVED as your update
+                       channel for later runs too (the same setting as
+                       `lw settings set channel <name>`)
   --no-host            update only the bundle; leave the lw binary as it is
 
 Update channel: `stable` follows the newest full release;
 `unstable` includes pre-releases, for testing ahead of a stable cut. Both are
 verified identically - `unstable` never means less checking. Precedence:
---channel > LOOMWORKS_CHANNEL > the `channel` setting > stable. Persist a
-default with `lw settings set channel unstable`.
+--channel > LOOMWORKS_CHANNEL > the `channel` setting > stable;
+LOOMWORKS_CHANNEL overrides the saved setting for a single run. A bundle never
+downgrades: switching back to `stable` while a newer prerelease is installed
+keeps that prerelease running until a newer stable release arrives (lw says
+so). `lw version` marks such a bundle `(prerelease)`.
 
 Source of releases: LOOMWORKS_RELEASE_URL, else the `release-url` settings key,
 else the built-in default. A local directory works as an offline mirror and is

@@ -71,6 +71,23 @@ function M.read_config()
   return decoded
 end
 
+--- Write the host config (the same file `lw settings` edits). Creates the
+--- directory. `cfg` replaces the whole file, so read_config → modify → write.
+--- Host-only (boot); the bundle keeps its own writer (cli.lua) for old hosts.
+--- @param cfg table
+--- @return boolean ok, string|nil err
+function M.write_config(cfg)
+  local file = M.config_file()
+  local ok, err = M.mkdirp((file:gsub("/[^/]*$", "")))
+  if not ok then return false, err end
+  local encoded = (next(cfg) == nil) and "{}" or json.encode(cfg)
+  local f, ferr = io.open(file, "wb")
+  if not f then return false, ferr end
+  f:write(encoded, "\n")
+  f:close()
+  return true
+end
+
 --- Split a version into its numeric release core and its pre-release identifier
 --- list. Build metadata (`+…`) is ignored for precedence (semver §10). A version
 --- with no `-<pre>` suffix returns nil for the identifier list.
