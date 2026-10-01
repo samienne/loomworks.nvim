@@ -76,9 +76,10 @@ function M.env(root)
     end
     set("LW_ROOT", root)
     local src = require("loomworks.daemon.version").lua_root()
-    if src and rawget(vim, "_loomworks_shim") and rawget(_G, "__loomworks_luaroot") then
-        set("LOOMWORKS_LUA", src)
-    end
+    -- The luvi host runs the source it resolved (a release bundle, a pinned
+    -- one, a dev checkout): the daemon must run the same one, whatever host
+    -- binary re-executes it (an old host resolves its own otherwise).
+    if src and rawget(vim, "_loomworks_shim") then set("LOOMWORKS_LUA", src) end
     for _, kv in pairs(by_key) do out[#out + 1] = kv[1] .. "=" .. kv[2] end
     table.sort(out)
     return out

@@ -213,15 +213,11 @@ function M.force(root, host, st, ask)
     return 0
 end
 
---- Record a kill / forced recovery (spec §19.5: printed on stderr and
---- recorded — in the workspace log until the runtime log exists).
+--- Record a kill / forced recovery in the runtime log (spec §19.5, §19.10).
 --- @param root string
 --- @param line string
 function M.record(root, line)
-    pcall(function()
-        local lg = require("loomworks.log").new({ path = root .. "/.nvim/loomworks.log" })
-        lg:info("%s", line)
-    end)
+    require("loomworks.daemon.rlog").write(root, line)
 end
 
 --- Send `stop` (best effort, short timeout). Returns the reply or nil.
@@ -290,9 +286,11 @@ function M.run_server(root, args, host)
     if r then root = (r:gsub("\\", "/"):gsub("/+$", "")) end
     if not root then host.die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace") end
     local server_mod = require("loomworks.daemon.server")
+    local rt = require("loomworks.daemon.runtime")
     local srv = server_mod.new(root, {
         exit = function(code) host.finish(code) end,
-        log = host.log,
+        log = require("loomworks.daemon.rlog").writer(root),
+        idle_seconds = rt.idle_seconds(host.config),
     })
     local ok, err, code = srv:start()
     if not ok then
@@ -319,7 +317,11 @@ function M.restart(root, host, args)
     local st = inspect.state(root)
     if st.kind ~= "none" then M.stop(root, host, { force = has(args, "--force") }) end
     local ok, res = require("loomworks.daemon.launch").launch(root)
-    if not ok then host.die("could not start the workspace daemon (" .. tostring(res) .. ")", 1) end
+    if not ok then
+        M.record(root, "lw daemon restart: could not start the workspace daemon: " .. tostring(res))
+        host.die("could not start the workspace daemon (" .. tostring(res) .. ")", 1)
+    end
+    M.record(root, "lw daemon restart: started the workspace daemon (pid " .. tostring(res.handle.pid) .. ")")
     host.out("started the workspace daemon (pid " .. tostring(res.handle.pid) .. ")")
     return 0
 end

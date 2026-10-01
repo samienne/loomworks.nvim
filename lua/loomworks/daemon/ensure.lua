@@ -84,6 +84,94 @@ function M.reconcile(root, conn, opts)
     return "restarted"
 end
 
+--- The launch-failure line (§19.10).
+--- @param reason string
+--- @return string
+function M.launch_failed_line(reason)
+    return "lw: could not start the workspace daemon (" .. tostring(reason) .. "); running without it"
+end
+
+--- In `runtime-mode daemon`, make sure the workspace daemon runs before a
+--- workspace command (spec §19.1, §19.10, §19.19 step 2): connect to a live
+--- one (handshake, version reconcile, `ping` — which also restarts its idle
+--- clock), or launch one. Nothing is routed yet; the command then runs on the
+--- in-process path whatever happened here. Never fails the command: problems
+--- are one stderr line.
+--- opts:
+---   config   lw's settings table
+---   flag     `--no-daemon` was given
+---   note     fun(line) — stderr
+---   log      fun(line) — the runtime log
+---   launch   (tests) replaces loomworks.daemon.launch.launch
+--- Returns what happened: "off" | "used" | "launched" | "restarted" |
+--- "bypass" | "newer" | "hung" | "elsewhere" | "failed".
+--- @param root string
+--- @param opts table
+--- @return string
+function M.ensure(root, opts)
+    local runtime = require("loomworks.daemon.runtime")
+    local note = opts.note or function() end
+    local log = opts.log or function() end
+    local sel = runtime.select((opts.config or {})[runtime.SETTING], { flag = opts.flag })
+    if sel.warning then note("lw: " .. sel.warning) end
+    if not sel.daemon then return "off" end
+    local launch = opts.launch or require("loomworks.daemon.launch").launch
+    local st = inspect.state(root)
+    if st.kind == "starting" then
+        vim.wait(require("loomworks.daemon.launch").READY_MS, function()
+            st = inspect.state(root)
+            return st.kind ~= "starting"
+        end, 25)
+    end
+    if st.kind == "hung" then
+        note(string.format("lw: the workspace daemon (pid %s) is not responding — recover with: "
+            .. "lw daemon stop --force", tostring(st.lock.pid)))
+        return "hung"
+    end
+    if st.kind == "foreign" or st.kind == "attached" or st.kind == "starting" then return "elsewhere" end
+    if st.kind == "live" then
+        local conn, err = client.session(st.handle.endpoint, { timeout_ms = 3000 })
+        if not conn then
+            if err == client.ERR_UNTRUSTED then
+                note("lw: the workspace daemon's endpoint " .. tostring(st.handle.endpoint)
+                    .. " did not authenticate as this machine's daemon — not using it")
+                log("refused an untrusted endpoint " .. tostring(st.handle.endpoint))
+            else
+                note("lw: could not reach the workspace daemon (pid " .. tostring(st.lock.pid) .. ", "
+                    .. tostring(err) .. "); running without it")
+            end
+            return "failed"
+        end
+        local outcome, detail = M.reconcile(root, conn, { launch = launch })
+        if outcome == "match" then
+            client.request(conn, { kind = "ping" })
+            conn:close()
+            return "used"
+        end
+        if outcome == "restarted" then
+            log("replaced a workspace daemon of another version (lw " .. tostring(conn.challenge.lw_version) .. ")")
+            return "restarted"
+        end
+        if outcome == "failed" then
+            note(M.launch_failed_line(detail))
+            log("could not replace the workspace daemon: " .. tostring(detail))
+            return "failed"
+        end
+        note(detail)
+        return outcome
+    end
+    -- none, stale or unreadable: launch (a dead holder's lock is reclaimed by
+    -- the new daemon itself).
+    local ok, res = launch(root)
+    if ok then
+        log("launched the workspace daemon (pid " .. tostring(res and res.handle and res.handle.pid) .. ")")
+        return "launched"
+    end
+    note(M.launch_failed_line(res))
+    log("could not start the workspace daemon: " .. tostring(res))
+    return "failed"
+end
+
 M._inspect = inspect
 
 return M

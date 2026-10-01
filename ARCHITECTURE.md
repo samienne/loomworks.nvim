@@ -662,7 +662,24 @@ re-cut onto master step by step; this section is expanded as each step lands.
   detection; `server.EXIT_HELD` = another runtime won).
 - `ensure.lua` — `reconcile(root, conn)`: the §19.9 decision after the
   handshake (match / stop + relaunch an idle mismatched daemon / retire a
-  busy one and bypass it / leave one with newer schemas alone).
+  busy one and bypass it / leave one with newer schemas alone); `ensure(root,
+  opts)`: `runtime.select` (mode, `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`),
+  then connect + reconcile + `ping`, or launch; problems are one stderr line,
+  never a failed command. `cli.lua` calls it as `M._ensure_daemon(root)` right
+  after the workspace-required guard in `main()` (so `status`, `health`,
+  `pull`, `worktree`, `settings`, `help`, `daemon …` never launch); `main()`
+  strips the global `--no-daemon` into `M._no_daemon`.
+- `rlog.lua` — the runtime log `<state>/logs/<root hash>.log` (2 MB + one
+  `.1`), written with libuv / plain io only so the daemon can log from libuv
+  callbacks (`writer(root)` resolves the path up front). `main()` points
+  `lock_break.log` at it for every command with a root; `lw unlock --force`
+  (build dir, operation lock, active device lock) records through
+  `M._record_recovery`.
+- Lifetime (`Server:lifetime()`, every tick): connections silent for three
+  keepalive intervals are dropped; with no authenticated client and no task
+  for `daemon-idle-timeout` (`runtime.idle_seconds`, default 1 h) the daemon
+  stops; a removed root stops it (checked before the lock, which went with
+  the root; its own socket is then removed although R is gone).
 
 ### Workspace trust (spec §17)
 

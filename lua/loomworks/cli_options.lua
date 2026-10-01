@@ -5,7 +5,7 @@
 --- The tables mirror the command parsers in cli.lua; keep them in step when a
 --- parser gains an option (tests/cli_unknown_options_spec.lua pins the rules).
 --- The global options (`--no-input`, `--non-interactive`, `--shared`,
---- `--local`, `--dev[=…]`, `--no-pin`) are stripped by the dispatcher before
+--- `--local`, `--dev[=…]`, `--no-pin`, `--no-daemon`) are stripped by the dispatcher before
 --- this check, and `--help` / `-h` are answered before it.
 ---
 --- A spec is:
