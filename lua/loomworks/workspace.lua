@@ -1997,7 +1997,13 @@ end
 function Workspace:_recover_interrupted_build_dir(dir, reclaimed)
     local lock_record = require("loomworks.lock_record")
     local op = lock_record.operation_of(reclaimed)
-    local norm = self._core._deps.normalize
+    -- Canonical form on both sides: a lock path and a cached build_dir may
+    -- spell one directory differently (8.3 short vs long name on Windows).
+    local canon_cache = {}
+    local function norm(p)
+        if canon_cache[p] == nil then canon_cache[p] = self:_canonicalize_boundary_path(p) end
+        return canon_cache[p]
+    end
     local key = norm(dir)
     local who = string.format("%s (pid %s)", lock_record.holder_text(reclaimed),
         tostring(reclaimed.pid or "?"))
