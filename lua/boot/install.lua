@@ -321,7 +321,7 @@ function M.install(opts)
     say("Incomplete: the binary is on PATH but no release bundle was fetched.")
     return out, "bundle fetch failed: " .. bundle_err
   end
-  say("Done. Try `lw version`. Shell completion: `lw completion bash` (see `lw help completion`).")
+  say("Done. Next: `lw init` in a project (or `lw help`). Shell completion: `lw completion bash` (see `lw help completion`).")
   return out
 end
 

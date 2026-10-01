@@ -205,6 +205,26 @@ M.ALIASES = {
   ws = "workspace", devices = "device", mod = "module",
 }
 
+--- Commands answered by the host (or, in the nvim-hosted fallback, by a short
+--- "standalone binary only" note) rather than by a COMMANDS entry. `update` is
+--- the removed command that still names its replacements (§16.24).
+M.HOST_COMMANDS = {
+  version = true, ["-v"] = true, ["--version"] = true, ["self-update"] = true,
+  install = true, bootstrap = true, update = true,
+}
+
+--- Is `name` a command lw knows (spec §16.7 "Unknown commands")? Covers the
+--- COMMANDS table, its aliases, the host commands and the help spellings.
+--- `profiles` is in COMMANDS; `status` too.
+--- @param name string
+--- @return boolean
+function M.is_command(name)
+  if type(name) ~= "string" then return false end
+  if name == "-h" or name == "--help" then return true end
+  if M.HOST_COMMANDS[name] then return true end
+  return M.COMMANDS[M.ALIASES[name] or name] ~= nil
+end
+
 --- Find the first unknown option in `argv` (argv[1] is the command, global
 --- options already stripped). Returns nil when every option is known (or the
 --- command is not checked), else the option and the command label for the
