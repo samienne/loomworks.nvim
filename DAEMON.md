@@ -47,7 +47,7 @@ operations.
 | D7 | **Version handshake:** protocol + lw version + schema versions. Idle mismatched daemon → restarted; busy → the client runs this command without it and the daemon retires when idle. | Same binary, so after `lw self-update` or a pin change a newer client meets an older daemon; never kill one serving others. |
 | D8 | **Editor:** launches `lw daemon run` from the `lw` it resolves (broker: `LOOMWORKS_LW` → repo pin → PATH → provisioned); with no `lw`, runs the daemon code inside nvim over loopback. | Same runtime for editor and CLI; the plugin keeps working without a binary. |
 | D9 | **Staged transition, locks first** (§5). Until every operation has moved, conflicting operations either fail or succeed — never an unknown state. | The in-process path, older versions and the daemon will coexist for months. |
-| D10 | **Solid recovery from dead and hung holders** (§19.5). A dead holder (same host, process with that id and start time gone) is reclaimed automatically; a hung one (alive, heartbeat stale) is reported as hung and recovered with `--break-locks` on any lockable command, or `lw daemon stop --force` / `lw daemon kill`: ask → kill the process tree → verify → reclaim nonce-matched locks → recover state → run. Never kills on another host or the editor; `lw unlock --force` breaks a lock without killing. | A killed or hung process must never leave a workspace stuck, and recovery must be one command, also in CI. Start time guards pid reuse; nonce matching guards racing recoveries. A new flag name because `--force` on `lw build` already overrides artifact conflicts. |
+| D10 | **Solid recovery from dead and hung holders** (§19.5). A dead holder (same host, process with that id and start time gone) is reclaimed automatically; a hung one (alive, heartbeat stale) is reported as hung and recovered with `--break-locks` on any lockable command (which also recovers a live, responsive holder right away: ask, ~5 s, kill; `=now` skips the wait), or `lw daemon stop --force` / `lw daemon kill`: ask → kill the process tree → verify → reclaim nonce-matched locks → recover state → run. Never kills on another host or the editor; `lw unlock --force` breaks a lock without killing. | A killed or hung process must never leave a workspace stuck, and recovery must be one command, also in CI. Start time guards pid reuse; nonce matching guards racing recoveries. A new flag name because `--force` on `lw build` already overrides artifact conflicts. |
 
 The architecture choices of the earlier design are **kept**: daemon-authoritative
 model with a client projection built by the same deserializer (§19.13);
@@ -67,7 +67,7 @@ core rewrite possible.
 | The daemon lock is the **write-authority token**; a client writes files only after taking it. | D5 + operation locks (§19.3): the runtime lock names the one runtime; per-operation locks + journal protect files. | During the transition the in-process path must write while a daemon runs; older versions never take the lock; a version-bypass run must be safe. Per-operation locks protect all of them; a lifetime lock protects none of them. |
 | Idle timeout ~10 min. | D6: default 1 h, configurable. | Keep the daemon warm across a normal working session. |
 | Separate `daemon` release channel / long-lived branch. | Opt-in `runtime-mode daemon` on master, step by step. | Each step is small and lock-safe on its own; a parallel line drifts (#88 already needed a full replay). |
-| Stale-heartbeat reclaim for every holder (§16.6), and `lw daemon stop` falling back to killing the pid (#88). | D10: same-host holders are classified dead / live / hung by process id + start time; only dead ones are reclaimed automatically; killing is explicit (`--break-locks`, `stop --force`, `kill`). | A hung but alive holder can resume and write after its lock was taken; a reused pid could be killed by mistake. |
+| Stale-heartbeat reclaim for every holder (§16.6, master `build_lock`), and `lw daemon stop` falling back to killing the pid (#88). | D10: a same-host build (or any) lock whose holder is **alive but stale** is **no longer reclaimed automatically** — it is "hung" and needs `--break-locks`; a **dead** holder (process gone or pid reused) is reclaimed **immediately**, without waiting for the heartbeat window; other-host holders keep the heartbeat rule. Killing is explicit (`--break-locks`, `stop --force`, `kill`). | A hung but alive holder can resume and write after its lock was taken; a reused pid could be killed by mistake. |
 | Broker may fall through to "bundled source, in-process". | D8: no binary → loopback inside nvim. | Same code either way; only the transport differs. |
 
 ## 3. Shape of the end state
@@ -175,9 +175,10 @@ Evidence from the daemon lifetime spike (2026-09), each with its fix and where
 - **Environment leakage** — `LOOMWORKS_LUA` and `LW_ROOT` forwarded to the
   daemon leak into the build children it spawns; strip loomworks-internal
   variables from task environments.
-- **Process start time** must be readable on every host (Windows
-  `GetProcessTimes`, Linux `/proc/<pid>/stat`, macOS `proc_pidinfo`); where it
-  is not, recovery degrades to heartbeat-only judgement for that host.
+- **Known limitations of recovery** (§19.5): on Windows an `lw` holder in
+  another console cannot reliably be interrupted, so recovery goes straight to
+  the kill; process start time needs per-OS code (`GetProcessTimes`, `/proc`,
+  `proc_pidinfo`), with heartbeat-only judgement where it is unavailable.
 - **Older versions** ignore the operation lock and journal — residual race of the
   same class as §2.7, documented.
 
@@ -208,13 +209,13 @@ Evidence from the daemon lifetime spike (2026-09), each with its fix and where
 6. **A stuck journal** is discarded with `lw unlock --journal` (§19.4).
 7. **Runtime log**: per-user state dir, one file per workspace, capped at a few
    MB with one rotation (§19.10).
+8. **`--break-locks` against a live, responsive same-host holder** recovers
+   right away: ask, wait about 5 s, kill; `=now` skips the wait. The same rule
+   holds for `lw daemon stop --force` (§19.5).
+9. **Recovery after a killed build** depends on the interrupted step: killed
+   during configure → `unconfigured` (a half-written configure cannot be
+   trusted); killed during the build step → not built (`configured`), and the
+   build tool decides what to rebuild — no forced reconfigure; deletion-held
+   directories keep `unknown` (§19.5, §5.7).
 
-## 10. Open questions
-
-1. `--break-locks` on a **live** (not hung) same-host holder: proposed to
-   recover as for a hung one (ask, then kill) — the user asked for force to
-   work "even right away". Alternatively restrict it to hung holders and
-   require `=now` for live ones.
-2. A killed **build** resets its units to `unconfigured` (full reconfigure).
-   Cheaper alternative: keep `configured` and only invalidate `built`, trusting
-   the build tool's own up-to-date checks on a half-written tree.
+No open questions remain.

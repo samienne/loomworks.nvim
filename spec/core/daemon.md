@@ -254,7 +254,9 @@ of §19.3 (R, O, B, D, F) and to the handle file and socket (§19.6–§19.7).
 holder's **process start time** (as reported by the operating system; it
 distinguishes a reused process id), a random nonce, the holder kind (`lw`,
 `daemon`, or `editor`), the operation, and a start timestamp; its modification
-time is the heartbeat. A record without a start time (written by an older
+time is the heartbeat. A holder that holds a build-directory lock across
+several steps rewrites the record's operation when it moves from configure to
+build, so recovery knows which step was interrupted. A record without a start time (written by an older
 version) is judged by heartbeat alone.
 
 **Holder states.** A process that finds a lock held classifies the holder:
@@ -282,8 +284,9 @@ removed by whoever reclaims its runtime lock.
 
 **`--break-locks`.** Every command that acquires a lock of class R, O, B or D
 accepts `--break-locks` (and `--break-locks=now`). When an acquisition finds a
-**hung** or **live** same-host holder, the command recovers instead of
-refusing:
+**hung** or a **live, responsive** same-host holder, the command recovers right
+away instead of refusing — a live holder is asked first and killed if it has not
+let go within the wait:
 
 1. **Ask.** A daemon holder is sent `stop` (frozen control subset, §19.8, so it
    works across versions); a non-daemon `lw` holder is sent the interrupt it
@@ -296,11 +299,15 @@ refusing:
    otherwise fail and name the process.
 4. **Reclaim** each lock whose record still carries the observed nonce.
 5. **Recover state.** Roll a journal forward per §19.4. For each build
-   directory whose lock the killed holder held for a configure or build, reset
-   its units to `unconfigured` in the cache, keeping the directory, so the next
-   build reconfigures (§5.1) instead of trusting a half-written tree; a
-   directory held for a deletion keeps the `unknown` state its deletion already
-   recorded (§5.7).
+   directory the killed holder held, by the step its lock record names:
+   - **configure** — its units reset to `unconfigured` in the cache (the
+     directory is kept), so the next build reconfigures (§5.1): a half-written
+     configure cannot be trusted;
+   - **build** (configure had completed) — its units are marked not built
+     (`configured`); the configure record is kept and the build tool's own
+     up-to-date checks decide what to rebuild — no forced reconfigure;
+   - **deletion** (clean, reset, delete, nuke) — keeps the `unknown` state its
+     deletion already recorded (§5.7).
 6. **Run** the requested operation normally, acquiring its locks as usual.
 
 `lw daemon stop --force` is steps 1–5 against the runtime lock;
@@ -328,11 +335,24 @@ never kills (§19.11).
 conflict (§5.9, §16.28), and an unrelated meaning would make one flag do two
 dangerous things.
 
+**Known limitations.**
+
+- On Windows an `lw` holder in another console cannot reliably be sent an
+  interrupt, so step 1 is effectively skipped there for non-daemon holders and
+  recovery goes straight to the kill.
+- The process start time needs per-OS code (Windows `GetProcessTimes`, Linux
+  `/proc/<pid>/stat`, macOS `proc_pidinfo`); where it is unavailable, holders
+  on that host are judged by heartbeat alone (a dead holder is then reclaimed
+  only after the heartbeat window, and a hung one is indistinguishable from a
+  dead one).
+
 **Required tests.**
 
 - The daemon killed (`SIGKILL` / forced termination) mid-build: the next
-  command reclaims the runtime and build locks automatically, the build
-  directory reads `unconfigured`, the next build reconfigures.
+  command reclaims the runtime and build locks automatically; killed during
+  configure, the units read `unconfigured` and the next build reconfigures;
+  killed during the build step, they read `configured` and the next build does
+  not reconfigure.
 - The daemon suspended (`SIGSTOP` / suspended threads): the next command
   reports it as hung, not busy; `--break-locks` recovers and the suspended
   process is gone.
