@@ -65,6 +65,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   the configuration set. `lw config` with an unknown sub-command now lists
   `describe` too. (#90)
 
+### Added
+
+- Experimental, opt-in workspace daemon: `lw daemon status|stop|run|protocol`
+  and the `runtime-mode` setting (`in-process` by default, or `daemon` /
+  `auto`; `LOOMWORKS_RUNTIME` overrides; the plugin reads
+  `setup({ runtime = { mode = ... } })`). With `daemon` or `auto`,
+  `lw build <profile>` runs through a per-workspace daemon and streams its
+  output; anything else, or an untrusted working copy, builds in-process as
+  before. See `lw help daemon`. (#89)
+
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
   `lw bootstrap install --version <x.y.z>`) to move a repository's pin, and
