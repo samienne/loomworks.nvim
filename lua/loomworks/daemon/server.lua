@@ -113,6 +113,20 @@ function Server:_handle_record()
     }
 end
 
+--- Rewrite the handle soon (client count changed): coalesced on a 0 ms
+--- timer so a slow filesystem (a virus scanner holding the staged file)
+--- never delays a handshake or a reply.
+function Server:_handle_changed()
+    if self.stopped or self._handle_pending then return end
+    self._handle_pending = true
+    local t = uv.new_timer()
+    t:start(0, 0, function()
+        pcall(function() t:close() end)
+        self._handle_pending = false
+        self:_write_handle()
+    end)
+end
+
 function Server:_write_handle()
     if self.stopped or not self.address then return end
     local ok, err = handle.write(self.root, self:_handle_record())
@@ -238,7 +252,7 @@ function Server:_close(conn, why)
     if conn.authed then
         self.n_clients = self.n_clients - 1
         if self.n_clients == 0 then self.idle_since = os.time() end
-        self:_write_handle()
+        self:_handle_changed()
         if self.retiring and self.n_clients == 0 and not self.busy then
             self:stop("retired (idle after a version mismatch)", 0)
         end
@@ -303,12 +317,12 @@ function Server:_handshake(conn, msg)
         conn.auth_timer = nil
         self.n_clients = self.n_clients + 1
         self.last_request = os.time()
-        self:_write_handle()
         self:_send(conn, {
             kind = K.welcome, seq = 0, clients = self.n_clients, busy = self.busy,
             header = { root = self.root, pid = self.pid, lw_version = self.identity,
                 session_generation = self.generation },
         })
+        self:_handle_changed()
         return
     end
     -- Anything else before authentication, or a failed proof: closed, no detail.
