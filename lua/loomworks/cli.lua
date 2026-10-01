@@ -3365,14 +3365,14 @@ function M.cmd_workspace(sub, root, args)
   die("unknown workspace subcommand '" .. tostring(sub) .. "' — use rename")
 end
 
---- True when the published snapshot would carry no shared items.
+--- True when the published snapshot would carry no shared items — judged on
+--- exactly what `lw publish` writes (the effective-intent closure, §2.4).
 local function snapshot_empty(ws)
-  local snap = ws:_serialize_config_internal()
+  local snap = ws:_serialize_config()
   local function empty(t) return not t or not next(t) end
   return empty(snap.projects) and empty(snap.configuration_sets) and empty(snap.profiles)
 end
 
---- `lw publish` — regenerate the shared loomworks.json from the working copy.
 --- `lw migrate [--check] [-y]` — rewrite the workspace files from a still-valid
 --- older shape into the current recommended one. Form changes, meaning does not.
 function M.cmd_migrate(root, args)
@@ -3630,6 +3630,7 @@ function M.cmd_module(sub, args)
     .. "expected list | install | update | remove")
 end
 
+--- `lw publish` — regenerate the shared loomworks.json from the working copy.
 function M.cmd_publish(root)
   local ws = load_workspace(root, false)
   local empty = snapshot_empty(ws)
