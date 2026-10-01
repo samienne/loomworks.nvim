@@ -105,7 +105,7 @@ Core §18 ([spec/core/remote-exec.md](spec/core/remote-exec.md)) v1 runs named
 foreign executables (`lw run`, `lw test --target`) on a device through an SDK
 provider's device runner. Deferred:
 
-- **PRIORITY — a hard kill of `lw` orphans the device program.** Found testing
+- ~~**PRIORITY — a hard kill of `lw` orphans the device program.** Found testing
   v0.1.34 on a Mate 60 Pro. Ctrl-C works (exit 130, the remote program is
   stopped), but CTRL_BREAK_EVENT or closing the console window ends `lw` with
   0xC000013A and no cleanup: the remote `sh -c … ./prog` and the program keep
@@ -114,7 +114,8 @@ provider's device runner. Deferred:
   CTRL_CLOSE like Ctrl-C; tie the remote process lifetime to the transport
   session (the program dies when the hdc shell does); or have the next run on
   that device kill leftovers it tracked by the `__LW_PID_<n>=` pid line
-  (persisted beside the lock).
+  (persisted beside the lock).~~ DONE (#69, v0.1.39): Ctrl-Break / console
+  close / hangup stop the program like Ctrl-C, and a later run reaps leftovers.
 - **`lw device list` outside a workspace** fails with "no loomworks.json
   found". Listing devices needs only the SDK runners, not a workspace.
 - **Staging "N removed" is opaque.** When the program changes, staging reports
@@ -367,8 +368,10 @@ update channel; `./lw.sh update` provisioned the pinned bundle first (so a pin
 with a bad bundle hash could not be repaired through the launcher); two
 implementations of the committed-ignore rule. Follow-ups:
 
-- **Remove `lw update`** one release after the deprecation (help topic,
-  parser branch, README row, tests).
+- ~~**Remove `lw update`** one release after the deprecation (help topic,
+  parser branch, README row, tests).~~ DONE (#89): removed after 0.1.42; `lw
+  update` is now an unknown command (exit 2) whose one line names `lw bootstrap
+  upgrade` and `lw self-update`.
 - ~~**Launcher template comment** still says "Regenerate with `lw update`".~~
   Done in 0.1.37-beta.2 with the launcher self-identification generation
   (`LOOMWORKS_LAUNCHER`).
@@ -400,7 +403,7 @@ implementations of the committed-ignore rule. Follow-ups:
      `./lw.sh` (invoked form not applied there).
   6. "line endings ok" is reported for untracked files whose index form
      cannot be checked yet; say "not checked until committed".
-  7. `lw update` on a prerelease pin prints two near-duplicate lines
+  7. `lw update` (now `lw bootstrap upgrade`) on a prerelease pin prints two near-duplicate lines
      ("newer than the newest stable … - kept", then "already at … - no
      changes"); print one.
   8. Run as the plain exe right after writing launchers, the tail points at
@@ -408,13 +411,15 @@ implementations of the committed-ignore rule. Follow-ups:
 
 ## Flaky tests
 
-- `tests/meson_spec.lua:229` ("configure command uses meson setup with
+- ~~`tests/meson_spec.lua:229` ("configure command uses meson setup with
   --buildtype") calls the real `builder()`, which `mkdir -p`s a fixed
   `/root/.nvim/build/App\Debug` — on Windows CI this intermittently fails with
-  E739 "file already exists". Use a temp root / stub the mkdir.
-- `tests/cli_worktree_add_spec.lua` "a main with no working config is
+  E739 "file already exists". Use a temp root / stub the mkdir.~~ DONE (#77,
+  #81).
+- ~~`tests/cli_worktree_add_spec.lua` "a main with no working config is
   'nothing to pull'" failed once in a full local run ("not in a git
-  repository") and passes alone; likely cwd/env leakage from another spec.
+  repository") and passes alone; likely cwd/env leakage from another spec.~~
+  DONE (#80): the cause was a slow git probe read as "git missing".
 
 ### `lw health fix <n>` (deferred, user idea)
 

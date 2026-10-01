@@ -8792,9 +8792,6 @@ function M.cmd_complete(cword, words)
       emit({ "--channel", "--pin-only", "--force" })
     end
     return 0
-  elseif cmd == "update" then
-    if n == 1 then emit({ "--version", "--force" }) end
-    return 0
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
@@ -10445,7 +10442,7 @@ both fetched sources and compiled objects.]],
 ;(function()
   local ok, bh = pcall(require, "boot.help")
   local topics = ok and type(bh) == "table" and type(bh.TOPICS) == "table" and bh.TOPICS or {}
-  for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "update" }) do
+  for _, k in ipairs({ "version", "install", "self-update", "bootstrap" }) do
     HELP[k] = topics[k]
       or ("lw " .. k .. ": this lw binary (host) is too old to document this command.\n"
         .. "Install the current lw binary as in the README's \"Installing lw\"; "
@@ -10701,11 +10698,18 @@ local function main()
   if command == "release-notes" then
     finish(M.cmd_release_notes(a))
   end
+  -- `lw update` was removed (§16.24): an unknown command that names its
+  -- replacements. The luvi host says so before we run; this is the
+  -- nvim-hosted fallback's copy of that line.
+  if command == "update" then
+    die("unknown command 'update' - to move lw.pin to the newest release run " ..
+      "`lw bootstrap upgrade`; to update lw itself run `lw self-update`", 2)
+  end
   -- The one-line "updated - see what's new" notice (§16.37): the first
   -- interactive run after an update nobody was told about. Never fails a command.
   if command ~= "version" and command ~= "--version" and command ~= "-v"
       and command ~= "self-update" and command ~= "install"
-      and command ~= "bootstrap" and command ~= "update" then
+      and command ~= "bootstrap" then
     pcall(M._release_notice, a, force_noninteractive)
   end
   -- `module` acquires third-party modules — no workspace needed.
@@ -10718,7 +10722,7 @@ local function main()
   -- fallback, where they don't apply.
   if command == "version" or command == "--version" or command == "-v"
       or command == "self-update" or command == "install"
-      or command == "bootstrap" or command == "update" then
+      or command == "bootstrap" then
     errw("lw: `" .. command .. "` is provided by the standalone lw " ..
       "binary; it is not available in the nvim-hosted fallback.\n")
     finish(1)

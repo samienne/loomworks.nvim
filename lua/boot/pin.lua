@@ -191,13 +191,13 @@ M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
 
 local INSTALL_ONLY = { "--version", "--latest", "--channel", "--pin-only", "--force" }
 
---- Parse `lw bootstrap [install|upgrade] …` / `lw update …` arguments.
+--- Parse `lw bootstrap [install|upgrade] …` arguments.
 --- @param args string[] the arguments (host flags already peeled), including
 ---   the command word itself
---- @param command "bootstrap"|"update"
+--- @param command "bootstrap"
 --- @param popts? { invoked?: string } how lw was run, so messages name commands
 ---   in that form (boot.launcher_check.cmd)
---- @return table|nil opts { sub, version?, latest?, channel?, pin_only?, force?, json?, check?, require_pin? }, string|nil usage_error
+--- @return table|nil opts { sub, version?, latest?, channel?, pin_only?, force?, json?, check? }, string|nil usage_error
 function M.parse_bootstrap_args(args, command, popts)
   local invoked = popts and popts.invoked
   local function C(rest) return require("boot.launcher_check").cmd(invoked, rest) end
@@ -236,20 +236,6 @@ function M.parse_bootstrap_args(args, command, popts)
       positional[#positional + 1] = v
     end
     i = i + 1
-  end
-
-  if command == "update" then
-    -- Deprecated alias (spec §16.24): `lw update` = install --latest,
-    -- `lw update --version X` = install --version X; it still needs a pin.
-    if #positional > 0 then return nil, "unexpected argument '" .. positional[1] .. "'" end
-    for _, f in ipairs({ "--latest", "--pin-only", "--channel", "--json", "--check" }) do
-      if o.flags[f] then return nil, f .. " is not an option of the deprecated `" .. C("update") .. "`;" ..
-        " use `" .. C("bootstrap install " .. f) .. "`" end
-    end
-    o.sub = "install"
-    o.latest = o.version == nil
-    o.require_pin = true
-    return o
   end
 
   local sub = positional[1]

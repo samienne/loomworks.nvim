@@ -66,7 +66,7 @@ describe("old host: the CLI loads without boot.help (host < v0.1.34)", function(
             local ok, cli = pcall(require, "loomworks.cli")
             assert.is_true(ok, tostring(cli))
             assert.is_table(cli)
-            for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "update" }) do
+            for _, k in ipairs({ "version", "install", "self-update", "bootstrap" }) do
                 assert.is_true(cli.has_help_topic(k), k)
             end
             local text = capture_stdout(function() assert.equals(0, cli.cmd_help("self-update")) end)

@@ -159,7 +159,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Run the bundle under v0.1.2 / v0.1.28 / v0.1.33 / v0.1.37 hosts
+      - name: Run the bundle under v0.1.2 / v0.1.28 / v0.1.33 / v0.1.37 / v0.1.42 hosts
         shell: bash
         env:
           REPO_SLUG: ${{ github.repository }}

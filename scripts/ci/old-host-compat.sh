@@ -20,14 +20,14 @@
 #
 #   bash scripts/ci/old-host-compat.sh [<host version> ...]
 #
-# Default hosts: OLD_HOSTS or "0.1.2 0.1.28 0.1.33 0.1.37". Set HOST_CACHE to a
+# Default hosts: OLD_HOSTS or "0.1.2 0.1.28 0.1.33 0.1.37 0.1.42". Set HOST_CACHE to a
 # directory to reuse downloads. Needs curl, openssl, python3, sha256sum/shasum.
 set -u
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 REPO_SLUG="${REPO_SLUG:-samienne/loomworks.nvim}"
 BUNDLE_VER="999.0.0"   # above every real release, so the hosts pick it
-if [ $# -gt 0 ]; then hosts="$*"; else hosts="${OLD_HOSTS:-0.1.2 0.1.28 0.1.33 0.1.37}"; fi
+if [ $# -gt 0 ]; then hosts="$*"; else hosts="${OLD_HOSTS:-0.1.2 0.1.28 0.1.33 0.1.37 0.1.42}"; fi
 
 PASS=0; FAIL=0
 ok()  { printf '  ok  : %s\n' "$*"; PASS=$((PASS + 1)); }

@@ -1,6 +1,7 @@
 -- Pin management (spec §16.24): `lw bootstrap` (the read-only status page),
 -- `lw bootstrap install` (converge: first install, repair, bump), and the
--- `upgrade` / deprecated `update` aliases, which only preset install's options.
+-- `upgrade` alias, which only presets install's options. (`lw update`, the
+-- deprecated alias, is removed; main.lua only points at its replacements.)
 --
 -- install fetches a release's SIGNED hash list (SHA256SUMS + .sig), verifies
 -- the signature against the embedded release key, and writes lw.pin (version +
@@ -283,12 +284,13 @@ function M.launcher_cmd(invoked, rest)
   return check.cmd("lw.sh", rest)
 end
 
---- The one-line deprecation notice of `lw update`, in the invoked form (spec
---- §16.24).
-function M.deprecation_line(invoked)
+--- The one-line usage error of the removed `lw update`, naming what replaced
+--- it in the invoked form (spec §16.24): the pin bump it used to do, and the
+--- installation update it is easily mistaken for.
+function M.removed_update_line(invoked)
   local cmd = require("boot.launcher_check").cmd
-  return "lw: `" .. cmd(invoked, "update") .. "` is deprecated; use `" .. cmd(invoked, "bootstrap upgrade") ..
-    "` (or `" .. cmd(invoked, "bootstrap install --version <x.y.z>") .. "`)"
+  return "lw: unknown command 'update' - to move lw.pin to the newest release run `" ..
+    cmd(invoked, "bootstrap upgrade") .. "`; to update lw itself run `lw self-update`"
 end
 
 -- One flat clause, no nested parentheses (spec §16.24 "Reporting").
@@ -330,16 +332,13 @@ end
 --- opts: version?, latest?, channel?, pin_only?, force?, host_version? (the
 --- running host's release version: the default for a new pin), self_version?
 --- (the release whose launcher templates this host writes), running_exe?,
---- require_pin? (the deprecated `lw update`), resolve_newest? (test seam).
+--- resolve_newest? (test seam).
 --- @param start string where to look for the pin (the launcher root / cwd)
 --- @return string[]|nil report, string|nil err
 function M.install(start, opts)
   opts = opts or {}
   local cmd = require("boot.launcher_check").cmd
   local root, has_pin = M.target(start)
-  if opts.require_pin and not has_pin then
-    return nil, "no lw.pin found (run `" .. cmd(opts.invoked, "bootstrap install") .. "` first)"
-  end
   if opts.version and opts.latest then
     return nil, "--version and --latest cannot be combined"
   end
