@@ -353,9 +353,10 @@ is published.
 The same serialization is available read-only: an **export** (§16.39) prints
 what `:w` would write, or the whole workspace as if every item were
 `local+shared`, without writing any file or changing any intent. An
-**import** (§16.39) replaces the working copy from such a file. It assigns
-intent by presence in the current published snapshot, so it never alters what
-is published.
+**import** (§16.39) replaces the working copy from such a file. An item the
+working copy already holds keeps its intent; a new item gets its intent by
+presence in the current published snapshot. So it never alters what is
+published.
 
 If the working copy has no items with effective intent including `shared`,
 `:w` is a no-op — empty published snapshots are not written, and any

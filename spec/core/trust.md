@@ -87,7 +87,9 @@ A file is, on read:
 
 - **Working copy refused.** The workspace does not load (the same posture as a
   version mismatch, §15 invariant 11): nothing in the file is read, and nothing
-  overwrites it. The host offers two actions: **trust** — show a summary of what
+  overwrites it (the one exception is an explicit, confirmed configuration
+  import, which replaces it unread after a backup, §16.39 and §17.5). The host
+  offers two actions: **trust** — show a summary of what
   the file contains, with every program-bearing field (§17.6) listed — and,
   among the other contents, the `device` blocks' stage and archive sets
   (§18.9), since they choose what is copied to a device — and on
@@ -137,8 +139,9 @@ one), and merges into a target working copy only when the target is valid or
 absent. A configuration **import** (§16.39) is the one writer that signs
 content from outside the working copy. It does so only as an explicit act of
 trust, after the same program-settings review that trusting uses (§17.4) and a
-confirmation (prompt or flag, never implicit). It writes only into a target
-working copy that is valid or absent. Signing never fails a write: if the key is unavailable the file is
+confirmation (prompt or flag, never implicit). It writes into a target working
+copy that is valid or absent, or replaces a refused one **unread** after keeping
+a byte-exact backup: nothing of the refused file is read, kept or signed. Signing never fails a write: if the key is unavailable the file is
 written unsigned (and will be refused or discarded on the next read, never
 trusted), and the failure is reported.
 

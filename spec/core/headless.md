@@ -3502,27 +3502,47 @@ because the file cannot carry it back:
 When the active profile is dropped, the workspace has no active profile
 afterwards, and the report says so.
 
+A current working copy that is **refused** (§17.4: not signed by this machine,
+or its signature does not match) holds no machine-local state that import may
+keep: an untrusted file is never read. Import then replaces it **unread**:
+nothing of it is carried over (no active profile, device selections, fill
+values, toolchain installations, language-server options or debugger-adapter
+mappings), and its content is used for nothing else either. The backup below
+is still taken, so the file stays recoverable byte for byte.
+
 **Intent of imported items.** Import publishes nothing and leaves the published
-snapshot untouched. Each imported item receives the intent that the item would
-get on a first load of this workspace:
+snapshot untouched. An item's identity is its project key, `(project,
+configuration)` name, set name or profile key. Each imported item receives:
 
-- `local+shared` when the current published snapshot holds an item of the same
-  identity (project key, `(project, configuration)` name, set name, profile key);
-- `local` otherwise.
+- its **current intent**, when the current working copy already holds an item
+  of the same identity (with intent `local` or `local+shared`). Intent is
+  sticky (§2.4), and an import does not change what the user chose to share;
+- otherwise the intent the item would get on a first load of this workspace:
+  `local+shared` when the current published snapshot holds an item of the same
+  identity, `local` otherwise.
 
-This rule holds for profiles too. A publish right after an import therefore
-never removes a published item: items already published are updated to the
-imported content (shown as modified, §2.4), and new items stay private until
-published by name. Published items absent from the import are no longer in the
-working copy. They remain visible as `shared` reference-only items, and use
-materializes them again (§2.4 implicit cascade). The global create-intent
-options override the rule:
+These rules hold for profiles too. A round trip on one machine (export, then
+import of that export into the same workspace) therefore keeps every intent.
+On another machine, whose working copy does not hold the items, the presence
+rule applies. A publish right after an import never removes a published item
+that the import carries, unless the item's kept intent was already `local`:
+items already published are updated to the imported content (shown as
+modified, §2.4), and new items stay private until published by name. Published
+items absent from the import are no longer in the working copy. They remain
+visible as `shared` reference-only items, and use materializes them again (§2.4
+implicit cascade). A refused working copy (above) holds no items, so the
+presence rule applies to every item. The global create-intent options override
+both rules:
 
 - the share option makes every imported item `local+shared` except profiles,
-  which keep the rule above (§2.4 profile exception). The next publish then
+  which keep the rules above (§2.4 profile exception). The next publish then
   writes the imported configuration as the shared one.
-- the private option makes every imported item `local`. The summary then warns
-  how many items the next publish would remove from the published snapshot.
+- the private option makes every imported item `local`.
+
+Whenever the published snapshot exists and the next publish after the import
+would remove items from it (with the private option, every published item the
+import carries), the summary says how many and names them. Without a published
+snapshot, or when nothing would be removed, it says nothing about publishing.
 
 **Validation first.** Before anything is written, the input is decoded and
 loaded **in memory** through the same path a workspace load uses. That covers
@@ -3541,11 +3561,24 @@ the program settings in it are honoured from then on (§17.6). That is why
 importing is an **explicit act of trust** in the content, made with the same
 review that trusting a working copy uses (§17.4). Before writing, import prints:
 
-- a **summary** of what changes: per item kind, the count before and after with
-  the names added and removed; the workspace name when it changes; the active
-  profile when it is dropped; the published items that will remain only as
-  reference-only items; and the configurations whose build directories no
-  profile will use any longer;
+- a **summary** of what changes. Nothing an import resets or changes goes
+  unmentioned:
+  - per item kind, the count before and after with the names added, removed
+    and changed;
+  - the workspace name when it changes;
+  - every **intent change** of an item the workspace already has, with its
+    kind, name, and old and new intent (for example under the private option,
+    or a reference-only item that becomes `local+shared`);
+  - the **active profile**: kept, or cleared and why (the import does not
+    contain it, or the working copy is replaced unread);
+  - the device selections and fill values dropped with the profiles that the
+    import removes;
+  - when the current working copy is refused, that it is replaced unread with
+    its backup kept, and that none of its machine-local settings is carried
+    over;
+  - the published items that will remain only as reference-only items, and the
+    items the next publish would remove from the published snapshot (above);
+  - the configurations whose build directories no profile will use any longer;
 - the **program settings** in the imported content, in the review format of
   §17.4. Those that the current working copy does not already hold with the
   same value are marked as new.
@@ -3557,10 +3590,14 @@ non-interactive host (§16.3), when its input is standard input (there is no
 terminal left to answer on), and when the answer is not yes. A refusal changes
 nothing, names the flag, and exits 1.
 
-Import is refused when the current working copy is **refused** (§17.4): an
-untrusted file is never read, so its machine-local state cannot be kept. The
-message names the trust and discard actions. Import into a workspace with **no**
-working copy is allowed and creates one. Import needs a workspace, as every
+A **refused** current working copy (§17.4) does not stop an import: the preview
+always works, and a confirmed import replaces the file unread (above). Its
+content is never read, never shown and never signed; the review compares the
+imported program settings with nothing, so all of them are marked as new. Import
+into a workspace with **no** working copy is allowed and creates one. Any other
+reason the workspace cannot be loaded (a refused build cache, a file with a newer
+schema, a working copy that is signed but structurally invalid) still refuses
+the import with that reason's own message. Import needs a workspace, as every
 workspace command does (§1.1). Outside one, it names workspace initialization.
 
 **Backup.** Before replacing an existing working copy, import keeps a byte-exact
@@ -3572,7 +3609,11 @@ gives that copy as the way to undo. If the backup cannot be written, the import
 stops before changing anything. Import never deletes or prunes these backups.
 
 **Writing.** The new working copy is written through the same atomic, signed,
-stale-guarded path as every management write (§2.3, §2.7, §17.5). Import touches **no build
+stale-guarded path as every management write (§2.3, §2.7, §17.5). For a working
+copy replaced unread, the bytes import found on disk are its baseline for the
+stale guard: the import is refused if that file changed after import looked at
+it. Until the import writes, nothing else in the command may save the working
+copy over the unread file. Import touches **no build
 state**: the build cache, build directories and their locks are left as they
 are. A configuration that keeps its `(project, configuration)` identity keeps its
 build directory and state. Whether its next build reconfigures follows the

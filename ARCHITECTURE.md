@@ -1196,8 +1196,10 @@ replaces it, which would drop `PATH`).
   `Workspace:prepare_import(content, {intent})` validates with
   `config.validate`, builds the candidate working copy (imported items + kept
   sdks/lsp/debug + per-profile state of surviving profiles + an explicit intent
-  map from `config_transfer.intents`: presence in `_shared_baseline`; baseline
-  items not imported → `shared`), and **remerges it in memory** — the load path
+  map from `config_transfer.intents`: the current intent of items the working
+  copy already holds (`Workspace:_item_intents()`, non-`shared`), else presence
+  in `_shared_baseline`; baseline items not imported → `shared`), and
+  **remerges it in memory** — the load path
   itself is the validation; nothing is written. The plan's before / after are
   both `_serialize_user()` output, so the summary and the `program_fields.review`
   diff describe exactly the file that will be signed. `Workspace:commit_import`
@@ -1206,6 +1208,17 @@ replaces it, which would drop `PATH`).
   (nothing written, reloaded, reported), then copies the old working copy to a
   timestamped `.bak` (`fs_copyfile`, excl) and writes through the guarded
   `_save_user()` (lock + stale check + `_meta.written_by`). Nothing is deleted.
+  The plan also carries the summary's lists: `intent_changes`
+  (`config_transfer.intent_changes` over `_item_intents()` before/after),
+  `dropped` (device selections / fills of removed profiles) and
+  `publish_removals` (`config_transfer.removed_names` of the loomworks.json on
+  disk vs the post-import publish snapshot; empty without the file). A refused
+  working copy (§17.4) is replaced unread: `cli.load_workspace(…,
+  {replace_untrusted_user})` sets `deps.replace_untrusted_user`, and
+  `Core:_on_files_read` then loads as if the file were absent (assemble never
+  decoded it) and marks `Workspace._user_unread`; the disk baseline is still
+  the file's raw bytes, so the stale guard covers it, and `_save_user` refuses
+  every save but `commit_import`'s (`_import_writing`) while the mark is set.
 - **Convention migration** (spec §16.19): `lua/loomworks/migrate.lua` holds a
   registry of named rules, each separating `plan` (what would change) from
   `apply` (change it), so `lw migrate --check` can lint without write access

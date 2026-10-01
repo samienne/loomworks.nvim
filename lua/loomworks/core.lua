@@ -250,6 +250,18 @@ function Core:_on_files_read(root, paths, results)
     -- this machine, or a cache with a foreign/modified signature, refuses the
     -- load. Nothing in the file was read, and nothing overwrites it.
     local trust_err = self:_trust_error(root, data)
+    -- A configuration import replaces a refused working copy unread (spec
+    -- §16.39): the host asks for that with `replace_untrusted_user`. The
+    -- file's content was never decoded (assemble dropped it); the workspace
+    -- loads as if it were absent and remembers why (`_user_unread`). Any other
+    -- refusal (an invalid cache) still applies.
+    local unread_user = nil
+    if trust_err and self._deps.replace_untrusted_user
+            and trust_err.trust and trust_err.trust.kind == "user" then
+        unread_user = data.user_trust
+        data.user_trust = nil
+        trust_err = self:_trust_error(root, data)
+    end
     if trust_err then
         fail(trust_err.message, trust_err)
         return
@@ -313,6 +325,7 @@ function Core:_on_files_read(root, paths, results)
 
     self._workspace = Workspace.new(self, data)
     self._workspace._shared_ignored = data.shared_ignored or {}
+    self._workspace._user_unread = unread_user
 
     self._workspace:_cleanup_orphaned_skeletons(data.cache)
     self._workspace:remerge(data.config, data.cache, data.user)
