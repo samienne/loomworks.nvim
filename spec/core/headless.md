@@ -3569,8 +3569,11 @@ review that trusting a working copy uses (§17.4). Before writing, import prints
   - every **intent change** of an item the workspace already has, with its
     kind, name, and old and new intent (for example under the private option,
     or a reference-only item that becomes `local+shared`);
-  - the **active profile**: kept, or cleared and why (the import does not
-    contain it, or the working copy is replaced unread);
+  - the **active profile**: kept, cleared and why (the import does not
+    contain it, or the working copy is replaced unread), or — when none was
+    active before — that it stays none. After an import with no active profile,
+    the hint to select one does not suggest that one was lost unless the import
+    cleared it;
   - the device selections and fill values dropped with the profiles that the
     import removes;
   - when the current working copy is refused, that it is replaced unread with
