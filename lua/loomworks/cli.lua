@@ -7551,7 +7551,8 @@ end
 --- The output helpers loomworks.daemon.command uses.
 --- @return table
 function M._daemon_host()
-  return { out = out, note = note, errw = errw, die = die, config = read_config(), finish = finish }
+  return { out = out, note = note, errw = errw, die = die, config = read_config(), finish = finish,
+    on_exit = on_exit }
 end
 
 --- `lw daemon <sub>` (spec §19.11) — loomworks.daemon.command.
@@ -9982,7 +9983,7 @@ Nuke holds the workspace operation lock and the build lock of every build
 directory it removes, so it refuses while a build runs ("cannot nuke: a
 build is running in ...") instead of deleting under it. `--break-locks[=now]`
 stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
-  daemon = [[lw daemon [status]
+  daemon = [[lw daemon [status] | stop [--force] | kill | restart [--force] | run [--root <dir>]
 
 EXPERIMENTAL, opt-in. The workspace daemon is one long-lived `lw` process per
 workspace that will, step by step, run the workspace's operations for every
@@ -9990,8 +9991,27 @@ client (the editor and each `lw` command). Nothing is routed through it yet:
 with the default runtime mode, `in-process`, lw behaves exactly as before.
 
   status    (also bare `lw daemon`) the runtime mode and the workspace's
-            daemon as its files describe it: pid, host, version, endpoint,
-            heartbeat. Never starts or contacts a daemon.
+            daemon: pid, host, version, endpoint, heartbeat, and what a live
+            daemon on this host answers. Never starts a daemon.
+  stop      ask the daemon to exit and wait for it (about 10 s). Never kills:
+            a daemon that does not stop is reported as not responding. With
+            no daemon running there is nothing to do; the files of one that
+            is gone are cleared.
+            --force: if it does not stop within about 5 s, kill its process
+            tree, then reclaim its lock and complete an interrupted commit
+  kill      the same without asking first
+  restart   stop (with --force if given), then start a daemon in the
+            background
+  run       serve this workspace in the foreground (what a started daemon
+            runs; --root names the workspace)
+
+A daemon on another host (a shared drive) is never stopped or killed from
+here: run the command there. Kills are printed on stderr.
+
+The endpoint (a named pipe on Windows, a socket in a private per-user
+directory elsewhere) is restricted to your user, and every connection proves
+knowledge of this machine's key (the trust key, `lw help trust`) before
+anything else is exchanged.
 
 Runtime mode: `lw settings set runtime-mode in-process|daemon`, or the
 LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
@@ -11347,7 +11367,8 @@ Usage: lw [command] [args]
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
   unlock <profile>  clear a stuck build-dir lock (--all, --force, --device <serial>)
-  daemon [status]   the workspace daemon (experimental, opt-in: runtime-mode)
+  daemon <sub>      the workspace daemon: status | stop | kill | restart | run
+                    (experimental, opt-in: runtime-mode)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
