@@ -103,6 +103,7 @@ end
 ---   note     fun(line) — stderr
 ---   log      fun(line) — the runtime log
 ---   launch   (tests) replaces loomworks.daemon.launch.launch
+---   getenv   (tests) replaces os.getenv for the selection
 --- Returns what happened: "off" | "used" | "launched" | "restarted" |
 --- "bypass" | "newer" | "hung" | "elsewhere" | "failed".
 --- @param root string
@@ -112,7 +113,7 @@ function M.ensure(root, opts)
     local runtime = require("loomworks.daemon.runtime")
     local note = opts.note or function() end
     local log = opts.log or function() end
-    local sel = runtime.select((opts.config or {})[runtime.SETTING], { flag = opts.flag })
+    local sel = runtime.select((opts.config or {})[runtime.SETTING], { flag = opts.flag, getenv = opts.getenv })
     if sel.warning then note("lw: " .. sel.warning) end
     if not sel.daemon then return "off" end
     local launch = opts.launch or require("loomworks.daemon.launch").launch

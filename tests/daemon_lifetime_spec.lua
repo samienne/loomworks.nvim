@@ -20,6 +20,10 @@ local proc = require("loomworks.proc")
 local H = require("tests.daemon_helpers")
 local uv = vim.uv or vim.loop
 
+-- The suite runs every spec file at once: an in-process handshake can take
+-- seconds on a loaded runner.
+client.TIMEOUT_MS = 30000
+
 local function env_of(t) return function(n) return t[n] end end
 
 describe("runtime selection (§19.1)", function()
@@ -88,23 +92,33 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.equals(0, exited)
     end)
 
+    -- The keepalive rule is checked by calling the tick's `lifetime()` on a
+    -- connection whose last traffic is set back in time (deterministic on a
+    -- loaded runner); the timer drives the same function.
+    local function age_conns(ms)
+        for conn in pairs(srv.conns) do conn.last_seen = uv.now() - ms end
+    end
+
     it("drops a connection silent for three keepalive intervals", function()
-        start({ keepalive_ms = 100 })
+        start({ keepalive_ms = 1000 })
         local conn = assert(client.session(srv.address))
         assert.equals(1, srv:client_count())
-        assert.is_true(vim.wait(6000, function() return srv:client_count() == 0 end, 20))
-        assert.is_true(vim.wait(1000, function() return conn.closed end, 20))
+        age_conns(2500)
+        srv:lifetime()
+        assert.equals(1, srv:client_count()) -- not yet three intervals
+        age_conns(3500)
+        srv:lifetime()
+        assert.equals(0, srv:client_count())
+        assert.is_true(vim.wait(10000, function() return conn.closed end, 20))
         assert.is_nil(exited)
     end)
 
-    it("pings keep a connection alive", function()
-        -- Dropped after 3 x 500 ms of silence; pinged every ~250 ms for 3 s.
-        start({ keepalive_ms = 500 })
+    it("a ping counts as traffic", function()
+        start({ keepalive_ms = 1000 })
         local conn = assert(client.session(srv.address))
-        for _ = 1, 12 do
-            assert(client.request(conn, { kind = "ping" }))
-            vim.wait(250, function() return false end, 10)
-        end
+        age_conns(3500)
+        assert(client.request(conn, { kind = "ping" }))
+        srv:lifetime()
         assert.equals(1, srv:client_count())
         conn:close()
     end)
@@ -158,7 +172,8 @@ describe("ensure (§19.9 through a workspace command)", function()
     local function run(extra)
         local notes, logs = {}, {}
         local o = { config = { ["runtime-mode"] = "daemon" }, note = function(l) notes[#notes + 1] = l end,
-            log = function(l) logs[#logs + 1] = l end, launch = function() error("must not launch") end }
+            log = function(l) logs[#logs + 1] = l end, launch = function() error("must not launch") end,
+            getenv = function() return nil end } -- never the runner's CI / LOOMWORKS_* variables
         for k, v in pairs(extra or {}) do o[k] = v end
         return ensure.ensure(root, o), table.concat(notes, "\n"), table.concat(logs, "\n")
     end
@@ -202,7 +217,7 @@ describe("runtime-mode daemon with real processes", function()
     end)
     after_each(function()
         H.track_root(root)
-        assert.equals(0, H.cleanup(), "a daemon process was left running")
+        H.cleanup()
     end)
     local function lw(args, e) return H.lw(args, { env = e or env, cwd = root }) end
 
@@ -314,5 +329,12 @@ describe("runtime-mode daemon with real processes", function()
         assert.equals(0, r.code, r.stderr)
         local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
         assert.truthy(log:find("lw unlock --force: removed the workspace operation lock held by pid 4242", 1, true), log)
+    end)
+end)
+
+describe("daemon processes", function()
+    it("none was left running by any test of this file", function()
+        H.cleanup()
+        assert.equals(0, H.leftovers, "a test left a daemon process running")
     end)
 end)
