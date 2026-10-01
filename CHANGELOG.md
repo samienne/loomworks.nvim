@@ -36,6 +36,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Changed
+- The working copy and the build cache record the loomworks version that wrote
+  them. A file whose format is newer than the running loomworks understands is
+  never rewritten: the workspace is not loaded and the message asks you to
+  update loomworks (it no longer offers to reset the cache or delete the
+  working copy). A file from a newer loomworks with the same format loads with
+  a one-time warning. (#94)
+- A save that finds the working copy changed on disk by another `lw` or the
+  editor since it was read writes nothing, reloads the file and reports that
+  the change must be redone (an error in the editor; `lw` exits with 1). (#94)
 - `lw status` ends with the everyday commands (build, run, test, clean,
   reset, health, pull, worktree add, publish) and points at `lw help`; outside
   a workspace it points at `lw help` too. (#90)
@@ -57,6 +66,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- A build recorded by `lw build` while the editor was open could be lost: the
+  editor's next save of the build cache overwrote it. Saves now merge with the
+  cache on disk, keeping the other process's build records. (#94)
+- A configuration, profile or project change made with `lw` while the editor
+  was open could be silently undone by the editor's next save of the working
+  copy (and the other way round). (#94)
+- A build cache or working copy written by a newer loomworks was read as
+  empty by an older one when it changed while loaded, and the next save
+  dropped its contents. (#94)
 - Outside a workspace, a mistyped command or option reported "no
   loomworks.json found" instead of the typo. (#90)
 - `lw profile remove` pointed at `lw clean`, which cannot reach a removed

@@ -2035,6 +2035,27 @@ workspace-root/
         └── ProjectB/
 ```
 
+### Editor and `lw` at the same time
+
+The editor and any number of `lw` commands can work on one workspace at once.
+Neither overwrites a change the other just made:
+
+- **Build state** (`loomworks.cache.json`) is merged: when `lw build` records
+  a build while the editor is open, the editor's next save keeps that record
+  (and shows the unit as built) instead of writing over it.
+- **The working copy** (`loomworks.user.json`) is not merged. If it changed on
+  disk since a process read it — you edited a profile in the editor while an
+  `lw profile …` command was saving — the later save writes nothing, reloads
+  the file and says so: `the working copy (.nvim/loomworks.user.json) changed on
+  disk (another lw or editor) — reloaded it; your last change was not saved,
+  redo it`. In the editor that is an error notification; `lw` exits with 1.
+  Redo the change.
+- Both files record which loomworks version wrote them. A file written by a
+  newer loomworks with a newer format is never rewritten by an older one: the
+  older one refuses to load the workspace and asks you to update loomworks. A
+  newer loomworks with the same format only triggers a one-time "update"
+  warning.
+
 ### Opening a repository you don't trust
 
 Workspace files can come with a clone. loomworks treats what is in them as
