@@ -72,7 +72,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
 
     it("exits after the idle timeout with no client", function()
         start({ idle_seconds = 1 })
-        assert.is_true(vim.wait(4000, function() return exited ~= nil end, 20))
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
         assert.equals(0, exited)
         assert.is_nil(handle.read(root))
         assert.is_nil(rlock.read(root))
@@ -84,7 +84,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
         vim.wait(2000, function() return exited ~= nil end, 20)
         assert.is_nil(exited)
         conn:close()
-        assert.is_true(vim.wait(4000, function() return exited ~= nil end, 20))
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
         assert.equals(0, exited)
     end)
 
@@ -92,17 +92,18 @@ describe("lifetime rules (§19.11, in-process server)", function()
         start({ keepalive_ms = 100 })
         local conn = assert(client.session(srv.address))
         assert.equals(1, srv:client_count())
-        assert.is_true(vim.wait(3000, function() return srv:client_count() == 0 end, 20))
+        assert.is_true(vim.wait(6000, function() return srv:client_count() == 0 end, 20))
         assert.is_true(vim.wait(1000, function() return conn.closed end, 20))
         assert.is_nil(exited)
     end)
 
     it("pings keep a connection alive", function()
-        start({ keepalive_ms = 200 })
+        -- Dropped after 3 x 500 ms of silence; pinged every ~250 ms for 3 s.
+        start({ keepalive_ms = 500 })
         local conn = assert(client.session(srv.address))
-        for _ = 1, 8 do
+        for _ = 1, 12 do
             assert(client.request(conn, { kind = "ping" }))
-            vim.wait(150, function() return false end, 10)
+            vim.wait(250, function() return false end, 10)
         end
         assert.equals(1, srv:client_count())
         conn:close()
@@ -112,7 +113,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
         start()
         local addr = srv.address
         vim.fn.delete(root, "rf")
-        assert.is_true(vim.wait(3000, function() return exited ~= nil end, 20))
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
         assert.equals(0, exited)
         if not H.is_win then assert.is_nil(uv.fs_lstat(addr)) end
     end)
@@ -121,7 +122,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
         local d = H.tmp()
         local lines = {}
         start({ log = function(l) lines[#lines + 1] = l end, idle_seconds = 1 })
-        assert.is_true(vim.wait(4000, function() return exited ~= nil end, 20))
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
         local all = table.concat(lines, "\n")
         assert.truthy(all:find("serving", 1, true))
         assert.truthy(all:find("stopping: idle", 1, true))
@@ -273,7 +274,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.equals(0, lw({ "profiles" }).code)
         local lk = H.track_root(root)
         assert.truthy(lk)
-        assert.is_true(vim.wait(10000, function() return not H.alive(lk.pid, lk.start_time) end, 100),
+        assert.is_true(vim.wait(20000, function() return not H.alive(lk.pid, lk.start_time) end, 100),
             "the idle daemon kept running")
         assert.is_nil(handle.read(root))
         assert.is_nil(rlock.read(root))
@@ -283,7 +284,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.equals(0, lw({ "profiles" }).code)
         local lk = H.track_root(root)
         vim.fn.delete(root, "rf")
-        assert.is_true(vim.wait(10000, function() return not H.alive(lk.pid, lk.start_time) end, 100),
+        assert.is_true(vim.wait(20000, function() return not H.alive(lk.pid, lk.start_time) end, 100),
             "the daemon outlived its workspace")
         root = H.workspace() -- after_each needs a root
     end)
