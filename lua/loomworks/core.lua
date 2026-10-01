@@ -410,14 +410,15 @@ function Core:_on_files_read(root, paths, results)
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 
-    -- Migration (spec §17.4): a cache written before signatures existed was
-    -- discarded unread; replace it with a signed one now so the notice shows
-    -- once.
+    -- Migration (spec §17.4): a cache written before signatures existed is
+    -- ignored unread — this load holds no build state from it. Loading never
+    -- writes: the file is replaced by the first command that writes the cache
+    -- (the disk baseline above is its exact bytes, so that save neither merges
+    -- nor refuses), and read-only commands / dry runs leave it untouched.
     if data.cache_trust == "unsigned" then
-        self._deps.notify("loomworks: discarded an unsigned build cache "
+        self._deps.notify("loomworks: ignoring an unsigned build cache "
             .. "(written by an earlier loomworks); build state is recreated on the next build",
             vim.log.levels.WARN)
-        self._workspace:_save_cache()
     end
 
     self._workspace:_start_tracking(paths)

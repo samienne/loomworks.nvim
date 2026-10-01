@@ -504,7 +504,8 @@ Sparse record of what has actually been configured and built.
 
 - Always gitignored.
 - Signed with the machine key (§17.3). An unsigned cache (an earlier loomworks)
-  is discarded and replaced; one with an invalid signature refuses the load
+  is ignored and replaced by the next cache write (loading never writes it);
+  one with an invalid signature refuses the load
   until reset (§17.4). Its `tool_data` is a record only — executable paths come
   from detection (§17.7).
 - Never auto-removes entries — survives git branch switches intact.
