@@ -281,6 +281,19 @@ JSON
     if [ $rc -eq 0 ] && grep -q "NUKED" "$out" && [ -z "$nuke_left" ]; then
         ok "locks: nuke removes the build tree and caches, leaving no aside tree or lock"
     else note_fail "locks: nuke left: $nuke_left" $rc; fi
+
+    # 4. Multi-file commits (spec 19.4) on this OS's rename semantics: publish
+    #    and a project rename leave no journal, no staged copies, no op lock.
+    ( cd "$ws" && run_lw publish && run_lw project rename App App2 ) > "$out" 2>&1
+    rc=$?
+    local leftovers
+    leftovers=$(find "$ws" -maxdepth 2 \( -name 'loomworks.txn.json*' -o -name '*.txn-*' \
+        -o -name 'loomworks.op.lock' \) 2>/dev/null)
+    if [ $rc -eq 0 ] && [ -z "$leftovers" ] && grep -q '"App2"' "$ws/.nvim/loomworks.user.json"; then
+        ok "locks: publish + rename commit cleanly (no journal, staged copy or op lock left)"
+    else
+        note_fail "locks: multi-file commit left $leftovers" $rc
+    fi
 }
 
 # Drive one module's project through the full CLI flow.

@@ -88,7 +88,7 @@ M.COMMANDS = {
     eq = BREAK_EQ }),
   clean = spec({ flags = BREAK, eq = BREAK_EQ }),
   reset = spec({ flags = { "--all", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
-  unlock = spec({ flags = { "--all", "--force", "--workspace" }, valued = { "--device" } }),
+  unlock = spec({ flags = { "--all", "--force", "--workspace", "--journal" }, valued = { "--device" } }),
   profiles = NONE,
   publish = spec({ flags = BREAK, eq = BREAK_EQ }),
   -- `lw export` / `lw import` (§16.39). A lone `-` is an operand (stdout/stdin).

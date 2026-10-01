@@ -1620,7 +1620,7 @@ outside a workspace.
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
-| `lw unlock <profile> \| <build dir> \| --workspace \| --all [--force] \| --device <serial>` | Clear a build-directory lock (or, `--workspace`, the workspace operation lock) whose holder is gone (killed, crashed); a running or hung holder's lock is refused unless `--force`, which removes the record WITHOUT stopping the holder (it may still be writing). `--all` covers every build directory and the operation lock. `--device <serial>` clears a device lock. See [Stuck locks](#stuck-locks) |
+| `lw unlock <profile> \| <build dir> \| --workspace \| --journal \| --all [--force] \| --device <serial>` | `--journal` discards a commit journal that cannot be completed. Clear a build-directory lock (or, `--workspace`, the workspace operation lock) whose holder is gone (killed, crashed); a running or hung holder's lock is refused unless `--force`, which removes the record WITHOUT stopping the holder (it may still be writing). `--all` covers every build directory and the operation lock. `--device <serial>` clears a device lock. See [Stuck locks](#stuck-locks) |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw export [--published] [--no-profiles] [-o <file>]` | Print the whole configuration as a `loomworks.json` (local items too) without writing anything; `--published` = exactly what `lw publish` would write |
 | `lw import <file>\|- [--dry-run] [-y]` | Replace the working configuration with an export (from another machine), after a review; keeps machine-local settings, backs up the old working copy |
@@ -1767,6 +1767,12 @@ names its holder: process id, host and process start time.
   `lw unlock --force <build dir>` removes the lock record without stopping
   anything. Every kill and forced unlock is printed and written to
   `.nvim/loomworks.log`.
+- **A multi-file change that was interrupted** (a publish or rename killed
+  half-way) is completed by the next command that touches the workspace,
+  which says so: `completed an interrupted publish (pid 4242 crashed) - ...`.
+  If it cannot be completed safely (a file was changed since by something
+  that ignores the commit journal), the workspace is refused until you run
+  `lw unlock --journal` (the files then stay as they are).
 
 ### Installing modules
 

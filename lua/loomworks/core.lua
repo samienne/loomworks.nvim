@@ -193,6 +193,30 @@ function Core:setup(opts)
     self._pending_root = root
     local paths = ws_mod.paths(root)
 
+    -- A commit journal left by a crashed multi-file operation (spec §19.4) is
+    -- completed before the files are read — or the workspace is refused. (A
+    -- host whose refusal hook raises — the CLI's `die` — leaves the state as
+    -- it found it.)
+    local okr, refused = pcall(self._recover_journal, self, root)
+    if not okr then
+        self._state = "uninitialized"
+        error(refused, 0)
+    end
+    if refused then
+        -- (a host that reports refusals itself — the CLI — prints it once)
+        if not self._deps.quiet_trust_errors then
+            self._deps.notify("loomworks: " .. refused, vim.log.levels.ERROR)
+        end
+        if self._workspace then
+            self._workspace:teardown()
+            self._workspace = nil
+        end
+        self._setup_error = { journal = true, message = refused }
+        self._state = "uninitialized"
+        self._deps.events.emit("workspace_changed", nil)
+        return
+    end
+
     self._deps.read_files_async(
         { paths.config, paths.user, paths.cache },
         function(results)
@@ -201,6 +225,42 @@ function Core:setup(opts)
             end)
         end
     )
+end
+
+--- Complete (or refuse) a commit journal of `root` before loading (spec
+--- §19.4). While the journal's writer still holds the workspace operation
+--- lock the commit is in progress: wait for it (bounded), then report the
+--- workspace busy (the CLI dies; the editor loads what is there and its file
+--- tracker reloads when the commit lands). Returns the refusal message, or nil.
+--- @param root string
+--- @return string|nil refusal
+function Core:_recover_journal(root)
+    if require("loomworks.op_lock").locks(self._deps, root).fake then return nil end
+    local txn = require("loomworks.txn")
+    if txn.read_journal(root) == nil then return nil end
+    local op_lock = require("loomworks.op_lock")
+    if op_lock.held(root) then return nil end -- this process is mid-commit
+    local tok, msg
+    local deadline = (vim.uv or vim.loop).hrtime() + 2e9
+    repeat
+        tok, msg = op_lock.acquire(root, "recover")
+        if tok or txn.read_journal(root) == nil then break end
+        vim.wait(50)
+    until (vim.uv or vim.loop).hrtime() > deadline
+    if not tok then
+        if txn.read_journal(root) == nil then return nil end
+        -- A refused journal, or a commit still in progress.
+        if msg and msg:find("loomworks.txn.json", 1, true) then return msg end
+        if self._deps.on_lock_refused then self._deps.on_lock_refused(msg) end
+        self._deps.notify("loomworks: " .. tostring(msg), vim.log.levels.WARN)
+        return nil
+    end
+    if tok.recovered then
+        self._deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN)
+        pcall(self._deps.log.info, self._deps.log, "%s", tok.recovered)
+    end
+    op_lock.release(tok)
+    return nil
 end
 
 --- Process read file results and complete initialization.
@@ -572,6 +632,7 @@ function Core:_nuke_files(root)
         self._deps.notify("loomworks: cannot nuke: " .. lmsg, vim.log.levels.ERROR)
         return nil
     end
+    if tok.recovered then self._deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN) end
     local held, berr = self:_nuke_build_locks(norm_root, build_dir, locks.build)
     if not held then
         op_lock.release(tok)

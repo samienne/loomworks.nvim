@@ -6,6 +6,12 @@ local uv = vim.uv or vim.loop
 --- @param path string
 --- @return string|nil content, string|nil err
 function M.read_file(path)
+    -- Inside a transaction (loomworks.txn, spec §19.4) a staged workspace file
+    -- reads as its staged bytes.
+    if M._txn_hook then
+        local hit, data = M._txn_hook.read(path)
+        if hit then return data, nil end
+    end
     local fd, err = uv.fs_open(path, "r", 438) -- 0666
     if not fd then return nil, err end
     local stat, stat_err = uv.fs_fstat(fd)
@@ -30,6 +36,12 @@ end
 --- @param opts? { backup: boolean|nil }
 --- @return boolean ok, string|nil err
 function M.write_file_atomic(path, data, opts)
+    -- Inside a transaction (loomworks.txn, spec §19.4) a workspace file is
+    -- staged to `<path>.txn-<id>`; the commit replaces the target.
+    if M._txn_hook then
+        local handled, ok, err = M._txn_hook.write(path, data, opts)
+        if handled then return ok, err end
+    end
     local tmp = path .. ".tmp"
 
     local fd, err = uv.fs_open(tmp, "w", 438)

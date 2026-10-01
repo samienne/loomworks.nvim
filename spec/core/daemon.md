@@ -215,7 +215,7 @@ before it releases that deletion's locks.
 
 ### 19.4 Crash-consistent multi-file commits
 
-*Status: future (step 1 of §19.19).*
+*Status: master (step 1 of §19.19).*
 
 A multi-file operation commits its file changes with a **journal**, so that a
 crash at any point leaves either the old state, the new state, or a marked
@@ -262,13 +262,38 @@ lw: completed an interrupted publish (pid 4242 crashed) — .nvim/loomworks.user
 An entry whose target matches neither hash (another writer that ignores
 journals changed it) or whose staged file is missing is left untouched; the
 workspace is then **refused** (as a §15 invariant 11 refusal) with the journal
-named and the remedies to discard it (`lw unlock --journal`) or reset.
+named and the remedy to discard it (`lw unlock --journal`). Nuke is not a
+remedy: it acquires O, which completes or refuses the journal first, and it
+resets only build state — the journal also covers `loomworks.json` and the
+working copy.
 
 **Validation.** A journal is data from disk: it is honoured only when every
 entry names one of the three workspace files in `.nvim/` and the staged files
 match `<file>.txn-<hex id>` beside them; anything else refuses the workspace
 as above. Rolling forward never bypasses trust — the renamed files are verified
 on load as any file is (§17.4).
+
+**Implementation notes (master).** The operations that hold O commit through a
+transaction: every write of one of the three files during it is staged (and
+reads of a staged file in that process see the staged bytes), and the
+transaction commits when the operation returns. The F locks of all three
+files are held from the transaction's start to its end (they are held for
+milliseconds: the operations are synchronous). A commit that touched one file
+needs no journal — the rename is the commit point. Before the commit point the
+holder checks that the O lockfile still carries its own record (fencing): a
+holder whose O was reclaimed while it was suspended, or removed with
+`lw unlock --force`, has lost authority — its staged files are removed and
+nothing is written. An operation that reports failure commits none of its
+staged writes, and a deletion whose working-copy / cache commit fails removes
+no build tree. An ordinary save's
+`.bak` copy is kept: step 4 renames the target to `<file>.bak` before renaming
+the staged file over it, so a crash between the two leaves the target absent,
+which recovery completes like a target with the old content. Recovery runs
+when a process loads the workspace (the editor and every `lw` command) and
+whenever a process acquires O; stray staged files (`<file>.txn-<hex>`, regular
+files beside the three targets, and the journal's `.tmp`) are removed only by
+an O holder. `lw unlock --journal` takes O without completing the journal and
+removes exactly the journal and those stray files.
 
 **Build trees.** Removing build directories (nuke, reset, deletion) is not
 journalled; it keeps the existing crash rule — cache entries are marked

@@ -4048,6 +4048,10 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
 
     local ws = self
     local f = self:stop_tasks_then(task_ids):next(function()
+        -- The `unknown` marks must reach the disk before any tree is removed
+        -- (§5.7): never staged in an open transaction (spec §19.4).
+        assert(not require("loomworks.txn").active(),
+            "loomworks: a deletion's cache write ran inside a transaction")
         ws:_mark_cache_unknown(items)
         ws:_save_cache()
 
@@ -4142,15 +4146,27 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         opts.deactivate_profile:deactivate()
     end
 
-    if plan.profile then
-        local profile = plan.profile
-        profile._removed = true
-        for i, p in ipairs(self._profiles) do
-            if p == profile then table.remove(self._profiles, i); break end
+    -- The working copy and the cache commit together (spec §19.4); the build
+    -- trees are removed afterwards under the §5.7 crash rule.
+    local t = self:_txn_begin("delete")
+    local ok_s, serr = pcall(function()
+        if plan.profile then
+            local profile = plan.profile
+            profile._removed = true
+            for i, p in ipairs(self._profiles) do
+                if p == profile then table.remove(self._profiles, i); break end
+            end
+            self:_save_user()
         end
-        self:_save_user()
+        self:_save_cache()
+    end)
+    if not ok_s then self:_txn_abort(t); error(serr, 0) end
+    if not self:_txn_finish(t) then
+        -- The working copy / cache commit failed (reported): remove no tree
+        -- while the cache may still claim it.
+        if on_done then on_done() end
+        return require("loomworks.future").resolved(false)
     end
-    self:_save_cache()
 
     local actionable = {}
     local clean_units = {}
@@ -4258,10 +4274,14 @@ function Workspace:_op_lock(operation)
         deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
         return nil, msg
     end
-    if tok.reclaimed then
+    if tok.reclaimed and op_lock.reclaimed_line then
         local line = op_lock.reclaimed_line(tok.reclaimed)
         deps.notify("loomworks: " .. line, vim.log.levels.WARN)
         pcall(deps.log.info, deps.log, "%s", line)
+    end
+    if tok.recovered then
+        deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN)
+        pcall(deps.log.info, deps.log, "%s", tok.recovered)
     end
     self._op_tokens = self._op_tokens or {}
     self._op_tokens[tok] = true
@@ -4277,6 +4297,35 @@ function Workspace:_working_copy_fresh()
     if not base then return true end
     local disk = self:_read_disk(user_mod.filepath(self.root))
     return disk == false or disk == base.text
+end
+
+--- Begin a transaction (spec §19.4) for `operation`: the workspace-file writes
+--- until `_txn_finish` are staged and commit together. A no-op (nil) with
+--- fake or inert locks (tests on a fake root, `op_lock.locks`).
+--- @param operation string
+--- @return table|nil txn
+function Workspace:_txn_begin(operation)
+    if require("loomworks.op_lock").locks(self._core._deps, self.root).fake then return nil end
+    return require("loomworks.txn").begin(self.root, operation)
+end
+
+--- Commit a transaction from `_txn_begin`. Returns true, or false + err
+--- (reported as an error notification).
+--- @param t table|nil
+--- @return boolean ok, string|nil err
+function Workspace:_txn_finish(t)
+    if not t then return true end
+    local ok, err = require("loomworks.txn").finish(t)
+    if not ok then
+        self._core._deps.notify("loomworks: " .. tostring(err), vim.log.levels.ERROR)
+    end
+    return ok, err
+end
+
+--- Abandon a transaction from `_txn_begin` (its staged files are removed).
+--- @param t table|nil
+function Workspace:_txn_abort(t)
+    if t then require("loomworks.txn").abort(t) end
 end
 
 --- Release a token from `_op_lock`.
