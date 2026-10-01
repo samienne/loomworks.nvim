@@ -3368,7 +3368,7 @@ end
 --- True when the published snapshot would carry no shared items — judged on
 --- exactly what `lw publish` writes (the effective-intent closure, §2.4).
 local function snapshot_empty(ws)
-  local snap = ws:_serialize_config()
+  local snap = ws:shared_snapshot()
   local function empty(t) return not t or not next(t) end
   return empty(snap.projects) and empty(snap.configuration_sets) and empty(snap.profiles)
 end
@@ -3642,6 +3642,264 @@ function M.cmd_publish(root)
     errw("lw: note: loomworks.json is empty — nothing is marked shared.\n")
     errw("    Share items with `lw <project|profile|configset> publish <name>`,\n")
     errw("    or create them with --shared (the CLI default). See `lw help publish`.\n")
+  end
+  return 0
+end
+
+-- ---------------------------------------------------------------------------
+-- `lw export` / `lw import` (spec §16.39)
+-- ---------------------------------------------------------------------------
+
+--- Write `s` to standard output as raw bytes: no control-character rendering,
+--- no ASCII folding (the JSON is data a reader parses), and no text-mode LF ->
+--- CRLF translation on Windows (the export must match the file a publish
+--- writes). Test seam: replace `M._raw_stdout`.
+--- @param s string
+function M._raw_stdout(s)
+  io.stdout:flush()
+  local pos = 1
+  while pos <= #s do
+    local ok, n = pcall(uv.fs_write, 1, s:sub(pos))
+    if not ok or type(n) ~= "number" or n <= 0 then
+      io.stdout:write(s:sub(pos))
+      io.stdout:flush()
+      return
+    end
+    pos = pos + n
+  end
+end
+
+--- Resolve and check `lw export -o <p>`: the parent directory must exist, the
+--- target must not be a directory, and it must be neither this workspace's
+--- loomworks.json (that is publish) nor anything under its .nvim/
+--- (machine-signed state). Compared on resolved paths with a separator
+--- boundary. Returns the absolute path, or nil and the message.
+--- @param root string
+--- @param p string
+--- @return string|nil dest, string|nil err
+function M._export_destination(root, p)
+  local dest = resolve_abs_out(p, user_cwd())
+  local parent, name = dest:match("^(.*)/([^/]+)$")
+  if not parent or not name then return nil, "cannot write " .. p .. ": not a file path" end
+  if parent == "" or parent:match("^%a:$") then parent = parent .. "/" end
+  local preal = uv.fs_realpath(parent)
+  if not preal then
+    return nil, "cannot write " .. dest .. ": directory " .. parent .. " does not exist"
+  end
+  local full = (preal:gsub("\\", "/"):gsub("/+$", "")) .. "/" .. name
+  local st = uv.fs_stat(full)
+  if st and st.type == "directory" then return nil, "cannot write " .. full .. ": it is a directory" end
+  local real_full = uv.fs_realpath(full)
+  real_full = real_full and real_full:gsub("\\", "/") or full
+  local nr = norm_cmp((uv.fs_realpath(root) or root):gsub("\\", "/"))
+  local nf = norm_cmp(real_full)
+  if nf == nr .. "/loomworks.json" then
+    return nil, "refusing to write this workspace's loomworks.json — that is what `lw publish` does"
+  end
+  local nvim = nr .. "/.nvim"
+  if nf == nvim or nf:sub(1, #nvim + 1) == nvim .. "/" then
+    return nil, "refusing to write inside this workspace's .nvim/ — it holds machine-signed state"
+  end
+  return full
+end
+
+local EXPORT_USAGE = "usage: lw export [--published] [--no-profiles] [-o <file>]  (see `lw help export`)"
+
+--- `lw export` — print the configuration as a loomworks.json (spec §16.39).
+function M.cmd_export(root, args)
+  local published, no_profiles, out_path = false, false, nil
+  local i = 2
+  while args[i] ~= nil do
+    local v = args[i]
+    if v == "--published" then published = true
+    elseif v == "--no-profiles" then no_profiles = true
+    elseif v == "-o" or v == "--output" then
+      out_path = args[i + 1]
+      if out_path == nil then die("`" .. v .. "` needs a file (or `-` for stdout) — " .. EXPORT_USAGE, 2) end
+      i = i + 1
+    elseif v:sub(1, 9) == "--output=" then
+      out_path = v:sub(10)
+    else
+      die("unexpected argument '" .. v .. "' — " .. EXPORT_USAGE, 2)
+    end
+    i = i + 1
+  end
+  local transfer = require("loomworks.config_transfer")
+  local dest
+  if out_path and out_path ~= "-" then
+    local derr
+    dest, derr = M._export_destination(root, out_path)
+    if not dest then die(derr) end
+  end
+  local ws = load_workspace(root, false)
+  local raw = ws:shared_snapshot({ all = not published, no_profiles = no_profiles })
+  local text, err = transfer.export_text(raw)
+  if not text then die("export failed: " .. tostring(err)) end
+
+  local counts = transfer.counts(transfer.inventory(raw))
+  local summary
+  if counts.projects + counts.configuration_sets + counts.profiles == 0 then
+    summary = published and "nothing is published — `lw publish` would write no items"
+      or "nothing to export — the workspace has no projects, configuration sets or profiles"
+  else
+    summary = (published and "what `lw publish` would write now: " or "exported ")
+      .. transfer.counts_text(counts)
+    local prog = require("loomworks.program_fields").review(raw, require("loomworks.modules"))
+    if #prog > 0 then
+      summary = summary .. string.format(", %d program setting%s", #prog, #prog == 1 and "" or "s")
+      if not published then
+        summary = summary .. string.format(" (`lw import` on the other machine puts %s into effect)",
+          #prog == 1 and "it" or "them")
+      end
+    end
+  end
+  if published then
+    summary = summary .. (dest and " — loomworks.json untouched" or " — nothing was written")
+  end
+  if dest then
+    local ok, werr = require("loomworks.io").write_file_atomic(dest, text, { backup = false })
+    if not ok then die("cannot write " .. dest .. ": " .. tostring(werr)) end
+    out(summary .. " → " .. dest)
+  else
+    M._raw_stdout(text)
+    note(summary)
+  end
+  return 0
+end
+
+--- Up to `max` names, then "…(+N)".
+local function name_list(names, max)
+  max = max or 5
+  if #names <= max then return table.concat(names, ", ") end
+  local head = {}
+  for k = 1, max do head[k] = names[k] end
+  return table.concat(head, ", ") .. string.format(", … (+%d)", #names - max)
+end
+
+--- The import summary and review (spec §16.39 "Trust"), printed before asking.
+--- @param plan table from Workspace:prepare_import
+--- @param label string where the import comes from
+function M._print_import_plan(plan, label)
+  local transfer = require("loomworks.config_transfer")
+  out("Import " .. label .. " into .nvim/loomworks.user.json — replaces the working configuration.")
+  out("loomworks.json and build state are not touched.")
+  out("")
+  out(string.format("  %-20s  %s", "", "now → after"))
+  local labels = { projects = "projects", configurations = "configurations",
+    configuration_sets = "configuration sets", profiles = "profiles" }
+  for _, kind in ipairs(transfer.KINDS) do
+    local d = plan.diff[kind]
+    local parts = {}
+    if #d.added > 0 then parts[#parts + 1] = "+ " .. name_list(d.added) end
+    if #d.removed > 0 then parts[#parts + 1] = "- " .. name_list(d.removed) end
+    if #d.changed > 0 then parts[#parts + 1] = "~ " .. name_list(d.changed) end
+    out(string.format("  %-20s  %3d → %-3d  %s", labels[kind], d.before, d.after,
+      table.concat(parts, "   ")):gsub("%s+$", ""))
+  end
+  if plan.name_before ~= plan.name_after then
+    out(string.format("  %-20s  %s → %s", "name", tostring(plan.name_before), tostring(plan.name_after)))
+  else
+    out(string.format("  %-20s  %s (unchanged)", "name", tostring(plan.name_after)))
+  end
+  if plan.active_before and plan.active_before ~= plan.active_after then
+    out("Active profile " .. plan.active_before .. " is not in the import — no profile will be active.")
+  end
+  if #plan.shared_only > 0 then
+    out("Still in loomworks.json, not in the import (stay visible as shared): "
+      .. name_list(plan.shared_only, 8) .. ".")
+  end
+  if plan.orphaned_build_dirs > 0 then
+    out(string.format("%d build director%s will belong to no profile (kept on disk).",
+      plan.orphaned_build_dirs, plan.orphaned_build_dirs == 1 and "y" or "ies"))
+  end
+  if plan.unpublished > 0 then
+    out(string.format("--local: the next `lw publish` would remove %d item%s from loomworks.json.",
+      plan.unpublished, plan.unpublished == 1 and "" or "s"))
+  end
+  out("")
+  out("Program settings — what loomworks may run on this file's word:")
+  if #plan.program_lines == 0 then out("  (none)") end
+  for _, l in ipairs(plan.program_lines) do out("  " .. l) end
+  out("Other contents:")
+  for _, l in ipairs(plan.other_lines) do out("  " .. l) end
+  out("")
+end
+
+local IMPORT_USAGE = "usage: lw import <file>|- [--dry-run] [-y]  (see `lw help import`)"
+
+--- `lw import` — replace the working configuration with an export (spec §16.39).
+function M.cmd_import(root, args)
+  local yes, dry, src = false, false, nil
+  for i = 2, #args do
+    local v = args[i]
+    if v == "-y" or v == "--yes" then yes = true
+    elseif v == "-n" or v == "--dry-run" then dry = true
+    elseif v == "-" or v:sub(1, 1) ~= "-" then
+      if src then die("import takes one file — " .. IMPORT_USAGE, 2) end
+      src = v
+    else
+      die("unknown option '" .. v .. "' — " .. IMPORT_USAGE, 2)
+    end
+  end
+  if not src then die(IMPORT_USAGE, 2) end
+  local from_stdin = src == "-"
+  local content, label
+  if from_stdin then
+    content = io.stdin:read("*a")
+    label = "standard input"
+  else
+    local path = resolve_abs_out(src, user_cwd())
+    content = require("loomworks.io").read_file(path)
+    if not content then die("cannot read " .. path) end
+    label = src
+  end
+  local ws = load_workspace(root, false)
+  local plan, err, kind = ws:prepare_import(content, { intent = create_intent })
+  if not plan then
+    if kind == "working_copy" then
+      die(label .. " is a working copy (.nvim/loomworks.user.json), not an export — on this machine "
+        .. "use `lw pull <checkout>`; from another machine run `lw export` there")
+    end
+    if kind == "json" then die(label .. " is not valid JSON — nothing was changed") end
+    die(label .. ": " .. tostring(err) .. " — nothing was changed")
+  end
+  M._print_import_plan(plan, label)
+  if dry then
+    out("dry run — nothing was written.")
+    return 0
+  end
+  if not yes then
+    if from_stdin or not interactive() then
+      die("refusing to import without confirmation — review with --dry-run, then re-run with --yes")
+    end
+    local answer = (prompt_line("Replace the working configuration? [y/N]") or ""):lower()
+    if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was changed") end
+  end
+  local ok, cerr, backup = ws:commit_import(plan)
+  if not ok then
+    die(tostring(cerr) .. (backup and "" or " — nothing was changed"))
+  end
+  local transfer = require("loomworks.config_transfer")
+  out("imported " .. transfer.counts_text(plan.counts))
+  if backup then
+    local rel = backup
+    local r = ws.root:gsub("\\", "/")
+    if rel:sub(1, #r + 1) == r .. "/" then rel = rel:sub(#r + 2) end
+    out("  previous working copy: " .. rel .. " (copy it back over .nvim/loomworks.user.json to undo)")
+  else
+    out("  created .nvim/loomworks.user.json (there was no working copy)")
+  end
+  if plan.active_after then
+    out("  active profile: " .. plan.active_after)
+  elseif plan.counts.profiles > 0 then
+    out("  no active profile — `lw profile select <profile>` (`lw profile list`)")
+  end
+  if plan.orphaned_build_dirs > 0 then
+    out("  build directories no profile uses were left in place. `lw reset --all` deletes them")
+    out("  along with every other profile's builds.")
+  end
+  if plan.publish_changes and M._has_shared_file(ws) then
+    out("`lw publish` to update the shared loomworks.json.")
   end
   return 0
 end
@@ -8207,7 +8465,14 @@ function M._plan_pull(opts)
       " — review it there first:  lw trust   (run in " .. root_dir .. ")"
   end
   local src_data, src_status, src_detail = user.load(source_root)
-  if not src_data then return nil, untrusted(source_root, src_status, src_detail) end
+  if not src_data then
+    -- A source signed elsewhere usually came from another machine (§16.39).
+    local msg = untrusted(source_root, src_status, src_detail)
+    if src_status ~= "newer" then
+      msg = msg .. "\n  copied from another machine? run `lw export` there and `lw import` here"
+    end
+    return nil, msg
+  end
 
   local tgt_user_path = user.filepath(target_root)
   local tgt_data = {}
@@ -8715,7 +8980,7 @@ end
 local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
-  "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
+  "export", "import", "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes",
   "--no-input",
 }
@@ -8841,6 +9106,14 @@ function M.cmd_complete(cword, words)
   elseif cmd == "pull" then
     -- The source is a checkout directory; let the shell complete paths.
     if n == 1 then out("__dirs__") end
+    return 0
+  elseif cmd == "export" then
+    if n >= 2 and (a[n] == "-o" or a[n] == "--output") then out("__files__"); return 0 end
+    emit({ "--published", "--no-profiles", "-o" })
+    return 0
+  elseif cmd == "import" then
+    if n == 1 then out("__files__") end
+    if n >= 2 then emit({ "--dry-run", "--yes" }) end
     return 0
   elseif cmd == "worktree" then
     if n == 1 then emit({ "list", "add" }) end
@@ -9970,7 +10243,61 @@ and each CI runner — pick a local tool and create their own profile
 (`lw profile create <set> <tool>`). You CAN publish a profile too; it just
 resolves as incomplete for anyone without that tool.
 
-Bare `lw publish` warns if the result is empty (nothing is shared yet).]],
+Bare `lw publish` warns if the result is empty (nothing is shared yet).
+
+`lw export --published` prints what `lw publish` would write, without writing
+it. To carry the whole configuration (local items too) to another machine,
+`lw export` here and `lw import` there.]],
+  export = [[lw export [--published] [--no-profiles] [-o <file>]
+
+Print this workspace's configuration as a loomworks.json, without publishing:
+to carry it to another machine (`lw import` there), or to see what a publish
+would write. Read-only: no file, intent or cache changes.
+
+By default every project, configuration, configuration set and profile is
+included, whatever its intent (local, local+shared, shared) — as if all were
+published. Machine-local settings never are, exactly as with `lw publish`: the
+active profile, device selections, profile variable fills, SDK declarations,
+language-server options and debug-adapter choices stay on this machine.
+
+  --published       only what `lw publish` would write now (a dry run of it)
+  --no-profiles     leave profiles out: a profile pins toolchains found on THIS
+                    machine; configuration sets + projects are the portable part
+  -o, --output <f>  write to <f> instead of stdout (`-` = stdout). Refuses this
+                    workspace's own loomworks.json and anything under .nvim/.
+
+stdout carries only the JSON, so `lw export > config.json` works; the summary
+goes to stderr. Program settings (launch commands, environments, …) are
+exported too; on the other machine `lw import` brings them into effect after
+you review them — a loomworks.json copied there ignores them.
+
+  lw export > app.json             then, on the other machine: lw import app.json
+  lw export | ssh build-box 'cd src/app && lw import - --yes']],
+  import = [[lw import <file> [--dry-run] [-y | --yes]       (`-` reads stdin)
+
+Replace this workspace's working configuration (.nvim/loomworks.user.json)
+with one made by `lw export` (any loomworks.json works). Projects,
+configurations, configuration sets, profiles and the workspace name become
+exactly the imported ones. What an export cannot carry stays: SDK
+declarations, language-server options, debug adapters, and — for profiles
+that still exist — the active profile, device selection and variable fills.
+
+Nothing is published: loomworks.json is untouched. Imported items that
+loomworks.json already has are local+shared (`lw publish` would update them);
+the rest are local. With --shared every imported item except profiles is
+local+shared; with --local all are local. Build directories are never deleted
+— those no profile uses any more stay on disk (`lw reset --all` removes them).
+
+Importing trusts the file: its program settings (launch commands,
+environments, …) will be used. Import shows what changes and those settings
+(`(new)` = not in your current working copy), then asks.
+  -n, --dry-run   show the summary and review, write nothing
+  -y, --yes       don't ask (required with --no-input, and when reading stdin)
+
+The previous working copy is saved as .nvim/loomworks.user.json.<time>.bak;
+copy it back over .nvim/loomworks.user.json to undo. A working copy
+(.nvim/loomworks.user.json) is not an export: on the same machine use
+`lw pull`; from another machine run `lw export` there.]],
   pull = [[lw pull [<source>] [--dry-run]
 
 Fold another checkout's working config into THIS checkout's working copy
@@ -10001,7 +10328,11 @@ collision — items only here are kept, items in both take the source's version,
 items only in the source are added. The debug-adapter and lsp-option maps are
 unioned per key (a pulled `c++` adapter keeps your `typescript` one). It writes
 the working copy only; it never publishes loomworks.json and never touches the
-cache or build dirs.]],
+cache or build dirs.
+
+Another machine? A working copy is signed for the machine that wrote it, so pull
+cannot read one copied from elsewhere: run `lw export > file.json` there and
+`lw import file.json` here.]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 
@@ -10567,6 +10898,8 @@ Usage: lw [command] [args]
   launch <sub>      launch configurations: list | add | set | show | remove
                     rename | describe
   publish           write loomworks.json from the working copy
+  export [-o <file>] print the whole config as a loomworks.json (another machine)
+  import <file>     replace the working config with an export (--dry-run, -y)
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
@@ -10835,6 +11168,13 @@ local function main()
   end
   if command == "publish" then
     finish(M.cmd_publish(root))
+  end
+  -- `export` / `import` carry the configuration to another machine (§16.39).
+  if command == "export" then
+    finish(M.cmd_export(root, a))
+  end
+  if command == "import" then
+    finish(M.cmd_import(root, a))
   end
   if command == "migrate" then
     finish(M.cmd_migrate(root, a))

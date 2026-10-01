@@ -22,12 +22,14 @@ end
 --- Write data to path atomically:
 ---   1. Write to path..".tmp"
 ---   2. fsync the fd
----   3. If path exists, rename path -> path..".bak"
+---   3. If path exists, rename path -> path..".bak" (unless `opts.backup` is
+---      false: an export written for the user leaves no `.bak` beside it)
 ---   4. Rename tmp -> path (with retry on Windows)
 --- @param path string
 --- @param data string
+--- @param opts? { backup: boolean|nil }
 --- @return boolean ok, string|nil err
-function M.write_file_atomic(path, data)
+function M.write_file_atomic(path, data, opts)
     local tmp = path .. ".tmp"
 
     local fd, err = uv.fs_open(tmp, "w", 438)
@@ -43,7 +45,7 @@ function M.write_file_atomic(path, data)
     uv.fs_fsync(fd)
     uv.fs_close(fd)
 
-    if uv.fs_stat(path) then
+    if uv.fs_stat(path) and not (opts and opts.backup == false) then
         uv.fs_rename(path, path .. ".bak")
     end
 
@@ -184,10 +186,21 @@ end
 --- @param tbl table
 --- @return boolean ok, string|nil err
 function M.write_json(path, tbl)
-    local ok, encoded = pcall(M.encode_sorted, tbl)
-    if not ok then return false, "json encode: " .. tostring(encoded) end
-    local pretty = M._pretty_json(encoded)
+    local pretty, err = M.encode_json(tbl)
+    if not pretty then return false, err end
     return M.write_file_atomic(path, pretty)
+end
+
+--- The exact text `write_json` writes for `tbl`: sorted keys at every depth,
+--- two-space indentation, trailing line feed (spec §2). One encoder for every
+--- workspace file and for `lw export` (§16.39), so an export is byte-compatible
+--- with the file a publish writes.
+--- @param tbl table
+--- @return string|nil text, string|nil err
+function M.encode_json(tbl)
+    local ok, encoded = pcall(M.encode_sorted, tbl)
+    if not ok then return nil, "json encode: " .. tostring(encoded) end
+    return M._pretty_json(encoded)
 end
 
 --- Write a loomworks state file under `.nvim/` (working copy, build cache,
@@ -204,9 +217,8 @@ end
 --- could pick up another process's write — spec §2.7).
 --- @return boolean ok, string|nil err, string|nil sign_err, string|nil written
 function M.write_json_signed(path, kind, tbl)
-    local ok, encoded = pcall(M.encode_sorted, tbl)
-    if not ok then return false, "json encode: " .. tostring(encoded) end
-    local pretty = M._pretty_json(encoded)
+    local pretty, err = M.encode_json(tbl)
+    if not pretty then return false, err end
     local signed, sign_err = require("loomworks.trust").sign(kind, pretty)
     local bytes = signed or pretty
     local wok, werr = M.write_file_atomic(path, bytes)
