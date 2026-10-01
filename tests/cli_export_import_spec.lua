@@ -166,7 +166,9 @@ describe("lw export", function()
     local root = make_source()
     local dest = vim.fn.tempname():gsub("\\", "/") .. ".json"
     local r = ok_run(root, "export", "-o", dest)
-    assert.truthy(r.stdout:find(dest, 1, true))
+    -- The report names the resolved path (long form on Windows, where the
+    -- temp dir may be an 8.3 short path), so match the file name.
+    assert.truthy(r.stdout:find(dest:match("[^/]+$"), 1, true))
     local text = read(dest)
     assert.equals(text, ok_run(root, "export").json)
     assert.is_nil(uv.fs_stat(dest .. ".bak"))

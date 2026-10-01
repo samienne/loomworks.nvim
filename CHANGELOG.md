@@ -37,7 +37,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ### Added
 - `lw export` prints the whole workspace configuration as a `loomworks.json`
-  — local items included, machine-local settings never — without writing
+  (local items included, machine-local settings never) without writing
   anything; `--published` prints exactly what `lw publish` would write,
   `--no-profiles` leaves profiles out, `-o <file>` writes a file. (#93)
 - `lw import <file>` (or `-` for stdin) replaces the working configuration with
