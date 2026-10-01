@@ -768,11 +768,40 @@ local function profile_by_number(ws, arg)
   return order.list[n]
 end
 
+--- Hint lines for mapping project `pkey` (configuration `cfg`, a literal name
+--- or the `<config>` placeholder) into a configuration set (spec §16.38): `map`
+--- into an existing set, else `create` one — and, for the placeholder, where
+--- the configurations come from. `indent` prefixes every line.
+function M._map_hint_lines(ws, pkey, cfg, indent)
+  local lines = {}
+  local function row(cmd, desc) lines[#lines + 1] = string.format("%s%-41s %s", indent, cmd, desc) end
+  if cfg == "<config>" then row("lw config list " .. pkey, "its configurations") end
+  if #(ws._config_sets or {}) > 0 then
+    row("lw configset map <set> " .. pkey .. " " .. cfg, "into a set (`lw configset list`)")
+  else
+    row("lw configset create <name> " .. pkey .. "=" .. cfg, "a set to build")
+  end
+  return lines
+end
+
+--- The "create a profile" hint line shared by `lw status`, `lw profile list`
+--- (spec §16.38: an operand chosen from a listing names the listing command).
+M.PROFILE_CREATE_HELP = "create a profile · lw profile create <set> <tool>  (tools: lw tools)"
+
 local function profile_list_rows(ws, color)
   local profiles = ws._profiles or {}
-  if #profiles == 0 then return { "(no profiles defined)" } end
   if color == nil then color = M._stdout_supports_color() end
   local pal = M._status_palette(color)
+  if #profiles == 0 then
+    -- Empty state names the command that fills it, and the listings its
+    -- operands come from (§16.38).
+    return {
+      "(no profiles defined)",
+      "",
+      "  " .. M._paint_help(pal, "create a profile · lw profile create <set> <tool>"),
+      "  " .. M._paint_help(pal, "list sets and tools · lw configset list · lw tools"),
+    }
+  end
   local active = ws._active_profile_key
   -- List in the stable sorted-by-key order so the numbers read 1,2,3 down the
   -- page; the number is the same one every other listing and CLI argument uses.
@@ -806,7 +835,7 @@ local function profile_list_rows(ws, color)
   if #profiles > 1 then
     help[#help + 1] = "switch the profile · lw profile select"
   end
-  help[#help + 1] = "create a profile · lw profile create <set> <tool>"
+  help[#help + 1] = M.PROFILE_CREATE_HELP
   help[#help + 1] = "use a number from this list in place of a name"
   lines[#lines + 1] = ""
   for _, h in ipairs(help) do lines[#lines + 1] = "  " .. M._paint_help(pal, h) end
@@ -3440,8 +3469,9 @@ function M.cmd_init(args)
   out("Add `.nvim/` to the repo's .gitignore — it holds the working copy, the")
   out("cache and build trees, all machine-local. Only loomworks.json is shared.")
   out("")
-  out("Add projects/profiles (editor or manual edit), then `lw publish` to")
-  out("write the shared loomworks.json.")
+  -- Next step (spec §16.38): the first command on the path to a build.
+  out("Next: `lw project add <path>` registers a project (type auto-detected);")
+  out("`lw help` has the quickstart from here to a first build.")
   return 0
 end
 
@@ -3981,11 +4011,14 @@ function M.cmd_project_add(root, path_arg, type_arg, name_arg)
   M._apply_create_description(project, "project '" .. key .. "'")
   out(string.format("added project '%s' (%s) at %s  [%s]", key, mtype, store_path or key, project._intent))
   out("")
+  -- Next step (spec §16.38): how to map it, and where the configurations to
+  -- map come from. `map` into an existing set, else `create` one.
+  out("Map it into a configuration set to build it:")
+  for _, l in ipairs(M._map_hint_lines(ws, key, "<config>", "  ")) do out(l) end
   if project._intent == "local" then
     out("Working copy only (--local). `lw project publish " .. key .. "` shares it later.")
   else
-    out("Map it into a configuration set to build it, then `lw publish` writes it")
-    out("to the shared loomworks.json.")
+    out("Then `lw publish` writes it to the shared loomworks.json.")
   end
   return 0
 end
@@ -4563,10 +4596,10 @@ function M.cmd_configuration_add(root, proj_name, name, bases)
   end
   -- Suggest publishing only when the new configuration would actually reach
   -- the shared file (same effective-intent check as config set/unset).
+  out("  map it into a configuration set to build it:")
+  for _, l in ipairs(M._map_hint_lines(ws, proj.key, name, "    ")) do out(l) end
   if config_reaches_shared(ws, proj, name) then
-    out("  map it into a configuration set to build it; `lw publish` to share.")
-  else
-    out("  map it into a configuration set to build it.")
+    out("  `lw publish` to share.")
   end
   return 0
 end
@@ -4817,7 +4850,7 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == "publish" then return M.cmd_configuration_publish(root, a3, a4) end
   if sub == "describe" then return M.cmd_describe("config", root, argv) end
   die("unknown config subcommand '" .. tostring(sub) ..
-    "' — use list|add|show|get|set|unset|rename|remove|publish")
+    "' — use list|add|show|get|set|unset|rename|describe|remove|publish")
 end
 
 -- ---------------------------------------------------------------------------
@@ -4962,7 +4995,7 @@ function M.cmd_cset_create(root, args)
   if cs._intent == "local" then
     out("`lw configset publish " .. cs.name .. "` shares it. ")
   end
-  out("`lw profile create " .. cs.name .. " <tool>` to build it.")
+  out("`lw profile create " .. cs.name .. " <tool>` to build it (`lw tools` lists tools).")
   return 0
 end
 
@@ -5708,6 +5741,16 @@ function M.cmd_profile_create(root, args)
   local ok, reasons = true, nil
   if profile.is_valid then ok, reasons = profile:is_valid() end
   if not ok then out("  not yet buildable: " .. table.concat(reasons or {}, "; ")) end
+  -- Next step (spec §16.38): build it — by name unless it is now the active
+  -- profile — and how to make it the default. Omitted while unbuildable.
+  if ok then
+    if activate then
+      out("  build it:          lw build")
+    else
+      out("  build it:          lw build " .. profile.key)
+      out("  make it default:   lw profile select " .. profile.key)
+    end
+  end
   if profile._intent == "local" then
     out("`lw profile publish " .. profile.key .. "` shares it (pulls its set + projects).")
   else
@@ -6152,8 +6195,8 @@ function M.cmd_sdk(sub, root, args)
 end
 
 --- `lw profile remove <profile>` — drop a profile from the working copy.
---- Removes user intent only; build directories are left alone (`lw clean` /
---- the editor's delete plan handle artifacts).
+--- Removes user intent only; build directories are left alone (`lw reset
+--- --all` / the editor's delete plan handle them).
 function M.cmd_profile_remove(root, args)
   local name = args[3]
   if not name then die("usage: lw profile remove <profile>") end
@@ -6164,7 +6207,10 @@ function M.cmd_profile_remove(root, args)
   local ok, err = ws:remove_profile(profile)
   if not ok then die("could not remove profile: " .. tostring(err)) end
   out("removed profile '" .. key .. "'")
-  out("  build directories were left in place (`lw clean` removes artifacts).")
+  -- `lw clean` cannot name a removed profile; `reset --all` also covers build
+  -- dirs no profile references any more (spec §16.30, §16.38).
+  out("  build directories were left in place. `lw reset --all` deletes them along")
+  out("  with every other profile's builds (`lw reset <profile>` first is narrower).")
   publish_hint(shared)
   return 0
 end
@@ -6979,6 +7025,39 @@ function M._worktree_hint(opts)
   return lines
 end
 
+--- Can `lw pull` fill this workspace's empty profile list (headless §16.18)?
+--- True when we sit in a linked git worktree whose main checkout holds a
+--- working copy (`.nvim/loomworks.user.json`). Presence only — the main
+--- checkout's files are never read here (pull verifies them). Best-effort and
+--- time-bounded like the no-workspace hint; never throws. `opts.git` /
+--- `opts.stat` / `opts.dir` are injectable for tests.
+function M._main_has_working_copy(opts)
+  opts = opts or {}
+  local stat = opts.stat or uv.fs_stat
+  local ok, res = pcall(function()
+    local main, top, reason = M._main_worktree(opts)
+    if not main or reason ~= nil or norm_cmp(main) == norm_cmp(top) then return false end
+    return stat(main .. "/.nvim/loomworks.user.json") and true or false
+  end)
+  return ok and res == true
+end
+
+--- The fixed command footer of the status overview (headless §16.18, §16.38):
+--- the everyday commands, then the pointer to the full index. ≤ 80 columns.
+--- Command names stay at normal brightness on a terminal; the rest is dim.
+--- No backticks on a pipe — the line must fit 80 columns plain.
+M.STATUS_COMMON = { "build", "run", "test", "clean", "reset", "health", "pull",
+  "worktree add", "publish" }
+function M._status_footer(pal)
+  local names = {}
+  for i, n in ipairs(M.STATUS_COMMON) do names[i] = n end
+  return {
+    pal.dim("Common: ") .. table.concat(names, pal.dim(", ")),
+    pal.inline("lw help") .. pal.dim(" for every command · ") ..
+      pal.inline("lw help <command>") .. pal.dim(" for details."),
+  }
+end
+
 --- Query a compiler cache tool's own usage statistics (headless §16.18,
 --- `--cache-stats`). This spawns the tool, so it is only called under the
 --- explicit flag. `run` is injectable for tests. Returns the (trimmed,
@@ -7049,6 +7128,11 @@ function M.cmd_status(root, opts)
   opts = opts or {}
   if not root then
     for _, line in ipairs(M._worktree_hint()) do out(line) end
+    -- The command index pointer lives here, not in _worktree_hint, so the
+    -- health report (which reuses the hint) does not repeat it (§16.18).
+    local pal0 = status_palette(stdout_supports_color())
+    out("")
+    out(pal0.inline("lw help") .. pal0.dim(" for every command."))
     return 0
   end
   local ws = load_workspace(root, false) -- pinned info only; skip tool detection
@@ -7078,6 +7162,18 @@ function M.cmd_status(root, opts)
   local active_key = ws._active_profile_key
   local ap
   for _, p in ipairs(profiles) do if p.key == active_key then ap = p end end
+  -- No profiles in a linked worktree whose main checkout has a working copy:
+  -- offer `lw pull` first (§16.18). The git probe runs only in this case.
+  local can_pull = false
+  if #profiles == 0 then
+    -- Probe from the workspace root (not the cwd): it is that checkout's
+    -- worktree whose main we ask about.
+    if opts.can_pull ~= nil then
+      can_pull = opts.can_pull
+    else
+      can_pull = M._main_has_working_copy({ dir = root })
+    end
+  end
 
   out("")
   if ap then
@@ -7090,6 +7186,9 @@ function M.cmd_status(root, opts)
       "   " .. pal.dim("(set " .. set_name .. ")"))
   elseif #profiles > 0 then
     out(pal.title("Active profile") .. "   " .. pal.dim("(none) — ") .. pal.inline("lw profile select"))
+  elseif can_pull then
+    out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
+      pal.inline("lw pull") .. pal.dim(" copies them from the main checkout"))
   else
     out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
       pal.inline("lw profile create <set> <tool>"))
@@ -7169,7 +7268,10 @@ function M.cmd_status(root, opts)
   for _, p in ipairs(rest) do plist[#plist + 1] = p end
   -- Switching only makes sense with more than one profile; offer it above the
   -- create hint in that case.
-  local profile_help = { "create a profile · lw profile create <set> <tool>" }
+  local profile_help = { M.PROFILE_CREATE_HELP }
+  if can_pull then
+    table.insert(profile_help, 1, "copy the main checkout's profiles · lw pull")
+  end
   if #profiles > 1 then
     table.insert(profile_help, 1, "switch the profile · lw profile select")
   end
@@ -7247,8 +7349,7 @@ function M.cmd_status(root, opts)
   end, "lw project list", "add a project · lw project add <path> [type]")
 
   out("")
-  out(pal.inline("lw help") .. pal.dim(" for commands · ") ..
-    pal.inline("lw help <command>") .. pal.dim(" for details."))
+  for _, l in ipairs(M._status_footer(pal)) do out(l) end
 
   -- `--check` (CI): exit non-zero when ANY diagnostic is present. The rendering
   -- above is unchanged; only the exit code differs. Without it, status is 0.
@@ -7910,12 +8011,16 @@ local function profile_show_rows(ws, profile, color)
     local default_cwd
     local ok_lt, lt = pcall(function() return profile:default_target() end)
     if ok_lt and lt and lt:is_module_target() then default_cwd = lt:working_directory() end
+    -- A non-active profile is named: the one-operand forms act on the active
+    -- profile (spec §16.38).
+    local pk = active and "" or (profile.key .. " ")
     local target_help = {
-      "run a target · lw run <target>",
-      "set this profile's default · lw target set <target>",
+      "run a target · lw run " .. pk .. "<target>",
+      "set this profile's default · lw target set " .. pk .. "<target>",
     }
     if tinfo.incomplete then
-      table.insert(target_help, 1, "configure to list build targets · lw build")
+      table.insert(target_help, 1, "configure to list build targets · lw build"
+        .. (active and "" or (" " .. profile.key)))
     end
     status_section(pal, "Targets", tinfo.rows, MAX, function(r)
       local base = string.format("%s %-30s (%s)", r.is_default and "*" or " ",
@@ -7931,12 +8036,22 @@ local function profile_show_rows(ws, profile, color)
     end, "lw target", target_help)
 
     -- 7. Footer help — profile-level actions not already surfaced by the
-    --    Targets section (which carries the run / set-default hints).
+    --    Targets section (which carries the run / set-default hints). A
+    --    non-active profile is named explicitly: the operand-less forms act on
+    --    the ACTIVE profile (spec §16.38, no dead ends).
     out("")
+    local arg = active and "" or (" " .. profile.key)
     local footer = {
-      "build · lw build",
-      "switch the profile · lw profile select",
+      "build / test · lw build" .. arg .. " · lw test" .. arg,
+      "start over (delete its build dirs) · lw reset" .. arg,
+      active and "switch the profile · lw profile select"
+        or ("make it the default · lw profile select " .. profile.key),
     }
+    -- Descriptions are offered once, here, when none is set (§16.38).
+    local desc = profile.description
+    if type(desc) ~= "string" or not desc:match("%S") then
+      footer[#footer + 1] = "describe it · lw profile describe " .. profile.key .. ' -m "<text>"'
+    end
     for _, h in ipairs(footer) do out("  " .. paint_help(pal, h)) end
   end)
   io.write = real_write
@@ -8427,6 +8542,9 @@ function M.cmd_worktree(args, opts)
       "  " .. padr(row.branch, branchw) ..
       "  " .. status)
   end
+  -- `worktree add` is everyday (spec §16.38): name it under the listing.
+  out("")
+  out("  " .. paint_help(status_palette(color), "new worktree with this config · lw worktree add <branch>"))
   return 0
 end
 
@@ -9304,7 +9422,7 @@ Reset is exclusive (like clean/delete): it holds each build directory's lock
 so it cannot race a concurrent build. A build directory still
 referenced by another profile not being reset is kept on disk (its state cleared
 only for the reset). Non-zero exit on any failure.]],
-  trust = [[lw trust [--yes] [--discard]
+  trust = [[lw trust [--yes | -y] [--discard]
 
 Workspace trust. A repository can come from anywhere, so loomworks decides what
 it may run by where a setting comes from:
@@ -9339,7 +9457,7 @@ Editing .nvim/loomworks.user.json by hand is fine: run `lw trust` afterwards.
 Environment variables that hijack loaders or interpreters (LD_PRELOAD,
 DYLD_*, NODE_OPTIONS, PYTHONPATH, ComSpec, PATHEXT, GIT_SSH_COMMAND, …) are
 refused from every configuration, even a trusted one.]],
-  nuke = [[lw nuke [-y]
+  nuke = [[lw nuke [-y | --yes]
 
 Delete the workspace's build state: .nvim/build/, .nvim/loomworks.cache.json
 and .nvim/loomworks.health.json. Your configuration (loomworks.json and the
@@ -9379,7 +9497,7 @@ Operands (before `--`) — the count picks the form:
                        profile use the two-operand form or `lw profile select`.
   <profile> <target>   the named target on the named profile.
   --cwd <dir>  working directory for this run (absolute or workspace-root-
-               relative, variable-expanded). Overrides the target's stored /
+               relative, variable-expanded; alias --working-dir). Overrides the target's stored /
                default working dir just for this invocation. Default: the
                owning project's directory.
   -- args…     everything after `--` is forwarded verbatim to the program
@@ -9445,16 +9563,20 @@ Devices for running cross-built programs. An SDK plugin whose kits
 build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
 ("stage") a program onto an attached device and run it there.
 
-  list [--json] [profile]         the devices each runner in scope reports:
+  list [--json] [--query-timeout <s>] [profile]
+                                  the devices each runner in scope reports:
                                   serial, state, runner, name, and the profiles
                                   that persist the serial. Exit 0 when none are
                                   attached; non-zero when no runner is available.
   select <serial> [profile]       persist the profile's device (working copy)
   select --clear [profile]        forget it
-  clean [--device <serial>]       remove this workspace's staging tree from
+  clean [--device <serial>] [--query-timeout <s>] [--no-wait]
+                                  remove this workspace's staging tree from
                                   the device (and the staging base if that
                                   leaves it empty) and clear the host's sync
-                                  record
+                                  record. --query-timeout bounds each device
+                                  query (default 120 s); --no-wait fails
+                                  instead of waiting for a busy device
 
 Device choice for `lw run` / `lw test --target`: --device, else the profile's
 persisted serial, else the only online device — never guessed otherwise.
@@ -9509,7 +9631,7 @@ Disambiguating a name present more than once (on `set`):
   --target | --launch   force the kind when a build target and a launch config
                         share a name
   --cwd <dir>           persistent working-dir override for a build-target
-                        default (variable-expanded)
+                        default (variable-expanded; alias --working-dir)
 
 `lw launch` manages the launch-config declarations; `lw target` is the resolved
 runnable view over both kinds. `lw run` runs one.]],
@@ -9528,6 +9650,7 @@ args/env/working-dir layered on top — no hand-written path.
         line, cut to the terminal; in full when piped).
   add <project> <name> <command> [args…] [--working-dir D] [--env K=V] [--description <para>]
         Declare a command-type launch config. Repeat --env for more variables.
+        --cwd is an alias of --working-dir (here and on `set`).
         --description (repeatable, one paragraph each; the first is the
         summary) describes it. There is no -m here: everything after the
         command is the program's own args (python -m http.server).
@@ -9587,7 +9710,7 @@ Named test executables (--target, repeatable): each is built and run DIRECTLY
 fails on a non-zero exit, a failed test in the XML, a missing XML, or (on a
 device) a crash report. Args after `--` go to each executable. A cross-built
 executable runs on a device (`lw help device`; --device, --fresh, --timeout,
---log, --no-wait apply). A profile whose kit cross-compiles refuses the plain
+--query-timeout, --transfer-timeout, --log, --no-wait apply). A profile whose kit cross-compiles refuses the plain
 batch-runner form — its registered tests cannot run on this host:
   lw test Debug:ohos-kit --target MyTests -- --gtest_filter=Scene.*]],
   init = [[lw init [--name <name>]
@@ -9613,7 +9736,7 @@ Workspace-level settings, stored in the working copy.
   rename <name>    Set the workspace display name. `lw publish` then writes it
                    to the shared loomworks.json. The name defaults to the
                    directory basename when never set.]],
-  migrate = [[lw migrate [--check] [-y]
+  migrate = [[lw migrate [--check] [-y | --yes]
 
 Rewrite the workspace files from a still-valid older shape into the current
 recommended one. Form changes, meaning does not: a migrated workspace resolves
@@ -9718,7 +9841,7 @@ applies a launcher-only change in place (the first build then rebuilds objects
 to fill the cache); when the MSVC /Z7 settings move too it runs `cmake
 --fresh`; meson always re-runs `setup --wipe`. A build dir configured by an
 older lw takes one full reconfigure. `lw build --reconfigure` forces one.]],
-  health = [[lw health [<area>...] [--all] [--verbose] [--json]
+  health = [[lw health [<area>...] [--all] [--verbose | -v] [--json]
 
 List the workspace's advisory suggestions — the detail behind the compact
 `N suggestions` line the status overview shows. Health is read-only: it runs
@@ -9987,6 +10110,7 @@ without re-authoring it.
               given and you're not in a linked worktree, when the source has no
               working copy, or when it resolves to this same checkout.
   --dry-run   Report the plan (added / updated / kept) without writing.
+              (alias -n)
 
 What it pulls: the source's working config — projects (with their
 configurations, launch configs, deploy steps, variables), configuration sets,
@@ -10192,6 +10316,8 @@ list commands), the rest is the body (shown by `show` and by `describe`).
                                             starting with # are ignored
   lw project describe <project> --clear     remove it
 
+Long forms: --message for -m, --file for -F, --edit for -e.
+
 The same forms work for `lw config describe <project> <config>`,
 `lw configset describe <set>` and `lw profile describe <profile>`. An empty
 description ("" or an empty file) removes it too. Descriptions are display text
@@ -10218,7 +10344,7 @@ Examples:
             unique substring works) needs no terminal, so your own scripts can
             switch it; --none clears the active profile. With neither, an
             interactive picker. Re-selecting the active profile changes nothing.
-  create <config-set> [tool ...] [--activate]
+  create <config-set> [tool ...] [--activate | -a]
             Create a profile (a config set + toolchains) in the working copy.
             If <config-set> doesn't exist but is auto-detectable, it's
             materialized first. Each [tool] is a tool key (version prefixes
@@ -10234,8 +10360,10 @@ Examples:
             `lw profile publish`.
   remove <profile>
             Drop a profile from the working copy. Removes the profile only —
-            its build directories are left in place (`lw clean` removes
-            artifacts). Clears the active selection if it pointed here.
+            its build directories are left in place: `lw reset <profile>`
+            first deletes them; afterwards only `lw reset --all` does (it
+            resets every profile). Clears the active selection if it pointed
+            here.
   publish <profile>
             Mark the profile shared (local+shared) and regenerate
             loomworks.json, including the set and projects it needs.
@@ -10297,6 +10425,9 @@ Keys:
                   `lw self-update` follows. `unstable` includes
                   pre-releases; both are equally signature/hash-verified.
                   LOOMWORKS_CHANNEL, or `lw self-update --channel`, overrides.
+  release-notes   `on` (default) or `off`. `off` silences the one-line
+                  "updated" notice and self-update's "what's new" lines;
+                  LOOMWORKS_RELEASE_NOTES wins.
 
 Source precedence (resolved by the host before commands run):
   LOOMWORKS_LUA env > `--dev[=PATH]` > default-source=dev > release bundle.
@@ -10534,18 +10665,23 @@ function M.cmd_help(cmd, sub)
 
 Usage: lw [command] [args]
 
-  (no command)      workspace status + active profile
+  status            workspace status + active profile (also bare `lw`)
   init              initialize the workspace working copy
   workspace <sub>   show / rename the workspace  (ws)
-  project <sub>     add | remove | rename | list | show projects
-  config <sub>      add | set | get | show | ... project configurations
-  configset <sub>   create | map | show | ... configuration sets
-  profile <sub>     list | show | select | create | remove | publish | query
+  project <sub>     add | remove | rename | list | show | set | unset
+                    describe | publish
+  config <sub>      list | add | show | get | set | unset | rename
+                    describe | remove | publish
+  configset <sub>   list | show | create | map | unmap | rename
+                    describe | remove | publish
+  profile <sub>     list | show | select | create | remove | publish
+                    query | set | unset | describe
   tools [--cached]  list detected toolchains (scans; --cached reads the cache)
   sdk <sub>         declare toolchain installations (types|detect|list|add|remove)
   build [profile]   build a profile (configure if needed, then build)
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
+  unlock <profile>  clear a stuck build-dir lock (--all, --device <serial>)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
@@ -10554,16 +10690,17 @@ Usage: lw [command] [args]
   target [profile]  list a profile's launchable targets (default marked *)
   target set|clear  set / clear a profile's default target
   device <sub>      list | select | clean devices for cross-built programs
-  launch <sub>      list | add | show | remove launch configurations
+  launch <sub>      launch configurations: list | add | set | show | remove
+                    rename | describe
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
   migrate [--check] bring the workspace files up to current conventions
   health            what this workspace needs: suggestions + inventory (--all: everything)
   module <sub>      install | update | remove | list acquirable modules (mod)
-  settings <...>    get/set lw's own settings (dev-lua, release-url, …)
+  settings <sub>    list | get | set | unset lw's own settings (dev-lua, …)
   completion <shell> print a shell completion script (bash|zsh)
-  version           host version + which system-Lua source is in use
+  version           host version + which system-Lua source (also -v, --version)
   install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release (bundle + lw binary)
   release-notes     what changed in each release (--since <version>, --all)
@@ -10574,7 +10711,7 @@ Quickstart (empty dir -> first build -> shared config):
   lw init                                  initialize the workspace
   lw project add <path>                    register a project (type auto-detected)
   lw configset create <name> <project>=<config>   map a config set (e.g. app=Debug)
-  lw profile create <name> <tool>          make a buildable profile (`lw tools`)
+  lw profile create <set> <tool>           make a buildable profile (`lw tools`)
   lw build <profile>                       build it
   lw publish                               write the shared loomworks.json
 
@@ -10593,6 +10730,8 @@ required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile (and never picks a sole profile)
 — pass the profile explicitly.
+
+Topics (`lw help <topic>`): agent, ci, cache, describe, launcher, submodules
 
 Automation agent? See `lw help agent` — run with --no-input so you never block
 or change the user's settings. Driving CI? See `lw help ci`. Compiler cache
@@ -10682,6 +10821,15 @@ local function main()
       die("unknown option '" .. bad .. "' for `lw " .. label .. "` — see `lw help " .. label
         .. "`\n    (arguments for the program or build tool go after `--`)", 2)
     end
+  end
+  -- An unknown command (or an option in the command position) is a usage
+  -- error decided from the name alone, BEFORE workspace resolution — outside a
+  -- workspace a typo must not read as "no loomworks.json" (spec §16.7).
+  if command and not require("loomworks.cli_options").is_command(command) then
+    if command:sub(1, 1) == "-" and #command > 1 then
+      die("unknown option '" .. command .. "' — see `lw help`", 2)
+    end
+    die("unknown command '" .. command .. "' — run `lw help`", 2)
   end
   -- `settings` edits lw's OWN user configuration (dev-lua, release-url, …). It
   -- is a global command (no workspace needed). NOTE: `config` no longer routes
@@ -10877,7 +11025,7 @@ local function main()
   elseif command == "run" then
     finish(M.cmd_run(ws, a))
   else
-    die("unknown command '" .. command .. "' — run `lw help`")
+    die("unknown command '" .. command .. "' — run `lw help`", 2)
   end
 end
 

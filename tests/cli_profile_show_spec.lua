@@ -151,7 +151,9 @@ describe("_profile_show_rows", function()
     assert.is_truthy(text:find("Targets", 1, true))
     assert.is_truthy(text:find("app:app", 1, true))
     -- Footer help.
-    assert.is_truthy(text:find("build · lw build", 1, true))
+    -- Footer help (the fixture's profile is the active one → operand-less).
+    assert.is_truthy(text:find("build / test · lw build · lw test", 1, true))
+    assert.is_truthy(text:find("start over (delete its build dirs) · lw reset", 1, true))
     assert.is_truthy(text:find("switch the profile · lw profile select", 1, true))
   end)
 

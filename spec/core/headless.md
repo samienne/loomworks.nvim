@@ -245,6 +245,16 @@ unrecognised token into a program argument (editing a launch configuration's
 arguments) and the host-level commands (version reporting, self-update,
 installation, pin management) keep their own parsing.
 
+**Unknown commands.** A command name the runner does not know is likewise a
+**usage error** (exit 2) that names it and points at the command index
+(`lw help`). An option in the command position — a first token starting with
+`-` that is neither a global option nor one of the help / version spellings — is
+reported as an **unknown option** in the same form, never as an unknown command.
+Both are decided from the command name alone, **before** workspace resolution:
+outside a workspace a mistyped command reports the typo, never a missing
+workspace, and nothing is read or written. A help request on an unknown command
+(`lw <unknown> --help`) still prints the general usage and exits 0, as above.
+
 **Host-level output is ASCII.** Everything printed before system Lua is loaded
 — the repo launchers (§16.22), the host-level commands (version reporting,
 self-update, installation, pin management), redirect and provisioning notices
@@ -690,7 +700,9 @@ no project or build-system files (§16.9), though it MAY refresh its own interna
 advisory caches under `.nvim/` (the suggestion cache of §16.31, whose passive
 tier is computed lazily on first display). When no workspace resolves
 here (§1.1) it points the user at how to start one, with each suggested command
-on its own line. When a workspace does resolve, the overview MAY present the
+on its own line, followed by a pointer to the command index (`lw help`); the
+health report's lead (§16.31), which reuses the start-one hint, does not repeat
+that pointer. When a workspace does resolve, the overview MAY present the
 active profile's launchable targets, marking its default target and — when the
 list is incomplete because a project is not yet configured — pointing the user
 at how to configure it. When the invocation sits in a linked git worktree whose main
@@ -700,6 +712,24 @@ the main checkout has no workspace — or the invocation is not in a linked
 worktree — it offers only to initialise one. Detecting the parent worktree is a
 best-effort, time-bounded hint: it never fails the report, and a slow or absent
 git only adds a small bounded delay.
+
+A workspace can resolve in a linked worktree from the committed published
+snapshot alone, with no working copy and therefore no profiles (§16.25). When
+the overview finds **no profiles** and the invocation sits in a linked git
+worktree whose main checkout holds a **working copy**, the no-profiles hint
+offers to **pull** (§16.25) before offering to create a profile. The test is the
+working copy's presence only — the overview never reads, parses or verifies the
+main checkout's files (pull does, §16.25, and reports "nothing to pull" when
+there is nothing). The detection is the same best-effort, time-bounded one as
+above and runs only in the no-profiles case, so a workspace with profiles pays
+no git cost.
+
+The overview ends with a **command footer**: one line naming the common
+everyday commands (building, running, testing, cleaning, resetting, health,
+pulling, creating a worktree, publishing), then the pointer to the full command
+index and to per-command help. The footer is fixed text — it does not vary with
+the workspace's state — and fits an 80-column terminal. It is what makes the
+everyday commands discoverable without first reading help (§16.38).
 
 When the workspace resolved only by continuing the upward root search past a
 git submodule (§1.1) — the invocation sits inside a submodule of the
@@ -3302,3 +3332,50 @@ none was written.
 Separately distributed modules and SDK providers (§16.20) keep their own; the
 grammar and reader are reusable for a per-module notes file, but the runner
 does not show module notes yet.
+
+### 16.38 Discoverability
+
+Every **everyday** operation of the runner is discoverable from the runner's
+own inline output — the status overview, usage errors, the line an operation
+prints when it finishes, and empty listings — without first reading help.
+Everyday means the path from an empty directory to a first build and its daily
+use: initialising a workspace, adding a project, mapping a configuration set,
+creating, selecting and removing a profile, building, running, testing,
+cleaning, resetting, health, pulling and creating a worktree, publishing, and
+describing an item. **Advanced** options (wrappers, machine-readable output,
+transport timeouts, disambiguation flags, …) MAY be reachable only through
+help. The rules:
+
+- **The overview carries the index.** The status overview's command footer
+  (§16.18) names the everyday commands; outside a workspace it points at the
+  command index (§16.18).
+- **Next step.** An operation that creates or initialises an item and leaves
+  the user one step short of building ends by naming the next step's command:
+  initialising a workspace names adding a project; adding a project or a
+  configuration names mapping it into a configuration set and how to list the
+  configurations to map; creating a configuration set names creating a profile
+  from it; creating a profile names building it and making it the active
+  profile (unless it was activated). Where an operand must be chosen from a
+  listing (a toolchain, a configuration), the hint names the listing command.
+- **Empty states.** An empty listing or an empty overview section names the
+  command that fills it, as in the previous rule.
+- **No dead ends.** A hint names only a command that acts on its subject as
+  printed. A hint about a profile that is not the active one names that
+  profile explicitly rather than an operand-less form that would act on the
+  active one. After a profile is removed, its build directories are no longer
+  any profile's; the hint names the reset that also covers such directories
+  (§16.30) and says that it resets every profile.
+- **Descriptions.** The single-profile view (§16.18) of a profile with no
+  description offers the describe operation (§16.35) once, as a hint line.
+- **Quiet where output is consumed.** Hints are secondary guidance, rendered
+  as the overview renders its hints (dim on a terminal). They never appear in
+  machine-readable output (`--json`, queries, `--print`), and the completion
+  line of a build, test or run carries none — those are read by CI and scripts,
+  and the overview's footer already names them.
+- **The help index is complete.** The command index (`lw help`) lists every
+  command (the host-level ones included) with every sub-command it accepts,
+  and lists the topics that are not commands. Every option a command accepts is
+  documented in that command's help topic, its short spelling included; only a
+  pure alias of a documented command or sub-command, and an option accepted
+  solely for compatibility as a no-op, MAY stay undocumented. A usage error that
+  lists a command's sub-commands lists all of them.

@@ -54,9 +54,10 @@ describe("lw profiles active highlight", function()
     assert.equals("* 2  beta", beta_name)
   end)
 
-  it("handles the empty case", function()
+  it("handles the empty case (with the create hint, spec §16.38)", function()
     local lines = cli._profile_list_rows({ _profiles = {} }, false)
-    assert.same({ "(no profiles defined)" }, lines)
+    assert.equals("(no profiles defined)", lines[1])
+    assert.is_truthy(table.concat(lines, "\n"):find("lw profile create <set> <tool>", 1, true))
   end)
 end)
 

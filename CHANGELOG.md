@@ -30,6 +30,40 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Scripts or CI that run `lw update` must switch to `lw bootstrap upgrade`
   (move a repository's pin) or `lw self-update` (update lw itself); `lw update`
   now fails with exit code 2. (#89)
+- An unknown command (`lw frobnicate`) now exits 2, not 1, like every other
+  usage error; scripts that test for exit code 1 must accept 2. `lw --check`
+  (and any other option in place of a command) is an unknown option: use
+  `lw status --check`. (#90)
+
+### Changed
+- `lw status` ends with the everyday commands (build, run, test, clean,
+  reset, health, pull, worktree add, publish) and points at `lw help`; outside
+  a workspace it points at `lw help` too. (#90)
+- A fresh git worktree with no profiles is told that `lw pull` copies the
+  main checkout's profiles. (#90)
+- Next-step hints: `lw init` names `lw project add`; `project add` and
+  `config add` name the `lw configset create`/`map` and `lw config list`
+  commands; `configset create` and `profile create` hints name `lw tools`;
+  `profile create` names `lw build <profile>` and `lw profile select`;
+  an empty `lw profile list` names `lw profile create`; `lw worktree` names
+  `lw worktree add`; `lw install` ends with `lw init` / `lw help`. (#90)
+- `lw profile show` names a non-active profile in its hints (they used to
+  act on the active one), adds `lw test` and `lw reset`, and offers
+  `lw profile describe` when the profile has no description. (#90)
+- `lw help` lists every command and sub-command (`unlock`, `profile set`,
+  `launch rename`, ...), indexes the help topics, and the help topics document
+  every accepted option (`run --working-dir`, `launch add --cwd`,
+  `device clean --no-wait`, `profile create -a`, `-v`/`--version`, the
+  `release-notes` setting, ...). (#90)
+
+### Fixed
+- Outside a workspace, a mistyped command or option reported "no
+  loomworks.json found" instead of the typo. (#90)
+- `lw profile remove` pointed at `lw clean`, which cannot reach a removed
+  profile's build directories; it now names `lw reset --all`. (#90)
+- The `lw help` quickstart called `profile create`'s operand `<name>`; it is
+  the configuration set. `lw config` with an unknown sub-command now lists
+  `describe` too. (#90)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or

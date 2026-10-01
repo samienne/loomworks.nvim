@@ -303,6 +303,21 @@ ARCHITECTURE.md "Standalone Runner & Distribution") ships a simple v1
   cannot run. Decide the capability model in the spec first (release version
   vs capability names), then retire the per-call guards where the contract
   covers them.
+- **Tell the user when `lw migrate` would change something.** Found in the
+  discoverability audit (fix/cli-discoverability, spec §16.38): `lw migrate`
+  is reachable only from `lw help`. Nothing in `lw status` or `lw health`
+  says the workspace files are in an older shape. Wanted: a passive health
+  suggestion (and so the status `N suggestions` line) when `lw migrate --check`
+  would report changes, at the cost of running the check on that path. Spec
+  first: §16.19 (migration) and §16.31 (which providers are passive).
+- **Count orphaned build directories in status / health.** Also from the
+  discoverability audit. After `lw profile remove` (or a configuration
+  rename) a build directory with cached state can belong to no profile any
+  more. Only `lw reset --all` removes it, and nothing shows that it exists.
+  Wanted: a count in `lw health` (and the status suggestions line), e.g.
+  "2 build directories belong to no profile — lw reset --all". A per-orphan
+  reset (`lw reset --orphaned`, which leaves live profiles alone) would make the
+  remedy narrower than `--all`. Spec first: §16.30 and §16.31.
 
 ---
 
