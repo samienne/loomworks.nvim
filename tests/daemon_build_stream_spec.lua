@@ -93,34 +93,84 @@ describe("daemon build stream (observable by any client)", function()
 end)
 
 describe("cli build delegation seam", function()
+    local function always_trusted() return true end
+    local reachable = function() return { present = true, live = true, compatible = true } end
+
     it("returns nil (in-process) when runtime mode is in-process", function()
-        assert.is_nil(cli._maybe_delegate_build("/ws", { "build" }, { mode = "in-process" }))
+        assert.is_nil(cli._maybe_delegate_build("/ws", { "build", "Debug:t" }, { mode = "in-process" }))
     end)
 
     it("delegates and streams when a daemon is reachable", function()
-        local out_chunks = {}
+        local sent
         local fake_proj = {
-            build = function(_self, _args, cbs)
+            build = function(_self, args, cbs)
+                sent = args
                 cbs.on_accept(1)
                 cbs.on_output("stdout", "hi\n")
                 cbs.on_done(0)
             end,
             close = function() end,
         }
-        local code = cli._maybe_delegate_build("/ws", { "build" }, {
+        local code = cli._maybe_delegate_build("/ws", { "build", "Debug:t", "--", "-j", "2" }, {
             mode = "daemon",
-            detect = function() return { present = true, live = true, compatible = true } end,
+            trusted = always_trusted,
+            detect = reachable,
             connect = function(_root, _opts, cb) cb(fake_proj, nil) end,
         })
         assert.equals(0, code)
+        assert.equals("Debug:t", sent.profile_key)
+        assert.same({ "-j", "2" }, sent.extra_args)
     end)
 
     it("falls back (nil) when no daemon is reachable and none can be spawned", function()
-        local code = cli._maybe_delegate_build("/ws", { "build" }, {
+        local code = cli._maybe_delegate_build("/ws", { "build", "Debug:t" }, {
             mode = "daemon",
+            trusted = always_trusted,
             detect = function() return { present = false } end,
             spawn = function() return false end,
         })
         assert.is_nil(code)
+    end)
+
+    it("runs in-process for options or profile forms the daemon does not carry", function()
+        local function never() error("must not reach the daemon") end
+        for _, argv in ipairs({
+            { "build" },                                  -- no profile: in-process resolves it
+            { "build", "2" },                             -- numbered profile
+            { "build", "Debug:t", "--target", "app" },
+            { "build", "Debug:t", "--force" },
+            { "build", "Debug:t", "--reconfigure" },
+            { "build", "Debug:t", "-v" },
+        }) do
+            assert.is_nil(cli._maybe_delegate_build("/ws", argv, {
+                mode = "daemon", trusted = always_trusted, detect = never, connect = never, spawn = never,
+            }), table.concat(argv, " "))
+        end
+    end)
+
+    it("never delegates an untrusted workspace (spec §17) — not even a detect/spawn", function()
+        local function never() error("must not reach the daemon") end
+        assert.is_nil(cli._maybe_delegate_build("/ws", { "build", "Debug:t" }, {
+            mode = "daemon", trusted = function() return false end,
+            detect = never, connect = never, spawn = never,
+        }))
+    end)
+
+    it("_daemon_workspace_trusted refuses an unsigned working copy and accepts none / a signed one", function()
+        local trust = require("loomworks.trust")
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root .. "/.nvim", "p")
+        -- A throwaway machine key: never touch the real one in the data dir.
+        trust._set_key_path(root .. "/trust.key")
+        trust._reset()
+        assert.is_true(cli._daemon_workspace_trusted(root)) -- no working copy at all
+        local path = require("loomworks.user").filepath(root)
+        local f = assert(io.open(path, "wb")); f:write('{"version":1}\n'); f:close()
+        assert.is_false(cli._daemon_workspace_trusted(root)) -- hand-written: unsigned
+        assert.is_true(trust.sign_file(path, "user"))
+        assert.is_true(cli._daemon_workspace_trusted(root))
+        trust._set_key_path(nil)
+        trust._reset()
+        vim.fn.delete(root, "rf")
     end)
 end)

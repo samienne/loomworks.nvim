@@ -37,7 +37,11 @@ end
 
 --- Run the real `lw` CLI (this nvim, headless) in `cwd`; return the result.
 local function lw(cli, cwd, args)
-    local argv = { vim.v.progpath, "--headless", "-u", "NONE", "-l", cli }
+    -- Module ids resolve on the runtime path only (plugin_loader, spec §17), so
+    -- an `-u NONE` host must be given the repo on its runtimepath explicitly.
+    local repo = vim.fn.fnamemodify(cli, ":h:h:h")
+    local argv = { vim.v.progpath, "--headless", "-u", "NONE",
+        "--cmd", "set rtp^=" .. vim.fn.fnameescape(repo), "-l", cli }
     vim.list_extend(argv, args)
     return vim.system(argv, {
         cwd = cwd, text = true,

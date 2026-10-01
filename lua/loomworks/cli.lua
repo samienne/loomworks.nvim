@@ -1278,12 +1278,43 @@ function M._spawn_daemon_if_possible(root)
   return st.present and st.live and st.compatible
 end
 
+--- Would this machine accept the workspace's `.nvim` files (spec §17.4)? The
+--- working copy must be absent or carry a valid machine signature, and the
+--- cache must not be "invalid" (an unsigned cache is discarded, not refused).
+--- Mirrors the gate `Core:setup` applies, without loading the workspace.
+--- @param root string
+--- @return boolean
+function M._daemon_workspace_trusted(root)
+  local trust = require("loomworks.trust")
+  local function read(path)
+    local f = io.open(path, "rb"); if not f then return nil end
+    local t = f:read("*a"); f:close(); return t
+  end
+  local utext = read(require("loomworks.user").filepath(root))
+  if utext and trust.verify("user", utext) ~= "valid" then return false end
+  local ctext = read(require("loomworks.cache").filepath(root))
+  if ctext and trust.verify("cache", ctext) == "invalid" then return false end
+  return true
+end
+
 --- Delegate a build to the daemon when the runtime mode resolves to daemon/auto
 --- and a compatible daemon is (or can be made) reachable; stream its output and
 --- return its exit code. Returns nil to mean "not delegated — run in-process"
 --- (the permanent fallback: in-process is never broken by this path).
 ---
---- `opts` is injectable for tests: `{ mode, detect, connect, spawn }`.
+--- Only the plain form `lw build <profile-key> [-- <build-tool args>]` is
+--- delegated. Anything the daemon's build command does not carry (`--target`,
+--- `--force`, `--reconfigure`, `--verbose`, a numbered profile, or no profile —
+--- which the in-process path resolves, interactively or under the strict
+--- non-interactive rule) runs in-process, so delegation never changes what a
+--- build means.
+---
+--- Workspace trust (spec §17): a working copy or cache this machine would refuse
+--- is never delegated — the daemon loads its workspace through the same gate and
+--- would refuse it too; falling back lets the in-process path print the
+--- actionable refusal (`lw trust`) instead of spawning a daemon that cannot start.
+---
+--- `opts` is injectable for tests: `{ mode, detect, connect, spawn, trusted }`.
 --- @param root string
 --- @param args string[] the build argv (args[1]=="build")
 --- @param opts? table
@@ -1294,6 +1325,20 @@ function M._maybe_delegate_build(root, args, opts)
   local runtime = require("loomworks.daemon.runtime")
   local mode = opts.mode or runtime.resolve(read_config()["runtime-mode"])
   if mode == runtime.IN_PROCESS then return nil end -- default path, unchanged
+
+  -- Parse profile + `-- extra` from argv; any option means "not delegable".
+  local pre, extra, seen = {}, {}, false
+  for i = 2, #args do
+    local v = args[i]
+    if not seen and v == "--" then seen = true
+    elseif seen then extra[#extra + 1] = v
+    elseif v:sub(1, 1) == "-" then return nil -- an option the daemon does not carry
+    else pre[#pre + 1] = v end
+  end
+  if #pre ~= 1 or pre[1]:match("^%d+$") then return nil end
+
+  local trusted = opts.trusted or M._daemon_workspace_trusted
+  if not trusted(root) then return nil end -- in-process reports the refusal
 
   local client = require("loomworks.daemon.client")
   local detect = opts.detect or client.detect
@@ -1306,14 +1351,6 @@ function M._maybe_delegate_build(root, args, opts)
   if not reachable then
     note("lw: no daemon reachable; building in-process")
     return nil -- fall back
-  end
-
-  -- Parse profile + `-- extra` from argv (mirror cmd_build's split).
-  local pre, extra, seen = {}, {}, false
-  for i = 2, #args do
-    if not seen and args[i] == "--" then seen = true
-    elseif seen then extra[#extra + 1] = args[i]
-    elseif args[i] ~= "--force" then pre[#pre + 1] = args[i] end
   end
 
   local connect = opts.connect or require("loomworks.daemon.projection").connect
@@ -10216,6 +10253,24 @@ items only in the source are added. The debug-adapter and lsp-option maps are
 unioned per key (a pulled `c++` adapter keeps your `typescript` one). It writes
 the working copy only; it never publishes loomworks.json and never touches the
 cache or build dirs.]],
+  daemon = [[lw daemon [status|stop|run|protocol]
+
+EXPERIMENTAL, opt-in. A long-lived per-workspace `lw` process that holds the
+workspace and runs builds for any client (spec §19, DAEMON.md). The default
+runtime is in-process and stays the permanent fallback: with runtime-mode
+unset nothing here changes how lw behaves.
+
+  status    (also bare `lw daemon`) the resolved runtime mode and whether a
+            daemon is running for this workspace (pid, pipe, protocol, beat)
+  stop      stop this workspace's daemon (graceful, then by pid)
+  run       run the daemon for this workspace in the foreground
+  protocol  print the daemon wire-protocol version
+
+Runtime mode: `lw settings set runtime-mode in-process|daemon|auto`, or
+LOOMWORKS_RUNTIME (wins). With `daemon`/`auto`, `lw build <profile> [-- args]`
+is sent to a running daemon (one is started when the host can) and its output
+streamed back; any other build form, an untrusted working copy (`lw help
+trust`), or an unreachable daemon builds in-process.]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 
@@ -10516,6 +10571,9 @@ Keys:
   release-notes   `on` (default) or `off`. `off` silences the one-line
                   "updated" notice and self-update's "what's new" lines;
                   LOOMWORKS_RELEASE_NOTES wins.
+  runtime-mode    EXPERIMENTAL. `in-process` (default), `daemon` or `auto`:
+                  whether `lw build` may run through a workspace daemon
+                  (`lw help daemon`). LOOMWORKS_RUNTIME overrides.
 
 Source precedence (resolved by the host before commands run):
   LOOMWORKS_LUA env > `--dev[=PATH]` > default-source=dev > release bundle.
