@@ -35,6 +35,10 @@ bad() { printf '  FAIL: %s\n' "$*" >&2; FAIL=$((FAIL + 1)); }
 run_lw() { $LW --no-input "$@"; }
 
 TMP=$(mktemp -d)
+# Per-user state (trust key, runtime logs) in the sandbox, never the runner's.
+mkdir -p "$TMP/lwdata"
+if command -v cygpath >/dev/null 2>&1; then export LOOMWORKS_DATA_DIR="$(cygpath -m "$TMP/lwdata")"
+else export LOOMWORKS_DATA_DIR="$TMP/lwdata"; fi
 trap 'rm -rf "$TMP"' EXIT
 
 # Pick a toolchain key for the given module from `run_lw tools`, preferring a

@@ -179,6 +179,10 @@ function Server:start()
     end
     self.listener, self.address = server, addr
     self.candidates = endpoint._posix_candidates(self.root)
+    -- The socket file this daemon bound (POSIX): removed on exit only while
+    -- it is still that file.
+    local sst = uv.fs_lstat(addr)
+    self.sock_ino = sst and sst.type == "socket" and sst.ino or nil
     self:_write_handle()
     self.timer = uv.new_timer()
     self.timer:start(self.tick_ms, self.tick_ms, function() self:_guard(self._tick) end)
@@ -270,11 +274,12 @@ function Server:stop(reason, code)
     end
     if rlock.still_ours(self.R) then
         handle.remove(self.root, { pid = self.pid, start_time = self.start_time })
-        endpoint.cleanup(self.root, self.address, self.candidates)
+        endpoint.cleanup(self.root, self.address, self.candidates, self.sock_ino)
     elseif not uv.fs_stat(self.root) then
-        -- The workspace (and R with it) is gone: nobody else can hold R for
-        -- it; remove the socket this daemon bound.
-        endpoint.cleanup(self.root, self.address, self.candidates)
+        -- The workspace (and R with it) is gone: remove the socket this
+        -- daemon bound — only while the file at its path is still that one
+        -- (the inode recorded at bind), never a successor's.
+        endpoint.cleanup(self.root, self.address, self.candidates, self.sock_ino)
     end
     rlock.release(self.R)
     self.exit(code or 0)

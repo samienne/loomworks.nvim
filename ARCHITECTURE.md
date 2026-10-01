@@ -667,7 +667,11 @@ re-cut onto master step by step; this section is expanded as each step lands.
   then connect + reconcile + `ping`, or launch; a hung daemon is reported, or
   under `--break-locks` recovered through `command.recover` (the non-exiting
   §19.5 sequence `stop --force` / `kill` also use) and relaunched; problems
-  are one stderr line, never a failed command. `cli.lua` calls it as `M._ensure_daemon(root)` right
+  are one stderr line, never a failed command. Each step waits at most
+  `ensure.STEP_MS` (~1 s: connect + handshake, `status`, `ping`); a daemon
+  still `starting` is waited for at most that long, once; the handle's
+  endpoint must pass `endpoint.check` before anything is connected to.
+  `cli.M.NO_DAEMON_COMMANDS` (`trust`, `nuke`, `unlock`) skips the ensure. `cli.lua` calls it as `M._ensure_daemon(root)` right
   after the workspace-required guard in `main()` (so `status`, `health`,
   `pull`, `worktree`, `settings`, `help`, `daemon …` never launch); `main()`
   strips the global `--no-daemon` into `M._no_daemon`.

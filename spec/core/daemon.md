@@ -611,8 +611,11 @@ it; the client refuses with the update message of §2.7 "Reading a newer file".
 *Status: master (`daemon/launch.lua`, `daemon/ensure.lua`,
 `daemon/rlog.lua`). In `daemon` mode the workspace commands launch — the
 commands that need no workspace (`status`, `health`, `pull`, `worktree`,
-`settings`, `help`, `daemon …`) never do; the `Runtime` row says the daemon
-"starts on the next command". A `lw daemon run` that finds the runtime lock
+`settings`, `help`, `daemon …`) and the recovery commands (`trust`, `nuke`,
+`unlock`) never do; the `Runtime` row says the daemon "starts on the next
+command". The ensure step of a command waits about a second per step at most
+(connect + handshake, `ping`), and for a daemon still starting at most about
+a second, once, before running without it. A `lw daemon run` that finds the runtime lock
 held exits with status 3, which the launching client reads as "another daemon
 won".*
 

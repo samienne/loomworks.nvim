@@ -20,6 +20,12 @@ local client = require("loomworks.daemon.client")
 
 local M = {}
 
+--- The latency budget of the ensure path (§19.10 keeps read-only commands
+--- fast): each step with a daemon (connect + handshake, `status`, `ping`)
+--- waits at most this long, and a daemon still starting is waited for at
+--- most this long, once per command.
+M.STEP_MS = 1000
+
 --- How long a client waits for a stopped daemon to release R before it
 --- gives up on replacing it.
 M.STOP_WAIT_MS = 10000
@@ -56,22 +62,23 @@ end
 --- @return string outcome, string|nil detail
 function M.reconcile(root, conn, opts)
     opts = opts or {}
+    local step = opts.step_ms
     local info = conn.challenge or {}
     if version.matches(info) then return "match" end
     if version.peer_schemas_newer(info) then
         conn:close()
         return "newer", M.newer_line(info)
     end
-    local st = client.request(conn, { kind = "status" })
+    local st = client.request(conn, { kind = "status" }, step)
     local others = st and ((tonumber(st.clients) or 1) - 1) or 1
     local busy = (st == nil) or st.busy == true or others > 0
     if busy then
-        client.request(conn, { kind = "retire" })
+        client.request(conn, { kind = "retire" }, step)
         conn:close()
         return "bypass", M.bypass_line(info.lw_version)
     end
     local lk = rlock.read(root)
-    client.request(conn, { kind = "stop" })
+    client.request(conn, { kind = "stop" }, step)
     conn:close()
     local released = vim.wait(M.STOP_WAIT_MS, function()
         local cur = rlock.read(root)
@@ -104,8 +111,9 @@ end
 ---   log      fun(line) — the runtime log
 ---   launch   (tests) replaces loomworks.daemon.launch.launch
 ---   getenv   (tests) replaces os.getenv for the selection
+---   step_ms  (tests) replaces STEP_MS
 --- Returns what happened: "off" | "used" | "launched" | "restarted" |
---- "bypass" | "newer" | "hung" | "elsewhere" | "failed".
+--- "bypass" | "newer" | "hung" | "starting" | "elsewhere" | "failed".
 --- @param root string
 --- @param opts table
 --- @return string
@@ -117,12 +125,20 @@ function M.ensure(root, opts)
     if sel.warning then note("lw: " .. sel.warning) end
     if not sel.daemon then return "off" end
     local launch = opts.launch or require("loomworks.daemon.launch").launch
+    local step = opts.step_ms or M.STEP_MS
     local st = inspect.state(root)
     if st.kind == "starting" then
-        vim.wait(require("loomworks.daemon.launch").READY_MS, function()
+        -- At most one short wait per command: a daemon stuck starting must
+        -- not cost every command the launch's readiness timeout.
+        vim.wait(step, function()
             st = inspect.state(root)
             return st.kind ~= "starting"
         end, 25)
+        if st.kind == "starting" then
+            note(string.format("lw: the workspace daemon (pid %s) is still starting — running without it",
+                tostring(st.lock and st.lock.pid)))
+            return "starting"
+        end
     end
     if st.kind == "hung" then
         local lb = require("loomworks.lock_break")
@@ -144,7 +160,13 @@ function M.ensure(root, opts)
     end
     if st.kind == "foreign" or st.kind == "attached" or st.kind == "starting" then return "elsewhere" end
     if st.kind == "live" then
-        local conn, err = client.session(st.handle.endpoint, { timeout_ms = 3000 })
+        local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
+        if not eok then
+            note("lw: " .. ewhy)
+            log(ewhy)
+            return "failed"
+        end
+        local conn, err = client.session(st.handle.endpoint, { timeout_ms = step })
         if not conn then
             if err == client.ERR_UNTRUSTED then
                 note("lw: the workspace daemon's endpoint " .. tostring(st.handle.endpoint)
@@ -156,9 +178,9 @@ function M.ensure(root, opts)
             end
             return "failed"
         end
-        local outcome, detail = M.reconcile(root, conn, { launch = launch })
+        local outcome, detail = M.reconcile(root, conn, { launch = launch, step_ms = step })
         if outcome == "match" then
-            client.request(conn, { kind = "ping" })
+            client.request(conn, { kind = "ping" }, step)
             conn:close()
             return "used"
         end

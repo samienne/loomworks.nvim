@@ -7556,6 +7556,11 @@ function M._runtime_row(root)
   return ok and row or nil
 end
 
+--- Workspace commands that never start or contact the daemon (besides the
+--- ones dispatched before the workspace guard: status, health, pull, worktree,
+--- settings, help, daemon …).
+M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
+
 --- Keep the workspace daemon running before a workspace command (spec §19.1,
 --- §19.10; loomworks.daemon.ensure). Never fails the command.
 --- @param root string
@@ -10045,16 +10050,23 @@ LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
 `Runtime` row, read from the files below only.
 
 In `daemon` mode every workspace command (not `lw status`, `health`, `help`,
-`settings`, `daemon …`) first makes sure the daemon runs: it connects (and
-pings it) or starts one in the background, then runs exactly as before — no
+`settings`, `pull`, `worktree`, `trust`, `nuke`, `unlock`, `daemon …`) first
+makes sure the daemon runs: it connects (and pings it, waiting about a second
+at most) or starts one in the background, then runs exactly as before — no
 operation goes through the daemon yet. A daemon of another lw version is
 replaced when idle; a busy one is asked to exit when idle and the command runs
-without it (one line says so). If it cannot start, one line says so and the
-command runs without it. A daemon that stopped responding is named with the
-recovery command; a command given `--break-locks` recovers it (asks it to
-stop, kills it, starts a fresh one). These never start or use it:
-`--no-daemon`, LOOMWORKS_NO_DAEMON=1, and CI=true (LOOMWORKS_NO_DAEMON=0
-overrides CI).
+without it (one line says so). If it cannot start, does not answer, or is
+still starting, one line says so and the command runs without it. A daemon
+that stopped responding is named with the recovery command; a command given
+`--break-locks` recovers it (asks it to stop, kills it, starts a fresh one).
+These never start or use it: `--no-daemon`, LOOMWORKS_NO_DAEMON=1, and
+CI=true (LOOMWORKS_NO_DAEMON=0 overrides CI). CI is detected by the `CI`
+variable only: Jenkins and Azure Pipelines do not set it — set
+LOOMWORKS_NO_DAEMON=1 there.
+
+A started daemon keeps the environment of the command that started it (its
+PATH, compiler variables, …) for its whole life; restart it
+(`lw daemon restart`) after changing them.
 
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
@@ -11733,7 +11745,10 @@ local function main()
 
   -- In `runtime-mode daemon` every workspace command keeps the workspace
   -- daemon running (spec §19.1, §19.19 step 2); nothing is routed to it yet.
-  M._ensure_daemon(root)
+  -- Not the recovery commands: `trust` / `nuke` repair a refused workspace
+  -- and `unlock` clears stuck locks — none of them may wait on (or start) a
+  -- daemon.
+  if not M.NO_DAEMON_COMMANDS[command] then M._ensure_daemon(root) end
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).

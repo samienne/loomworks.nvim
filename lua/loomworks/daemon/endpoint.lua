@@ -325,10 +325,13 @@ end
 --- The caller holds the runtime lock.
 --- `cands` are the candidates computed earlier (the daemon computes them at
 --- start: hashing is not allowed inside libuv callbacks in the editor host).
+--- With `ino` (recorded when the daemon bound the socket), only the socket
+--- it bound — never one a successor bound at the same path since.
 --- @param root string
 --- @param addr string|nil
 --- @param cands? table[]
-function M.cleanup(root, addr, cands)
+--- @param ino? integer
+function M.cleanup(root, addr, cands, ino)
     if is_win() or type(addr) ~= "string" then return end
     local ok = false
     for _, c in ipairs(cands or posix_candidates(root)) do
@@ -336,7 +339,7 @@ function M.cleanup(root, addr, cands)
     end
     if not ok then return end
     local st = uv().fs_lstat(addr)
-    if st and st.type == "socket" then pcall(uv().fs_unlink, addr) end
+    if st and st.type == "socket" and (ino == nil or st.ino == ino) then pcall(uv().fs_unlink, addr) end
 end
 
 return M

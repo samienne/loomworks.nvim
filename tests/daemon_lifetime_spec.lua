@@ -349,6 +349,101 @@ describe("runtime-mode daemon with real processes", function()
     end)
 end)
 
+describe("review hardening of the ensure path (§19.7, §19.10)", function()
+    local LH = require("tests.lock_helpers")
+    local root
+    before_each(function() root = H.workspace() end)
+    after_each(function()
+        LH.cleanup() -- lock-holder helpers (they hold R in these tests)
+        if not uv.fs_stat(dpaths.lock_path(root)) then return end
+        H.track_root(root)
+        H.cleanup()
+    end)
+
+    local function run(extra)
+        local notes = {}
+        local o = { config = { ["runtime-mode"] = "daemon" }, note = function(l) notes[#notes + 1] = l end,
+            log = function() end, launch = function() error("must not launch") end,
+            getenv = function() return nil end }
+        for k, v in pairs(extra or {}) do o[k] = v end
+        local t0 = uv.hrtime()
+        local out = ensure.ensure(root, o)
+        return out, notes, (uv.hrtime() - t0) / 1e6
+    end
+
+    it("never connects to a handle naming a foreign endpoint", function()
+        local holder = LH.hold(dpaths.lock_path(root), "daemon", "daemon")
+        handle.write(root, { pid = holder.pid, host = require("loomworks.lock_record").this_host(),
+            endpoint = H.is_win and [[\\attacker-host\pipe\x]] or "/tmp/elsewhere.sock", protocol = 2 })
+        local connects = 0
+        local real = client.connect
+        client.connect = function(...) connects = connects + 1; return real(...) end
+        local out, notes = run()
+        client.connect = real
+        assert.equals("failed", out)
+        assert.equals(0, connects)
+        assert.equals(1, #notes)
+        assert.truthy(notes[1]:find("untrusted handle", 1, true), notes[1])
+    end)
+
+    it("a daemon stuck starting costs a command about a second, once, with one line", function()
+        local holder = LH.hold(dpaths.lock_path(root), "daemon", "daemon")
+        local out, notes, ms = run()
+        assert.equals("starting", out)
+        assert.equals(1, #notes)
+        assert.truthy(notes[1]:find("still starting", 1, true), notes[1])
+        assert.truthy(ms < 2500, ms .. " ms")
+    end)
+
+    it("a daemon alive but not answering costs a command about a second", function()
+        local env = H.env({ LW_TEST_HEARTBEAT_MS = "300", LW_TEST_DAEMON_TICK_MS = "300" })
+        assert.equals(0, H.lw({ "daemon", "restart" }, { env = env, cwd = root }).code)
+        local lk = H.track_root(root)
+        assert.is_true(proc._suspend(lk.pid))
+        trust._set_key_path(env.data .. "/trust.key")
+        local out, notes, ms = run()
+        trust._set_key_path(nil)
+        proc.kill_tree(lk.pid, lk.start_time) -- the suspended daemon (not a leftover)
+        assert.equals("failed", out)
+        assert.equals(1, #notes)
+        assert.truthy(ms < 2500, ms .. " ms")
+    end)
+
+    it("trust, nuke and unlock never start a daemon", function()
+        local env = H.env({ LOOMWORKS_RUNTIME = "daemon" })
+        for _, args in ipairs({ { "unlock", "--workspace" }, { "unlock", "--journal" }, { "nuke", "-y" },
+            { "--no-input", "trust" } }) do
+            H.lw(args, { env = env, cwd = root })
+            assert.is_nil(rlock.read(root), table.concat(args, " ") .. " started a daemon")
+        end
+    end)
+
+    if not H.is_win then
+        it("on root removal only the socket it bound is removed, not a successor's", function()
+            trust._set_key_path(H.tmp() .. "/trust.key")
+            local exited
+            local srv = server_mod.new(root, { exit = function(c) exited = c end, tick_ms = 100,
+                auth_timeout_ms = 30000 })
+            assert(srv:start())
+            local addr = srv.address
+            srv.timer:stop()
+            -- A successor's socket at the same path.
+            pcall(function() srv.listener:close() end)
+            os.remove(addr)
+            local other = uv.new_pipe(false)
+            assert(other:bind(addr))
+            vim.fn.delete(root, "rf")
+            srv:stop("test: root removed", 0)
+            assert.equals(0, exited)
+            assert.equals("socket", (uv.fs_lstat(addr) or {}).type)
+            other:close()
+            os.remove(addr)
+            trust._set_key_path(nil)
+            root = H.workspace()
+        end)
+    end
+end)
+
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()
