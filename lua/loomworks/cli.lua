@@ -10872,7 +10872,8 @@ Usage: lw [command] [args]
   publish           write loomworks.json from the working copy
   pull [<source>]   fold another checkout's working config into this one
   worktree <sub>    list the repo's git worktrees, or `add` a new one (+ pull)
-  daemon [status|stop]  inspect / stop the workspace daemon (see runtime-mode)
+  daemon <sub>      status | stop | run | protocol: the experimental workspace
+                    daemon (see runtime-mode)
   migrate [--check] bring the workspace files up to current conventions
   health            what this workspace needs: suggestions + inventory (--all: everything)
   module <sub>      install | update | remove | list acquirable modules (mod)
