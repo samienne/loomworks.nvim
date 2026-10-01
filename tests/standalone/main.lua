@@ -429,16 +429,12 @@ do
       "`lw install --help` prints install's host help  (got " .. inst .. ")")
     -- A host command's help IS its full help (the CLI reuses it), so it carries
     -- no "full help needs the bundle" note — which confused pinned-launcher users.
-    for _, cmd in ipairs({ "install", "self-update", "version", "bootstrap", "update" }) do
+    for _, cmd in ipairs({ "install", "self-update", "version", "bootstrap" }) do
       local s = t({ "help", cmd }) or ""
       ok(s ~= "" and not s:find("Full help needs", 1, true) and not s:find("full help", 1, true),
         "`lw help " .. cmd .. "` is complete, with no bundle note")
       ok(s:match("^[%w%p%s]*$") ~= nil, "`lw help " .. cmd .. "` is ASCII")
     end
-    local upd = t({ "help", "update" }) or ""
-    ok(upd:find("deprecated", 1, true) and upd:find("lw bootstrap install --latest", 1, true)
-      and upd:find("lw bootstrap install --version <x.y.z>", 1, true) and upd:find("--force", 1, true),
-      "`lw help update` states the deprecation and the equivalent bootstrap forms")
     local bsi = t({ "help", "bootstrap", "install" }) or ""
     ok(bsi:find("lw bootstrap install", 1, true) and bsi:find("--pin-only", 1, true)
       and not bsi:find("Which launcher", 1, true) and bsi:find("`lw help bootstrap` for the whole command", 1, true),
@@ -459,8 +455,8 @@ do
       "`lw help self-update` prints self-update's host help")
     ok((t({ "version", "-h" }) or ""):find("lw version", 1, true),
       "`lw version -h` prints version's host help")
-    ok((t({ "update", "--help" }) or ""):find("lw.pin", 1, true),
-      "`lw update --help` prints update's host help")
+    ok(help.TOPICS.update == nil and not (t({ "help", "update" }) or ""):find("deprecated", 1, true),
+      "`lw help update` has no topic: `lw update` is removed")
     local other = t({ "build", "--help" }) or ""
     ok(other:find("`lw build`", 1, true) and other:find("install [-y]", 1, true)
       and other:find(HINT, 1, true),
@@ -1660,13 +1656,6 @@ do
     ok(has(rep3, "wrote lw.sh") and has(rep3, "./lw.sh <cmd>"), "reports the new launchers  (" .. show(rep3) .. ")")
   end
 
-  -- ---- the deprecated `lw update` alias: needs a pin --------------------------
-  do
-    local _, e = bootstrap.install(sb .. "/nopin-update", { require_pin = true, latest = true })
-    ok(e and e:find("no lw.pin found", 1, true) and e:find("lw bootstrap install", 1, true),
-      "`lw update` without a pin refuses, naming `lw bootstrap install`  (" .. tostring(e) .. ")")
-  end
-
   -- ---- argument grammar ----------------------------------------------------------
   do
     local P = pin.parse_bootstrap_args
@@ -1691,12 +1680,6 @@ do
     ok(e and e:find("install, upgrade", 1, true), "an unknown sub-command is a usage error")
     _, e = P({ "bootstrap", "install", "--json" }, "bootstrap")
     ok(e ~= nil, "--json belongs to the status page")
-    o = P({ "update" }, "update")
-    ok(o and o.sub == "install" and o.latest and o.require_pin, "`lw update` = install --latest, needs a pin")
-    o = P({ "update", "--version", "1.2.3", "--force" }, "update")
-    ok(o and o.version == "1.2.3" and not o.latest and o.force, "`lw update --version X` = install --version X")
-    _, e = P({ "update", "--pin-only" }, "update")
-    ok(e ~= nil, "`lw update` takes only its old flags")
   end
 
   -- ---- status page ------------------------------------------------------------------
@@ -1831,13 +1814,22 @@ do
     local _, sout = run_host({ "bootstrap" }, { "LOOMWORKS_LAUNCHER=lw.sh" })
     ok(sout:find("./lw.sh bootstrap install", 1, true) and not sout:find("lw.cmd bootstrap", 1, true),
       "run from lw.sh, commands read ./lw.sh only")
-    -- F: usage errors and the deprecation line use the invoked form too
+    -- F: usage errors and the removed-`lw update` pointer use the invoked form too
     local ucode, uout = run_host({ "bootstrap", "--version", "1.2.3" }, { "LOOMWORKS_LAUNCHER=lw.cmd" })
     ok(ucode == 2 and uout:find(".\\lw.cmd bootstrap install --version 1.2.3", 1, true),
       "an old-flag usage error names the invoked form  (" .. uout .. ")")
-    local _, dout = run_host({ "update", "--version", "9.9.9-nope" }, { "LOOMWORKS_LAUNCHER=lw.sh" })
-    ok(dout:find("`./lw.sh update` is deprecated; use `./lw.sh bootstrap upgrade`", 1, true),
-      "the deprecation line names the invoked form  (" .. dout:sub(1, 200) .. ")")
+    -- `lw update` is removed: an unknown command (exit 2) that names its
+    -- replacements and does nothing else - the pin is untouched.
+    local pin_before = slurp(repo .. "/lw.pin")
+    local dcode, dout = run_host({ "update", "--version", "9.9.9-nope" }, { "LOOMWORKS_LAUNCHER=lw.sh" })
+    eq(dcode, 2, "`lw update` is a usage error")
+    eq((dout:gsub("\r?\n$", "")), "lw: unknown command 'update' - to move lw.pin to the newest release run " ..
+      "`./lw.sh bootstrap upgrade`; to update lw itself run `lw self-update`",
+      "`lw update` names its replacements in the invoked form, in one line")
+    eq(slurp(repo .. "/lw.pin"), pin_before, "`lw update` leaves lw.pin alone")
+    local hcode, hout = run_host({ "update", "--help" }, { "LOOMWORKS_LAUNCHER=lw.cmd" })
+    ok(hcode == 2 and hout:find("run `.\\lw.cmd bootstrap upgrade`", 1, true),
+      "`lw update --help` gets the same pointer  (" .. hout:sub(1, 200) .. ")")
   end
 
   uv.os_unsetenv("LOOMWORKS_RELEASE_URL")
@@ -1996,7 +1988,7 @@ do
     ok(launcher.render("sh"):find("LOOMWORKS_LAUNCHER=lw.sh", 1, true) ~= nil, "lw.sh names itself to the host")
     ok(launcher.render("cmd"):find('set "LOOMWORKS_LAUNCHER=lw.cmd"', 1, true) ~= nil, "lw.cmd names itself to the host")
     ok(not launcher.LW_SH:find("lw update", 1, true) and not launcher.LW_CMD:find("lw update", 1, true),
-      "the templates no longer name the deprecated `lw update`")
+      "the templates no longer name the removed `lw update`")
     local c36sh = launcher.GENERATIONS.sh["1fe5b9caafc2872e26eb971b4cea89411a08b8f9a3bc0f09db3ac7292c91b696"]
     local c36cmd = launcher.GENERATIONS.cmd["bb21d2287961a73e5946474b02ab24dd2378466b1531c568e3a4599370e577e3"]
     eq(c36sh and c36sh.releases, "0.1.36-beta.1-0.1.37-beta.1", "the previous lw.sh generation is catalogued")
@@ -2016,9 +2008,14 @@ do
   do
     local _, e = pin.parse_bootstrap_args({ "bootstrap", "--force" }, "bootstrap", { invoked = "lw.cmd" })
     ok(e and e:find(".\\lw.cmd bootstrap install --force", 1, true), "old-flag error in the lw.cmd form  (" .. tostring(e) .. ")")
-    eq(bootstrap.deprecation_line("lw.sh"),
-      "lw: `./lw.sh update` is deprecated; use `./lw.sh bootstrap upgrade` (or `./lw.sh bootstrap install --version <x.y.z>`)",
-      "the deprecation line in the invoked form")
+    eq(bootstrap.removed_update_line("lw.cmd"),
+      "lw: unknown command 'update' - to move lw.pin to the newest release run `.\\lw.cmd bootstrap upgrade`;" ..
+      " to update lw itself run `lw self-update`",
+      "the removed-`lw update` pointer in the invoked form")
+    eq(bootstrap.removed_update_line("global"),
+      "lw: unknown command 'update' - to move lw.pin to the newest release run `lw bootstrap upgrade`;" ..
+      " to update lw itself run `lw self-update`",
+      "the removed-`lw update` pointer for the global lw")
   end
 
   uv.os_unsetenv("LOOMWORKS_RELEASE_URL")

@@ -1452,9 +1452,10 @@ git commit -m "Add the pinned lw launcher"
 > **Changed in 0.1.37.** Plain `lw bootstrap` used to write the files; it is now
 > a read-only status page, and `lw bootstrap install` writes them (the old flags
 > on plain `lw bootstrap` — `--version`, `--force` — are an error naming the new
-> form). `lw update` is deprecated: it still works for now, with a notice, as
-> `lw bootstrap install --latest` (`lw update --version X` as `lw bootstrap
-> install --version X`); use `lw bootstrap upgrade`.
+> form). `lw update`, deprecated in 0.1.37, has since been removed: use `lw
+> bootstrap upgrade` (or `lw bootstrap install --version X`) to move the pin, and
+> `lw self-update` to update lw itself. `lw update` now only prints that pointer
+> and exits 2.
 
 `install` writes three committed files:
 
@@ -1621,7 +1622,6 @@ silently ignored; arguments for the program or build tool go after `--`.
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
 | `lw bootstrap upgrade` | `lw bootstrap install --latest`: move the pin to the newest release |
-| `lw update` | Deprecated: `lw bootstrap install --latest` (`--version X`: `install --version X`) |
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command

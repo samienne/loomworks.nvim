@@ -158,7 +158,7 @@ execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 `lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
-pruning by `lw bootstrap install` / `upgrade` and the deprecated `lw update`)) **must** be reviewed for
+pruning by `lw bootstrap install` / `upgrade`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -427,9 +427,9 @@ These are implementation-specific details not covered by the spec or architectur
 - **Repo-local launcher + version pin** (spec §16.21–16.24): `lw bootstrap
   install` commits `lw.sh`/`lw.cmd`/`lw.pin` (or only the pin, `--pin-only`) so
   a repo runs a pinned, verified `lw` with no prior install; plain `lw
-  bootstrap` is the read-only status page, `upgrade` = `install --latest`,
-  `lw update` a deprecated alias (all dispatched in `main.lua` BEFORE pinned
-  bundle provisioning). `boot/launcher_check.lua` is the ONE implementation of
+  bootstrap` is the read-only status page, `upgrade` = `install --latest`
+  (dispatched in `main.lua` BEFORE pinned bundle provisioning; the removed
+  `lw update` only gets a one-line pointer there, exit 2). `boot/launcher_check.lua` is the ONE implementation of
   the launcher/pin checks, shared by the status page and health provider #4
   (`loomworks/launcher_health.lua` is only an adapter). `boot/pin.lua` is pure (parse/serialize `lw.pin`, asset
   selection via `HOST_ASSETS`, `decide{}` redirect action); `boot/bootstrap.lua`

@@ -1,5 +1,5 @@
 -- Host-level help: the help of the HOST's own commands (version, self-update,
--- install, bootstrap and the deprecated update) — the single source of that text (spec §16.7):
+-- install, bootstrap) — the single source of that text (spec §16.7):
 -- the bundle's CLI reuses these topics for `lw help <host command>`, so the
 -- answer is the same with or without a bundle. Also what `lw help` / `-h` /
 -- `--help` / `lw <cmd> --help` print when no loomworks system Lua is available
@@ -208,19 +208,6 @@ Bypass the pin with `--no-pin`, or LOOMWORKS_LW=<path> to run a specific binary
 (`lw help launcher`). Before lw 0.1.37 plain `lw bootstrap` wrote the files; it
 now only reports - use `lw bootstrap install`. A host command (handled by lw
 itself); never redirected by an existing pin.]==],
-
-  update = [==[lw update [--version <x.y.z>] [--force]      (deprecated)
-
-`lw update` is deprecated and will be removed in a later release. It still
-works, printing a one-line notice, and does exactly what these do:
-
-  lw update                    ->  lw bootstrap install --latest   (= lw bootstrap upgrade)
-  lw update --version <x.y.z>  ->  lw bootstrap install --version <x.y.z>
-  --force                      ->  the same --force
-
-Like before it needs a repository that already has an lw.pin. `--latest` now
-follows your update channel (`lw help self-update`); on the default stable
-channel nothing changes. See `lw help bootstrap`.]==],
 }
 
 local USAGE = [[lw - loomworks standalone runner

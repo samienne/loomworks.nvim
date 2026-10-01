@@ -265,9 +265,8 @@ This applies to the host's own commands as well: pin management's help
 (`lw help bootstrap`) is organised by sub-command — the status page, `install`,
 `upgrade` — so `lw help bootstrap install` and `lw bootstrap install --help`
 print only the `install` part with a pointer to the whole, from the host's own
-help text, with or without a bundle. The deprecated `update` keeps a help topic
-of its own that states the deprecation and the equivalent `bootstrap` forms.
-Asking for help of a writing sub-command never performs it.
+help text, with or without a bundle. The removed `update` (§16.24) has no help
+topic. Asking for help of a writing sub-command never performs it.
 
 ### 16.8 Host-determined module availability
 
@@ -970,8 +969,8 @@ POSIX signal sent to its process only) is forwarded to the pinned host.
 
 Redirection applies only to workspace operations. **Host and management
 operations** — reporting the host version, self-update, install, and pin
-management (§16.24: the status page, `install`, `upgrade` and the deprecated
-`update`) — MUST NOT redirect; they always run as the invoked (global)
+management (§16.24: the status page, `install` and `upgrade`) — MUST NOT
+redirect; they always run as the invoked (global)
 host, so that, for example, updating the pin is never carried out by the old
 pinned version. Redirection MUST be guarded against recursion: once a host is
 running as the pinned version with the pinned bundle loaded, it never redirects
@@ -984,7 +983,7 @@ path); and a development source (§16.11) likewise bypasses. The first redirect 
 provision of an invocation emits a one-line notice rather than stalling silently.
 
 The rule is the same when a launcher runs the host (pinned context, §16.22):
-`./lw.sh bootstrap …` and the deprecated `./lw.sh update` are management
+`./lw.sh bootstrap …` (and the removed `./lw.sh update`'s pointer) are management
 operations of the pinned host itself — dispatched before any redirect decision
 and, since they need no system Lua, before bundle provisioning (§16.24).
 
@@ -1024,7 +1023,6 @@ one writing sub-command:
 | `lw bootstrap [--json] [--check]` | **Status page**: reports the pin, the launchers and the repository metadata, then what the user can do. Writes nothing. |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <name>]] [--pin-only] [--force]` | **Converge**: brings the repository from any start state to a correct pin (and, unless `--pin-only`, launchers) plus metadata. First install, repair and version bump are all this one command. |
 | `lw bootstrap upgrade [--channel <name>] [--pin-only] [--force]` | Alias of `lw bootstrap install --latest …`. |
-| `lw update [--version <x.y.z>] [--force]` | **Deprecated** alias (below). |
 
 All of them are **management operations** (§16.9): they never redirect
 (§16.23) and run as whichever host is invoked. They need no system Lua — a
@@ -1049,7 +1047,7 @@ install that creates a pin there says so in its report, since a pin below the
 top is only found from inside that subdirectory.
 
 **Invoked form.** Every command lw prints for pin management — on the status
-page, in a report, a remedy, a usage error or the deprecation notice — is
+page, in a report, a remedy, a usage error or the removed-`update` pointer — is
 spelled in the form that was invoked. A repo launcher **names itself** to the
 host it runs (§16.22), so run through `lw.sh` the commands read `./lw.sh …` and
 run through `lw.cmd` they read `.\lw.cmd …`; a pinned context whose launcher did
@@ -1378,19 +1376,26 @@ the pinned bundle first (§16.22): `./lw.sh bootstrap` reports its local checks
 offline, and a pin whose bundle entry is wrong can still be repaired through the
 launcher.
 
-#### Deprecated `lw update`
+#### Removed `lw update`
 
-`lw update` keeps working for **at least one release** after this change as a
-deprecated alias with its old meaning: `lw update` → `lw bootstrap install
---latest`, `lw update --version <x.y.z>` → `lw bootstrap install --version
-<x.y.z>`, `--force` carried over. As before it requires an existing pin (with
-none, the error names `lw bootstrap install`). It first prints one line to
-standard error — "lw: `lw update` is deprecated; use `lw bootstrap upgrade` (or
-`lw bootstrap install --version <x.y.z>`)", every command in the invoked form
-(`./lw.sh update` … through `lw.sh`) — then behaves exactly as the target form. Its old default "latest" read only the default release base (the stable
-channel); as an alias it follows `--latest`'s channel resolution, which is the
-same for users on the default channel. It is not offered by shell completion;
-`lw help update` prints the deprecation and the equivalent forms.
+`lw update` was the pin-bump command before `lw bootstrap`'s sub-commands; it
+was kept from 0.1.37 through 0.1.42 as a deprecated alias of `lw bootstrap
+install --latest` and is now **removed**. It is an unknown command, with one
+difference from any other unknown command: the host answers it itself — before
+pinned-bundle provisioning, without a bundle or a workspace, and also when it
+carries `--help` / `-h` — with one line on standard error naming both commands
+it is likely to have meant, then exits 2 (a usage error) having changed
+nothing:
+
+```
+lw: unknown command 'update' - to move lw.pin to the newest release run `lw bootstrap upgrade`; to update lw itself run `lw self-update`
+```
+
+The `bootstrap upgrade` command is in the invoked form (`./lw.sh bootstrap
+upgrade` through `lw.sh`); `lw self-update` is always the global form. The
+nvim-hosted fallback CLI answers the same way. It is not offered by shell
+completion and has no help topic. A host older than this change still runs its
+own deprecated alias; nothing in the bundle is involved.
 
 **Plain `lw bootstrap` changes meaning.** Before this change `lw bootstrap`
 wrote the pin and launchers; now it is the read-only status page. A user who

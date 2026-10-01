@@ -102,7 +102,7 @@ describe("`lw <command> --help`", function()
     for _, topic in ipairs({ "status", "build", "clean", "reset", "unlock", "run", "target",
       "launch", "test", "init", "workspace", "migrate", "cache", "health", "module", "publish",
       "pull", "worktree", "project", "config", "configset", "profile", "settings", "completion",
-      "version", "install", "self-update", "bootstrap", "update", "agent", "sdk", "ci", "tools",
+      "version", "install", "self-update", "bootstrap", "agent", "sdk", "ci", "tools",
       "trust", "nuke", "submodules", "device" }) do
       local t = help_text(topic)
       assert.is_nil(t:find("§", 1, true), topic .. ": " .. (t:match("[^\n]*§[^\n]*") or ""))
@@ -136,5 +136,17 @@ describe("CI pattern in `lw help build` / `lw help test`", function()
       assert.is_truthy(t:find("lw profile create <set> <tool>", 1, true), topic)
       assert.is_truthy(t:find("<set>:<tool>", 1, true), topic)
     end
+  end)
+end)
+
+describe("removed `lw update` (nvim-hosted fallback)", function()
+  it("is an unknown command (exit 2) that names its replacements", function()
+    local root = make_root()
+    local r = run_main({ "update" }, root)
+    vim.fn.delete(root, "rf")
+    assert.equals(2, r.exit_code)
+    assert.is_truthy(r.stderr:find("unknown command 'update'", 1, true), r.stderr)
+    assert.is_truthy(r.stderr:find("`lw bootstrap upgrade`", 1, true), r.stderr)
+    assert.is_truthy(r.stderr:find("`lw self-update`", 1, true), r.stderr)
   end)
 end)

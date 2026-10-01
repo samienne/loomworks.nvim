@@ -356,7 +356,7 @@ M.GENERATIONS = {
     ["1fe5b9caafc2872e26eb971b4cea89411a08b8f9a3bc0f09db3ac7292c91b696"] = {
       gen = 2, releases = "0.1.36-beta.1-0.1.37-beta.1",
       defects = {
-        { severity = "minor", text = "does not tell lw which launcher ran it; names the deprecated `lw update`" },
+        { severity = "minor", text = "does not tell lw which launcher ran it; names the removed `lw update`" },
       },
     },
     -- v0.1.6 .. v0.1.35 (lw.sh unchanged by v0.1.35)
@@ -389,7 +389,7 @@ M.GENERATIONS = {
       gen = 4, releases = "0.1.36-beta.2-0.1.37-beta.1",
       defects = {
         { severity = "minor", text = "does not tell lw which launcher ran it (lw then prints ./lw.sh commands);" ..
-          " names the deprecated `lw update`" },
+          " names the removed `lw update`" },
       },
     },
     -- v0.1.37-beta.2 .. v0.1.39

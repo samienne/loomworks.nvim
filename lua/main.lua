@@ -3,8 +3,7 @@
 -- The only Lua fused into the host binary. It carries no behavioral logic; it
 -- (1) resolves where *system Lua* (the loomworks implementation) comes from,
 -- (2) handles the host-level commands `version`, `self-update`, `install`,
--- `bootstrap` and the deprecated `update` (which must work even with no bundle
--- installed) —
+-- and `bootstrap` (which must work even with no bundle installed) —
 -- and, when there is no system Lua at all, their help (boot.help) — and
 -- (3) runs the CLI from the resolved source.
 --
@@ -155,7 +154,7 @@ local pin_root = pin.find_pin_root(paths.norm(getenv("LW_ROOT")) or uv.cwd())
 
 -- ---- host commands: version / self-update (work without a bundle) -----------
 -- Detect the subcommand tolerant of a leading global flag (e.g.
--- `lw --no-input update`), the same way the redirect classifies it — otherwise a
+-- `lw --no-input self-update`), the same way the redirect classifies it — otherwise a
 -- flag-prefixed host command would fall through to the nvim-hosted CLI.
 local command = subcommand(forwarded)
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
@@ -198,11 +197,19 @@ do
 end
 
 -- ---- pin management (spec §16.24) -----------------------------------------
--- `lw bootstrap [install|upgrade]` and the deprecated `lw update` run as the
--- invoked host, never redirect, and need no system Lua — so they are handled
--- here, BEFORE pinned-context bundle provisioning: `./lw.sh bootstrap` works
--- offline and can repair a pin whose bundle entry is wrong.
-if host_command == "bootstrap" or host_command == "update" then
+-- `lw bootstrap [install|upgrade]` runs as the invoked host, never redirects,
+-- and needs no system Lua — so it is handled here, BEFORE pinned-context bundle
+-- provisioning: `./lw.sh bootstrap` works offline and can repair a pin whose
+-- bundle entry is wrong.
+--
+-- `lw update` (deprecated in 0.1.37, since removed) is an unknown command that
+-- still names its replacements — here, so the pointer needs no bundle and no
+-- workspace, and `lw update --help` gets it too.
+if command == "update" then
+  io.stderr:write(require("boot.bootstrap").removed_update_line(invoked_form) .. "\n")
+  exit(2)
+end
+if host_command == "bootstrap" then
   local bootstrap = require("boot.bootstrap")
   local invoked = invoked_form
   local o, perr = pin.parse_bootstrap_args(forwarded, command, { invoked = invoked })
@@ -228,15 +235,12 @@ if host_command == "bootstrap" or host_command == "update" then
     end
     exit(st.exit)
   end
-  if command == "update" then
-    io.stderr:write(bootstrap.deprecation_line(invoked) .. "\n")
-  end
   -- The running executable is never pruned from the launcher cache (under
   -- `./lw.sh bootstrap install` it IS a cached binary, still executing).
   local okx, running_exe = pcall(uv.exepath)
   local report, err = bootstrap.install(start, {
     version = o.version, latest = o.latest, channel = o.channel, pin_only = o.pin_only,
-    force = o.force, require_pin = o.require_pin, host_version = host_version, invoked = invoked,
+    force = o.force, host_version = host_version, invoked = invoked,
     -- The launcher templates are the HOST's (boot.launcher), so the "written
     -- by an older lw" hint compares against the host's own release version
     -- (nil for a development build, whose templates are the newest).
@@ -245,8 +249,7 @@ if host_command == "bootstrap" or host_command == "update" then
   })
   if report then for _, line in ipairs(report) do io.write(line .. "\n") end end
   if err then
-    io.stderr:write("lw: " .. (command == "update" and "update" or "bootstrap install") ..
-      " failed: " .. tostring(err) .. "\n")
+    io.stderr:write("lw: bootstrap install failed: " .. tostring(err) .. "\n")
     exit(1)
   end
   exit(0)

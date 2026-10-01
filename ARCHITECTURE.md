@@ -1527,14 +1527,15 @@ with no prior install (spec §16.21–16.24). Layers:
   `lw-<valid version>-<HOST_ASSETS value>` directly in `<root>/.nvim/cache`
   (lstat, separator-bounded prefix check, never the running exe); listed under
   CLAUDE.md "Deletion Safety".
-- **`boot/bootstrap.lua`** — `status` / `install` (and the `upgrade` / `update`
-  aliases, which only preset `install`'s options). `status(start, opts)` →
+- **`boot/bootstrap.lua`** — `status` / `install` (and the `upgrade` alias,
+  which only presets `install`'s options; `removed_update_line(invoked)` is the
+  removed `lw update`'s one-line pointer). `status(start, opts)` →
   `{ lines[], doc, exit }`: `launcher_check.run` + the bounded release probe
   (`update.resolve_newest_version` with health's fetch limits) + the tailored
   "What you can do" actions; `doc` is the `--json` document (encoded by
   `boot/json.lua`, sorted keys; `json.array()` marks arrays so an empty one
   encodes as `[]`). The argument grammar (`pin.parse_bootstrap_args`, pure) maps
-  `upgrade` / `update` onto install options and rejects the old flags on the
+  `upgrade` onto install options and rejects the old flags on the
   status page (exit 2). `install(start, opts)` resolves the target
   (pin root or start dir) and the version (explicit > `--latest` via
   `resolve_newest_version` with the never-backwards rule > pinned > host), then:
@@ -1594,17 +1595,17 @@ with no prior install (spec §16.21–16.24). Layers:
   pinned binary (machine-local), provisions + verifies the pinned bundle and runs
   `check_legacy_pinned_bundle`, sets the sentinel + `LW_ROOT`, and `uv.spawn`s it with inherited
   stdio, propagating the child's exit code. `--no-pin`, `LOOMWORKS_LW`, and a dev
-  source bypass; `version`/`self-update`/`install`/`bootstrap`/`update` are host
+  source bypass; `version`/`self-update`/`install`/`bootstrap` are host
   commands handled before the redirect, so they never redirect. `bootstrap`
-  (and the deprecated `update`) are dispatched **before** pinned-context bundle
-  provisioning too — they need no system Lua — so `./lw.sh bootstrap` works
+  (and the removed `update`'s pointer, exit 2, even with `--help`) are
+  dispatched **before** pinned-context bundle provisioning too — they need no system Lua — so `./lw.sh bootstrap` works
   offline and can repair a pin whose bundle entry is wrong. Before that,
   `main.lua` reads `LOOMWORKS_LAUNCHER` (set by the launchers since
   0.1.37-beta.2) into `invoked_form` / `_G.__loomworks_invoked` and unsets it so
   children do not inherit it. `main.lua` only
   parses argv (`pin.parse_bootstrap_args`) into `{ sub = nil|"install"|"upgrade", version, latest, channel,
-  pin_only, force, json, check }` (usage errors exit 2), prints the one-line
-  deprecation on `update`, and calls `boot.bootstrap`.
+  pin_only, force, json, check }` (usage errors exit 2) and calls
+  `boot.bootstrap`.
 
 Security: the origin is fixed in the host (user-overridable only via
 `LOOMWORKS_RELEASE_URL`); the pin carries a version + hashes, never a URL; the
@@ -1663,11 +1664,11 @@ per-sub-command sections for `bootstrap`), `whats_new.lua` self-update's
 "what's new" lines rendered from the new bundle's notes (sandboxed load) + the
 last-seen record, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap` status page +
-`install`/`upgrade` (+ the deprecated `update`), `launcher.lua` the launcher
+`install`/`upgrade` (+ the removed `update`'s pointer), `launcher.lua` the launcher
 templates, `launcher_check.lua` the shared launcher/pin checks), `lua/loomworks/shim/`, `modules.json` (the curated
 module index), `bin/lw`, `bin/lw.cmd` exist. The bootstrap intercepts the host
-commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
-`lw update`, and redirects workspace ops to a repo's pinned `lw`; with no
+commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap`
+(and answers the removed `lw update` with a pointer), and redirects workspace ops to a repo's pinned `lw`; with no
 system Lua at all (release host, no bundle yet) it answers help requests from
 `boot.help` instead of failing with "no loomworks release is installed"; `lw module` is
 a CLI command (system Lua) that calls into `boot.modules`.
