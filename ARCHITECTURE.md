@@ -399,7 +399,8 @@ plugin/loomworks.lua
           → ws:_cleanup_orphaned_skeletons()
           → ws:remerge()                               ← merge + sync all registries
           → state = "initialized", emit "workspace_changed"
-          → unsigned (pre-trust) cache → notice + ws:_save_cache() (signed)
+          → unsigned (pre-trust) cache → notice only; held as empty in memory,
+            replaced by the next cache write (loading never writes)
           → ws:_start_tracking(paths)                  ← file watcher owned by Workspace
           → ws:_scan_tools_async()
             → tool_state = "scanning", emit "tools_scanning"

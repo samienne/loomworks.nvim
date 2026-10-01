@@ -74,6 +74,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   local+shared); only new items take theirs from `loomworks.json`. Exporting
   and importing on the same workspace no longer turns shared items local.
   `--shared` and `--local` still override. (#102)
+- `lw import` keeps the workspace's own name instead of taking the exported
+  one; the summary shows the export's name when it differs, and the new
+  `--take-name` option adopts it. (#104)
 - `lw import` replaces a working copy that is not signed by this machine (for
   example one written by an older `lw` in a worktree) instead of refusing:
   `--dry-run` always works, and a confirmed import replaces the file unread,
@@ -113,6 +116,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- Read-only commands (`lw status`, `lw profile list`, `lw export`,
+  `lw import --dry-run`, `lw health`, ...) and the editor no longer rewrite a
+  build cache written by an earlier loomworks (unsigned) when they load the
+  workspace: it is ignored in memory and replaced only by the next command
+  that writes the cache. (#104)
+- The `lw import` summary printed the active profile twice; it now appears
+  once, under the table. (#104)
 - The `lw import` summary now lists everything the import resets: each intent
   change, whether the active profile is kept, and the device selections and
   fill values dropped with removed profiles. It warned that the next

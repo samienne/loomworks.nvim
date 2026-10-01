@@ -94,7 +94,7 @@ M.COMMANDS = {
   -- `lw export` / `lw import` (§16.39). A lone `-` is an operand (stdout/stdin).
   export = spec({ flags = { "--published", "--no-profiles" }, valued = { "-o", "--output" },
     eq = { "--output=" } }),
-  import = spec({ flags = { "-y", "--yes", "-n", "--dry-run", "--break-locks" }, eq = BREAK_EQ }),
+  import = spec({ flags = { "-y", "--yes", "-n", "--dry-run", "--take-name", "--break-locks" }, eq = BREAK_EQ }),
   status = spec({ flags = { "--check", "--cache-stats" } }),
   -- `--force` / `--refresh` predate health re-checking everything; kept as no-ops.
   -- Positional words are health areas (§16.36).
