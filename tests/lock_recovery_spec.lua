@@ -408,6 +408,23 @@ describe("state recovery of a killed holder's build directory (§19.5 step 5)", 
         assert.equals(1, r.exit_code)
         assert.is_truthy(r.stderr:find("not a directory under the workspace root", 1, true), r.stderr)
     end)
+
+    it("lw unlock --force never follows '..' out of the workspace", function()
+        local root = make_ws()
+        local ws = assert(cli._load_workspace(root, false))
+        local outside = root .. "-outside"
+        vim.fn.mkdir(outside, "p")
+        local lockf = outside .. "/x.loomworks-lock"
+        local f = assert(io.open(lockf, "wb")); f:write("{}"); f:close()
+        local base = outside:match("[^/]+$")
+        local r = capture(function()
+            cli.cmd_unlock(ws, { "unlock", "--force", ".nvim/../../" .. base .. "/x" })
+        end)
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stderr:find("no '.' or '..' segments", 1, true), r.stderr)
+        assert.is_not_nil(uv.fs_stat(lockf), "a lockfile outside the workspace was removed")
+        vim.fn.delete(outside, "rf")
+    end)
 end)
 
 describe("lock order (§19.3)", function()

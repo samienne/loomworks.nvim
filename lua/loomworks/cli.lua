@@ -1797,6 +1797,14 @@ function M._unlock_build_dirs(ws, all, name, force)
       for _, bd in ipairs(profile_build_dirs(hit)) do targets[#targets + 1] = bd end
     else
       local p = name:gsub("\\", "/"):gsub("/+$", "")
+      -- No `.` / `..` segments: the prefix check below compares spellings,
+      -- so `../x` must never pass for a path under the root.
+      for seg in p:gmatch("[^/]+") do
+        if seg == "." or seg == ".." then
+          die("a build directory is named by a plain path under the workspace root "
+            .. "(no '.' or '..' segments): " .. name)
+        end
+      end
       if not (p:match("^%a:/") or p:sub(1, 1) == "/") then p = ws.root .. "/" .. p end
       local nr, np = norm_cmp(ws.root), norm_cmp(p)
       if np:sub(1, #nr + 1) ~= nr .. "/" then

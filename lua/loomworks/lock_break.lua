@@ -61,8 +61,8 @@ function M.can_break(info, ctx)
     if info.state ~= "hung" and info.state ~= "live" then
         return false, lock_record.busy_message(info, bctx)
     end
-    if type(info.pid) ~= "number" or info.pid == lock_record.this_pid() then
-        return false, (ctx.what or "the lock") .. " is held by this process"
+    if type(info.pid) ~= "number" or proc.ancestors()[info.pid] then
+        return false, (ctx.what or "the lock") .. " is held by this process or one that started it"
     end
     if type(info.start_time) ~= "string" or proc.alive(info.pid, info.start_time) == nil then
         return false, string.format("%s is held by %s (pid %s), whose process start time cannot be "

@@ -360,6 +360,16 @@ dangerous things.
   native children only: a grandchild started through an MSYS/Cygwin shell
   (for example `sleep` under Git's `sh`) has no Windows parent link to the
   holder and survives the kill.
+- A holder is identified by host name, process id and start time. Processes
+  in different PID namespaces that report the same host name (containers
+  sharing a hostname, or sharing a checkout over a bind mount) are not told
+  apart: a holder in another namespace looks dead (its id is unknown here) or,
+  if the id is taken, like a different process — its lock is reclaimed. Give
+  such containers distinct host names, or do not share one checkout between
+  them.
+- `--break-locks` never signals the calling process or any of its ancestors;
+  descendants are signalled only while they are still the process seen in the
+  snapshot (same id and start time).
 
 **Required tests.**
 

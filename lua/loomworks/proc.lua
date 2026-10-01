@@ -306,47 +306,81 @@ local function snapshot()
     return list
 end
 
---- The descendants of `pid` (children first-level first), from one snapshot.
---- On Windows, where a parent id is never updated when the parent exits, a
---- process counts as a child only if it started after its parent (an older
---- process whose dead parent had the same id is not one).
+--- The descendants of `pid` (children first-level first), from one snapshot,
+--- each with the start time it had then: `{ pid, start }`. A descendant whose
+--- start time cannot be read is left out — it is never signalled unverified.
+--- A process counts as a child only if it started no earlier than its parent
+--- (on Windows a parent id is never updated when the parent exits, so an
+--- older process whose dead parent had the same id is not one). This process
+--- and its ancestors are never included.
 --- @param pid integer
---- @return integer[]
+--- @return { pid: integer, start: string }[]
 function M.descendants(pid)
+    local snap = snapshot()
     local by_parent = {}
-    for _, e in ipairs(snapshot()) do
+    for _, e in ipairs(snap) do
         if e.pid ~= e.ppid then
             by_parent[e.ppid] = by_parent[e.ppid] or {}
             table.insert(by_parent[e.ppid], e.pid)
         end
     end
-    local out, seen, queue = {}, { [pid] = true }, { pid }
+    local protected = M.ancestors(snap)
     local starts = {}
-    local function start_num(p)
+    local function start_of(p)
         if starts[p] == nil then
-            local st = OS == "Windows" and win_start_time(p) or nil
-            starts[p] = type(st) == "string" and tonumber(st:match("(%d+)$")) or false
+            local st = M.start_time(p)
+            starts[p] = type(st) == "string" and st or false
         end
         return starts[p]
     end
+    local function num(st) return tonumber((st:match("([%d%.]+)$") or ""):match("^(%d+)")) end
+    local out, seen, queue = {}, { [pid] = true }, { pid }
     while #queue > 0 do
         local parent = table.remove(queue, 1)
         for _, child in ipairs(by_parent[parent] or {}) do
-            if not seen[child] then
-                local okc = true
-                if OS == "Windows" then
-                    local ps, cs = start_num(parent), start_num(child)
-                    okc = ps and cs and cs >= ps or false
-                end
-                if okc then
-                    seen[child] = true
-                    out[#out + 1] = child
-                    queue[#queue + 1] = child
+            if not seen[child] and not protected[child] then
+                seen[child] = true
+                local cs, ps = start_of(child), start_of(parent)
+                if cs and ps then
+                    local cn, pn = num(cs), num(ps)
+                    if not (cn and pn) or cn >= pn then
+                        out[#out + 1] = { pid = child, start = cs }
+                        queue[#queue + 1] = child
+                    end
                 end
             end
         end
     end
     return out
+end
+
+--- This process and its ancestors, as a set of pids (walked up the parent
+--- ids of one snapshot; on Windows a parent counts only while it started no
+--- later than its child). `--break-locks` never signals any of them.
+--- @param snap? table a snapshot (default: a fresh one)
+--- @return table<integer, boolean>
+function M.ancestors(snap)
+    local parent_of = {}
+    for _, e in ipairs(snap or snapshot()) do parent_of[e.pid] = e.ppid end
+    local me = uv().os_getpid and uv().os_getpid() or nil
+    local set = {}
+    if not me then return set end
+    set[me] = true
+    local cur, n = me, 0
+    while n < 64 do
+        n = n + 1
+        local p = parent_of[cur] or (cur == me and uv().os_getppid and uv().os_getppid()) or nil
+        if not p or p <= 0 or set[p] then break end
+        if OS == "Windows" then
+            local cs, ps = win_start_time(cur), win_start_time(p)
+            local cn = type(cs) == "string" and tonumber(cs:match("(%d+)$")) or nil
+            local pn = type(ps) == "string" and tonumber(ps:match("(%d+)$")) or nil
+            if not (cn and pn) or pn > cn then break end
+        end
+        set[p] = true
+        cur = p
+    end
+    return set
 end
 
 --- Terminate one process (Windows: verifying the start time on the handle
@@ -373,15 +407,18 @@ end
 
 --- Kill the process tree of the holder `pid` whose recorded start time is
 --- `st` (spec §19.5 step 2): the holder and its enumerated descendants, by
---- force. A process whose start time no longer matches is never signalled.
---- `extra` adds descendants enumerated earlier (before an ask step) that are
---- still running. Returns true when the holder no longer exists afterwards.
+--- force. A process whose start time no longer matches is never signalled,
+--- nor is this process or one of its ancestors. `extra` adds descendants
+--- enumerated earlier (`descendants`, before an ask step) that are still the
+--- same processes. Returns true when the holder no longer exists afterwards.
 --- @param pid integer
 --- @param st string the holder's recorded start time
 --- @param extra? integer[]
 --- @return boolean gone, string|nil err
 function M.kill_tree(pid, st, extra)
     if type(st) ~= "string" then return false, "the holder's start time is unknown" end
+    local protected = M.ancestors()
+    if protected[pid] then return false, "process " .. tostring(pid) .. " is this process or its ancestor" end
     local alive = M.alive(pid, st)
     local desc = {}
     if alive then
@@ -389,15 +426,25 @@ function M.kill_tree(pid, st, extra)
         desc = M.descendants(pid)
     end
     local seen = {}
-    for _, d in ipairs(desc) do seen[d] = true end
+    for _, d in ipairs(desc) do seen[d.pid] = true end
     for _, d in ipairs(extra or {}) do
-        if not seen[d] then seen[d] = true; desc[#desc + 1] = d end
+        if type(d) == "table" and not seen[d.pid] then seen[d.pid] = true; desc[#desc + 1] = d end
     end
     if alive then
         if OS == "Windows" then win_kill(pid, st) else pcall(uv().kill, pid, "sigkill") end
     end
+    -- Each descendant is signalled only if it is still the process recorded
+    -- in the snapshot (same id AND start time) — never a reused id, never this
+    -- process or an ancestor. On Windows the check is made on the very handle
+    -- that is terminated.
     for _, d in ipairs(desc) do
-        if OS == "Windows" then win_kill(d, nil) else pcall(uv().kill, d, "sigkill") end
+        if not protected[d.pid] and type(d.start) == "string" then
+            if OS == "Windows" then
+                win_kill(d.pid, d.start)
+            elseif M.alive(d.pid, d.start) == true then
+                pcall(uv().kill, d.pid, "sigkill")
+            end
+        end
     end
     -- Verify (step 3): the holder is gone. Poll briefly: a killed process can
     -- take a moment to leave the process table.
