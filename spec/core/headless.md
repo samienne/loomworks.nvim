@@ -1739,7 +1739,9 @@ uses — reset introduces no private channel:
   reset removes nothing and exits non-zero, naming the holder — it can never
   rm a directory a build is using. Conversely, once reset holds the lock, the
   editor's build of that directory fails to acquire and declines, so neither
-  side deletes or writes a directory the other is operating on.
+  side deletes or writes a directory the other is operating on. Before the
+  build locks, reset takes the workspace operation lock (§19.3), so it never
+  interleaves with a publish, import, rename or another reset or nuke.
 - *Reload to unconfigured.* Reset's cache rewrite is an ordinary external change
   to the cache file; the editor's file reconciliation observes it and remerges,
   so the reset units surface as `unconfigured` without any manual reload. No

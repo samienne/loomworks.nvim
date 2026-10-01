@@ -182,6 +182,14 @@ function M.set_operation(build_dir, operation)
     M.update_record(h, { operation = operation, action = operation })
 end
 
+--- Does this process hold the lock of `build_dir`?
+--- @param build_dir string
+--- @return boolean
+function M.held_by_me(build_dir)
+    local h = _held[held_key(lock_path(build_dir))]
+    return h ~= nil and not h.released
+end
+
 --- Release a held lock.
 --- @param handle table|nil
 function M.release(handle)

@@ -764,6 +764,21 @@ function M.make_test_deps(files, opts)
     end
 
     local deps = {
+        -- In-memory cross-process locks: a fake root must never get lockfiles
+        -- on the real file system (spec §19.3 locks are exercised for real in
+        -- tests/lock_recovery_spec.lua and tests/op_lock_spec.lua).
+        locks = {
+            op = {
+                acquire = function() return { fake = true } end,
+                release = function() end,
+                reclaimed_line = function() return "" end,
+            },
+            build = {
+                acquire = function(dir) return { path = dir, fake = true } end,
+                held_by_me = function() return false end,
+                release = function() end,
+            },
+        },
         io = {
             read_file = file_lookup,
             write_json = function() return true end,

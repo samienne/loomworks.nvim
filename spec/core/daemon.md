@@ -105,11 +105,11 @@ exception after the transition is a **version-bypass run** (§19.9).
 
 ### 19.3 Operation locks
 
-*Status: master for build-directory locks (§16.6), device locks (§18.7) and
-per-file save locks (§2.7), all with the §19.5 record, and for the canonical
-order of build directories; future for the workspace operation lock, the full
-lock order, and `lw nuke` taking build locks. This is step 1 of §19.19 and
-comes before any lifetime work.*
+*Status: master — build-directory locks (§16.6), device locks (§18.7),
+per-file save locks (§2.7) and the workspace operation lock, all with the
+§19.5 record; the lock order R → O → B → D → F (R does not exist yet, §19.2);
+`lw nuke` and the editor's deletions taking build locks. This is step 1 of
+§19.19 and comes before any lifetime work.*
 
 Every **mutating operation**, on any path (in-process, attached, daemon),
 acquires **all** the locks it needs **before its first side effect**, in the
@@ -171,9 +171,27 @@ lw: cannot nuke: a build is running in build/debug (pid 4242) — wait for it, o
 ```
 
 The CLI exits 1 (the build-directory lock's existing exit codes are
-unchanged); the editor shows an error notification. `lw unlock` (§16.6) also
-clears a stale O lock; dead and hung holders of every class are handled by
-§19.5 (`--break-locks`).
+unchanged); the editor shows an error notification. `lw unlock --workspace`
+(and `lw unlock --all`, §16.6) also clears an O lock whose holder is gone, and
+`--force` one whose holder runs; dead and hung holders of every class are
+handled by §19.5 (`--break-locks`, accepted by every command above).
+
+O is re-entrant within one process: an operation that holds it (the CLI's
+`lw reset`, which takes O and then every build lock before the workspace's
+deletion runs) may call another operation that takes it; the lockfile goes
+with the outermost holder. Likewise a deletion skips the build locks its own
+process already holds.
+
+**Which build locks nuke and deletions take.** A deletion (profile delete or
+reset, orphan delete, `lw reset`) takes the build lock of every build
+directory its plan removes, after O. `lw nuke` removes the whole
+`.nvim/build/`; it takes the lock of every directory under it that has a
+lockfile (`<dir>.loomworks-lock`, found by a bounded, link-free scan — a
+lockfile marks a directory some process uses or used) and of every build
+directory of the loaded workspace there. A build that creates the first
+lockfile of a directory after that scan (a directory never built before) is
+not excluded and can lose its tree to the removal; nuke never deletes a
+directory whose lock it found held.
 
 ### 19.4 Crash-consistent multi-file commits
 

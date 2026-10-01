@@ -35,6 +35,10 @@ local DEFAULT_DEPS = {
         nuke = "<C-n> on the status page",
     },
     io        = require("loomworks.io"),
+    -- Cross-process locks (spec §19.3): the workspace operation lock and the
+    -- build-directory lock. Injectable so tests with a fake root never create
+    -- lockfiles on the real file system.
+    locks     = { op = require("loomworks.op_lock"), build = require("loomworks.build_lock") },
     read_file_async = require("loomworks.io").read_file_async,
     read_files_async = require("loomworks.io").read_files_async,
     detect_tools_async = require("loomworks.merge").detect_tools_async,
@@ -541,6 +545,22 @@ function Core:_nuke_files(root)
         end
     end
 
+    -- Lock order (spec §19.3): the workspace operation lock, then the build
+    -- lock of every build directory it removes — so a nuke refuses while a
+    -- build runs instead of deleting under it. Nothing is removed on refusal.
+    local op_lock = require("loomworks.op_lock").locks(self._deps).op
+    local tok, lmsg = op_lock.acquire(norm_root, "nuke")
+    if not tok then
+        self._deps.notify("loomworks: cannot nuke: " .. lmsg, vim.log.levels.ERROR)
+        return nil
+    end
+    local held, berr = self:_nuke_build_locks(norm_root, build_dir)
+    if not held then
+        op_lock.release(tok)
+        self._deps.notify("loomworks: " .. berr, vim.log.levels.ERROR)
+        return nil
+    end
+
     local ok, err = self._deps.io.rm_rf(build_dir)
     if not ok then
         self._deps.notify("loomworks: failed to delete build dir: " .. err, vim.log.levels.ERROR)
@@ -550,7 +570,87 @@ function Core:_nuke_files(root)
     self._deps.io.rm_rf(cache_bak)
     self._deps.io.rm_rf(health_path)
     self._deps.io.rm_rf(health_path .. ".bak")
+    for _, h in ipairs(held) do require("loomworks.op_lock").locks(self._deps).build.release(h) end
+    op_lock.release(tok)
     return norm_root
+end
+
+--- The build directories `nuke` removes that may be in use: every directory
+--- with a lockfile `<dir>.loomworks-lock` under `build_dir` (scanned to a
+--- bounded depth, never following links), plus the loaded workspace's build
+--- directories under it. Read-only. Each entry is `{ key, path, shown }`:
+--- the normalized path (order, identity), the path as found (on-disk casing
+--- below `.nvim/build`) and its display form `.nvim/build/...`.
+--- @param build_dir string normalized `<root>/.nvim/build`
+--- @return table[]
+function Core:_nuke_lock_dirs(build_dir)
+    local uv = vim.uv or vim.loop
+    local normalize = self._deps.normalize
+    local suffix = ".loomworks-lock"
+    local found, seen = {}, {}
+    local function add(dir)
+        local raw = tostring(dir):gsub("\\", "/")
+        local k = normalize(raw)
+        if (k:sub(1, #build_dir + 1) == build_dir .. "/") and not seen[k] then
+            seen[k] = true
+            found[#found + 1] = { key = k, path = raw, shown = ".nvim/build" .. raw:sub(#build_dir + 1) }
+        end
+    end
+    local function scan(dir, depth)
+        local req = uv.fs_scandir(dir)
+        if not req then return end
+        while true do
+            local name, typ = uv.fs_scandir_next(req)
+            if not name then break end
+            local p = dir .. "/" .. name
+            if typ == nil then
+                local st = uv.fs_lstat(p)
+                typ = st and st.type or nil
+            end
+            if typ == "file" and name:sub(-#suffix) == suffix then
+                add(p:sub(1, -#suffix - 1))
+            elseif typ == "directory" and depth < 3 then
+                scan(p, depth + 1)
+            end
+        end
+    end
+    scan(build_dir, 0)
+    local ws = self._workspace
+    for _, unit in pairs(ws and ws._config_units or {}) do
+        if unit.build_dir_value then add(unit.build_dir_value) end
+    end
+    return found
+end
+
+--- Take the build lock of every directory `nuke` removes (canonical order,
+--- skipping locks this process holds). Returns the handles, or nil + the
+--- refusal message (nothing held).
+--- @param root string normalized workspace root
+--- @param build_dir string normalized `<root>/.nvim/build`
+--- @return table[]|nil handles, string|nil message
+function Core:_nuke_build_locks(root, build_dir)
+    local build_lock = require("loomworks.op_lock").locks(self._deps).build
+    local lock_break = require("loomworks.lock_break")
+    local _ = root
+    local dirs = self:_nuke_lock_dirs(build_dir)
+    table.sort(dirs, function(a, b) return a.key < b.key end)
+    local held = {}
+    for _, e in ipairs(dirs) do
+        if not build_lock.held_by_me(e.path) then
+            local ctx = { what = e.shown, command = lock_break.command or "lw nuke", unlock = e.shown,
+                style = "nuke", prefix = "cannot nuke: " }
+            local h, msg = lock_break.acquire(function()
+                local hh, _, info = build_lock.acquire(e.path, "nuke", ctx)
+                return hh, info
+            end, ctx)
+            if not h then
+                for _, x in ipairs(held) do build_lock.release(x) end
+                return nil, msg
+            end
+            held[#held + 1] = h
+        end
+    end
+    return held
 end
 
 --- Delete user.json and reload the workspace.
@@ -558,6 +658,22 @@ end
 --- @param root string
 function Core:delete_user_prefs(root)
     local norm_root = self._deps.normalize(root)
+    -- The working copy and its backup go together, under the workspace
+    -- operation lock (spec §19.3).
+    local op_lock = require("loomworks.op_lock").locks(self._deps).op
+    local tok, lmsg = op_lock.acquire(norm_root, "trust --discard")
+    if not tok then
+        self._deps.notify("loomworks: " .. lmsg, vim.log.levels.ERROR)
+        return
+    end
+    local ok_d, derr = pcall(self._delete_user_prefs_locked, self, norm_root)
+    op_lock.release(tok)
+    if not ok_d then error(derr, 0) end
+end
+
+--- `delete_user_prefs` under the operation lock.
+--- @param norm_root string
+function Core:_delete_user_prefs_locked(norm_root)
 
     local user_path = self._deps.user.filepath(norm_root)
     if not self:_safe_nvim_path(user_path, norm_root) then

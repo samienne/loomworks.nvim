@@ -217,15 +217,26 @@ end
 ---   command  the command to retry with `--break-locks` ("lw build")
 ---   unlock   the `lw unlock --force` argument naming this lock
 ---   breaking true when `--break-locks` was given (and refused here)
+---   style    "workspace" (the operation lock, §19.3: `workspace busy: …`) or
+---            "nuke" (a build lock `lw nuke` needs: `a build is running in …`)
+---   prefix   prepended to every message ("cannot nuke: ")
 --- @param info table classified holder info (`state` set)
 --- @param ctx table
 --- @return string
 function M.busy_message(info, ctx)
+    return (ctx.prefix or "") .. M._busy_text(info, ctx)
+end
+
+function M._busy_text(info, ctx)
     local what = ctx.what or "the lock"
     local pid = tostring(info.pid or "?")
     local holder = M.holder_text(info)
     local unlock = ctx.unlock and ("lw unlock --force " .. ctx.unlock) or "lw unlock --force"
     local foreign = not M.same_host(info)
+    if foreign and ctx.style == "workspace" and not ctx.breaking then
+        return string.format("workspace busy: %s (pid %s on %s, %s) — retry when it finishes",
+            M.operation_of(info) or "an operation", pid, tostring(info.host or "?"), M.age_text(info.age))
+    end
     if foreign then
         local host = (type(info.host) == "string" and info.host ~= "") and info.host or "another host"
         return string.format("%s is in use by %s (pid %s on %s), %s ago — wait for it; it cannot be "
@@ -239,6 +250,14 @@ function M.busy_message(info, ctx)
     if info.state == "hung" then
         return string.format("%s is locked by a hung %s (pid %s, no heartbeat for %s) — recover with: %s",
             what, holder, pid, M.age_text(info.age), (ctx.command or "lw <command>") .. " --break-locks")
+    end
+    if ctx.style == "workspace" then
+        return string.format("workspace busy: %s (pid %s on %s, %s) — retry when it finishes",
+            M.operation_of(info) or "an operation", pid, tostring(info.host or "?"), M.age_text(info.age))
+    end
+    if ctx.style == "nuke" then
+        return string.format("a build is running in %s (pid %s) — wait for it, or stop it%s", what, pid,
+            ctx.command and (" (" .. ctx.command .. " --break-locks)") or "")
     end
     return string.format("%s is in use by %s (pid %s), %s ago — wait for it to finish, or stop it"
         .. (ctx.command and (" (" .. ctx.command .. " --break-locks)") or ""),

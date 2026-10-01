@@ -679,6 +679,9 @@ local function load_workspace(root, wait_tools, opts)
   -- command read it, or a state file has a newer schema) ends the command:
   -- `lw: <message>`, exit 1. Nothing was written.
   core._deps.on_save_refused = function(msg) die(msg) end
+  -- A refused workspace operation lock (spec §19.3: another process runs a
+  -- multi-file operation) ends the command too, before anything was changed.
+  core._deps.on_lock_refused = function(msg) die(msg) end
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
@@ -1284,23 +1287,10 @@ end
 --- @param cleanup? fun()
 --- @return table handle
 function M._lock_holder_or_die(try, ctx, cleanup)
-  local lock_break = require("loomworks.lock_break")
-  local lock_record = require("loomworks.lock_record")
-  local h, info = try()
+  local h, msg = require("loomworks.lock_break").acquire(try, ctx)
   if h then return h end
-  info = info or {}
-  if lock_break.requested and (info.state == "hung" or info.state == "live") then
-    local ok, berr = lock_break.break_holder(info, ctx, { mode = lock_break.requested })
-    if not ok then
-      if cleanup then cleanup() end
-      die(berr)
-    end
-    h, info = try()
-    if h then return h end
-    info = info or {}
-  end
   if cleanup then cleanup() end
-  die(lock_record.busy_message(info, ctx))
+  die(msg)
 end
 
 --- @param profile loomworks.Profile
@@ -1524,6 +1514,10 @@ function M.cmd_reset(ws, args)
   -- delete-pending) and fail loudly if a directory truly could not be removed —
   -- reset must not report success while a build tree survives.
   local done, still_present = false, nil
+  -- Lock order (spec §19.3): the workspace operation lock first, then every
+  -- build directory's lock; the workspace's own deletion re-enters both.
+  local op_tok = ws:_op_lock("reset")
+  on_exit(function() require("loomworks.op_lock").release(op_tok) end)
   with_build_dir_locks(lock_dirs, "reset", function()
     run(function() done = true end)
     if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then return end
@@ -1542,6 +1536,7 @@ function M.cmd_reset(ws, args)
       if #left > 0 then table.sort(left); still_present = left end
     end
   end, ws)
+  require("loomworks.op_lock").release(op_tok)
   if not done then
     die("reset timed out — a build-directory deletion did not complete")
   end
@@ -1622,10 +1617,17 @@ function M.cmd_trust(root, args)
       local answer = (prompt_line("Discard it? [y/N]") or ""):lower()
       if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
     end
+    -- Removes the working copy and its backup: the workspace operation lock
+    -- (spec §19.3) keeps a concurrent publish / import out of the middle.
+    local op_lock = require("loomworks.op_lock")
+    local tok, lmsg = op_lock.acquire(root, "trust --discard")
+    if not tok then die(lmsg) end
+    on_exit(function() op_lock.release(tok) end)
     for _, p in ipairs({ path, path .. ".bak" }) do
       local ok, err = io_mod.rm_rf(p)
       if not ok then die("could not delete " .. p .. ": " .. tostring(err)) end
     end
+    op_lock.release(tok)
     out("DISCARDED: " .. path)
     return 0
   end
@@ -1717,12 +1719,13 @@ end
 --- naming the holder. `--force` removes the record whatever the holder's state,
 --- WITHOUT stopping it, after warning that it may still be running and writing.
 --- `--device <serial>` clears a device lock (§18.7; always forced).
-function M.cmd_unlock(ws, args)
-  local all, profile_name, device_serial, force = false, nil, nil, false
+function M.cmd_unlock(ws, args, root)
+  local all, profile_name, device_serial, force, workspace = false, nil, nil, false, false
   local i = 2
   while args[i] do
     if args[i] == "--all" then all = true; i = i + 1
     elseif args[i] == "--force" then force = true; i = i + 1
+    elseif args[i] == "--workspace" then workspace = true; i = i + 1
     elseif args[i] == "--device" then
       device_serial = args[i + 1]
       if not device_serial then die("--device requires a serial") end
@@ -1762,7 +1765,52 @@ function M.cmd_unlock(ws, args)
     return 0
   end
 
+  -- `lw unlock --workspace` clears the workspace operation lock (spec §19.3);
+  -- `--all` includes it.
+  if workspace and not all and not profile_name then
+    return M._unlock_workspace(root or (ws and ws.root), force)
+  end
+  if all then
+    local code = M._unlock_workspace(ws.root, force, true)
+    if code ~= 0 then return code end
+  end
   return M._unlock_build_dirs(ws, all, profile_name, force)
+end
+
+--- Clear the workspace operation lock (`lw unlock --workspace`, `--all`):
+--- a gone holder's lock is removed (nonce-checked); a running or hung one only
+--- with `force`, loudly, without stopping it. `quiet` = say nothing when free.
+--- @param root string
+--- @param force boolean
+--- @param quiet? boolean
+--- @return integer exit code
+function M._unlock_workspace(root, force, quiet)
+  local op_lock = require("loomworks.op_lock")
+  local build_lock = require("loomworks.build_lock")
+  local lock_record = require("loomworks.lock_record")
+  local path = op_lock.path(root)
+  local info = build_lock.read_path(path)
+  if not info then
+    if not quiet then out("no workspace operation lock") end
+    return 0
+  end
+  info.state = lock_record.classify(info)
+  if lock_record.RECLAIMABLE[info.state] then
+    if build_lock.reclaim_path(path) then out("unlocked the workspace operation lock") end
+    return 0
+  end
+  if not force then
+    errw("lw: " .. lock_record.busy_message(info, op_lock.ctx()) .. "\n")
+    die("the workspace operation lock was left in place — its holder is running (use --force "
+      .. "to remove the record anyway, or the command's --break-locks to stop the holder)")
+  end
+  errw(string.format("lw: WARNING: removing the workspace operation lock held by %s (pid %s%s, %s) "
+    .. "without stopping it — it may still be running and writing\n", lock_record.holder_text(info),
+    tostring(info.pid or "?"), lock_record.same_host(info) and "" or (" on " .. tostring(info.host)),
+    info.state))
+  build_lock.force_path(path)
+  out("unlocked the workspace operation lock")
+  return 0
 end
 
 --- The build-directory part of `lw unlock` (see M.cmd_unlock). `name` is a
@@ -3547,6 +3595,10 @@ function M.cmd_migrate(root, args)
     end
   end
 
+  -- Rewrites the working copy and the published snapshot: one operation
+  -- under the workspace operation lock (spec §19.3).
+  local op_tok = ws:_op_lock("migrate")
+  on_exit(function() require("loomworks.op_lock").release(op_tok) end)
   local applied, err = migrate.apply(plan)
   if err then die("migration failed after " .. applied .. " change(s): " .. err) end
 
@@ -3557,6 +3609,7 @@ function M.cmd_migrate(root, args)
     die("migrated the working copy, but publishing failed: " .. tostring(pub_err)
       .. "\n  Run `lw publish` once resolved.")
   end
+  require("loomworks.op_lock").release(op_tok)
   out("")
   out("migrated " .. applied .. " configuration(s); wrote the working copy and "
     .. "regenerated loomworks.json")
@@ -8778,7 +8831,16 @@ function M.cmd_pull(args, opts)
     return 0
   end
 
+  -- Write under the target's workspace operation lock (spec §19.3), planned
+  -- again under it so a concurrent multi-file operation is not overwritten.
+  local op_lock = require("loomworks.op_lock")
+  local tok, lmsg = op_lock.acquire(plan.target_root, "pull")
+  if not tok then die(lmsg) end
+  on_exit(function() op_lock.release(tok) end)
+  plan, err = M._plan_pull({ source = source, cwd = opts.cwd, git = opts.git })
+  if not plan then die(err) end
   local ok, serr = require("loomworks.user").save(plan.target_root, plan.merged)
+  op_lock.release(tok)
   if not ok then die("could not write working copy: " .. tostring(serr)) end
   out("")
   out("wrote " .. plan.target_user_path)
@@ -9806,7 +9868,10 @@ that is what you asked for.
 Editing .nvim/loomworks.user.json by hand is fine: run `lw trust` afterwards.
 Environment variables that hijack loaders or interpreters (LD_PRELOAD,
 DYLD_*, NODE_OPTIONS, PYTHONPATH, ComSpec, PATHEXT, GIT_SSH_COMMAND, …) are
-refused from every configuration, even a trusted one.]],
+refused from every configuration, even a trusted one.
+
+`--discard` holds the workspace operation lock while it removes the working
+copy and its backup; `--break-locks[=now]` recovers it from a hung holder.]],
   nuke = [[lw nuke [-y | --yes]
 
 Delete the workspace's build state: .nvim/build/, .nvim/loomworks.cache.json
@@ -9815,8 +9880,13 @@ working copy) is kept; the next `lw build` reconfigures from scratch.
 
 This is the remedy when the build cache was not written on this machine (it is
 refused — see `lw help trust`). Confirms first; -y skips the prompt and is
-required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
-  unlock = [[lw unlock <profile> | <build dir> | --all [--force] | --device <serial>
+required in non-interactive mode. Prefer `lw reset` to reset one profile.
+
+Nuke holds the workspace operation lock and the build lock of every build
+directory it removes, so it refuses while a build runs ("cannot nuke: a
+build is running in ...") instead of deleting under it. `--break-locks[=now]`
+stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
+  unlock = [[lw unlock <profile> | <build dir> | --workspace | --all [--force] | --device <serial>
 
 Clear build-directory locks. loomworks serializes configure/build/clean on a
 build dir across processes (editor + CLI) with an advisory lockfile that names
@@ -9827,7 +9897,10 @@ heartbeat) is reported with the recovery command, `<command> --break-locks`.
   <profile>    the locks of that profile's build dirs
   <build dir>  one build dir, by path (relative to the workspace root, or
                absolute; it must lie under the root), e.g. .nvim/build/App/Debug
-  --all        the locks of every profile's build dirs
+  --all        the locks of every profile's build dirs, and the workspace
+               operation lock
+  --workspace  the workspace operation lock (.nvim/loomworks.op.lock), held
+               by publish / import / pull / rename / remove / reset / nuke
   --force      also remove the lock of a holder that is running (or hung, or on
                another host) — WITHOUT stopping it: it may still be running and
                writing there. Printed loudly, recorded in .nvim/loomworks.log.
@@ -10125,7 +10198,12 @@ Rules:
                      one declared source. Rewrites the old shape onto the
                      matching `variant:*` base. Skips a variant no
                      configuration provides, and a chain where adding the base
-                     could change which option wins.]],
+                     could change which option wins.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   cache = [[lw help cache — compiler caching (ccache / sccache)   (also: sccache, ccache)
 
 loomworks can wrap C/C++ compiles with a compiler cache so clean and
@@ -10463,7 +10541,12 @@ Bare `lw publish` warns if the result is empty (nothing is shared yet).
 
 `lw export --published` prints what `lw publish` would write, without writing
 it. To carry the whole configuration (local items too) to another machine,
-`lw export` here and `lw import` there.]],
+`lw export` here and `lw import` there.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   export = [[lw export [--published] [--no-profiles] [-o <file>]
 
 Print this workspace's configuration as a loomworks.json, without publishing:
@@ -10520,7 +10603,12 @@ does not block an import: it is replaced unread — none of its settings is kept
 The previous working copy is saved as .nvim/loomworks.user.json.<time>.bak;
 copy it back over .nvim/loomworks.user.json to undo. A working copy
 (.nvim/loomworks.user.json) is not an export: on the same machine use
-`lw pull`; from another machine run `lw export` there.]],
+`lw pull`; from another machine run `lw export` there.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   pull = [[lw pull [<source>] [--dry-run]
 
 Fold another checkout's working config into THIS checkout's working copy
@@ -10555,7 +10643,12 @@ cache or build dirs.
 
 Another machine? A working copy is signed for the machine that wrote it, so pull
 cannot read one copied from elsewhere: run `lw export > file.json` there and
-`lw import file.json` here.]],
+`lw import file.json` here.
+
+It changes several workspace files as one operation, holding the workspace
+operation lock (.nvim/loomworks.op.lock): a second such operation fails
+fast with "workspace busy". `--break-locks[=now]` recovers the lock from a
+hung holder (see `lw help unlock`).]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 
@@ -10639,7 +10732,12 @@ Examples:
   lw project set  App out_dir '${project_path}/dist' --type path
   lw project set  App sdk_root --type path      # blank; fill with `lw profile set`
   lw project set  App port 8080                 # string (the default type)
-  lw project unset App out_dir]],
+  lw project unset App out_dir
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   config = [[lw config <list|add|show|get|set|unset|rename|describe|remove>   (aliases: configuration, cfg)
 
 Manage a project's build configurations in the working copy; `lw publish`
@@ -10702,7 +10800,12 @@ Examples:
   lw config set   App Debug overrides.clang.warn_flags '-Werror -Wno-unused-command-line-argument'
   lw config get   App Debug overrides.clang.warn_flags
   lw config unset App Debug overrides.clang.warn_flags
-  lw config rename App Debug Debug-asan]],
+  lw config rename App Debug Debug-asan
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   configset = [[lw configset <list|show|create|map|unmap|rename|describe|remove>   (aliases: configuration-set, cs)
 
 A configuration set maps each project to one of its configurations — the
@@ -10725,7 +10828,12 @@ cross-project selection a profile builds. Managed in the working copy;
 resolves `variant:Debug`). Build a set with `lw profile create <name> <tool>`.
 
 Examples:
-  lw configset rename Dev Development]],
+  lw configset rename Dev Development
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   describe = [[lw <project|config|configset|profile> describe <item> [text | flags]
 
 Projects, configurations, configuration sets and profiles can carry an
@@ -10826,7 +10934,12 @@ The active profile is the default for `lw build`. Profiles and toolchains
 resolve by a TRUNCATED selector, matched at segment boundaries: `ninja-clang-18`
 picks the highest `18.x`, and `msvc-17` picks an installed VS 17 without naming
 the edition. A truncated selector never crosses a boundary (`…-1` never matches
-`…-18`), and a substring like `lw build clang-19` works when unambiguous.]],
+`…-18`), and a substring like `lw build clang-19` works when unambiguous.
+
+rename / remove / publish change several workspace files as one operation,
+holding the workspace operation lock (.nvim/loomworks.op.lock): a second such
+operation fails fast with "workspace busy". `--break-locks[=now]` recovers
+the lock from a hung holder (see `lw help unlock`).]],
   settings = [[lw settings <list|get|set|unset> [key] [value]
 
 Read or write lw's OWN user settings (]] .. config_path() .. [[). This is lw's
@@ -11208,6 +11321,9 @@ function M._take_break_locks(argv, command)
 end
 
 local function main()
+  -- A workspace operation lock (spec §19.3) taken inside a guarded operation
+  -- is released on every exit path, `die` included.
+  on_exit(function() pcall(function() require("loomworks.op_lock").release_all() end) end)
   -- Before any dispatch: release held build-dir locks if we're interrupted
   -- (Ctrl-C's SIGINT reaches the whole foreground group and would otherwise
   -- kill lw before its exit hooks run — see install_interrupt_handler).
@@ -11463,9 +11579,11 @@ local function main()
   if command == "device" or command == "devices" then
     finish(M.cmd_device(a[2], root, a))
   end
-  -- `unlock --device <serial>` needs no workspace (device locks are per user).
-  if command == "unlock" and vim.tbl_contains(a, "--device") then
-    finish(M.cmd_unlock(nil, a))
+  -- `unlock --device <serial>` needs no workspace (device locks are per user),
+  -- nor does `unlock --workspace` (the operation lock is a file under .nvim/).
+  if command == "unlock" and (vim.tbl_contains(a, "--device")
+      or (vim.tbl_contains(a, "--workspace") and not vim.tbl_contains(a, "--all"))) then
+    finish(M.cmd_unlock(nil, a, root))
   end
   -- `launch` manages launch configs in the working copy (no tools needed).
   if command == "launch" then
