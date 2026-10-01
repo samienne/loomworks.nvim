@@ -320,27 +320,62 @@ daemon never changes the default in-process build.
 
 **Delegable forms and trust.** Only a build the daemon's command fully carries is
 delegated: a named profile plus build-tool arguments. Any request whose meaning
-the command does not carry (target selection, forced or full reconfiguration,
-verbosity, a positional profile number, or no profile — whose resolution,
-interactive or strict non-interactive, belongs to the requesting host) runs
-in-process. A client never delegates a build of a workspace whose working copy
-or cache this machine would refuse (§17.4): the daemon loads its workspace
-through the same trust gate (§17) and would refuse it too, so the client falls
-back to in-process, which reports the refusal with its remedies (§17.10).
+the command does not carry (target selection — whose unknown-target hint reads
+the host's target list —, forced or full reconfiguration, verbosity, a
+positional profile number, or no profile — whose resolution, interactive or
+strict non-interactive, belongs to the requesting host) runs in-process. A
+client never delegates a build of a workspace whose working copy or cache this
+machine would refuse (§17.4): the daemon loads its workspace through the same
+trust gate (§17) and would refuse it too, so the client falls back to
+in-process, which reports the refusal with its remedies (§17.10).
 
-A daemon build MUST be **behaviorally identical** to the in-process build it
-replaces, not merely a spawn of the same commands. Specifically it: applies the
-same **build gate** (an unbuildable profile refuses) and **output-artifact
-conflict** rule (§16.28); holds the per-build-directory **advisory lock** (§16.6)
-for the duration, so it coordinates with an editor or CLI building the same
-directory (this is distinct from the daemon's write-authority lock, §19.7, which
-guards *files* not *build directories*); and **writes each step's result back
-through the workspace** — so the configured/built **state and cache persist**
-exactly as an in-process build would, and a later reader (or the projection, via
-the build-state broadcast) sees the true state. Because the command is handled in
-an asynchronous callback, any step that touches host UI/filesystem primitives
+**One build path.** A daemon build MUST be **behaviorally identical** to the
+in-process build it replaces, not merely a spawn of the same commands: both run
+the SAME headless build-step sequence, differing only in how a step is spawned
+(the daemon streams it) and how a refusal is reported (the daemon sends it on
+the task stream; the client prints it exactly as the in-process host would and
+exits with the same code). That sequence is: hold the per-build-directory
+**advisory lock** (§16.6) for every build directory of the profile, taken before
+planning (distinct from the daemon's write-authority lock, §19.7, which guards
+*files* not *build directories*); apply the **build gate** (an unbuildable
+profile refuses); plan with the caller's build request handed to the module
+(§8.1 / §16.4 — a request the module did not apply is appended, or refused for a
+batch-wrapped command), a planning error refusing the build and an empty plan
+being a refusal, never a success; before each step, the **output-artifact
+conflict** rule (§16.28) and a full reconfigure's **configure-state reset**
+(§5.1); announce each step with the same status lines, including why a
+configure runs, and log its command line (§16.4); spawn the **hardened** argv
+(§5.10 — an unresolvable program is reported, never spawned by name); **write
+each step's result back through the workspace** with the module's configure
+record and the profile it ran for — so the configured/built **state, cache, and
+configure record persist** exactly as an in-process build would, and the next
+build classifies its configure against the same record; and on a failing step,
+the same failure line and exit code. Because the command is handled in an
+asynchronous callback, any step that touches host UI/filesystem primitives
 (build-directory creation during planning, cache write-back) MUST run on the
 host's main execution context, never in a callback context that forbids them.
+
+**Live workspace.** An in-process build loads the workspace from disk; the
+daemon's is long-lived. Before accepting a build the daemon therefore applies
+every pending external change to its workspace files exactly as its file watcher
+would (an edit, a profile created by another process, a discarded working copy,
+a deleted cache, a file that is no longer trusted — which unloads the workspace,
+§17.4), then resolves the profile with the in-process matcher (exact key, else an
+unambiguous substring, §16.9). It does not accept — and the client falls back
+in-process, which reports the condition — when the workspace is not loaded or
+the profile does not resolve.
+
+**Cancellation.** A build belongs to the client that launched it. When that
+client disconnects (an interrupted `lw build`, a closed editor), when the daemon
+stops, or when the workspace the build runs in is unloaded or its profile
+removed, the daemon stops the build: it terminates the running step's process
+tree, records nothing for the interrupted step, releases the build-directory
+locks, and ends the task with a nonzero code — the daemon equivalent of an
+interrupted in-process build. A client whose daemon connection is lost after
+the build was accepted reports a failure; it never re-runs the build in-process.
+A deleted build directory or cache under a running build (`lw nuke`) is not a
+cancellation trigger: as with a concurrent in-process build, the running step
+completes or fails on its own, and the next build starts from the reset state.
 
 ### 19.13 Parity (differential correctness)
 

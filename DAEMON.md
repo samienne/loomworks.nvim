@@ -13,10 +13,14 @@
 > **The in-process model stays the permanent default and fallback** — the daemon
 > is opt-in behind `runtime.mode` / `LOOMWORKS_RUNTIME` (default `in-process`) and
 > a client falls back to in-process whenever the daemon is absent, crashed, or
-> protocol-incompatible (§4). Remaining work is noted per-section (e.g. per-object
-> deltas, launch-if-absent hardening, wiring the real build runner + ohos through
-> the daemon). The `daemon` release channel (§8) is not needed here — everything
-> is on one branch behind the flag.
+> protocol-incompatible (§4). A delegated build runs the SAME build-step path as
+> the in-process `lw build` (`lua/loomworks/build_run.lua`, spec §19.12 "One build
+> path"), re-validates the live workspace first, and is cancelled when its client
+> disconnects or its workspace is unloaded. Remaining work is noted per-section
+> (e.g. per-object deltas, launch-if-absent hardening, delegating the
+> `--target`/`--force`/`--reconfigure`/`-v` build forms, ohos through the
+> daemon) and in BACKLOG.md. The `daemon` release channel (§8) is not needed
+> here — everything is on one branch behind the flag.
 >
 > Related: [`ARCHITECTURE.md`](ARCHITECTURE.md),
 > [`spec/core/headless.md`](spec/core/headless.md) (§16 standalone/host),

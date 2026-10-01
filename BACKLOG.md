@@ -5,6 +5,30 @@ they don't get lost.
 
 ---
 
+## Daemon build follow-ups (PR #88)
+
+The daemon build now runs the in-process build path (`build_run.lua`, spec
+§19.12). Left open:
+
+- **Delegate the remaining `lw build` forms.** `--force`, `--reconfigure` and
+  `-v` are one-liners through `build_run` (carry them in the build command);
+  `--target` also needs the unknown-target hint, which reads the unit's parsed
+  targets via cli.lua's `ensure_unit_targets` — move that to a shared module
+  first. Until then these forms run in-process.
+- **`lw nuke` / build-dir deletion under a running daemon build.** Not a
+  cancellation trigger today (same as a concurrent in-process build): the running
+  step completes or fails on its own; the next build re-reads the reset cache.
+  `lw nuke` itself takes no build-dir lock in either mode — decide whether it
+  should refuse (or ask the daemon to stop its builds) while a build holds one.
+- **POSIX process-tree kill.** Cancelling a daemon build signals the step's
+  direct children (`pkill -P`) and then the step; grandchildren of a deep tool
+  chain can outlive it. Spawning steps in their own process group (detach) and
+  signalling the group would be exact. Windows uses `taskkill /T`.
+- **Adopt a reloaded workspace everywhere.** `live_workspace` adopts the core's
+  current workspace for builds (after a refused file is re-trusted); the snapshot
+  and command handlers still use `server.workspace` as last adopted. Route them
+  through the same accessor.
+
 ## Variable rename: what should it cascade to?
 
 Found while fixing PR #75. Renaming a variable in the editor's variable editor
