@@ -49,7 +49,7 @@ end
 --- @param id string
 --- @return table|nil
 function M.get(id)
-    if type(id) ~= "string" or id == "" then return nil end
+    if type(id) ~= "string" then return nil end
     if registry[id] then return registry[id] end
     if rejected[id] then return nil end
     local mod, err, status = loader.load("modules", id)
