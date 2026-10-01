@@ -1980,6 +1980,17 @@ function Workspace:_display_build_dir(dir)
     local nd, nr = d, root
     if vim.fn.has("win32") == 1 then nd, nr = d:lower(), root:lower() end
     if nr ~= "" and nd:sub(1, #nr + 1) == nr .. "/" then return d:sub(#root + 2) end
+    -- The same directory spelled differently (8.3 short vs long name on
+    -- Windows): relative by the canonical forms, shown with `d`'s own tail.
+    if nr ~= "" and self._canonicalize_boundary_path then
+        local cd, cr = self:_canonicalize_boundary_path(d), self:_canonicalize_boundary_path(root)
+        if cd:sub(1, #cr + 1) == cr .. "/" then
+            local n = select(2, cd:sub(#cr + 2):gsub("[^/]+", ""))
+            local segs = {}
+            for s in d:gmatch("[^/]+") do segs[#segs + 1] = s end
+            if n > 0 and n <= #segs then return table.concat(segs, "/", #segs - n + 1) end
+        end
+    end
     return d
 end
 
