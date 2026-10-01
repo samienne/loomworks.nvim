@@ -69,6 +69,7 @@ local to each file and restart at §1.
 | What `lw health` checks and shows: providers, environment inventory, scope (relevant / `--all`), areas | `specification.md` §16.31, §16.33, §16.36; §8.4 / §9.3 for the optional relevance fields |
 | Release notes: the `CHANGELOG.md` grammar, `lw release-notes`, the upgrade notice, self-update's "what's new", the release gate | `specification.md` §16.37 (+ §16.32 for self-update, §16.24 for pin upgrades) |
 | What the CLI's inline output must reveal: the status footer, next-step and empty-state hints, unknown commands, the help index | `specification.md` §16.38 (+ §16.18 for the overview, §16.7 for usage errors) |
+| Several processes (editor, CLI, background process, older versions) writing the same workspace state: stale-save detection, cache merge, working-copy refusal, writer version stamp | `specification.md` §2.7 (+ §16.6 for the headless host) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
@@ -104,6 +105,10 @@ belongs in the matching `spec/` file.
 
 4. **Atomic writes**: All file writes (cache, user) use temp + fsync + rename
    with .bak recovery on read failure.
+   A save never blindly overwrites a working copy or cache another process
+   changed since this one last read it: the cache merges per entry, the
+   working copy refuses and reloads, and a file with a newer schema is never
+   rewritten (§2.7).
 
 5. **ConfigUnit is source of truth for runtime state**: Running, deleting,
    and progress state are never stored elsewhere. All queries go through
@@ -178,6 +183,9 @@ belongs in the matching `spec/` file.
     `loomworks.cache.json`, then re-runs setup. This is the only way to
     resolve a version mismatch — the system never silently discards or
     overwrites an incompatible cache.
+    A cache (or working copy) whose version is **newer** than the running
+    loomworks understands is refused the same way, but the remedy shown is to
+    update loomworks, not to reset — the file is valid, only newer (§2.7).
 
 12. **Non-blocking initialization**: Workspace setup never blocks the
     Neovim UI thread. File reads use async I/O. Tool detection runs
