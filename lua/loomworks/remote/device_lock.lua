@@ -6,12 +6,13 @@
 --- Same atomic-create + heartbeat mechanism as build-directory locks
 --- (loomworks.build_lock); unlike those it WAITS by default (queueing for a
 --- shared device is normal), printing the holder once; `wait = false` fails
---- fast. The wait has no deadline; a stale lock (heartbeat lapsed) is
---- reclaimed. `LOOMWORKS_DEVICE_LOCK_DIR` relocates the directory.
+--- fast. The wait has no deadline; a dead holder's lock is reclaimed, a hung
+--- one (alive, heartbeat lapsed) is reported, not waited for (spec §19.5).
+--- `LOOMWORKS_DEVICE_LOCK_DIR` relocates the directory.
 ---
 --- Leftover programs (§18.7): while a remote run's program runs, the lockfile
 --- also records `{ device_pid, nonce, program, program_started_at }`; a
---- handle that reclaimed a stale lock carries that record as `leftover`.
+--- handle that reclaimed a dead holder's lock carries that record as `leftover`.
 
 local build_lock = require("loomworks.build_lock")
 
@@ -161,11 +162,18 @@ end
 
 --- Acquire the device lock.
 --- opts:
----   wait       boolean (default true) — false fails fast naming the holder
----   action     string recorded in the lockfile ("run", "test", "clean")
----   workspace  string recorded in the lockfile
----   on_wait    fun(msg: string) called ONCE when the lock is held by another
----   poll_ms    number override of the poll cadence
+---   wait        boolean (default true) — false fails fast naming the holder
+---   action      string recorded in the lockfile ("run", "test", "clean")
+---   workspace   string recorded in the lockfile
+---   on_wait     fun(msg: string) called ONCE when the lock is held by another
+---   poll_ms     number override of the poll cadence
+---   break_locks "ask"|"now"|nil — `--break-locks` (spec §19.5): a hung or
+---               live holder on this host is stopped instead of waited for
+---               (default: loomworks.lock_break.requested, set by the CLI)
+---   command     the command named in a hung holder's recovery hint
+---   on_break    fun(line: string) — every ask / kill of `--break-locks`
+--- A hung holder (alive, heartbeat stale, spec §19.5) is never waited for: it
+--- is reported with the recovery command.
 --- @param serial string
 --- @param opts? table
 --- @return table|nil handle, string|nil err
@@ -173,7 +181,11 @@ function M.acquire(serial, opts)
     opts = opts or {}
     local path = M.path(serial)
     local extra = { serial = serial, workspace = opts.workspace }
-    local announced = false
+    local announced, broke = false, false
+    local lock_break = require("loomworks.lock_break")
+    local break_mode = opts.break_locks or lock_break.requested
+    local ctx = { what = "device " .. tostring(serial), command = opts.command or lock_break.command,
+        unlock = "--device " .. tostring(serial) }
     while true do
         local h, info = build_lock.try_acquire_path(path, opts.action or "run", extra)
         if h then
@@ -181,15 +193,24 @@ function M.acquire(serial, opts)
             h.leftover = M.leftover_of(h.reclaimed)
             return h
         end
-        local msg = holder(info, serial)
-        if opts.wait == false then
-            return nil, msg .. " — retry later, or `lw unlock --device " .. tostring(serial) .. "`"
+        if break_mode and not broke and (info.state == "hung" or info.state == "live") then
+            local ok, berr = lock_break.break_holder(info, ctx,
+                { mode = break_mode, report = opts.on_break })
+            if not ok then return nil, berr end
+            broke = true
+        elseif info.state == "hung" then
+            return nil, require("loomworks.lock_record").busy_message(info, ctx)
+        else
+            local msg = holder(info, serial)
+            if opts.wait == false then
+                return nil, msg .. " — retry later, or `lw unlock --device " .. tostring(serial) .. "`"
+            end
+            if not announced then
+                announced = true
+                if opts.on_wait then opts.on_wait(msg .. " — waiting for it") end
+            end
+            vim.wait(opts.poll_ms or M.POLL_MS)
         end
-        if not announced then
-            announced = true
-            if opts.on_wait then opts.on_wait(msg .. " — waiting for it") end
-        end
-        vim.wait(opts.poll_ms or M.POLL_MS)
     end
 end
 

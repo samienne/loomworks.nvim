@@ -1949,10 +1949,98 @@ function Workspace:_acquire_file_lock(dir, action)
         entry.refs = entry.refs + 1
         return true
     end
-    local handle, err = require("loomworks.build_lock").acquire(dir, action)
+    local handle, err = require("loomworks.build_lock").acquire(dir, action,
+        { what = "build directory " .. self:_display_build_dir(dir), command = "lw build",
+          unlock = self:_display_build_dir(dir) })
     if not handle then return false, err end
     self._build_dir_file_locks[dir] = { handle = handle, refs = 1 }
+    if handle.reclaimed then
+        local line = self:_recover_interrupted_build_dir(dir, handle.reclaimed)
+        if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
+    end
     return true
+end
+
+--- A build directory as messages name it: relative to the workspace root when
+--- it lies under it, else as given.
+--- @param dir string
+--- @return string
+function Workspace:_display_build_dir(dir)
+    local d = tostring(dir):gsub("\\", "/")
+    -- A normalized (case-folded) path is shown in its recorded casing.
+    local norm = self._core and self._core._deps and self._core._deps.normalize
+    if norm then
+        local key = norm(d)
+        for _, unit in pairs(self._config_units or {}) do
+            local v = unit.build_dir_value
+            if v and norm(v) == key then d = tostring(v):gsub("\\", "/"); break end
+        end
+    end
+    local root = tostring(self.root or ""):gsub("\\", "/"):gsub("/+$", "")
+    local nd, nr = d, root
+    if vim.fn.has("win32") == 1 then nd, nr = d:lower(), root:lower() end
+    if nr ~= "" and nd:sub(1, #nr + 1) == nr .. "/" then return d:sub(#root + 2) end
+    return d
+end
+
+--- Recover the state of a build directory whose lock was reclaimed from a
+--- dead or killed holder (spec §19.5 step 5), by the step its lock record
+--- names: `configure` — the units read `unconfigured` (a half-written
+--- configure cannot be trusted; the directory is kept); `build` — units that
+--- read built read not built (`configured`, the configure record kept, no
+--- forced reconfigure); any other operation (clean, reset, delete, nuke) —
+--- unchanged: a deletion already recorded `unknown` (§5.7). Persists the cache
+--- and returns the line to report, or nil when nothing was recorded there.
+--- @param dir string the build directory (any form)
+--- @param reclaimed table the reclaimed lock record
+--- @return string|nil line
+function Workspace:_recover_interrupted_build_dir(dir, reclaimed)
+    local lock_record = require("loomworks.lock_record")
+    local op = lock_record.operation_of(reclaimed)
+    local norm = self._core._deps.normalize
+    local key = norm(dir)
+    local who = string.format("%s (pid %s)", lock_record.holder_text(reclaimed),
+        tostring(reclaimed.pid or "?"))
+    local shown = self:_display_build_dir(dir)
+    if op ~= "configure" and op ~= "build" then
+        return string.format("reclaimed %s from %s, which had stopped", shown, who)
+    end
+    local changed = false
+    local function apply(obj, state_field)
+        local st = obj[state_field]
+        if op == "configure" then
+            if st ~= nil and st ~= "unconfigured" and st ~= "unknown" then
+                obj[state_field] = nil
+                obj.last_configured = nil
+                obj.last_built = nil
+                changed = true
+            end
+        elseif st == "built" or st == "failed_build" then
+            obj[state_field] = "configured"
+            obj.last_built = nil
+            changed = true
+        end
+    end
+    local seen_bd = {}
+    for _, unit in pairs(self._config_units or {}) do
+        local bdv = unit.build_dir_value or (unit._build_dir and unit._build_dir.path)
+        if bdv and norm(bdv) == key then
+            apply(unit, "state_value")
+            if unit._build_dir then seen_bd[unit._build_dir] = true; apply(unit._build_dir, "state") end
+        end
+    end
+    for _, bd in pairs(self._build_dirs or {}) do
+        if not seen_bd[bd] and bd.path and norm(bd.path) == key then apply(bd, "state") end
+    end
+    local result = op == "configure" and "unconfigured" or "not built"
+    if changed then
+        self:_save_cache()
+        pcall(self._core._deps.events.emit, "active_set_changed", self._active_set)
+    end
+    local line = string.format("reclaimed %s from %s, interrupted during %s — %s", shown, who, op,
+        changed and ("its state now reads " .. result) or "no build state to recover")
+    pcall(self._core._deps.log.info, self._core._deps.log, "%s", line)
+    return line
 end
 
 --- Release one reference to the cross-process file lock; frees it at zero refs.

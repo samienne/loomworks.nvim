@@ -918,6 +918,56 @@ do
   eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
+print("loomworks.proc / lock records — process identity under luvi (spec §19.5)")
+do
+  -- The start-time probe, tree kill and suspend run under the luvi host on the
+  -- CI's Linux and Windows runners (the nvim suite covers Windows under nvim).
+  local vim = require("loomworks.shim")
+  local proc = require("loomworks.proc")
+  local lock_record = require("loomworks.lock_record")
+  local win = package.config:sub(1, 1) == "\\"
+  local native = win and "win" or (proc._os == "Linux" and "linux" or "mac")
+  local st = proc.self_start_time()
+  ok(type(st) == "string" and proc.method_of(st) == native, "self start time via the native method  (" .. tostring(st) .. ")")
+  eq(proc.start_time(4194300), false, "a missing process is gone")
+  local cmd, args
+  if win then cmd, args = "cmd.exe", { "/c", "ping -n 30 127.0.0.1 >nul" }
+  else cmd, args = "/bin/sh", { "-c", "sleep 30 & sleep 30; true" } end
+  local handle, pid = uv.spawn(cmd, { args = args }, function() end)
+  ok(handle ~= nil, "spawned a helper process tree")
+  if handle then
+    vim.wait(400)
+    local cst = proc.start_time(pid)
+    ok(type(cst) == "string" and cst ~= st, "child start time differs from ours")
+    local kids = proc.descendants(pid)
+    ok(#kids >= 1, "the helper's children are enumerated  (" .. #kids .. ")")
+    ok(proc._suspend(pid), "suspend the helper")
+    eq(proc.alive(pid, cst), true, "a suspended process is alive (same start time)")
+    -- a lock held by the suspended helper with a stale heartbeat is hung
+    local tmp = uv.os_tmpdir() .. "/lw-proc-" .. tostring(uv.hrtime())
+    local lockp = tmp .. ".lock"
+    local f = assert(io.open(lockp, "wb"))
+    f:write(vim.json.encode({ pid = pid, host = lock_record.this_host(), start_time = cst,
+      lock_nonce = "n", kind = "lw", operation = "build", started_at = os.time() }))
+    f:close()
+    uv.fs_utime(lockp, os.time() - 100, os.time() - 100)
+    local info = lock_record.read(lockp, 20)
+    eq(lock_record.classify(info), "hung", "suspended holder + stale heartbeat = hung")
+    -- a reused pid (start time differs) is dead, and is never signalled
+    local gone_fake = proc.kill_tree(pid, native .. ":0")
+    ok(gone_fake and proc.alive(pid, cst) == true, "a mismatched start time never signals the process")
+    local gone, kerr = proc.kill_tree(pid, cst)
+    ok(gone, "kill_tree stops the suspended holder  (" .. tostring(kerr) .. ")")
+    eq(lock_record.classify(info), "dead", "the killed holder is dead")
+    local all_gone = vim.wait(5000, function()
+      for _, k in ipairs(kids) do if proc.start_time(k) then return false end end
+      return true
+    end, 50)
+    ok(all_gone, "the holder's children were killed too")
+    ok(lock_record.reclaim(lockp, info) and uv.fs_stat(lockp) == nil, "nonce-matched reclaim removes the record")
+  end
+end
+
 -- A throwaway git repository for tests of pin management's git steps. Its
 -- config pins the Windows-like behaviour (no file-mode tracking) so the
 -- index-only exec-bit path runs on every platform, and no autocrlf noise.

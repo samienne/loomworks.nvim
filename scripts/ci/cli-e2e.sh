@@ -125,6 +125,135 @@ JSON
     else note_fail "module install: unknown module" 0; fi
 }
 
+# Lock recovery (spec §19.5) against a real `lw build` process, on every OS:
+# a holder killed during configure is reclaimed at once by the next build and
+# the unit reconfigures; a holder suspended mid-build (POSIX: SIGSTOP) is
+# reported hung, and `--break-locks=now` stops its process tree and builds; on
+# Windows (no SIGSTOP from bash) `--break-locks=now` recovers a live holder.
+# Toolchain-independent: a shell-module project whose steps sleep on demand.
+LOCK_SLEEP=61
+is_windows_host() { case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) return 0;; esac; return 1; }
+# Kill a process and everything below it (pid from a lock record: a Windows
+# pid on Windows hosts).
+kill_tree() {
+    local pid="$1" kid
+    [ -z "$pid" ] && return 0
+    if is_windows_host; then
+        taskkill //F //T //PID "$pid" >/dev/null 2>&1
+        return 0
+    fi
+    for kid in $(ps -A -o pid= -o ppid= | awk -v p="$pid" '$2 == p {print $1}'); do
+        kill_tree "$kid"
+    done
+    kill -9 "$pid" 2>/dev/null
+}
+# The pid field of a lockfile.
+lock_pid() { sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
+# Wait (up to ~20 s) until the workspace's build-dir lockfile records the
+# given operation; prints the lockfile's path.
+wait_lock_op() {
+    local ws="$1" op="$2" n=0 f
+    while [ $n -lt 200 ]; do
+        f=$(find "$ws" -name '*.loomworks-lock' 2>/dev/null | head -1)
+        if [ -n "$f" ] && grep -q "\"operation\":\"$op\"" "$f" 2>/dev/null; then
+            printf '%s' "$f"; return 0
+        fi
+        sleep 0.1; n=$((n + 1))
+    done
+    return 1
+}
+
+test_lock_recovery() {
+    say "lock recovery (kill / hang / --break-locks)"
+    local ws="$TMP/locks" out="$TMP/out.txt" lockf pid bg step
+    mkdir -p "$ws/App"
+    # The step command sleeps while a flag file exists. On Windows a NATIVE
+    # sleeper (ping under cmd), so the holder's process tree is a real Windows
+    # tree (an MSYS `sleep` is not reachable through parent ids).
+    if is_windows_host; then
+        printf '@echo off\r\nif exist "%%~dp0slow-%%1" ping -n %d 127.0.0.1 >nul\r\nexit /b 0\r\n' \
+            "$((LOCK_SLEEP + 1))" > "$ws/slow.cmd"
+        step="\"cmd\",\"/c\",\"$(cygpath -m "$ws")/slow.cmd\""
+    else
+        printf '#!/bin/sh\n[ -f "$(dirname "$0")/slow-$1" ] && sleep %d\nexit 0\n' "$LOCK_SLEEP" > "$ws/slow.sh"
+        step="\"sh\",\"$ws/slow.sh\""
+    fi
+    cat > "$ws/loomworks.json" <<JSON
+{"projects":{"App":{"path":"App","shell":{
+  "build_dir":"\${workspace_root}/out/b",
+  "configure_cmd":[$step,"configure"],
+  "build_cmd":[$step,"build"],
+  "configurations":{"Debug":{}}}}},
+ "configuration_sets":{"Dev":{"App":"Debug"}}}
+JSON
+    ( cd "$ws" && run_lw profile create Dev --activate ) > "$out" 2>&1 \
+        || { note_fail "locks: profile create" $?; return; }
+
+    # 1. Killed during configure: the next build reclaims at once, reconfigures.
+    touch "$ws/slow-configure"
+    ( cd "$ws" && run_lw build Dev ) > "$TMP/bg.txt" 2>&1 &
+    bg=$!
+    if ! lockf=$(wait_lock_op "$ws" configure); then
+        cp "$TMP/bg.txt" "$out"; note_fail "locks: background build never took the lock" 1
+        kill_tree "$(lock_pid "$(find "$ws" -name '*.loomworks-lock' | head -1)")"; wait "$bg" 2>/dev/null
+        return
+    fi
+    pid=$(lock_pid "$lockf")
+    kill_tree "$pid"; wait "$bg" 2>/dev/null
+    rm -f "$ws/slow-configure"
+    ( cd "$ws" && run_lw build Dev ) > "$out" 2>&1
+    rc=$?
+    if [ $rc -eq 0 ] && grep -q "interrupted during configure" "$out" && grep -q "BUILD OK" "$out" \
+        && grep -q "\[configure\]" "$out"; then
+        ok "locks: a killed configure is reclaimed at once and reconfigured"
+    else note_fail "locks: killed-configure recovery" $rc; fi
+
+    # 2. Hung (POSIX) or live (Windows) holder mid-build: --break-locks=now.
+    touch "$ws/slow-build"
+    ( cd "$ws" && run_lw build Dev ) > "$TMP/bg.txt" 2>&1 &
+    bg=$!
+    if ! lockf=$(wait_lock_op "$ws" build); then
+        cp "$TMP/bg.txt" "$out"; note_fail "locks: background build never reached the build step" 1
+        kill_tree "$(lock_pid "$(find "$ws" -name '*.loomworks-lock' | head -1)")"; wait "$bg" 2>/dev/null
+        return
+    fi
+    pid=$(lock_pid "$lockf")
+    if ! is_windows_host; then
+        kill -STOP "$pid"
+        touch -t 200001010000 "$lockf"
+        ( cd "$ws" && run_lw build Dev ) > "$out" 2>&1
+        rc=$?
+        if [ $rc -ne 0 ] && grep -q "hung" "$out" && grep -q -- "--break-locks" "$out"; then
+            ok "locks: a suspended holder is reported hung with the recovery command"
+        else note_fail "locks: hung holder not reported" $rc; fi
+    fi
+    rm -f "$ws/slow-build"
+    ( cd "$ws" && run_lw build Dev --break-locks=now ) > "$out" 2>&1
+    rc=$?
+    wait "$bg" 2>/dev/null
+    local still=0
+    if is_windows_host; then
+        tasklist //FI "PID eq $pid" 2>/dev/null | grep -q " $pid " && still=1
+    else
+        kill -0 "$pid" 2>/dev/null && still=1
+    fi
+    if [ $rc -eq 0 ] && [ $still -eq 0 ] && grep -q "killed" "$out" && grep -q "BUILD OK" "$out"; then
+        ok "locks: --break-locks=now stops the holder's tree and builds"
+    else
+        note_fail "locks: --break-locks recovery" $rc
+        kill_tree "$pid"
+    fi
+    if is_windows_host; then
+        if tasklist //FI "IMAGENAME eq PING.EXE" 2>/dev/null | grep -qi "ping.exe"; then
+            bad "locks: the holder's build step (ping) survived"
+            taskkill //F //IM PING.EXE >/dev/null 2>&1
+        fi
+    elif ps -A -o args= | grep -q "^sleep $LOCK_SLEEP\$"; then
+        bad "locks: the holder's build step (sleep $LOCK_SLEEP) survived"
+        pkill -9 -f "^sleep $LOCK_SLEEP\$"
+    fi
+}
+
 # Drive one module's project through the full CLI flow.
 #   $1 = label (for messages)   $2 = module (meson|cmake)
 #   $3 = workspace dir with app/ inside   $4 = marker to grep in `lw run` output
@@ -261,6 +390,14 @@ int main() { printf("greeting=%s\n", greet()); return 0; }
 CPP
 }
 
+# E2E_ONLY=<function> runs just that toolchain-independent section (local
+# iteration, e.g. E2E_ONLY=test_lock_recovery).
+if [ -n "${E2E_ONLY:-}" ]; then
+    "$E2E_ONLY"
+    printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
+    [ "$FAIL" -eq 0 ]; exit
+fi
+
 # --- meson project (single executable) -------------------------------------
 mkdir -p "$TMP/meson/app"
 cat > "$TMP/meson/app/meson.build" <<'MB'
@@ -330,6 +467,9 @@ test_worktree_boundary
 
 # Toolchain-independent module-acquisition command surface.
 test_module_commands
+
+# Toolchain-independent lock recovery (spec §19.5).
+test_lock_recovery
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -13,11 +13,12 @@
 ---     rewrites) and not a counter stored in the file (an older version
 ---     rewrites `_meta` without it). The comparison is a plain string compare.
 ---   * Write lock — `<file>.lock`, an O_EXCL create held only around the
----     re-read + merge + write (milliseconds). No heartbeat: a lockfile older
----     than `STALE_SECONDS` belongs to a crashed holder and is reclaimed by an
----     atomic rename (as `build_lock.lua` does). A save that cannot get the lock
----     within `WAIT_MS` proceeds without it (the stale check still applies)
----     rather than lose the change.
+---     re-read + merge + write (milliseconds), carrying the common lock record
+---     (§19.5). No heartbeat: a dead holder's lockfile, or one older than
+---     `STALE_SECONDS` whose holder cannot be checked, is reclaimed by an
+---     atomic, nonce-checked rename (as `build_lock.lua` does). A save that
+---     cannot get the lock within `WAIT_MS` proceeds without it (the stale
+---     check still applies) rather than lose the change.
 ---   * Cache merge — per entry of the keyed maps; see `merge_cache`.
 ---   * Version stamp — `_meta.written_by`; see `version` / `newer_writer`.
 ---
@@ -152,69 +153,55 @@ end
 -- Write lock
 -- ---------------------------------------------------------------------------
 
-local function this_pid()
-    local u = uv()
-    if u.os_getpid then return u.os_getpid() end
-    return 0
-end
-
-local _seq = 0
-local function new_token()
-    _seq = _seq + 1
-    return string.format("%d-%d-%d", this_pid(), math.floor(uv().hrtime() % 1e12), _seq)
-end
-
-local function read_small(path)
-    local u = uv()
-    local fd = u.fs_open(path, "r", 438)
-    if not fd then return nil end
-    local data = u.fs_read(fd, 4096, 0)
-    u.fs_close(fd)
-    return data
-end
-
---- Take the save lock for `path` (`<path>.lock`). Waits up to `opts.wait_ms`
---- (default `WAIT_MS`) for a live holder and reclaims a stale one. Returns a
---- handle, or nil when the lock is still held after waiting.
+--- Take the save lock for `path` (`<path>.lock`). The lockfile holds the
+--- common lock record (loomworks.lock_record, spec §19.5); its nonce is the
+--- handle's token. Waits up to `opts.wait_ms` (default `WAIT_MS`) for a live
+--- holder; a dead holder's lock — or one older than `STALE_SECONDS` whose
+--- holder cannot be checked (another host, an older version's token) — is
+--- reclaimed; a hung one (alive) is not, so the save then proceeds without the
+--- lock. Returns a handle, or nil when the lock is still held after waiting.
 --- @param path string the guarded file
 --- @param opts? { wait_ms?: number }
 --- @return table|nil handle `{ path, token }`
 function M.lock(path, opts)
     local u = uv()
+    local lock_record = require("loomworks.lock_record")
     local lock_path = path .. ".lock"
     local wait_ms = (opts and opts.wait_ms) or M.WAIT_MS
     local deadline = u.hrtime() + wait_ms * 1e6
-    local token = new_token()
+    local rec = lock_record.new("save")
+    local body = vim.json.encode(rec)
     while true do
         local fd, _, code = u.fs_open(lock_path, "wx", 420) -- 0644, exclusive create
         if fd then
-            u.fs_write(fd, token, 0)
+            u.fs_write(fd, body, 0)
             u.fs_close(fd)
-            return { path = lock_path, token = token }
+            return { path = lock_path, token = rec.lock_nonce, record = rec }
         end
         -- Anything but "exists" (no directory, no permission) cannot be waited
         -- out: save without the lock.
         if code ~= "EEXIST" then return nil end
-        local st = u.fs_stat(lock_path)
-        if st and (os.time() - ((st.mtime and st.mtime.sec) or 0)) > M.STALE_SECONDS then
-            -- Atomic reclaim: only the process whose rename wins removes it.
-            local tmp = lock_path .. ".stale." .. token
-            if u.fs_rename(lock_path, tmp) then pcall(u.fs_unlink, tmp) end
+        local info = lock_record.read(lock_path, M.STALE_SECONDS)
+        if info then
+            info.state = lock_record.classify(info)
+            -- Atomic, nonce-checked reclaim: only the process whose rename
+            -- wins removes the record it judged.
+            if lock_record.RECLAIMABLE[info.state] then lock_record.reclaim(lock_path, info) end
         end
-        -- (no st: the holder just released it — retry at once)
+        -- (no info: the holder just released it — retry at once)
         if u.hrtime() >= deadline then return nil end
-        if st then u.sleep(5) end
+        if info then u.sleep(5) end
     end
 end
 
 --- Release a lock taken by `lock`. Only a lockfile that still carries this
---- handle's token is removed (a holder whose lock was reclaimed as stale must
---- not remove its successor's). Idempotent.
+--- handle's token is removed (a holder whose lock was reclaimed must not
+--- remove its successor's). Idempotent.
 --- @param handle table|nil
 function M.unlock(handle)
     if not handle or handle.released then return end
     handle.released = true
-    if read_small(handle.path) == handle.token then
+    if require("loomworks.lock_record").still_ours(handle.path, { lock_nonce = handle.token }) then
         pcall(uv().fs_unlink, handle.path)
     end
 end

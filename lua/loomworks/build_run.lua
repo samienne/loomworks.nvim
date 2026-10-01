@@ -117,7 +117,8 @@ function M.plan(profile, opts)
     return steps
 end
 
---- The gates evaluated immediately before a step runs:
+--- The gates evaluated immediately before a step runs (after recording the
+--- step in this process's build-directory lock, spec §19.5):
 ---   * the output-artifact conflict gate (§5.9 / §16.28), directional and
 ---     evaluated at compile-start — for a configure→build chain the configure
 ---     (after_step) already populated this unit's artifact set. `force` is the
@@ -131,6 +132,11 @@ end
 --- @return boolean|nil ok, string|nil err
 function M.before_step(ws, step, opts)
     opts = opts or {}
+    -- The held build-dir lock names the step now running, so a recovery after
+    -- this process dies knows what was interrupted (spec §19.5).
+    if step.kind == "configure" or step.kind == "build" then
+        require("loomworks.build_lock").set_operation(step.build_dir, step.kind)
+    end
     if step.kind == "build" and step.unit and ws.artifact_conflict_block then
         local block = ws:artifact_conflict_block(step.unit, opts.force or false)
         if block then return nil, M.conflict_message(block) end
