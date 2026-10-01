@@ -175,6 +175,31 @@ describe("status overview (§16.18)", function()
   end)
 end)
 
+describe("status no-profiles pull hint when the git probe times out", function()
+  local root
+  before_each(function() root = make_root() end)
+  after_each(function() vim.fn.delete(root, "rf") end)
+
+  it("says git timed out instead of silently dropping the `lw pull` offer", function()
+    local real = cli._main_has_working_copy
+    cli._main_has_working_copy = function() return false, "git-timeout" end
+    local ok, r = pcall(capture, function() cli.cmd_status(root) end)
+    cli._main_has_working_copy = real
+    assert.is_true(ok, tostring(r))
+    assert.is_truthy(r.stdout:find("(no profiles) — `lw profile create <set> <tool>`", 1, true), r.stdout)
+    assert.is_truthy(r.stdout:find(
+      "(git timed out after 1.5 s — couldn't check the main checkout; `lw pull` waits longer)",
+      1, true), r.stdout)
+  end)
+
+  it("_main_has_working_copy returns the timeout reason", function()
+    local ok, reason = cli._main_has_working_copy({ dir = "/repo/wt",
+      git = function() return nil, "timeout" end, stat = function() return {} end })
+    assert.is_false(ok)
+    assert.equals("git-timeout", reason)
+  end)
+end)
+
 describe("_main_has_working_copy (pull hint detection)", function()
   local function fake_git(top, list)
     return function(_, args)

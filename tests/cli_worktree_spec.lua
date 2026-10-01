@@ -290,6 +290,23 @@ describe("cli.cmd_worktree (errors, git-required)", function()
         assert.is_truthy(res.stderr:find("git is not available", 1, true))
     end)
 
+    it("says git timed out (not unavailable / not a repo) when a probe times out", function()
+        local res = capture(function()
+            return cli.cmd_worktree({ "worktree" }, {
+                dir = "/x",
+                git = function(_, args)
+                    if args[1] == "--version" then return "git version 2.40.0" end
+                    return nil, "timeout"
+                end,
+                color = false,
+            })
+        end)
+        assert.is_false(res.ok)
+        assert.equals(1, res.exit_code)
+        assert.is_truthy(res.stderr:find("git did not answer within 30 s", 1, true), res.stderr)
+        assert.is_nil(res.stderr:find("not in a git repository", 1, true), res.stderr)
+    end)
+
     it("errors with a non-zero exit when the cwd is not a git repo", function()
         local res = capture(function()
             return cli.cmd_worktree({ "worktree" }, {
