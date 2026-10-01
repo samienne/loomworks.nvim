@@ -654,10 +654,14 @@ state to it exactly as it would an external change (another process's units
 appear built, configured, reset, …). When both processes changed the **same**
 entry, this process wins; build-state changes to one build directory are
 already serialized by the per-build-directory lock (§16.6), so this only
-arises for bookkeeping that is safe to repeat. A disk cache that is unsigned
-is treated as absent (§17.4: it is replaced); one with an invalid signature is
-not overwritten — the save is refused and the workspace returns to the refused
-state of §17.4.
+arises for bookkeeping that is safe to repeat. A cache that another process
+deleted (a reset of the whole cache) merges as an empty one: only this
+process's own changes are written back. A disk cache that is unsigned is not
+read — this process's cache is written as is, as for any unsigned cache change
+(§17.4); one with an invalid signature or a newer schema is not overwritten —
+the save is refused (reported as for the working copy below) and the change,
+once reconciled, puts the workspace in the refused state (§17.4, and "Reading a
+newer file" below).
 
 **Working copy: refuse and reload.** A stale working-copy save is **refused**:
 nothing is written, the process reloads the working copy from disk (as an
@@ -700,7 +704,8 @@ other completely.
 **Writer version stamp.** Every write of the working copy and of the build
 cache records, besides the schema version `_meta.version`, the writing
 loomworks version as `_meta.written_by` (a development build records its last
-released version with a `+dev` suffix; precedence ignores the suffix). In the
+released version with a `+dev` suffix; precedence ignores the suffix; a build
+that cannot tell its version records none). In the
 working copy `_meta` is part of the signed bytes (§17.3). Older versions read
 only `_meta.version`, ignore unknown `_meta` members and rewrite `_meta`
 without them; a file without `written_by` was written by such a version.
