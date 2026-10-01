@@ -463,7 +463,8 @@ describe("version handshake (§19.9)", function()
         with_key()
         root = H.workspace()
         exited = nil
-        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100 })
+        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100,
+            auth_timeout_ms = 30000 })
         assert(srv:start())
     end)
     after_each(function()
