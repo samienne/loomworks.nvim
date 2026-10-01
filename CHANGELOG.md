@@ -35,6 +35,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (and any other option in place of a command) is an unknown option: use
   `lw status --check`. (#90)
 
+### Added
+
+- Experimental, opt-in workspace daemon: `lw daemon status|stop|run|protocol`
+  and the `runtime-mode` setting (`in-process` by default, or `daemon` /
+  `auto`; `LOOMWORKS_RUNTIME` overrides; the plugin reads
+  `setup({ runtime = { mode = ... } })`). With `daemon` or `auto`,
+  `lw build <profile>` runs through a per-workspace daemon and streams its
+  output; anything else, or an untrusted working copy, builds in-process as
+  before. A daemon build runs the same build steps, gates and cache write-back
+  as an in-process one, and stops when the `lw build` that started it is
+  interrupted. See `lw help daemon`. (#88)
+
 ### Changed
 - `lw status` ends with the everyday commands (build, run, test, clean,
   reset, health, pull, worktree add, publish) and points at `lw help`; outside
@@ -64,18 +76,6 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - The `lw help` quickstart called `profile create`'s operand `<name>`; it is
   the configuration set. `lw config` with an unknown sub-command now lists
   `describe` too. (#90)
-
-### Added
-
-- Experimental, opt-in workspace daemon: `lw daemon status|stop|run|protocol`
-  and the `runtime-mode` setting (`in-process` by default, or `daemon` /
-  `auto`; `LOOMWORKS_RUNTIME` overrides; the plugin reads
-  `setup({ runtime = { mode = ... } })`). With `daemon` or `auto`,
-  `lw build <profile>` runs through a per-workspace daemon and streams its
-  output; anything else, or an untrusted working copy, builds in-process as
-  before. A daemon build runs the same build steps, gates and cache write-back
-  as an in-process one, and stops when the `lw build` that started it is
-  interrupted. See `lw help daemon`. (#88)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
