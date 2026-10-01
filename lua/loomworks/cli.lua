@@ -6832,8 +6832,11 @@ M._git_base_cmd = git_base_cmd
 
 --- Best-effort, time-bounded git query for the no-workspace status hint. Never
 --- throws and never hangs status: a missing binary, non-zero exit, or a git
---- that runs long past the timeout all collapse to nil. Returns trimmed stdout
---- only on a clean (code 0) run. `cwd` nil runs git unanchored (for `--version`).
+--- that runs long past the timeout all return nil. Returns trimmed stdout only
+--- on a clean (code 0) run. A timeout additionally returns `"timeout"` as the
+--- second value, so callers can tell a SLOW git from an absent one (a missing
+--- binary or a failed run returns a bare nil). `cwd` nil runs git unanchored
+--- (for `--version`).
 local GIT_HINT_TIMEOUT_MS = 1500
 local function git_query(cwd, args, timeout_ms)
   local cmd = git_base_cmd()
@@ -6848,7 +6851,7 @@ local function git_query(cwd, args, timeout_ms)
   if not done then
     pcall(function() proc:kill(9) end)
     if proc.pid then pcall(uv.kill, proc.pid, 9) end
-    return nil
+    return nil, "timeout"
   end
   if not res or res.code ~= 0 then return nil end
   return ((res.stdout or ""):gsub("%s+$", ""))
@@ -6860,11 +6863,22 @@ end
 -- or silently resolves the wrong checkout. The status hint's 1.5 s budget is
 -- right for a convenience line but routinely too short for a real answer on a
 -- loaded machine, so these use a generous one (30 s) — still bounded, never a
--- hang. git_query with that budget; same `(cwd, args) -> stdout|nil` contract,
--- so it is interchangeable with an injected test runner. (A module field, not a
--- local: this chunk is at Lua's 200-local limit.)
+-- hang. git_query with that budget; same `(cwd, args) -> stdout|nil[, "timeout"]`
+-- contract, so it is interchangeable with an injected test runner. (Module
+-- fields, not locals: this chunk is at Lua's 200-local limit.)
+M.GIT_REQUIRED_TIMEOUT_MS = 30000
 function M._git_query_required(cwd, args)
-  return git_query(cwd, args, 30000)
+  return git_query(cwd, args, M.GIT_REQUIRED_TIMEOUT_MS)
+end
+
+--- The one-line note for a best-effort probe that ran past the status hint's
+--- budget: a slow git is not an absent git, so say it timed out (and which
+--- command does the full, longer-budget check) instead of "git unavailable".
+--- @param what string what could not be checked
+--- @param cmd string the git-required command that checks with the longer budget
+function M._git_timeout_note(what, cmd)
+  return string.format("(git timed out after %g s — couldn't check %s; `%s` waits longer)",
+    GIT_HINT_TIMEOUT_MS / 1000, what, cmd)
 end
 
 -- Timeout for the one MUTATING git call the CLI makes (`git worktree add`, via
@@ -6936,18 +6950,24 @@ end
 --- `git worktree list --porcelain`. Read-only, time-bounded, never throws.
 --- Returns `(records, top, reason)`: `records` is the ordered list (first =
 --- main), `top` the current worktree's toplevel; both nil when there is no
---- answer, with `reason` one of "git-missing" | "not-git" | "no-list" |
---- "no-main" for the caller to phrase. `opts.git`/`opts.dir` inject for tests.
+--- answer, with `reason` one of "git-missing" | "git-timeout" | "not-git" |
+--- "no-list" | "no-main" for the caller to phrase. "git-timeout" means ANY
+--- probe ran past the runner's budget — a slow git, never read as absent git or
+--- as "not a repo". `opts.git`/`opts.dir` inject for tests.
 function M._worktree_list(opts)
   opts = opts or {}
   local git = opts.git or git_query
   local dir = opts.dir or user_cwd()
   -- Probe git itself first: its absence and "not a repo" both fail the queries
   -- below, but only the former is distinguishable as a real "no git" note.
-  if not git(nil, { "--version" }) then return nil, nil, "git-missing" end
-  local top = git(dir, { "rev-parse", "--show-toplevel" })
+  local ver, verr = git(nil, { "--version" })
+  if verr == "timeout" then return nil, nil, "git-timeout" end
+  if not ver then return nil, nil, "git-missing" end
+  local top, terr = git(dir, { "rev-parse", "--show-toplevel" })
+  if terr == "timeout" then return nil, nil, "git-timeout" end
   if not top or top == "" then return nil, nil, "not-git" end
-  local list = git(dir, { "worktree", "list", "--porcelain" })
+  local list, lerr = git(dir, { "worktree", "list", "--porcelain" })
+  if lerr == "timeout" then return nil, nil, "git-timeout" end
   if not list then return nil, nil, "no-list" end
   local records = parse_worktrees(list)
   if #records == 0 or not records[1].path then return nil, nil, "no-main" end
@@ -7147,6 +7167,8 @@ function M._worktree_hint(opts)
   }
   if reason == "git-missing" then
     lines[#lines + 1] = "(git unavailable — couldn't check for a parent worktree)"
+  elseif reason == "git-timeout" then
+    lines[#lines + 1] = M._git_timeout_note("for a parent worktree", "lw worktree")
   end
   return lines
 end
@@ -7155,17 +7177,20 @@ end
 --- True when we sit in a linked git worktree whose main checkout holds a
 --- working copy (`.nvim/loomworks.user.json`). Presence only — the main
 --- checkout's files are never read here (pull verifies them). Best-effort and
---- time-bounded like the no-workspace hint; never throws. `opts.git` /
+--- time-bounded like the no-workspace hint; never throws. Returns
+--- `(bool, reason)`: `reason` is "git-timeout" when the probe ran past its
+--- budget (the answer is unknown, not "no"), else nil. `opts.git` /
 --- `opts.stat` / `opts.dir` are injectable for tests.
 function M._main_has_working_copy(opts)
   opts = opts or {}
   local stat = opts.stat or uv.fs_stat
-  local ok, res = pcall(function()
+  local ok, res, why = pcall(function()
     local main, top, reason = M._main_worktree(opts)
+    if reason == "git-timeout" then return false, reason end
     if not main or reason ~= nil or norm_cmp(main) == norm_cmp(top) then return false end
     return stat(main .. "/.nvim/loomworks.user.json") and true or false
   end)
-  return ok and res == true
+  return ok and res == true, ok and why or nil
 end
 
 --- The fixed command footer of the status overview (headless §16.18, §16.38):
@@ -7293,14 +7318,14 @@ function M.cmd_status(root, opts)
   for _, p in ipairs(profiles) do if p.key == active_key then ap = p end end
   -- No profiles in a linked worktree whose main checkout has a working copy:
   -- offer `lw pull` first (§16.18). The git probe runs only in this case.
-  local can_pull = false
+  local can_pull, pull_probe = false, nil
   if #profiles == 0 then
     -- Probe from the workspace root (not the cwd): it is that checkout's
     -- worktree whose main we ask about.
     if opts.can_pull ~= nil then
       can_pull = opts.can_pull
     else
-      can_pull = M._main_has_working_copy({ dir = root })
+      can_pull, pull_probe = M._main_has_working_copy({ dir = root })
     end
   end
 
@@ -7321,6 +7346,10 @@ function M.cmd_status(root, opts)
   else
     out(pal.title("Active profile") .. "   " .. pal.dim("(no profiles) — ") ..
       pal.inline("lw profile create <set> <tool>"))
+    -- A slow git leaves the pull offer unknown, not "no": say so (§16.18).
+    if pull_probe == "git-timeout" then
+      out(string.rep(" ", 17) .. pal.dim(M._git_timeout_note("the main checkout", "lw pull")))
+    end
   end
 
   -- Compiler cache line for the active profile (headless §16.18), sibling to
@@ -8403,7 +8432,12 @@ function M._plan_pull(opts)
   -- TARGET = the current checkout's root. Prefer the git worktree top (it
   -- resolves in a fresh worktree that has no workspace files yet); fall back to
   -- an already-initialized workspace root when not in a git repo.
-  local target_root = git(cwd, { "rev-parse", "--show-toplevel" })
+  local target_root, terr = git(cwd, { "rev-parse", "--show-toplevel" })
+  -- A slow git is not "not a repo": never fall back to the enclosing workspace.
+  if terr == "timeout" then
+    return nil, string.format("git did not answer within %g s — could not determine the current checkout",
+      M.GIT_REQUIRED_TIMEOUT_MS / 1000)
+  end
   target_root = (target_root and target_root ~= "")
       and (target_root:gsub("\\", "/"):gsub("/+$", "")) or find_root(cwd)
   if not target_root then
@@ -8422,7 +8456,12 @@ function M._plan_pull(opts)
     end
     source_root = abs
   else
-    local main = M._main_worktree({ dir = cwd, git = git })
+    local main, _, reason = M._main_worktree({ dir = cwd, git = git })
+    if reason == "git-timeout" then
+      return nil, string.format("git did not answer within %g s — could not resolve the main worktree " ..
+        "to pull from.\n  retry, or pass the checkout to pull from:  lw pull <path>",
+        M.GIT_REQUIRED_TIMEOUT_MS / 1000)
+    end
     if not main then
       return nil, "no source given and this is not a linked git worktree.\n" ..
         "  pass the checkout to pull from:  lw pull <path>"
@@ -8645,6 +8684,9 @@ function M.cmd_worktree(args, opts)
   if not records then
     if reason == "git-missing" then
       die("git is not available — `lw worktree` needs git to list worktrees")
+    elseif reason == "git-timeout" then
+      die(string.format("git did not answer within %g s — `lw worktree` could not list worktrees",
+        M.GIT_REQUIRED_TIMEOUT_MS / 1000))
     end
     die("not in a git repository — run `lw worktree` inside a git worktree")
   end
@@ -8742,6 +8784,9 @@ function M.cmd_worktree_add(args, opts)
   if not main then
     if reason == "git-missing" then
       die("git is not available — `lw worktree add` needs git")
+    elseif reason == "git-timeout" then
+      die(string.format("git did not answer within %g s — `lw worktree add` could not resolve the main worktree",
+        M.GIT_REQUIRED_TIMEOUT_MS / 1000))
     end
     die("not in a git repository — run `lw worktree add` inside a git worktree")
   end

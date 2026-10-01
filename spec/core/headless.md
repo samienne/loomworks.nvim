@@ -723,7 +723,9 @@ current worktree (§16.25) as well as to initialise a fresh workspace here; when
 the main checkout has no workspace — or the invocation is not in a linked
 worktree — it offers only to initialise one. Detecting the parent worktree is a
 best-effort, time-bounded hint: it never fails the report, and a slow or absent
-git only adds a small bounded delay.
+git only adds a small bounded delay. A git that does not answer within the bound
+is reported as having timed out (pointing at the git-required command that checks
+with a longer bound), never as git being unavailable or as "not a linked worktree".
 
 A workspace can resolve in a linked worktree from the committed published
 snapshot alone, with no working copy and therefore no profiles (§16.25). When

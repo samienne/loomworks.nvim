@@ -13,6 +13,9 @@ local uv = vim.uv or vim.loop
 local function fake_git(spec)
     return function(_, args)
         local a1 = args[1]
+        -- spec.timeout names the probe that runs past its budget: the runner
+        -- then answers like git_query does on a timeout, (nil, "timeout").
+        if spec.timeout and (a1 == spec.timeout) then return nil, "timeout" end
         if a1 == "--version" then
             return spec.version and "git version 2.40.0" or nil
         elseif a1 == "rev-parse" then
@@ -119,6 +122,60 @@ describe("lw status worktree hint (_worktree_hint)", function()
         local text = joined(lines)
         assert.is_truthy(text:find("lw init", 1, true))
         assert.is_nil(text:find("lw pull", 1, true))
+    end)
+end)
+
+-- A slow git is not an absent git: a probe that ran past the hint's 1.5 s budget
+-- must say so (and point at the full check) instead of "git unavailable", and
+-- must never pass silently for "not a linked worktree".
+describe("lw status worktree hint when the git probe times out", function()
+    for _, probe in ipairs({ "--version", "rev-parse", "worktree" }) do
+        it("says git timed out (not unavailable) when `" .. probe .. "` times out", function()
+            local lines = cli._worktree_hint({
+                dir = "/repo/wt",
+                git = fake_git({
+                    version = true,
+                    toplevel = "/repo/wt",
+                    list = "worktree /repo/main\n\nworktree /repo/wt\n",
+                    timeout = probe,
+                }),
+                stat = always_stat,
+            })
+            local text = joined(lines)
+            assert.is_truthy(text:find("lw init", 1, true), text)
+            assert.is_nil(text:find("git unavailable", 1, true), text)
+            assert.is_truthy(text:find(
+                "(git timed out after 1.5 s — couldn't check for a parent worktree; " ..
+                "`lw worktree` waits longer)", 1, true), text)
+        end)
+    end
+
+    it("_worktree_list reports git-timeout, distinct from git-missing", function()
+        local _, _, r = cli._worktree_list({
+            dir = "/x", git = fake_git({ version = true, toplevel = "/x", timeout = "--version" }),
+        })
+        assert.equals("git-timeout", r)
+        local _, _, r2 = cli._worktree_list({
+            dir = "/x", git = fake_git({ version = true, timeout = "rev-parse" }),
+        })
+        assert.equals("git-timeout", r2)
+        local _, _, r3 = cli._worktree_list({ dir = "/x", git = fake_git({ version = false }) })
+        assert.equals("git-missing", r3)
+    end)
+
+    it("the real bounded probe reports a git that never answers as timed out", function()
+        local exe = require("loomworks.exe")
+        local real = exe.system
+        -- A git that spawns but never completes within the 1.5 s budget.
+        exe.system = function()
+            return { pid = nil, kill = function() end, wait = function() end }
+        end
+        local ok, lines = pcall(cli._worktree_hint, { dir = "/x", stat = never_stat })
+        exe.system = real
+        assert.is_true(ok, tostring(lines))
+        local text = joined(lines)
+        assert.is_truthy(text:find("git timed out after 1.5 s", 1, true), text)
+        assert.is_nil(text:find("git unavailable", 1, true), text)
     end)
 end)
 
