@@ -49,6 +49,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   daemon. Its endpoint is restricted to your user and every connection must
   prove this machine's key; `stop` never kills, `stop --force` and `kill`
   recover a hung daemon. (#106)
+- Experimental: with `runtime-mode daemon`, every workspace command keeps the
+  workspace daemon running (it only answers status requests for now; nothing
+  runs through it yet). `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true`
+  never start it; it exits after `daemon-idle-timeout` (default 1h) without
+  clients, or when the workspace is removed. Kills and forced unlocks are now
+  recorded in a per-workspace runtime log under the lw data directory. (#107)
 - Operations that change several workspace files at once (publish, import,
   pull, cache-propagating renames, profile removal, reset, nuke,
   `lw trust --discard`, and the editor's delete / reset / nuke) take a
