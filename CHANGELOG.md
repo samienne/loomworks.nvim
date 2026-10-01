@@ -29,13 +29,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 ### Upgrade notes
 - Scripts or CI that run `lw update` must switch to `lw bootstrap upgrade`
   (move a repository's pin) or `lw self-update` (update lw itself); `lw update`
-  now fails with exit code 2. (#88)
+  now fails with exit code 2. (#89)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
   `lw bootstrap install --version <x.y.z>`) to move a repository's pin, and
   `lw self-update` to update lw itself; `lw update` now only names these and
-  exits 2. (#88)
+  exits 2. (#89)
 
 ## 0.1.42 - 2026-09-30
 

@@ -369,7 +369,7 @@ with a bad bundle hash could not be repaired through the launcher); two
 implementations of the committed-ignore rule. Follow-ups:
 
 - ~~**Remove `lw update`** one release after the deprecation (help topic,
-  parser branch, README row, tests).~~ DONE (#88): removed after 0.1.42; `lw
+  parser branch, README row, tests).~~ DONE (#89): removed after 0.1.42; `lw
   update` is now an unknown command (exit 2) whose one line names `lw bootstrap
   upgrade` and `lw self-update`.
 - ~~**Launcher template comment** still says "Regenerate with `lw update`".~~
