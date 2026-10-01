@@ -278,12 +278,15 @@ end
 --- Remove the socket file a daemon bound (POSIX; a named pipe has none):
 --- exactly `addr` when it is a socket inside one of the per-user directories.
 --- The caller holds the runtime lock.
+--- `cands` are the candidates computed earlier (the daemon computes them at
+--- start: hashing is not allowed inside libuv callbacks in the editor host).
 --- @param root string
 --- @param addr string|nil
-function M.cleanup(root, addr)
+--- @param cands? table[]
+function M.cleanup(root, addr, cands)
     if is_win() or type(addr) ~= "string" then return end
     local ok = false
-    for _, c in ipairs(posix_candidates(root)) do
+    for _, c in ipairs(cands or posix_candidates(root)) do
         if c.path == addr then ok = true end
     end
     if not ok then return end

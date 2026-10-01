@@ -158,6 +158,7 @@ function Server:start()
         return nil, addr, 1
     end
     self.listener, self.address = server, addr
+    self.candidates = endpoint._posix_candidates(self.root)
     self:_write_handle()
     self.timer = uv.new_timer()
     self.timer:start(self.tick_ms, self.tick_ms, function() self:_tick() end)
@@ -212,7 +213,7 @@ function Server:stop(reason, code)
     end
     if rlock.still_ours(self.R) then
         handle.remove(self.root, { pid = self.pid, start_time = self.start_time })
-        endpoint.cleanup(self.root, self.address)
+        endpoint.cleanup(self.root, self.address, self.candidates)
     end
     rlock.release(self.R)
     self.exit(code or 0)
