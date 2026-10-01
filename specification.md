@@ -70,6 +70,7 @@ local to each file and restart at §1.
 | Release notes: the `CHANGELOG.md` grammar, `lw release-notes`, the upgrade notice, self-update's "what's new", the release gate | `specification.md` §16.37 (+ §16.32 for self-update, §16.24 for pin upgrades) |
 | What the CLI's inline output must reveal: the status footer, next-step and empty-state hints, unknown commands, the help index | `specification.md` §16.38 (+ §16.18 for the overview, §16.7 for usage errors) |
 | Several processes (editor, CLI, background process, older versions) writing the same workspace state: stale-save detection, cache merge, working-copy refusal, writer version stamp | `specification.md` §2.7 (+ §16.6 for the headless host) |
+| Exporting the configuration as a published snapshot, or importing one into the working copy (another machine) | `specification.md` §16.39 (+ §2.4 for the serializer and intent, §17.5 for the signed write) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /

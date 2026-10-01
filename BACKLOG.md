@@ -73,6 +73,27 @@ repositories that commit loomworks.json.
 
 ---
 
+## Export / import follow-ups
+
+Deferred from `lw export` / `lw import` (spec §16.39):
+
+- **Editor commands** `:Loomworks export [file]` and `:Loomworks import
+  <file>`, with the import summary and review shown in a confirm dialog. The
+  CLI covers the use case. The editor picks up a CLI import through its file
+  watcher.
+- **Restoring an import backup** with a command (e.g. `lw import --restore
+  <backup>`) instead of copying the file back by hand.
+- **The serializer does not enforce §2.1's ban on absolute paths.** Option
+  values, toolchain or machine files, path-typed variable defaults, launch
+  working directories and module binary overrides reach loomworks.json (and an
+  export) as written. A publish/export warning naming absolute paths (outside
+  `${VAR}` expansions) would make this visible.
+- **Byte identity of DEL and C1 characters.** Export writes DEL and C1 control
+  characters as `\u` escapes and publish writes them raw. Making publish
+  escape them as well would make the two byte-identical in every case.
+
+---
+
 ## Extra source roots for a project
 
 Reported by a user of a superproject setup (local repro repos:

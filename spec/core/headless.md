@@ -3393,3 +3393,221 @@ help. The rules:
   pure alias of a documented command or sub-command, and an option accepted
   solely for compatibility as a no-op, MAY stay undocumented. A usage error that
   lists a command's sub-commands lists all of them.
+
+### 16.39 Configuration export and import
+
+The working copy (§2.2) is machine-local and signed for one machine (§17.3), so
+it cannot be copied to another computer, and a working-copy pull (§16.25) reads
+only a source signed on the same machine. **Export** and **import** carry a
+workspace's configuration to another machine in the one portable form the
+system already has: the published-snapshot format (§2.1).
+
+#### Export
+
+Export is **read-only**: it prints the workspace's configuration in the
+published-snapshot format and writes no workspace file. It never changes an
+item's intent (§2.4), the published baseline, the working copy, the build cache
+or any signature. It is not part of a build and needs no toolchain detection.
+
+**What is exported.** Export runs the **same serializer** a publish (§2.4
+Saving) runs, over a different item set:
+
+- **Full export** (the default) serializes the workspace as if **every** item
+  carried the intent `local+shared`. Every project, configuration, configuration
+  set and profile in the workspace is included, whatever its intent: `local`
+  items, `local+shared` items, and `shared` (reference-only) items that live only
+  in the published snapshot. It is the complete configuration the workspace
+  works with, not only the part shared with collaborators.
+- **Published export** (an explicit flag) serializes exactly the effective-intent
+  closure (§2.4) — byte for byte what a publish would write now. It is a preview
+  of a publish that writes nothing.
+- An option to **leave out profiles** restricts either form to configuration
+  sets and projects, the portable unit (§2.4). A configuration set that a left-out
+  profile alone would have pulled in by the closure rule stays out of a
+  published export too.
+
+The serializer's own rules apply unchanged, so whatever the published snapshot
+never carries is never exported:
+
+- **Machine-local working-copy state** is excluded: the active-profile
+  selection (§4.2), per-profile device selections (§12), profile fill values for
+  blank variables (§1.3.1), declared toolchain installations (§10), language-server
+  option overrides, debugger-adapter mappings, and the intent map. The workspace
+  name is included when set, as on publish (§2.2).
+- **Module-generated configurations** (that the user has not overridden) and
+  **source-missing** configuration stubs are excluded; generated configurations
+  are produced again by the receiving machine's module.
+- **Projects known only from the build cache** (orphaned, §3) are excluded.
+- **Projects of an unknown or rejected type** (§8.0) are included verbatim, like
+  any other project.
+- **Program-bearing fields** (§17.6) are included. That includes values held
+  back from the model because they came from the published snapshot: they are
+  written back at their place exactly as a publish does (§17.6).
+- **Descriptions** (§1.10), launch configurations, deploy steps, variables and
+  device blocks are part of their items and are exported with them.
+- Items flagged **removed upstream** (§2.4) are included. They are the user's
+  items whatever upstream did.
+
+**Format.** The output is the deterministic encoding of §2 (sorted keys,
+two-space indentation, trailing line feed). A full export of a workspace whose
+items all have intent `local+shared` is byte-identical to the file a publish
+writes. There is one exception: a DEL character or a C1 control character in a
+string is written as a JSON `\u` escape. The decoded value is the same, but no
+such byte ever reaches a terminal raw (§16.7). The output never carries a
+signature.
+
+**Destination.** By default the JSON goes to **standard output**. Standard
+output then carries only the JSON, so redirecting it produces a file a reader
+can parse. An output option writes it to a named file instead (`-` names
+standard output). The file is written atomically. An existing file is replaced,
+and its parent directory must already exist. Export **refuses**, writing
+nothing, to write to the workspace's own published snapshot. It also refuses any
+path inside the workspace's `.nvim/` directory. The comparison is on resolved
+paths with a separator boundary (§15 invariant 3's prefix rule). Writing the
+published snapshot is what publish is for, with its baseline update (§2.4). A
+`.nvim/` file is machine-signed state (§17.3) that an export must never
+overwrite.
+
+**Reporting.** Export reports what it exported in one line: the item counts,
+and how many program settings (§17.6) the output carries. With a program
+setting present, the line adds that importing (below) is how they come into
+effect on the receiving machine. When the output goes to standard output, this
+line goes to standard error. When it goes to a file, the line goes to standard
+output and names the file. An empty result is not an error: export prints it
+(an object with an empty `projects` table) and the report says there was
+nothing to export.
+
+#### Import
+
+Import is an **explicit management write** (§16.9). It **replaces** the
+workspace's working configuration with the content of an export (any file in
+the published-snapshot format; `-` reads standard input). It is never part of a
+build.
+
+**What is replaced and what is kept.** The working copy's projects,
+configuration sets (with their descriptions), profiles (with their default
+targets) and the workspace name become exactly the imported ones. An item absent
+from the import leaves the working copy. Import does not merge (contrast pull,
+§16.25). The machine-local state that an export never carries is **kept**,
+because the file cannot carry it back:
+
+- declared toolchain installations, language-server option overrides and
+  debugger-adapter mappings stay as they are;
+- the active-profile selection, device selections and profile fill values stay
+  for every profile whose key the import still contains;
+- they are dropped for profiles that the import removes.
+
+When the active profile is dropped, the workspace has no active profile
+afterwards, and the report says so.
+
+**Intent of imported items.** Import publishes nothing and leaves the published
+snapshot untouched. Each imported item receives the intent that the item would
+get on a first load of this workspace:
+
+- `local+shared` when the current published snapshot holds an item of the same
+  identity (project key, `(project, configuration)` name, set name, profile key);
+- `local` otherwise.
+
+This rule holds for profiles too. A publish right after an import therefore
+never removes a published item: items already published are updated to the
+imported content (shown as modified, §2.4), and new items stay private until
+published by name. Published items absent from the import are no longer in the
+working copy. They remain visible as `shared` reference-only items, and use
+materializes them again (§2.4 implicit cascade). The global create-intent
+options override the rule:
+
+- the share option makes every imported item `local+shared` except profiles,
+  which keep the rule above (§2.4 profile exception). The next publish then
+  writes the imported configuration as the shared one.
+- the private option makes every imported item `local`. The summary then warns
+  how many items the next publish would remove from the published snapshot.
+
+**Validation first.** Before anything is written, the input is decoded and
+loaded **in memory** through the same path a workspace load uses. That covers
+the published-snapshot validation, the per-configuration merge with the current
+published snapshot (§2.4), and deserialization into the model (§1). Any error
+the load would report as fatal is fatal to the import, and the import then
+changes nothing. Warnings the load would give, such as a project directory that
+does not exist on this checkout or an unknown project type, are printed and do
+not stop the import. A **working copy** (it carries the working-copy version
+marker or a signature member) is refused with a message. It is not an export:
+on the same machine, pull carries it (§16.25), and on another machine the source
+must export it.
+
+**Trust.** Import writes the content into the signed working copy (§17.5), so
+the program settings in it are honoured from then on (§17.6). That is why
+importing is an **explicit act of trust** in the content, made with the same
+review that trusting a working copy uses (§17.4). Before writing, import prints:
+
+- a **summary** of what changes: per item kind, the count before and after with
+  the names added and removed; the workspace name when it changes; the active
+  profile when it is dropped; the published items that will remain only as
+  reference-only items; and the configurations whose build directories no
+  profile will use any longer;
+- the **program settings** in the imported content, in the review format of
+  §17.4. Those that the current working copy does not already hold with the
+  same value are marked as new.
+
+Import then asks for confirmation. A confirmation flag skips the prompt. A
+**preview** flag prints the same summary and review, writes nothing, and exits
+0. Without the confirmation flag, import refuses in three cases: in a
+non-interactive host (§16.3), when its input is standard input (there is no
+terminal left to answer on), and when the answer is not yes. A refusal changes
+nothing, names the flag, and exits 1.
+
+Import is refused when the current working copy is **refused** (§17.4): an
+untrusted file is never read, so its machine-local state cannot be kept. The
+message names the trust and discard actions. Import into a workspace with **no**
+working copy is allowed and creates one. Import needs a workspace, as every
+workspace command does (§1.1). Outside one, it names workspace initialization.
+
+**Backup.** Before replacing an existing working copy, import keeps a byte-exact
+copy of it next to it, named with the import's local time:
+`.nvim/loomworks.user.json.<YYYYMMDD-HHMMSS>.bak`. The signature does not bind
+the file's name or the workspace root (§17.3), so copying the backup back over
+the working copy restores it on this machine. The report names the backup and
+gives that copy as the way to undo. If the backup cannot be written, the import
+stops before changing anything. Import never deletes or prunes these backups.
+
+**Writing.** The new working copy is written through the same atomic, signed
+path as every management write (§2.3, §17.5). Import touches **no build
+state**: the build cache, build directories and their locks are left as they
+are. A configuration that keeps its `(project, configuration)` identity keeps its
+build directory and state. Whether its next build reconfigures follows the
+normal staleness rules (§16.4). A build directory that no remaining profile
+uses becomes orphaned build state, exactly as after removing a profile. The
+report then names the reset that also covers such directories (§16.30) and
+says that it resets every profile (§16.38). Import deletes nothing.
+
+**Concurrent editor.** An editor host that is live on the workspace picks the
+new working copy up like any other external change to it (§2.4 External
+changes). The file is signed by this machine, so the change is merged, not
+refused. As with any other management write, an edit the editor saves between
+import's read and its write may be lost. Close the editor or keep it idle while
+importing.
+
+**Report.** After writing, import reports the imported counts, the backup's
+path, and the resulting active profile. When the import changed an item that
+reaches the published snapshot (§2.4 effective intent), it also names publish.
+
+#### Transfer without import
+
+An export is also a valid published snapshot. Saving it as the receiving
+checkout's published-snapshot file is enough for a machine to read it: the
+working copy folds it in as an external change (§2.4), and its items appear as
+`shared` items that use materializes. This path changes a file that is usually
+committed. The receiving machine also **ignores** the program settings in it
+(§17.6) until they are copied into its working copy. Import is the documented
+transfer. This path is the fallback for a lw that has no import.
+
+#### Discoverability
+
+Export and import are not everyday operations (§16.38). They are documented in
+the command index and in their own help topics. Inline hints point at them in
+three places:
+
+- the help for publish names export as the way to see what a publish would
+  write, or to carry the configuration to another machine;
+- the help for pull names export and import for another machine;
+- a pull whose source working copy is not signed by this machine, which is the
+  usual sign that it was copied from elsewhere, adds that line too.
