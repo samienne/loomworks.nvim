@@ -65,7 +65,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   the configuration set. `lw config` with an unknown sub-command now lists
   `describe` too. (#90)
 - `lw status --check` outside a workspace exited 0, so a misconfigured CI gate
-  passed silently; it now exits 1 (same page as plain `lw status`) (#999)
+  passed silently; it now exits 1 (same page as plain `lw status`) (#92)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
