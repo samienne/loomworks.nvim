@@ -134,7 +134,11 @@ cache saves, health-cache writes, workspace initialization, and a working-copy
 pull between checkouts (§16.25). A pull reads its **source** working copy only
 when that file is valid (a pull must not turn an untrusted file into a signed
 one), and merges into a target working copy only when the target is valid or
-absent. Signing never fails a write: if the key is unavailable the file is
+absent. A configuration **import** (§16.39) is the one writer that signs
+content from outside the working copy. It does so only as an explicit act of
+trust, after the same program-settings review that trusting uses (§17.4) and a
+confirmation (prompt or flag, never implicit). It writes only into a target
+working copy that is valid or absent. Signing never fails a write: if the key is unavailable the file is
 written unsigned (and will be refused or discarded on the next read, never
 trusted), and the failure is reported.
 

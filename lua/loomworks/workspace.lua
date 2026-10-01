@@ -4571,29 +4571,44 @@ end
 --- published, regardless of the leaf's explicit intent. Profiles default
 --- to `local` so don't normally propagate; an explicitly published
 --- profile (`local+shared`) forces its set and the set's leaves.
+---
+--- `opts.all` treats every item as `local+shared` — the full export of
+--- `lw export` (spec §16.39): every non-orphaned project and its
+--- configurations, every set, every profile, whatever their intent.
+--- `opts.no_profiles` leaves profiles out, including the set / projects a
+--- profile alone would have pulled in by the closure.
+--- @param opts? { all: boolean|nil, no_profiles: boolean|nil }
 --- @return table { projects: table, config_sets: table, configs: table, profiles: table }
 ---   each sub-table maps domain-object identity → true
-function Workspace:_publishable_to_shared()
+function Workspace:_publishable_to_shared(opts)
+    opts = opts or {}
     local pub = { projects = {}, config_sets = {}, configs = {}, profiles = {} }
+    local function shared(item)
+        return opts.all or (item._intent and item._intent ~= "local")
+    end
 
     for _, p in pairs(self._projects) do
-        if not p.orphaned and p._intent and p._intent ~= "local" then
+        if not p.orphaned and shared(p) then
             pub.projects[p] = true
         end
-        for _, cfg in ipairs(p._configurations or {}) do
-            if cfg._intent and cfg._intent ~= "local" then
-                pub.configs[cfg] = true
+        if not p.orphaned then
+            for _, cfg in ipairs(p._configurations or {}) do
+                if shared(cfg) then
+                    pub.configs[cfg] = true
+                end
             end
         end
     end
     for _, cs in pairs(self._config_sets) do
-        if cs._intent and cs._intent ~= "local" then
+        if shared(cs) then
             pub.config_sets[cs] = true
         end
     end
-    for _, prof in pairs(self._profiles) do
-        if prof._intent and prof._intent ~= "local" then
-            pub.profiles[prof] = true
+    if not opts.no_profiles then
+        for _, prof in pairs(self._profiles) do
+            if shared(prof) then
+                pub.profiles[prof] = true
+            end
         end
     end
 
@@ -4692,14 +4707,15 @@ end
 --- Only includes shared-sourced items (excludes user-sourced projects/config_sets).
 --- Reads from domain objects (Project, ConfigurationSet, Profile).
 --- This is the object → disk serialization boundary.
+--- @param opts? { all: boolean|nil, no_profiles: boolean|nil } item selection (`_publishable_to_shared`)
 --- @return table raw JSON-compatible table
-function Workspace:_serialize_config()
+function Workspace:_serialize_config(opts)
     local raw = { projects = {} }
     if self.name then
         raw.name = self.name
     end
 
-    local pub = self:_publishable_to_shared()
+    local pub = self:_publishable_to_shared(opts)
 
     -- Projects: include those with effective intent shared (own intent
     -- or transitively promoted by a published config set / profile).
@@ -5133,13 +5149,217 @@ function Workspace:has_any_modified()
     return false
 end
 
+--- The published-snapshot table a publish writes (spec §2.4 Saving): the
+--- serialized items plus the shared program-bearing values the model never
+--- held, written back at their places (spec §17.6). With `opts` it is the
+--- same serialization over another item set — `lw export` (spec §16.39):
+--- `all` = every item as if `local+shared`, `no_profiles` = no profiles.
+--- Pure: writes nothing, changes no intent.
+--- @param opts? { all: boolean|nil, no_profiles: boolean|nil }
+--- @return table raw JSON-compatible table
+function Workspace:shared_snapshot(opts)
+    local raw = self:_serialize_config(opts)
+    require("loomworks.program_fields").regraft(raw, self._shared_ignored)
+    return raw
+end
+
+--- Normalized build directories the profiles' units use now (import report:
+--- which cached build directories an import leaves to no profile).
+--- @return table<string, boolean>
+function Workspace:_profile_build_dirs()
+    local norm = self._core._deps.normalize or function(p) return p end
+    local used = {}
+    for _, pp in ipairs(self._profile_projects or {}) do
+        local unit = pp._config_unit
+        local bd = unit and unit:build_dir()
+        if bd then used[norm(bd)] = true end
+    end
+    return used
+end
+
+--- Load an export into this workspace IN MEMORY, as `lw import` would leave it
+--- (spec §16.39), without writing anything. The input is validated as a
+--- published snapshot, the working copy is rebuilt from it (keeping the
+--- machine-local state an export cannot carry), and the model is remerged
+--- through the same path a load uses — so anything a load would refuse
+--- refuses the import. On error the in-memory model may be partly replaced;
+--- the caller must then write nothing (the CLI exits).
+---
+--- `opts.intent` is the global create intent (`--shared` / `--local`), nil for
+--- the presence rule. Returns a plan for the report and `commit_import`, or
+--- nil, an error, and an error kind (`"json"`, `"working_copy"`, `"invalid"`,
+--- `"load"`).
+--- @param content string the export's text
+--- @param opts? { intent: string|nil }
+--- @return table|nil plan, string|nil err, string|nil kind
+function Workspace:prepare_import(content, opts)
+    opts = opts or {}
+    local transfer = require("loomworks.config_transfer")
+    local ok, raw = pcall(vim.json.decode, content or "")
+    if not ok or type(raw) ~= "table" or vim.islist(raw) and next(raw) ~= nil then
+        return nil, "not valid JSON", "json"
+    end
+    if raw._meta ~= nil or raw._sig ~= nil then
+        return nil, "a working copy (.nvim/loomworks.user.json), not an export", "working_copy"
+    end
+    local config, verr = config_mod.validate(vim.deepcopy(raw), self.root)
+    if not config then return nil, verr, "invalid" end
+
+    local before = self:_serialize_user()
+    local snapshot_before = self:shared_snapshot()
+    local used_before = self:_profile_build_dirs()
+    local name_before = self.name
+
+    -- The working copy the import writes: the imported items, plus the
+    -- machine-local state an export never carries (kept for surviving
+    -- profiles only where it is per profile).
+    local profiles, default_targets = {}, {}
+    for key, def in pairs(config.profiles or {}) do
+        local entry = vim.deepcopy(def)
+        if entry.default_target ~= nil then default_targets[key] = entry.default_target end
+        entry.default_target = nil
+        profiles[key] = entry
+    end
+    local function keep(map)
+        local kept = {}
+        for key, v in pairs(type(map) == "table" and map or {}) do
+            if profiles[key] then kept[key] = v end
+        end
+        return next(kept) and kept or nil
+    end
+    local cand = {
+        _meta = { version = 2 },
+        active_profile = before.active_profile and profiles[before.active_profile]
+            and before.active_profile or nil,
+        projects = config.projects,
+        configuration_sets = config.configuration_sets,
+        configuration_set_descriptions = config.configuration_set_descriptions,
+        profiles = next(profiles) and profiles or nil,
+        default_target = next(default_targets) and default_targets or nil,
+        device = keep(before.device),
+        profile_variables = keep(before.profile_variables),
+        debug = before.debug,
+        lsp = before.lsp,
+        sdks = before.sdks,
+        intent = transfer.intents(config, self._shared_baseline, opts.intent),
+    }
+
+    -- The name: the import's, else what a load derives without one.
+    local base = self._shared_baseline or {}
+    self.name = config.name or base.name or self.root:match("([^/]+)$") or self.root
+
+    local rok, rerr = pcall(self.remerge, self,
+        vim.deepcopy(self._shared_baseline or { projects = {} }), nil, cand)
+    if not rok then
+        return nil, "the imported configuration does not load: " .. tostring(rerr), "load"
+    end
+
+    local after = self:_serialize_user()
+    local snapshot_after = self:shared_snapshot()
+    local used_after = self:_profile_build_dirs()
+    local norm = self._core._deps.normalize or function(p) return p end
+    local orphaned = 0
+    for _, bd in ipairs(self._build_dirs or {}) do
+        local p = not bd._removed and bd.path and norm(bd.path)
+        if p and used_before[p] and not used_after[p] then orphaned = orphaned + 1 end
+    end
+
+    -- Published items the import leaves out (they stay as reference-only).
+    local inv_after = transfer.inventory(after)
+    local shared_only = {}
+    for _, key in ipairs(vim.tbl_keys(base.projects or {})) do
+        if not inv_after.projects[key] then shared_only[#shared_only + 1] = "project " .. key end
+    end
+    for _, name in ipairs(vim.tbl_keys(base.configuration_sets or {})) do
+        if not inv_after.configuration_sets[name] then
+            shared_only[#shared_only + 1] = "configuration set " .. name
+        end
+    end
+    for _, key in ipairs(vim.tbl_keys(base.profiles or {})) do
+        if not inv_after.profiles[key] then shared_only[#shared_only + 1] = "profile " .. key end
+    end
+    table.sort(shared_only)
+
+    -- Published items the next publish would drop (only under --local).
+    local inv_snap = transfer.inventory(snapshot_after)
+    local inv_base_snap = transfer.inventory(snapshot_before)
+    local unpublished = 0
+    for _, kind in ipairs({ "projects", "configuration_sets", "profiles" }) do
+        for k in pairs(inv_base_snap[kind]) do
+            if inv_snap[kind][k] == nil then unpublished = unpublished + 1 end
+        end
+    end
+
+    local prog, other, new_prog = transfer.review(before, after, self._core._deps.modules)
+    local io_mod = require("loomworks.io")
+    return {
+        before = before,
+        after = after,
+        diff = transfer.diff(transfer.inventory(before), inv_after),
+        counts = transfer.counts(inv_after),
+        name_before = name_before,
+        name_after = self.name,
+        active_before = before.active_profile,
+        active_after = after.active_profile,
+        shared_only = shared_only,
+        orphaned_build_dirs = orphaned,
+        publish_changes = io_mod.encode_json(snapshot_before) ~= io_mod.encode_json(snapshot_after),
+        unpublished = unpublished,
+        program_lines = prog,
+        other_lines = other,
+        new_program_settings = new_prog,
+    }
+end
+
+--- Write the working copy `prepare_import` loaded (spec §16.39): first a
+--- byte-exact, timestamped backup of the current working copy (never
+--- overwriting an existing file; no backup, no write), then the new working
+--- copy through the guarded save (`_save_user`, spec §2.7). A working copy
+--- that changed on disk since it was read refuses the import before the
+--- backup (nothing written, reloaded, reported). Deletes nothing.
+--- @param plan table from `prepare_import`
+--- @return boolean|nil ok, string|nil err, string|nil backup path of the backup (nil when there was no working copy)
+function Workspace:commit_import(plan)
+    local uv = vim.uv or vim.loop
+    local path = self._core._deps.user.filepath(self.root)
+    -- The working copy changed on disk since this process read it (another lw
+    -- or the editor saved while the import was being reviewed): refuse before
+    -- the backup, through the one stale-save path (spec §2.7) — it writes
+    -- nothing, reloads the working copy and reports the refusal. `_save_user`
+    -- repeats the check under the save lock, so a write racing the backup
+    -- below is refused too.
+    local base = self._disk_baseline and self._disk_baseline.user
+    if base then
+        local disk = self:_read_disk(path)
+        if disk ~= false and disk ~= base.text then
+            local ok, err = self:_save_user()
+            if not ok then return nil, err end
+        end
+    end
+    local backup = nil
+    if uv.fs_stat(path) then
+        local stamp = os.date("%Y%m%d-%H%M%S")
+        local candidate, n = path .. "." .. stamp .. ".bak", 1
+        while uv.fs_stat(candidate) do
+            n = n + 1
+            candidate = path .. "." .. stamp .. "-" .. n .. ".bak"
+        end
+        local ok, err = uv.fs_copyfile(path, candidate, { excl = true })
+        if not ok then
+            return nil, "could not save a backup of the working copy: " .. tostring(err)
+        end
+        backup = candidate
+    end
+    local ok, err = self:_save_user()
+    if not ok then return nil, err or "could not write the working copy", backup end
+    return true, nil, backup
+end
+
 --- Write the current config to loomworks.json.
 --- Updates the file tracker's cached content to suppress self-write detection.
 --- @return boolean ok, string|nil err
 function Workspace:_save_config()
-    local raw = self:_serialize_config()
-    -- Restore shared program-bearing values the model never held (spec §17.6).
-    require("loomworks.program_fields").regraft(raw, self._shared_ignored)
+    local raw = self:shared_snapshot()
     local path = M.paths(self.root).config
     local ok, err = self._core._deps.io.write_json(path, raw)
     if ok and self._tracker then
