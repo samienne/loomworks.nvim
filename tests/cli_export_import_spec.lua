@@ -142,9 +142,7 @@ describe("lw export", function()
     local data = vim.json.decode(ok_run(root, "export").json)
     -- The launch is ignored from loomworks.json (§17.6) but written back.
     assert.same({ command = "node", args = { "x.js" } }, data.projects.app.launch.serve)
-    -- (Its own `configurations` are not kept by the shared serializer today:
-    -- a publish drops them too — BACKLOG "Unknown-type configurations".)
-    assert.equals(7, data.projects.odd.frobnicate.knob)
+    assert.same({ knob = 7, configurations = { Fast = { level = 3 } } }, data.projects.odd.frobnicate)
     assert.equals("old", data.projects.odd.path)
   end)
 

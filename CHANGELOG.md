@@ -98,6 +98,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `describe` too. (#90)
 - `lw status --check` outside a workspace exited 0, so a misconfigured CI gate
   passed silently; it now exits 1 (same page as plain `lw status`) (#92)
+- A project whose module is not installed, or is refused for an interface
+  version mismatch, lost its `configurations` on `lw publish` and whenever the
+  working copy was saved. They are now kept unchanged, and load normally once
+  the module is available. (#95)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or

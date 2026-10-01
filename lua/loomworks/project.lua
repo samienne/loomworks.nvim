@@ -70,9 +70,12 @@ function Project:_update(data)
     self.path = data.path
     -- Store type_config without .configurations — that data lives on
     -- Configuration domain objects and is reconstructed for serialization.
+    -- Without a module (type missing or rejected, spec §8.0) no Configuration
+    -- objects are built, so the declared configurations stay on type_config
+    -- verbatim and the serializers write them back unchanged.
     if data.type_config then
         local tc = data.type_config
-        if tc.configurations then
+        if tc.configurations and data._module then
             tc = vim.deepcopy(tc)
             tc.configurations = nil
         end
