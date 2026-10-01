@@ -988,6 +988,7 @@ end
 --- the in-memory state is then reconciled to the merged cache.
 --- @return boolean ok
 function Workspace:_save_cache()
+    if self._torn_down then return false end
     local deps = self._core._deps
     local cache = self:_serialize_cache()
     -- Compute loomworks_hash from serialized config content
@@ -4372,7 +4373,13 @@ function Workspace:_locked_deletion(operation, dirs, start, on_done)
     end
     local ok, f = pcall(start)
     if not ok then release(); error(f, 0) end
-    f:next(function() release() end):catch(function() release() end)
+    self._deletions = self._deletions or {}
+    self._deletions[f] = true
+    local function settle()
+        if self._deletions then self._deletions[f] = nil end
+        release()
+    end
+    f:next(settle):catch(settle)
     return f
 end
 
@@ -6931,6 +6938,10 @@ function Workspace:_set_profile_variables_raw(profile_key, dict)
 end
 
 --- The message of a refused stale working-copy save (spec §2.7).
+--- How long `teardown` waits for an in-flight deletion to finish removing
+--- its trees before it releases the deletion's locks anyway.
+M.TEARDOWN_WAIT_MS = 30000
+
 M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on disk"
     .. " (another lw or editor) — reloaded it; your last change was not saved, redo it"
 
@@ -6942,6 +6953,7 @@ M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on 
 --- working-copy mutations are cross-item (renames, cascade, self-containment).
 --- @return boolean ok, string|nil err
 function Workspace:_save_user()
+    if self._torn_down then return false, "the workspace was unloaded" end
     local deps = self._core._deps
     local path = user_mod.filepath(self.root)
     -- A refused working copy loaded as absent for an import (spec §16.39) is
@@ -7858,6 +7870,15 @@ end
 --- @return loomworks.Future resolves once tasks are confirmed stopped
 function Workspace:teardown()
     self:_stop_tracking()
+    -- A deletion still removing its trees keeps its locks until it ends: wait
+    -- for it (bounded, `TEARDOWN_WAIT_MS`) before the locks below are
+    -- released, so no other process enters a directory being removed.
+    if self._deletions and next(self._deletions) then
+        vim.wait(M.TEARDOWN_WAIT_MS, function() return next(self._deletions) == nil end, 20)
+    end
+    -- A torn-down workspace writes nothing again (a late task callback must
+    -- not resurrect state, e.g. a cache a nuke just removed).
+    self._torn_down = true
 
     local events = self._core._deps.events
     for _, entry in ipairs(self._event_handlers) do

@@ -199,7 +199,19 @@ gone creates a fresh `.nvim/build`, never a directory inside the tree being
 removed. A tree left aside by a nuke that crashed (a real directory directly
 in `.nvim/` named exactly `build.nuke-<hex>`) is removed by the next nuke.
 Where the rename is impossible (a file in the tree held open on Windows), nuke
-removes the tree in place and says so.
+refuses after removing the caches, leaving the tree: removing it in place
+would let a build that starts once the locks go write into a tree being
+deleted. The editor's nuke first stops its own tasks and unloads its
+workspace (which then writes nothing), so its own build neither keeps writing
+into the tree nor recreates the cache; the operation lock is held until the
+removal has really ended.
+
+A build lock that a task of the same process already holds is taken by a
+deletion as a counted reference, not acquired again, so the editor's deletion
+— which takes O while its own task may hold the directory's build lock — never
+waits on itself and cannot deadlock (every cross-process acquisition is
+fail-fast). `Workspace:teardown` lets an in-flight deletion finish (bounded)
+before it releases that deletion's locks.
 
 ### 19.4 Crash-consistent multi-file commits
 

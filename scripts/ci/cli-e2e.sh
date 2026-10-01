@@ -252,6 +252,35 @@ JSON
         bad "locks: the holder's build step (sleep $LOCK_SLEEP) survived"
         pkill -9 -f "^sleep $LOCK_SLEEP\$"
     fi
+
+    # 3. lw nuke (spec 19.3) on this host: refused while a build runs (nothing
+    #    deleted), then a clean nuke (tree moved aside and removed under the
+    #    host's own event loop, caches gone, no aside tree or lock left).
+    touch "$ws/slow-build"
+    ( cd "$ws" && run_lw build Dev ) > "$TMP/bg.txt" 2>&1 &
+    bg=$!
+    if ! lockf=$(wait_lock_op "$ws" build); then
+        cp "$TMP/bg.txt" "$out"; note_fail "locks: nuke: background build never reached the build step" 1
+        kill_tree "$(lock_pid "$(find "$ws" -name '*.loomworks-lock' | head -1)")"; wait "$bg" 2>/dev/null
+        return
+    fi
+    pid=$(lock_pid "$lockf")
+    ( cd "$ws" && run_lw nuke -y ) > "$out" 2>&1
+    rc=$?
+    if [ $rc -ne 0 ] && grep -q "a build is running in" "$out" && [ -d "$ws/.nvim/build" ] \
+        && [ -f "$ws/.nvim/loomworks.cache.json" ]; then
+        ok "locks: nuke refuses while a build runs and deletes nothing"
+    else note_fail "locks: nuke during a running build" $rc; fi
+    rm -f "$ws/slow-build"
+    kill_tree "$pid"; wait "$bg" 2>/dev/null
+    ( cd "$ws" && run_lw nuke -y ) > "$out" 2>&1
+    rc=$?
+    local nuke_left
+    nuke_left=$(find "$ws/.nvim" -maxdepth 1 \( -name 'build' -o -name 'build.nuke-*' \
+        -o -name 'loomworks.cache.json' -o -name 'loomworks.op.lock' \) 2>/dev/null)
+    if [ $rc -eq 0 ] && grep -q "NUKED" "$out" && [ -z "$nuke_left" ]; then
+        ok "locks: nuke removes the build tree and caches, leaving no aside tree or lock"
+    else note_fail "locks: nuke left: $nuke_left" $rc; fi
 }
 
 # Drive one module's project through the full CLI flow.

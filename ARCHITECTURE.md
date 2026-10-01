@@ -538,8 +538,14 @@ under O, as its plan predates the lock). `Core:_nuke_files` (editor nuke and
 by a depth-bounded `fs_scandir`, plus the loaded workspace's build dirs), removes
 the caches, renames the tree aside (`_nuke_move_aside` →
 `.nvim/build.nuke-<hex>`, plus `_nuke_leftovers` of crashed nukes) and removes
-it with `io.rm_rf_async` under `vim.wait` (`_nuke_remove`) so the heartbeat
-timers keep running; `Core:delete_user_prefs` takes O. Deletions hold their
+it with `io.rm_rf_async` under `vim.wait` (`_nuke_remove`, re-waiting after
+an interrupted wait) so the heartbeat timers keep running; a failed rename
+refuses the nuke (tree kept). `Core:nuke_cache` first retires the live
+workspace (`_retire_workspace`: teardown, waiting for its tasks to stop;
+a torn-down workspace's `_save_cache` / `_save_user` write nothing), and
+`_nuke_build_locks` refuses a directory this process still holds.
+`Workspace:teardown` waits up to `TEARDOWN_WAIT_MS` for in-flight deletions
+(`_deletions`) before releasing their locks. `Core:delete_user_prefs` takes O. Deletions hold their
 build locks as counted references in `Workspace._build_dir_file_locks` (the
 editor task path's table), and `Workspace:teardown` releases those and every
 O token in `_op_tokens`. The lock modules come from

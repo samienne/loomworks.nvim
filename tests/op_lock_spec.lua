@@ -347,9 +347,14 @@ describe("review fixes (§19.3)", function()
         local root, dir = L.make_ws()
         local ws = load(root)
         io_mod.rm_rf_async = function() return require("loomworks.future").create(function() end) end
+        local wsmod = require("loomworks.workspace")
+        local saved_wait = wsmod.TEARDOWN_WAIT_MS
+        wsmod.TEARDOWN_WAIT_MS = 200 -- a deletion that never settles
         ws._profiles[1]:reset()
         assert.is_true(vim.wait(2000, function() return op_lock.read(root) ~= nil and bl.read(dir) ~= nil end, 20))
         ws:teardown()
+        if ws._core._workspace == ws then ws._core._workspace = nil end -- as Core does on swap
+        wsmod.TEARDOWN_WAIT_MS = saved_wait
         assert.is_nil(op_lock.read(root), "O survived teardown")
         assert.is_nil(bl.read(dir), "the build lock survived teardown")
     end)
@@ -405,5 +410,106 @@ describe("fake roots never get lockfiles (§19.3)", function()
         assert.is_true(ws:_acquire_file_lock(root .. "/.nvim/build/App/Debug", "build"))
         ws:_release_file_lock(root .. "/.nvim/build/App/Debug")
         assert.is_nil(uv.fs_stat(root), "a lock created " .. root)
+    end)
+end)
+
+describe("re-review fixes (§19.3)", function()
+    local io_mod = require("loomworks.io")
+    local saved = {}
+    before_each(function()
+        saved.rm_rf_async, saved.rename, saved.wait = io_mod.rm_rf_async, uv.fs_rename, nil
+    end)
+    after_each(function()
+        io_mod.rm_rf_async, uv.fs_rename = saved.rm_rf_async, saved.rename
+        L.cleanup()
+        op_lock.release_all()
+    end)
+
+    it("nuke refuses (tree left, locks released) when the tree cannot be moved aside", function()
+        local root, dir = L.make_ws()
+        uv.fs_rename = function(a, b)
+            if tostring(b):find("build.nuke-", 1, true) then return nil, "EBUSY: resource busy", "EBUSY" end
+            return saved.rename(a, b)
+        end
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        uv.fs_rename = saved.rename
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stderr:find("could not move .nvim/build aside", 1, true), r.stderr)
+        assert.is_not_nil(uv.fs_stat(dir), "the tree was removed in place")
+        assert.is_nil(bl.read(dir), "a build lock was left behind")
+        assert.is_nil(op_lock.read(root), "the operation lock was left behind")
+    end)
+
+    it("nuke refuses a build directory this process itself holds outside the workspace", function()
+        local root, dir = L.make_ws()
+        local mine = assert(bl.acquire(dir, "build"))
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        bl.release(mine)
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stderr:find("in use by this process", 1, true), r.stderr)
+        assert.is_not_nil(uv.fs_stat(dir))
+    end)
+
+    it("the editor's nuke: the old workspace can no longer recreate the cache, its locks are released", function()
+        local root, dir = L.make_ws()
+        local ws, core = cli._load_workspace(root, false)
+        local key = ws._core._deps.normalize(dir)
+        assert.is_true(ws:_acquire_file_lock(key, "build")) -- its own running build
+        local recreated
+        io_mod.rm_rf_async = function(p, cb)
+            -- a late callback of the old workspace while the removal pumps the loop
+            pcall(ws._save_cache, ws)
+            recreated = L.read(root .. "/.nvim/loomworks.cache.json")
+            return saved.rm_rf_async(p, cb)
+        end
+        core:nuke_cache(root)
+        io_mod.rm_rf_async = saved.rm_rf_async
+        vim.wait(5000, function() return core._state ~= "initializing" end, 10)
+        assert.is_nil(recreated, "the old workspace recreated the cache mid-nuke: " .. tostring(recreated))
+        local cache = L.read(root .. "/.nvim/loomworks.cache.json") or ""
+        assert.is_nil(cache:find('"built"', 1, true), "a stale built state came back: " .. cache)
+        assert.is_nil(uv.fs_stat(dir), "the tree survived")
+        assert.same({}, ws._build_dir_file_locks or {})
+    end)
+
+    it("teardown lets an in-flight deletion finish before releasing its locks", function()
+        local root, dir = L.make_ws()
+        local ws = load(root)
+        local removed = false
+        io_mod.rm_rf_async = function(d, cb)
+            local f = require("loomworks.future").create(function(resolve)
+                local t = uv.new_timer()
+                t:start(500, 0, function()
+                    t:close()
+                    vim.schedule(function()
+                        vim.fn.delete(d, "rf")
+                        removed = true
+                        if cb then cb(true, nil) end
+                        resolve(true)
+                    end)
+                end)
+            end)
+            return f
+        end
+        ws._profiles[1]:reset()
+        assert.is_true(vim.wait(2000, function() return bl.read(dir) ~= nil end, 10))
+        ws:teardown()
+        if ws._core._workspace == ws then ws._core._workspace = nil end -- as Core does on swap
+        assert.is_true(removed, "teardown returned while the deletion was still removing")
+        assert.is_true(vim.wait(2000, function() return bl.read(dir) == nil and op_lock.read(root) == nil end, 20))
+    end)
+
+    it("adding a project reports a refused profile upgrade instead of carrying on", function()
+        local root = L.make_ws()
+        local ws = load(root)
+        ws._core._deps.on_lock_refused = nil
+        ws._core._deps.notify = function() end
+        L.hold(op_lock.path(root), "publish")
+        vim.fn.mkdir(root .. "/B", "p")
+        local wv = require("loomworks.workspace_view")
+        local ok, err = wv.execute_add_project(ws, "B", "typescript", "B",
+            { mappings = {}, tool_entry = { type = "typescript", key = "t" } }, false)
+        assert.equals(false, ok)
+        assert.is_truthy(tostring(err):find("workspace busy", 1, true), tostring(err))
     end)
 end)

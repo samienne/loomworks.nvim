@@ -499,9 +499,27 @@ end
 --- Caller must confirm with the user before calling this.
 --- @param root string workspace root to nuke
 function Core:nuke_cache(root)
+    -- The live workspace goes first (spec §19.3): its tasks are stopped (an
+    -- editor build would keep writing into the tree, and hold its lock) and
+    -- it can no longer save — a callback that ran while the removal pumps the
+    -- event loop must not recreate the cache with stale `built` states. The
+    -- reload below builds a fresh one, also when the nuke was refused.
+    self:_retire_workspace()
     local norm_root = self:_nuke_files(root)
-    if norm_root then
-        self:setup({ root = norm_root })
+    self:setup({ root = norm_root or self._deps.normalize(root) })
+end
+
+--- Stop the live workspace's tasks (waiting, bounded, for them to end) and
+--- tear it down so nothing of it writes again.
+function Core:_retire_workspace()
+    local ws = self._workspace
+    if not ws then return end
+    self._workspace = nil
+    local done = false
+    local ok, f = pcall(ws.teardown, ws)
+    if ok and type(f) == "table" and f.next then
+        f:next(function() done = true end):catch(function() done = true end)
+        vim.wait(10000, function() return done end, 20)
     end
 end
 
@@ -572,16 +590,26 @@ function Core:_nuke_files(root)
     -- 2. Move the build tree aside in one atomic rename, so a build that
     --    starts as soon as the locks go creates a fresh `.nvim/build` instead
     --    of writing into the tree being removed. Trees left aside by a nuke
-    --    that crashed are removed too.
+    --    that crashed are removed too. If the rename fails (on Windows: a
+    --    program has a file in the tree open) nuke REFUSES rather than remove
+    --    the tree in place: a build that starts once the locks go would then
+    --    write into a tree still being deleted, and a tree with open files
+    --    could not be removed completely anyway. Only the caches are gone,
+    --    which is harmless: the builds reconfigure.
     local targets = self:_nuke_leftovers(norm_root)
     local aside, rerr = self:_nuke_move_aside(norm_root, build_dir)
     if aside then
         targets[#targets + 1] = aside
+    elseif rerr then
+        for _, h in ipairs(held) do locks.build.release(h) end
+        op_lock.release(tok)
+        self._deps.notify("loomworks: cannot nuke: could not move .nvim/build aside (" .. rerr
+            .. ") — close programs using files in it (the editor's build, a file explorer, a "
+            .. "running program), then nuke again. The build caches were removed; the tree was "
+            .. "left as it is.", vim.log.levels.ERROR)
+        return nil
     else
-        if rerr then
-            self._deps.notify("loomworks: could not move the build tree aside (" .. rerr
-                .. ") — removing it in place", vim.log.levels.WARN)
-        end
+        -- No real directory to move (none, or a host's fake root).
         targets[#targets + 1] = build_dir
     end
     -- The lockfiles moved with the tree: nothing of theirs is left to release
@@ -658,7 +686,13 @@ function Core:_nuke_remove(target)
     end
     local done, ok, err = false, false, nil
     io_mod.rm_rf_async(target, function(o, e) done, ok, err = true, o, e end)
-    vim.wait(24 * 3600 * 1000, function() return done end, 50)
+    -- Until the removal has really ended: an interrupted wait (Ctrl-C in the
+    -- editor) waits again, so the operation lock is never released while the
+    -- tree is still being removed. (The CLI's interrupt ends the process; a
+    -- half-removed aside tree is removed by the next nuke.)
+    while not done do
+        vim.wait(24 * 3600 * 1000, function() return done end, 50)
+    end
     return ok, err
 end
 
@@ -723,7 +757,13 @@ function Core:_nuke_build_locks(root, build_dir, build_lock)
     table.sort(dirs, function(a, b) return a.key < b.key end)
     local held = {}
     for _, e in ipairs(dirs) do
-        if not build_lock.held_by_me(e.path) then
+        if build_lock.held_by_me(e.path) then
+            -- A task of this very process still uses it (nuke_cache retires
+            -- the workspace first, so this is some other holder here): never
+            -- delete under it.
+            for _, x in ipairs(held) do build_lock.release(x) end
+            return nil, "cannot nuke: " .. e.shown .. " is in use by this process — stop its build first"
+        else
             local ctx = { what = e.shown, command = lock_break.command or "lw nuke", unlock = e.shown,
                 style = "nuke", prefix = "cannot nuke: " }
             local h, msg = lock_break.acquire(function()
