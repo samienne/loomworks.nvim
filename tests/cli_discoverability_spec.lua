@@ -83,6 +83,18 @@ describe("unknown commands (§16.7)", function()
     assert.is_truthy(r.stderr:find("unknown option '--check'", 1, true), r.stderr)
   end)
 
+  it("`lw status --check` outside a workspace fails the gate (exit 1), same page as plain status", function()
+    local plain = run_main({ "status" }, nows)
+    assert.equals(0, plain.exit_code)
+    local bare = run_main({}, nows)
+    assert.equals(0, bare.exit_code)
+    local r = run_main({ "status", "--check" }, nows)
+    assert.equals(1, r.exit_code)
+    assert.is_truthy(r.stdout:find("no workspace here", 1, true), r.stdout)
+    -- --check never changes what is rendered (§16.18).
+    assert.equals(plain.stdout, r.stdout)
+  end)
+
   it("every dispatched command and alias is known; help spellings and host commands too", function()
     for name in pairs(cli_options.COMMANDS) do assert.is_true(cli_options.is_command(name), name) end
     for alias in pairs(cli_options.ALIASES) do assert.is_true(cli_options.is_command(alias), alias) end
