@@ -157,13 +157,19 @@ end
 --- its whole commit: a save inside it re-enters the lock.
 local _txn_held = {}
 
+local function held_key(path)
+    local p = tostring(path):gsub("\\", "/")
+    if package.config:sub(1, 1) == "\\" then p = p:lower() end
+    return p
+end
+
 --- Mark `path`'s save lock as held by the active transaction.
 --- @param path string
-function M._hold(path) _txn_held[path] = true end
+function M._hold(path) _txn_held[held_key(path)] = true end
 
 --- Clear `_hold`.
 --- @param path string
-function M._unhold(path) _txn_held[path] = nil end
+function M._unhold(path) _txn_held[held_key(path)] = nil end
 
 --- Take the save lock for `path` (`<path>.lock`). The lockfile holds the
 --- common lock record (loomworks.lock_record, spec §19.5); its nonce is the
@@ -176,7 +182,7 @@ function M._unhold(path) _txn_held[path] = nil end
 --- @param opts? { wait_ms?: number }
 --- @return table|nil handle `{ path, token }`
 function M.lock(path, opts)
-    if _txn_held[path] then return { path = path .. ".lock", txn = true, released = false } end
+    if _txn_held[held_key(path)] then return { path = path .. ".lock", txn = true, released = false } end
     local u = uv()
     local lock_record = require("loomworks.lock_record")
     local lock_path = path .. ".lock"

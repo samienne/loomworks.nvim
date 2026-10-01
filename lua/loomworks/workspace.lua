@@ -4048,6 +4048,10 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
 
     local ws = self
     local f = self:stop_tasks_then(task_ids):next(function()
+        -- The `unknown` marks must reach the disk before any tree is removed
+        -- (§5.7): never staged in an open transaction (spec §19.4).
+        assert(not require("loomworks.txn").active(),
+            "loomworks: a deletion's cache write ran inside a transaction")
         ws:_mark_cache_unknown(items)
         ws:_save_cache()
 
@@ -4157,7 +4161,12 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         self:_save_cache()
     end)
     if not ok_s then self:_txn_abort(t); error(serr, 0) end
-    self:_txn_finish(t)
+    if not self:_txn_finish(t) then
+        -- The working copy / cache commit failed (reported): remove no tree
+        -- while the cache may still claim it.
+        if on_done then on_done() end
+        return require("loomworks.future").resolved(false)
+    end
 
     local actionable = {}
     local clean_units = {}

@@ -9948,7 +9948,8 @@ heartbeat) is reported with the recovery command, `<command> --break-locks`.
                normally completed by the next command; when it cannot be
                (a file changed since, a staged copy is missing) the workspace
                is refused until you discard the journal (the files then stay
-               as they are — possibly mixed) or reset (`lw nuke`).
+               as they are — possibly mixed). `lw nuke` cannot help: it takes
+               the same lock, and only resets build state.
   --force      also remove the lock of a holder that is running (or hung, or on
                another host) — WITHOUT stopping it: it may still be running and
                writing there. Printed loudly, recorded in .nvim/loomworks.log.

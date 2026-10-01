@@ -166,3 +166,94 @@ describe("multi-file commit (§19.4)", function()
         assert.is_truthy((L.read(root .. "/loomworks.json") or ""):find("Dev", 1, true))
     end)
 end)
+
+describe("review fixes (§19.4)", function()
+    after_each(function() L.cleanup(); op_lock.release_all(); txn.abandon() end)
+
+    it("a refused journal names `lw unlock --journal` as its remedy, never nuke (which cannot run)", function()
+        local root = L.make_ws()
+        assert.equals(77, crash(root, "journal"))
+        local f = assert(io.open(root .. "/.nvim/loomworks.user.json", "ab")); f:write("\n"); f:close()
+        local r = L.capture(function() cli._load_workspace(root, false) end)
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stderr:find("lw unlock --journal", 1, true), r.stderr)
+        assert.is_nil(r.stderr:find("lw nuke", 1, true), "suggests a remedy that refuses: " .. r.stderr)
+        r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        assert.equals(1, r.exit_code) -- nuke indeed cannot run
+    end)
+
+    it("a guarded operation that reports failure commits none of its writes", function()
+        local root = L.make_ws()
+        local ws = cli._load_workspace(root, false)
+        local before = L.read(root .. "/.nvim/loomworks.user.json")
+        local cls = {}
+        function cls.go(w)
+            -- a write the operation made before it failed
+            assert(require("loomworks.io").write_file_atomic(w.root .. "/.nvim/loomworks.user.json", "{}\n"))
+            return false, "refused after writing"
+        end
+        op_lock.guard(cls, "go", "test", function(w) return w end)
+        local ok = cls.go(ws)
+        assert.equals(false, ok)
+        assert.equals(before, L.read(root .. "/.nvim/loomworks.user.json"), "a failed operation committed")
+        assert.same({}, txn.strays(root))
+    end)
+
+    it("a deletion whose working-copy commit fails removes no build tree", function()
+        local root, dir = L.make_ws()
+        local ws = cli._load_workspace(root, false)
+        ws._core._deps.notify = function() end
+        local real = txn.finish
+        txn.finish = function(t) txn.abort(t); return false, "simulated commit failure" end
+        local done, result = false, nil
+        ws._profiles[1]:reset(function() done = true end):next(function(v) result = v end)
+        txn.finish = real
+        assert.is_true(vim.wait(5000, function() return done end, 20))
+        assert.equals(false, result)
+        assert.is_not_nil(uv.fs_stat(dir), "the tree was removed although its cache change was not committed")
+    end)
+
+    it("a deletion never writes its unknown marks inside an open transaction", function()
+        local root, dir = L.make_ws()
+        local ws = cli._load_workspace(root, false)
+        local items = { { unit = ws._profiles[1]:projects()[1]._config_unit, build_dir = dir, disposition = "reset" } }
+        local t = txn.begin(root, "test")
+        local failed, finished = false, false
+        ws:_run_deletion(items, function() end):next(function() finished = true end)
+            :catch(function() failed = true end)
+        vim.wait(3000, function() return failed or finished end, 20)
+        txn.abort(t)
+        assert.is_true(failed, "the deletion ran with its cache write staged")
+        assert.is_not_nil(uv.fs_stat(dir))
+    end)
+
+    it("a transaction holds a save lock under any spelling of the path", function()
+        local sg = require("loomworks.save_guard")
+        local p = (vim.fn.tempname():gsub("\\", "/")) .. "/x.json"
+        sg._hold(p)
+        local h = sg.lock((p:gsub("/", "\\")), { wait_ms = 0 })
+        sg._unhold(p)
+        assert.is_table(h)
+        assert.is_true(h.txn == true, "a different spelling missed the transaction's lock")
+    end)
+
+    it("a commit after the operation lock was lost writes nothing (fencing)", function()
+        local root = L.make_ws()
+        local before = L.read(root .. "/.nvim/loomworks.user.json")
+        local tok = assert(op_lock.acquire(root, "test"))
+        local t = txn.begin(root, "test")
+        local io_mod = require("loomworks.io")
+        assert(io_mod.write_file_atomic(root .. "/.nvim/loomworks.user.json", "{}\n"))
+        -- the lock is reclaimed while this process is (say) suspended
+        local path = op_lock.path(root)
+        require("loomworks.build_lock").force_path(path)
+        local f = assert(io.open(path, "wb")); f:write(vim.json.encode({ pid = 1, host = "x", lock_nonce = "other" })); f:close()
+        local ok, err = txn.finish(t)
+        assert.is_false(ok)
+        assert.is_truthy(tostring(err):find("lost the workspace operation lock", 1, true), tostring(err))
+        assert.equals(before, L.read(root .. "/.nvim/loomworks.user.json"))
+        assert.same({}, txn.strays(root))
+        require("loomworks.build_lock").force_path(path)
+        op_lock.release(tok)
+    end)
+end)

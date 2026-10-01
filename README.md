@@ -1772,7 +1772,7 @@ names its holder: process id, host and process start time.
   which says so: `completed an interrupted publish (pid 4242 crashed) - ...`.
   If it cannot be completed safely (a file was changed since by something
   that ignores the commit journal), the workspace is refused until you run
-  `lw unlock --journal` (the files then stay as they are) or `lw nuke`.
+  `lw unlock --journal` (the files then stay as they are).
 
 ### Installing modules
 

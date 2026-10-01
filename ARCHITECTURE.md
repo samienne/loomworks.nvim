@@ -563,7 +563,12 @@ wraps its whole write phase. `op_lock.acquire` (outermost) runs
 completed; `Core:setup` runs `Core:_recover_journal(root)` before reading the
 files (waiting up to ~2 s for a writer that still holds O; a refusal is
 `setup_error.journal`). The CLI's exit hook abandons an open transaction
-(`txn.abandon`) before releasing O.
+(`txn.abandon`) before releasing O. `txn.finish` fences on
+`op_lock.still_held(root)` (the O lockfile still carries this process's
+record); `op_lock.guard` aborts the transaction when the method returns
+`false`; `_execute_deletion_unlocked` stops (no tree removed) when its commit
+fails, and `_run_deletion` asserts that no transaction is open when it writes
+the `unknown` marks.
 
 The target —
 one `lw daemon run` per workspace, with `lw` and the plugin as thin clients and

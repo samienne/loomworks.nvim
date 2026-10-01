@@ -134,6 +134,17 @@ function M.release_all()
     end
 end
 
+--- Does this process still hold the operation lock of `root` — the lockfile
+--- carrying its own record (not reclaimed or forced off meanwhile)? The
+--- fencing check before a commit point (spec §19.4).
+--- @param root string
+--- @return boolean
+function M.still_held(root)
+    local e = _held[norm(M.path(root))]
+    if not e or e.handle.released then return false end
+    return require("loomworks.lock_record").still_ours(e.handle.path, e.handle.record)
+end
+
 --- Does this process hold the operation lock of `root`?
 --- @param root string
 --- @return boolean
@@ -177,7 +188,11 @@ function M.guard(class, name, operation, ws_of)
         -- Its file writes commit together (spec §19.4).
         local t = ws:_txn_begin(operation)
         local r = pack(pcall(impl, self, ...))
-        if r[1] then
+        if r[1] and r[2] == false then
+            -- The method refused / failed (`false, err`): none of its staged
+            -- writes is committed.
+            ws:_txn_abort(t)
+        elseif r[1] then
             local ok_c, cerr = ws:_txn_finish(t)
             if not ok_c then
                 ws:_op_unlock(tok)

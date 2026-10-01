@@ -225,6 +225,15 @@ function M.finish(t)
     if t.refs > 0 then return true end
     local staged = {}
     for _, e in ipairs(t.entries) do if e.staged then staged[#staged + 1] = e end end
+    -- Fencing: commit only while this process still holds the workspace
+    -- operation lock with its own record. A holder whose lock was reclaimed
+    -- (suspended past the heartbeat, `lw unlock --force`) has lost authority
+    -- and writes nothing.
+    if #staged > 0 and not require("loomworks.op_lock").still_held(t.root) then
+        for _, e in ipairs(staged) do pcall(uv().fs_unlink, staged_path(e.target, t.id)) end
+        release(t)
+        return false, "lost the workspace operation lock before committing — nothing was written"
+    end
     local ok, err = true, nil
     if #staged == 1 then
         ok, err = apply(staged[1], t.id)
@@ -341,8 +350,7 @@ function M.recover_locked(root)
     end
     local jrel = M.JOURNAL
     if j == false then
-        return "refused", string.format("%s %s — discard it with `lw unlock --journal`, or reset the "
-            .. "workspace (`lw nuke`)", jrel, why)
+        return "refused", string.format("%s %s — discard it with `lw unlock --journal`", jrel, why)
     end
     -- First pass: decide every entry; touch nothing unless all can complete.
     local plan, bad = {}, {}
@@ -376,7 +384,7 @@ function M.recover_locked(root)
         return "refused", string.format("%s: an interrupted %s cannot be completed — %s changed since "
             .. "(by a writer that ignores the journal) or its staged copy is missing; nothing was "
             .. "changed. Discard the journal with `lw unlock --journal` (the files then stay as they "
-            .. "are), or reset the workspace (`lw nuke`)", jrel, tostring(j.operation or "operation"),
+            .. "are)", jrel, tostring(j.operation or "operation"),
             table.concat(bad, ", "))
     end
     for _, p in ipairs(plan) do
