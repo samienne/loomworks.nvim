@@ -48,7 +48,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   instead of interleaving its writes. `lw unlock --workspace` clears it when
   its holder is gone. (#100)
 - `--break-locks` (and `--break-locks=now`) on `lw build`, `clean`, `reset`,
-  `run`, `test` and `lw device clean` recovers a stuck lock: it asks the
+  `run`, `test` and `lw device clean` (and, with the workspace operation lock,
+  `nuke`, `publish`, `import`, `pull`, `migrate`, `trust`, `project` /
+  `config` / `configset` `rename` and `publish`, `profile publish` and
+  `profile remove`) recovers a stuck lock: it asks the
   holder to stop, waits about 5 s (`=now` skips the wait), kills its process
   tree, recovers the interrupted step's state and runs. It never touches a
   process on another host or an editor, and works under `--no-input`. (#99)

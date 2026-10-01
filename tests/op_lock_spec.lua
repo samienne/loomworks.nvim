@@ -228,3 +228,182 @@ describe("the editor's deletion takes O and B (§19.3)", function()
         assert.is_true(vim.wait(2000, function() return op_lock.read(root) == nil and bl.read(dir) == nil end, 20))
     end)
 end)
+
+describe("review fixes (§19.3)", function()
+    local io_mod = require("loomworks.io")
+    local saved = {}
+    before_each(function()
+        saved.rm_rf, saved.rm_rf_async, saved.hb = io_mod.rm_rf, io_mod.rm_rf_async, bl.HEARTBEAT_MS
+    end)
+    after_each(function()
+        io_mod.rm_rf, io_mod.rm_rf_async, bl.HEARTBEAT_MS = saved.rm_rf, saved.rm_rf_async, saved.hb
+        L.cleanup()
+        op_lock.release_all()
+    end)
+
+    --- Run `hook(target)` when nuke starts removing its build tree, then remove it.
+    local function on_tree_removal(hook)
+        local function intercept(target)
+            if target:find("/.nvim/build", 1, true) and not target:find("loomworks", 1, true) then
+                hook(target)
+            end
+        end
+        io_mod.rm_rf = function(p) intercept(p); return saved.rm_rf(p) end
+        io_mod.rm_rf_async = function(p, cb)
+            intercept(p)
+            return saved.rm_rf_async(p, cb)
+        end
+    end
+
+    it("nuke ∥ a build starting mid-removal: the new build's tree survives", function()
+        local root = L.make_ws()
+        local fresh = root .. "/.nvim/build/App/Debug"
+        local newlock
+        on_tree_removal(function()
+            if newlock then return end
+            -- a build starting the moment nuke's locks are gone
+            vim.fn.mkdir(fresh, "p")
+            local mf = assert(io.open(fresh .. "/new.o", "wb")); mf:write("x"); mf:close()
+            newlock = assert(bl.acquire(fresh, "build"))
+        end)
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.is_not_nil(newlock)
+        assert.is_not_nil(uv.fs_stat(fresh .. "/new.o"), "nuke deleted a tree a new build created")
+        assert.is_not_nil(bl.read(fresh), "nuke deleted the new build's lock")
+        bl.release(newlock)
+        local left = {}
+        for n in vim.fs.dir(root .. "/.nvim") do if n:match("^build%.nuke") then left[#left + 1] = n end end
+        assert.same({}, left, "the aside tree is removed")
+    end)
+
+    it("nuke removes the cache before the tree and keeps heartbeating while it removes", function()
+        local root = L.make_ws()
+        bl.HEARTBEAT_MS = 100
+        local cache_gone, fresh_beat
+        local function slow(p, cb)
+            cache_gone = uv.fs_stat(root .. "/.nvim/loomworks.cache.json") == nil
+            L.age(op_lock.path(root), 300)
+            local t = uv.new_timer()
+            t:start(1500, 0, function()
+                t:close()
+                local info = op_lock.read(root)
+                fresh_beat = info ~= nil and info.age < 100
+                vim.schedule(function() saved.rm_rf_async(p, cb) end)
+            end)
+        end
+        io_mod.rm_rf_async = function(p, cb)
+            if p:find("build.nuke-", 1, true) or p:match("/%.nvim/build$") then return slow(p, cb) end
+            return saved.rm_rf_async(p, cb)
+        end
+        io_mod.rm_rf = function(p)
+            if p:match("/%.nvim/build$") then
+                -- (the code before the fix removed the tree synchronously)
+                cache_gone = uv.fs_stat(root .. "/.nvim/loomworks.cache.json") == nil
+                fresh_beat = false
+            end
+            return saved.rm_rf(p)
+        end
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.is_true(cache_gone, "the cache still existed while the tree was removed")
+        assert.is_true(fresh_beat, "the operation lock stopped heartbeating during the removal")
+    end)
+
+    it("a leftover tree of a crashed nuke is removed; look-alikes are not", function()
+        local root = L.make_ws()
+        local nv = root .. "/.nvim/"
+        vim.fn.mkdir(nv .. "build.nuke-abc123/x", "p")
+        vim.fn.mkdir(nv .. "build.nuke-notHEX", "p")
+        vim.fn.mkdir(nv .. "keep.nuke-abc", "p")
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.is_nil(uv.fs_stat(nv .. "build.nuke-abc123"))
+        assert.is_not_nil(uv.fs_stat(nv .. "build.nuke-notHEX"))
+        assert.is_not_nil(uv.fs_stat(nv .. "keep.nuke-abc"))
+    end)
+
+    it("a deletion holds its own reference: the cancelled task's release keeps the lock", function()
+        local root, dir = L.make_ws()
+        local ws = load(root)
+        local key = ws._core._deps.normalize(dir)
+        assert.is_true(ws:_acquire_file_lock(key, "build")) -- the editor task's lock
+        local mid
+        io_mod.rm_rf_async = function(d, cb)
+            ws:_release_file_lock(key) -- the cancelled task lets go mid-removal
+            mid = bl.read(dir) ~= nil
+            vim.fn.delete(d, "rf")
+            if cb then vim.schedule(function() cb(true, nil) end) end
+            return require("loomworks.future").resolved(true)
+        end
+        local done = false
+        ws._profiles[1]:reset(function() done = true end)
+        assert.is_true(vim.wait(5000, function() return done end, 20))
+        assert.is_true(mid, "the lockfile vanished while the deletion was still removing")
+        assert.is_true(vim.wait(2000, function() return bl.read(dir) == nil end, 20))
+    end)
+
+    it("teardown releases the operation lock and build locks of a deletion that never settles", function()
+        local root, dir = L.make_ws()
+        local ws = load(root)
+        io_mod.rm_rf_async = function() return require("loomworks.future").create(function() end) end
+        ws._profiles[1]:reset()
+        assert.is_true(vim.wait(2000, function() return op_lock.read(root) ~= nil and bl.read(dir) ~= nil end, 20))
+        ws:teardown()
+        assert.is_nil(op_lock.read(root), "O survived teardown")
+        assert.is_nil(bl.read(dir), "the build lock survived teardown")
+    end)
+
+    it("upgrading / downgrading profiles for a tool takes the operation lock", function()
+        local root = L.make_ws()
+        local ws = load(root)
+        ws._core._deps.on_lock_refused = nil
+        ws._core._deps.notify = function() end
+        L.hold(op_lock.path(root), "publish")
+        local ok, msg = ws:upgrade_profiles_for_tool({ type = "typescript", key = "x" })
+        assert.equals(false, ok)
+        assert.is_truthy(tostring(msg):find("workspace busy", 1, true), tostring(msg))
+        ok = ws:downgrade_profiles_from_tool("typescript")
+        assert.equals(false, ok)
+    end)
+
+    it("migrate refuses when the working copy changed after it planned, before writing", function()
+        local root = L.make_ws()
+        local migrate = require("loomworks.migrate")
+        local real_plan, real_apply = migrate.plan, migrate.apply
+        local applied = false
+        migrate.plan = function()
+            -- another process writes the working copy right after this plan
+            local p = root .. "/.nvim/loomworks.user.json"
+            local f = assert(io.open(p, "ab")); f:write("\n"); f:close()
+            return { changes = { { project = "App", item = "Debug", rule = "r", before = "a", after = "b" } },
+                skipped = {} }
+        end
+        migrate.apply = function() applied = true; return 1 end
+        local r = L.capture(function() cli.cmd_migrate(root, { "migrate", "-y" }) end)
+        migrate.plan, migrate.apply = real_plan, real_apply
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stderr:find("changed on disk", 1, true), r.stderr)
+        assert.is_false(applied, "migrate wrote over a working copy it had not read")
+    end)
+end)
+
+describe("fake roots never get lockfiles (§19.3)", function()
+    it("a workspace on a root that does not exist takes inert locks", function()
+        local h = require("tests.helpers")
+        local Core = require("loomworks.core")
+        local root = "/lw-guard-root-" .. tostring(uv.hrtime())
+        local deps = h.make_test_deps({ ["loomworks.json"] = h.make_config_json({ projects = { App = { cmake = {} } } }) })
+        deps.locks = nil -- the production default
+        local core = Core.new(deps)
+        core:setup({ root = root })
+        local ws = assert(core:get_workspace())
+        local tok = assert(ws:_op_lock("publish"))
+        ws:_op_unlock(tok)
+        ws:_locked_deletion("delete", { root .. "/.nvim/build/App/Debug" },
+            function() return require("loomworks.future").resolved(true) end)
+        assert.is_true(ws:_acquire_file_lock(root .. "/.nvim/build/App/Debug", "build"))
+        ws:_release_file_lock(root .. "/.nvim/build/App/Debug")
+        assert.is_nil(uv.fs_stat(root), "a lock created " .. root)
+    end)
+end)

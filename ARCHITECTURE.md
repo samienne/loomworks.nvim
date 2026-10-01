@@ -532,12 +532,20 @@ O, then `_deletion_build_locks(dirs)` (sorted, skipping locks this process
 holds), runs the body and releases both when its Future settles. The CLI takes
 O itself where it writes outside the workspace methods: `lw reset` (O, then
 `with_build_dir_locks`, then the re-entrant deletion), `lw trust --discard`,
-`lw pull` (re-planned under O), `lw migrate`. `Core:_nuke_files` (editor nuke
-and `lw nuke`) takes O and `Core:_nuke_build_locks` (lockfiles under
-`.nvim/build/` by a depth-bounded `fs_scandir`, plus the loaded workspace's
-build dirs); `Core:delete_user_prefs` takes O. The lock modules are injected as
-`deps.locks = { op, build }` so fake-root tests (`tests/helpers.lua`) never
-touch the real file system. The target —
+`lw pull` (re-planned under O), `lw migrate` (checks `_working_copy_fresh()`
+under O, as its plan predates the lock). `Core:_nuke_files` (editor nuke and
+`lw nuke`) takes O and `Core:_nuke_build_locks` (lockfiles under `.nvim/build/`
+by a depth-bounded `fs_scandir`, plus the loaded workspace's build dirs), removes
+the caches, renames the tree aside (`_nuke_move_aside` →
+`.nvim/build.nuke-<hex>`, plus `_nuke_leftovers` of crashed nukes) and removes
+it with `io.rm_rf_async` under `vim.wait` (`_nuke_remove`) so the heartbeat
+timers keep running; `Core:delete_user_prefs` takes O. Deletions hold their
+build locks as counted references in `Workspace._build_dir_file_locks` (the
+editor task path's table), and `Workspace:teardown` releases those and every
+O token in `_op_tokens`. The lock modules come from
+`op_lock.locks(deps, root)`: an injected `deps.locks = { op, build }`, the
+inert `op_lock.INERT` for a root that does not exist on disk (a test's fake
+`/root` never gets lockfiles), else the real modules. The target —
 one `lw daemon run` per workspace, with `lw` and the plugin as thin clients and
 `--no-daemon` running the same daemon code over a loopback transport — is
 reached in the steps of spec §19.19 (rationale and plan:

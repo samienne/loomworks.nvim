@@ -1949,11 +1949,12 @@ function Workspace:_acquire_file_lock(dir, action)
         entry.refs = entry.refs + 1
         return true
     end
-    local handle, err = require("loomworks.build_lock").acquire(dir, action,
+    local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
+    local handle, err = build_lock.acquire(dir, action,
         { what = "build directory " .. self:_display_build_dir(dir), command = "lw build",
           unlock = self:_display_build_dir(dir) })
     if not handle then return false, err end
-    self._build_dir_file_locks[dir] = { handle = handle, refs = 1 }
+    self._build_dir_file_locks[dir] = { handle = handle, refs = 1, build = build_lock }
     if handle.reclaimed then
         local line = self:_recover_interrupted_build_dir(dir, handle.reclaimed)
         if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
@@ -2068,7 +2069,7 @@ function Workspace:_release_file_lock(dir)
     if not entry then return end
     entry.refs = entry.refs - 1
     if entry.refs <= 0 then
-        require("loomworks.build_lock").release(entry.handle)
+        (entry.build or require("loomworks.build_lock")).release(entry.handle)
         locks[dir] = nil
     end
 end
@@ -4249,7 +4250,7 @@ end
 --- @return table|nil token, string|nil message
 function Workspace:_op_lock(operation)
     local deps = self._core._deps
-    local op_lock = require("loomworks.op_lock").locks(deps).op
+    local op_lock = require("loomworks.op_lock").locks(deps, self.root).op
     local tok, msg = op_lock.acquire(self.root, operation)
     if not tok then
         if deps.on_lock_refused then deps.on_lock_refused(msg) end
@@ -4261,25 +4262,44 @@ function Workspace:_op_lock(operation)
         deps.notify("loomworks: " .. line, vim.log.levels.WARN)
         pcall(deps.log.info, deps.log, "%s", line)
     end
+    self._op_tokens = self._op_tokens or {}
+    self._op_tokens[tok] = true
     return tok
+end
+
+--- Is the working copy on disk still the one this workspace last read or
+--- wrote (spec §2.7)? An operation that planned its change before taking the
+--- workspace operation lock checks this under the lock, before writing.
+--- @return boolean
+function Workspace:_working_copy_fresh()
+    local base = self._disk_baseline and self._disk_baseline.user
+    if not base then return true end
+    local disk = self:_read_disk(user_mod.filepath(self.root))
+    return disk == false or disk == base.text
 end
 
 --- Release a token from `_op_lock`.
 --- @param tok table|nil
 function Workspace:_op_unlock(tok)
-    require("loomworks.op_lock").locks(self._core._deps).op.release(tok)
+    if self._op_tokens then self._op_tokens[tok] = nil end
+    require("loomworks.op_lock").locks(self._core._deps, self.root).op.release(tok)
 end
 
 --- Take the build-directory locks of the directories a deletion will remove
---- (spec §19.3: after O, in canonical order), skipping those this process
---- already holds (the CLI's `lw reset` holds them around the deletion; an
---- editor task's own lock is stopped by the deletion itself). Returns the
---- handles, or nil + the refusal message (nothing held).
+--- (spec §19.3: after O, in canonical order) as COUNTED references in this
+--- workspace's file-lock table (`_acquire_file_lock`): an editor task that
+--- holds the same directory (and is cancelled by the deletion) releases only
+--- its own reference, and two deletions of one directory each hold one, so
+--- the lockfile stays until the last of them ends. A lock this process holds
+--- outside the table — the CLI's `lw reset`, which keeps it until the
+--- deletion has completed — is left to its holder. Returns the normalized
+--- directories referenced (release with `_release_file_lock`), or nil + the
+--- refusal message (nothing held).
 --- @param dirs string[] validated build directories
 --- @param operation string
---- @return table[]|nil handles, string|nil message
+--- @return string[]|nil refs, string|nil message
 function Workspace:_deletion_build_locks(dirs, operation)
-    local build_lock = require("loomworks.op_lock").locks(self._core._deps).build
+    local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
     local lock_break = require("loomworks.lock_break")
     local norm = self._core._deps.normalize
     local keyed, seen = {}, {}
@@ -4288,9 +4308,17 @@ function Workspace:_deletion_build_locks(dirs, operation)
         if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
     end
     table.sort(keyed, function(a, b) return a.k < b.k end)
-    local held = {}
+    self._build_dir_file_locks = self._build_dir_file_locks or {}
+    local refs = {}
+    local function undo()
+        for _, k in ipairs(refs) do self:_release_file_lock(k) end
+    end
     for _, e in ipairs(keyed) do
-        if not build_lock.held_by_me(e.d) then
+        local entry = self._build_dir_file_locks[e.k]
+        if entry then
+            entry.refs = entry.refs + 1
+            refs[#refs + 1] = e.k
+        elseif not build_lock.held_by_me(e.d) then
             local shown = self:_display_build_dir(e.d)
             local ctx = { what = shown, command = lock_break.command, unlock = shown,
                 prefix = "cannot " .. operation .. ": " }
@@ -4299,17 +4327,18 @@ function Workspace:_deletion_build_locks(dirs, operation)
                 return hh, info
             end, ctx)
             if not h then
-                for _, x in ipairs(held) do build_lock.release(x) end
+                undo()
                 return nil, msg
             end
-            held[#held + 1] = h
+            self._build_dir_file_locks[e.k] = { handle = h, refs = 1, build = build_lock }
+            refs[#refs + 1] = e.k
             if h.reclaimed then
                 local line = self:_recover_interrupted_build_dir(e.d, h.reclaimed)
                 if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
             end
         end
     end
-    return held
+    return refs
 end
 
 --- Run `start()` (-> Future) holding O and the build locks of `dirs`; both are
@@ -4322,7 +4351,6 @@ end
 --- @return loomworks.Future
 function Workspace:_locked_deletion(operation, dirs, start, on_done)
     local future_mod = require("loomworks.future")
-    local build_lock = require("loomworks.op_lock").locks(self._core._deps).build
     local tok = self:_op_lock(operation)
     if not tok then
         if on_done then on_done() end
@@ -4338,7 +4366,7 @@ function Workspace:_locked_deletion(operation, dirs, start, on_done)
         return future_mod.resolved(false)
     end
     local function release()
-        for _, h in ipairs(held) do build_lock.release(h) end
+        for _, k in ipairs(held) do self:_release_file_lock(k) end
         held = {}
         self:_op_unlock(tok)
     end
@@ -7851,10 +7879,16 @@ function Workspace:teardown()
     if self._build_dir_file_locks then
         local build_lock = require("loomworks.build_lock")
         for _, entry in pairs(self._build_dir_file_locks) do
-            build_lock.release(entry.handle)
+            (entry.build or build_lock).release(entry.handle)
         end
         self._build_dir_file_locks = {}
     end
+    -- A multi-file operation whose future never settled (a deletion stuck in
+    -- its removal) must not keep the workspace operation lock (spec §19.3).
+    for tok in pairs(self._op_tokens or {}) do
+        pcall(require("loomworks.op_lock").locks(self._core._deps, self.root).op.release, tok)
+    end
+    self._op_tokens = {}
     self._status_cursor_row = nil
 
     return self:stop_tasks_then(task_ids)
@@ -8001,6 +8035,9 @@ do
     op_lock.guard(Workspace, "rename_project", "rename", self_ws)
     op_lock.guard(Workspace, "rename_configuration_set", "rename", self_ws)
     op_lock.guard(Workspace, "remove_profile", "remove", self_ws)
+    -- Profile keys renamed into the cache and the working copy.
+    op_lock.guard(Workspace, "upgrade_profiles_for_tool", "rename", self_ws)
+    op_lock.guard(Workspace, "downgrade_profiles_from_tool", "rename", self_ws)
 end
 
 M.Workspace = Workspace

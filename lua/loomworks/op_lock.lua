@@ -31,12 +31,34 @@ local function norm(p)
 end
 
 --- The cross-process lock modules a host uses: `deps.locks` when injected
---- (tests with a fake root), else this module and loomworks.build_lock.
+--- (tests with a fake root), `INERT` for a root that does not exist, else this
+--- module and loomworks.build_lock.
 --- @param deps table|nil
+--- @param root? string
 --- @return { op: table, build: table }
-function M.locks(deps)
-    return (deps and deps.locks) or { op = M, build = build_lock }
+function M.locks(deps, root)
+    if deps and deps.locks then return deps.locks end
+    -- A root that does not exist on disk (a test's fake `/root`) gets inert
+    -- locks: a lock must never create directories or files there.
+    if root and not (vim.uv or vim.loop).fs_stat(root) then return M.INERT end
+    return { op = M, build = build_lock }
 end
+
+--- Locks that hold nothing (see `locks`).
+M.INERT = {
+    fake = true,
+    op = {
+        acquire = function() return { inert = true } end,
+        release = function() end,
+        reclaimed_line = function() return "" end,
+        held = function() return false end,
+    },
+    build = {
+        acquire = function(dir) return { path = tostring(dir) .. ".loomworks-lock", inert = true } end,
+        held_by_me = function() return false end,
+        release = function() end,
+    },
+}
 
 --- The operation lock's path for a workspace root.
 --- @param root string

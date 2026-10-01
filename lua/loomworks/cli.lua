@@ -3599,6 +3599,11 @@ function M.cmd_migrate(root, args)
   -- under the workspace operation lock (spec §19.3).
   local op_tok = ws:_op_lock("migrate")
   on_exit(function() require("loomworks.op_lock").release(op_tok) end)
+  -- The plan was made (and confirmed) before the lock: refuse if another
+  -- process changed the working copy since, before writing anything.
+  if not ws:_working_copy_fresh() then
+    die(require("loomworks.workspace").STALE_USER_MESSAGE .. " — re-run `lw migrate`")
+  end
   local applied, err = migrate.apply(plan)
   if err then die("migration failed after " .. applied .. " change(s): " .. err) end
 

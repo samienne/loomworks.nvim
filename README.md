@@ -1756,8 +1756,9 @@ names its holder: process id, host and process start time.
   it could wake up and keep writing. The command stops and prints the fix:
   `lw: build/debug is locked by a hung lw build (pid 4242, no heartbeat for 2m) — recover with: lw build --break-locks`.
 - **`--break-locks`** (on every command that takes these locks: build, clean,
-  reset, run, test, nuke, publish, import, pull, migrate, the rename / remove /
-  publish sub-commands, `trust --discard`, device clean) stops
+  reset, run, test, nuke, publish, import, pull, migrate, `trust`, the
+  `rename` and `publish` sub-commands of project / config / configset, profile
+  `publish` and `remove`, device clean) stops
   the holder: it asks it to stop (POSIX), waits about 5 s, then kills its
   process tree, recovers the state as above, and runs. `--break-locks=now`
   skips the wait. It also works under `--no-input` (CI). It never touches a

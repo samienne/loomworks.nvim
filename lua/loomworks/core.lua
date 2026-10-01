@@ -35,10 +35,9 @@ local DEFAULT_DEPS = {
         nuke = "<C-n> on the status page",
     },
     io        = require("loomworks.io"),
-    -- Cross-process locks (spec §19.3): the workspace operation lock and the
-    -- build-directory lock. Injectable so tests with a fake root never create
-    -- lockfiles on the real file system.
-    locks     = { op = require("loomworks.op_lock"), build = require("loomworks.build_lock") },
+    -- Cross-process locks (spec §19.3): `locks = { op, build }` may be injected;
+    -- by default loomworks.op_lock.locks(deps, root) picks the real modules,
+    -- or inert ones for a root that does not exist (a test's fake root).
     read_file_async = require("loomworks.io").read_file_async,
     read_files_async = require("loomworks.io").read_files_async,
     detect_tools_async = require("loomworks.merge").detect_tools_async,
@@ -548,37 +547,125 @@ function Core:_nuke_files(root)
     -- Lock order (spec §19.3): the workspace operation lock, then the build
     -- lock of every build directory it removes — so a nuke refuses while a
     -- build runs instead of deleting under it. Nothing is removed on refusal.
-    local op_lock = require("loomworks.op_lock").locks(self._deps).op
+    local locks = require("loomworks.op_lock").locks(self._deps, norm_root)
+    local op_lock = locks.op
     local tok, lmsg = op_lock.acquire(norm_root, "nuke")
     if not tok then
         self._deps.notify("loomworks: cannot nuke: " .. lmsg, vim.log.levels.ERROR)
         return nil
     end
-    local held, berr = self:_nuke_build_locks(norm_root, build_dir)
+    local held, berr = self:_nuke_build_locks(norm_root, build_dir, locks.build)
     if not held then
         op_lock.release(tok)
         self._deps.notify("loomworks: " .. berr, vim.log.levels.ERROR)
         return nil
     end
 
-    local ok, err = self._deps.io.rm_rf(build_dir)
-    if not ok then
-        self._deps.notify("loomworks: failed to delete build dir: " .. err, vim.log.levels.ERROR)
-    end
-
+    -- 1. The caches first (§15 invariant 1, deletion safety 4): once they are
+    --    gone nothing claims a configured or built tree, whatever happens to
+    --    the removal below.
     self._deps.io.rm_rf(cache_path)
     self._deps.io.rm_rf(cache_bak)
     self._deps.io.rm_rf(health_path)
     self._deps.io.rm_rf(health_path .. ".bak")
-    for _, h in ipairs(held) do require("loomworks.op_lock").locks(self._deps).build.release(h) end
+
+    -- 2. Move the build tree aside in one atomic rename, so a build that
+    --    starts as soon as the locks go creates a fresh `.nvim/build` instead
+    --    of writing into the tree being removed. Trees left aside by a nuke
+    --    that crashed are removed too.
+    local targets = self:_nuke_leftovers(norm_root)
+    local aside, rerr = self:_nuke_move_aside(norm_root, build_dir)
+    if aside then
+        targets[#targets + 1] = aside
+    else
+        if rerr then
+            self._deps.notify("loomworks: could not move the build tree aside (" .. rerr
+                .. ") — removing it in place", vim.log.levels.WARN)
+        end
+        targets[#targets + 1] = build_dir
+    end
+    -- The lockfiles moved with the tree: nothing of theirs is left to release
+    -- in `.nvim/build`; drop the handles.
+    for _, h in ipairs(held) do locks.build.release(h) end
+
+    -- 3. Remove, keeping this process's event loop running so the operation
+    --    lock heartbeats: a large tree must not look like a hung holder.
+    for _, t in ipairs(targets) do
+        local ok, err = self:_nuke_remove(t)
+        if not ok then
+            self._deps.notify("loomworks: failed to delete build dir: " .. tostring(err), vim.log.levels.ERROR)
+        end
+    end
     op_lock.release(tok)
     return norm_root
 end
 
+--- Trees a crashed nuke left aside: directories directly in `<root>/.nvim`
+--- named exactly `build.nuke-<hex>`, real directories (lstat: never a link or
+--- junction), under `.nvim/` (`_safe_nvim_path`).
+--- @param root string normalized root
+--- @return string[]
+function Core:_nuke_leftovers(root)
+    local uv = vim.uv or vim.loop
+    local out = {}
+    local dir = root .. "/.nvim"
+    local req = uv.fs_scandir(dir)
+    while req do
+        local name = uv.fs_scandir_next(req)
+        if not name then break end
+        if name:match("^build%.nuke%-%x+$") then
+            local p = dir .. "/" .. name
+            local st = uv.fs_lstat(p)
+            if st and st.type == "directory" and self:_safe_nvim_path(p, root) then out[#out + 1] = p end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+--- Rename `build_dir` to `<root>/.nvim/build.nuke-<nonce>`. Returns the new
+--- path, or nil (+ the error when the rename failed; nil alone when there is
+--- no real directory to move — a missing tree, a link, a fake test root).
+--- @param root string normalized root
+--- @param build_dir string normalized `<root>/.nvim/build`
+--- @return string|nil aside, string|nil err
+function Core:_nuke_move_aside(root, build_dir)
+    local uv = vim.uv or vim.loop
+    local st = uv.fs_lstat(build_dir)
+    if not st or st.type ~= "directory" then return nil end
+    local aside = root .. "/.nvim/build.nuke-" .. require("loomworks.lock_record").new_nonce()
+    if not self:_safe_nvim_path(aside, root) then return nil, "unsafe path" end
+    local last
+    for i = 1, 5 do
+        local ok, err = uv.fs_rename(build_dir, aside)
+        if ok then return aside end
+        last = err
+        if i < 5 then vim.wait(100) end
+    end
+    return nil, tostring(last)
+end
+
+--- Remove one nuke target (asynchronously when the host can, while pumping
+--- the event loop). Returns ok, err.
+--- @param target string
+--- @return boolean ok, string|nil err
+function Core:_nuke_remove(target)
+    local io_mod = self._deps.io
+    -- Nothing real to remove (a missing tree, or a host's fake root): the
+    -- plain removal. Otherwise asynchronously, while pumping the loop.
+    if not io_mod.rm_rf_async or not (vim.uv or vim.loop).fs_lstat(target) then
+        return io_mod.rm_rf(target)
+    end
+    local done, ok, err = false, false, nil
+    io_mod.rm_rf_async(target, function(o, e) done, ok, err = true, o, e end)
+    vim.wait(24 * 3600 * 1000, function() return done end, 50)
+    return ok, err
+end
+
 --- The build directories `nuke` removes that may be in use: every directory
---- with a lockfile `<dir>.loomworks-lock` under `build_dir` (scanned to a
---- bounded depth, never following links), plus the loaded workspace's build
---- directories under it. Read-only. Each entry is `{ key, path, shown }`:
+--- with a lockfile `<dir>.loomworks-lock` under `build_dir` (scanned to depth
+--- 12, never following links), plus the loaded workspace's build directories
+--- under it. Read-only. Each entry is `{ key, path, shown }`:
 --- the normalized path (order, identity), the path as found (on-disk casing
 --- below `.nvim/build`) and its display form `.nvim/build/...`.
 --- @param build_dir string normalized `<root>/.nvim/build`
@@ -609,7 +696,7 @@ function Core:_nuke_lock_dirs(build_dir)
             end
             if typ == "file" and name:sub(-#suffix) == suffix then
                 add(p:sub(1, -#suffix - 1))
-            elseif typ == "directory" and depth < 3 then
+            elseif typ == "directory" and depth < 12 then
                 scan(p, depth + 1)
             end
         end
@@ -628,8 +715,8 @@ end
 --- @param root string normalized workspace root
 --- @param build_dir string normalized `<root>/.nvim/build`
 --- @return table[]|nil handles, string|nil message
-function Core:_nuke_build_locks(root, build_dir)
-    local build_lock = require("loomworks.op_lock").locks(self._deps).build
+function Core:_nuke_build_locks(root, build_dir, build_lock)
+    build_lock = build_lock or require("loomworks.op_lock").locks(self._deps, root).build
     local lock_break = require("loomworks.lock_break")
     local _ = root
     local dirs = self:_nuke_lock_dirs(build_dir)
@@ -660,7 +747,7 @@ function Core:delete_user_prefs(root)
     local norm_root = self._deps.normalize(root)
     -- The working copy and its backup go together, under the workspace
     -- operation lock (spec §19.3).
-    local op_lock = require("loomworks.op_lock").locks(self._deps).op
+    local op_lock = require("loomworks.op_lock").locks(self._deps, norm_root).op
     local tok, lmsg = op_lock.acquire(norm_root, "trust --discard")
     if not tok then
         self._deps.notify("loomworks: " .. lmsg, vim.log.levels.ERROR)

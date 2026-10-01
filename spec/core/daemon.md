@@ -184,14 +184,22 @@ process already holds.
 
 **Which build locks nuke and deletions take.** A deletion (profile delete or
 reset, orphan delete, `lw reset`) takes the build lock of every build
-directory its plan removes, after O. `lw nuke` removes the whole
-`.nvim/build/`; it takes the lock of every directory under it that has a
-lockfile (`<dir>.loomworks-lock`, found by a bounded, link-free scan — a
-lockfile marks a directory some process uses or used) and of every build
-directory of the loaded workspace there. A build that creates the first
-lockfile of a directory after that scan (a directory never built before) is
-not excluded and can lose its tree to the removal; nuke never deletes a
-directory whose lock it found held.
+directory its plan removes, after O, as a counted reference within its
+process: an editor task on the same directory that the deletion cancels
+releases only its own reference, so the lock stays until the removal ends.
+`lw nuke` removes the whole `.nvim/build/`; it takes the lock of every
+directory under it that has a lockfile (`<dir>.loomworks-lock`, found by a
+depth-bounded, link-free scan — a lockfile marks a directory some process uses
+or used) and of every build directory of the loaded workspace there. Holding
+them, it removes the build and health caches first (so nothing claims a
+configured or built tree from then on), then renames `.nvim/build` to
+`.nvim/build.nuke-<hex>` in one step and removes that tree, keeping its event
+loop running so O keeps heartbeating. A build that starts once the locks are
+gone creates a fresh `.nvim/build`, never a directory inside the tree being
+removed. A tree left aside by a nuke that crashed (a real directory directly
+in `.nvim/` named exactly `build.nuke-<hex>`) is removed by the next nuke.
+Where the rename is impossible (a file in the tree held open on Windows), nuke
+removes the tree in place and says so.
 
 ### 19.4 Crash-consistent multi-file commits
 
