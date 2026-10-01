@@ -101,7 +101,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - A project whose module is not installed, or is refused for an interface
   version mismatch, lost its `configurations` on `lw publish` and whenever the
   working copy was saved. They are now kept unchanged, and load normally once
-  the module is available. (#NN)
+  the module is available. (#95)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
