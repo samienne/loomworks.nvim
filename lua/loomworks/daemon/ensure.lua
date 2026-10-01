@@ -124,9 +124,22 @@ function M.ensure(root, opts)
         end, 25)
     end
     if st.kind == "hung" then
-        note(string.format("lw: the workspace daemon (pid %s) is not responding — recover with: "
-            .. "lw daemon stop --force", tostring(st.lock.pid)))
-        return "hung"
+        local lb = require("loomworks.lock_break")
+        if not lb.requested then
+            note(string.format("lw: the workspace daemon (pid %s) is not responding — recover with: "
+                .. "lw daemon stop --force", tostring(st.lock.pid)))
+            return "hung"
+        end
+        -- `--break-locks` (§19.5): recover the hung daemon (ask unless =now,
+        -- kill, verify, reclaim), then start a fresh one below.
+        local rok, rerr = require("loomworks.daemon.command").recover(root, st, lb.requested ~= "now", {
+            note = note, ctx = { what = "the workspace runtime", command = lb.command },
+        })
+        if not rok then
+            note("lw: " .. tostring(rerr))
+            return "hung"
+        end
+        st = inspect.state(root)
     end
     if st.kind == "foreign" or st.kind == "attached" or st.kind == "starting" then return "elsewhere" end
     if st.kind == "live" then

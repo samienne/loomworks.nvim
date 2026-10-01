@@ -314,8 +314,10 @@ commit. This is the same class of residual race as §2.7 "Remaining race".
 *Status: master for build-directory, device and file-save locks (B, D, F): the
 record, the classification, the state recovery, `--break-locks` and
 `lw unlock --force`; the operation lock O (step 1 of §19.19); the runtime
-lock R (`lw daemon stop --force` / `kill`, `daemon/command.lua`). Kills and
-forced unlocks are recorded in the runtime log (§19.10).*
+lock R (`lw daemon stop --force` / `kill`, `daemon/command.lua`; in `daemon`
+mode a workspace command given `--break-locks` recovers a hung daemon the same
+way before relaunching it). Kills and forced unlocks are recorded in the
+runtime log (§19.10).*
 
 A crashed or killed process must never leave a workspace stuck, and a hung one
 must be recoverable with one command. These rules apply uniformly to every lock

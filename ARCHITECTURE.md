@@ -664,8 +664,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   handshake (match / stop + relaunch an idle mismatched daemon / retire a
   busy one and bypass it / leave one with newer schemas alone); `ensure(root,
   opts)`: `runtime.select` (mode, `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`),
-  then connect + reconcile + `ping`, or launch; problems are one stderr line,
-  never a failed command. `cli.lua` calls it as `M._ensure_daemon(root)` right
+  then connect + reconcile + `ping`, or launch; a hung daemon is reported, or
+  under `--break-locks` recovered through `command.recover` (the non-exiting
+  §19.5 sequence `stop --force` / `kill` also use) and relaunched; problems
+  are one stderr line, never a failed command. `cli.lua` calls it as `M._ensure_daemon(root)` right
   after the workspace-required guard in `main()` (so `status`, `health`,
   `pull`, `worktree`, `settings`, `help`, `daemon …` never launch); `main()`
   strips the global `--no-daemon` into `M._no_daemon`.

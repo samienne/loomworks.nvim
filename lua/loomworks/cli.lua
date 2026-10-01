@@ -10050,8 +10050,11 @@ pings it) or starts one in the background, then runs exactly as before — no
 operation goes through the daemon yet. A daemon of another lw version is
 replaced when idle; a busy one is asked to exit when idle and the command runs
 without it (one line says so). If it cannot start, one line says so and the
-command runs without it. These never start or use it: `--no-daemon`,
-LOOMWORKS_NO_DAEMON=1, and CI=true (LOOMWORKS_NO_DAEMON=0 overrides CI).
+command runs without it. A daemon that stopped responding is named with the
+recovery command; a command given `--break-locks` recovers it (asks it to
+stop, kills it, starts a fresh one). These never start or use it:
+`--no-daemon`, LOOMWORKS_NO_DAEMON=1, and CI=true (LOOMWORKS_NO_DAEMON=0
+overrides CI).
 
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
