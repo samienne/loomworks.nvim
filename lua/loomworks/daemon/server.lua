@@ -230,7 +230,9 @@ function Server:lifetime()
         end
     end
     if self.stopped then return end
-    if self.n_clients == 0 and not self.busy then
+    -- Idle only with no connection at all: one still authenticating (bounded
+    -- by the authentication timeout) is a client on its way in.
+    if self.n_clients == 0 and not self.busy and next(self.conns) == nil then
         local since = math.max(self.idle_since or 0, self.last_request or 0)
         if os.time() - since >= self.idle_seconds then
             self:stop(string.format("idle for %ds", self.idle_seconds), 0)
@@ -313,6 +315,7 @@ function Server:_on_connection(err)
     end
     local conn = { sock = sock, decoder = protocol.new_decoder(protocol.PREAUTH_MAX), state = "new",
         last_seen = uv.now() }
+    self.last_request = os.time()
     self.conns[conn] = true
     conn.auth_timer = uv.new_timer()
     conn.auth_timer:start(self.auth_timeout_ms, 0, function()

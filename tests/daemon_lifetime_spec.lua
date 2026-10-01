@@ -85,6 +85,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
 
     it("a connected client keeps it alive past the idle timeout; the clock restarts after it leaves", function()
         start({ idle_seconds = 1 })
+        -- A connection still authenticating already counts (it is not idle).
         local conn = assert(client.session(srv.address))
         vim.wait(2000, function() return exited ~= nil end, 20)
         assert.is_nil(exited)
@@ -122,6 +123,20 @@ describe("lifetime rules (§19.11, in-process server)", function()
         srv:lifetime()
         assert.equals(1, srv:client_count())
         conn:close()
+    end)
+
+    it("a connection still authenticating holds off the idle exit", function()
+        start({ idle_seconds = 1 })
+        local p = uv.new_pipe(false)
+        local closed = false
+        p:connect(srv.address, function(err)
+            if err then closed = true; return end
+            p:read_start(function(_, chunk) if not chunk then closed = true end end)
+        end)
+        vim.wait(2500, function() return exited ~= nil end, 20)
+        assert.is_nil(exited)
+        pcall(function() p:close() end)
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
     end)
 
     it("exits when the workspace root is removed", function()
