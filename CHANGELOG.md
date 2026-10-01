@@ -107,7 +107,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   dropped the `lw pull` offer. They now say git timed out and point at
   `lw worktree` (or `lw pull`), which wait longer; `lw worktree`, `lw worktree
   add` and `lw pull` likewise report a git that does not answer within 30 s as
-  a timeout, not as "git is not available" or "not in a git repository". (#97)
+  a timeout, not as "git is not available" or "not in a git repository". (#98)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
