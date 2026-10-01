@@ -61,6 +61,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
         opts = opts or {}
         opts.exit = function(code) exited = code end
         opts.tick_ms = 100
+        opts.auth_timeout_ms = 30000 -- a real handshake on a loaded runner
         srv = server_mod.new(root, opts)
         assert(srv:start())
     end
@@ -162,7 +163,8 @@ describe("ensure (§19.9 through a workspace command)", function()
         trust._set_key_path(H.tmp() .. "/trust.key")
         root = H.workspace()
         exited = nil
-        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100 })
+        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100,
+            auth_timeout_ms = 30000 })
         assert(srv:start())
     end)
     after_each(function()
