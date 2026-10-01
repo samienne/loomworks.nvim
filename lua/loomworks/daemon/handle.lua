@@ -70,7 +70,19 @@ function M.read(root)
     return info
 end
 
---- Write the handle atomically (staged `.tmp-<pid>` beside it, renamed over).
+--- The random suffix of a staged handle (a test seam).
+--- @return string
+function M._suffix()
+    local ok, b = pcall(uv().random, 8)
+    if ok and type(b) == "string" and #b == 8 then
+        return (b:gsub(".", function(c) return string.format("%02x", c:byte()) end))
+    end
+    return string.format("%x%x", uv().hrtime() % 0x7fffffff, math.random(0, 0x7fffffff))
+end
+
+--- Write the handle atomically: staged to `<handle>.tmp-<random>` created
+--- exclusively (never through a file or link planted in a shared `.nvim/`),
+--- then renamed over the handle.
 --- @param root string
 --- @param rec table
 --- @return boolean|nil ok, string|nil err
@@ -82,13 +94,16 @@ function M.write(root, rec)
     for k, v in pairs(rec) do
         if k ~= "age" and k ~= "stale" and k ~= "valid" then body[k] = v end
     end
-    local pid = uv().os_getpid and uv().os_getpid() or 0
-    local tmp = path .. ".tmp-" .. tostring(pid)
-    local fd, err = uv().fs_open(tmp, "w", tonumber("644", 8))
-    if not fd then return nil, err end
-    local ok_w, werr = uv().fs_write(fd, vim.json.encode(body), 0)
-    uv().fs_close(fd)
-    if not ok_w then pcall(uv().fs_unlink, tmp); return nil, werr end
+    local data = vim.json.encode(body)
+    local tmp, err
+    for _ = 1, 3 do
+        local cand = path .. ".tmp-" .. M._suffix()
+        local ok, werr, code = require("loomworks.io").write_exclusive(cand, data, tonumber("644", 8))
+        if ok then tmp = cand; break end
+        err = werr
+        if code ~= "EEXIST" then break end
+    end
+    if not tmp then return nil, err end
     local ok_r, rerr = uv().fs_rename(tmp, path)
     if not ok_r then pcall(uv().fs_unlink, tmp); return nil, rerr end
     return true

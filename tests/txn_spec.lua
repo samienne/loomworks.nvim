@@ -66,6 +66,17 @@ describe("multi-file commit (§19.4)", function()
         assert.same({}, txn.strays(root))
     end)
 
+    it("the journal's temporary file is never written through a link planted at its name", function()
+        local root = L.make_ws()
+        local before = snapshot(root)
+        local victim = root .. "/victim.txt"
+        local f = assert(io.open(victim, "wb")); f:write("PRECIOUS"); f:close()
+        assert(uv.fs_link(victim, journal(root) .. ".tmp"))
+        assert.equals(0, crash(root, "none"))
+        assert.equals("new", state(root, before))
+        assert.equals("PRECIOUS", L.read(victim))
+    end)
+
     local cases = {
         { step = "staged", expect = "old" },  -- crash during check/stage
         { step = "journal", expect = "new" }, -- journal written, nothing applied

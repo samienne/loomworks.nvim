@@ -62,14 +62,11 @@ local function read(path)
 end
 
 --- Write `bytes` to `path` and flush it to stable storage.
+--- Write a staged copy or the journal's temporary file, never through a file
+--- or link already at that name (loomworks.io.write_fresh: the name is
+--- cleared, then created exclusively).
 local function write_flushed(path, bytes)
-    local fd, err = uv().fs_open(path, "w", 438)
-    if not fd then return false, err end
-    local _, werr = uv().fs_write(fd, bytes, 0)
-    pcall(uv().fs_fsync, fd)
-    uv().fs_close(fd)
-    if werr then pcall(uv().fs_unlink, path); return false, werr end
-    return true
+    return require("loomworks.io").write_fresh(path, bytes, 438)
 end
 
 --- Rename with the Windows sharing-violation retry of io.write_file_atomic.
