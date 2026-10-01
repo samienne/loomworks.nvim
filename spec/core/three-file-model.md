@@ -694,9 +694,12 @@ window in which it can happen is a few seconds of concurrent editing.
 per-file advisory lock: an exclusive create (`O_EXCL`) of
 `<file>.lock` beside the file, held only for that step (milliseconds). A
 process that finds the lock held retries for a bounded time (about two
-seconds). A lock whose file is older than a short stale window (a few seconds —
-far longer than any save) belongs to a crashed holder and is reclaimed by an
-atomic rename, as for the build-directory lock (§16.6). If the lock is still
+seconds). The lockfile carries the common lock record of §19.5. A lock whose
+holder is dead (§19.5), or whose file is older than a short stale window (a few
+seconds — far longer than any save) while its holder cannot be checked (another
+host, or a record without a start time), is reclaimed by an atomic, nonce-checked
+rename, as for the build-directory lock (§16.6); a holder that is alive but
+stale is hung and is not reclaimed. If the lock is still
 held when the retry time runs out, the save proceeds without it — the stale
 check still applies — rather than lose the change. A process removes only a
 lock it still owns.

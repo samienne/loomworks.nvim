@@ -12,7 +12,7 @@
 ---           tools | build [profile] |
 ---           clean [profile] | run [target] | run <profile> <target> |
 ---           target <list|set|clear> [profile] | launch <sub> | publish | test [profile] |
----           unlock <profile>|--all|--device <serial> | device <list|select|clean> |
+---           unlock <profile>|<dir>|--all [--force]|--device <serial> | device <list|select|clean> |
 --           settings <...> | completion <shell> | help
 
 -- Make loomworks requireable regardless of runtimepath (nvim host, -u NONE).
@@ -1224,11 +1224,15 @@ end
 --- for the duration of `fn`, then release. Fail-fast: if any dir is in use by
 --- another process, dies with a clear message (releasing any already held). A
 --- release is also registered as an exit hook so a `die()` inside `fn` frees
---- the locks too.
+--- the locks too. Directories are locked in canonical order (normalized path,
+--- spec §19.3). A dead holder's lock is reclaimed and the interrupted step's
+--- state recovered (§19.5 step 5); a hung or live holder is broken first under
+--- `--break-locks` (M._lock_holder_or_die).
 --- @param dirs string[] distinct build directories to lock
---- @param action "build"|"clean"
+--- @param action string "build"|"clean"|"reset"
 --- @param fn fun()
-local function with_build_dir_locks(dirs, action, fn)
+--- @param ws? loomworks.Workspace for messages and state recovery
+local function with_build_dir_locks(dirs, action, fn, ws)
   local build_lock = require("loomworks.build_lock")
   local held = {}
   local function release_all()
@@ -1236,23 +1240,74 @@ local function with_build_dir_locks(dirs, action, fn)
     held = {}
   end
   on_exit(release_all)
-  for _, bd in ipairs(dirs) do
-    local h, err = build_lock.acquire(bd, action)
-    if not h then
-      release_all()
-      die("cannot " .. action .. ": " .. tostring(err))
-    end
+  local ordered = M._lock_order(dirs)
+  for _, bd in ipairs(ordered) do
+    local shown = ws and ws:_display_build_dir(bd) or bd
+    local ctx = { what = shown, command = require("loomworks.lock_break").command, unlock = shown }
+    local h = M._lock_holder_or_die(function()
+      local hh, _, info = build_lock.acquire(bd, action, ctx)
+      return hh, info
+    end, ctx, release_all)
     held[#held + 1] = h
+    if h.reclaimed and ws then
+      local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
+      if line then errw("lw: " .. line .. "\n") end
+    end
   end
   fn()
   release_all()
+end
+M._with_build_dir_locks = with_build_dir_locks -- exported for tests
+
+--- Build directories in the canonical lock order of spec §19.3: by
+--- normalized path (§2.3 normalization), duplicates dropped.
+--- @param dirs string[]
+--- @return string[]
+function M._lock_order(dirs)
+  local seen, keyed = {}, {}
+  for _, d in ipairs(dirs or {}) do
+    local k = norm_cmp(d)
+    if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
+  end
+  table.sort(keyed, function(a, b) return a.k < b.k end)
+  local out = {}
+  for _, e in ipairs(keyed) do out[#out + 1] = e.d end
+  return out
+end
+
+--- Acquire one lock through `try()` (→ handle | nil, classified info), dying
+--- with the holder's message on refusal (after `cleanup`). Under
+--- `--break-locks` (loomworks.lock_break.requested) a hung or live holder on
+--- this host is stopped first and the acquisition retried once (§19.5).
+--- @param try fun(): table|nil, table|nil
+--- @param ctx table busy-message context
+--- @param cleanup? fun()
+--- @return table handle
+function M._lock_holder_or_die(try, ctx, cleanup)
+  local lock_break = require("loomworks.lock_break")
+  local lock_record = require("loomworks.lock_record")
+  local h, info = try()
+  if h then return h end
+  info = info or {}
+  if lock_break.requested and (info.state == "hung" or info.state == "live") then
+    local ok, berr = lock_break.break_holder(info, ctx, { mode = lock_break.requested })
+    if not ok then
+      if cleanup then cleanup() end
+      die(berr)
+    end
+    h, info = try()
+    if h then return h end
+    info = info or {}
+  end
+  if cleanup then cleanup() end
+  die(lock_record.busy_message(info, ctx))
 end
 
 --- @param profile loomworks.Profile
 --- @param action "build"|"clean"
 --- @param fn fun()
 local function with_build_locks(profile, action, fn)
-  with_build_dir_locks(profile_build_dirs(profile), action, fn)
+  with_build_dir_locks(profile_build_dirs(profile), action, fn, profile._workspace)
 end
 
 --- `lw build [profile] [--target <name>]... [-- <build-tool args>]` — configure
@@ -1469,7 +1524,7 @@ function M.cmd_reset(ws, args)
   -- delete-pending) and fail loudly if a directory truly could not be removed —
   -- reset must not report success while a build tree survives.
   local done, still_present = false, nil
-  with_build_dir_locks(lock_dirs, "clean", function()
+  with_build_dir_locks(lock_dirs, "reset", function()
     run(function() done = true end)
     if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then return end
     if #removal_dirs > 0 then
@@ -1486,7 +1541,7 @@ function M.cmd_reset(ws, args)
       for d in pairs(pending) do left[#left + 1] = d end
       if #left > 0 then table.sort(left); still_present = left end
     end
-  end)
+  end, ws)
   if not done then
     die("reset timed out — a build-directory deletion did not complete")
   end
@@ -1655,15 +1710,19 @@ function M.cmd_nuke(root, args)
   return 0
 end
 
---- `lw unlock <profile> | --all` — force-remove build-dir locks,
---- for recovery after a crash left a stale lock. Warns before clearing a lock
---- that still looks active (fresh heartbeat).
+--- `lw unlock <profile|dir> | --all [--force]` — clear build-dir locks
+--- (spec §16.6, §19.5). Without `--force` only a lock whose holder is gone (dead,
+--- or stale where it cannot be checked) is removed — its interrupted step's
+--- state recovered as on any reclaim; a live or hung holder's lock is refused,
+--- naming the holder. `--force` removes the record whatever the holder's state,
+--- WITHOUT stopping it, after warning that it may still be running and writing.
+--- `--device <serial>` clears a device lock (§18.7; always forced).
 function M.cmd_unlock(ws, args)
-  local build_lock = require("loomworks.build_lock")
-  local all, profile_name, device_serial = false, nil, nil
+  local all, profile_name, device_serial, force = false, nil, nil, false
   local i = 2
   while args[i] do
     if args[i] == "--all" then all = true; i = i + 1
+    elseif args[i] == "--force" then force = true; i = i + 1
     elseif args[i] == "--device" then
       device_serial = args[i + 1]
       if not device_serial then die("--device requires a serial") end
@@ -1703,36 +1762,93 @@ function M.cmd_unlock(ws, args)
     return 0
   end
 
-  local function unlock_dir(bd)
-    local info = build_lock.read(bd)
-    if not info then return false end
-    if not info.stale then
-      errw(string.format(
-        "lw: forcing an ACTIVE lock (pid %s, %s, %ss ago): %s\n",
-        tostring(info.pid), tostring(info.action), tostring(info.age), bd))
-    end
-    build_lock.force(bd)
-    out("unlocked " .. bd)
-    return true
-  end
+  return M._unlock_build_dirs(ws, all, profile_name, force)
+end
 
+--- The build-directory part of `lw unlock` (see M.cmd_unlock). `name` is a
+--- profile, or a build directory (relative to the workspace root, or
+--- absolute) that must lie under the root (separator-bounded): only
+--- `<dir>.loomworks-lock` — exactly that regular file — is ever removed.
+--- @param ws loomworks.Workspace
+--- @param all boolean
+--- @param name string|nil
+--- @param force boolean
+--- @return integer exit code
+function M._unlock_build_dirs(ws, all, name, force)
+  local build_lock = require("loomworks.build_lock")
+  local lock_record = require("loomworks.lock_record")
   local targets = {}
   if all then
     for _, p in ipairs(ws._profiles or {}) do
-      for _, bd in ipairs(profile_build_dirs(p)) do targets[bd] = true end
+      for _, bd in ipairs(profile_build_dirs(p)) do targets[#targets + 1] = bd end
     end
   else
-    if not profile_name then
-      die("usage: lw unlock <profile> | --all | --device <serial>")
+    if not name then
+      die("usage: lw unlock <profile> | <build dir> | --all [--force] | --device <serial>")
     end
-    for _, bd in ipairs(profile_build_dirs(resolve_profile(ws, profile_name))) do
-      targets[bd] = true
+    -- A name with a path separator is a build directory; else a profile.
+    local is_path = name:find("[/\\]") ~= nil
+    local hit = not is_path and match_profile_arg(ws, name) or nil
+    if not is_path and not hit then
+      die("no profile matching '" .. name .. "' (a build directory is named by its path, e.g. "
+        .. ".nvim/build/App/Debug). Run `lw profile list` to list.")
+    end
+    if hit then
+      for _, bd in ipairs(profile_build_dirs(hit)) do targets[#targets + 1] = bd end
+    else
+      local p = name:gsub("\\", "/"):gsub("/+$", "")
+      -- No `.` / `..` segments: the prefix check below compares spellings,
+      -- so `../x` must never pass for a path under the root.
+      for seg in p:gmatch("[^/]+") do
+        if seg == "." or seg == ".." then
+          die("a build directory is named by a plain path under the workspace root "
+            .. "(no '.' or '..' segments): " .. name)
+        end
+      end
+      if not (p:match("^%a:/") or p:sub(1, 1) == "/") then p = ws.root .. "/" .. p end
+      local nr, np = norm_cmp(ws.root), norm_cmp(p)
+      if np:sub(1, #nr + 1) ~= nr .. "/" then
+        die("no profile matching '" .. name .. "', and it is not a directory under the workspace root")
+      end
+      targets[1] = p
     end
   end
 
-  local removed = 0
-  for bd in pairs(targets) do
-    if unlock_dir(bd) then removed = removed + 1 end
+  local removed, refused = 0, 0
+  for _, bd in ipairs(M._lock_order(targets)) do
+    local path = build_lock.lock_path(bd)
+    local shown = ws:_display_build_dir(bd)
+    local info = build_lock.read_path(path)
+    if info then
+      info.state = lock_record.classify(info)
+      local gone
+      if lock_record.RECLAIMABLE[info.state] then
+        gone = build_lock.reclaim_path(path) ~= nil
+      elseif force then
+        errw(string.format("lw: WARNING: removing the lock of %s held by %s (pid %s%s, %s) without "
+          .. "stopping it — it may still be running and writing there\n", shown,
+          lock_record.holder_text(info), tostring(info.pid or "?"),
+          lock_record.same_host(info) and "" or (" on " .. tostring(info.host)), info.state))
+        pcall(ws._core._deps.log.info, ws._core._deps.log, "%s",
+          "lw unlock --force: removed the lock of " .. shown .. " held by pid " .. tostring(info.pid))
+        gone = build_lock.force_path(path)
+      else
+        refused = refused + 1
+        errw("lw: " .. lock_record.busy_message(info, { what = shown, command = "lw build",
+          unlock = shown }) .. "\n")
+      end
+      if gone then
+        removed = removed + 1
+        out("unlocked " .. shown)
+        local line = ws:_recover_interrupted_build_dir(bd, info)
+        if line then errw("lw: " .. line .. "\n") end
+      end
+    end
+  end
+  if refused > 0 then
+    die(string.format("%d lock%s left in place — its holder is running (use --force to remove the "
+      .. "record anyway, or the command's --break-locks to stop the holder)", refused,
+      refused == 1 and " was" or "s were"))
   end
   if removed == 0 then out("no build-dir locks to clear") end
   return 0
@@ -9564,7 +9680,7 @@ $XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
 (profile create, profiles) read it.
   --cached   print the cached result instantly (with its age); don't scan.
 Installed a new compiler? run `lw tools` to refresh.]],
-  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [-- <build-tool args>]
+  build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [--break-locks] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.
 `lw build Debug:ninja-gcc-14 -- -j 4` to cap parallelism in CI. They go on
@@ -9604,6 +9720,11 @@ for a deterministic build. The CI pattern is:
   -v, --verbose  print each configure / build step's full command line and
                 the directory it runs in (for an MSVC kit, the cmake command
                 run inside vcvarsall). Always written to .nvim/loomworks.log.
+  --break-locks[=now]  recover a build-directory lock whose holder hangs (or,
+                on this host, is still running): ask it to stop (POSIX), wait
+                ~5s (`=now` skips the wait), kill its process tree, recover the
+                interrupted step's state, then run. Never another host's holder
+                or the editor's (see `lw help unlock`).
 
 Configures first if the build dir isn't configured — or when a configure input
 changed since the last configure (options, env, toolchain, compiler cache), or
@@ -9611,7 +9732,7 @@ the build dir was configured by an older lw — then builds. Each configure
 prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO
 removed)`. Non-zero exit on any failure. Artifacts land under
 .nvim/build/<project>/<tool>/<config>/ — a separate build dir per toolchain.]],
-  clean = [[lw clean [profile | config-set]
+  clean = [[lw clean [profile | config-set] [--break-locks]
 
 Run each project's build-system clean on the profile's build directories
 (cmake -> `cmake --build <dir> --target clean`; meson -> `meson compile
@@ -9621,8 +9742,9 @@ created are skipped. Non-zero exit on any failure.
 
 Profile resolution matches `lw build` (a unique substring works; --no-input
 requires an explicit profile). To remove a build directory entirely rather than
-just its artifacts — a hard reset to unconfigured — use `lw reset`.]],
-  reset = [[lw reset [profile | --all] [-y]
+just its artifacts — a hard reset to unconfigured — use `lw reset`.
+`--break-locks[=now]` recovers a hung build-directory lock (see `lw help build`).]],
+  reset = [[lw reset [profile | --all] [-y] [--break-locks]
 
 HARD-reset build state: remove the build directories (rm -rf, NOT the build
 system's artifact clean of `lw clean`) and drop the affected configurations back
@@ -9638,6 +9760,7 @@ artifacts.
             and including orphaned ones (cached build state no profile still
             references). Takes no profile argument.
   -y | --yes  skip the confirmation prompt (required in --no-input / CI).
+  --break-locks[=now]  recover a hung build-directory lock (`lw help build`).
 
 Destructive, so it confirms first: the build directories to remove are printed
 and confirmation is requested. In non-interactive mode (--no-input / LW_NO_INPUT
@@ -9693,21 +9816,28 @@ working copy) is kept; the next `lw build` reconfigures from scratch.
 This is the remedy when the build cache was not written on this machine (it is
 refused — see `lw help trust`). Confirms first; -y skips the prompt and is
 required in non-interactive mode. Prefer `lw reset` to reset one profile.]],
-  unlock = [[lw unlock <profile> | --all | --device <serial>
+  unlock = [[lw unlock <profile> | <build dir> | --all [--force] | --device <serial>
 
-Force-remove build-directory locks. loomworks serializes configure/build/clean
-on a build dir across processes (editor + CLI) with an advisory lockfile;
-a crashed process's lock is normally reclaimed automatically once
-its heartbeat goes stale (~20s). Use `unlock` to clear one immediately.
+Clear build-directory locks. loomworks serializes configure/build/clean on a
+build dir across processes (editor + CLI) with an advisory lockfile that names
+its holder (process id, host, start time). A holder that crashed or was killed
+is reclaimed automatically by the next command; one that hangs (alive, no
+heartbeat) is reported with the recovery command, `<command> --break-locks`.
 
-  <profile>   clear locks on that profile's build dirs
-  --all       clear locks on every profile's build dirs
+  <profile>    the locks of that profile's build dirs
+  <build dir>  one build dir, by path (relative to the workspace root, or
+               absolute; it must lie under the root), e.g. .nvim/build/App/Debug
+  --all        the locks of every profile's build dirs
+  --force      also remove the lock of a holder that is running (or hung, or on
+               another host) — WITHOUT stopping it: it may still be running and
+               writing there. Printed loudly, recorded in .nvim/loomworks.log.
   --device <serial>
-              clear the per-user DEVICE lock of that serial (remote runs hold
-              it for their whole duration; see `lw help device`)
+               clear the per-user DEVICE lock of that serial (remote runs hold
+               it for their whole duration; see `lw help device`)
 
-Warns (on stderr) before clearing a lock that still looks active — meaning a
-build may really be running elsewhere.]],
+Without --force a lock whose holder is still running is left in place and
+named (exit 1). A removed lock of a killed configure leaves its units
+unconfigured, of a killed build step not built (configured).]],
   run = [[lw run [<target>] [-- prog-args…]   |   lw run <profile> <target> [-- …]
 
 Resolve a profile and a launch target, then build -> deploy -> execute.
@@ -9776,6 +9906,8 @@ device/transport lost it, 124 on --timeout). See `lw help device`.
                         transport timeouts (defaults 120 s / 600 s)
   --log <key>=<value>   device-log option for the runner (repeatable)
   --no-wait             fail instead of waiting when the device is busy
+  --break-locks[=now]   recover a hung build-directory or device lock first
+                        (stop its holder's process tree; see `lw help build`)
 `--prefix` and `--cwd` are errors on a foreign target; `--print` reports the
 device-side invocation and the staging manifest. The run announces
 "running <program> on <serial> (pid N)"; Ctrl-C stops the device program and
@@ -9797,7 +9929,7 @@ build for another platform may ship a DEVICE RUNNER; loomworks uses it to copy
                                   attached; non-zero when no runner is available.
   select <serial> [profile]       persist the profile's device (working copy)
   select --clear [profile]        forget it
-  clean [--device <serial>] [--query-timeout <s>] [--no-wait]
+  clean [--device <serial>] [--query-timeout <s>] [--no-wait] [--break-locks]
                                   remove this workspace's staging tree from
                                   the device (and the staging base if that
                                   leaves it empty) and clear the host's sync
@@ -9830,7 +9962,9 @@ Trust: stage/archive and device_log are honored from loomworks.json; device
 `env` and `working_dir` only from your local config (`lw help trust`).
 One remote operation per device at a time: runs wait for the device lock
 (`--no-wait` fails fast; `lw unlock --device <serial>`;
-LOOMWORKS_DEVICE_LOCK_DIR relocates the lock directory).]],
+LOOMWORKS_DEVICE_LOCK_DIR relocates the lock directory). A holder that hangs is
+reported instead of waited for; `--break-locks[=now]` on run / test / device
+clean stops it (never another host's process or the editor's).]],
   target = [[lw target [list] [profile]
 lw target set [<profile>] <target>   |   lw target clear [profile]
 
@@ -9922,6 +10056,8 @@ profile (`lw profile create <set> <tool> && lw test <set>:<tool>`).
 
   profile        e.g. Debug:ninja-clang-19  (unique substring works)
   config-set     a set name (interactive: onboards a profile, then tests)
+  --break-locks[=now]  recover a hung build-directory or device lock first
+                 (stop its holder's process tree; see `lw help build`)
   --junit <file> Write JUnit XML for CI reporters. ctest maps to
                  --output-junit; meson's fixed testlog is copied here. One file
                  per invocation; when a profile runs several test units a label
@@ -10973,7 +11109,7 @@ Usage: lw [command] [args]
   build [profile]   build a profile (configure if needed, then build)
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
-  unlock <profile>  clear a stuck build-dir lock (--all, --device <serial>)
+  unlock <profile>  clear a stuck build-dir lock (--all, --force, --device <serial>)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
@@ -11043,6 +11179,32 @@ end
 local function env_truthy(name)
   local v = os.getenv(name)
   return v ~= nil and v ~= "" and v ~= "0" and v:lower() ~= "false"
+end
+
+--- Strip `--break-locks` / `--break-locks=now` from `argv` (before any `--`)
+--- and configure loomworks.lock_break for this run; records this process as
+--- an `lw` lock holder (spec §19.5). Returns the remaining argv.
+--- @param argv string[]
+--- @param command string|nil
+--- @return string[]
+function M._take_break_locks(argv, command)
+  require("loomworks.lock_record").set_holder_kind("lw")
+  local lb = require("loomworks.lock_break")
+  lb.command = command and ("lw " .. command) or "lw"
+  lb.report = function(line) errw("lw: " .. line .. "\n") end
+  local kept, after = {}, false
+  for _, v in ipairs(argv) do
+    local mode = (not after) and lb.parse_flag(v) or nil
+    if v == "--" then after = true end
+    if mode == false then
+      die("--break-locks takes no value, or `=now` — see `lw help " .. tostring(command) .. "`", 2)
+    elseif mode then
+      lb.requested = mode
+    else
+      kept[#kept + 1] = v
+    end
+  end
+  return kept
 end
 
 local function main()
@@ -11116,6 +11278,11 @@ local function main()
         .. "`\n    (arguments for the program or build tool go after `--`)", 2)
     end
   end
+  -- `--break-locks[=now]` (spec §19.5), validated per command above: strip it
+  -- (before any `--`) and make it the process-wide request every lock
+  -- acquisition of this run consults. This process records itself as an `lw`
+  -- lock holder.
+  a = M._take_break_locks(a, command)
   -- An unknown command (or an option in the command position) is a usage
   -- error decided from the name alone, BEFORE workspace resolution — outside a
   -- workspace a typo must not read as "no loomworks.json" (spec §16.7).
@@ -11311,6 +11478,10 @@ local function main()
   end
 
   local ws = load_workspace(root)
+  -- Every kill of `--break-locks` is also recorded in the workspace log.
+  require("loomworks.lock_break").log = function(line)
+    pcall(ws._core._deps.log.info, ws._core._deps.log, "%s", line)
+  end
   if command == "profiles" then
     finish(M.cmd_profiles(ws))
   elseif command == "build" then

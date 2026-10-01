@@ -185,8 +185,25 @@ mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is
 building, and a build cannot enter a directory a reset is removing. Acquisition
-is **fail-fast** (the loser reports the holder and declines rather than waiting). A stale lock is reclaimed automatically after
-the heartbeat window; `lw unlock` clears one immediately. The CLI also releases
+is **fail-fast** (the loser reports the holder and declines rather than waiting).
+The lockfile holds the common lock record of §19.5 (holder process id, host,
+process start time, nonce, holder kind, operation — rewritten from `configure`
+to `build` as the holder moves between steps — and start time), and the holder
+heartbeats its mtime. A **dead** holder's lock (same host, no process with that
+id and start time) is reclaimed at once, and the interrupted step's state is
+recovered (§19.5 step 5); a lock on another host, or one whose record has no
+start time (an older version), is reclaimed after the heartbeat window as
+before. A same-host holder that is **alive but stale** is **hung** and is **not**
+reclaimed automatically (it could resume and write): the refusal names it with
+the recovery command, and `--break-locks` on the command recovers it (§19.5).
+`lw unlock <profile> | <build dir> | --all` removes a lock whose holder is gone
+(dead, or stale where it cannot be checked), recovering its state as on any
+reclaim, and refuses a live or hung holder's lock naming it (exit 1);
+`lw unlock --force …` removes the record whatever the holder's state, without
+stopping it, after warning that it may still be running and writing. A build
+directory argument is a path (it contains a separator), relative to the
+workspace root or absolute, and must lie under the root; only the lockfile
+`<dir>.loomworks-lock` itself, a regular file, is removed. The CLI also releases
 its build locks on interrupt as well as on normal exit, so an interrupted
 (Ctrl-C'd) build does not leave a lock for the stale-reclaim window. An
 **interrupt** is any of: SIGINT (Ctrl-C), SIGTERM, SIGHUP (a terminal hangup)

@@ -325,8 +325,11 @@ heartbeat mechanism as build-directory locks, §16.6), shared by the editor, the
 CLI and every workspace on the host. Unlike a build-directory lock, a device
 lock **waits** by default (queueing for a shared device is normal), printing the
 holder once; a host option fails fast instead. The wait has no deadline; the
-operations performed under the lock do (§18.8). A stale lock (heartbeat lapsed)
-is reclaimed.
+operations performed under the lock do (§18.8). A dead holder's lock is
+reclaimed at once, and a stale one on another host or without a start time by
+the heartbeat rule (§19.5); a hung holder (same host, alive, heartbeat lapsed)
+is never waited for: the acquisition fails at once with the recovery command
+(`--break-locks`, §19.5).
 
 **Leftover programs.** A run can end without its cleanup (§18.8) — the host
 killed it, a power loss, an interrupt the host gives no time to handle — and
@@ -334,7 +337,7 @@ its program then keeps running on the device. So that the next run can stop
 it, a remote run records its program in its device lockfile as soon as
 `parse_pid` reports the process id: `{ device_pid, nonce, program }` (the
 staged device-side path), cleared again when the run's program has exited or
-been stopped. When core **reclaims** a stale device lock whose record names a
+been stopped. When core **reclaims** a device lock (§19.5) whose record names a
 program, it first — before staging (for `lw device clean`, before removing
 anything), still holding the new lock — asks the
 runner to `reap` it (§18.2), under the query timeout, and reports the outcome

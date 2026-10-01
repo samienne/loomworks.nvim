@@ -27,6 +27,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 ## Unreleased
 
 ### Upgrade notes
+- A build-directory or device lock whose holder is still running but has
+  stopped heartbeating ("hung") is no longer taken over after about 20 s: the
+  command stops and names the recovery command, `--break-locks`. Scripts that
+  relied on waiting out such a lock must pass `--break-locks`. `lw unlock
+  <profile>` no longer removes the lock of a running holder; add `--force`. (#99)
 - Scripts or CI that run `lw update` must switch to `lw bootstrap upgrade`
   (move a repository's pin) or `lw self-update` (update lw itself); `lw update`
   now fails with exit code 2. (#89)
@@ -36,6 +41,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `--break-locks` (and `--break-locks=now`) on `lw build`, `clean`, `reset`,
+  `run`, `test` and `lw device clean` recovers a stuck lock: it asks the
+  holder to stop, waits about 5 s (`=now` skips the wait), kills its process
+  tree, recovers the interrupted step's state and runs. It never touches a
+  process on another host or an editor, and works under `--no-input`. (#99)
+- `lw unlock --force <profile | build dir>` removes a lock record without
+  stopping its holder, with a loud warning; `lw unlock` also takes a build
+  directory path. (#99)
 - `lw export` prints the whole workspace configuration as a `loomworks.json`
   (local items included, machine-local settings never) without writing
   anything; `--published` prints exactly what `lw publish` would write,
@@ -56,6 +69,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   example one written by an older `lw` in a worktree) instead of refusing:
   `--dry-run` always works, and a confirmed import replaces the file unread,
   keeping a backup and none of its settings. (#102)
+- A lock left by a process that crashed or was killed is taken over at once
+  (it used to wait about 20 s), and the interrupted step is recovered: a killed
+  configure leaves its configuration unconfigured, a killed build step leaves
+  it configured. Every lock now records the holder's process start time, so a
+  reused process id is never mistaken for the holder. (#99)
 - The working copy and the build cache record the loomworks version that wrote
   them. A file whose format is newer than the running loomworks understands is
   never rewritten: the workspace is not loaded and the message asks you to

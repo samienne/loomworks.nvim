@@ -106,9 +106,10 @@ exception after the transition is a **version-bypass run** (§19.9).
 ### 19.3 Operation locks
 
 *Status: master for build-directory locks (§16.6), device locks (§18.7) and
-per-file save locks (§2.7); future for the workspace operation lock, the lock
-order, and `lw nuke` taking build locks. This is step 1 of §19.19 and comes
-before any lifetime work.*
+per-file save locks (§2.7), all with the §19.5 record, and for the canonical
+order of build directories; future for the workspace operation lock, the full
+lock order, and `lw nuke` taking build locks. This is step 1 of §19.19 and
+comes before any lifetime work.*
 
 Every **mutating operation**, on any path (in-process, attached, daemon),
 acquires **all** the locks it needs **before its first side effect**, in the
@@ -141,7 +142,8 @@ that needs a lock it did not take up front (for example a remote run that
 discovers it must rebuild) first releases every lock of a later class.
 
 The **workspace operation lock** O is the O_EXCL + heartbeat primitive with the
-record `{ pid, host, operation, started_at, nonce }`. It is taken by every
+common lock record of §19.5 (`{ pid, host, start_time, lock_nonce, kind,
+operation, started_at }`). It is taken by every
 operation that writes more than one of the three workspace files, or that
 removes a workspace file or a build tree as part of a larger change:
 
@@ -242,9 +244,12 @@ commit. This is the same class of residual race as §2.7 "Remaining race".
 
 ### 19.5 Recovery from dead and hung holders
 
-*Status: future, except the stale-heartbeat reclaim of build-directory and
-device locks (§16.6, §18.7) and `lw unlock` (master). Lands with step 1 of
-§19.19 for the operation locks and with step 2 for the runtime.*
+*Status: master for build-directory, device and file-save locks (B, D, F): the
+record, the classification, the state recovery, `--break-locks` and
+`lw unlock --force`; lands with step 1 of §19.19 for the operation lock O and
+with step 2 for the runtime (R, `lw daemon stop --force` / `kill`). Until the
+runtime log (§19.10) exists, kills and forced unlocks are recorded in the
+workspace log.*
 
 A crashed or killed process must never leave a workspace stuck, and a hung one
 must be recoverable with one command. These rules apply uniformly to every lock
@@ -254,7 +259,13 @@ of §19.3 (R, O, B, D, F) and to the handle file and socket (§19.6–§19.7).
 holder's **process start time** (as reported by the operating system; it
 distinguishes a reused process id), a random nonce, the holder kind (`lw`,
 `daemon`, or `editor`), the operation, and a start timestamp; its modification
-time is the heartbeat. A holder that holds a build-directory lock across
+time is the heartbeat. As JSON: `{ pid, host, start_time, lock_nonce, kind,
+operation, started_at }`, plus `action` (a copy of `operation` that older
+versions read) and the class's own fields. The nonce is `lock_nonce`, not
+`nonce`: device-lock records already use `nonce` for their running program
+(§18.7). `start_time` is opaque and carries its method (`win:`, `linux:`,
+`mac:`); a value written by a method the reader cannot use is judged by
+heartbeat alone. A holder that holds a build-directory lock across
 several steps rewrites the record's operation when it moves from configure to
 build, so recovery knows which step was interrupted. A record without a start time (written by an older
 version) is judged by heartbeat alone.
@@ -345,6 +356,20 @@ dangerous things.
   on that host are judged by heartbeat alone (a dead holder is then reclaimed
   only after the heartbeat window, and a hung one is indistinguishable from a
   dead one).
+- A process tree is enumerated by parent process id. On Windows that reaches
+  native children only: a grandchild started through an MSYS/Cygwin shell
+  (for example `sleep` under Git's `sh`) has no Windows parent link to the
+  holder and survives the kill.
+- A holder is identified by host name, process id and start time. Processes
+  in different PID namespaces that report the same host name (containers
+  sharing a hostname, or sharing a checkout over a bind mount) are not told
+  apart: a holder in another namespace looks dead (its id is unknown here) or,
+  if the id is taken, like a different process — its lock is reclaimed. Give
+  such containers distinct host names, or do not share one checkout between
+  them.
+- `--break-locks` never signals the calling process or any of its ancestors;
+  descendants are signalled only while they are still the process seen in the
+  snapshot (same id and start time).
 
 **Required tests.**
 

@@ -918,6 +918,134 @@ do
   eq(("x__LW_EXIT_n.1=3"):match(vim.pesc("__LW_EXIT_n.1") .. "=(%d+)$"), "3", "vim.pesc output is a literal pattern")
 end
 
+print("loomworks.proc / lock records — process identity under luvi (spec §19.5)")
+do
+  -- The start-time probe, tree kill and suspend run under the luvi host on the
+  -- CI's Linux and Windows runners (the nvim suite covers Windows under nvim).
+  local vim = require("loomworks.shim")
+  local proc = require("loomworks.proc")
+  local lock_record = require("loomworks.lock_record")
+  local win = package.config:sub(1, 1) == "\\"
+  local native = win and "win" or (proc._os == "Linux" and "linux" or "mac")
+  local st = proc.self_start_time()
+  ok(type(st) == "string" and proc.method_of(st) == native, "self start time via the native method  (" .. tostring(st) .. ")")
+  eq(proc.start_time(4194300), false, "a missing process is gone")
+  local cmd, args
+  if win then cmd, args = "cmd.exe", { "/c", "ping -n 30 127.0.0.1 >nul" }
+  else cmd, args = "/bin/sh", { "-c", "sleep 30 & sleep 30; true" } end
+  local handle, pid = uv.spawn(cmd, { args = args }, function() end)
+  ok(handle ~= nil, "spawned a helper process tree")
+  if handle then
+    vim.wait(400)
+    local cst = proc.start_time(pid)
+    ok(type(cst) == "string" and cst ~= st, "child start time differs from ours")
+    local kids = proc.descendants(pid)
+    ok(#kids >= 1, "the helper's children are enumerated  (" .. #kids .. ")")
+    ok(proc._suspend(pid), "suspend the helper")
+    eq(proc.alive(pid, cst), true, "a suspended process is alive (same start time)")
+    -- a lock held by the suspended helper with a stale heartbeat is hung
+    local tmp = uv.os_tmpdir() .. "/lw-proc-" .. tostring(uv.hrtime())
+    local lockp = tmp .. ".lock"
+    local f = assert(io.open(lockp, "wb"))
+    f:write(vim.json.encode({ pid = pid, host = lock_record.this_host(), start_time = cst,
+      lock_nonce = "n", kind = "lw", operation = "build", started_at = os.time() }))
+    f:close()
+    uv.fs_utime(lockp, os.time() - 100, os.time() - 100)
+    local info = lock_record.read(lockp, 20)
+    eq(lock_record.classify(info), "hung", "suspended holder + stale heartbeat = hung")
+    -- a reused pid (start time differs) is dead, and is never signalled
+    local gone_fake = proc.kill_tree(pid, native .. ":0")
+    ok(gone_fake and proc.alive(pid, cst) == true, "a mismatched start time never signals the process")
+    local gone, kerr = proc.kill_tree(pid, cst)
+    ok(gone, "kill_tree stops the suspended holder  (" .. tostring(kerr) .. ")")
+    eq(lock_record.classify(info), "dead", "the killed holder is dead")
+    local all_gone = vim.wait(5000, function()
+      for _, k in ipairs(kids) do if proc.alive(k.pid, k.start) == true then return false end end
+      return true
+    end, 50)
+    ok(all_gone, "the holder's children were killed too")
+    ok(lock_record.reclaim(lockp, info) and uv.fs_stat(lockp) == nil, "nonce-matched reclaim removes the record")
+  end
+end
+
+print("loomworks.lock_break / proc — descendants verified, ancestors spared, POSIX ask path (spec §19.5)")
+do
+  local vim = require("loomworks.shim")
+  local proc = require("loomworks.proc")
+  local lock_break = require("loomworks.lock_break")
+  local win = package.config:sub(1, 1) == "\\"
+  local native = win and "win" or (proc._os == "Linux" and "linux" or "mac")
+  local function spawn(cmd, args)
+    local h, pid = uv.spawn(cmd, { args = args }, function() end)
+    assert(h, "spawn " .. cmd)
+    return pid
+  end
+  local function sleeper(secs)
+    if win then return spawn("cmd.exe", { "/c", "ping -n " .. (secs + 1) .. " 127.0.0.1 >nul" }) end
+    return spawn("/bin/sh", { "-c", "sleep " .. secs })
+  end
+  local function gone(pid, st)
+    return vim.wait(5000, function() return proc.alive(pid, st) ~= true end, 50)
+  end
+
+  -- A descendant recorded earlier whose id now names another process (its
+  -- start time differs) is never signalled.
+  local holder, other = sleeper(30), sleeper(30)
+  vim.wait(300)
+  local hst, ost = proc.start_time(holder), proc.start_time(other)
+  local ok_k = proc.kill_tree(holder, hst, { { pid = other, start = native .. ":0" } })
+  ok(ok_k and proc.alive(other, ost) == true, "a reused descendant id (start time differs) is not killed")
+  proc.kill_tree(other, ost)
+
+  -- This process and its ancestors are never a descendant to kill.
+  local anc = proc.ancestors()
+  local me = uv.os_getpid()
+  ok(anc[me] == true, "ancestors() includes this process")
+  local parent = uv.os_getppid and uv.os_getppid() or nil
+  if parent then
+    ok(anc[parent] == true, "ancestors() includes the parent")
+    local listed = false
+    for _, d in ipairs(proc.descendants(parent)) do if d.pid == me then listed = true end end
+    ok(not listed, "descendants of the parent never list this process")
+    local okb, why = lock_break.can_break({ pid = parent, host = require("loomworks.lock_record").this_host(),
+      start_time = proc.start_time(parent), kind = "lw", state = "hung", age = 99 }, { what = "x" })
+    ok(not okb and why:find("started it", 1, true) ~= nil, "--break-locks refuses an ancestor holder")
+  end
+
+  if not win then
+    -- POSIX ask path (§19.5 step 1): SIGINT, wait, then kill the snapshot.
+    local saved = lock_break.ASK_MS
+    lock_break.ASK_MS = 800
+    local lines = {}
+    local function info_of(pid)
+      return { pid = pid, host = require("loomworks.lock_record").this_host(),
+        start_time = proc.start_time(pid), kind = "lw", state = "live", age = 1 }
+    end
+    -- (a) a holder that ignores the interrupt is killed after the wait
+    local stubborn = spawn("/bin/sh", { "-c", "trap '' INT; sleep 30" })
+    vim.wait(300)
+    local i1 = info_of(stubborn)
+    local t0 = uv.hrtime()
+    local okb = lock_break.break_holder(i1, { what = "t" }, { mode = "ask", report = function(l) lines[#lines + 1] = l end })
+    local waited = (uv.hrtime() - t0) / 1e6
+    ok(okb and gone(stubborn, i1.start_time), "ask: a holder ignoring SIGINT is killed")
+    ok(waited >= 700, "ask: the kill comes only after the wait  (" .. math.floor(waited) .. " ms)")
+    ok(table.concat(lines, "\n"):find("asked", 1, true) ~= nil, "ask: the interrupt is reported")
+    -- (b) a holder that exits on the interrupt but leaves a child: the child
+    -- (in the snapshot taken before asking) is killed too
+    local leaver = spawn("/bin/sh", { "-c", "sleep 30 & wait" })
+    vim.wait(300)
+    local i2 = info_of(leaver)
+    local kids = proc.descendants(leaver)
+    ok(#kids >= 1, "ask: the holder's child is in the snapshot")
+    local okb2 = lock_break.break_holder(i2, { what = "t" }, { mode = "ask", report = function() end })
+    local all = okb2 and gone(leaver, i2.start_time)
+    for _, k in ipairs(kids) do all = all and gone(k.pid, k.start) end
+    ok(all, "ask: the holder and the child it left are gone")
+    lock_break.ASK_MS = saved
+  end
+end
+
 -- A throwaway git repository for tests of pin management's git steps. Its
 -- config pins the Windows-like behaviour (no file-mode tracking) so the
 -- index-only exec-bit path runs on every platform, and no autocrlf noise.
