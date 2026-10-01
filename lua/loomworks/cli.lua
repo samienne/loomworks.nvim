@@ -945,16 +945,15 @@ local function run_spec(step, root, to_stderr)
   -- Resolve the program to an absolute path (never the cwd / a relative PATH
   -- entry) and, on Windows, add NoDefaultCurrentDirectoryInExePath=1 to the
   -- child env. An unresolvable program is reported, never spawned by name.
-  local hardened, herr = require("loomworks.exe").harden_spec({
-    cmd = step.cmd, env = step.env,
-  })
-  if not hardened then
-    errw("lw: cannot run step: " .. tostring(herr) .. "\n")
+  -- loomworks.build_run.spawn_spec (the shared headless build path); an
+  -- empty env is dropped there (the child inherits ours, never a wiped PATH).
+  local spec, herr = require("loomworks.build_run").spawn_spec(step, root)
+  if not spec then
+    errw("lw: " .. tostring(herr) .. "\n")
     return 127
   end
-  step = { cmd = hardened.cmd, cwd = step.cwd, env = hardened.env }
-  -- An empty env table would wipe PATH; inherit the parent env instead.
-  local env = (step.env and next(step.env)) and step.env or nil
+  step = { cmd = spec.cmd, cwd = spec.cwd, env = spec.env }
+  local env = step.env
   if vim._loomworks_shim then
     -- Flush our own buffered output first: the child inherits the terminal and
     -- writes directly, so anything we printed must land before its output
@@ -1088,62 +1087,10 @@ local function resolve_project(ws, name)
     (next(names) and table.concat(names, ", ") or "(none)"))
 end
 
---- Persist a headless step's outcome (state + config snapshot for staleness)
---- to the cache via Workspace:record_task_result, so a later invocation skips
---- an already-done, unchanged configure (headless builds may write the cache).
---- build_dir is set on the unit but not passed as result.build_dir
---- (that triggers the post-configure parse_targets scan the CLI opts out of).
-local function record_step(ws, step, ok)
-  if not step.unit then return end
-  if step.build_dir then step.unit.build_dir_value = step.build_dir end
-  pcall(function()
-    -- Pass the module's configure record (cache_launcher, passed_options, …)
-    -- exactly like the editor's task path, so launcher staleness and the
-    -- faithful-reconfigure retraction (core §5.1) work for CLI configures too.
-    ws:record_task_result({
-      unit = step.unit, action = step.kind, success = ok,
-      module_info = step.module_info,
-      -- The profile being built: the snapshot is taken in its context.
-      profile = step.profile,
-    })
-  end)
-end
-M._record_step = record_step
-
---- Format the output-artifact conflict refusal (spec §5.9 / §16.28). `die`
---- prepends "lw: " and exits 1. Names the conflicting profile and the shared
---- artifact path, and points at `--force`.
---- @param block { profile: string, path: string|nil }
---- @return string
-local function conflict_message(block)
-  return string.format(
-    "build would overwrite an artifact owned by built profile '%s':\n"
-      .. "      %s\n"
-      .. "    pass --force to overwrite it (%s will be marked stale)",
-    block.profile, block.path or "?", block.profile)
-end
-
---- Whether `cmd` runs a batch file through cmd.exe: the program the build
---- really runs is inside the batch, so arguments appended to this argv never
---- reach it. Recognizes a literal batch path (`cmd /C <x.bat>`) and a program
---- named only by a variable reference cmd.exe expands (`!VAR!` / `%VAR%`) —
---- the cmake vcvarsall wrapper's `cmd /d /v:on /c !LOOMWORKS_VCVARS_BAT!`
---- form. An argv whose real program cmd.exe substitutes cannot be extended
---- safely either way, so it is treated as a batch (refuse, never drop args).
---- @param cmd string[]
---- @return boolean
-local function runs_batch_file(cmd)
-  local prog = type(cmd) == "table" and type(cmd[1]) == "string"
-    and (cmd[1]:match("([^/\\]+)$") or ""):lower() or ""
-  if prog ~= "cmd" and prog ~= "cmd.exe" then return false end
-  for i = 2, #cmd do
-    local a = tostring(cmd[i]):lower()
-    if a:match("%.bat$") or a:match("%.cmd$") then return true end
-    if a:match("^!.+!$") or a:match("^%%.+%%$") then return true end
-  end
-  return false
-end
-M._runs_batch_file = runs_batch_file
+-- The headless build-step logic (plan/gates/record) lives in
+-- loomworks.build_run, host-neutral so any runner can share it.
+M._record_step = function(ws, step, ok) return require("loomworks.build_run").record(ws, step, ok) end
+M._runs_batch_file = function(cmd) return require("loomworks.build_run").runs_batch_file(cmd) end
 
 --- Up to three of `candidates` close to `name` (case-insensitive substring
 --- either way, or a small edit distance), nearest first.
@@ -1223,113 +1170,35 @@ end
 ---   verbose prints each step's command line + cwd (always logged, §16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
-  -- Same gate the editor applies in `Profile:build` / `Profile:configure`.
-  -- The CLI plans steps directly, so without this an unbuildable profile —
-  -- e.g. one mapping an abstract configuration — would build anyway, on
-  -- whatever default the module picked.
-  if profile.assert_buildable then
-    local buildable, why = profile:assert_buildable()
-    if not buildable then die(tostring(why)) end
-  end
-  local overseer = require("loomworks.overseer")
-  local steps, plan_err = overseer.plan_profile_build(profile, {
+  -- The plan/gate/record sequence lives in loomworks.build_run (host-neutral);
+  -- only the spawn (blocking here) and the reporting (die) are this host's.
+  local build_run = require("loomworks.build_run")
+  local steps, plan_err = build_run.plan(profile, {
     for_test = opts.for_test,
     reconfigure = opts.reconfigure,
-    build_args = opts.extra_args,
+    extra_args = opts.extra_args,
     build_targets = opts.build_targets,
   })
-  if plan_err then die("cannot build: " .. tostring(plan_err)) end
-  if not steps or #steps == 0 then return 0 end
-  -- The build request (core §8.1 / §16.4), checked for every build step
-  -- before anything runs. A module that applied it has already put it on its
-  -- native command. For one that did not: `--target` is refused (no generic
-  -- way to select a target), and forwarded args fall back to being appended
-  -- to the step's command — unless that command runs a batch file, where they
-  -- would be silently ignored, so it is refused instead.
-  for _, step in ipairs(steps) do
-    if step.kind == "build" then
-      if opts.build_targets and not step.applied_build_targets then
-        die(string.format("%s: this project's module does not support --target "
-          .. "(pass the build tool's own target syntax after `--` instead)", step.name or "?"))
-      end
-      if opts.extra_args and not step.applied_build_args then
-        if runs_batch_file(step.cmd) then
-          die(string.format("%s: cannot forward build-tool args — the module runs "
-            .. "its build through a batch file and does not accept build args", step.name or "?"))
-        end
-        step.cmd = vim.list_extend(vim.list_extend({}, step.cmd), opts.extra_args)
-      end
-    end
-  end
+  if not steps then die(plan_err) end
+  if #steps == 0 then return 0 end
   -- `quiet` keeps our stdout clean (status lines + build-tool output → stderr)
   -- so a machine consumer like `lw run --print` captures only its report.
   local quiet = opts.quiet or false
   local log = quiet and note or out
   log("building profile: " .. profile.key)
   for _, step in ipairs(steps) do
-    -- Output-artifact conflict gate (spec §5.9 / §16.28). Directional: refuse
-    -- a build that would clobber a still-`built` unit's shared artifact unless
-    -- forced. Evaluated at compile-start — for a configure→build chain the
-    -- configure step (below) already populated this unit's artifact set, so
-    -- the set is known here. `--force` and `--no-input` alike just
-    -- refuse with exit 1; force is the only bypass, never a prompt.
-    if step.kind == "build" and step.unit and ws.artifact_conflict_block then
-      local block = ws:artifact_conflict_block(step.unit, opts.force or false)
-      if block then die(conflict_message(block), 1) end
-    end
-    -- Full reconfigure (core §5.1 / §8.1): remove the module-named
-    -- configure-state entries first. Core validates + deletes; the build-dir
-    -- lock is already held for the whole run (with_build_locks).
-    if step.kind == "configure" and type(step.pre_configure_reset) == "table"
-        and #step.pre_configure_reset > 0 then
-      local ok_r, r_err = ws:_pre_configure_reset(step.build_dir, step.pre_configure_reset)
-      if not ok_r then die(tostring(r_err)) end
-    end
-    log(string.format("==> [%s] %s", step.kind, step.name or "?"))
-    -- Say WHY a configure runs (§16.4): the gate's reason + the module's
-    -- full / in-place choice, e.g. "full reconfigure (--fresh): configure
-    -- record from an older lw".
-    if step.kind == "configure" then
-      local why = overseer.configure_reason_line(step)
-      if why then log("    " .. why) end
-    end
-    -- The command line + cwd (§16.4): always to the workspace log, and on
-    -- the terminal with -v. A wrapped command shows what the wrapper runs.
-    local cwd = step.cwd or ws.root
-    overseer.log_task_command(ws, step.name, step, cwd)
-    if opts.verbose then
-      log("    $ " .. overseer.command_text(step))
-      log("    (in " .. tostring(cwd) .. ")")
-    end
+    -- Conflict gate + full-reconfigure reset. `--force` and `--no-input`
+    -- alike just refuse with exit 1; force is the only bypass, never a prompt.
+    local ok_g, g_err = build_run.before_step(ws, step, { force = opts.force })
+    if not ok_g then die(g_err, 1) end
+    for _, line in ipairs(build_run.step_lines(ws, step, { verbose = opts.verbose })) do log(line) end
     -- Through the module table so tests can stub the spawn.
     local code = M._run_spec(step, ws.root, quiet)
-    record_step(ws, step, code == 0)
+    build_run.after_step(ws, step, code)
     if code ~= 0 then
-      -- A build that fails after the post-configure scan predicted it (an
-      -- error-severity cache-compat finding, e.g. /Zi under sccache) closes
-      -- with one line pointing back at that finding. Advisory: the scan never
-      -- gates the build (§5.1), it only explains the failure.
-      local hint
-      if step.kind == "build" and step.unit and step.unit.module_info then
-        hint = require("loomworks.compiler_cache").compat_failure_hint(
-          step.unit.module_info.cache_compat)
-      end
       -- A `--target` the unit's parsed targets do not list (likely a typo).
-      if step.kind == "build" then
-        local th = unknown_target_hint(ws, step, opts.build_targets)
-        if th then hint = hint and (th .. "\nlw: " .. hint) or th end
-      end
-      die(string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?")
-        .. (hint and ("\nlw: " .. hint) or ""), code)
-    end
-    -- After a successful configure, populate this unit's resolved artifact set
-    -- so a following build step in THIS invocation sees it (the CLI opts out
-    -- of the record_task_result post-configure scan by not passing build_dir).
-    if step.kind == "configure" and code == 0 and step.unit and step.build_dir
-        and ws._populate_resolved_artifacts then
-      pcall(function()
-        ws:_populate_resolved_artifacts(step.unit, step.build_dir, step.unit._variant)
-      end)
+      local th = step.kind == "build" and unknown_target_hint(ws, step, opts.build_targets) or nil
+      die(build_run.failure_message(step, code, th), code)
     end
   end
   return #steps
@@ -1337,15 +1206,8 @@ end
 M._run_build_steps = run_build_steps  -- exported for tests
 
 --- The distinct build directories a profile's projects map to.
---- @param profile loomworks.Profile
---- @return string[]
 local function profile_build_dirs(profile)
-  local dirs, seen = {}, {}
-  for _, pp in ipairs(profile:projects()) do
-    local bd = pp.build_dir and pp:build_dir()
-    if bd and not seen[bd] then seen[bd] = true; dirs[#dirs + 1] = bd end
-  end
-  return dirs
+  return require("loomworks.build_run").profile_build_dirs(profile)
 end
 
 --- Hold a cross-process lock on every build directory of `profile`
