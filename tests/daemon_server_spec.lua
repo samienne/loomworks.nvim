@@ -336,17 +336,38 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         assert.truthy(st.stdout:find("no workspace daemon is running", 1, true))
     end)
 
-    it("the daemon runs in the per-user state directory, not the workspace", function()
-        assert.equals(0, lw({ "daemon", "restart" }).code)
-        local lk = H.track_root(root)
-        -- The workspace can be renamed while the daemon runs (Windows refuses
-        -- a rename of a directory that is some process's cwd).
-        local moved = root .. "-moved"
-        local ok = uv.fs_rename(root, moved)
-        if ok then uv.fs_rename(moved, root) end
-        assert.truthy(ok, "the workspace directory is held busy")
-        assert.equals(0, lw({ "daemon", "stop" }).code)
-        assert.is_true(vim.wait(5000, function() return not H.alive(lk.pid, lk.start_time) end, 50))
+    it("is spawned detached, hidden, without std handles, in the state directory (§19.10)", function()
+        -- (That the workspace can be deleted under a running daemon — it is
+        -- nobody's cwd — is checked with real processes by the lifetime spec.)
+        local seen
+        local real = uv.spawn
+        uv.spawn = function(exe, o, cb) seen = { exe = exe, o = o }; return nil, "stubbed" end
+        local ok, err = pcall(require("loomworks.daemon.launch").spawn, root)
+        uv.spawn = real
+        assert.is_true(ok, err)
+        assert.truthy(seen, "spawn not called")
+        local o = seen.o
+        assert.equals(dpaths.state_dir(), o.cwd)
+        assert.is_true(o.detached)
+        assert.is_true(o.hide)
+        assert.is_nil(o.stdio[1]); assert.is_nil(o.stdio[2]); assert.is_nil(o.stdio[3])
+        local args = table.concat(o.args, " ")
+        assert.truthy(args:find("daemon run --root " .. root, 1, true), args)
+        local keys, lw_root = {}, nil
+        for _, kv in ipairs(o.env) do
+            local k, v = kv:match("^([^=]*)=(.*)$")
+            local key = H.is_win and k:upper() or k
+            assert.is_nil(keys[key], "duplicate environment entry " .. k)
+            keys[key] = true
+            if key == "LW_ROOT" then lw_root = v end
+        end
+        assert.equals(root, lw_root)
+    end)
+
+    it("names the same per-user files for every spelling of the root", function()
+        local alias = root .. "/."
+        assert.equals(dpaths.root_hash(root), dpaths.root_hash(alias))
+        if H.is_win then assert.equals(dpaths.root_hash(root), dpaths.root_hash(root:upper())) end
     end)
 
     it("concurrent launches leave exactly one daemon; the others exit EXIT_HELD", function()

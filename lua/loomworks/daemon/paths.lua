@@ -25,12 +25,16 @@ function M.norm_root(root)
     return (tostring(root):gsub("\\", "/"):gsub("/+$", ""))
 end
 
---- The root as hashed for per-user names (case-folded on Windows, whose
---- filesystems are case-insensitive — the same folding as §2.3).
+--- The root as hashed for per-user names: its real path (so a client that
+--- reached the workspace through an 8.3 short name, a junction or a symlink
+--- names the same files as the daemon), case-folded on Windows, whose
+--- filesystems are case-insensitive (the same folding as §2.3).
 --- @param root string
 --- @return string
 local function hash_key(root)
-    local r = M.norm_root(root)
+    local uv = vim.uv or vim.loop
+    local ok, real = pcall(uv.fs_realpath, M.norm_root(root))
+    local r = M.norm_root((ok and type(real) == "string") and real or root)
     if is_win() then r = r:lower() end
     return r
 end

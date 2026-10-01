@@ -268,11 +268,10 @@ end
 --- @param host table
 --- @return integer
 function M.run_server(root, args, host)
+    -- The root exactly as the launching client named it (the per-user names
+    -- hash its real path, loomworks.daemon.paths).
     local r = opt_value(args, "--root")
-    if r then
-        local real = (vim.uv or vim.loop).fs_realpath(r)
-        root = real and real:gsub("\\", "/") or r
-    end
+    if r then root = (r:gsub("\\", "/"):gsub("/+$", "")) end
     if not root then host.die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace") end
     local server_mod = require("loomworks.daemon.server")
     local srv = server_mod.new(root, {
