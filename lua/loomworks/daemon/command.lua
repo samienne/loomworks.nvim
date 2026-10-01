@@ -168,14 +168,42 @@ end
 --- Forced recovery of R (§19.5 steps 1–5): `ask` sends `stop` first (stop
 --- --force), `kill` skips it. Returns 0 or dies.
 function M.force(root, host, st, ask)
+    local ok, res, info = M.recover(root, st, ask, {
+        note = function(line) host.note(line) end,
+        ctx = { what = "the workspace runtime", command = "lw daemon stop" },
+    })
+    if not ok then host.die(res, 1) end
+    if res == "replaced" then
+        host.out("stopped the workspace daemon (pid " .. info.pid .. "); another runtime has started since")
+        return 0
+    end
+    host.out(string.format("%s the workspace daemon (pid %d)", res, info.pid))
+    return 0
+end
+
+--- The forced recovery of R (§19.5 steps 1–5) without exiting: `ask` sends
+--- `stop` first and waits about ASK_MS; then the holder's tree is killed and
+--- verified gone (loomworks.lock_break), R is reclaimed by nonce with the
+--- handle and socket removed under it, and an interrupted commit journal is
+--- rolled forward. Every ask and kill is printed (`opts.note`) and recorded
+--- in the runtime log. Returns true + "stopped" | "killed" | "replaced"
+--- (another runtime started meanwhile) + the holder info, or false + the
+--- refusal / error.
+--- @param root string
+--- @param st table inspect.state(root) with a live / hung same-host holder
+--- @param ask boolean
+--- @param opts { note: fun(line: string), ctx: table }
+--- @return boolean ok, string result_or_err, table info
+function M.recover(root, st, ask, opts)
     local lb = require("loomworks.lock_break")
     local proc = require("loomworks.proc")
     local info = st.lock
-    local ctx = { what = "the workspace runtime", command = "lw daemon stop", root = root,
-        remedy = "delete " .. require("loomworks.daemon.paths").lock_path(root) .. " by hand" }
+    local ctx = opts.ctx
+    ctx.root = ctx.root or root
+    ctx.remedy = ctx.remedy or ("delete " .. require("loomworks.daemon.paths").lock_path(root) .. " by hand")
     local ok, why = lb.can_break(info, ctx)
-    if not ok then host.die(why, 1) end
-    local report = function(line) host.note("lw: " .. line); M.record(root, line) end
+    if not ok then return false, why, info end
+    local report = function(line) opts.note("lw: " .. line); M.record(root, line) end
     local gone = false
     if ask and st.handle and st.handle.valid then
         local r = M.query_stop(st)
@@ -186,42 +214,35 @@ function M.force(root, host, st, ask)
     end
     if not gone then
         local bok, berr = lb.break_holder(info, ctx, { mode = "now", report = report, log = function() end })
-        if not bok then host.die(berr, 1) end
+        if not bok then return false, berr, info end
     end
     -- Step 4: reclaim R (the dead holder's record, nonce-checked), removing
     -- its handle and socket under it.
     if not M.clear_stale(root, info) then
         local now = rlock.read(root)
-        if now and now.lock_nonce ~= info.lock_nonce then
-            host.out("stopped the workspace daemon (pid " .. info.pid .. "); another runtime has started since")
-            return 0
-        end
-        host.die("stopped the workspace daemon (pid " .. info.pid .. ") but could not reclaim its runtime lock", 1)
+        if now and now.lock_nonce ~= info.lock_nonce then return true, "replaced", info end
+        return false, "stopped the workspace daemon (pid " .. info.pid .. ") but could not reclaim its runtime lock",
+            info
     end
     -- Step 5: complete an interrupted multi-file commit (§19.4) if one is left.
     local uv = vim.uv or vim.loop
     if uv.fs_stat(root .. "/" .. require("loomworks.txn").JOURNAL) then
         local tok, msg = require("loomworks.op_lock").acquire(root, "daemon recovery")
         if tok then
-            if tok.recovered then host.note("lw: " .. tok.recovered) end
+            if tok.recovered then opts.note("lw: " .. tok.recovered) end
             require("loomworks.op_lock").release(tok)
         elseif msg then
-            host.note("lw: " .. msg)
+            opts.note("lw: " .. msg)
         end
     end
-    host.out(string.format("%s the workspace daemon (pid %d)", gone and "stopped" or "killed", info.pid))
-    return 0
+    return true, gone and "stopped" or "killed", info
 end
 
---- Record a kill / forced recovery (spec §19.5: printed on stderr and
---- recorded — in the workspace log until the runtime log exists).
+--- Record a kill / forced recovery in the runtime log (spec §19.5, §19.10).
 --- @param root string
 --- @param line string
 function M.record(root, line)
-    pcall(function()
-        local lg = require("loomworks.log").new({ path = root .. "/.nvim/loomworks.log" })
-        lg:info("%s", line)
-    end)
+    require("loomworks.daemon.rlog").write(root, line)
 end
 
 --- Send `stop` (best effort, short timeout). Returns the reply or nil.
@@ -290,9 +311,11 @@ function M.run_server(root, args, host)
     if r then root = (r:gsub("\\", "/"):gsub("/+$", "")) end
     if not root then host.die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace") end
     local server_mod = require("loomworks.daemon.server")
+    local rt = require("loomworks.daemon.runtime")
     local srv = server_mod.new(root, {
         exit = function(code) host.finish(code) end,
-        log = host.log,
+        log = require("loomworks.daemon.rlog").writer(root),
+        idle_seconds = rt.idle_seconds(host.config),
     })
     local ok, err, code = srv:start()
     if not ok then
@@ -319,7 +342,11 @@ function M.restart(root, host, args)
     local st = inspect.state(root)
     if st.kind ~= "none" then M.stop(root, host, { force = has(args, "--force") }) end
     local ok, res = require("loomworks.daemon.launch").launch(root)
-    if not ok then host.die("could not start the workspace daemon (" .. tostring(res) .. ")", 1) end
+    if not ok then
+        M.record(root, "lw daemon restart: could not start the workspace daemon: " .. tostring(res))
+        host.die("could not start the workspace daemon (" .. tostring(res) .. ")", 1)
+    end
+    M.record(root, "lw daemon restart: started the workspace daemon (pid " .. tostring(res.handle.pid) .. ")")
     host.out("started the workspace daemon (pid " .. tostring(res.handle.pid) .. ")")
     return 0
 end

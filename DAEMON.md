@@ -175,6 +175,12 @@ Evidence from the daemon lifetime spike (2026-09), each with its fix and where
 - **Environment leakage** — `LOOMWORKS_LUA` and `LW_ROOT` forwarded to the
   daemon leak into the build children it spawns; strip loomworks-internal
   variables from task environments.
+- **Stale environment (step 3)** — the daemon keeps the environment of the
+  client that launched it (step 2 documents this; `lw daemon restart` picks
+  up a new one). Once builds are routed, a build must run with the
+  *requesting* client's environment (PATH, compiler and SDK variables), not
+  the daemon's: send the client environment with the request, or refuse to
+  route when it differs.
 - **Known limitations of recovery** (§19.5): on Windows an `lw` holder in
   another console cannot reliably be interrupted, so recovery goes straight to
   the kill; process start time needs per-OS code (`GetProcessTimes`, `/proc`,

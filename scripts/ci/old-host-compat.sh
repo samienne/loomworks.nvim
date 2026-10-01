@@ -146,6 +146,32 @@ for v in $hosts; do
     case "$LAST_OUT" in *"predates self-update"*) ok "v$v: health flags the pre-self-update host" ;;
       *) bad "v$v: health lacks the 'predates self-update' item" ;; esac
   fi
+  # The workspace daemon (spec §19.10): the host re-executes itself as
+  # `daemon run` with LOOMWORKS_LUA forwarded, so even the oldest host runs
+  # the same bundle as the daemon; stop then ends that process.
+  check "$lw" "v$v" "0" daemon restart
+  dpid="$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$T/proj/.nvim/loomworks.daemon.lock" 2>/dev/null)"
+  check "$lw" "v$v" "0" daemon status
+  case "$LAST_OUT" in *"answers      1 client"*) ok "v$v: the daemon answers" ;;
+    *) bad "v$v: daemon status: $LAST_OUT" ;; esac
+  check "$lw" "v$v" "0" daemon stop
+  if [ -n "$dpid" ]; then
+    gone=no
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if [ "$os" = windows ]; then
+        tasklist //FI "PID eq $dpid" 2>/dev/null | grep -q " $dpid " || { gone=yes; break; }
+      else
+        kill -0 "$dpid" 2>/dev/null || { gone=yes; break; }
+      fi
+      sleep 0.5
+    done
+    if [ "$gone" = yes ]; then ok "v$v: daemon pid $dpid exited"; else
+      bad "v$v: daemon pid $dpid still running"
+      if [ "$os" = windows ]; then taskkill //F //T //PID "$dpid" >/dev/null 2>&1; else kill -9 "$dpid"; fi
+    fi
+  else
+    bad "v$v: no daemon lock after restart"
+  fi
   cd "$repo" || exit 1
 done
 

@@ -9,6 +9,9 @@
 #   - concurrent `lw daemon run`s leave exactly one daemon (the others exit 3);
 #   - `lw daemon kill`, and a suspended daemon: `stop` reports it not
 #     responding, `stop --force` recovers (POSIX: SIGSTOP);
+#   - in `runtime-mode daemon` a workspace command starts it (not `lw status`,
+#     `--no-daemon`, CI) and returns at once; the next one reuses it;
+#   - it exits when its workspace is removed and after the idle timeout;
 #   - no daemon process is left running at the end.
 #
 #   LW=<path to lw> bash scripts/ci/daemon-e2e.sh
@@ -123,6 +126,45 @@ if [ "$os" != windows ]; then
   out=$(lw daemon stop --force 2>&1) || bad "stop --force failed: $out"
   if wait_gone "$spid"; then ok "stop --force recovered"; else bad "suspended pid $spid survived"; fi
 fi
+
+say "runtime-mode daemon: a workspace command starts it and returns at once"
+export LOOMWORKS_RUNTIME=daemon
+lw --no-daemon profiles >/dev/null
+[ ! -e "$LOCK" ] && ok "--no-daemon starts none" || bad "--no-daemon started a daemon"
+CI=true lw profiles >/dev/null
+[ ! -e "$LOCK" ] && ok "CI=true starts none" || bad "CI=true started a daemon"
+lw status >/dev/null
+[ ! -e "$LOCK" ] && ok "lw status starts none" || bad "lw status started a daemon"
+t0=$(now_ms)
+lw profiles | cat >/dev/null
+t1=$(now_ms)
+mpid=$(pid_of "$LOCK"); track "$mpid"
+if [ -n "$mpid" ] && alive "$mpid"; then ok "started daemon pid $mpid"; else bad "no daemon in daemon mode"; fi
+if [ $((t1 - t0)) -lt 15000 ]; then ok "lw profiles | cat returned in $((t1 - t0)) ms"; else bad "lw profiles | cat took $((t1 - t0)) ms"; fi
+t0=$(now_ms); lw profiles | cat >/dev/null; t1=$(now_ms)
+[ "$(pid_of "$LOCK")" = "$mpid" ] && ok "next command reused it ($((t1 - t0)) ms)" || bad "next command started another daemon"
+logf=$(ls "$TMP"/data/daemon/logs/*.log 2>/dev/null | head -1)
+grep -q "launched the workspace daemon" "$logf" 2>/dev/null && ok "runtime log records the launch" || bad "no launch in the runtime log ($logf)"
+
+say "the daemon exits when its workspace is removed"
+WS2="$TMP/ws2"; mkdir -p "$WS2"; printf '{"projects":{}}\n' > "$WS2/loomworks.json"
+(cd "$WS2" && "$LW" profiles >/dev/null)
+rpid=$(pid_of "$WS2/.nvim/loomworks.daemon.lock"); track "$rpid"
+rm -rf "$WS2"
+i=0; while alive "$rpid" && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
+if ! alive "$rpid"; then ok "pid $rpid exited after its root was removed"; else bad "pid $rpid outlived its workspace"; fi
+
+say "the daemon exits after the idle timeout"
+lw daemon stop >/dev/null
+wait_gone "$mpid" || bad "stop left $mpid"
+mkdir -p "$TMP/config/loomworks"
+printf '{"daemon-idle-timeout":"3s"}\n' > "$TMP/config/loomworks/config.json"
+lw profiles >/dev/null
+ipid=$(pid_of "$LOCK"); track "$ipid"
+i=0; while alive "$ipid" && [ $i -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+if ! alive "$ipid"; then ok "idle daemon pid $ipid exited by itself"; else bad "idle daemon $ipid kept running"; fi
+[ ! -e "$LOCK" ] && [ ! -e "$HANDLE" ] && ok "idle exit removed its files" || bad "idle exit left files"
+unset LOOMWORKS_RUNTIME
 
 say "no daemon left running"
 left=""

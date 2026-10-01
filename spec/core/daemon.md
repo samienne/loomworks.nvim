@@ -32,10 +32,10 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 ### 19.1 Runtime modes
 
 *Status: master for the transition values — the host setting `runtime-mode`
-(`in-process` | `daemon`), `LOOMWORKS_RUNTIME` and the editor option
-`runtime.mode` (`daemon/runtime.lua`; the editor's is informational until
-§19.19 step 4); the shared/attached selection lands with the launch (§19.10);
-the end-state values future.*
+(`in-process` | `daemon`), `LOOMWORKS_RUNTIME`, the editor option
+`runtime.mode` (informational until §19.19 step 4) — and the selection of
+attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
+(`daemon/runtime.lua`); the end-state values future.*
 
 A command runs its operation in one of two ways:
 
@@ -314,9 +314,10 @@ commit. This is the same class of residual race as §2.7 "Remaining race".
 *Status: master for build-directory, device and file-save locks (B, D, F): the
 record, the classification, the state recovery, `--break-locks` and
 `lw unlock --force`; the operation lock O (step 1 of §19.19); the runtime
-lock R (`lw daemon stop --force` / `kill`, `daemon/command.lua`). Until the
-runtime log (§19.10) exists, kills and forced unlocks are recorded in the
-workspace log.*
+lock R (`lw daemon stop --force` / `kill`, `daemon/command.lua`; in `daemon`
+mode a workspace command given `--break-locks` recovers a hung daemon the same
+way before relaunching it). Kills and forced unlocks are recorded in the
+runtime log (§19.10).*
 
 A crashed or killed process must never leave a workspace stuck, and a hung one
 must be recoverable with one command. These rules apply uniformly to every lock
@@ -572,9 +573,11 @@ other.
 
 ### 19.9 Version handshake
 
-*Status: master for the comparison and the idle / busy / newer decisions
-(`daemon/version.lua`, `daemon/ensure.lua`); applied by every workspace
-command once the launch is wired in (§19.10).*
+*Status: master (`daemon/version.lua`, `daemon/ensure.lua`), applied by every
+workspace command in `daemon` mode. During the transition a version-bypass
+run is the in-process path, and a daemon with newer schemas is reported in
+one line and not used — the command itself still runs in-process, where the
+file-level checks of §2.7 apply.*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -605,9 +608,16 @@ it; the client refuses with the update message of §2.7 "Reading a newer file".
 
 ### 19.10 Launch
 
-*Status: master for the recipe (`daemon/launch.lua`, used by
-`lw daemon restart`); launching from workspace commands and the runtime log
-land with the rest of §19.19 step 2.*
+*Status: master (`daemon/launch.lua`, `daemon/ensure.lua`,
+`daemon/rlog.lua`). In `daemon` mode the workspace commands launch — the
+commands that need no workspace (`status`, `health`, `pull`, `worktree`,
+`settings`, `help`, `daemon …`) and the recovery commands (`trust`, `nuke`,
+`unlock`) never do; the `Runtime` row says the daemon "starts on the next
+command". The ensure step of a command waits about a second per step at most
+(connect + handshake, `ping`), and for a daemon still starting at most about
+a second, once, before running without it. A `lw daemon run` that finds the runtime lock
+held exits with status 3, which the launching client reads as "another daemon
+won".*
 
 A client that finds no live daemon (no handle, a stale handle, or a lock whose
 holder is gone) launches `<own executable> daemon run --root <root>`:
@@ -636,9 +646,10 @@ exit, all clients connect to the winner.
 
 ### 19.11 Lifetime
 
-*Status: master for exit on `stop` / `retire` / lost lock and the commands
-(`lw daemon status|stop|restart|kill|run`); the keepalive, idle and root rules
-land with the rest of §19.19 step 2.*
+*Status: master (`daemon/server.lua`, `daemon/command.lua`). A `lw` command
+connects for a moment (handshake, `ping`) and leaves; the keepalive rule
+applies to every authenticated connection. A `retire`d daemon exits when its
+last authenticated client disconnects (there are no tasks in step 2).*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a

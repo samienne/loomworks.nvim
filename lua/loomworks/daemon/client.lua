@@ -143,7 +143,9 @@ end
 function M.session(endpoint, opts)
     local res
     M.connect(endpoint, opts, function(c, e, d) res = { c, e, d } end)
-    vim.wait((opts and opts.timeout_ms or M.TIMEOUT_MS) + 1000, function() return res ~= nil end, 5)
+    -- The connect callback reports a timeout itself; the extra margin only
+    -- covers its own scheduling.
+    vim.wait((opts and opts.timeout_ms or M.TIMEOUT_MS) + 200, function() return res ~= nil end, 5)
     if not res then return nil, M.ERR_TIMEOUT end
     return res[1], res[2], res[3]
 end

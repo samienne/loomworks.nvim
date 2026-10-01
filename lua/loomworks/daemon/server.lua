@@ -43,8 +43,12 @@ local M = {}
 --- launching client connects to the holder instead of failing).
 M.EXIT_HELD = 3
 
---- Heartbeat period of the handle / lost-lock check.
+--- Heartbeat period of the handle / lost-lock / lifetime checks.
 M.TICK_MS = 5000
+--- Keepalive interval (§19.11): a connection silent for three is dropped.
+M.KEEPALIVE_MS = 30000
+--- Idle timeout default (§19.11, setting `daemon-idle-timeout`).
+M.IDLE_SECONDS = 3600
 --- An unauthenticated connection is closed after this long (§19.8).
 M.AUTH_TIMEOUT_MS = 5000
 
@@ -76,6 +80,8 @@ function M.new(root, opts)
     local hb = env_ms("LW_TEST_HEARTBEAT_MS")
     if hb then require("loomworks.build_lock").HEARTBEAT_MS = hb end
     self.auth_timeout_ms = opts.auth_timeout_ms or env_ms("LW_TEST_DAEMON_AUTH_MS") or M.AUTH_TIMEOUT_MS
+    self.keepalive_ms = opts.keepalive_ms or env_ms("LW_TEST_DAEMON_KEEPALIVE_MS") or M.KEEPALIVE_MS
+    self.idle_seconds = opts.idle_seconds or M.IDLE_SECONDS
     self.conns = {}
     self.n_clients = 0
     self.busy = false
@@ -173,6 +179,10 @@ function Server:start()
     end
     self.listener, self.address = server, addr
     self.candidates = endpoint._posix_candidates(self.root)
+    -- The socket file this daemon bound (POSIX): removed on exit only while
+    -- it is still that file.
+    local sst = uv.fs_lstat(addr)
+    self.sock_ino = sst and sst.type == "socket" and sst.ino or nil
     self:_write_handle()
     self.timer = uv.new_timer()
     self.timer:start(self.tick_ms, self.tick_ms, function() self:_guard(self._tick) end)
@@ -201,11 +211,37 @@ end
 --- The heartbeat (§19.2, §19.6; lifetime checks of §19.11 via `lifetime`).
 function Server:_tick()
     if self.stopped then return end
+    -- Root removed (§19.11): checked first — its lock went with it.
+    local rst = uv.fs_stat(self.root)
+    if not rst or rst.type ~= "directory" then
+        return self:stop("the workspace root was removed", 0)
+    end
     if not rlock.still_ours(self.R) then
         return self:_lost_lock()
     end
     if not handle.touch(self.root) then self:_write_handle() end
-    if self.lifetime then self:lifetime() end
+    self:lifetime()
+end
+
+--- The lifetime rules of §19.11 checked on every tick: a connection silent
+--- for three keepalive intervals is dropped as half-open; with no connection,
+--- no running task and no request for the idle timeout, the daemon exits.
+function Server:lifetime()
+    local now = uv.now()
+    for conn in pairs(self.conns) do
+        if conn.authed and now - conn.last_seen > 3 * self.keepalive_ms then
+            self:_close(conn, "silent for three keepalive intervals")
+        end
+    end
+    if self.stopped then return end
+    -- Idle only with no connection at all: one still authenticating (bounded
+    -- by the authentication timeout) is a client on its way in.
+    if self.n_clients == 0 and not self.busy and next(self.conns) == nil then
+        local since = math.max(self.idle_since or 0, self.last_request or 0)
+        if os.time() - since >= self.idle_seconds then
+            self:stop(string.format("idle for %ds", self.idle_seconds), 0)
+        end
+    end
 end
 
 --- R was reclaimed or removed while this process held it: it has lost
@@ -238,7 +274,12 @@ function Server:stop(reason, code)
     end
     if rlock.still_ours(self.R) then
         handle.remove(self.root, { pid = self.pid, start_time = self.start_time })
-        endpoint.cleanup(self.root, self.address, self.candidates)
+        endpoint.cleanup(self.root, self.address, self.candidates, self.sock_ino)
+    elseif not uv.fs_stat(self.root) then
+        -- The workspace (and R with it) is gone: remove the socket this
+        -- daemon bound — only while the file at its path is still that one
+        -- (the inode recorded at bind), never a successor's.
+        endpoint.cleanup(self.root, self.address, self.candidates, self.sock_ino)
     end
     rlock.release(self.R)
     self.exit(code or 0)
@@ -279,6 +320,7 @@ function Server:_on_connection(err)
     end
     local conn = { sock = sock, decoder = protocol.new_decoder(protocol.PREAUTH_MAX), state = "new",
         last_seen = uv.now() }
+    self.last_request = os.time()
     self.conns[conn] = true
     conn.auth_timer = uv.new_timer()
     conn.auth_timer:start(self.auth_timeout_ms, 0, function()

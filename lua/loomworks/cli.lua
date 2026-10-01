@@ -1757,6 +1757,8 @@ function M.cmd_unlock(ws, args, root)
     end
     if not info.stale then
       errw("lw: forcing an ACTIVE device lock (" .. device_lock.holder(info, device_serial) .. " ago)\n")
+      M._record_recovery(root or (ws and ws.root), "lw unlock --device: forced the active device lock of "
+        .. device_serial .. " held by pid " .. tostring(info.pid))
     end
     device_lock.force(device_serial)
     out("unlocked device " .. device_serial)
@@ -1841,6 +1843,8 @@ function M._unlock_workspace(root, force, quiet)
     .. "without stopping it — it may still be running and writing\n", lock_record.holder_text(info),
     tostring(info.pid or "?"), lock_record.same_host(info) and "" or (" on " .. tostring(info.host)),
     info.state))
+  M._record_recovery(root, "lw unlock --force: removed the workspace operation lock held by pid "
+    .. tostring(info.pid) .. " (" .. tostring(info.state) .. ")")
   build_lock.force_path(path)
   out("unlocked the workspace operation lock")
   return 0
@@ -1910,8 +1914,8 @@ function M._unlock_build_dirs(ws, all, name, force)
           .. "stopping it — it may still be running and writing there\n", shown,
           lock_record.holder_text(info), tostring(info.pid or "?"),
           lock_record.same_host(info) and "" or (" on " .. tostring(info.host)), info.state))
-        pcall(ws._core._deps.log.info, ws._core._deps.log, "%s",
-          "lw unlock --force: removed the lock of " .. shown .. " held by pid " .. tostring(info.pid))
+        M._record_recovery(ws.root, "lw unlock --force: removed the lock of " .. shown .. " held by pid "
+          .. tostring(info.pid) .. " (" .. tostring(info.state) .. ")")
         gone = build_lock.force_path(path)
       else
         refused = refused + 1
@@ -6864,6 +6868,7 @@ local function effective_config_default(key)
     local v = os.getenv(rt.ENV)
     return (rt.is_valid(v) and v) or rt.DEFAULT
   end
+  if key == "daemon-idle-timeout" then return "1h" end
   return nil
 end
 
@@ -6901,6 +6906,9 @@ function M.cmd_settings(sub, key, value)
     end
     if key == "runtime-mode" and not require("loomworks.daemon.runtime").is_valid(value) then
       die("invalid runtime-mode '" .. value .. "' — use 'in-process' or 'daemon'")
+    end
+    if key == "daemon-idle-timeout" and not require("loomworks.daemon.runtime").parse_duration(value) then
+      die("invalid daemon-idle-timeout '" .. value .. "' — use seconds, or a number with s, m or h (30m, 1h)")
     end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
@@ -7546,6 +7554,30 @@ function M._runtime_row(root)
     return inspect.row(inspect.state(root), mode, require("loomworks.daemon.version").identity())
   end)
   return ok and row or nil
+end
+
+--- Workspace commands that never start or contact the daemon (besides the
+--- ones dispatched before the workspace guard: status, health, pull, worktree,
+--- settings, help, daemon …).
+M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
+
+--- Keep the workspace daemon running before a workspace command (spec §19.1,
+--- §19.10; loomworks.daemon.ensure). Never fails the command.
+--- @param root string
+function M._ensure_daemon(root)
+  pcall(function()
+    require("loomworks.daemon.ensure").ensure(root, {
+      config = read_config(), flag = M._no_daemon, note = note,
+      log = require("loomworks.daemon.rlog").writer(root),
+    })
+  end)
+end
+
+--- Record a kill or forced unlock in the runtime log (spec §19.5, §19.10).
+--- @param root string|nil
+--- @param line string
+function M._record_recovery(root, line)
+  if root then require("loomworks.daemon.rlog").write(root, line) end
 end
 
 --- The output helpers loomworks.daemon.command uses.
@@ -9404,7 +9436,7 @@ function M.cmd_complete(cword, words)
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
       emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes",
-        "runtime-mode" })
+        "runtime-mode", "daemon-idle-timeout" })
     end
     if n == 3 and sub == "set" and a[3] == "release-notes" then emit({ "on", "off" }) end
     if n == 3 and sub == "set" and a[3] == "runtime-mode" then emit({ "in-process", "daemon" }) end
@@ -10017,9 +10049,37 @@ Runtime mode: `lw settings set runtime-mode in-process|daemon`, or the
 LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
 `Runtime` row, read from the files below only.
 
+In `daemon` mode every workspace command (not `lw status`, `health`, `help`,
+`settings`, `pull`, `worktree`, `trust`, `nuke`, `unlock`, `daemon …`) first
+makes sure the daemon runs: it connects (and pings it, waiting about a second
+at most) or starts one in the background, then runs exactly as before — no
+operation goes through the daemon yet. A daemon of another lw version is
+replaced when idle; a busy one is asked to exit when idle and the command runs
+without it (one line says so). If it cannot start, does not answer, or is
+still starting, one line says so and the command runs without it. A daemon
+that stopped responding is named with the recovery command; a command given
+`--break-locks` recovers it (asks it to stop, kills it, starts a fresh one).
+These never start or use it: `--no-daemon`, LOOMWORKS_NO_DAEMON=1, and
+CI=true (LOOMWORKS_NO_DAEMON=0 overrides CI). CI is detected by the `CI`
+variable only: Jenkins and Azure Pipelines do not set it — set
+LOOMWORKS_NO_DAEMON=1 there.
+
+A started daemon keeps the environment of the command that started it (its
+PATH, compiler variables, …) for its whole life; restart it
+(`lw daemon restart`) after changing them.
+
+Lifetime: the daemon runs while a client is connected (a connection silent for
+three 30 s keepalive intervals is dropped) and exits after
+`daemon-idle-timeout` without any (setting; seconds or 30m / 1h; default 1h),
+when the workspace directory is removed, or when its lock is taken over.
+
 Files: .nvim/loomworks.daemon.lock (the runtime lock: one runtime per
-workspace) and .nvim/loomworks.daemon.json (the handle a client finds the
-daemon by).]],
+workspace), .nvim/loomworks.daemon.json (the handle a client finds the daemon
+by), and the runtime log <data dir>/daemon/logs/<hash>.log (one per
+workspace, 2 MB + one rotated .1): the daemon's starts, stops and refusals,
+every launch, and every kill and forced unlock (`lw daemon kill`,
+`--break-locks`, `lw unlock --force`). <data dir> is %LOCALAPPDATA%\loomworks,
+$XDG_DATA_HOME/loomworks or ~/.local/share/loomworks (LOOMWORKS_DATA_DIR).]],
   unlock = [[lw unlock <profile> | <build dir> | --workspace | --journal | --all [--force] | --device <serial>
 
 Clear build-directory locks. loomworks serializes configure/build/clean on a
@@ -10044,7 +10104,8 @@ heartbeat) is reported with the recovery command, `<command> --break-locks`.
                the same lock, and only resets build state.
   --force      also remove the lock of a holder that is running (or hung, or on
                another host) — WITHOUT stopping it: it may still be running and
-               writing there. Printed loudly, recorded in .nvim/loomworks.log.
+               writing there. Printed loudly, recorded in the runtime log
+               (`lw help daemon`).
   --device <serial>
                clear the per-user DEVICE lock of that serial (remote runs hold
                it for their whole duration; see `lw help device`)
@@ -11416,6 +11477,8 @@ for custom variants.
 
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
+--no-daemon: this command neither starts nor uses the workspace daemon
+(`lw help daemon`).
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile (and never picks a sole profile)
 — pass the profile explicitly.
@@ -11499,6 +11562,9 @@ local function main()
       create_intent = "local+shared"
     elseif v == "--local" then
       create_intent = "local"
+    elseif v == "--no-daemon" then
+      -- Attached (spec §19.1): launch and use no daemon for this command.
+      M._no_daemon = true
     elseif v == "--dev" or v:sub(1, 6) == "--dev=" or v == "--no-pin" then
       -- Source selection and pin redirect are resolved by the host bootstrap
       -- (main.lua) before we run; ignore these here so the nvim-hosted path
@@ -11606,6 +11672,13 @@ local function main()
   -- runs from elsewhere (the luvi host runs from the bundle dir).
   -- `root_info.submodule` is set when the root came from a superproject.
   local root, root_info = find_root(os.getenv("LW_ROOT"))
+  -- Every kill and forced unlock is recorded in the workspace's runtime log
+  -- (spec §19.5, §19.10).
+  if root then
+    pcall(function()
+      require("loomworks.lock_break").log = require("loomworks.daemon.rlog").writer(root)
+    end)
+  end
 
   -- `daemon` manages the workspace runtime (spec §19.11); it never loads the
   -- workspace, and `status` works outside one.
@@ -11669,6 +11742,13 @@ local function main()
 
   -- Workspace commands.
   if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
+
+  -- In `runtime-mode daemon` every workspace command keeps the workspace
+  -- daemon running (spec §19.1, §19.19 step 2); nothing is routed to it yet.
+  -- Not the recovery commands: `trust` / `nuke` repair a refused workspace
+  -- and `unlock` clears stuck locks — none of them may wait on (or start) a
+  -- daemon.
+  if not M.NO_DAEMON_COMMANDS[command] then M._ensure_daemon(root) end
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).
@@ -11751,10 +11831,6 @@ local function main()
   end
 
   local ws = load_workspace(root)
-  -- Every kill of `--break-locks` is also recorded in the workspace log.
-  require("loomworks.lock_break").log = function(line)
-    pcall(ws._core._deps.log.info, ws._core._deps.log, "%s", line)
-  end
   if command == "profiles" then
     finish(M.cmd_profiles(ws))
   elseif command == "build" then
