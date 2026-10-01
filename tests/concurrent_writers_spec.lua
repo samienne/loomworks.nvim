@@ -199,7 +199,9 @@ describe("concurrent writers (spec §2.7)", function()
     assert.is_true(cws:_save_cache())
     -- The editor reconciles the CLI's record, then the cache is deleted out
     -- from under it (another process reset everything).
-    ews:_on_file_changed(cache_mod.filepath(root), io_mod.read_file(cache_mod.filepath(root)))
+    -- (the workspace's own path spelling: on CI the temp root is an 8.3 short path
+    -- that the workspace resolves to its long form)
+    ews:_on_file_changed(cache_mod.filepath(ews.root), io_mod.read_file(cache_mod.filepath(root)))
     assert.equals("built", ews._profiles[1]:projects()[1]._config_unit.state_value)
     os.remove(cache_mod.filepath(root))
     assert.is_true(ews:_save_cache())
@@ -333,7 +335,7 @@ describe("writer version stamp (spec §2.7)", function()
     assert.is_false(ews:_save_cache())
     assert.equals(before, io_mod.read_file(path))
     -- The tracker delivering the change puts the workspace in the refused state.
-    ews:_on_file_changed(path, before)
+    ews:_on_file_changed(cache_mod.filepath(ews.root), before) -- the workspace's path spelling
     assert(vim.wait(15000, function() return core._state ~= "initializing" end, 10))
     assert.equals("uninitialized", core._state)
     assert.equals(before, io_mod.read_file(path))
