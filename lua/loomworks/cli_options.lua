@@ -141,6 +141,8 @@ M.COMMANDS = {
     default = NONE,
   },
   workspace = { subs = { rename = NONE }, aliases = { mv = "rename" }, default = NONE },
+  -- `lw daemon <sub>` (spec §19.11).
+  daemon = { subs = { status = NONE }, default = NONE },
   profile = {
     subs = {
       list = NONE, show = NONE, select = spec({ flags = { "--none" } }),

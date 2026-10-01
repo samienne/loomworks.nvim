@@ -31,8 +31,11 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 
 ### 19.1 Runtime modes
 
-*Status: future (the `runtime-mode` setting and `LOOMWORKS_RUNTIME` exist on
-#88 with values `in-process|daemon|auto`; re-cut).*
+*Status: master for the transition values — the host setting `runtime-mode`
+(`in-process` | `daemon`), `LOOMWORKS_RUNTIME` and the editor option
+`runtime.mode` (`daemon/runtime.lua`; the editor's is informational until
+§19.19 step 4); the shared/attached selection lands with the launch (§19.10);
+the end-state values future.*
 
 A command runs its operation in one of two ways:
 
@@ -66,9 +69,9 @@ of `no-daemon`.
 
 ### 19.2 One runtime per workspace: the runtime lock
 
-*Status: #88 (`daemon/lock.lua`, `.nvim/loomworks.daemon.lock`, held by the
-daemon for its lifetime); re-cut (attached runs, holder record, lost-lock
-exit).*
+*Status: master for the record and its reading (`daemon/rlock.lua`, the
+§19.5 record plus `mode`, `command`, `host_version`; read by the Runtime row);
+held by a daemon once the server lands (§19.19 step 2); attached runs future.*
 
 The **runtime lock** `<root>/.nvim/loomworks.daemon.lock` designates the one
 runtime of a workspace. It uses the build-directory lock primitive (§16.6): an
@@ -455,11 +458,16 @@ dangerous things.
 
 ### 19.6 Discovery: the handle file and the Runtime row
 
-*Status: #88 (`daemon/handle.lua`); re-cut (fields).*
+*Status: master — the handle format (`daemon/handle.lua`), the Runtime row
+and `lw daemon status` (files only); the daemon writing it lands with the
+server (§19.19 step 2).*
 
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
-endpoint: `{ pid, host, os, endpoint, protocol, lw_version, schemas = { user,
-cache }, session_generation, started_at, clients, busy, idle_since }`. It
+endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
+schemas = { user, cache }, session_generation, started_at, clients, busy,
+idle_since, lock_nonce }` (`start_time` is the daemon's process start time of
+§19.5, `lock_nonce` its runtime-lock record's nonce). A development build's
+`lw_version` is its source fingerprint (§19.9). It
 refreshes the file's modification time on its heartbeat and rewrites it when
 `clients`/`busy` change. Liveness is judged by the heartbeat, never by probing
 the pid (§16.6). The handle is **discovery only**: the runtime lock (§19.2)
@@ -478,7 +486,14 @@ Runtime   attached: lw build (pid 4242)
 Runtime   no daemon (starts on the next command)
 Runtime   in-process
 Runtime   stale daemon handle (pid 4242, 3h ago) — lw daemon stop clears it
+Runtime   daemon pid 4242 is not responding (no heartbeat for 2m) — lw daemon stop --force
+Runtime   daemon pid 4242 (starting)
+Runtime   unreadable daemon handle — lw daemon stop clears it
 ```
+
+`no daemon (starts on the next command)` is shown in `daemon` mode,
+`in-process` in `in-process` mode, when neither the runtime lock nor a handle
+exists.
 
 ### 19.7 Endpoint and access control
 

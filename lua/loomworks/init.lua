@@ -81,7 +81,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string, runtime?: { mode?: string } }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -94,6 +94,10 @@ function M.setup(opts)
     end
     if opts and opts.task_output_win then
         task_output_win = opts.task_output_win
+    end
+    if opts and type(opts.runtime) == "table" then
+        M._runtime_mode_config = opts.runtime.mode
+        M.runtime_mode() -- report an invalid value once, at setup
     end
 
     if opts and opts.log_level then
@@ -146,6 +150,23 @@ end
 --- @return string|false
 function M._auto_load_mode()
     return auto_load_mode
+end
+
+--- The configured runtime mode (spec §19.1, setup option `runtime.mode`).
+--- @type string|nil
+M._runtime_mode_config = nil
+
+--- The effective runtime mode (spec §19.1): `LOOMWORKS_RUNTIME` > the setup
+--- option `runtime.mode` > `in-process`. Informational during the transition:
+--- the editor connects to the daemon only from step 4 of §19.19, so the
+--- plugin runs in-process whatever this returns. An invalid value is reported
+--- and ignored.
+--- @return string mode
+function M.runtime_mode()
+    local runtime = require("loomworks.daemon.runtime")
+    local mode, _, warning = runtime.resolve(M._runtime_mode_config, { what = "runtime.mode" })
+    if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+    return mode
 end
 
 --- Get the merged active configuration set.
