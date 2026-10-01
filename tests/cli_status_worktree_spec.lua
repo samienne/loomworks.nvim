@@ -266,7 +266,10 @@ describe("lw status worktree hint (real git)", function()
         git(main, "commit", "-q", "-m", "init")
         git(main, "worktree", "add", "-q", wt)
 
-        local lines = cli._worktree_hint({ dir = wt })
+        -- Real git, but with the git-required probe budget (30 s) instead of
+        -- the hint's 1.5 s: on a loaded runner a timed-out probe would drop the
+        -- worktree lines asserted below. Still bounded, never a hang.
+        local lines = cli._worktree_hint({ dir = wt, git = cli._git_query_required })
         vim.fn.delete(base, "rf")
 
         local text = joined(lines)

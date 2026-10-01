@@ -84,19 +84,27 @@ describe("unknown commands (§16.7)", function()
   end)
 
   it("`lw status --check` outside a workspace fails the gate (exit 1), same page as plain status", function()
-    local plain = run_main({ "status" }, nows)
-    assert.equals(0, plain.exit_code)
-    local bare = run_main({}, nows)
-    assert.equals(0, bare.exit_code)
-    local r = run_main({ "status", "--check" }, nows)
-    assert.equals(1, r.exit_code)
-    assert.is_truthy(r.stdout:find("no workspace here", 1, true), r.stdout)
-    -- --check never changes what is rendered (§16.18). The git probe behind the
-    -- worktree hint is time-bounded (1.5 s): on a loaded CI runner one call can
-    -- time out ("git unavailable") while the next does not, which is not what
-    -- this compares — drop that line from both.
-    local function page(s) return (s:gsub("%(git unavailable[^\n]*%)\n", "")) end
-    assert.equals(page(plain.stdout), page(r.stdout))
+    -- The no-workspace page's worktree hint comes from a time-bounded (1.5 s)
+    -- real git probe; on a loaded CI runner one call can time out while the
+    -- next does not, changing the page. Pin the probe's answer ("not a git
+    -- repo") so every run renders the same page — what is compared here is
+    -- only whether --check changes the rendering.
+    local real = cli._main_worktree
+    cli._main_worktree = function() return nil, nil, "not-git" end
+    local ok, err = pcall(function()
+      local plain = run_main({ "status" }, nows)
+      assert.equals(0, plain.exit_code)
+      local bare = run_main({}, nows)
+      assert.equals(0, bare.exit_code)
+      assert.equals(plain.stdout, bare.stdout)
+      local r = run_main({ "status", "--check" }, nows)
+      assert.equals(1, r.exit_code)
+      assert.is_truthy(r.stdout:find("no workspace here", 1, true), r.stdout)
+      -- --check never changes what is rendered (§16.18).
+      assert.equals(plain.stdout, r.stdout)
+    end)
+    cli._main_worktree = real
+    if not ok then error(err, 0) end
   end)
 
   it("every dispatched command and alias is known; help spellings and host commands too", function()
@@ -123,7 +131,12 @@ describe("status overview (§16.18)", function()
   after_each(function() vim.fn.delete(root, "rf") end)
 
   it("the no-workspace page points at `lw help`; the shared hint (health's lead) does not", function()
-    local r = capture(function() cli.cmd_status(nil) end)
+    -- Pin the worktree probe (no real, time-bounded git call).
+    local real = cli._main_worktree
+    cli._main_worktree = function() return nil, nil, "not-git" end
+    local ok, r = pcall(capture, function() cli.cmd_status(nil) end)
+    cli._main_worktree = real
+    assert.is_true(ok, tostring(r))
     assert.is_truthy(r.stdout:find("lw help` for every command.", 1, true), r.stdout)
     local hint = table.concat(cli._worktree_hint({ git = function() return nil end }), "\n")
     assert.is_nil(hint:find("lw help", 1, true), hint)
@@ -205,9 +218,13 @@ describe("_main_has_working_copy (pull hint detection)", function()
     git("worktree", "add", "-q", wt, "-b", "feat")
     vim.fn.mkdir(main .. "/.nvim", "p")
     local u = assert(io.open(main .. "/.nvim/loomworks.user.json", "w")); u:write("{}"); u:close()
-    assert.is_true(cli._main_has_working_copy({ dir = wt }))
+    -- Real git, but with the git-required probe budget (30 s) instead of the
+    -- status probe's 1.5 s: on a loaded runner a timed-out probe reads as "no
+    -- main checkout" and would fail the positive assertion.
+    local git_q = cli._git_query_required
+    assert.is_true(cli._main_has_working_copy({ dir = wt, git = git_q }))
     vim.fn.delete(main .. "/.nvim", "rf")
-    assert.is_false(cli._main_has_working_copy({ dir = wt }))
+    assert.is_false(cli._main_has_working_copy({ dir = wt, git = git_q }))
     vim.fn.system({ "git", "-C", main, "worktree", "remove", "--force", wt })
     vim.fn.delete(wt, "rf")
     vim.fn.delete(main, "rf")
