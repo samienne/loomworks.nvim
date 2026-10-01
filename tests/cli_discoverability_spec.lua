@@ -91,8 +91,12 @@ describe("unknown commands (§16.7)", function()
     local r = run_main({ "status", "--check" }, nows)
     assert.equals(1, r.exit_code)
     assert.is_truthy(r.stdout:find("no workspace here", 1, true), r.stdout)
-    -- --check never changes what is rendered (§16.18).
-    assert.equals(plain.stdout, r.stdout)
+    -- --check never changes what is rendered (§16.18). The git probe behind the
+    -- worktree hint is time-bounded (1.5 s): on a loaded CI runner one call can
+    -- time out ("git unavailable") while the next does not, which is not what
+    -- this compares — drop that line from both.
+    local function page(s) return (s:gsub("%(git unavailable[^\n]*%)\n", "")) end
+    assert.equals(page(plain.stdout), page(r.stdout))
   end)
 
   it("every dispatched command and alias is known; help spellings and host commands too", function()
