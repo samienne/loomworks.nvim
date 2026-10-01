@@ -190,7 +190,10 @@ describe("ensure (§19.9 through a workspace command)", function()
         local notes, logs = {}, {}
         local o = { config = { ["runtime-mode"] = "daemon" }, note = function(l) notes[#notes + 1] = l end,
             log = function(l) logs[#logs + 1] = l end, launch = function() error("must not launch") end,
-            getenv = function() return nil end } -- never the runner's CI / LOOMWORKS_* variables
+            getenv = function() return nil end, -- never the runner's CI / LOOMWORKS_* variables
+            -- Client and server share this (loaded) process here: not a test
+            -- of the latency bound (see "review hardening of the ensure path").
+            step_ms = 30000 }
         for k, v in pairs(extra or {}) do o[k] = v end
         return ensure.ensure(root, o), table.concat(notes, "\n"), table.concat(logs, "\n")
     end
