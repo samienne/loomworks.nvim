@@ -945,7 +945,7 @@ local function run_spec(step, root, to_stderr)
   -- Resolve the program to an absolute path (never the cwd / a relative PATH
   -- entry) and, on Windows, add NoDefaultCurrentDirectoryInExePath=1 to the
   -- child env. An unresolvable program is reported, never spawned by name.
-  -- loomworks.build_run.spawn_spec (the shared headless build path); an
+  -- Shared with the daemon's runner (loomworks.build_run.spawn_spec); an
   -- empty env is dropped there (the child inherits ours, never a wiped PATH).
   local spec, herr = require("loomworks.build_run").spawn_spec(step, root)
   if not spec then
@@ -1087,8 +1087,8 @@ local function resolve_project(ws, name)
     (next(names) and table.concat(names, ", ") or "(none)"))
 end
 
--- The headless build-step logic (plan/gates/record) lives in
--- loomworks.build_run, host-neutral so any runner can share it.
+-- The headless build-step logic shared with the daemon's runner (one build
+-- path, spec §19.12): plan/gates/record live in loomworks.build_run.
 M._record_step = function(ws, step, ok) return require("loomworks.build_run").record(ws, step, ok) end
 M._runs_batch_file = function(cmd) return require("loomworks.build_run").runs_batch_file(cmd) end
 
@@ -1170,8 +1170,9 @@ end
 ---   verbose prints each step's command line + cwd (always logged, §16.4).
 local function run_build_steps(profile, ws, opts)
   opts = opts or {}
-  -- The plan/gate/record sequence lives in loomworks.build_run (host-neutral);
-  -- only the spawn (blocking here) and the reporting (die) are this host's.
+  -- The SAME plan/gate/record sequence the daemon's runner uses
+  -- (loomworks.build_run); only the spawn (blocking here) and the reporting
+  -- (die) are this host's.
   local build_run = require("loomworks.build_run")
   local steps, plan_err = build_run.plan(profile, {
     for_test = opts.for_test,

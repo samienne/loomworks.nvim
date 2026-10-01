@@ -1,7 +1,8 @@
---- loomworks/build_run.lua — the headless profile-build step logic used by
---- the in-process `lw build` (cli.lua `run_build_steps`). It is kept free of
---- terminal I/O and process exit so another runner (the planned workspace
---- daemon, which spawns asynchronously and streams) can drive the SAME steps:
+--- loomworks/build_run.lua — the headless profile-build step logic, shared by
+--- the in-process `lw build` (cli.lua `run_build_steps`, synchronous) and the
+--- daemon's build runner (daemon/runner.lua, asynchronous + streamed).
+---
+--- There is ONE build path: both runners call these functions in the same order
 ---
 ---   lock every build dir → plan (gate + module plan + build request)
 ---   → per step: before_step (conflict gate, full-reconfigure reset)
@@ -10,11 +11,11 @@
 ---               after_step (record result, populate artifacts)
 ---               failure_message on a nonzero exit
 ---
---- A runner differs only in HOW a step is spawned (blocking vs streamed) and
---- how a refusal is reported (die vs a streamed error). Everything here returns
---- values/errors instead of exiting; nothing here touches the terminal. Spec
---- §16.4 (build), §5.9/§16.28 (artifact conflicts), §5.1/§8.1 (configure
---- record, full reconfigure), §5.10 (program resolution).
+--- and differ only in HOW a step is spawned (blocking vs streamed) and how a
+--- refusal is reported (die vs a task-stream error). Everything here returns
+--- values/errors instead of exiting, so the daemon can stream them; nothing
+--- here touches the terminal. Spec §16.4 (build), §5.9/§16.28 (artifact
+--- conflicts), §5.1/§8.1 (configure record, full reconfigure), §19.12 (daemon).
 
 local M = {}
 
