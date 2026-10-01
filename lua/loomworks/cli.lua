@@ -1298,6 +1298,21 @@ function M._daemon_workspace_trusted(root)
   return true
 end
 
+--- The one stderr line a build delegated to the daemon prints before its
+--- streamed output (spec §19.12): `lw: building through the workspace daemon
+--- (pid <n>)` — the parenthetical only when the handle records a pid. Dim on a
+--- color-capable stderr, plain otherwise (`note` renders the markers).
+--- @param pid integer|nil the daemon's pid from its handle
+--- @param color? boolean override the stderr color probe (tests)
+--- @return string
+function M._delegation_line(pid, color)
+  local line = "lw: building through the workspace daemon"
+  if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
+  if color == nil then color = M._stderr_supports_color() end
+  if color then return term.sgr("2") .. line .. term.sgr("0") end
+  return line
+end
+
 --- Delegate a build to the daemon when the runtime mode resolves to daemon/auto
 --- and a compatible daemon is (or can be made) reachable; stream its output and
 --- return its exit code. Returns nil to mean "not delegated — run in-process"
@@ -1348,6 +1363,7 @@ function M._maybe_delegate_build(root, args, opts)
   if not reachable then
     local spawn = opts.spawn or M._spawn_daemon_if_possible
     reachable = spawn(root)
+    if reachable then st = detect(root) or {} end -- the spawned daemon's handle
   end
   if not reachable then
     note("lw: no daemon reachable; building in-process")
@@ -1380,6 +1396,9 @@ function M._maybe_delegate_build(root, args, opts)
         if aerr then fallback = aerr; done = true; proj:close(); return end
         accepted, my_task = true, task_id
         key = reply and reply.profile_key or key
+        -- While the daemon is experimental, say once, before its streamed
+        -- output, that this build runs in the daemon (never for in-process).
+        note(M._delegation_line(st.info and st.info.pid))
       end,
       on_output = function(stream, text)
         if stream == "stderr" then io.stderr:write(text) else io.write(text) end
@@ -6876,29 +6895,36 @@ end
 -- on. Enable it once via LuaJIT FFI (kernel32) — available on both hosts (nvim
 -- and the luvi luajit shim). Memoized, Windows-only, and every step is
 -- pcall-guarded: no ffi, a redirected stdout, or a denied syscall all yield
--- false and we stay plain. Never touches kernel32 off Windows.
-local _win_vt_memo -- nil = undecided, then true/false
-local function windows_vt_enabled()
-  if _win_vt_memo ~= nil then return _win_vt_memo end
+-- false and we stay plain. Never touches kernel32 off Windows. `fd` is 1
+-- (stdout, the default) or 2 (stderr); each handle is probed once.
+local _win_vt_memo = {} -- fd -> true/false once decided
+local _win_vt_cdef = false
+local function windows_vt_enabled(fd)
+  fd = fd or 1
+  if _win_vt_memo[fd] ~= nil then return _win_vt_memo[fd] end
   local enabled = false
   pcall(function()
     local ffi = require("ffi")
     if ffi.os ~= "Windows" then return end
-    ffi.cdef([[
-      void* GetStdHandle(unsigned long nStdHandle);
-      int GetConsoleMode(void* hConsoleHandle, unsigned long* lpMode);
-      int SetConsoleMode(void* hConsoleHandle, unsigned long dwMode);
-    ]])
-    local STD_OUTPUT_HANDLE = 0xFFFFFFF5 -- (DWORD)-11
+    if not _win_vt_cdef then
+      ffi.cdef([[
+        void* GetStdHandle(unsigned long nStdHandle);
+        int GetConsoleMode(void* hConsoleHandle, unsigned long* lpMode);
+        int SetConsoleMode(void* hConsoleHandle, unsigned long dwMode);
+      ]])
+      _win_vt_cdef = true
+    end
+    -- STD_OUTPUT_HANDLE = (DWORD)-11, STD_ERROR_HANDLE = (DWORD)-12
+    local std = (fd == 2) and 0xFFFFFFF4 or 0xFFFFFFF5
     local ENABLE_VT = 0x0004 -- ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    local h = ffi.C.GetStdHandle(STD_OUTPUT_HANDLE)
+    local h = ffi.C.GetStdHandle(std)
     local mode = ffi.new("unsigned long[1]")
     if ffi.C.GetConsoleMode(h, mode) == 0 then return end -- redirected / not a console
     if ffi.C.SetConsoleMode(h, bit.bor(tonumber(mode[0]), ENABLE_VT)) == 0 then return end
     enabled = true
   end)
-  _win_vt_memo = enabled
-  return _win_vt_memo
+  _win_vt_memo[fd] = enabled
+  return enabled
 end
 
 --- Whether to color stdout: NO_COLOR (the convention) unset AND stdout is a
@@ -6913,6 +6939,17 @@ local function stdout_supports_color()
   return true
 end
 M._stdout_supports_color = stdout_supports_color
+
+--- The stderr counterpart of `stdout_supports_color` (same NO_COLOR / tty /
+--- Windows-VT gates, probed on fd 2) — for the dim one-line notes `lw` writes
+--- to stderr, e.g. the daemon-delegation line (spec §19.12).
+function M._stderr_supports_color()
+  if os.getenv("NO_COLOR") then return false end
+  local ok, h = pcall(uv.guess_handle, 2)
+  if not ok or h ~= "tty" then return false end
+  if is_windows() then return windows_vt_enabled(2) end
+  return true
+end
 
 --- Best-effort width of the output terminal, in columns. A real stdout tty is
 --- measured via libuv (`new_tty` + `get_winsize`); a redirected / piped /
@@ -10299,9 +10336,12 @@ Runtime mode: `lw settings set runtime-mode in-process|daemon|auto`, or
 LOOMWORKS_RUNTIME (wins). With `daemon`/`auto`, `lw build <profile> [-- args]`
 is sent to a running daemon (one is started when the host can) and its output
 streamed back; any other build form, an untrusted working copy (`lw help
-trust`), or an unreachable daemon builds in-process. The daemon runs the same
-build steps as an in-process build; interrupting `lw build` (Ctrl-C) stops it,
-and so does stopping the daemon.]],
+trust`), or an unreachable daemon builds in-process. A build the daemon runs
+first prints one line on stderr, `lw: building through the workspace daemon
+(pid <n>)`; an in-process build prints no such line. Either way a success ends
+with `BUILD OK: <profile>`. The daemon runs the same build steps as an
+in-process build; interrupting `lw build` (Ctrl-C) stops it, and so does
+stopping the daemon.]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 

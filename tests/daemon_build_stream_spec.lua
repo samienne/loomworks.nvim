@@ -132,20 +132,33 @@ describe("cli build delegation seam", function()
         assert.is_nil(code)
     end)
 
-    it("runs in-process for options or profile forms the daemon does not carry", function()
+    it("runs in-process for options or profile forms the daemon does not carry — silently", function()
         local function never() error("must not reach the daemon") end
-        for _, argv in ipairs({
-            { "build" },                                  -- no profile: in-process resolves it
-            { "build", "2" },                             -- numbered profile
-            { "build", "Debug:t", "--target", "app" },
-            { "build", "Debug:t", "--force" },
-            { "build", "Debug:t", "--reconfigure" },
-            { "build", "Debug:t", "-v" },
-        }) do
-            assert.is_nil(cli._maybe_delegate_build("/ws", argv, {
-                mode = "daemon", trusted = always_trusted, detect = never, connect = never, spawn = never,
-            }), table.concat(argv, " "))
-        end
+        local o_stderr, err_buf = io.stderr, {}
+        io.stderr = { write = function(_, t) err_buf[#err_buf + 1] = t end, flush = function() end }
+        local ok, e = pcall(function()
+            for _, argv in ipairs({
+                { "build" },                                  -- no profile: in-process resolves it
+                { "build", "2" },                             -- numbered profile
+                { "build", "Debug:t", "--target", "app" },
+                { "build", "Debug:t", "--force" },
+                { "build", "Debug:t", "--reconfigure" },
+                { "build", "Debug:t", "-v" },
+            }) do
+                assert.is_nil(cli._maybe_delegate_build("/ws", argv, {
+                    mode = "daemon", trusted = always_trusted, detect = never, connect = never, spawn = never,
+                }), table.concat(argv, " "))
+            end
+            -- An untrusted workspace falls back the same way.
+            assert.is_nil(cli._maybe_delegate_build("/ws", { "build", "Debug:t" }, {
+                mode = "daemon", trusted = function() return false end,
+                detect = never, connect = never, spawn = never,
+            }))
+        end)
+        io.stderr = o_stderr
+        assert.is_true(ok, tostring(e))
+        -- No delegation notice (spec §19.12): nothing at all is printed.
+        assert.equals("", table.concat(err_buf))
     end)
 
     it("never delegates an untrusted workspace (spec §17) — not even a detect/spawn", function()

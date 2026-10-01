@@ -329,6 +329,19 @@ machine would refuse (§17.4): the daemon loads its workspace through the same
 trust gate (§17) and would refuse it too, so the client falls back to
 in-process, which reports the refusal with its remedies (§17.10).
 
+**Delegation notice (while experimental).** A build the daemon accepted prints
+exactly ONE line on the client's stderr, before any of its streamed output:
+`lw: building through the workspace daemon (pid <n>)` — the parenthetical only
+when the daemon's handle records its process id. It follows the CLI's hint
+styling: dim on a color-capable terminal, plain (ASCII, no escape sequences) on a
+pipe or redirect. A build that runs in-process prints nothing new — including
+every fallback above (an undelegable form, an untrusted workspace, an
+unreachable daemon) and a build the daemon does not accept (its workspace not
+loaded, its profile unresolved). The outcome line is unchanged: a successful
+delegated build ends with the same `BUILD OK: <profile>` line on stdout as an
+in-process build. The notice exists so a user who opted into the experimental
+runtime can tell which path ran; it is removed if the daemon becomes the default.
+
 **One build path.** A daemon build MUST be **behaviorally identical** to the
 in-process build it replaces, not merely a spawn of the same commands: both run
 the SAME headless build-step sequence, differing only in how a step is spawned

@@ -454,7 +454,8 @@ describe("daemon build lifecycle", function()
 end)
 
 describe("cli delegation client", function()
-    local function delegate(fake_build)
+    local DELEGATION = "lw: building through the workspace daemon"
+    local function delegate(fake_build, info)
         local fake_proj = { build = fake_build, close = function() end }
         local o_write, o_stderr = io.write, io.stderr
         local out_buf, err_buf = {}, {}
@@ -463,7 +464,7 @@ describe("cli delegation client", function()
         local ok, code = pcall(cli._maybe_delegate_build, "/ws", { "build", "fast" }, {
             mode = "daemon",
             trusted = function() return true end,
-            detect = function() return { present = true, live = true, compatible = true } end,
+            detect = function() return { present = true, live = true, compatible = true, info = info } end,
             connect = function(_root, copts, cb) fake_proj.copts = copts; cb(fake_proj, nil) end,
         })
         io.write, io.stderr = o_write, o_stderr
@@ -481,13 +482,35 @@ describe("cli delegation client", function()
         assert.matches("lw: build failed (exit 2): App/Debug", err, 1, true)
     end)
 
-    it("reports success with the resolved profile key", function()
+    it("reports success with the resolved profile key, exactly as in-process", function()
         local code, out = delegate(function(_, _, cbs)
             cbs.on_accept(1, nil, { profile_key = "Debug-fast" })
             cbs.on_done(0)
         end)
         assert.equals(0, code)
+        assert.equals("BUILD OK: Debug-fast\n", out)
+    end)
+
+    it("announces an accepted build once on stderr, with the daemon pid, before its output (§19.12)", function()
+        local code, out, err = delegate(function(_, _, cbs)
+            cbs.on_accept(1, nil, { profile_key = "Debug-fast" })
+            cbs.on_output("stderr", "warning: x\n")
+            cbs.on_output("stdout", "[1/1] Linking app\n")
+            cbs.on_done(0)
+        end, { pid = 4242 })
+        assert.equals(0, code)
+        assert.equals(DELEGATION .. " (pid 4242)\nwarning: x\n", err)
+        assert.is_nil(out:find(DELEGATION, 1, true), "the notice is stderr-only")
         assert.matches("BUILD OK: Debug-fast", out, 1, true)
+    end)
+
+    it("announces a failing delegated build too (the daemon ran it)", function()
+        local code, _, err = delegate(function(_, _, cbs)
+            cbs.on_accept(3, nil, { profile_key = "Debug-fast" })
+            cbs.on_done(2)
+        end)
+        assert.equals(2, code)
+        assert.equals(DELEGATION .. "\n", err) -- no pid in the handle: no parenthetical
     end)
 
     it("falls back in-process, silently, when the daemon cannot resolve the profile", function()
@@ -495,7 +518,32 @@ describe("cli delegation client", function()
             cbs.on_accept(nil, service.ERR_PROFILE .. ": no profile matching 'fast'")
         end)
         assert.is_nil(code)
+        assert.equals("", err) -- in particular, no delegation notice
+    end)
+
+    it("prints no delegation notice when the daemon's workspace is unavailable", function()
+        local code, out, err = delegate(function(_, _, cbs)
+            cbs.on_accept(nil, service.ERR_WORKSPACE .. ": workspace not loaded")
+        end, { pid = 4242 })
+        assert.is_nil(code)
         assert.equals("", err)
+        assert.equals("", out)
+    end)
+
+    it("prints no delegation notice when the daemon refuses the build for another reason", function()
+        local code, _, err = delegate(function(_, _, cbs)
+            cbs.on_accept(nil, "busy")
+        end, { pid = 4242 })
+        assert.is_nil(code)
+        assert.is_nil(err:find(DELEGATION, 1, true))
+        assert.matches("building in-process", err, 1, true)
+    end)
+
+    it("the notice is dim only on a color-capable stderr", function()
+        local term = require("loomworks.term")
+        assert.equals(DELEGATION .. " (pid 7)", cli._delegation_line(7, false))
+        assert.equals(DELEGATION, cli._delegation_line(nil, false))
+        assert.equals("\27[2m" .. DELEGATION .. " (pid 7)\27[0m", term.render(cli._delegation_line(7, true)))
     end)
 
     it("a daemon lost after accepting fails the build (never re-run in-process)", function()

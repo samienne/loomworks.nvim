@@ -236,8 +236,10 @@ run_case() {
 # it and streams the real toolchain output back. Proves the daemon build path on
 # every CI platform (the in-process plenary spec covers it under nvim). Uses an
 # explicitly-started daemon (no reliance on launch-if-absent). Non-fatal: a
-# fallback to in-process shows up as a missing "(daemon)" marker, reported but
-# not aborting the run.
+# fallback to in-process shows up as a missing delegation line on stderr
+# ("lw: building through the workspace daemon", spec §19.12), reported but not
+# aborting the run. A build form the daemon does not carry (`--target`) must
+# build in-process and print NO delegation line.
 test_daemon_build() {
     say "daemon build (runtime.mode=daemon)"
     local ws="$TMP/daemon-cmake" out="$TMP/out.txt"
@@ -275,14 +277,28 @@ CPP
     fi
     ok "daemon: started"
 
-    # Delegate a build to the running daemon; it must stream the real toolchain
-    # output back and report the daemon marker (not the in-process fallback).
-    LOOMWORKS_RUNTIME=daemon LW_ROOT="$ws" $LW --no-input build "$prof" > "$out" 2>&1
+    # Delegate a build to the running daemon; it must announce the delegation on
+    # stderr, stream the real toolchain output back, and end with the same
+    # `BUILD OK: <profile>` line as an in-process build.
+    local derr="$TMP/daemon-build.err"
+    LOOMWORKS_RUNTIME=daemon LW_ROOT="$ws" $LW --no-input build "$prof" > "$out" 2> "$derr"
     local rc=$?
-    if grep -q "BUILD OK (daemon)" "$out"; then ok "daemon: delegated build"
+    cat "$derr" >> "$out"
+    if grep -q "^lw: building through the workspace daemon" "$derr"; then ok "daemon: delegated build"
     else note_fail "daemon: build did not delegate to the daemon" "$rc"; fi
+    if [ "$rc" -eq 0 ] && grep -qF "BUILD OK: $prof" "$out"; then ok "daemon: BUILD OK line"
+    else note_fail "daemon: no 'BUILD OK: $prof' line" "$rc"; fi
     if grep -qE '\[[0-9]+/[0-9]+\]|Linking|Building' "$out"; then ok "daemon: streamed real build output"
     else note_fail "daemon: no streamed build output" 0; fi
+
+    # A form the daemon does not carry (`--target`) builds in-process even with
+    # a daemon running: no delegation line, the same BUILD OK line.
+    LOOMWORKS_RUNTIME=daemon LW_ROOT="$ws" $LW --no-input build "$prof" --target app > "$out" 2>&1
+    rc=$?
+    if grep -q "building through the workspace daemon" "$out"; then
+        note_fail "daemon: --target build announced a delegation" "$rc"
+    elif [ "$rc" -eq 0 ] && grep -qF "BUILD OK: $prof" "$out"; then ok "daemon: --target builds in-process (no delegation line)"
+    else note_fail "daemon: --target in-process build" "$rc"; fi
 
     # Retire the daemon (graceful, then a hard kill as a backstop).
     LW_ROOT="$ws" $LW --no-input daemon stop > "$out" 2>&1

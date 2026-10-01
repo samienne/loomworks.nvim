@@ -1644,7 +1644,11 @@ protocol-incompatible. Set the mode in the plugin
 (`lw settings set runtime-mode daemon`); `LOOMWORKS_RUNTIME` overrides both.
 Values: `in-process` (default), `daemon`, `auto`. `lw daemon status` shows the
 resolved mode and whether a daemon is running; `lw daemon run` starts one;
-`lw daemon stop` retires one. See [`DAEMON.md`](DAEMON.md) for the design and
+`lw daemon stop` retires one. While the daemon is experimental, a build it runs
+announces itself with one stderr line, `lw: building through the workspace
+daemon (pid <n>)`, before its output; an in-process build (including every
+fallback) prints no such line, and both end with the same `BUILD OK: <profile>`.
+See [`DAEMON.md`](DAEMON.md) for the design and
 [`spec/core/daemon.md`](spec/core/daemon.md) §19 for the contract.
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical

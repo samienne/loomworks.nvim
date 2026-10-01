@@ -43,9 +43,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `setup({ runtime = { mode = ... } })`). With `daemon` or `auto`,
   `lw build <profile>` runs through a per-workspace daemon and streams its
   output; anything else, or an untrusted working copy, builds in-process as
-  before. A daemon build runs the same build steps, gates and cache write-back
-  as an in-process one, and stops when the `lw build` that started it is
-  interrupted. See `lw help daemon`. (#88)
+  before. A daemon build says so in one stderr line (`lw: building through the
+  workspace daemon (pid <n>)`), runs the same build steps, gates and cache
+  write-back as an in-process one, ends with the same `BUILD OK` line, and
+  stops when the `lw build` that started it is interrupted. See
+  `lw help daemon`. (#88)
 
 ### Changed
 - `lw status` ends with the everyday commands (build, run, test, clean,
