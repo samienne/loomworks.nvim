@@ -93,6 +93,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `loomworks.json` (and labelled it `--local` without that option); the warning
   now appears only when the file exists and items would really be removed,
   and names them. (#102)
+- When no profile was active before an import, the `lw import` summary said
+  nothing about it and the closing "no active profile" hint read as if the
+  import had cleared one. The summary now says `active profile: none
+  (unchanged)` and the hint says none was active before. (#103)
 - A build recorded by `lw build` while the editor was open could be lost: the
   editor's next save of the build cache overwrote it. Saves now merge with the
   cache on disk, keeping the other process's build records. (#94)

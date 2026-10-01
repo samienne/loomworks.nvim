@@ -3820,6 +3820,8 @@ function M._print_import_plan(plan, label)
     out("active profile: " .. plan.active_before .. " (kept)")
   elseif plan.active_before then
     out("Active profile " .. plan.active_before .. " is not in the import — no profile will be active.")
+  elseif not plan.active_after then
+    out("active profile: none (unchanged)")
   end
   for _, d in ipairs(plan.dropped or {}) do
     if d.what == "device" then
@@ -3920,6 +3922,10 @@ function M.cmd_import(root, args)
   end
   if plan.active_after then
     out("  active profile: " .. plan.active_after)
+  elseif plan.counts.profiles > 0 and not plan.active_before and not plan.unread then
+    -- There was none before: say so, so the hint does not read as a loss.
+    out("  no profile is active (none was before) — `lw profile select <profile>` to choose one "
+      .. "(`lw profile list`)")
   elseif plan.counts.profiles > 0 then
     out("  no active profile — `lw profile select <profile>` (`lw profile list`)")
   end
