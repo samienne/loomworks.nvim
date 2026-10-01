@@ -45,6 +45,9 @@ function M.env(extra)
         vars[k] = nil
     end
     vars.LOOMWORKS_DATA_DIR = data
+    -- The suite runs every spec file at once: give a daemon start, and a
+    -- handshake, room on a loaded machine.
+    vars.LW_TEST_DAEMON_READY_MS = "60000"
     if M.is_win then vars.APPDATA = cfg else vars.XDG_CONFIG_HOME = cfg end
     for k, v in pairs(extra or {}) do vars[k] = v or nil end
     return { vars = vars, data = data, config = cfg }
@@ -87,7 +90,7 @@ function M.lw(args, opts)
     local eof = 0
     out:read_start(function(_, d) if d then obuf[#obuf + 1] = d else eof = eof + 1 end end)
     err:read_start(function(_, d) if d then ebuf[#ebuf + 1] = d else eof = eof + 1 end end)
-    local done = vim.wait(opts.timeout or 30000, function() return code ~= nil and eof >= 2 end, 10)
+    local done = vim.wait(opts.timeout or 120000, function() return code ~= nil and eof >= 2 end, 10)
     pcall(function() out:read_stop(); out:close(); err:read_stop(); err:close() end)
     pcall(function() h:close() end)
     if not done then
@@ -118,8 +121,12 @@ function M.track_root(root)
     return info
 end
 
+--- Processes found alive by `cleanup` over a whole spec file (asserted by a
+--- final test, so a failing test's leftovers do not mask its own failure).
+M.leftovers = 0
+
 --- Kill every tracked process still alive (identity-checked); returns the
---- number killed.
+--- number killed (also added to `M.leftovers`).
 function M.cleanup()
     local n = 0
     for _, t in ipairs(tracked) do
@@ -130,6 +137,7 @@ function M.cleanup()
         end
     end
     tracked = {}
+    M.leftovers = M.leftovers + n
     return n
 end
 

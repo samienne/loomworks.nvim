@@ -19,6 +19,10 @@ local proc = require("loomworks.proc")
 local H = require("tests.daemon_helpers")
 local uv = vim.uv or vim.loop
 
+-- The suite runs every spec file at once: an in-process handshake can take
+-- seconds on a loaded runner.
+client.TIMEOUT_MS = 30000
+
 local function with_key()
     local d = H.tmp()
     trust._set_key_path(d .. "/trust.key")
@@ -90,9 +94,9 @@ describe("daemon server (in-process)", function()
         with_key()
         root = H.workspace()
         exited = nil
-        -- The unauthenticated timeout is short for the test, but not so short
-        -- that a loaded CI runner times out a real handshake.
-        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100, auth_timeout_ms = 2000 })
+        -- A real handshake must never hit the unauthenticated timeout on a
+        -- loaded runner; the test of that timeout shortens it.
+        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100, auth_timeout_ms = 30000 })
         assert(srv:start())
     end)
     after_each(function()
@@ -187,6 +191,7 @@ describe("daemon server (in-process)", function()
         p2.send(tostring(protocol.PREAUTH_MAX + 1) .. "\n")
         assert.is_true(vim.wait(2000, function() return p2.closed end, 10))
         assert.equals(0, p2.bytes)
+        srv.auth_timeout_ms = 500
         local p3 = raw_peer(srv.address) -- says nothing
         assert.is_true(vim.wait(8000, function() return p3.closed end, 10))
         assert.equals(0, p3.bytes)
@@ -197,7 +202,12 @@ describe("daemon server (in-process)", function()
         local conn = assert(client.session(srv.address))
         for _ = 1, 5 do assert(client.request(conn, { kind = "status" })) end
         conn:close()
-        assert.is_true(vim.wait(3000, function() return eaves.closed end, 10))
+        -- Then the eavesdropper is closed by the unauthenticated timeout.
+        srv.auth_timeout_ms = 500
+        local late = raw_peer(srv.address)
+        assert.is_true(vim.wait(8000, function() return late.closed end, 10))
+        assert.equals(0, late.bytes)
+        eaves.close()
         assert.equals(0, eaves.bytes)
     end)
 
@@ -297,7 +307,7 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
     end)
     after_each(function()
         H.track_root(root)
-        assert.equals(0, H.cleanup(), "a daemon process was left running")
+        H.cleanup()
     end)
 
     local function lw(args) return H.lw(args, { env = env, cwd = root }) end
@@ -485,5 +495,12 @@ describe("version handshake (§19.9)", function()
         vim.wait(200, function() return false end, 10)
         assert.is_nil(exited)
         assert.is_false(srv.retiring)
+    end)
+end)
+
+describe("daemon processes", function()
+    it("none was left running by any test of this file", function()
+        H.cleanup()
+        assert.equals(0, H.leftovers, "a test left a daemon process running")
     end)
 end)

@@ -29,8 +29,9 @@ local paths = require("loomworks.daemon.paths")
 
 local M = {}
 
---- Readiness wait (§19.10).
-M.READY_MS = 10000
+--- Readiness wait (§19.10). `LW_TEST_DAEMON_READY_MS` lengthens it for test
+--- suites that start daemons on a heavily loaded machine.
+M.READY_MS = tonumber(os.getenv("LW_TEST_DAEMON_READY_MS") or "") or 10000
 
 local function is_win() return package.config:sub(1, 1) == "\\" end
 local function norm(p) return p and (tostring(p):gsub("\\", "/"):gsub("/+$", "")) or nil end
