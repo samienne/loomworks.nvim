@@ -43,18 +43,19 @@ operations.
 | D3 | **Default: `lw <cmd>` finds or launches (detached) the workspace daemon, sends the request, streams the result, exits, leaves the daemon running.** | Cold start paid once; nothing for the user to manage. |
 | D4 | **`--no-daemon` runs the daemon code in the client process over a loopback transport** — same code, same protocol, no pipe, nothing left running. Auto under `CI=true`, after a failed background launch, or via `LOOMWORKS_NO_DAEMON=1` / setting. | Replaces the separate in-process implementation: **one** implementation of every operation, two transports. CI and sandboxes need no background process. |
 | D5 | **One runtime per workspace in either mode.** `--no-daemon` takes the same runtime lock; uses a running daemon if there is one; waits briefly then fails "workspace busy" if another attached run holds it. | Never a second writer. |
-| D6 | **Lifetime:** alive while any client is attached (editor keepalive), else exits after an idle timeout (default 1 h, configurable), or when the workspace root disappears. `lw daemon status|stop|restart`; a passive Runtime row in `lw status`. Handle records host and pid. | 1 h makes "mostly warm" the common case; shared drives need the host to avoid stopping a stranger's daemon. |
+| D6 | **Lifetime:** alive while any client is attached (editor keepalive), else exits after an idle timeout (default 1 h, configurable), or when the workspace root disappears. `lw daemon status`/`stop`/`restart`; a passive Runtime row in `lw status`. Handle records host and pid. | 1 h makes "mostly warm" the common case; shared drives need the host to avoid stopping a stranger's daemon. |
 | D7 | **Version handshake:** protocol + lw version + schema versions. Idle mismatched daemon → restarted; busy → the client runs this command without it and the daemon retires when idle. | Same binary, so after `lw self-update` or a pin change a newer client meets an older daemon; never kill one serving others. |
 | D8 | **Editor:** launches `lw daemon run` from the `lw` it resolves (broker: `LOOMWORKS_LW` → repo pin → PATH → provisioned); with no `lw`, runs the daemon code inside nvim over loopback. | Same runtime for editor and CLI; the plugin keeps working without a binary. |
 | D9 | **Staged transition, locks first** (§5). Until every operation has moved, conflicting operations either fail or succeed — never an unknown state. | The in-process path, older versions and the daemon will coexist for months. |
+| D10 | **Solid recovery from dead and hung holders** (§19.5). A dead holder (same host, process with that id and start time gone) is reclaimed automatically; a hung one (alive, heartbeat stale) is reported as hung and recovered with `--break-locks` on any lockable command, or `lw daemon stop --force` / `lw daemon kill`: ask → kill the process tree → verify → reclaim nonce-matched locks → recover state → run. Never kills on another host or the editor; `lw unlock --force` breaks a lock without killing. | A killed or hung process must never leave a workspace stuck, and recovery must be one command, also in CI. Start time guards pid reuse; nonce matching guards racing recoveries. A new flag name because `--force` on `lw build` already overrides artifact conflicts. |
 
 The architecture choices of the earlier design are **kept**: daemon-authoritative
-model with a client projection built by the same deserializer (§19.12);
-session-local opaque ids for rename-stable wire identity (§19.11);
+model with a client projection built by the same deserializer (§19.13);
+session-local opaque ids for rename-stable wire identity (§19.12);
 broadcast-everything coarse invalidation with seq + session generation; a
-separate task stream with coalescing and bounded output (§19.14); three consumer
+separate task stream with coalescing and bounded output (§19.15); three consumer
 strategies (header / view-scoped / transient); FIFO commands whose effect returns
-as a broadcast (§19.13); Lua for the daemon, with the protocol keeping a later
+as a broadcast (§19.14); Lua for the daemon, with the protocol keeping a later
 core rewrite possible.
 
 ### Superseded decisions
@@ -66,6 +67,7 @@ core rewrite possible.
 | The daemon lock is the **write-authority token**; a client writes files only after taking it. | D5 + operation locks (§19.3): the runtime lock names the one runtime; per-operation locks + journal protect files. | During the transition the in-process path must write while a daemon runs; older versions never take the lock; a version-bypass run must be safe. Per-operation locks protect all of them; a lifetime lock protects none of them. |
 | Idle timeout ~10 min. | D6: default 1 h, configurable. | Keep the daemon warm across a normal working session. |
 | Separate `daemon` release channel / long-lived branch. | Opt-in `runtime-mode daemon` on master, step by step. | Each step is small and lock-safe on its own; a parallel line drifts (#88 already needed a full replay). |
+| Stale-heartbeat reclaim for every holder (§16.6), and `lw daemon stop` falling back to killing the pid (#88). | D10: same-host holders are classified dead / live / hung by process id + start time; only dead ones are reclaimed automatically; killing is explicit (`--break-locks`, `stop --force`, `kill`). | A hung but alive holder can resume and write after its lock was taken; a reused pid could be killed by mistake. |
 | Broker may fall through to "bundled source, in-process". | D8: no binary → loopback inside nvim. | Same code either way; only the transport differs. |
 
 ## 3. Shape of the end state
@@ -117,8 +119,8 @@ transition: they are what makes version-bypass runs and older versions safe.
 
 | Step | Content | Exit criteria |
 |--|--|--|
-| **1. Operation locks** | §19.3/§19.4 on the in-process path: `loomworks.op.lock`, lock-order audit (incl. device run vs build locks), nuke takes build locks, journal + recovery, `lw unlock` clears O / journal. | Concurrency tests: publish ∥ rename, nuke ∥ build, import ∥ publish, crash injected at every commit point → old or new, never mixed. |
-| **2. Lifetime** | Server + mutual HMAC auth (§19.7), Windows DACL, launch recipe (§19.9), lifetime rules (§19.10), version handshake (§19.8), `lw daemon status|stop|restart`, Runtime row, `--no-daemon` (= in-process for now). Opt-in `runtime-mode daemon`: every workspace command keeps the daemon running though it only answers `ping`/`status`. | Weeks of daily use with the daemon resident: no stray processes, no stuck locks, clean restart after self-update, Windows job-object kills recover. |
+| **1. Operation locks** | §19.3/§19.4 on the in-process path: `loomworks.op.lock`, lock-order audit (incl. device run vs build locks), nuke takes build locks, journal + recovery, lock records with start time + holder kind, dead/hung classification, `--break-locks`, `lw unlock --force` / `--journal`. | Concurrency tests: publish ∥ rename, nuke ∥ build, import ∥ publish; the §19.5 recovery tests (crash at every commit point → old or new; pid reuse; foreign host; editor-held). |
+| **2. Lifetime** | Server + mutual HMAC auth (§19.8), Windows DACL, launch recipe (§19.10), lifetime rules (§19.11), version handshake (§19.9), `lw daemon status`/`stop`/`restart`/`kill` and `stop --force`, runtime log, Runtime row, `--no-daemon` (= in-process for now). Opt-in `runtime-mode daemon`: every workspace command keeps the daemon running though it only answers `ping`/`status`. | Weeks of daily use with the daemon resident: no stray processes, no stuck locks, clean restart after self-update, Windows job-object kills recover; §19.5 tests: daemon killed mid-build → automatic recovery, suspended daemon → reported hung, `--break-locks` recovers. |
 | **3. First operation: `lw build`** | Re-cut #88's delegation (parity-tested there) onto step 1–2 foundations; all build forms. | Build parity test; delegated builds in the LumeEditor peer session. |
 | **4. Editor connects** | Plugin resolves `lw`, launches/connects, keepalive, observes task streams and model changes; still runs its own operations in-process. | CLI build visible live in the status page; editor reload/exit never orphans or kills a busy daemon. |
 | **5. Remaining operations** | One at a time (configure/clean/reset, run/test, profile/project mutations, publish/import/pull, devices), each with a parity test; then the loopback transport; then CLI and plugin stop loading the workspace themselves. | Each operation's parity test green; the in-process loader has no callers except loopback. |
@@ -130,32 +132,28 @@ broadcasts, opaque ids, snapshot + projection, commands, task stream, the shared
 build-step path (`build_run.lua`, already on master), the parity test. Re-cut:
 runtime-mode values, handle fields, the runtime lock record and lost-lock exit,
 version policy (range → match + frozen subset), idle default, launch
-(`_spawn_daemon_if_possible` is detached but has none of the rest of the §19.9
+(`_spawn_daemon_if_possible` is detached but has none of the rest of the §19.10
 recipe: cwd, env de-duplication, dev-source forwarding, early-exit detection),
 routing (`_maybe_delegate_build` falls back to in-process
-on any daemon error — it must instead follow §19.8/§19.9). New: auth, DACL,
+on any daemon error — it must instead follow §19.9/§19.10). New: auth, DACL,
 operation lock, journal.
 
 ## 6. Spike findings that are now requirements
 
-From the daemon lifetime spike:
+Evidence from the daemon lifetime spike (2026-09), each with its fix and where
+§19 requires it:
 
-- **Mutual HMAC handshake** from the machine trust key (§17.2), proofs bound to
-  the pipe address; only `hello`/`auth` before authentication; broadcasts only to
-  authenticated connections; 64 KiB pre-auth frame cap (§19.7).
-- **Windows pipe DACL** via FFI `SetSecurityInfo`: owner + SYSTEM, deny NETWORK;
-  the default descriptor is not enough (§19.6).
-- **No inherited std handles on Windows** (the launching client must be able to
-  exit and release its own pipeline while the daemon keeps running).
-- **Forward the dev source** via `LOOMWORKS_LUA`, or a dev client launches a
-  daemon running different code.
-- **Neutral cwd** (per-user state dir), so the daemon never pins the workspace
-  directory.
-- **De-duplicated environment** before spawning.
-- **Early exit detection** during readiness, so a daemon that cannot start
-  fails fast instead of costing the full readiness timeout.
-- **`stop` must end the process** — no timer or handle may keep the loop alive
-  after shutdown.
+| Finding | Evidence | Fix (verified) | §19 |
+|--|--|--|--|
+| The detached daemon inherited the client's std handles (libuv spawns with `bInheritHandles=TRUE` on Windows). | `lw build \| tail` hung **2 m 56 s**, until the daemon died. POSIX unaffected (fds 0–2 → `/dev/null`). | Clear `HANDLE_FLAG_INHERIT` on the std handles around the spawn: the same pipeline finished in **0.85 s**. | §19.10 |
+| `daemon run` never exited after stop / idle-out: other handles kept the uv loop alive. | Three such processes from 2026-09-18 were still running and had to be killed. | `on_stop` ends the process. | §19.11 |
+| The `--dev` source was not forwarded. | The child resolved a different source or died; the client waited the full 10 s. | Forward `LOOMWORKS_LUA`; stop waiting as soon as the child exits. | §19.10 |
+| Daemon cwd inside the workspace. | Blocked rename, `git worktree remove` and `rm -rf` of the checkout on Windows for the whole idle window. | Neutral cwd (per-user state dir). | §19.10 |
+| Windows pipe default DACL `D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<owner>)(A;;FR;;;WD)(A;;FR;;;AN)`: Everyone and Anonymous READ, no `PIPE_REJECT_REMOTE_CLIENTS`. | A read-only peer that never sent `hello` received **2103 bytes** of another client's build output and broadcasts. With the HMAC handshake prototype: **0 bytes**. | FFI `SetSecurityInfo` after bind with `D:P(D;;GA;;;NU)(A;;GA;;;<user SID>)(A;;GA;;;SY)`, plus no broadcasts before authentication. | §19.7, §19.8 |
+| The repository's `.nvim` grants Authenticated Users *Modify*. | The handle file is writable by other local users. | Never put a raw token in `hello` or the handle; mutual proofs bound to the endpoint, keyed from the per-user machine key. | §19.8 |
+| Old host v0.1.2 forwards unknown commands to the bundle. | Re-exec of `daemon run` works there, given `LOOMWORKS_LUA` forwarding. | — (no host change needed) | §19.10 |
+| The decoder had no frame-size limit before authentication. | — | 64 KiB pre-auth cap, checked on the length prefix. | §19.8 |
+| `client.stop` removed the handle file even on an error reply. | — | Only the lock holder (or a reclaimer, §19.5) removes the handle. | §19.5, §19.11 |
 
 ## 7. Known risks
 
@@ -164,9 +162,9 @@ From the daemon lifetime spike:
   the lock goes stale and the next command relaunches (try
   `CREATE_BREAKAWAY_FROM_JOB` where permitted).
 - **Unix socket path length** — short per-user socket directory, hashed name
-  (§19.6).
+  (§19.7).
 - **EDR / AppLocker** may block or slow a resident, network-ish process; launch
-  failure falls back to attached (§19.9), and `LOOMWORKS_NO_DAEMON=1` is the
+  failure falls back to attached (§19.10), and `LOOMWORKS_NO_DAEMON=1` is the
   documented escape.
 - **WSL and Windows on one checkout** — two hosts (and two machine keys) on the
   same `.nvim/`: the runtime lock and handle record host + OS, so one side sees
@@ -174,6 +172,12 @@ From the daemon lifetime spike:
   connecting; the operation locks still serialize them.
 - **Network drives** — heartbeat by mtime works across hosts but clock skew
   shifts staleness; locks record host so foreign holders are never killed.
+- **Environment leakage** — `LOOMWORKS_LUA` and `LW_ROOT` forwarded to the
+  daemon leak into the build children it spawns; strip loomworks-internal
+  variables from task environments.
+- **Process start time** must be readable on every host (Windows
+  `GetProcessTimes`, Linux `/proc/<pid>/stat`, macOS `proc_pidinfo`); where it
+  is not, recovery degrades to heartbeat-only judgement for that host.
 - **Older versions** ignore the operation lock and journal — residual race of the
   same class as §2.7, documented.
 
@@ -189,25 +193,28 @@ From the daemon lifetime spike:
   updates; broadcast + id-map is simpler.
 - **A lifetime write-authority lock as the only safety** — superseded (§2).
 
-## 9. Open questions
+## 9. Resolved questions (working answers, revisitable)
 
-1. **Version-bypass vs "never a second writer".** D5 says one runtime; D7's busy
-   mismatch case runs a command outside the runtime (safe only through the
-   operation locks). Accept this as the one exception, or make the client wait
-   for the busy daemon to drain instead?
-2. **Editor code vs daemon binary.** The editor's client code ships with the
-   plugin, the daemon with `lw`. Should the editor launch the resolved `lw` with
-   `LOOMWORKS_LUA` pointing at the plugin's own source (daemon code = plugin
-   code by construction), at the cost of CLI clients then mismatching that
-   daemon?
-3. **Attached runs vs a long-lived attached editor** (no `lw` binary): the editor
-   holds the runtime lock for hours, so a CLI on PATH that the editor did not
-   resolve gets "busy". Should an attached editor serve the endpoint too?
-4. **Parallel CI jobs on one workspace** serialize on the runtime lock and fail
-   after the brief wait — fine, or should `CI=true` wait longer?
-5. **Single-file mutations and O.** Proposed: they do not take O (save guard
-   covers them). Alternative: they check O and fail-fast while a multi-file
-   operation runs — simpler to explain, more refusals.
-6. **Journal discard command** — `lw unlock --journal` (proposed) or part of
-   `lw nuke`?
-7. **Daemon log location and retention** in the per-user state dir.
+1. **Version-bypass run is accepted** as the one exception to "one runtime":
+   it is safe through the operation locks, and waiting for a busy daemon to
+   drain could block for a whole build (§19.9).
+2. **The editor launches the daemon from the resolved `lw`**, shared with the
+   CLI — not from its own plugin source (§19.16).
+3. **An attached editor will also serve the endpoint** (a shared daemon owned by
+   the editor process) — future (§19.16).
+4. **CI "busy" is fine**: parallel jobs use separate checkouts; the wait is
+   configurable (`runtime-busy-wait`, §19.2).
+5. **Single-file mutations do not take O**; they rely on the save guard (§19.3).
+6. **A stuck journal** is discarded with `lw unlock --journal` (§19.4).
+7. **Runtime log**: per-user state dir, one file per workspace, capped at a few
+   MB with one rotation (§19.10).
+
+## 10. Open questions
+
+1. `--break-locks` on a **live** (not hung) same-host holder: proposed to
+   recover as for a hung one (ask, then kill) — the user asked for force to
+   work "even right away". Alternatively restrict it to hung holders and
+   require `=now` for live ones.
+2. A killed **build** resets its units to `unconfigured` (full reconfigure).
+   Cheaper alternative: keep `configured` and only invalidate `built`, trusting
+   the build tool's own up-to-date checks on a half-written tree.
