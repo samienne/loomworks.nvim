@@ -3,6 +3,8 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 local CURRENT_VERSION = 2
+--- The working-copy schema this version reads and writes (`_meta.version`).
+M.CURRENT_VERSION = CURRENT_VERSION
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -37,9 +39,11 @@ end
 --- Parse raw JSON content into UserData.
 --- Returns defaults on invalid content. Second return value is true when a
 --- version mismatch was detected (valid JSON but unsupported version).
---- Accepts v1 and v2 formats (v1 is auto-migrated).
+--- Accepts v1 and v2 formats (v1 is auto-migrated). The third return value
+--- is the file's `_meta` when the mismatch is a NEWER schema than this version
+--- understands (spec §2.7: such a file is never rewritten).
 --- @param content string raw JSON content
---- @return loomworks.UserData data, boolean version_mismatch
+--- @return loomworks.UserData data, boolean version_mismatch, table|nil newer_meta
 function M.parse(content)
     local ok, raw = pcall(vim.json.decode, content)
     if not ok or type(raw) ~= "table" then
@@ -47,6 +51,9 @@ function M.parse(content)
     end
     if not raw._meta then
         return M.default(), true
+    end
+    if require("loomworks.save_guard").schema_newer(raw._meta, CURRENT_VERSION) then
+        return M.default(), true, raw._meta
     end
     if raw._meta.version == 1 then
         return migrate_v1(raw), false
@@ -65,9 +72,11 @@ end
 --- Load user preferences for a workspace.
 --- Returns defaults if file doesn't exist. A working copy that is not signed
 --- by this machine is never read (spec §17.4): it returns nil plus the
---- verification status (`"unsigned"` / `"invalid"`).
+--- verification status (`"unsigned"` / `"invalid"`). One written with a newer
+--- schema than this version understands returns nil, `"newer"` and the
+--- message (spec §2.7) — never defaults, which a caller could write back.
 --- @param root string
---- @return loomworks.UserData|nil data, string|nil trust_status
+--- @return loomworks.UserData|nil data, string|nil trust_status, string|nil message
 function M.load(root)
     local text = io_mod.read_file(M.filepath(root))
     if not text then
@@ -87,6 +96,11 @@ function M.load(root)
         return M.default()
     end
 
+    local sg = require("loomworks.save_guard")
+    if sg.schema_newer(data._meta, CURRENT_VERSION) then
+        return nil, "newer", sg.newer_schema_message(M.filepath(root), data._meta, CURRENT_VERSION)
+    end
+
     if data._meta.version == 1 then
         return migrate_v1(data)
     end
@@ -99,12 +113,13 @@ function M.load(root)
     return data
 end
 
---- Save user preferences for a workspace.
+--- Save user preferences for a workspace. Stamps the schema and the writer's
+--- loomworks version (`_meta.written_by`, spec §2.7; inside the signed bytes).
 --- @param root string
 --- @param data loomworks.UserData
---- @return boolean ok, string|nil err
+--- @return boolean ok, string|nil err, string|nil sign_err, string|nil written exact bytes written
 function M.save(root, data)
-    data._meta = { version = CURRENT_VERSION }
+    data._meta = { version = CURRENT_VERSION, written_by = require("loomworks.save_guard").version() }
 
     local dir = root .. "/.nvim"
     local ok, dir_err = io_mod.ensure_dir(dir)

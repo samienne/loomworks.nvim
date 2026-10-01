@@ -9,7 +9,7 @@
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
 --- @field _workspace loomworks.Workspace|nil
---- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4)
+--- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean, newer?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4; `newer`: a file with a newer schema, spec §2.7)
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _pending_root string|nil root passed to setup(), known before async init resolves
 local Core = {}
@@ -213,9 +213,10 @@ function Core:_on_files_read(root, paths, results)
         if not (setup_error and setup_error.trust and self._deps.quiet_trust_errors) then
             self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
         end
-        -- A refused file (spec §17.4) unloads a live workspace too (a file
-        -- changed under it): nothing may keep running on the old state.
-        if setup_error and setup_error.trust and self._workspace then
+        -- A refused file (spec §17.4, or a newer schema, §2.7) unloads a
+        -- live workspace too (a file changed under it): nothing may keep
+        -- running on — or saving — the old state.
+        if setup_error and (setup_error.trust or setup_error.newer) and self._workspace then
             self._workspace:teardown()
             self._workspace = nil
         end
@@ -251,6 +252,20 @@ function Core:_on_files_read(root, paths, results)
     local trust_err = self:_trust_error(root, data)
     if trust_err then
         fail(trust_err.message, trust_err)
+        return
+    end
+
+    -- A file written with a NEWER schema than this version understands is
+    -- valid, only newer: refuse the load, never rewrite it, and point at the
+    -- update — not at reset / discard (spec §2.7).
+    if data.cache_newer or data.user_newer then
+        local sg = require("loomworks.save_guard")
+        local msg = data.cache_newer
+            and sg.newer_schema_message(".nvim/loomworks.cache.json", data.cache_newer,
+                require("loomworks.cache").CURRENT_VERSION)
+            or sg.newer_schema_message(".nvim/loomworks.user.json", data.user_newer,
+                require("loomworks.user").CURRENT_VERSION)
+        fail(msg, { root = root, message = msg, newer = true })
         return
     end
 
@@ -301,6 +316,21 @@ function Core:_on_files_read(root, paths, results)
 
     self._workspace:_cleanup_orphaned_skeletons(data.cache)
     self._workspace:remerge(data.config, data.cache, data.user)
+    -- Disk baselines for the stale-save guard (spec §2.7): the exact bytes
+    -- this load read.
+    self._workspace:_adopt_disk("user", user_content)
+    self._workspace:_adopt_disk("cache", cache_content)
+    -- Same schema, newer writer: load, but say so once (spec §2.7).
+    do
+        local sg = require("loomworks.save_guard")
+        for _, f in ipairs({
+            { paths.user, ".nvim/loomworks.user.json", data.user and data.user._meta },
+            { paths.cache, ".nvim/loomworks.cache.json", data.cache and data.cache._meta },
+        }) do
+            local warning = sg.newer_writer_warning(f[1], f[2], f[3])
+            if warning then self._deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+        end
+    end
     self._state = "initialized"
     self._deps.events.emit("workspace_changed", self._workspace)
 

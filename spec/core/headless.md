@@ -193,6 +193,18 @@ its build locks on interrupt as well as on normal exit, so an interrupted
 and, on Windows, CTRL_BREAK_EVENT and CTRL_CLOSE_EVENT (the console window
 closed) — each takes the same cleanup path and exits 130.
 
+The state files themselves are shared under the concurrent-writer rules of
+§2.7, which every host follows: a headless build that records its result in the
+build cache merges with whatever the editor (or another CLI) wrote there
+meanwhile instead of overwriting it, and the editor merges the CLI's build
+records the same way when it saves inside its reconciliation window. A
+headless working-copy mutation (`lw project …`, `lw profile …`, …) whose save
+finds the working copy changed on disk since the command read it writes
+nothing and exits **1** with `lw: the working copy … changed on disk …` — the
+command is re-run, not merged. A working copy or build cache whose schema is
+newer than the running version (§2.7) refuses the command with the update
+message and is left unchanged.
+
 ### 16.7 Reporting
 
 Success or failure is reported via process exit status; task output streams

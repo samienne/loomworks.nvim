@@ -10,6 +10,7 @@ local M = {}
 local config_mod = require("loomworks.config")
 local user_mod = require("loomworks.user")
 local cache_mod = require("loomworks.cache")
+local save_guard = require("loomworks.save_guard")
 local data_model = require("loomworks.data_model")
 local ConfigUnit = require("loomworks.config_unit")
 local Profile = require("loomworks.profile").Profile
@@ -155,7 +156,8 @@ function M.init_workspace(root, name, write_json)
         assert(require("loomworks.io").mkdir_p(nvim_dir))
     end
 
-    local data = { _meta = { version = 2 } }
+    local data = { _meta = { version = user_mod.CURRENT_VERSION,
+        written_by = require("loomworks.save_guard").version() } }
     -- Persist the name only when it overrides the directory basename default;
     -- otherwise the name stays dynamic and follows the directory.
     local dir_name = root:match("([^/]+)$") or root
@@ -464,9 +466,9 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         }
     end
 
-    local user_data, user_version_mismatch
+    local user_data, user_version_mismatch, user_newer
     if user_content then
-        user_data, user_version_mismatch = user_mod.parse(user_content)
+        user_data, user_version_mismatch, user_newer = user_mod.parse(user_content)
     else
         user_data = user_mod.default()
         user_version_mismatch = false
@@ -486,9 +488,9 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         end
     end
 
-    local cache_data, cache_version_mismatch
+    local cache_data, cache_version_mismatch, cache_newer
     if cache_content then
-        cache_data, cache_version_mismatch = cache_mod.parse(cache_content)
+        cache_data, cache_version_mismatch, cache_newer = cache_mod.parse(cache_content)
     else
         cache_data = cache_mod.default()
         cache_version_mismatch = false
@@ -518,6 +520,10 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         cache_version_mismatch = cache_version_mismatch,
         cache_inconsistent = not cache_consistent,
         user_version_mismatch = user_version_mismatch,
+        -- `_meta` of a file whose schema is NEWER than this version's (spec
+        -- §2.7): the load is refused and the file never rewritten.
+        user_newer = user_newer,
+        cache_newer = cache_newer,
         user_projects_invalid = user_projects_invalid,
         -- Trust status of the signed files: "valid" | "unsigned" | "invalid",
         -- nil when the file is absent (spec §17.4).
@@ -577,6 +583,15 @@ end
 --- @field _shared_ignored table[] program-bearing fields stripped from loomworks.json (spec §17.6; program_fields.strip)
 --- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
+--- @field _disk_baseline table<"user"|"cache", { text: string|nil }> per guarded
+---     file, the exact bytes this process last read from or wrote to disk
+---     (`text` nil = absent). A save whose file no longer matches is stale
+---     (spec §2.7). No entry = never loaded from disk (unguarded).
+--- @field _cache_snapshot table|nil per-entry serialization of the cache at
+---     the last sync with disk (`save_guard.snapshot_cache`) — what "this
+---     process changed an entry" is measured against in a stale-save merge.
+--- @field _save_stats { cache_merges: integer, user_refusals: integer }
+---     stale saves handled (diagnostics/tests).
 --- @field _event_handlers { event: string, handler: function }[]
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
 ---     pattern on View. Populated only via `Workspace:on`, walked in
@@ -636,6 +651,9 @@ function Workspace.new(core, data)
     self._sdks = {}  -- SDK domain objects
     self._devices = {}  -- serial -> Device domain object (runtime-only)
     self._device_scan_state = "idle"  -- "idle" | "scanning" | "done"
+    self._disk_baseline = {}  -- spec §2.7 stale-save detection
+    self._cache_snapshot = nil
+    self._save_stats = { cache_merges = 0, user_refusals = 0 }
 
     return self
 end
@@ -890,22 +908,124 @@ function Workspace:_serialize_cache()
     return data
 end
 
+--- Record that this process now holds `text` as the on-disk content of a
+--- guarded file (spec §2.7): at load, after reconciling an external change, or
+--- after writing it. For the cache, also re-take the per-entry snapshot that a
+--- later stale-save merge measures "changed here" against.
+--- @param kind "user"|"cache"
+--- @param text string|nil raw file bytes (nil = absent)
+function Workspace:_adopt_disk(kind, text)
+    self._disk_baseline[kind] = { text = text }
+    if kind == "cache" then
+        self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
+    end
+end
+
+--- After a successful write: move the baseline to the bytes written and tell
+--- the file tracker, so neither this process's next save nor its next poll
+--- mistakes its own write for a foreign one. A dependency that does not
+--- report the bytes (a test stub) falls back to reading the file back.
+--- @param kind "user"|"cache"
+--- @param path string
+--- @param written string|nil
+function Workspace:_record_written(kind, path, written)
+    local read_file = self._core._deps.io.read_file
+    if written == nil and type(read_file) == "function" then written = read_file(path) end
+    self._disk_baseline[kind] = { text = written }
+    if self._tracker then self._tracker:mark_written(path, written) end
+end
+
+--- The guarded file's current bytes, or `false` when this host cannot read
+--- them (an injected io without `read_file`): the save is then unguarded.
+--- @param path string
+--- @return string|nil|false
+function Workspace:_read_disk(path)
+    local read_file = self._core._deps.io.read_file
+    if type(read_file) ~= "function" then return false end
+    return (read_file(path))
+end
+
+--- Report a refused save (spec §2.7): the CLI turns it into `lw: …` + exit 1
+--- (`deps.on_save_refused`), the editor into an error notification.
+--- @param msg string
+function Workspace:_report_save_refused(msg)
+    local deps = self._core._deps
+    if deps.on_save_refused then return deps.on_save_refused(msg) end
+    deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+end
+
+--- The cache on disk, read under the save lock because it differs from this
+--- process's baseline (spec §2.7). Returns the parsed cache to merge with, nil
+--- to write this process's cache as is (an unsigned cache, §17.4, or an older
+--- incompatible one), or `nil, refusal` when the file must not be overwritten
+--- (a foreign signature, §17.4, or a newer schema).
+--- @param disk string|nil raw bytes (nil = the file is gone)
+--- @return table|nil theirs, string|nil refusal
+function Workspace:_disk_cache_for_merge(disk)
+    if disk == nil then return { build_dirs = {} } end
+    local status, body = self._core._deps.trust.verify("cache", disk)
+    if status == "unsigned" then return nil end
+    if status ~= "valid" then
+        return nil, ".nvim/loomworks.cache.json was not written on this machine (its signature"
+            .. " does not match) — it was left unchanged"
+    end
+    local theirs, mismatch, newer = cache_mod.parse(body)
+    if newer then
+        return nil, save_guard.newer_schema_message(".nvim/loomworks.cache.json", newer,
+            cache_mod.CURRENT_VERSION)
+    end
+    if mismatch then return nil end
+    return theirs
+end
+
 --- Save the cache file with standard error handling.
 --- Computes loomworks_hash from the current config for change detection.
+--- Guarded against concurrent writers (spec §2.7): when the file changed on
+--- disk since this process last read or wrote it, the save merges per entry —
+--- this process's changed entries win, everything else comes from disk — and
+--- the in-memory state is then reconciled to the merged cache.
 --- @return boolean ok
 function Workspace:_save_cache()
+    local deps = self._core._deps
     local cache = self:_serialize_cache()
     -- Compute loomworks_hash from serialized config content
     local config_json = vim.json.encode(self:_serialize_config())
     cache._meta = { loomworks_hash = cache_mod.compute_hash(config_json) }
-    local ok, err = self._core._deps.cache.save(self.root, cache)
-    if not ok then
-        self._core._deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
-    end
-    if ok then
-        if self._tracker then
-            self._tracker:mark_written(self._core._deps.cache.filepath(self.root))
+    local path = cache_mod.filepath(self.root)
+
+    local base = self._disk_baseline.cache
+    local lock = base and save_guard.lock(path) or nil
+    local merged = false
+    if base then
+        local disk = self:_read_disk(path)
+        if disk ~= false and disk ~= base.text then
+            local theirs, refusal = self:_disk_cache_for_merge(disk)
+            if refusal then
+                save_guard.unlock(lock)
+                self:_report_save_refused(refusal)
+                return false
+            end
+            if theirs then
+                cache = save_guard.merge_cache(cache, theirs, self._cache_snapshot)
+                merged = true
+            end
         end
+    end
+    local ok, err, _, written = deps.cache.save(self.root, cache)
+    save_guard.unlock(lock)
+    if not ok then
+        deps.notify("loomworks: failed to save cache: " .. (err or "unknown"), vim.log.levels.ERROR)
+        return ok
+    end
+    self:_record_written("cache", path, written)
+    if merged then
+        -- Reconcile to the merged cache exactly as to an external change:
+        -- the other process's units now show their recorded state.
+        self._save_stats.cache_merges = self._save_stats.cache_merges + 1
+        self:remerge(nil, cache)
+        self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
+    else
+        self._cache_snapshot = save_guard.snapshot_cache(cache)
     end
     return ok
 end
@@ -6203,17 +6323,47 @@ function Workspace:_set_profile_variables_raw(profile_key, dict)
     end
 end
 
+--- The message of a refused stale working-copy save (spec §2.7).
+M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on disk"
+    .. " (another lw or editor) — reloaded it; your last change was not saved, redo it"
+
+--- Save the working copy. Guarded against concurrent writers (spec §2.7): when
+--- the file changed on disk since this process last read or wrote it, nothing
+--- is written — the working copy is reloaded from disk (this process's unsaved
+--- change is discarded) and the refusal is reported (editor: error
+--- notification; CLI: `lw: …`, exit 1). Item-level replay is not attempted:
+--- working-copy mutations are cross-item (renames, cascade, self-containment).
+--- @return boolean ok, string|nil err
 function Workspace:_save_user()
+    local deps = self._core._deps
+    local path = user_mod.filepath(self.root)
     local data = self:_serialize_user()
-    local ok, err = self._core._deps.user.save(self.root, data)
+
+    local base = self._disk_baseline.user
+    local lock = base and save_guard.lock(path) or nil
+    if base then
+        local disk = self:_read_disk(path)
+        if disk ~= false and disk ~= base.text then
+            save_guard.unlock(lock)
+            self._save_stats.user_refusals = self._save_stats.user_refusals + 1
+            -- Reload exactly as the tracker delivering the change would (it
+            -- verifies the signature and refuses a newer schema, §17.4/§2.7);
+            -- the tracker must not deliver it a second time.
+            if self._tracker then self._tracker:mark_written(path, disk) end
+            self:_on_file_changed(path, disk)
+            self:_report_save_refused(M.STALE_USER_MESSAGE)
+            return false, M.STALE_USER_MESSAGE
+        end
+    end
+    local ok, err, _, written = deps.user.save(self.root, data)
+    save_guard.unlock(lock)
     if not ok then
-        self._core._deps.notify(
+        deps.notify(
             "loomworks: failed to save user.json: " .. (err or "unknown"),
             vim.log.levels.ERROR)
+        return ok, err
     end
-    if self._tracker then
-        self._tracker:mark_written(self._core._deps.user.filepath(self.root))
-    end
+    self:_record_written("user", path, written)
     return ok, err
 end
 
@@ -7139,8 +7289,14 @@ function Workspace:_on_file_changed(path, content)
     -- of merging the change. An unsigned cache change is ignored — the
     -- in-memory state is kept and the next save replaces the file.
     local function refuse()
+        -- Only the core's live workspace may reload it: a replaced one (the
+        -- core moved to another root) must not pull the core back.
+        if self._core._workspace ~= self then return end
         self._core:setup({ root = self.root })
     end
+    -- The exact bytes delivered: once reconciled they are this process's disk
+    -- baseline for the stale-save guard (spec §2.7).
+    local raw = content
     if (path == paths.user or path == paths.cache) and content then
         local kind = (path == paths.user) and "user" or "cache"
         local status, body = deps.trust.verify(kind, content)
@@ -7187,6 +7343,9 @@ function Workspace:_on_file_changed(path, content)
                 self._shared_ignored = data.shared_ignored or {}
                 self:_scan_tools_async()
                 self:remerge(data.config, data.cache, data.user)
+                -- In-memory state was rebuilt from the files: re-take the
+                -- cache's per-entry snapshot (spec §2.7).
+                self._cache_snapshot = save_guard.snapshot_cache(self:_serialize_cache())
                 -- After remerge, _shared_baseline is the new baseline.
                 -- Detect items present in old baseline but not in new (and
                 -- effective local+shared in working copy) — flag as
@@ -7208,7 +7367,13 @@ function Workspace:_on_file_changed(path, content)
 
     elseif path == paths.user then
         -- user.json changed: normalize user projects and pass through remerge
-        local user_data = content and user_mod.parse(content) or user_mod.default()
+        local user_data, newer = user_mod.default(), nil
+        if content then local _m; user_data, _m, newer = user_mod.parse(content) end
+        -- A newer schema is never reconciled (it would read as defaults and
+        -- the next save would drop it): back to the refused state (spec §2.7).
+        if newer then return refuse() end
+        local warning = save_guard.newer_writer_warning(path, ".nvim/loomworks.user.json", user_data._meta)
+        if warning then deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
         if user_data.projects and next(user_data.projects) then
             local normalized, norm_err = config_mod.normalize_projects(user_data.projects)
             if normalized then
@@ -7219,11 +7384,17 @@ function Workspace:_on_file_changed(path, content)
             end
         end
         self:remerge(nil, nil, user_data)
+        self:_adopt_disk("user", raw)
 
     elseif path == paths.cache then
         -- cache.json changed: update cache data and remerge
-        local cache_data = content and cache_mod.parse(content) or cache_mod.default()
+        local cache_data, newer = cache_mod.default(), nil
+        if content then local _m; cache_data, _m, newer = cache_mod.parse(content) end
+        if newer then return refuse() end
+        local warning = save_guard.newer_writer_warning(path, ".nvim/loomworks.cache.json", cache_data._meta)
+        if warning then deps.notify("loomworks: " .. warning, vim.log.levels.WARN) end
         self:remerge(nil, cache_data)
+        self:_adopt_disk("cache", raw)
     end
 end
 

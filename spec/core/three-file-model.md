@@ -39,7 +39,7 @@ metadata lives here. All UI mutations land here.
 
 ```json
 {
-  "_meta": { "version": 2 },
+  "_meta": { "version": 2, "written_by": "0.1.43" },
   "name": "reactive",
   "active_profile": "Debug:ninja-gcc-12",
   "projects": { ... },
@@ -108,6 +108,8 @@ specific schema and how options map to cmd flags.
 
 - Always gitignored.
 - Written on every UI mutation (add/edit/remove project, config, profile, etc.).
+  A save never overwrites a working copy another process changed since this
+  one last read it: it is refused and the working copy reloaded (§2.7).
 - Signed with the machine key (§17.3); used only when the signature is valid —
   an unsigned or modified working copy is refused until the user trusts or
   discards it (§17.4). It is the only file whose program-bearing fields
@@ -461,7 +463,7 @@ Sparse record of what has actually been configured and built.
 
 ```json
 {
-  "_meta": { "version": 8, "cached_at": "..." },
+  "_meta": { "version": 8, "cached_at": "...", "written_by": "0.1.43" },
   "build_dirs": {
     "build/App/ninja-gcc-12/Debug": {
       "project_key": "App",
@@ -549,6 +551,9 @@ Sparse record of what has actually been configured and built.
   strip). `absolute_build_dir()` detects absolute paths and returns them
   unchanged. Deletion safety requires the path to be under workspace root.
 - Atomic writes (temp + fsync + rename) with .bak recovery.
+- A save merges with a cache another process changed since this one last read
+  it, per entry, so concurrent processes never lose each other's build records
+  (§2.7).
 
 ### 2.5 Three-file reconciliation
 
@@ -603,6 +608,128 @@ still work.
 - No toolchain/SDK existence validation at UI render time (expensive,
   module-specific — the right place for that check is task launch)
 - No builds driven by cached paths (cache is a record, not a driver)
+
+### 2.7 Concurrent writers
+
+Any number of loomworks processes may hold the same workspace open and write
+its `.nvim/` state at the same time: the editor, any number of CLI
+invocations, a long-lived background process, and **older** loomworks versions
+(an older editor plugin, a repository pinned to an older release, §16.21). Each
+writes whole files atomically (§15 invariant 4) and reconciles the others'
+writes as external changes (§2.4 "External changes", §2.3), but a process only
+notices another's write on its next reconciliation. A save is therefore never a
+blind overwrite of the working copy or the build cache: it is guarded as below.
+(`loomworks.json` is regenerated only on an explicit publish, §2.4, and is not
+guarded.)
+
+**Disk baseline.** Per guarded file (working copy, build cache) each process
+remembers the **exact bytes** it last read from disk — at load, or when it
+reconciled an external change — or last wrote itself; "absent" is a baseline
+too. Before overwriting the file, the process re-reads it; if the bytes differ
+from its baseline, the file changed since this process last saw it, and the
+save is **stale**. The fingerprint is the full content, not a timestamp or a
+counter: modification times are coarse on some file systems and a same-size
+rewrite within one tick is invisible to them, and a counter stored in the file
+would be dropped or reset by an older version that rewrites the file without
+knowing it — exact content detects every foreign write, including those. The
+files are small enough that the extra read is negligible. A process's own
+consecutive saves never appear stale: each write moves its baseline to the
+bytes it wrote.
+
+**Build cache: merge.** A stale cache save is merged, not refused, so another
+process's build record is never lost. The process reads the disk cache
+(verified as in §17.4) and merges per **entry** of the cache's keyed maps
+(`build_dirs`, `deploy_state`, `device_sync`):
+
+- an entry this process **changed** since its last sync with disk — its
+  serialization differs from the one it had when it last read or wrote the
+  file; this includes entries it added or removed — is taken from this
+  process;
+- every other entry, and every top-level member this version does not write,
+  is taken from disk (another process's additions, updates and removals
+  survive).
+
+The merged cache is written, and the process then reconciles its in-memory
+state to it exactly as it would an external change (another process's units
+appear built, configured, reset, …). When both processes changed the **same**
+entry, this process wins; build-state changes to one build directory are
+already serialized by the per-build-directory lock (§16.6), so this only
+arises for bookkeeping that is safe to repeat. A cache that another process
+deleted (a reset of the whole cache) merges as an empty one: only this
+process's own changes are written back. A disk cache that is unsigned is not
+read — this process's cache is written as is, as for any unsigned cache change
+(§17.4); one with an invalid signature or a newer schema is not overwritten —
+the save is refused (reported as for the working copy below) and the change,
+once reconciled, puts the workspace in the refused state (§17.4, and "Reading a
+newer file" below).
+
+**Working copy: refuse and reload.** A stale working-copy save is **refused**:
+nothing is written, the process reloads the working copy from disk (as an
+external change, §2.4, verified per §17.4) — its own unsaved change is
+discarded — and reports:
+
+```
+the working copy (.nvim/loomworks.user.json) changed on disk (another lw or editor) — reloaded it; your last change was not saved, redo it
+```
+
+The editor shows it as an error notification; the CLI prints it as
+`lw: …` and exits **1**. Item-level replay is deliberately not attempted:
+working-copy mutations are not independent per item — a rename propagates
+through configuration sets and profiles, use materializes referenced items
+(§2.4 implicit cascade), and the file must stay self-contained (§2.2) — so
+splicing one process's changed items into another's file can produce a working
+copy neither intended (a profile naming a set the other process removed).
+Refusing keeps both on-disk states intact; redoing a change is cheap, and the
+window in which it can happen is a few seconds of concurrent editing.
+
+**Write lock.** The re-read, the merge and the write happen under a short-lived
+per-file advisory lock: an exclusive create (`O_EXCL`) of
+`<file>.lock` beside the file, held only for that step (milliseconds). A
+process that finds the lock held retries for a bounded time (about two
+seconds). A lock whose file is older than a short stale window (a few seconds —
+far longer than any save) belongs to a crashed holder and is reclaimed by an
+atomic rename, as for the build-directory lock (§16.6). If the lock is still
+held when the retry time runs out, the save proceeds without it — the stale
+check still applies — rather than lose the change. A process removes only a
+lock it still owns.
+
+**Remaining race.** There is no cross-process compare-and-swap for a rename, so
+the guard is advisory. A writer that does not take the lock — a loomworks
+version before this section, or a hand edit — can still write between this
+process's re-read and its rename (a window of milliseconds), and that write is
+then overwritten, as every write was before this section; so can a writer that
+gave up waiting for the lock. Writers that follow this section exclude each
+other completely.
+
+**Writer version stamp.** Every write of the working copy and of the build
+cache records, besides the schema version `_meta.version`, the writing
+loomworks version as `_meta.written_by` (a development build records its last
+released version with a `+dev` suffix; precedence ignores the suffix; a build
+that cannot tell its version records none). In the
+working copy `_meta` is part of the signed bytes (§17.3). Older versions read
+only `_meta.version`, ignore unknown `_meta` members and rewrite `_meta`
+without them; a file without `written_by` was written by such a version.
+
+**Reading a newer file.**
+
+- **Newer schema** — `_meta.version` greater than this version's schema for
+  that file (working copy or build cache): the file is never rewritten. At load
+  the workspace is refused (as for a version mismatch, §15 invariant 11), and a
+  newer-schema file appearing while a workspace is loaded returns it to that
+  refused state instead of being reconciled. The message names both versions
+  and the remedy — `.nvim/loomworks.cache.json was written by loomworks X
+  (schema N), newer than this loomworks Y (schema M) — update loomworks; the
+  file was left unchanged` — and does not offer a reset or a discard as the
+  fix, since the file is valid, only newer.
+- **Same schema, newer writer** — `written_by` newer than the running version:
+  the file is loaded and saved normally, and a warning is shown **once per
+  process per file**: `… was written by loomworks X, newer than this loomworks
+  Y — update loomworks`. This is safe by rule: a change that adds data an older
+  version would drop on rewrite, where the loss matters, **must** bump the
+  file's schema version; fields that may be absent without harm (e.g. the
+  cache's `artifacts`, §2.3) do not.
+- **Older schema** — unchanged: migrated where a migration exists, otherwise
+  refused with the reset/discard remedies of §15 invariant 11.
 
 ---
 

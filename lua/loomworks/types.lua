@@ -83,7 +83,7 @@
 
 --- Parsed loomworks.user.json structure.
 --- @class loomworks.UserData
---- @field _meta { version: number }
+--- @field _meta { version: number, written_by?: string } schema + writing loomworks version (spec §2.7)
 --- @field name? string workspace name override (working copy wins)
 --- @field active_profile? string
 --- @field default_target? table<string, table> profile_key -> descriptor
@@ -104,6 +104,7 @@
 --- @field version number
 --- @field loomworks_hash string
 --- @field cached_at string ISO 8601 timestamp
+--- @field written_by? string loomworks version that wrote the file (spec §2.7; absent = before it)
 
 --- Cached profile entry in cache.json.
 --- @class loomworks.CachedProfile
@@ -424,6 +425,8 @@
 --- @field cache_version_mismatch boolean
 --- @field cache_inconsistent boolean
 --- @field user_version_mismatch boolean
+--- @field user_newer table|nil the working copy's `_meta` when its schema is newer than this version's (spec §2.7)
+--- @field cache_newer table|nil the cache's `_meta` when its schema is newer than this version's (spec §2.7)
 --- @field user_projects_invalid string|nil structural error message, if any
 --- @field user_trust "valid"|"unsigned"|"invalid"|nil working-copy signature status (spec §17.4; nil = absent)
 --- @field cache_trust "valid"|"unsigned"|"invalid"|nil build-cache signature status (nil = absent)

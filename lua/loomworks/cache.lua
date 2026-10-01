@@ -3,6 +3,8 @@ local M = {}
 local io_mod = require("loomworks.io")
 
 local CURRENT_VERSION = 8
+--- The cache schema this version reads and writes (`_meta.version`).
+M.CURRENT_VERSION = CURRENT_VERSION
 
 --- Return the file path for a workspace root.
 --- @param root string
@@ -99,15 +101,20 @@ end
 
 --- Parse raw JSON content into CacheData.
 --- Returns defaults on invalid content. Second return value is true when a
---- version mismatch was detected (valid JSON but wrong version number).
+--- version mismatch was detected (valid JSON but wrong version number); the
+--- third is the file's `_meta` when that mismatch is a NEWER schema than this
+--- version understands (spec §2.7: such a file is never rewritten).
 --- Applies transparent migrations for recent schema bumps (see
 --- `migrate_v7_to_v8`).
 --- @param content string raw JSON content
---- @return loomworks.CacheData data, boolean version_mismatch
+--- @return loomworks.CacheData data, boolean version_mismatch, table|nil newer_meta
 function M.parse(content)
     local ok, raw = pcall(vim.json.decode, content)
     if not ok or type(raw) ~= "table" then
         return M.default(), false
+    end
+    if require("loomworks.save_guard").schema_newer(raw._meta, CURRENT_VERSION) then
+        return M.default(), true, raw._meta
     end
     migrate_v7_to_v8(raw)
     if not raw._meta or raw._meta.version ~= CURRENT_VERSION then
@@ -156,14 +163,16 @@ function M.load(root)
     return data
 end
 
---- Save cache for a workspace.
+--- Save cache for a workspace. Stamps the schema and the writer's loomworks
+--- version (`_meta.written_by`, spec §2.7).
 --- @param root string
 --- @param data loomworks.CacheData
---- @return boolean ok, string|nil err
+--- @return boolean ok, string|nil err, string|nil sign_err, string|nil written exact bytes written
 function M.save(root, data)
     data._meta = data._meta or {}
     data._meta.version = CURRENT_VERSION
     data._meta.cached_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    data._meta.written_by = require("loomworks.save_guard").version()
 
     local dir = root .. "/.nvim"
     local ok, dir_err = io_mod.ensure_dir(dir)

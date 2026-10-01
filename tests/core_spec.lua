@@ -3104,7 +3104,7 @@ describe("Core", function()
             local files = {
                 ["loomworks.json"] = h.make_config_json(),
                 ["loomworks.user.json"] = vim.json.encode({
-                    _meta = { version = 999 },
+                    _meta = { version = 0 }, -- an OLDER unsupported schema (newer: spec §2.7)
                     active_profile = "debug",
                 }),
             }

@@ -314,8 +314,9 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `io.lua` | Atomic file read/write (sync and async), JSON encode/decode (`write_json` pretty-prints with keys sorted at every depth via `encode_sorted` — stable diffs for user.json / loomworks.json / cache), rm_rf (sync) / rm_rf_async (libuv async fs ops — no subprocess, no shell; `lstat`-based so links/junctions are removed, never followed; read-only files chmod'ed and retried), directory creation, read_file_async/read_files_async (libuv callbacks) | Validate domain semantics; know about loomworks data model |
 | `config.lua` | `loomworks.json` parsing, validation, project type extraction. `_extract_device` lifts a project's `device` block (§18.9) out of the module section (legacy top-level location still read) | Write files (config is read-only) |
-| `user.lua` | `loomworks.user.json` parse/save/defaults; `save` signs (`io.write_json_signed`), `load` returns nil + status for a file not signed by this machine | Validate beyond structural correctness |
-| `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking; `save` signs | Business logic; auto-migration |
+| `user.lua` | `loomworks.user.json` parse/save/defaults; `save` signs (`io.write_json_signed`), stamps `_meta.written_by` and returns the bytes written; `load` returns nil + status for a file not signed by this machine (`"newer"` + message for a newer schema) | Validate beyond structural correctness |
+| `cache.lua` | `loomworks.cache.json` parse/save/defaults, version checking (`parse`'s third value is the `_meta` of a NEWER schema, spec §2.7); `save` signs, stamps `_meta.written_by` and returns the bytes written | Business logic; auto-migration |
+| `save_guard.lua` | Concurrent-writer primitives (spec §2.7), host-neutral, no boot dependency: `version()` (the running release, else CHANGELOG's newest release + `+dev`), `is_newer`, `newer_writer_warning` (warn once per process per file), `newer_schema_message` / `schema_newer`; the save lock `lock(path)` / `unlock(handle)` (`<file>.lock`, O_EXCL, waits `WAIT_MS`, reclaims after `STALE_SECONDS` by rename, unlocks only its own token, gives up → unlocked save); `snapshot_cache(cache)` (per-entry `encode_sorted`) and `merge_cache(ours, theirs, snapshot)` (per entry of `build_dirs`/`deploy_state`/`device_sync`: changed-here wins, all else from disk) | Decide policy (Workspace does), read workspace state |
 | `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review) | Decide policy (callers decide what refusal means) |
 | `program_fields.lua` | Program-bearing fields (spec §17.6): `strip(config, modules)` removes them from the parsed shared config before any merge (generic: configuration/override `env`, launches naming command/args/env/working_dir, non-local deploy destinations, shared SDK paths; plus each module's `trust_fields.type_config`), `regraft(raw, ignored)` restores them on publish, `diagnostics(ignored, merged)`, `review(user_data, modules)` for the trust prompt | Know module names |
 | `env_policy.lua` | Environment denylist (spec §17.9): `is_denied(name)` (case-insensitive, prefix entries), `filter(env, opts)` with one-time warnings (silent for a captured tool env that repeats the process's own value) | Touch the process environment |
@@ -457,9 +458,44 @@ file_tracker (uv.fs_poll, 2s interval, owned by Workspace)
     → config changed → reassemble + validate + update ws fields + remerge
     → user changed   → re-parse user data + remerge
     → cache changed  → re-parse cache data + remerge
+    (a newer schema → core:setup(), the refused state; the delivered bytes
+     become the disk baseline via _adopt_disk)
   → ws:remerge() → events.emit("active_set_changed")
   → UI/integrations react to event
 ```
+
+### Concurrent writers (spec §2.7)
+
+The editor, CLI invocations and older versions write the same working copy and
+cache. `Workspace._disk_baseline[kind].text` holds the exact bytes this process
+last read (`Core:_on_files_read` and `_on_file_changed` → `_adopt_disk`) or
+wrote (`_record_written`, from the bytes `io.write_json_signed` returns — never a
+re-read). `FileTracker:mark_written(path, content)` takes those bytes too, so a
+foreign write landing right after ours is still delivered.
+
+```
+_save_cache()                          _save_user()
+  serialize; lock <cache>.lock           serialize; lock <user>.lock
+  disk == baseline? ─yes─> write          disk == baseline? ─yes─> write
+     │ no                                    │ no
+  _disk_cache_for_merge(disk)             unlock; tracker:mark_written(disk)
+   unsigned/older → write ours as is      _on_file_changed(user, disk)  (reload)
+   invalid sig / newer schema → refuse    _report_save_refused(STALE_USER_MESSAGE)
+   valid → save_guard.merge_cache(        return false, msg
+     ours, theirs, _cache_snapshot)
+  write; unlock; _record_written
+  merged → remerge(nil, merged)
+  _cache_snapshot = snapshot_cache(...)
+```
+
+`_cache_snapshot` is the per-entry serialization at the last sync with disk;
+an entry whose current serialization differs is "changed here". It is re-taken
+after every load, reconciliation (including a loomworks.json change) and save.
+`_report_save_refused` calls `deps.on_save_refused` when the host set one (the
+CLI: `die` → `lw: …`, exit 1), else notifies an error. `_save_stats` counts
+merges and refusals. A newer-schema file refuses `Core:_on_files_read`
+(`setup_error.newer`; a live workspace is unloaded as for a trust refusal);
+a same-schema newer `written_by` warns once (`save_guard.newer_writer_warning`).
 
 ### Workspace trust (spec §17)
 
