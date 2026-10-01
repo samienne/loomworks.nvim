@@ -356,6 +356,10 @@ dangerous things.
   on that host are judged by heartbeat alone (a dead holder is then reclaimed
   only after the heartbeat window, and a hung one is indistinguishable from a
   dead one).
+- A process tree is enumerated by parent process id. On Windows that reaches
+  native children only: a grandchild started through an MSYS/Cygwin shell
+  (for example `sleep` under Git's `sh`) has no Windows parent link to the
+  holder and survives the kill.
 
 **Required tests.**
 
