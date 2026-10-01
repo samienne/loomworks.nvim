@@ -51,11 +51,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw import`: an item the working copy already has keeps its intent (local or
   local+shared); only new items take theirs from `loomworks.json`. Exporting
   and importing on the same workspace no longer turns shared items local.
-  `--shared` and `--local` still override. (#PR)
+  `--shared` and `--local` still override. (#102)
 - `lw import` replaces a working copy that is not signed by this machine (for
   example one written by an older `lw` in a worktree) instead of refusing:
   `--dry-run` always works, and a confirmed import replaces the file unread,
-  keeping a backup and none of its settings. (#PR)
+  keeping a backup and none of its settings. (#102)
 - The working copy and the build cache record the loomworks version that wrote
   them. A file whose format is newer than the running loomworks understands is
   never rewritten: the workspace is not loaded and the message asks you to
@@ -92,7 +92,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw publish` would remove items from `loomworks.json` when there was no
   `loomworks.json` (and labelled it `--local` without that option); the warning
   now appears only when the file exists and items would really be removed,
-  and names them. (#PR)
+  and names them. (#102)
 - A build recorded by `lw build` while the editor was open could be lost: the
   editor's next save of the build cache overwrote it. Saves now merge with the
   cache on disk, keeping the other process's build records. (#94)
