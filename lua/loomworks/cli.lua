@@ -6858,6 +6858,12 @@ local function effective_config_default(key)
     -- Precedence mirrors boot.update.resolve_channel (env > config > default).
     return os.getenv("LOOMWORKS_CHANNEL") or "stable"
   end
+  if key == "runtime-mode" then
+    -- Precedence mirrors loomworks.daemon.runtime.resolve (env > config > default).
+    local rt = require("loomworks.daemon.runtime")
+    local v = os.getenv(rt.ENV)
+    return (rt.is_valid(v) and v) or rt.DEFAULT
+  end
   return nil
 end
 
@@ -6892,6 +6898,9 @@ function M.cmd_settings(sub, key, value)
     end
     if key == "release-notes" and value ~= "on" and value ~= "off" then
       die("invalid value '" .. value .. "' for release-notes — use 'on' or 'off'")
+    end
+    if key == "runtime-mode" and not require("loomworks.daemon.runtime").is_valid(value) then
+      die("invalid runtime-mode '" .. value .. "' — use 'in-process' or 'daemon'")
     end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
@@ -7525,6 +7534,34 @@ end
 --- it never changes the rendering.
 --- `opts.submodule` (the submodule dir the root search crossed, spec §1.1)
 --- adds a one-line note that the workspace came from the superproject.
+--- The `Runtime` row of `lw status` (spec §19.6), computed from the runtime
+--- lock and handle files only (nil only if that fails).
+--- @param root string
+--- @return string|nil
+function M._runtime_row(root)
+  local ok, row = pcall(function()
+    local rt = require("loomworks.daemon.runtime")
+    local mode = rt.resolve(read_config()[rt.SETTING])
+    local inspect = require("loomworks.daemon.inspect")
+    return inspect.row(inspect.state(root), mode, require("loomworks.daemon.version").identity())
+  end)
+  return ok and row or nil
+end
+
+--- The output helpers loomworks.daemon.command uses.
+--- @return table
+function M._daemon_host()
+  return { out = out, note = note, errw = errw, die = die, config = read_config(), finish = finish }
+end
+
+--- `lw daemon <sub>` (spec §19.11) — loomworks.daemon.command.
+--- @param root string|nil
+--- @param args string[]
+--- @return integer
+function M.cmd_daemon(root, args)
+  return require("loomworks.daemon.command").run(args[2], root, args, M._daemon_host())
+end
+
 function M.cmd_status(root, opts)
   opts = opts or {}
   if not root then
@@ -7610,6 +7647,13 @@ function M.cmd_status(root, opts)
     -- --cache-stats needs a profile to resolve the cache tool from.
     out(pal.title("Cache") .. string.rep(" ", 12)
       .. pal.dim("(no active profile — activate one with `lw profile select` for --cache-stats)"))
+  end
+
+  -- Runtime row (spec §19.6): from the runtime lock and handle files only —
+  -- never launches or connects.
+  do
+    local row = M._runtime_row(root)
+    if row then out(pal.title("Runtime") .. string.rep(" ", 10) .. pal.dim(row)) end
   end
 
   -- Diagnostics section — right after the active-profile block, before Targets.
@@ -9285,7 +9329,7 @@ local COMP_COMMANDS = {
   "status", "init", "project", "config", "configset",
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "export", "import", "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
-  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes",
+  "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes", "daemon",
   "--no-input",
 }
 
@@ -9352,12 +9396,17 @@ function M.cmd_complete(cword, words)
       emit({ "--channel", "--pin-only", "--force" })
     end
     return 0
+  elseif cmd == "daemon" then
+    if n == 1 then emit(require("loomworks.daemon.command").SUBS) end
+    return 0
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
-      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes" })
+      emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes",
+        "runtime-mode" })
     end
     if n == 3 and sub == "set" and a[3] == "release-notes" then emit({ "on", "off" }) end
+    if n == 3 and sub == "set" and a[3] == "runtime-mode" then emit({ "in-process", "daemon" }) end
     return 0
   elseif cmd == "build" and n >= 2 and a[n] == "--target" then
     -- `lw build <profile> --target <TAB>`: the named profile's parsed build
@@ -9933,6 +9982,24 @@ Nuke holds the workspace operation lock and the build lock of every build
 directory it removes, so it refuses while a build runs ("cannot nuke: a
 build is running in ...") instead of deleting under it. `--break-locks[=now]`
 stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
+  daemon = [[lw daemon [status]
+
+EXPERIMENTAL, opt-in. The workspace daemon is one long-lived `lw` process per
+workspace that will, step by step, run the workspace's operations for every
+client (the editor and each `lw` command). Nothing is routed through it yet:
+with the default runtime mode, `in-process`, lw behaves exactly as before.
+
+  status    (also bare `lw daemon`) the runtime mode and the workspace's
+            daemon as its files describe it: pid, host, version, endpoint,
+            heartbeat. Never starts or contacts a daemon.
+
+Runtime mode: `lw settings set runtime-mode in-process|daemon`, or the
+LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
+`Runtime` row, read from the files below only.
+
+Files: .nvim/loomworks.daemon.lock (the runtime lock: one runtime per
+workspace) and .nvim/loomworks.daemon.json (the handle a client finds the
+daemon by).]],
   unlock = [[lw unlock <profile> | <build dir> | --workspace | --journal | --all [--force] | --device <serial>
 
 Clear build-directory locks. loomworks serializes configure/build/clean on a
@@ -11280,6 +11347,7 @@ Usage: lw [command] [args]
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
   unlock <profile>  clear a stuck build-dir lock (--all, --force, --device <serial>)
+  daemon [status]   the workspace daemon (experimental, opt-in: runtime-mode)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
   test  [profile]   build a profile, then run its tests (real exit code)
@@ -11517,6 +11585,12 @@ local function main()
   -- runs from elsewhere (the luvi host runs from the bundle dir).
   -- `root_info.submodule` is set when the root came from a superproject.
   local root, root_info = find_root(os.getenv("LW_ROOT"))
+
+  -- `daemon` manages the workspace runtime (spec §19.11); it never loads the
+  -- workspace, and `status` works outside one.
+  if command == "daemon" then
+    finish(M.cmd_daemon(root, a))
+  end
 
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then

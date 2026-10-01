@@ -584,6 +584,32 @@ step only changes *where* an operation runs. The experimental implementation
 of the daemon layers (`lua/loomworks/daemon/*`) lives on draft PR #88 and is
 re-cut onto master step by step; this section is expanded as each step lands.
 
+**Step 2 (lifetime, opt-in `runtime-mode daemon`)** lives in
+`lua/loomworks/daemon/`:
+
+- `runtime.lua` — resolves the mode (`LOOMWORKS_RUNTIME` > setting
+  `runtime-mode` / editor option `runtime.mode` > `in-process`); never
+  launches anything.
+- `paths.lua` — the runtime lock / handle paths under `.nvim/`, the per-user
+  state directory (`<data dir>/daemon`) and the root hash naming per-user
+  files.
+- `version.lua` — what the handshake compares: `PROTOCOL`, the host identity
+  (release version, or `<version>+dev.<fingerprint>` over the source files'
+  paths/sizes/mtimes for a development build) and the schema versions.
+- `rlock.lua` — the runtime lock R on the build-lock primitive
+  (`build_lock.try_acquire_path`, the §19.5 record plus `mode`, `command`,
+  `host_version`).
+- `handle.lua` — the handle: atomic write (staged + rename), validated read
+  (malformed = unreadable), `remove(root, expect)` of exactly the named
+  daemon's regular file.
+- `inspect.lua` — the state of the runtime from those two files only (none /
+  live / starting / hung / foreign / attached / stale / unreadable) and the
+  `Runtime` row text; `M._runtime_row` in `cli.lua` renders it in
+  `lw status`.
+- `command.lua` — `lw daemon <sub>`, kept out of `cli.lua` (at the 200-local
+  limit); `cli.lua`'s `M.cmd_daemon` passes its output helpers
+  (`M._daemon_host`).
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller

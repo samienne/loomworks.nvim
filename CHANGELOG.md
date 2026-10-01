@@ -41,6 +41,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
+  default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
+  workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
+  show the mode and any daemon from its files; neither ever starts one. (#105)
 - Operations that change several workspace files at once (publish, import,
   pull, cache-propagating renames, profile removal, reset, nuke,
   `lw trust --discard`, and the editor's delete / reset / nuke) take a
