@@ -370,8 +370,17 @@ let go within the wait:
    works across versions); a non-daemon `lw` holder is sent the interrupt it
    handles (§16.6) where the platform allows signalling it. Wait a bounded time
    (about 5 s). `--break-locks=now` skips this step.
-2. **Kill** the holder's process tree — the daemon's process group, or the
-   holder and its enumerated descendants (on Windows a forced tree
+2. **Kill** — only once the process the record names is verified to be such
+   a holder: its command line (Windows: the process's command line; Linux:
+   `/proc/<pid>/cmdline`; macOS: `KERN_PROCARGS2`) is an `lw` host — the `lw`
+   binary or a pinned copy, a development `luvi` run, or the nvim-hosted
+   `nvim … -l …/loomworks/cli.lua` — and, for a daemon holder,
+   `lw … daemon run` (for this workspace when it names one with `--root`).
+   A record is data from a shared directory: one naming an unrelated process
+   of the user is refused (the process is never signalled), as is a holder
+   whose command line cannot be read; the remedy is to remove the record
+   without stopping anything. Then kill the holder's process tree — the
+   daemon's process group, or the holder and its enumerated descendants (on Windows a forced tree
    termination).
 3. **Verify** that no process with the holder's id and start time remains;
    otherwise fail and name the process.
@@ -516,7 +525,13 @@ system **and** gated by authentication (§19.8).
   `SYSTEM` only and an explicit deny for the `NETWORK` SID. A daemon that cannot
   apply the DACL does not serve and exits with an error.
 
-Clients never compute the address; they read it from the handle.
+Clients read the address from the handle, and use it only when it is an
+address a daemon of this workspace binds — on Windows exactly the pipe name
+above, on POSIX one of the per-user socket paths. Any other address (a
+remote `\\host\pipe\…`, another user's socket) marks the handle as
+untrusted: nothing is connected to, and the command says so. The handle sits
+in a `.nvim/` other local users may be able to write; connecting to a remote
+pipe would hand the user's credentials to that host.
 
 ### 19.8 Wire protocol and authentication
 

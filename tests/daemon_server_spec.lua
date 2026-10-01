@@ -520,6 +520,166 @@ describe("version handshake (§19.9)", function()
     end)
 end)
 
+describe("review hardening (§19.5, §19.7)", function()
+    local LH = require("tests.lock_helpers")
+    local command = require("loomworks.daemon.command")
+    local lock_break = require("loomworks.lock_break")
+    local build_lock = require("loomworks.build_lock")
+    local root
+    local strangers = {}
+    before_each(function()
+        root = H.workspace()
+        trust._set_key_path(H.tmp() .. "/trust.key")
+    end)
+    after_each(function()
+        LH.cleanup()
+        for _, s in ipairs(strangers) do
+            if proc.alive(s.pid, s.start) then proc.kill_tree(s.pid, s.start) end
+        end
+        strangers = {}
+        trust._set_key_path(nil)
+    end)
+
+    --- A harmless process that is not lw (an nvim with no loomworks script).
+    local function stranger()
+        local h, pid = uv.spawn(vim.v.progpath, { args = { "--headless", "--clean", "-c", "sleep 60", "-c", "qa!" } },
+            function() end)
+        assert(h, pid)
+        assert(vim.wait(5000, function() return type(proc.start_time(pid)) == "string" end, 20))
+        local s = { pid = pid, start = proc.start_time(pid) }
+        strangers[#strangers + 1] = s
+        return s
+    end
+
+    local function host_capture()
+        local out = {}
+        return {
+            out = function(l) out[#out + 1] = l end,
+            note = function(l) out[#out + 1] = l end,
+            die = function(msg, code) error({ die = msg, code = code }, 0) end,
+            finish = function() end, config = {},
+        }, out
+    end
+
+    it("a handle naming a foreign endpoint is never connected to", function()
+        local holder = LH.hold(dpaths.lock_path(root), "daemon", "daemon")
+        H.track(holder.pid, holder.start)
+        -- A real listener at an endpoint that is not this workspace's.
+        local fake_addr = H.is_win and ([[\\.\pipe\lwtest-fake-]] .. dpaths.short_hash(root)) or (H.tmp() .. "/f.sock")
+        local fake, accepted = uv.new_pipe(false), 0
+        assert(fake:bind(fake_addr))
+        fake:listen(4, function()
+            accepted = accepted + 1
+            local c = uv.new_pipe(false); fake:accept(c); c:close()
+        end)
+        local connects = 0
+        local real_connect = client.connect
+        client.connect = function(...) connects = connects + 1; return real_connect(...) end
+        local forged = { fake_addr, H.is_win and [[\\attacker-host\pipe\x]] or "/tmp/elsewhere.sock" }
+        local ok, err = pcall(function()
+            for _, addr in ipairs(forged) do
+                handle.write(root, { pid = holder.pid, host = lock_record.this_host(), endpoint = addr, protocol = 2,
+                    lw_version = require("loomworks.daemon.version").identity(), clients = 0 })
+                local host, out = host_capture()
+                command.status(root, host)
+                local text = table.concat(out, "\n")
+                assert(text:find("untrusted handle", 1, true), text)
+                local okd, d = pcall(command.stop, root, host, {})
+                assert(not okd and type(d) == "table" and tostring(d.die):find("untrusted handle", 1, true),
+                    vim.inspect(d))
+            end
+        end)
+        client.connect = real_connect
+        vim.wait(300, function() return false end, 10)
+        pcall(function() fake:close() end)
+        assert(ok, err)
+        assert.equals(0, connects)
+        assert.equals(0, accepted)
+        assert.is_true(endpoint.check(root, endpoint.address(root)))
+    end)
+
+    it("stop --force / kill never kill a process the runtime lock merely names", function()
+        local s = stranger()
+        local rec = lock_record.new("daemon", { mode = "daemon" })
+        rec.pid, rec.start_time, rec.kind = s.pid, s.start, "daemon"
+        local f = assert(io.open(dpaths.lock_path(root), "w")); f:write(vim.json.encode(rec)); f:close()
+        local env = H.env()
+        for _, args in ipairs({ { "daemon", "kill" }, { "daemon", "stop", "--force" } }) do
+            local r = H.lw(args, { env = env, cwd = root })
+            assert.equals(1, r.code, r.stdout .. r.stderr)
+            assert.truthy(r.stderr:find("is not one", 1, true), r.stderr)
+            assert.is_true(proc.alive(s.pid, s.start))
+        end
+        -- Hung (stale heartbeat): still never killed.
+        local t = os.time() - 120
+        uv.fs_utime(dpaths.lock_path(root), t, t)
+        local r = H.lw({ "daemon", "kill" }, { env = env, cwd = root })
+        assert.equals(1, r.code)
+        assert.is_true(proc.alive(s.pid, s.start))
+        os.remove(dpaths.lock_path(root))
+    end)
+
+    it("--break-locks never kills a process a build-directory lock merely names", function()
+        local s = stranger()
+        local dir = root .. "/build"
+        local rec = lock_record.new("build")
+        rec.pid, rec.start_time, rec.kind = s.pid, s.start, "lw"
+        local f = assert(io.open(build_lock.lock_path(dir), "w")); f:write(vim.json.encode(rec)); f:close()
+        local saved = lock_break.requested
+        lock_break.requested = "now"
+        local h, msg = lock_break.acquire(function()
+            return build_lock.try_acquire_path(build_lock.lock_path(dir), "build")
+        end, { what = "build", command = "lw build", unlock = "build" })
+        lock_break.requested = saved
+        if h then build_lock.release(h) end
+        assert.is_nil(h)
+        assert.truthy(tostring(msg):find("is not one", 1, true), msg)
+        assert.is_true(proc.alive(s.pid, s.start))
+        -- An lw host's command line is recognised.
+        assert.is_true(proc.is_lw({ "C:/x/lw.exe", "build" }))
+        assert.is_true(proc.is_lw({ "/usr/bin/nvim", "--headless", "-l", "/r/lua/loomworks/cli.lua" }))
+        assert.is_true(proc.is_daemon_for({ "lw", "daemon", "run", "--root", root }, root))
+        assert.is_false(proc.is_daemon_for({ "lw", "daemon", "run", "--root", H.tmp() }, root))
+        assert.is_false(proc.is_daemon_for({ "lw", "build" }, root))
+        assert.is_false(proc.is_lw({ "/usr/bin/nvim", "--headless" }))
+    end)
+
+    it("a handler error is an error reply; an error in the loop still releases the runtime lock", function()
+        local exited
+        local srv = server_mod.new(root, { exit = function(c) exited = c end, tick_ms = 100, auth_timeout_ms = 30000 })
+        assert(srv:start())
+        srv.status = function() error("boom") end
+        local conn = assert(client.session(srv.address))
+        local reply, err = client.request(conn, { kind = "status" })
+        assert.is_nil(reply)
+        assert.equals("internal error", err)
+        assert.truthy(client.request(conn, { kind = "ping" }))
+        conn:close()
+        local real_touch = handle.touch
+        handle.touch = function() error("disk on fire") end
+        local done = vim.wait(5000, function() return exited ~= nil end, 10)
+        handle.touch = real_touch
+        assert.is_true(done)
+        assert.equals(1, exited)
+        assert.is_nil(rlock.read(root))
+        assert.is_nil(handle.read(root))
+    end)
+
+    it("a failed spawn still restores the std handles' inherit flags", function()
+        local launch = require("loomworks.daemon.launch")
+        local restored = false
+        local real_ni, real_spawn = launch._no_inherit_std, uv.spawn
+        launch._no_inherit_std = function() return function() restored = true end end
+        uv.spawn = function() error("spawn exploded") end
+        local ok, child, err = pcall(launch.spawn, root)
+        launch._no_inherit_std, uv.spawn = real_ni, real_spawn
+        assert.is_true(ok, tostring(child))
+        assert.is_nil(child)
+        assert.truthy(tostring(err):find("spawn exploded", 1, true))
+        assert.is_true(restored)
+    end)
+end)
+
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()

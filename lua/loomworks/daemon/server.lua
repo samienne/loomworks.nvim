@@ -166,7 +166,7 @@ function Server:start()
         return nil, "no machine key for authentication: " .. tostring(kerr), 1
     end
     self.key = key
-    local server, addr = endpoint.listen(self.root, function(err) self:_on_connection(err) end)
+    local server, addr = endpoint.listen(self.root, function(err) self:_guard(self._on_connection, err) end)
     if not server then
         rlock.release(R)
         return nil, addr, 1
@@ -175,7 +175,7 @@ function Server:start()
     self.candidates = endpoint._posix_candidates(self.root)
     self:_write_handle()
     self.timer = uv.new_timer()
-    self.timer:start(self.tick_ms, self.tick_ms, function() self:_tick() end)
+    self.timer:start(self.tick_ms, self.tick_ms, function() self:_guard(self._tick) end)
     if package.config:sub(1, 1) ~= "\\" and uv.new_signal then
         pcall(function()
             self.sigterm = uv.new_signal()
@@ -185,6 +185,17 @@ function Server:start()
     self:log("daemon pid %d serving %s on %s (lw %s, protocol %d)", self.pid, self.root, addr,
         self.identity, protocol.VERSION)
     return true
+end
+
+--- Run a callback of the event loop; a Lua error in it is fatal for the
+--- daemon but still takes the stop path (handle and socket removed, the
+--- runtime lock released, the process ended) — never a daemon that keeps R
+--- while its loop is broken.
+function Server:_guard(fn, ...)
+    local ok, err = pcall(fn, self, ...)
+    if ok then return end
+    self:log("internal error: %s", tostring(err))
+    if not self.stopped then pcall(self.stop, self, "internal error: " .. tostring(err), 1) end
 end
 
 --- The heartbeat (§19.2, §19.6; lifetime checks of §19.11 via `lifetime`).
@@ -274,6 +285,17 @@ function Server:_on_connection(err)
         if not conn.authed then self:_close(conn, "not authenticated in time") end
     end)
     sock:read_start(function(rerr, chunk)
+        local ok, err = pcall(self._on_read, self, conn, rerr, chunk)
+        if not ok then
+            self:log("internal error on a connection: %s", tostring(err))
+            pcall(self._close, self, conn)
+        end
+    end)
+end
+
+--- Bytes (or EOF / an error) arrived on a connection.
+function Server:_on_read(conn, rerr, chunk)
+    do
         if rerr or not chunk then return self:_close(conn) end
         conn.last_seen = uv.now()
         local msgs, derr = conn.decoder:push(chunk)
@@ -290,7 +312,7 @@ function Server:_on_connection(err)
                 self:_handshake(conn, msg)
             end
         end
-    end)
+    end
 end
 
 --- The pre-authentication state machine: only `hello`, then `auth`.
@@ -338,7 +360,17 @@ function Server:status()
 end
 
 --- Authenticated requests: the frozen control subset.
+--- An authenticated request: a handler error is a typed error reply (§19.8),
+--- never a crash.
 function Server:_dispatch(conn, msg)
+    local ok, err = pcall(self._dispatch_request, self, conn, msg)
+    if not ok then
+        self:log("handler error for %s: %s", tostring(msg.kind), tostring(err))
+        self:_send(conn, { kind = protocol.KIND.error, req_id = msg.req_id, error = "internal error" })
+    end
+end
+
+function Server:_dispatch_request(conn, msg)
     local K = protocol.KIND
     self.last_request = os.time()
     local function reply(fields, cb)

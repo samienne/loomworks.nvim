@@ -142,10 +142,13 @@ function M.spawn(root, opts)
     pcall(vim.fn.mkdir, cwd, "p")
     if not uv.fs_stat(cwd) then return nil, "cannot create " .. cwd end
     local child = { code = nil }
+    local env = M.env(root)
     local restore = M._no_inherit_std()
-    local h, pid = uv.spawn(exe, {
+    -- Whatever happens in the spawn, the std handles' inherit flags are
+    -- restored.
+    local okp, h, pid = pcall(uv.spawn, exe, {
         args = argv,
-        env = M.env(root),
+        env = env,
         cwd = cwd,
         stdio = { nil, nil, nil },
         detached = true,
@@ -155,6 +158,7 @@ function M.spawn(root, opts)
         if child.handle and not child.handle:is_closing() then pcall(function() child.handle:close() end) end
     end)
     restore()
+    if not okp then return nil, "cannot start " .. tostring(exe) .. ": " .. tostring(h) end
     if not h then return nil, "cannot start " .. tostring(exe) .. ": " .. tostring(pid) end
     child.handle, child.pid = h, pid
     pcall(function() h:unref() end)

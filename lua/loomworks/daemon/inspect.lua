@@ -25,7 +25,7 @@ local M = {}
 function M.state(root)
     local lk = rlock.read(root)
     local h = handle.read(root)
-    local s = { lock = lk, handle = h }
+    local s = { lock = lk, handle = h, root = root }
     if lk and (lk.state == "live" or lk.state == "hung") then
         local is_daemon = lk.mode == "daemon" or (lk.mode == nil and lk.kind == "daemon")
         if not lock_record.same_host(lk) then

@@ -236,6 +236,31 @@ function M.read_dacl(pipe)
     return s
 end
 
+--- Is `addr` an endpoint a daemon of this workspace would bind — exactly
+--- `address(root)` on Windows, one of the per-user socket candidates on
+--- POSIX? A client connects to nothing else (spec §19.7): the handle lives
+--- in a `.nvim/` other local users may be able to write, and a forged one
+--- naming `\\host\pipe\x` would make a client open a remote pipe (an SMB
+--- connection that leaks the user's NTLM hash) or another user's socket.
+--- Returns true, or false + the refusal.
+--- @param root string
+--- @param addr any
+--- @return boolean ok, string|nil err
+function M.check(root, addr)
+    if type(addr) == "string" then
+        if is_win() then
+            if addr == M.address(root) then return true end
+        else
+            for _, c in ipairs(posix_candidates(root)) do
+                if c.path == addr then return true end
+            end
+        end
+    end
+    return false, "untrusted handle: it names the endpoint " .. tostring(addr)
+        .. ", which no daemon of this workspace uses — not connecting to it (the handle may have been "
+        .. "planted; `lw daemon stop --force` recovers the runtime lock's holder)"
+end
+
 -- ---------------------------------------------------------------------------
 -- Listen
 -- ---------------------------------------------------------------------------

@@ -63,12 +63,26 @@ local function has(args, flag)
     return false
 end
 
+--- Send one frozen control request to the daemon a state describes —
+--- only when the handle names this workspace's own endpoint
+--- (loomworks.daemon.endpoint.check); otherwise nothing is connected to and
+--- the error starts with "untrusted".
+--- @param st table inspect.state(root)
+--- @param kind string
+--- @param timeout_ms? integer
+--- @return table|nil reply, string|nil err
+function M.request(st, kind, timeout_ms)
+    local h = st.handle
+    if not h or not h.valid then return nil, "no handle" end
+    local ok, why = require("loomworks.daemon.endpoint").check(st.root, h.endpoint)
+    if not ok then return nil, why end
+    return require("loomworks.daemon.client").call(h.endpoint, kind, { timeout_ms = timeout_ms or 2000 })
+end
+
 --- Ask a live daemon for its status over the endpoint (frozen `status`).
 --- @return table|nil reply, string|nil err
 function M.query(st, timeout_ms)
-    local h = st.handle
-    if not h or not h.valid then return nil, "no handle" end
-    return require("loomworks.daemon.client").call(h.endpoint, "status", { timeout_ms = timeout_ms or 2000 })
+    return M.request(st, "status", timeout_ms)
 end
 
 --- `lw daemon status`: the mode, then the daemon as its files describe it,
@@ -109,6 +123,8 @@ function M.status(root, host)
         if r then
             out(string.format("  answers      %d client%s%s", tonumber(r.clients) or 0, r.clients == 1 and "" or "s",
                 r.retiring and ", retiring (exits when idle)" or ""))
+        elseif tostring(err):match("^untrusted handle") then
+            out("  answers      NOT ASKED — " .. tostring(err))
         elseif tostring(err):match("^untrusted") then
             out("  answers      NO — the endpoint did not authenticate as this machine's daemon (untrusted)")
         else
@@ -155,7 +171,8 @@ function M.force(root, host, st, ask)
     local lb = require("loomworks.lock_break")
     local proc = require("loomworks.proc")
     local info = st.lock
-    local ctx = { what = "the workspace runtime", command = "lw daemon stop", unlock = nil }
+    local ctx = { what = "the workspace runtime", command = "lw daemon stop", root = root,
+        remedy = "delete " .. require("loomworks.daemon.paths").lock_path(root) .. " by hand" }
     local ok, why = lb.can_break(info, ctx)
     if not ok then host.die(why, 1) end
     local report = function(line) host.note("lw: " .. line); M.record(root, line) end
@@ -209,9 +226,7 @@ end
 
 --- Send `stop` (best effort, short timeout). Returns the reply or nil.
 function M.query_stop(st)
-    local h = st.handle
-    if not h or not h.valid then return nil end
-    return require("loomworks.daemon.client").call(h.endpoint, "stop", { timeout_ms = 2000 })
+    return M.request(st, "stop", 2000)
 end
 
 --- `lw daemon stop [--force]` / `lw daemon kill`.
@@ -252,6 +267,7 @@ function M.stop(root, host, opts)
         if st.kind ~= "live" then host.die(not_responding(lk), 1) end
     end
     local _, err = M.query_stop(st)
+    if err and tostring(err):match("^untrusted handle") then host.die(tostring(err), 1) end
     if err and tostring(err):match("^untrusted") then
         host.die("the daemon endpoint " .. tostring(st.handle.endpoint) .. " did not authenticate as this "
             .. "machine's daemon (untrusted) — not sending it anything; `lw daemon stop --force` stops the "

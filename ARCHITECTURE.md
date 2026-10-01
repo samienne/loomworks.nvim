@@ -636,6 +636,21 @@ re-cut onto master step by step; this section is expanded as each step lands.
   remove handle + socket while R is ours, release R, `opts.exit`). Identity
   and schemas are captured at start (the editor host forbids `vim.fn` in
   libuv callbacks — the version fingerprint uses `vim.fn.sha256`).
+- Hardening: `endpoint.check(root, addr)` — a client connects only to an
+  address this workspace's daemon binds (`command.request`, and `ensure`), so
+  a planted handle naming `\\host\pipe\x` never opens an SMB connection;
+  `proc.cmdline(pid, st)` (Windows `NtQueryInformationProcess` class 60 +
+  `CommandLineToArgvW`, Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`)
+  with `proc.is_lw` / `proc.is_daemon_for`, checked by
+  `lock_break.verify_identity` from `can_break` — so `--break-locks`,
+  `lw daemon stop --force` and `kill` never kill a process a forged record
+  merely names (test helpers run as `…/loomworks/cli.lua` copies for that
+  reason); `io.write_exclusive` / `io.write_fresh` — temporary files
+  (`write_file_atomic`'s `.tmp`, the journal's `.tmp`, staged copies, the
+  handle's `.tmp-<random>`) are created with O_EXCL, never through a planted
+  file or link; `Server:_guard` / `_on_read` / `_dispatch` pcall every loop
+  callback (a handler error is an error reply; a loop error still takes the
+  stop path).
 - `client.lua` — `connect` (hello built before going async, server proof
   verified before anything else is sent), `session` / `request` / `call`
   synchronous wrappers over `vim.wait`.
