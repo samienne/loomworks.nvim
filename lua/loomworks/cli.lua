@@ -8503,14 +8503,14 @@ function M.cmd_daemon(root, args, opts)
 
   -- `lw daemon protocol` — print the wire protocol version + supported range.
   -- A host/introspection command (no workspace, no daemon): the broker uses it
-  -- to probe a candidate `lw`'s protocol (spec §17.3/§17.5).
+  -- to probe a candidate `lw`'s protocol (spec §19.3/§19.5).
   if sub == "protocol" then
     local protocol = require("loomworks.daemon.protocol")
     out(string.format("protocol %d (min %d)", protocol.VERSION, protocol.MIN_SUPPORTED))
     return 0
   end
 
-  -- `lw daemon run` — the daemon server run loop (spec §17). Acquires write
+  -- `lw daemon run` — the daemon server run loop (spec §19). Acquires write
   -- authority, listens on the owner-restricted pipe, publishes the handle, and
   -- serves clients until shut down or idle. Requires a workspace.
   if sub == "run" then
@@ -11163,7 +11163,7 @@ local function main()
     finish(M.cmd_target(root, a))
   end
 
-  -- Build delegation (spec §17, opt-in via runtime-mode=daemon/auto): if a
+  -- Build delegation (spec §19, opt-in via runtime-mode=daemon/auto): if a
   -- compatible daemon is reachable, stream the build from it instead of loading
   -- the workspace in-process. Returns nil ⇒ not delegated ⇒ in-process below
   -- (the permanent fallback), so the default path is never changed.

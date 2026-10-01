@@ -1,4 +1,4 @@
---- loomworks/daemon/server.lua — the daemon run loop (DAEMON.md §4, spec §17).
+--- loomworks/daemon/server.lua — the daemon run loop (DAEMON.md §4, spec §19).
 ---
 --- One long-lived process per workspace that owns the authoritative model +
 --- files + execution and serves the editor and the CLI. This module is the
@@ -118,7 +118,7 @@ function Server:start()
         return nil, "handle write failed: " .. tostring(herr)
     end
 
-    -- Heartbeat the handle + lock mtime so liveness stays fresh (§17.2).
+    -- Heartbeat the handle + lock mtime so liveness stays fresh (§19.2).
     self._hb = uv.new_timer()
     self._hb:start(lock.HEARTBEAT_MS, lock.HEARTBEAT_MS, function()
         handle.heartbeat(self.root)

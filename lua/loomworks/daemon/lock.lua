@@ -11,7 +11,7 @@
 --- (atomic across processes) with an mtime heartbeat so a crashed holder's lock
 --- goes stale and is reclaimed — but it is a DISTINCT, per-folder lockfile
 --- (`.nvim/loomworks.daemon.lock`), not `build_lock`'s per-build-dir naming.
---- The lock (write-authority) and the handle file (discovery, §17.2) are
+--- The lock (write-authority) and the handle file (discovery, §19.2) are
 --- separate concerns.
 
 local uv = vim.uv or vim.loop

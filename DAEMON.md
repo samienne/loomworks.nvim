@@ -2,14 +2,14 @@
 
 > **STATUS: DESIGN + daemon implemented behind the flag.** This document is the
 > design overview; the normative contract and the implementation now live under
-> [`spec/core/daemon.md`](spec/core/daemon.md) §17 and `lua/loomworks/daemon/`.
+> [`spec/core/daemon.md`](spec/core/daemon.md) §19 and `lua/loomworks/daemon/`.
 > Implemented on this branch, one green commit per phase: the runtime-mode flag,
-> handle file, wire protocol, client, and broker (§17.1–17.5); the **daemon
-> server** — run loop, write-authority lock, owner-restricted pipe (§17.6–17.8);
-> the **projection** — model snapshot + shared-deserializer client (§17.9); wire
-> identity + change broadcasts (§17.10); **commands** (§17.11); the **task
-> stream** + build delegation (§17.12); the **parity** differential test
-> (§17.13); and the device/log-record generalization scaffold (§17.14).
+> handle file, wire protocol, client, and broker (§19.1–19.5); the **daemon
+> server** — run loop, write-authority lock, owner-restricted pipe (§19.6–19.8);
+> the **projection** — model snapshot + shared-deserializer client (§19.9); wire
+> identity + change broadcasts (§19.10); **commands** (§19.11); the **task
+> stream** + build delegation (§19.12); the **parity** differential test
+> (§19.13); and the device/log-record generalization scaffold (§19.14).
 > **The in-process model stays the permanent default and fallback** — the daemon
 > is opt-in behind `runtime.mode` / `LOOMWORKS_RUNTIME` (default `in-process`) and
 > a client falls back to in-process whenever the daemon is absent, crashed, or

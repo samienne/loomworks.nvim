@@ -4,31 +4,31 @@
 > This file is written **per-phase** as the daemon line lands (see
 > [`../../DAEMON.md`](../../DAEMON.md), the design overview, and its §8 promotion
 > ladder). It specifies: the runtime-mode flag, the handle file, wire-protocol
-> versioning, the client stub, and the broker (§17.1–17.5); and the **daemon
+> versioning, the client stub, and the broker (§19.1–19.5); and the **daemon
 > server** run loop — lifecycle, write-authority lock, and owner-restricted pipe
-> (§17.6–17.8). The projection client, commands, and broadcasts land in the
+> (§19.6–19.8). The projection client, commands, and broadcasts land in the
 > sections that follow as each phase is implemented.
 
-## 17. Daemon Runtime
+## 19. Daemon Runtime
 
 The system runs its workspace either **in-process** — the editor or CLI process
-*is* the workspace, as in §1–§16 — or by driving a long-lived **daemon** that
+*is* the workspace, as in §1–§18 — or by driving a long-lived **daemon** that
 owns the model, files, and execution and serves both the editor and the CLI. The
-runtime-mode flag (§17.1) selects between them; the handle (§17.2), wire protocol
-(§17.3), client (§17.4), and broker (§17.5) are the discovery and resolution
-layer; the server (§17.6) is the daemon process itself.
+runtime-mode flag (§19.1) selects between them; the handle (§19.2), wire protocol
+(§19.3), client (§19.4), and broker (§19.5) are the discovery and resolution
+layer; the server (§19.6) is the daemon process itself.
 
-**In-process is the permanent default and fallback.** Every contract in §1–§16
+**In-process is the permanent default and fallback.** Every contract in §1–§18
 holds unchanged when the daemon is absent, crashed, or protocol-incompatible: the
 resolved runtime falls back to in-process. The daemon is an opt-in acceleration
 layer selected behind the flag, never a hard dependency, and enabling it never
 regresses the in-process path.
 
-### 17.1 Runtime mode
+### 19.1 Runtime mode
 
 A **runtime mode** selects the execution backend. Its values are `in-process`,
 `daemon`, and `auto`. The default is `in-process`, which is also the permanent
-fallback (§17.4, and DAEMON.md §1/§4).
+fallback (§19.4, and DAEMON.md §1/§4).
 
 The **effective** mode is resolved by precedence: an environment override, then
 host configuration, then the default. An invalid value at either configured
@@ -39,14 +39,14 @@ or connects to anything.
 
 In Phase 0 the resolved mode is **informational**: because no daemon backend
 exists on mainline, execution stays in-process regardless of the mode. A host
-MUST expose the resolved mode for inspection (§17.4) but MUST NOT change build,
+MUST expose the resolved mode for inspection (§19.4) but MUST NOT change build,
 run, test, clean, or configure behavior based on it.
 
 The interactive editor host reads the mode from its setup options
 (`runtime.mode`); the non-interactive host reads it from its own settings
 (`runtime-mode`). Both honor the same environment override (`LOOMWORKS_RUNTIME`).
 
-### 17.2 The daemon handle file
+### 19.2 The daemon handle file
 
 A daemon publishes a per-workspace **handle file** at
 `<root>/.nvim/loomworks.daemon.json` as its **discovery** record. It carries the
@@ -71,7 +71,7 @@ a present-but-corrupt handle (empty or non-decoding) reports as unreadable, not 
 running, so a client neither trusts it nor is confused by it (`lw daemon status`
 says the handle is present but unreadable and offers to clear it).
 
-### 17.3 Wire protocol versioning
+### 19.3 Wire protocol versioning
 
 The daemon and its clients are shipped at **independently chosen versions**. The
 wire protocol is therefore versioned as a **supported range**
@@ -82,16 +82,16 @@ a host built together; the daemon's premise is two independently-shipped sides,
 which needs a compatibility range, not lockstep.
 
 An incompatible peer is reported, never silently driven. A client MUST NOT kill a
-daemon merely because it is version-incompatible (§17.4).
+daemon merely because it is version-incompatible (§19.4).
 
-### 17.4 The client stub: detect and stop
+### 19.4 The client stub: detect and stop
 
 A host MUST provide two daemon-client operations even when it ships no daemon
 server:
 
-- **Detect** — read the handle (§17.2) and report whether a daemon is present,
+- **Detect** — read the handle (§19.2) and report whether a daemon is present,
   whether it appears live (heartbeat within the window), and whether its protocol
-  is compatible (§17.3). Detection performs no connection and no mutation.
+  is compatible (§19.3). Detection performs no connection and no mutation.
 
 - **Stop** — retire the workspace's daemon, if any. Stop first attempts a
   **graceful shutdown** over the daemon's pipe; on a connection failure or an
@@ -102,12 +102,12 @@ server:
 All client I/O is asynchronous and MUST NOT block the editor's main loop.
 
 The non-interactive host surfaces these as `daemon status` (detect; also reports
-the effective runtime mode, §17.1) and `daemon stop`. This lets **any** host —
+the effective runtime mode, §19.1) and `daemon stop`. This lets **any** host —
 daemon-capable or not — inspect and retire a stray daemon, e.g. after a machine
 is switched back to in-process operation. Neither operation ever *launches* a
 daemon.
 
-### 17.5 The runtime broker
+### 19.5 The runtime broker
 
 The **broker** resolves *which* runtime a daemon would be driven from, by
 precedence: an explicit runtime override, then a repository version pin (§16.21),
@@ -123,7 +123,7 @@ Two rules are normative:
   consented management action (§16.13).
 - **In-process is always reachable.** The bundled host source is always available
   as the last-resort resolution, so the daemon is never a hard dependency
-  (§17.1).
+  (§19.1).
 
 This broker chain is **distinct** from the launcher's system-source precedence
 (§16.11) and the pin-aware redirect (§16.23): those choose what to *execute now*;
@@ -131,21 +131,21 @@ the broker chooses what runtime a daemon would be *driven from*. The broker
 **resolves only** — it never spawns and never installs.
 
 The broker MAY **probe** a resolved system host for wire-protocol compatibility
-before choosing it (§17.3), by invoking it to report its protocol version; a host
+before choosing it (§19.3), by invoking it to report its protocol version; a host
 whose protocol falls outside the local supported range is rejected and the chain
 falls through. Probing is optional and best-effort — a host that cannot be probed
 is reported with the probe still owed, never silently trusted or silently
 discarded.
 
-### 17.6 The daemon server
+### 19.6 The daemon server
 
 The **daemon server** is one long-lived process per workspace, started by
 `daemon run`. On start it MUST, in order: acquire the workspace's
-**write-authority lock** (§17.7) — refusing to start if another live daemon holds
+**write-authority lock** (§19.7) — refusing to start if another live daemon holds
 it (single primary per folder); bind and listen on the **owner-restricted pipe**
-(§17.8); publish the **handle file** (§17.2) naming that pipe, its pid, protocol
+(§19.8); publish the **handle file** (§19.2) naming that pipe, its pid, protocol
 version, lw version, and a fresh **session generation**; and begin heartbeating
-the handle and lock so their liveness stays fresh (§17.2). A start that cannot
+the handle and lock so their liveness stays fresh (§19.2). A start that cannot
 complete these leaves no partial state — the lock and any bound pipe are released.
 
 The server maintains a per-workspace **monotonic sequence counter** that stamps
@@ -170,7 +170,7 @@ activity and holds the daemon alive. Shutdown — requested, idle, or on process
 exit/interrupt — MUST remove the handle file, remove the POSIX socket, and
 release the lock, so no discovery or write-authority state leaks.
 
-### 17.7 Write-authority lock
+### 19.7 Write-authority lock
 
 Exactly one process may write a workspace's files (working copy, cache, published
 snapshot) at a time. The **write-authority lock** is that single-writer token: a
@@ -179,12 +179,12 @@ primitive as the build-dir lock (§16.6) — atomic across processes, with a cra
 holder's lock going stale and being reclaimed after the heartbeat window — but a
 **distinct** lockfile, never the build-dir lock's per-directory naming. The daemon
 holds it for its lifetime, making it the sole writer. A client enters the
-file-writing fallback lane (§17.4/§4) only after it acquires this lock **itself**,
+file-writing fallback lane (§19.4/§4) only after it acquires this lock **itself**,
 never on a bare socket error, so two writers can never race. The lock
-(write-authority) and the handle file (discovery, §17.2) are separate concerns
+(write-authority) and the handle file (discovery, §19.2) are separate concerns
 with separate files.
 
-### 17.8 Owner-restricted pipe
+### 19.8 Owner-restricted pipe
 
 The daemon's IPC endpoint is a **trust boundary**: any local peer that can open it
 can issue mutation and build commands (and, in a later phase, cause daemon-hosted
@@ -200,7 +200,7 @@ overflow. It lives under `XDG_RUNTIME_DIR` (per-user, session-scoped) when prese
 else `TMPDIR`, else `/tmp`; the socket file is keyed by a hash of the normalized
 workspace root, and a length guard falls back to a shorter base if a pathological
 temp path would still overflow. Before binding — and only while holding the
-write-authority lock (§17.7), so no live daemon owns the address — a stale socket
+write-authority lock (§19.7), so no live daemon owns the address — a stale socket
 file from a crashed predecessor is unlinked (else `bind` fails `EADDRINUSE`).
 
 On **Windows** it is a named pipe reachable, by its default security descriptor,
@@ -210,9 +210,9 @@ runtime exposes it.
 
 The address is derived from the workspace root so it is stable and unique per
 folder, but clients never recompute it — they read the bound address from the
-handle file (§17.2), so the daemon is the only party that resolves the scheme.
+handle file (§19.2), so the daemon is the only party that resolves the scheme.
 
-### 17.9 Model snapshot and the projection client
+### 19.9 Model snapshot and the projection client
 
 The daemon is **model-authoritative**; a client keeps a local **projection** of
 the model, hydrated from the daemon and used for rendering and integration (reads
@@ -244,7 +244,7 @@ state) — bounded and cheap, so a winbar redraw needs no per-frame query (§3.5
 When the session generation changes (a daemon restart), the client discards its
 projection and re-hydrates.
 
-### 17.10 Wire identity and change broadcasts
+### 19.10 Wire identity and change broadcasts
 
 **Opaque wire identity.** Domain objects have no stable semantic id, and a rename
 rewrites their semantic key in place — the only thing preserved across a rename is
@@ -271,10 +271,10 @@ client, so a change made through one client (or by an external file edit the
 daemon reconciles) becomes visible to all — the live shared view the daemon
 exists to provide.
 
-### 17.11 Commands (mutations)
+### 19.11 Commands (mutations)
 
 A client mutation is a **command** the daemon applies against its authoritative
-model and persists (it holds the write-authority lock, §17.7). Pure accessors and
+model and persists (it holds the write-authority lock, §19.7). Pure accessors and
 derived queries run **locally on the projection** — only commands (and sync)
 cross the wire.
 
@@ -282,7 +282,7 @@ Commands are **FIFO-serialized** by the single daemon: a command's resulting
 change broadcast is emitted before any later command's, and a client that awaits
 its own ack has seen (or will see, in order) the change its command produced.
 Their *effect* returns as the `model_change` broadcast that re-renders the
-projection (§17.10) — emitted before the ack, which carries only an **outcome**
+projection (§19.10) — emitted before the ack, which carries only an **outcome**
 (`ok` / `rolled-back` / `partially-applied`) or an error. So the common UI action
 does not wait on a round-trip: the projection updates from the broadcast.
 
@@ -291,7 +291,7 @@ Domain logic stays **reference-based**: a command resolves its wire arguments
 deserializer does — then calls the object's own mutation method. No key lookup
 leaks into domain logic. A handler error becomes an error ack, never a crash.
 
-### 17.12 Task stream and build delegation
+### 19.12 Task stream and build delegation
 
 A running build/op streams over a **task stream** — high-frequency `progress` /
 `output` events kept SEPARATE from model-change batches, so progress ticks never
@@ -313,17 +313,27 @@ command: the daemon runs it (reusing the same build **planning** seam the
 in-process path uses) and streams it; the client renders the stream and exits on
 the durable outcome. The build is **async** — the command is acknowledged with a
 task id immediately and the result follows on the stream — and an outstanding
-task holds the daemon alive (§17.6). Delegation is **opt-in and self-healing**: a
+task holds the daemon alive (§19.6). Delegation is **opt-in and self-healing**: a
 client only delegates when a compatible daemon is reachable (or can be launched);
 otherwise it runs the build in-process, the permanent fallback. Enabling the
 daemon never changes the default in-process build.
+
+**Delegable forms and trust.** Only a build the daemon's command fully carries is
+delegated: a named profile plus build-tool arguments. Any request whose meaning
+the command does not carry (target selection, forced or full reconfiguration,
+verbosity, a positional profile number, or no profile — whose resolution,
+interactive or strict non-interactive, belongs to the requesting host) runs
+in-process. A client never delegates a build of a workspace whose working copy
+or cache this machine would refuse (§17.4): the daemon loads its workspace
+through the same trust gate (§17) and would refuse it too, so the client falls
+back to in-process, which reports the refusal with its remedies (§17.10).
 
 A daemon build MUST be **behaviorally identical** to the in-process build it
 replaces, not merely a spawn of the same commands. Specifically it: applies the
 same **build gate** (an unbuildable profile refuses) and **output-artifact
 conflict** rule (§16.28); holds the per-build-directory **advisory lock** (§16.6)
 for the duration, so it coordinates with an editor or CLI building the same
-directory (this is distinct from the daemon's write-authority lock, §17.7, which
+directory (this is distinct from the daemon's write-authority lock, §19.7, which
 guards *files* not *build directories*); and **writes each step's result back
 through the workspace** — so the configured/built **state and cache persist**
 exactly as an in-process build would, and a later reader (or the projection, via
@@ -332,9 +342,9 @@ an asynchronous callback, any step that touches host UI/filesystem primitives
 (build-directory creation during planning, cache write-back) MUST run on the
 host's main execution context, never in a callback context that forbids them.
 
-### 17.13 Parity (differential correctness)
+### 19.13 Parity (differential correctness)
 
-Both backends share the SAME deserializer and serialization (§17.9), so
+Both backends share the SAME deserializer and serialization (§19.9), so
 correctness is defined **differentially**: the daemon is correct when it produces
 the same model state as the in-process backend for the same inputs. Running an
 operation through in-process and through the daemon (as a command) MUST leave a
@@ -344,7 +354,7 @@ criterion for the daemon and the guard that the in-process path never silently
 diverges — the existing behavioral suite runs against either backend, and a
 dedicated differential test asserts the byte-identity directly.
 
-### 17.14 Device/log generalization (scaffold)
+### 19.14 Device/log generalization (scaffold)
 
 Once the daemon owns execution and detection, device logic (install / launch /
 log) is headless and belongs in a daemon-hosted plugin rather than an
@@ -353,7 +363,7 @@ editor-coupled one. The main plugin then gains a **general** device picker and
 message, fields? }`, where `fields` is a typed escape hatch for platform extras.
 A module's device-log producer emits raw records; the daemon normalizes them
 (unknown level → a default, unknown keys → `fields`) and streams them on the same
-broadcast channel the task stream uses (§17.12) — device-log streaming is the
+broadcast channel the task stream uses (§19.12) — device-log streaming is the
 natural streaming reference. This schema and stream are defined now; wiring a
 concrete module's device logs through them, and migrating a platform module off
 its editor-coupled implementation, is deferred until that module is actively

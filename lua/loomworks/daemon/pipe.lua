@@ -1,6 +1,6 @@
 --- loomworks/daemon/pipe.lua — the daemon's local IPC endpoint address + bind.
 ---
---- The pipe is a TRUST BOUNDARY (DAEMON.md §4, spec §17.4/§17.8): any local peer
+--- The pipe is a TRUST BOUNDARY (DAEMON.md §4, spec §19.4/§19.8): any local peer
 --- that can open it can issue mutation and build commands, so the endpoint MUST
 --- be owner-restricted.
 ---
@@ -21,7 +21,7 @@
 ---     `uv_pipe_bind` does not surface (documented gap).
 ---
 --- Clients never recompute the address — they read the bound address from the
---- handle file (§17.2), so the daemon is the only party that resolves it.
+--- handle file (§19.2), so the daemon is the only party that resolves it.
 
 local uv = vim.uv or vim.loop
 
@@ -168,7 +168,7 @@ local function bind_and_listen(addr, backlog, on_connection)
 end
 
 --- Bind and listen on the workspace's owner-restricted endpoint. On POSIX it
---- tries each candidate (§17.8) in order — ensuring the owner-only 0700 socket
+--- tries each candidate (§19.8) in order — ensuring the owner-only 0700 socket
 --- directory and unlinking any stale socket first (safe: the caller holds the
 --- write-authority lock, §4, so no LIVE daemon owns the address) — and returns
 --- the address it actually bound, which the daemon records in the handle.

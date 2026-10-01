@@ -54,7 +54,7 @@ local function default_which(exe)
 end
 
 --- Probe a candidate `lw` binary for its wire protocol version by invoking
---- `<path> daemon protocol`, which prints `protocol <N> (min <M>)` (spec §17.3).
+--- `<path> daemon protocol`, which prints `protocol <N> (min <M>)` (spec §19.3).
 --- Returns the parsed `{ version, min }`, or nil + reason when it cannot be run
 --- or parsed. Synchronous and time-bounded; injectable via `opts.run`.
 --- @param path string the candidate binary
@@ -138,7 +138,7 @@ function M.resolve(root, opts)
     end
 
     -- 3. System `lw` on PATH, gated by the wire-protocol compatibility floor
-    --    (§17.3). When a probe is supplied it is run against the candidate: a
+    --    (§19.3). When a probe is supplied it is run against the candidate: a
     --    protocol OUTSIDE our supported range makes the candidate fall through
     --    (never silently driven); a probe that cannot run leaves the compat owed
     --    but still names the candidate rather than discarding it. With no probe
@@ -157,7 +157,7 @@ function M.resolve(root, opts)
             local info = probe(sys)
             if info and info.version then
                 -- Compatible when the peer's version is in our range AND our
-                -- version is in the peer's advertised range (symmetric, §17.3).
+                -- version is in the peer's advertised range (symmetric, §19.3).
                 local ours_ok = proto.compatible(info.version)
                 local theirs_ok = (info.min == nil) or (proto.VERSION >= info.min)
                 if ours_ok and theirs_ok then

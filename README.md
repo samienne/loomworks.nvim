@@ -1645,7 +1645,7 @@ protocol-incompatible. Set the mode in the plugin
 Values: `in-process` (default), `daemon`, `auto`. `lw daemon status` shows the
 resolved mode and whether a daemon is running; `lw daemon run` starts one;
 `lw daemon stop` retires one. See [`DAEMON.md`](DAEMON.md) for the design and
-[`spec/core/daemon.md`](spec/core/daemon.md) §17 for the contract.
+[`spec/core/daemon.md`](spec/core/daemon.md) §19 for the contract.
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command

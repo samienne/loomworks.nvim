@@ -14,7 +14,7 @@
 ---     across an external edit for surviving items.
 ---
 --- Ids are monotonic and **never reused within a session**; a daemon restart
---- makes a new registry (a new session generation, §17.6), on which a client
+--- makes a new registry (a new session generation, §19.6), on which a client
 --- flushes its id-map and re-hydrates.
 ---
 --- The `index(workspace)` output stamps the CURRENT key/name → stable id for each

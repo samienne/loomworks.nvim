@@ -231,7 +231,7 @@ run_case() {
     if grep -q "CLEAN OK" "$out"; then ok "$label clean"; else note_fail "$label clean" "$rc"; fi
 }
 
-# Drive a REAL build THROUGH the daemon (spec §17, DAEMON.md §3.4/§7): start a
+# Drive a REAL build THROUGH the daemon (spec §19, DAEMON.md §3.4/§7): start a
 # daemon for a workspace, then `lw build` with runtime.mode=daemon delegates to
 # it and streams the real toolchain output back. Proves the daemon build path on
 # every CI platform (the in-process plenary spec covers it under nvim). Uses an
@@ -384,7 +384,7 @@ greet_lib_source   > "$TMP/cmake-ml/app/lib/greet.cpp"
 multilib_main_source > "$TMP/cmake-ml/app/main.cpp"
 run_case cmake-multilib cmake "$TMP/cmake-ml" "LINKED-OK"
 
-# A real build driven through the daemon (spec §17), on every CI platform.
+# A real build driven through the daemon (spec §19), on every CI platform.
 test_daemon_build
 
 # Toolchain-independent root-discovery regression.

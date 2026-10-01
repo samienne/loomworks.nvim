@@ -1238,7 +1238,7 @@ listing candidates.
 
 ### Daemon runtime
 
-The daemon line (design: [`DAEMON.md`](DAEMON.md); spec §17) is an opt-in
+The daemon line (design: [`DAEMON.md`](DAEMON.md); spec §19) is an opt-in
 acceleration layer behind `runtime.mode` — in-process stays the default and the
 permanent fallback. `lua/loomworks/daemon/` holds it.
 
@@ -1334,6 +1334,11 @@ reachable daemon when `runtime-mode` is daemon/auto, returning nil (run
 in-process — the permanent fallback) otherwise, so the default build is never
 changed. (The luvi shim's `vim.system` honors the streaming `stdout`/`stderr`
 callback form so this output actually streams under the standalone host.)
+Only the plain `lw build <profile-key> [-- args]` form is delegated (any option,
+a numbered profile, or no profile runs in-process), and
+`cli._daemon_workspace_trusted` keeps an untrusted working copy / invalid cache
+off the daemon path entirely (spec §19.12, §17) — the daemon itself loads its
+workspace through the CLI's `load_workspace`, so it hits the same trust gate.
 
 **Device/log generalization** (`log_record.lua`, scaffold): a normalized log
 record `{ts, level, tag, pid, message, fields?}` (with a `fields` platform escape
@@ -1871,7 +1876,7 @@ loomworks.nvim/
 │   │   │   └── inventory/             Host-neutral inventory companions (§9.3/§16.33): clangd, qmlls, codelldb, cppdbg, pwa_node
 │   │   ├── inventory.lua              Environment inventory framework (`lw health`, §16.33)
 │   │   ├── build_run.lua              Headless build-step logic behind cli.lua run_build_steps (lock set, plan + gate + build request, conflict/reset gates, status lines, hardened spawn spec, record, failure line)
-│   │   ├── daemon/                    Daemon runtime (DAEMON.md, spec §17) — opt-in behind runtime.mode
+│   │   ├── daemon/                    Daemon runtime (DAEMON.md, spec §19) — opt-in behind runtime.mode
 │   │   │   ├── runtime.lua            Runtime-mode resolution (env > config > in-process default)
 │   │   │   ├── handle.lua             .nvim/loomworks.daemon.json discovery file + mtime-heartbeat liveness
 │   │   │   ├── protocol.lua           Wire protocol: supported-range compat + length-prefixed JSON framing

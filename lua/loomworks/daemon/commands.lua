@@ -2,7 +2,7 @@
 ---
 --- A client mutation becomes a `command{ name, args }` the daemon applies against
 --- its authoritative Workspace and persists (the daemon holds the write-authority
---- lock, §17.7). Commands are **FIFO-serialized** by the single-threaded daemon
+--- lock, §19.7). Commands are **FIFO-serialized** by the single-threaded daemon
 --- loop: a command's resulting `model_change` batch is broadcast before any later
 --- command's. The *effect* returns as that broadcast (which re-renders the
 --- projection); the reply is only an **ack** carrying an outcome
