@@ -73,7 +73,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `setup({ runtime = { mode = ... } })`). With `daemon` or `auto`,
   `lw build <profile>` runs through a per-workspace daemon and streams its
   output; anything else, or an untrusted working copy, builds in-process as
-  before. See `lw help daemon`. (#89)
+  before. See `lw help daemon`. (#88)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
