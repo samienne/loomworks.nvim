@@ -145,6 +145,16 @@ jobs:
           lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
           LW="$lw" bash scripts/ci/cli-e2e.sh
 
+      # The workspace daemon with real processes (spec §19.2, §19.6–§19.11):
+      # detached launch, no inherited std handles, stop/kill end the process,
+      # one daemon per workspace, hung-daemon recovery, nothing left running.
+      - name: Daemon lifetime end-to-end
+        shell: bash
+        run: |
+          export LOOMWORKS_LUA="$PWD/lua"
+          lw="$PWD/lw"; [ -f "$PWD/lw.exe" ] && lw="$PWD/lw.exe"
+          LW="$lw" bash scripts/ci/daemon-e2e.sh
+
   # The bundle from this checkout under real released hosts (spec §16.14): an
   # old host that `lw self-update`d runs the newest bundle with its own, older
   # boot modules. Hosts are downloaded from GitHub releases and verified against

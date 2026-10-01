@@ -608,7 +608,61 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `lw status`.
 - `command.lua` — `lw daemon <sub>`, kept out of `cli.lua` (at the 200-local
   limit); `cli.lua`'s `M.cmd_daemon` passes its output helpers
-  (`M._daemon_host`).
+  (`M._daemon_host`). `stop` sends the frozen `stop` and waits for R to be
+  released; `stop --force` / `kill` are §19.5 against R: `lock_break.can_break`
+  (same host, not an editor, start time known, not an ancestor), ask (`stop`
+  over the endpoint, ~5 s) unless `kill`, `lock_break.break_holder` (mode
+  `now`: kill tree + verify), then `clear_stale` (acquire R — reclaiming the
+  dead record by nonce — remove the handle naming that pid/start time and its
+  socket, release) and, when a journal exists, `op_lock.acquire` to roll it
+  forward.
+- `protocol.lua` — `<len>\n<json>` framing; the decoder checks the length
+  prefix against the cap (64 KiB before authentication, 16 MiB after) before
+  buffering a payload.
+- `auth.lua` — K = HMAC(trust key, `loomworks-daemon-v1`), nonces, the two
+  endpoint-bound proofs, constant-time compare (pure-Lua HMAC from
+  `trust.lua`).
+- `endpoint.lua` — the address (Windows pipe name hashed from user + root;
+  POSIX socket `<per-user 0700 dir>/<root hash>.sock`), `listen` (Windows:
+  bind → `apply_dacl` via FFI `SetSecurityInfo` on `pipe:fileno()` → listen,
+  refusing on failure; POSIX: verified directory, stale socket unlinked
+  only if `lstat` says socket), `cleanup` (only a socket at one of the
+  candidate paths), `read_dacl` / `user_sid` for tests.
+- `server.lua` — `Server:start()` (R → stale handle removed → K → endpoint →
+  handle → tick timer), per-connection handshake state machine
+  (`new` → `challenged` → `authed`, auth timer), `_dispatch` of
+  `ping`/`status`/`stop`/`retire`, `_tick` (R still ours, else `_lost_lock`:
+  exit 1 touching nothing; handle mtime or rewrite), `stop` (close all,
+  remove handle + socket while R is ours, release R, `opts.exit`). Identity
+  and schemas are captured at start (the editor host forbids `vim.fn` in
+  libuv callbacks — the version fingerprint uses `vim.fn.sha256`).
+- Hardening: `endpoint.check(root, addr)` — a client connects only to an
+  address this workspace's daemon binds (`command.request`, and `ensure`), so
+  a planted handle naming `\\host\pipe\x` never opens an SMB connection;
+  `proc.cmdline(pid, st)` (Windows `NtQueryInformationProcess` class 60 +
+  `CommandLineToArgvW`, Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`)
+  with `proc.is_lw` / `proc.is_daemon_for`, checked by
+  `lock_break.verify_identity` from `can_break` — so `--break-locks`,
+  `lw daemon stop --force` and `kill` never kill a process a forged record
+  merely names (test helpers run as `…/loomworks/cli.lua` copies for that
+  reason); `io.write_exclusive` / `io.write_fresh` — temporary files
+  (`write_file_atomic`'s `.tmp`, the journal's `.tmp`, staged copies, the
+  handle's `.tmp-<random>`) are created with O_EXCL, never through a planted
+  file or link; `Server:_guard` / `_on_read` / `_dispatch` pcall every loop
+  callback (a handler error is an error reply; a loop error still takes the
+  stop path).
+- `client.lua` — `connect` (hello built before going async, server proof
+  verified before anything else is sent), `session` / `request` / `call`
+  synchronous wrappers over `vim.wait`.
+- `launch.lua` — `self_argv` (fused `lw`, `luvi <app> --`, or `nvim -l
+  cli.lua`), `env` (de-duplicated; `LW_ROOT`, `LOOMWORKS_LUA` = the running
+  source on the luvi host), `spawn` (detached, hidden, stdio ignored, cwd =
+  state dir; Windows: `_no_inherit_std` clears `HANDLE_FLAG_INHERIT` on the
+  std handles around `uv.spawn`), `launch` (readiness wait with early-exit
+  detection; `server.EXIT_HELD` = another runtime won).
+- `ensure.lua` — `reconcile(root, conn)`: the §19.9 decision after the
+  handshake (match / stop + relaunch an idle mismatched daemon / retire a
+  busy one and bypass it / leave one with newer schemas alone).
 
 ### Workspace trust (spec §17)
 

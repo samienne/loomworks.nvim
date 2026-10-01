@@ -69,9 +69,10 @@ of `no-daemon`.
 
 ### 19.2 One runtime per workspace: the runtime lock
 
-*Status: master for the record and its reading (`daemon/rlock.lua`, the
-§19.5 record plus `mode`, `command`, `host_version`; read by the Runtime row);
-held by a daemon once the server lands (§19.19 step 2); attached runs future.*
+*Status: master for daemons (`daemon/rlock.lua`, the §19.5 record plus
+`mode`, `command`, `host_version`; held by `daemon/server.lua` for its
+lifetime, a held lock makes `lw daemon run` exit with status 3, a replaced
+record makes the daemon exit 1); attached runs future.*
 
 The **runtime lock** `<root>/.nvim/loomworks.daemon.lock` designates the one
 runtime of a workspace. It uses the build-directory lock primitive (§16.6): an
@@ -312,8 +313,8 @@ commit. This is the same class of residual race as §2.7 "Remaining race".
 
 *Status: master for build-directory, device and file-save locks (B, D, F): the
 record, the classification, the state recovery, `--break-locks` and
-`lw unlock --force`; lands with step 1 of §19.19 for the operation lock O and
-with step 2 for the runtime (R, `lw daemon stop --force` / `kill`). Until the
+`lw unlock --force`; the operation lock O (step 1 of §19.19); the runtime
+lock R (`lw daemon stop --force` / `kill`, `daemon/command.lua`). Until the
 runtime log (§19.10) exists, kills and forced unlocks are recorded in the
 workspace log.*
 
@@ -369,8 +370,17 @@ let go within the wait:
    works across versions); a non-daemon `lw` holder is sent the interrupt it
    handles (§16.6) where the platform allows signalling it. Wait a bounded time
    (about 5 s). `--break-locks=now` skips this step.
-2. **Kill** the holder's process tree — the daemon's process group, or the
-   holder and its enumerated descendants (on Windows a forced tree
+2. **Kill** — only once the process the record names is verified to be such
+   a holder: its command line (Windows: the process's command line; Linux:
+   `/proc/<pid>/cmdline`; macOS: `KERN_PROCARGS2`) is an `lw` host — the `lw`
+   binary or a pinned copy, a development `luvi` run, or the nvim-hosted
+   `nvim … -l …/loomworks/cli.lua` — and, for a daemon holder,
+   `lw … daemon run` (for this workspace when it names one with `--root`).
+   A record is data from a shared directory: one naming an unrelated process
+   of the user is refused (the process is never signalled), as is a holder
+   whose command line cannot be read; the remedy is to remove the record
+   without stopping anything. Then kill the holder's process tree — the
+   daemon's process group, or the holder and its enumerated descendants (on Windows a forced tree
    termination).
 3. **Verify** that no process with the holder's id and start time remains;
    otherwise fail and name the process.
@@ -458,9 +468,8 @@ dangerous things.
 
 ### 19.6 Discovery: the handle file and the Runtime row
 
-*Status: master — the handle format (`daemon/handle.lua`), the Runtime row
-and `lw daemon status` (files only); the daemon writing it lands with the
-server (§19.19 step 2).*
+*Status: master — the handle (`daemon/handle.lua`, written and heartbeated
+by `daemon/server.lua`), the Runtime row and `lw daemon status`.*
 
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
@@ -497,8 +506,7 @@ exists.
 
 ### 19.7 Endpoint and access control
 
-*Status: #88 for the POSIX socket directory and a default-security named pipe;
-future for the Windows DACL.*
+*Status: master (`daemon/endpoint.lua`; the DACL through LuaJIT FFI).*
 
 The endpoint is a trust boundary — a peer that can issue commands can run
 builds, i.e. execute code as the owner — so it is restricted by the operating
@@ -517,11 +525,19 @@ system **and** gated by authentication (§19.8).
   `SYSTEM` only and an explicit deny for the `NETWORK` SID. A daemon that cannot
   apply the DACL does not serve and exits with an error.
 
-Clients never compute the address; they read it from the handle.
+Clients read the address from the handle, and use it only when it is an
+address a daemon of this workspace binds — on Windows exactly the pipe name
+above, on POSIX one of the per-user socket paths. Any other address (a
+remote `\\host\pipe\…`, another user's socket) marks the handle as
+untrusted: nothing is connected to, and the command says so. The handle sits
+in a `.nvim/` other local users may be able to write; connecting to a remote
+pipe would hand the user's credentials to that host.
 
 ### 19.8 Wire protocol and authentication
 
-*Status: framing, request/reply and broadcasts #88; authentication future.*
+*Status: master for framing, authentication and the frozen control subset
+(`daemon/protocol.lua`, `daemon/auth.lua`, `daemon/server.lua`,
+`daemon/client.lua`; protocol version 2); broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -556,7 +572,9 @@ other.
 
 ### 19.9 Version handshake
 
-*Status: future (#88 negotiates a protocol range; re-cut).*
+*Status: master for the comparison and the idle / busy / newer decisions
+(`daemon/version.lua`, `daemon/ensure.lua`); applied by every workspace
+command once the launch is wired in (§19.10).*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -587,8 +605,9 @@ it; the client refuses with the update message of §2.7 "Reading a newer file".
 
 ### 19.10 Launch
 
-*Status: #88 has a minimal launch (`cli._spawn_daemon_if_possible`); re-cut to
-the recipe below.*
+*Status: master for the recipe (`daemon/launch.lua`, used by
+`lw daemon restart`); launching from workspace commands and the runtime log
+land with the rest of §19.19 step 2.*
 
 A client that finds no live daemon (no handle, a stale handle, or a lock whose
 holder is gone) launches `<own executable> daemon run --root <root>`:
@@ -617,8 +636,9 @@ exit, all clients connect to the winner.
 
 ### 19.11 Lifetime
 
-*Status: #88 for idle exit (10 min) and `lw daemon status|stop`; future for the
-rest.*
+*Status: master for exit on `stop` / `retire` / lost lock and the commands
+(`lw daemon status|stop|restart|kill|run`); the keepalive, idle and root rules
+land with the rest of §19.19 step 2.*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a

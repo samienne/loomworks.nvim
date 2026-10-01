@@ -45,6 +45,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
   workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
   show the mode and any daemon from its files; neither ever starts one. (#105)
+- Experimental: `lw daemon run | stop | kill | restart` manage the workspace
+  daemon. Its endpoint is restricted to your user and every connection must
+  prove this machine's key; `stop` never kills, `stop --force` and `kill`
+  recover a hung daemon. (#106)
 - Operations that change several workspace files at once (publish, import,
   pull, cache-propagating renames, profile removal, reset, nuke,
   `lw trust --discard`, and the editor's delete / reset / nuke) take a

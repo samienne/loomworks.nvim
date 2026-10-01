@@ -25,8 +25,46 @@ function M.read_file(path)
     return data, nil
 end
 
+--- Create `path` EXCLUSIVELY (O_CREAT|O_EXCL: never through an existing file,
+--- a hard link to another file, or a symbolic link — whose target is never
+--- opened) and write `data` to it, flushed. Returns true, or false + error +
+--- the error code ("EEXIST" when something already has that name).
+--- @param path string
+--- @param data string
+--- @param mode? integer
+--- @return boolean ok, string|nil err, string|nil code
+function M.write_exclusive(path, data, mode)
+    local fd, err, code = uv.fs_open(path, "wx", mode or 438)
+    if not fd then return false, err, code end
+    local _, werr = uv.fs_write(fd, data, 0)
+    pcall(uv.fs_fsync, fd)
+    uv.fs_close(fd)
+    if werr then
+        pcall(uv.fs_unlink, path)
+        return false, werr
+    end
+    return true
+end
+
+--- Write a temporary file at a FIXED name (`<target>.tmp`, the name crash
+--- recovery and stray-file cleanup know): whatever sits at that name first
+--- is removed — a leftover of a crashed write, or a link someone planted in a
+--- shared `.nvim/` (unlinking a link removes only the link, never its
+--- target) — then the file is created exclusively. A directory there is left
+--- alone (the create then fails).
+--- @param tmp string
+--- @param data string
+--- @param mode? integer
+--- @return boolean ok, string|nil err
+function M.write_fresh(tmp, data, mode)
+    local st = uv.fs_lstat(tmp)
+    if st and st.type ~= "directory" then pcall(uv.fs_unlink, tmp) end
+    local ok, err = M.write_exclusive(tmp, data, mode)
+    return ok, err
+end
+
 --- Write data to path atomically:
----   1. Write to path..".tmp"
+---   1. Write to path..".tmp" (created exclusively, M.write_fresh)
 ---   2. fsync the fd
 ---   3. If path exists, rename path -> path..".bak" (unless `opts.backup` is
 ---      false: an export written for the user leaves no `.bak` beside it)
@@ -44,18 +82,8 @@ function M.write_file_atomic(path, data, opts)
     end
     local tmp = path .. ".tmp"
 
-    local fd, err = uv.fs_open(tmp, "w", 438)
-    if not fd then return false, "open tmp: " .. (err or "unknown") end
-
-    local _, write_err = uv.fs_write(fd, data, 0)
-    if write_err then
-        uv.fs_close(fd)
-        uv.fs_unlink(tmp)
-        return false, "write: " .. write_err
-    end
-
-    uv.fs_fsync(fd)
-    uv.fs_close(fd)
+    local okw, werr = M.write_fresh(tmp, data, 438)
+    if not okw then return false, "write tmp: " .. tostring(werr or "unknown") end
 
     if uv.fs_stat(path) and not (opts and opts.backup == false) then
         uv.fs_rename(path, path .. ".bak")

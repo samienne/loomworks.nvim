@@ -1012,8 +1012,29 @@ do
     ok(not okb and why:find("started it", 1, true) ~= nil, "--break-locks refuses an ancestor holder")
   end
 
+  -- The holder's command line is read and checked (§19.5): this luvi run is
+  -- an lw host; a plain shell is not, and is never killed.
+  local me_args = proc.cmdline(me, proc.self_start_time())
+  ok(type(me_args) == "table" and #me_args > 0, "proc.cmdline reads this process's command line")
+  ok(proc.is_lw(me_args), "a luvi host counts as an lw process  (" .. tostring(me_args and me_args[1]) .. ")")
+  do
+    local stranger = sleeper(30)
+    vim.wait(300)
+    local sst = proc.start_time(stranger)
+    local okb, why = lock_break.can_break({ pid = stranger, host = require("loomworks.lock_record").this_host(),
+      start_time = sst, kind = "lw", state = "hung", age = 99 }, { what = "x" })
+    ok(not okb and tostring(why):find("not one", 1, true) ~= nil,
+      "--break-locks refuses a holder that is not an lw process  (" .. tostring(why) .. ")")
+    ok(proc.alive(stranger, sst) == true, "the stranger was not signalled")
+    proc.kill_tree(stranger, sst)
+  end
+
   if not win then
     -- POSIX ask path (§19.5 step 1): SIGINT, wait, then kill the snapshot.
+    -- The stand-in holders are shells, not lw processes: the identity check
+    -- (tested above) is bypassed for this part only.
+    local saved_verify = lock_break.verify_identity
+    lock_break.verify_identity = function() return true end
     local saved = lock_break.ASK_MS
     lock_break.ASK_MS = 800
     local lines = {}
@@ -1043,6 +1064,7 @@ do
     for _, k in ipairs(kids) do all = all and gone(k.pid, k.start) end
     ok(all, "ask: the holder and the child it left are gone")
     lock_break.ASK_MS = saved
+    lock_break.verify_identity = saved_verify
   end
 end
 
