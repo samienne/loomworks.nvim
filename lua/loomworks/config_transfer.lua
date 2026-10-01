@@ -115,42 +115,49 @@ function M.counts_text(c)
 end
 
 --- The intent map an import writes (spec §16.39 "Intent of imported items").
---- Every imported item gets an explicit intent: `local+shared` when the
---- current published snapshot holds an item of the same identity, else
---- `local`. `mode` ("local" / "local+shared", the global create-intent
---- options) overrides that — except that a share request leaves profiles on
---- the presence rule (§2.4). Published items the import does not carry become
---- `shared` (reference-only), so no stale intent keeps them in the working
---- copy. Configuration keys are `<project>/<configuration>` (the intent-map
---- form of the working copy).
+--- Every imported item gets an explicit intent: the item's intent in the
+--- current working copy when it already holds the item (`current`), else
+--- `local+shared` when the current published snapshot holds an item of the
+--- same identity, else `local`. `mode` ("local" / "local+shared", the global
+--- create-intent options) overrides both — except that a share request leaves
+--- profiles on those rules (§2.4). Published items the import does not carry
+--- become `shared` (reference-only), so no stale intent keeps them in the
+--- working copy. Configuration keys are `<project>/<configuration>` (the
+--- intent-map form of the working copy).
 --- @param config table the validated import (internal `config.validate` shape)
 --- @param baseline table|nil the published snapshot (internal shape)
 --- @param mode string|nil nil | "local" | "local+shared"
+--- @param current table|nil intents of the items the working copy holds now, by kind
 --- @return table intent map
-function M.intents(config, baseline, mode)
+function M.intents(config, baseline, mode, current)
     baseline = baseline or {}
+    current = current or {}
     local bp = tbl(baseline.projects)
     local function base_cfgs(key)
         return bp[key] and bp[key].type_config and tbl(bp[key].type_config.configurations) or {}
     end
-    local function pick(in_base, is_profile)
+    local function pick(kind, key, in_base, is_profile)
         if mode == "local" then return "local" end
         if mode == "local+shared" and not is_profile then return "local+shared" end
+        local cur = tbl(current[kind])[key]
+        if cur then return cur end
         return in_base and "local+shared" or "local"
     end
     local intent = { projects = {}, configurations = {}, configuration_sets = {}, profiles = {} }
     for key, proj in pairs(tbl(config.projects)) do
-        intent.projects[key] = pick(bp[key] ~= nil)
+        intent.projects[key] = pick("projects", key, bp[key] ~= nil)
         local cfgs = proj.type_config and tbl(proj.type_config.configurations) or {}
         for cname in pairs(cfgs) do
-            intent.configurations[key .. "/" .. cname] = pick(base_cfgs(key)[cname] ~= nil)
+            local ck = key .. "/" .. cname
+            intent.configurations[ck] = pick("configurations", ck, base_cfgs(key)[cname] ~= nil)
         end
     end
     for name in pairs(tbl(config.configuration_sets)) do
-        intent.configuration_sets[name] = pick(tbl(baseline.configuration_sets)[name] ~= nil)
+        intent.configuration_sets[name] = pick("configuration_sets", name,
+            tbl(baseline.configuration_sets)[name] ~= nil)
     end
     for key in pairs(tbl(config.profiles)) do
-        intent.profiles[key] = pick(tbl(baseline.profiles)[key] ~= nil, true)
+        intent.profiles[key] = pick("profiles", key, tbl(baseline.profiles)[key] ~= nil, true)
     end
     -- Published items the import leaves out: reference-only.
     for key in pairs(bp) do
@@ -167,6 +174,51 @@ function M.intents(config, baseline, mode)
         if intent.profiles[key] == nil then intent.profiles[key] = "shared" end
     end
     return intent
+end
+
+--- Singular labels of the item kinds, as the import summary names items.
+M.KIND_LABEL = {
+    projects = "project",
+    configurations = "configuration",
+    configuration_sets = "configuration set",
+    profiles = "profile",
+}
+
+--- "<kind> <name>" for every project, configuration set and profile of
+--- inventory `from` that inventory `to` lacks, sorted — the items a publish
+--- of `to` would remove from a published snapshot `from` (spec §16.39).
+--- @param from table inventory
+--- @param to table inventory
+--- @return string[]
+function M.removed_names(from, to)
+    local out = {}
+    for _, kind in ipairs({ "projects", "configuration_sets", "profiles" }) do
+        for _, k in ipairs(sorted_keys(from[kind])) do
+            if tbl(to[kind])[k] == nil then out[#out + 1] = M.KIND_LABEL[kind] .. " " .. k end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+--- Intent changes between two `Workspace:_item_intents()` maps, for items in
+--- both (spec §16.39 summary): `{ kind, name, from, to }`, in report order.
+--- A configuration is named `<project>:<configuration>`.
+--- @param before table
+--- @param after table
+--- @return { kind: string, name: string, from: string, to: string }[]
+function M.intent_changes(before, after)
+    local out = {}
+    for _, kind in ipairs(M.KINDS) do
+        local b, a = tbl(before[kind]), tbl(after[kind])
+        for _, k in ipairs(sorted_keys(b)) do
+            if a[k] ~= nil and a[k] ~= b[k] then
+                local name = kind == "configurations" and (k:gsub("/", ":", 1)) or k
+                out[#out + 1] = { kind = M.KIND_LABEL[kind], name = name, from = b[k], to = a[k] }
+            end
+        end
+    end
+    return out
 end
 
 --- The text `lw export` prints: exactly what a publish writes (`io.encode_json`),

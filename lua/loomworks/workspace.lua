@@ -581,6 +581,8 @@ end
 --- @field _user_provenance table<string, table> per-project sub-item provenance from merge
 --- @field _shared_baseline table|nil raw parsed loomworks.json for modified-state computation
 --- @field _shared_ignored table[] program-bearing fields stripped from loomworks.json (spec §17.6; program_fields.strip)
+--- @field _user_unread "unsigned"|"invalid"|nil the working copy on disk was refused (spec §17.4) and this load, made for an import that replaces it unread (spec §16.39), treated it as absent; no save may overwrite it until that import writes
+--- @field _import_writing boolean|nil true while `commit_import` saves the working copy
 --- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
 --- @field _disk_baseline table<"user"|"cache", { text: string|nil }> per guarded
@@ -5177,6 +5179,37 @@ function Workspace:_profile_build_dirs()
     return used
 end
 
+--- The intent of every item the workspace shows — in the working copy or in
+--- the published baseline — keyed the way the working copy's intent map is
+--- (configurations `<project>/<configuration>`). Module-generated
+--- configurations that neither file holds are left out. `lw import` compares
+--- this before and after (spec §16.39) and keeps the non-`shared` ones.
+--- @return table<string, table<string, string>>
+function Workspace:_item_intents()
+    local out = { projects = {}, configurations = {}, configuration_sets = {}, profiles = {} }
+    for _, project in pairs(self._projects or {}) do
+        if not project.orphaned and project._intent then
+            out.projects[project.key] = project._intent
+            local prov = self._user_provenance and self._user_provenance[project.key] or {}
+            local bp = self:_baseline_project(project.key)
+            local bcfgs = bp and bp.type_config and bp.type_config.configurations or {}
+            for _, cfg in ipairs(project._configurations or {}) do
+                local held = (prov.user_configs and prov.user_configs[cfg.name]) or bcfgs[cfg.name] ~= nil
+                if held and cfg._intent and not cfg._source_missing then
+                    out.configurations[project.key .. "/" .. cfg.name] = cfg._intent
+                end
+            end
+        end
+    end
+    for _, cs in pairs(self._config_sets or {}) do
+        if cs._intent then out.configuration_sets[cs.name] = cs._intent end
+    end
+    for _, profile in pairs(self._profiles or {}) do
+        if profile._intent then out.profiles[profile.key] = profile._intent end
+    end
+    return out
+end
+
 --- Load an export into this workspace IN MEMORY, as `lw import` would leave it
 --- (spec §16.39), without writing anything. The input is validated as a
 --- published snapshot, the working copy is rebuilt from it (keeping the
@@ -5205,10 +5238,22 @@ function Workspace:prepare_import(content, opts)
     local config, verr = config_mod.validate(vim.deepcopy(raw), self.root)
     if not config then return nil, verr, "invalid" end
 
+    -- A working copy replaced unread (spec §16.39) contributes nothing: the
+    -- load treated it as absent, so `before` holds no item and no
+    -- machine-local state of it.
     local before = self:_serialize_user()
     local snapshot_before = self:shared_snapshot()
     local used_before = self:_profile_build_dirs()
     local name_before = self.name
+    local intents_before = self:_item_intents()
+    -- Items the working copy holds now keep their intent (spec §16.39).
+    local current = {}
+    for kind, map in pairs(intents_before) do
+        current[kind] = {}
+        for key, intent in pairs(map) do
+            if intent ~= "shared" then current[kind][key] = intent end
+        end
+    end
 
     -- The working copy the import writes: the imported items, plus the
     -- machine-local state an export never carries (kept for surviving
@@ -5241,7 +5286,7 @@ function Workspace:prepare_import(content, opts)
         debug = before.debug,
         lsp = before.lsp,
         sdks = before.sdks,
-        intent = transfer.intents(config, self._shared_baseline, opts.intent),
+        intent = transfer.intents(config, self._shared_baseline, opts.intent, current),
     }
 
     -- The name: the import's, else what a load derives without one.
@@ -5280,18 +5325,47 @@ function Workspace:prepare_import(content, opts)
     end
     table.sort(shared_only)
 
-    -- Published items the next publish would drop (only under --local).
-    local inv_snap = transfer.inventory(snapshot_after)
-    local inv_base_snap = transfer.inventory(snapshot_before)
-    local unpublished = 0
-    for _, kind in ipairs({ "projects", "configuration_sets", "profiles" }) do
-        for k in pairs(inv_base_snap[kind]) do
-            if inv_snap[kind][k] == nil then unpublished = unpublished + 1 end
-        end
+    -- Items of the loomworks.json on disk that the next publish would remove
+    -- (spec §16.39) — judged against the file itself, never against what a
+    -- publish would have written before the import: with no loomworks.json
+    -- there is nothing to remove.
+    local io_mod = require("loomworks.io")
+    local publish_removals = {}
+    local read_file = self._core._deps.io.read_file or io_mod.read_file
+    local cfg_text = read_file(M.paths(self.root).config)
+    local cok, published = pcall(vim.json.decode, cfg_text or "")
+    if cfg_text and cok and type(published) == "table" then
+        publish_removals = transfer.removed_names(transfer.inventory(published),
+            transfer.inventory(snapshot_after))
     end
 
+    -- Intent changes of items the workspace already had (spec §16.39).
+    local intent_changes = transfer.intent_changes(intents_before, self:_item_intents())
+
+    -- Per-profile machine-local state dropped with the profiles the import
+    -- removes.
+    local dropped = {}
+    for _, key in ipairs(vim.tbl_keys(type(before.device) == "table" and before.device or {})) do
+        if not profiles[key] then
+            dropped[#dropped + 1] = { what = "device", profile = key, value = before.device[key] }
+        end
+    end
+    for _, key in ipairs(vim.tbl_keys(type(before.profile_variables) == "table"
+            and before.profile_variables or {})) do
+        if not profiles[key] then
+            local n = 0
+            for _, vars in pairs(before.profile_variables[key]) do
+                for _ in pairs(type(vars) == "table" and vars or {}) do n = n + 1 end
+            end
+            dropped[#dropped + 1] = { what = "fills", profile = key, value = n }
+        end
+    end
+    table.sort(dropped, function(a, b)
+        if a.profile ~= b.profile then return a.profile < b.profile end
+        return a.what < b.what
+    end)
+
     local prog, other, new_prog = transfer.review(before, after, self._core._deps.modules)
-    local io_mod = require("loomworks.io")
     return {
         before = before,
         after = after,
@@ -5304,7 +5378,10 @@ function Workspace:prepare_import(content, opts)
         shared_only = shared_only,
         orphaned_build_dirs = orphaned,
         publish_changes = io_mod.encode_json(snapshot_before) ~= io_mod.encode_json(snapshot_after),
-        unpublished = unpublished,
+        publish_removals = publish_removals,
+        intent_changes = intent_changes,
+        dropped = dropped,
+        unread = self._user_unread,
         program_lines = prog,
         other_lines = other,
         new_program_settings = new_prog,
@@ -5328,12 +5405,17 @@ function Workspace:commit_import(plan)
     -- nothing, reloads the working copy and reports the refusal. `_save_user`
     -- repeats the check under the save lock, so a write racing the backup
     -- below is refused too.
+    -- A working copy replaced unread (spec §16.39): its baseline is the bytes
+    -- the load found, so the same guard covers it.
+    self._import_writing = true
     local base = self._disk_baseline and self._disk_baseline.user
     if base then
         local disk = self:_read_disk(path)
         if disk ~= false and disk ~= base.text then
             local ok, err = self:_save_user()
+            self._import_writing = nil
             if not ok then return nil, err end
+            self._import_writing = true
         end
     end
     local backup = nil
@@ -5346,12 +5428,15 @@ function Workspace:commit_import(plan)
         end
         local ok, err = uv.fs_copyfile(path, candidate, { excl = true })
         if not ok then
+            self._import_writing = nil
             return nil, "could not save a backup of the working copy: " .. tostring(err)
         end
         backup = candidate
     end
     local ok, err = self:_save_user()
+    self._import_writing = nil
     if not ok then return nil, err or "could not write the working copy", backup end
+    self._user_unread = nil
     return true, nil, backup
 end
 
@@ -6557,6 +6642,11 @@ M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on 
 function Workspace:_save_user()
     local deps = self._core._deps
     local path = user_mod.filepath(self.root)
+    -- A refused working copy loaded as absent for an import (spec §16.39) is
+    -- replaced only by that import's confirmed write, never by another save.
+    if self._user_unread and not self._import_writing then
+        return false, "the working copy is not trusted on this machine — not overwritten"
+    end
     local data = self:_serialize_user()
 
     local base = self._disk_baseline.user

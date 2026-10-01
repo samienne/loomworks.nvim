@@ -307,7 +307,7 @@ describe("lw import", function()
     end
   end)
 
-  it("rejects invalid input, a working copy, and an untrusted working copy — changing nothing", function()
+  it("rejects invalid input and a working copy — changing nothing", function()
     local src = make_source()
     local root = make_target(src)
     local before = read(user.filepath(root))
@@ -327,13 +327,6 @@ describe("lw import", function()
     assert.equals(1, r.exit_code)
     assert.truthy(r.stderr:find("is a working copy", 1, true))
     assert.equals(before, read(user.filepath(root)))
-
-    -- An untrusted working copy is never read, so it cannot be replaced.
-    write(user.filepath(root), '{ "_meta": { "version": 2 } }')
-    r = run(root, "import", export_of(src), "-y")
-    assert.equals(1, r.exit_code)
-    assert.truthy(r.stderr:find("lw trust", 1, true))
-    assert.equals('{ "_meta": { "version": 2 } }', read(user.filepath(root)))
   end)
 
   it("is refused when the working copy changed on disk after it was read (§2.7)", function()
@@ -375,5 +368,191 @@ describe("lw import", function()
     local r = ok_run(root, "import", export_of(src), "-y")
     assert.truthy(r.stdout:find("there was no working copy", 1, true))
     assert.is_not_nil(user_data(root).projects.web)
+  end)
+end)
+
+describe("lw import round trip on one workspace", function()
+  --- A workspace with NO loomworks.json (never published): the project and
+  --- the set carry intent local+shared, `dev` is active, and both profiles
+  --- hold a device selection and a fill value.
+  local function make_local(with_shared)
+    local root = tmp_root()
+    if with_shared then
+      write(root .. "/loomworks.json", vim.json.encode({
+        projects = { app = { typescript = {} } },
+        configuration_sets = { dev = { app = "variant:default" } },
+      }))
+    end
+    assert(user.save(root, {
+      _meta = { version = 2 },
+      active_profile = "dev",
+      projects = { app = { typescript = {} }, web = { typescript = {} } },
+      configuration_sets = { dev = { app = "variant:default" }, webdev = { web = "variant:default" } },
+      profiles = { dev = { configuration_set = "dev" }, webdev = { configuration_set = "webdev" } },
+      device = { dev = "SERIAL-DEV", webdev = "SERIAL-WEB" },
+      profile_variables = { dev = { app = { v = "x" } }, webdev = { web = { v = "y" } } },
+      lsp = { clangd = { clang_tidy = false } },
+      intent = not with_shared
+        and { projects = { app = "local+shared" }, configuration_sets = { dev = "local+shared" } } or nil,
+    }))
+    if with_shared then -- web is local, its set too: same intents, by presence
+      assert.is_nil(user_data(root).intent)
+    end
+    return root
+  end
+
+  local function export_to_file(root, ...)
+    local path = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(path, ok_run(root, "export", ...).json)
+    return path
+  end
+
+  for _, with_shared in ipairs({ false, true }) do
+    local label = with_shared and "with a loomworks.json" or "without a loomworks.json"
+    it("keeps intent, the active profile, devices and fills (" .. label .. ")", function()
+      local root = make_local(with_shared)
+      local before = user_data(root)
+      local published = ok_run(root, "export", "--published").json
+      local file = export_to_file(root)
+      local dry = ok_run(root, "import", file, "--dry-run")
+      assert.is_nil(dry.stdout:find("would remove", 1, true), dry.stdout)
+      assert.is_nil(dry.stdout:find("intent:", 1, true), dry.stdout)
+      assert.truthy(dry.stdout:find("active profile: dev (kept)", 1, true), dry.stdout)
+      ok_run(root, "import", file, "--yes")
+      local after = user_data(root)
+      assert.equals("dev", after.active_profile)
+      assert.same(before.intent, after.intent)
+      -- What a publish would write is unchanged too (with a loomworks.json the
+      -- intents equal the presence defaults, so the map is empty both times).
+      assert.equals(published, ok_run(root, "export", "--published").json)
+      assert.same(before.device, after.device)
+      assert.same(before.profile_variables, after.profile_variables)
+      assert.same(before.lsp, after.lsp)
+      -- Lossless: a second export is the same file.
+      assert.equals(read(file), ok_run(root, "export").json)
+    end)
+  end
+
+  it("--local lists each intent change; no publish warning without loomworks.json", function()
+    local root = make_local(false)
+    local file = export_to_file(root)
+    local r = ok_run(root, "--local", "import", file, "--dry-run")
+    assert.truthy(r.stdout:find("intent: project app local+shared -> local", 1, true), r.stdout)
+    assert.truthy(r.stdout:find("intent: configuration set dev local+shared -> local", 1, true), r.stdout)
+    assert.is_nil(r.stdout:find("would remove", 1, true), r.stdout)
+  end)
+
+  it("--local warns, naming them, when loomworks.json items would be removed", function()
+    local root = make_local(true)
+    local file = export_to_file(root)
+    local r = ok_run(root, "--local", "import", file, "--dry-run")
+    assert.truthy(r.stdout:find("the next `lw publish` would remove 2 items from loomworks.json", 1, true), r.stdout)
+    assert.truthy(r.stdout:find("configuration set dev", 1, true), r.stdout)
+  end)
+
+  it("names the device selections and fills dropped with a removed profile", function()
+    local root = make_local(false)
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    local data = vim.json.decode(ok_run(root, "export").json)
+    data.profiles.webdev = nil
+    write(file, vim.json.encode(data))
+    local r = ok_run(root, "import", file, "--dry-run")
+    assert.truthy(r.stdout:find("active profile: dev (kept)", 1, true), r.stdout)
+    assert.truthy(r.stdout:find("device selection of webdev (SERIAL-WEB)", 1, true), r.stdout)
+    assert.truthy(r.stdout:find("fill values of webdev", 1, true), r.stdout)
+  end)
+end)
+
+describe("lw import over a working copy not signed by this machine", function()
+  local UNSIGNED = '{ "_meta": { "version": 2 }, "active_profile": "dev",'
+    .. ' "lsp": { "clangd": { "clang_tidy": false } } }'
+
+  it("--dry-run works and says the file is replaced unread", function()
+    local src = make_source()
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(file, ok_run(src, "export").json)
+    local root = tmp_root()
+    write(root .. "/loomworks.json", read(src .. "/loomworks.json"))
+    vim.fn.mkdir(root .. "/.nvim", "p")
+    write(user.filepath(root), UNSIGNED)
+    local r = ok_run(root, "import", file, "--dry-run")
+    assert.truthy(r.stdout:find("not signed by this machine", 1, true), r.stdout)
+    assert.truthy(r.stdout:find("replaced unread", 1, true), r.stdout)
+    assert.truthy(r.stdout:find("dry run", 1, true))
+    assert.equals(UNSIGNED, read(user.filepath(root)))
+  end)
+
+  it("a confirmed import replaces it unread, keeps a backup, carries nothing over", function()
+    local src = make_source()
+    ok_run(src, "profile", "select", "dev")
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(file, ok_run(src, "export").json)
+    local root = tmp_root()
+    write(root .. "/loomworks.json", read(src .. "/loomworks.json"))
+    vim.fn.mkdir(root .. "/.nvim", "p")
+    write(user.filepath(root), UNSIGNED)
+    local r = run(root, "--no-input", "import", file)
+    assert.equals(1, r.exit_code) -- still needs --yes
+    assert.equals(UNSIGNED, read(user.filepath(root)))
+    r = ok_run(root, "import", file, "--yes")
+    local backup = r.stdout:match("previous working copy: (%S+%.bak)")
+    assert.is_not_nil(backup, r.stdout)
+    assert.equals(UNSIGNED, read(root .. "/" .. backup))
+    local data = user_data(root) -- signed by this machine now
+    assert.is_not_nil(data.projects.web)
+    assert.is_nil(data.lsp)
+    assert.is_nil(data.active_profile)
+    ok_run(root, "status")
+  end)
+
+  it("is refused when the unread file changed on disk before the write (§2.7)", function()
+    local src = make_source()
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(file, ok_run(src, "export").json)
+    local root = tmp_root()
+    write(root .. "/loomworks.json", read(src .. "/loomworks.json"))
+    vim.fn.mkdir(root .. "/.nvim", "p")
+    write(user.filepath(root), UNSIGNED)
+    local ws = cli._load_workspace(root, false, { replace_untrusted_user = true })
+    assert.equals("unsigned", ws._user_unread)
+    -- Nothing but the import may overwrite the unread file.
+    assert.is_false((ws:_save_user()))
+    assert.equals(UNSIGNED, read(user.filepath(root)))
+    local deps = ws._core._deps
+    local saved_hook, refused = deps.on_save_refused, nil
+    deps.on_save_refused = function(msg) refused = msg end
+    local plan = assert(ws:prepare_import(read(file)))
+    -- Another lw writes (and signs) the working copy meanwhile.
+    assert(user.save(root, { _meta = { version = 2 }, projects = { old = { typescript = {} } } }))
+    local theirs = read(user.filepath(root))
+    local ok, err, backup = ws:commit_import(plan)
+    deps.on_save_refused = saved_hook
+    deps.replace_untrusted_user = nil
+    if ws._stop_tracking then ws:_stop_tracking() end
+    assert.is_nil(ok)
+    assert.truthy(tostring(err):find("changed on disk", 1, true))
+    assert.truthy(refused and refused:find("changed on disk", 1, true))
+    assert.is_nil(backup)
+    assert.equals(theirs, read(user.filepath(root)))
+  end)
+
+  it("an invalid cache still refuses", function()
+    local src = make_source()
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(file, ok_run(src, "export").json)
+    local root = tmp_root()
+    write(root .. "/loomworks.json", read(src .. "/loomworks.json"))
+    vim.fn.mkdir(root .. "/.nvim", "p")
+    write(user.filepath(root), UNSIGNED)
+    -- Signed with another machine's key: invalid here.
+    local key = trust.key_path()
+    trust._set_key_path(vim.fn.tempname() .. "/other/trust.key")
+    local foreign = assert(trust.sign("cache", trust.encode({ _meta = { version = 8 }, build_dirs = vim.empty_dict() })))
+    trust._set_key_path(key)
+    write(root .. "/.nvim/loomworks.cache.json", foreign)
+    local r = run(root, "import", file, "--dry-run")
+    assert.equals(1, r.exit_code)
+    assert.truthy(r.stderr:find("loomworks.cache.json", 1, true), r.stderr)
+    assert.equals(UNSIGNED, read(user.filepath(root)))
   end)
 end)

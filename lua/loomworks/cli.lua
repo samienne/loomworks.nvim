@@ -654,7 +654,9 @@ end
 --- instead of exiting with the trust instructions (`lw health`, §16.36).
 --- @param root string
 --- @param wait_tools? boolean default true
---- @param opts? { soft_trust?: boolean }
+--- `opts.replace_untrusted_user` loads past a refused working copy as if it
+--- were absent (`lw import`, §16.39; the workspace's `_user_unread` says why).
+--- @param opts? { soft_trust?: boolean, replace_untrusted_user?: boolean }
 --- @return table|nil workspace, table core, table|nil trust refusal
 local function load_workspace(root, wait_tools, opts)
   local lw = require("loomworks")
@@ -670,6 +672,9 @@ local function load_workspace(root, wait_tools, opts)
   -- its own commands (spec §17.10).
   core._deps.quiet_trust_errors = true
   core._deps.trust_actions = { trust = "lw trust", discard = "lw trust --discard", nuke = "lw nuke" }
+  -- Only `lw import` loads past a refused working copy (it replaces it unread,
+  -- spec §16.39); every other command keeps the refusal.
+  core._deps.replace_untrusted_user = opts and opts.replace_untrusted_user or nil
   -- A refused save (spec §2.7: the working copy changed on disk since this
   -- command read it, or a state file has a newer schema) ends the command:
   -- `lw: <message>`, exit 1. Nothing was written.
@@ -3801,8 +3806,29 @@ function M._print_import_plan(plan, label)
   else
     out(string.format("  %-20s  %s (unchanged)", "name", tostring(plan.name_after)))
   end
-  if plan.active_before and plan.active_before ~= plan.active_after then
+  for _, c in ipairs(plan.intent_changes or {}) do
+    out(string.format("  intent: %s %s %s -> %s", c.kind, c.name, c.from, c.to))
+  end
+  if plan.unread then
+    out("Current working copy is " .. (plan.unread == "invalid"
+        and "modified outside loomworks or from another machine (its signature does not match)"
+        or "not signed by this machine")
+      .. " — replaced unread (backup kept).")
+    out("Its machine-local settings are not carried over (active profile, device selections,")
+    out("fill values, SDKs, LSP and debug-adapter settings).")
+  elseif plan.active_before and plan.active_before == plan.active_after then
+    out("active profile: " .. plan.active_before .. " (kept)")
+  elseif plan.active_before then
     out("Active profile " .. plan.active_before .. " is not in the import — no profile will be active.")
+  end
+  for _, d in ipairs(plan.dropped or {}) do
+    if d.what == "device" then
+      out(string.format("device selection of %s (%s) is dropped — the import removes the profile.",
+        d.profile, tostring(d.value)))
+    else
+      out(string.format("fill values of %s (%d) are dropped — the import removes the profile.",
+        d.profile, d.value))
+    end
   end
   if #plan.shared_only > 0 then
     out("Still in loomworks.json, not in the import (stay visible as shared): "
@@ -3812,9 +3838,10 @@ function M._print_import_plan(plan, label)
     out(string.format("%d build director%s will belong to no profile (kept on disk).",
       plan.orphaned_build_dirs, plan.orphaned_build_dirs == 1 and "y" or "ies"))
   end
-  if plan.unpublished > 0 then
-    out(string.format("--local: the next `lw publish` would remove %d item%s from loomworks.json.",
-      plan.unpublished, plan.unpublished == 1 and "" or "s"))
+  local removals = plan.publish_removals or {}
+  if #removals > 0 then
+    out(string.format("the next `lw publish` would remove %d item%s from loomworks.json: %s.",
+      #removals, #removals == 1 and "" or "s", name_list(removals, 8)))
   end
   out("")
   out("Program settings — what loomworks may run on this file's word:")
@@ -3853,7 +3880,9 @@ function M.cmd_import(root, args)
     if not content then die("cannot read " .. path) end
     label = src
   end
-  local ws = load_workspace(root, false)
+  -- A working copy not signed by this machine is replaced unread (spec
+  -- §16.39): load as if it were absent; the plan says so.
+  local ws = load_workspace(root, false, { replace_untrusted_user = true })
   local plan, err, kind = ws:prepare_import(content, { intent = create_intent })
   if not plan then
     if kind == "working_copy" then
@@ -10327,15 +10356,22 @@ exactly the imported ones. What an export cannot carry stays: SDK
 declarations, language-server options, debug adapters, and — for profiles
 that still exist — the active profile, device selection and variable fills.
 
-Nothing is published: loomworks.json is untouched. Imported items that
-loomworks.json already has are local+shared (`lw publish` would update them);
-the rest are local. With --shared every imported item except profiles is
+Nothing is published: loomworks.json is untouched. An imported item your
+working copy already has keeps its intent (local / local+shared), so exporting
+and importing on the same workspace changes nothing. A new item is
+local+shared when loomworks.json already has it (`lw publish` would update
+it), else local. With --shared every imported item except profiles is
 local+shared; with --local all are local. Build directories are never deleted
 — those no profile uses any more stay on disk (`lw reset --all` removes them).
 
 Importing trusts the file: its program settings (launch commands,
-environments, …) will be used. Import shows what changes and those settings
+environments, …) will be used. Import shows what changes — intent changes, the
+active profile, dropped device selections and fills — and those settings
 (`(new)` = not in your current working copy), then asks.
+
+A working copy not signed by this machine (written by an older lw, or by hand)
+does not block an import: it is replaced unread — none of its settings is kept
+— after the usual backup.
   -n, --dry-run   show the summary and review, write nothing
   -y, --yes       don't ask (required with --no-input, and when reading stdin)
 

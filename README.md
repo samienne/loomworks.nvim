@@ -1692,10 +1692,14 @@ configuration set and profile — local items included — and writes nothing
 settings (active profile, device selections, variable fills, SDKs, LSP and
 debug-adapter settings) are never exported. `lw import` replaces the working
 configuration with the file's, keeps this machine's own settings, publishes
-nothing (items `loomworks.json` already has stay published, the rest are
-local), deletes no build directories, and saves the previous working copy as
+nothing (an item your working copy already has keeps its local / shared
+choice; a new one is shared only if `loomworks.json` already has it), deletes
+no build directories, and saves the previous working copy as
 `.nvim/loomworks.user.json.<time>.bak`. Importing trusts the file's program
-settings (launch commands, environments), so it shows them and asks first.
+settings (launch commands, environments), so it shows them, and everything
+else it changes (intents, the active profile, dropped device selections), and
+asks first. A working copy not signed by this machine (an older `lw` wrote it)
+does not block an import: it is replaced unread, keeping none of its settings.
 
 `lw pull` is a **source-wins, non-destructive** item-level merge: items only in this
 worktree are kept, items in both take the source's version, items only in the
