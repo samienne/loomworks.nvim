@@ -338,6 +338,38 @@ describe("lw import", function()
     assert.equals('{ "_meta": { "version": 2 } }', read(user.filepath(root)))
   end)
 
+  it("is refused when the working copy changed on disk after it was read (§2.7)", function()
+    local src = make_source()
+    local file = export_of(src)
+    local root = make_target(src)
+    local ws = cli._load_workspace(root, false)
+    local deps = ws._core._deps
+    local saved_hook, refused = deps.on_save_refused, nil
+    deps.on_save_refused = function(msg) refused = msg end -- the CLI would die here
+    local plan = assert(ws:prepare_import(read(file)))
+    -- Another lw / the editor saves while the review is on screen.
+    assert(user.save(root, { _meta = { version = 2 }, projects = { old = { typescript = {} } },
+      configuration_sets = { mine = { old = "variant:default" } } }))
+    local theirs = read(user.filepath(root))
+    local ok, err, backup = ws:commit_import(plan)
+    deps.on_save_refused = saved_hook
+    ws:_stop_tracking()
+    assert.is_nil(ok)
+    assert.truthy(tostring(err):find("changed on disk", 1, true))
+    assert.truthy(refused and refused:find("changed on disk", 1, true))
+    assert.is_nil(backup)
+    -- Nothing written: the other writer's file stands, no backup was taken.
+    assert.equals(theirs, read(user.filepath(root)))
+    for name in vim.fs.dir(root .. "/.nvim") do
+      assert.is_nil(name:match("%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d%.bak$"), "backup written: " .. name)
+    end
+    -- Reloaded: the model holds the other writer's working copy, not the import.
+    local sets = {}
+    for _, cs in pairs(ws._config_sets) do sets[cs.name] = true end
+    assert.is_true(sets.mine == true)
+    assert.is_nil(sets.webdev)
+  end)
+
   it("creates the working copy when there is none", function()
     local src = make_source()
     local root = tmp_root()

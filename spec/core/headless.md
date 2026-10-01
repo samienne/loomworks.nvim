@@ -3569,8 +3569,8 @@ the working copy restores it on this machine. The report names the backup and
 gives that copy as the way to undo. If the backup cannot be written, the import
 stops before changing anything. Import never deletes or prunes these backups.
 
-**Writing.** The new working copy is written through the same atomic, signed
-path as every management write (§2.3, §17.5). Import touches **no build
+**Writing.** The new working copy is written through the same atomic, signed,
+stale-guarded path as every management write (§2.3, §2.7, §17.5). Import touches **no build
 state**: the build cache, build directories and their locks are left as they
 are. A configuration that keeps its `(project, configuration)` identity keeps its
 build directory and state. Whether its next build reconfigures follows the
@@ -3582,9 +3582,11 @@ says that it resets every profile (§16.38). Import deletes nothing.
 **Concurrent editor.** An editor host that is live on the workspace picks the
 new working copy up like any other external change to it (§2.4 External
 changes). The file is signed by this machine, so the change is merged, not
-refused. As with any other management write, an edit the editor saves between
-import's read and its write may be lost. Close the editor or keep it idle while
-importing.
+refused. An import is a working-copy save like any other (§2.7). If the working
+copy changed on disk after import read it, for example because the editor saved
+while the review was on screen, the import is **refused** before its backup is
+taken. Nothing is written, the working copy is reloaded, and the refusal asks
+for the import to be run again.
 
 **Report.** After writing, import reports the imported counts, the backup's
 path, and the resulting active profile. When the import changed an item that

@@ -5314,12 +5314,28 @@ end
 --- Write the working copy `prepare_import` loaded (spec §16.39): first a
 --- byte-exact, timestamped backup of the current working copy (never
 --- overwriting an existing file; no backup, no write), then the new working
---- copy through the ordinary signed save. Deletes nothing.
+--- copy through the guarded save (`_save_user`, spec §2.7). A working copy
+--- that changed on disk since it was read refuses the import before the
+--- backup (nothing written, reloaded, reported). Deletes nothing.
 --- @param plan table from `prepare_import`
 --- @return boolean|nil ok, string|nil err, string|nil backup path of the backup (nil when there was no working copy)
 function Workspace:commit_import(plan)
     local uv = vim.uv or vim.loop
     local path = self._core._deps.user.filepath(self.root)
+    -- The working copy changed on disk since this process read it (another lw
+    -- or the editor saved while the import was being reviewed): refuse before
+    -- the backup, through the one stale-save path (spec §2.7) — it writes
+    -- nothing, reloads the working copy and reports the refusal. `_save_user`
+    -- repeats the check under the save lock, so a write racing the backup
+    -- below is refused too.
+    local base = self._disk_baseline and self._disk_baseline.user
+    if base then
+        local disk = self:_read_disk(path)
+        if disk ~= false and disk ~= base.text then
+            local ok, err = self:_save_user()
+            if not ok then return nil, err end
+        end
+    end
     local backup = nil
     if uv.fs_stat(path) then
         local stamp = os.date("%Y%m%d-%H%M%S")

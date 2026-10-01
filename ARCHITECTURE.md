@@ -1184,8 +1184,11 @@ replaces it, which would drop `PATH`).
   itself is the validation; nothing is written. The plan's before / after are
   both `_serialize_user()` output, so the summary and the `program_fields.review`
   diff describe exactly the file that will be signed. `Workspace:commit_import`
-  copies the old working copy to a timestamped `.bak` (`fs_copyfile`, excl),
-  then `_save_user()`. Nothing is deleted.
+  first repeats `_save_user`'s stale check (spec §2.7) so a working copy that
+  changed on disk since it was read refuses the import before any backup
+  (nothing written, reloaded, reported), then copies the old working copy to a
+  timestamped `.bak` (`fs_copyfile`, excl) and writes through the guarded
+  `_save_user()` (lock + stale check + `_meta.written_by`). Nothing is deleted.
 - **Convention migration** (spec §16.19): `lua/loomworks/migrate.lua` holds a
   registry of named rules, each separating `plan` (what would change) from
   `apply` (change it), so `lw migrate --check` can lint without write access
