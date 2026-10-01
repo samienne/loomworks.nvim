@@ -473,6 +473,178 @@ function M.interrupt(pid, st)
 end
 
 -- ---------------------------------------------------------------------------
+-- Command lines and holder identity (spec §19.5: never kill a process that is
+-- not what its lock record claims)
+-- ---------------------------------------------------------------------------
+
+local _wcmd
+local function win_cmd()
+    if _wcmd ~= nil then return _wcmd or nil end
+    _wcmd = false
+    local ffi = win()
+    if not ffi then return nil end
+    cdef("int32_t NtQueryInformationProcess(void* h, int cls, void* info, uint32_t len, uint32_t* ret);")
+    cdef("void** CommandLineToArgvW(const uint16_t* cmd, int* argc);")
+    cdef("int WideCharToMultiByte(uint32_t cp, uint32_t flags, const uint16_t* w, int wlen, char* s, int slen, const char* d, int* used);")
+    cdef("void* LocalFree(void* p);")
+    cdef("typedef struct { uint16_t Length; uint16_t MaximumLength; uint16_t* Buffer; } lw_UNICODE_STRING;")
+    local okn, nt = pcall(ffi.load, "ntdll")
+    local oks, sh = pcall(ffi.load, "shell32")
+    if not okn or not oks then return nil end
+    _wcmd = { ffi = ffi, nt = nt, sh = sh }
+    return _wcmd
+end
+
+local function utf8_of(ffi, w)
+    local n = ffi.C.WideCharToMultiByte(65001, 0, w, -1, nil, 0, nil, nil)
+    if n <= 0 then return "" end
+    local buf = ffi.new("char[?]", n)
+    ffi.C.WideCharToMultiByte(65001, 0, w, -1, buf, n, nil, nil)
+    return ffi.string(buf, n - 1)
+end
+
+--- Windows: the command line of `pid` (NtQueryInformationProcess class 60,
+--- ProcessCommandLineInformation), split with CommandLineToArgvW; the start
+--- time is checked on the same handle.
+local function win_cmdline(pid, st)
+    local w = win_cmd()
+    if not w then return nil end
+    local ffi = w.ffi
+    local h = win_open(pid, W.QUERY)
+    if not h then return nil end
+    local args
+    pcall(function()
+        if st and win_handle_start(h) ~= st then return end
+        local size, ret = 8192, ffi.new("uint32_t[1]")
+        for _ = 1, 3 do
+            local buf = ffi.new("uint8_t[?]", size)
+            local rc = w.nt.NtQueryInformationProcess(h, 60, buf, size, ret)
+            if rc == 0 then
+                local us = ffi.cast("lw_UNICODE_STRING*", buf)
+                local n = math.floor(us.Length / 2)
+                local wide = ffi.new("uint16_t[?]", n + 1)
+                ffi.copy(wide, us.Buffer, n * 2)
+                wide[n] = 0
+                local argc = ffi.new("int[1]")
+                local argv = w.sh.CommandLineToArgvW(wide, argc)
+                if argv ~= nil then
+                    args = {}
+                    for i = 0, argc[0] - 1 do
+                        args[#args + 1] = utf8_of(ffi, ffi.cast("uint16_t*", argv[i]))
+                    end
+                    ffi.C.LocalFree(argv)
+                end
+                return
+            end
+            if ret[0] > size then size = ret[0] else return end
+        end
+    end)
+    ffi.C.CloseHandle(h)
+    return args
+end
+
+local function linux_cmdline(pid)
+    local f = io.open("/proc/" .. tostring(pid) .. "/cmdline", "rb")
+    if not f then return nil end
+    local s = f:read("*a") or ""
+    f:close()
+    if s == "" then return nil end
+    local args = {}
+    for a in (s:gsub("%z$", "") .. "\0"):gmatch("(.-)%z") do args[#args + 1] = a end
+    return args
+end
+
+local _mac_sysctl
+local function mac_cmdline(pid)
+    local ffi = ffi_mod()
+    if not ffi or OS ~= "OSX" then return nil end
+    if not _mac_sysctl then
+        cdef("int sysctl(int* name, unsigned int namelen, void* oldp, size_t* oldlenp, void* newp, size_t newlen);")
+        _mac_sysctl = true
+    end
+    local size = 1024 * 1024
+    local buf = ffi.new("uint8_t[?]", size)
+    local len = ffi.new("size_t[1]", size)
+    local mib = ffi.new("int[3]", { 1, 49, pid }) -- CTL_KERN, KERN_PROCARGS2
+    if ffi.C.sysctl(mib, 3, buf, len, nil, 0) ~= 0 then return nil end
+    local n = tonumber(len[0])
+    if n < 4 then return nil end
+    local argc = ffi.cast("int*", buf)[0]
+    local s = ffi.string(buf + 4, n - 4)
+    -- exec path, NUL padding, then argc NUL-terminated arguments
+    local pos = (s:find("\0", 1, true) or #s) + 1
+    while s:sub(pos, pos) == "\0" do pos = pos + 1 end
+    local args = {}
+    while #args < argc and pos <= #s do
+        local e = s:find("\0", pos, true) or (#s + 1)
+        args[#args + 1] = s:sub(pos, e - 1)
+        pos = e + 1
+    end
+    return #args > 0 and args or nil
+end
+
+--- The command line (argv) of process `pid`, or nil when it cannot be read
+--- (gone, access denied, no method on this OS). With `st`, nil unless the
+--- process still has that start time.
+--- @param pid integer
+--- @param st? string recorded start time
+--- @return string[]|nil
+function M.cmdline(pid, st)
+    if M._cmdline_probe then return M._cmdline_probe(pid, st) end
+    if type(pid) ~= "number" or pid < 1 then return nil end
+    if st and OS ~= "Windows" and M.alive(pid, st) ~= true then return nil end
+    local ok, args
+    if OS == "Windows" then ok, args = pcall(win_cmdline, pid, st)
+    elseif OS == "Linux" then ok, args = pcall(linux_cmdline, pid)
+    else ok, args = pcall(mac_cmdline, pid) end
+    if ok and type(args) == "table" and #args > 0 then return args end
+    return nil
+end
+
+local function base_of(p)
+    local b = tostring(p or ""):gsub("\\", "/"):match("[^/]*$") or ""
+    return (b:lower():gsub("%.exe$", ""))
+end
+
+--- Does this command line run an `lw` host: the `lw` binary (also a pinned
+--- `lw-<version>-<asset>` copy), a development `luvi` run, or the
+--- nvim-hosted fallback (`nvim … -l …/loomworks/cli.lua`)?
+--- @param args string[]
+--- @return boolean
+function M.is_lw(args)
+    if type(args) ~= "table" or not args[1] then return false end
+    local exe = base_of(args[1])
+    if exe == "lw" or exe:match("^lw%-") or exe == "luvi" then return true end
+    if exe == "nvim" then
+        for i = 2, #args do
+            local a = tostring(args[i]):gsub("\\", "/")
+            if a == "loomworks/cli.lua" or a:match("/loomworks/cli%.lua$") then return true end
+        end
+    end
+    return false
+end
+
+--- Is this command line `lw … daemon run` — for `root` when it names one
+--- with `--root`?
+--- @param args string[]
+--- @param root? string
+--- @return boolean
+function M.is_daemon_for(args, root)
+    if not M.is_lw(args) then return false end
+    local run, named
+    for i = 1, #args - 1 do
+        if args[i] == "daemon" and args[i + 1] == "run" then run = true end
+        if args[i] == "--root" then named = args[i + 1] end
+    end
+    if not run then return false end
+    if named and root then
+        local key = require("loomworks.daemon.paths")._hash_key
+        return key(named) == key(root)
+    end
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- Test helpers: suspend / resume a process (a hung holder)
 -- ---------------------------------------------------------------------------
 

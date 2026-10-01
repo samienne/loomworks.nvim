@@ -71,7 +71,36 @@ function M.can_break(info, ctx)
             ctx.what or "the lock", lock_record.holder_text(info), tostring(info.pid),
             ctx.unlock and ("lw unlock --force " .. ctx.unlock) or "lw unlock --force")
     end
-    return true
+    return M.verify_identity(info, ctx)
+end
+
+--- Is the process a lock record names really such a holder (spec §19.5)?
+--- A record is data from a shared directory: one naming an unrelated process
+--- of this user (its id and start time are easy to read) must never get it
+--- killed. The holder's command line must be an `lw` host — for a daemon
+--- holder `lw … daemon run` (for `ctx.root` when it names one). A command
+--- line that cannot be read refuses the kill. Returns true, or false + the
+--- refusal.
+--- @param info table classified holder info
+--- @param ctx table busy-message context (+ `root`, `remedy`)
+--- @return boolean ok, string|nil refusal
+function M.verify_identity(info, ctx)
+    local what = ctx.what or "the lock"
+    local remedy = ctx.remedy or (ctx.unlock and ("lw unlock --force " .. ctx.unlock)) or "lw unlock --force"
+    local args = proc.cmdline(info.pid, info.start_time)
+    if not args then
+        return false, string.format("%s is held by pid %s, whose command line cannot be read — it is never "
+            .. "killed unchecked; wait for it, or remove the record without stopping it: %s",
+            what, tostring(info.pid), remedy)
+    end
+    local daemon = info.kind == "daemon" or info.mode == "daemon"
+    local ok
+    if daemon then ok = proc.is_daemon_for(args, ctx.root) else ok = proc.is_lw(args) end
+    if ok then return true end
+    local exe = tostring(args[1] or "?"):gsub("\\", "/"):match("[^/]*$")
+    return false, string.format("%s names pid %s (%s) as %s, but that process is not one — it is never "
+        .. "killed; if the record is stale, remove it without stopping anything: %s",
+        what, tostring(info.pid), exe, daemon and "an `lw daemon run`" or "an lw process", remedy)
 end
 
 --- Break the holder of a lock (steps 1–3). Returns true when the

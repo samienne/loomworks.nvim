@@ -8,7 +8,16 @@ local uv = vim.uv or vim.loop
 local M = {}
 
 M.REPO = (uv.cwd():gsub("\\", "/"))
-M.HELPER = M.REPO .. "/tests/fixtures/lock_holder.lua"
+-- The helper runs from a copy named `…/loomworks/cli.lua`: --break-locks only
+-- ever kills a holder whose command line is an lw host (spec §19.5,
+-- lock_break.verify_identity), and the nvim-hosted lw runs exactly that.
+M.HELPER = (function()
+    local dir = (vim.fn.tempname():gsub("\\", "/")) .. "/loomworks"
+    vim.fn.mkdir(dir, "p")
+    local src = assert(io.open(M.REPO .. "/tests/fixtures/lock_holder.lua", "rb")):read("*a")
+    local f = assert(io.open(dir .. "/cli.lua", "wb")); f:write(src); f:close()
+    return dir .. "/cli.lua"
+end)()
 
 local spawned = {}
 
