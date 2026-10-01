@@ -20,6 +20,8 @@ local lock = require("loomworks.daemon.lock")
 local pipe = require("loomworks.daemon.pipe")
 
 --- @class loomworks.daemon.Server
+--- @field on_conn_closed? fun(server: loomworks.daemon.Server, conn: table) set by the model layer: a client connection went away
+--- @field on_stopping? fun(server: loomworks.daemon.Server, reason: string|nil) set by the model layer: the server is stopping
 local Server = {}
 Server.__index = Server
 
@@ -193,6 +195,9 @@ function Server:_drop_conn(conn)
     if self._conns[conn] then
         self._conns[conn] = nil
         self._n_conns = self._n_conns - 1
+        -- Let the model layer react to a lost client (e.g. cancel the builds it
+        -- launched, spec §19.12).
+        if self.on_conn_closed then pcall(self.on_conn_closed, self, conn) end
     end
 end
 
@@ -305,6 +310,9 @@ end
 function Server:stop(reason)
     if self._stopped then return end
     self._stopped = true
+    -- Let the model layer stop what it runs (in-flight builds release their
+    -- build-dir locks) before the clients and the lock go away.
+    if self.on_stopping then pcall(self.on_stopping, self, reason) end
     self:_teardown()
     if self.opts.on_stop then pcall(self.opts.on_stop, reason) end
 end

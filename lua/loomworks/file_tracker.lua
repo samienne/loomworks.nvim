@@ -6,6 +6,7 @@
 --- @class loomworks.FileTracker
 --- @field _watches table<string, uv_fs_poll_t>
 --- @field _content table<string, string|nil> last known raw content per path
+--- @field _content_watch? table<string, true> paths watched for content (`watch`, not `watch_signal`) — what `sync` re-reads
 --- @field _callback fun(path: string, content: string|nil)
 --- @field _interval number poll interval in milliseconds
 --- @field _read_file fun(path: string): string|nil, string|nil
@@ -49,6 +50,8 @@ function FileTracker:watch(path)
     if not poll then return end
 
     self._watches[path] = poll
+    self._content_watch = self._content_watch or {}
+    self._content_watch[path] = true
 
     poll:start(path, self._interval, function(err, prev, curr)
         -- fs_poll callback runs in the libuv thread; schedule to main thread
@@ -100,6 +103,28 @@ function FileTracker:unwatch(path)
         end
         self._watches[path] = nil
         self._content[path] = nil
+        if self._content_watch then self._content_watch[path] = nil end
+    end
+end
+
+--- Re-read every content-watched file NOW and deliver any change through the
+--- callback, exactly as the next poll would — without waiting up to one poll
+--- interval. A long-lived owner (the daemon, spec §19.12) calls this before
+--- acting on its model so an edit, a discarded working copy, a deleted cache
+--- (`lw nuke`), or a file that is no longer trusted (§17.4) is applied first.
+--- Must run on the main loop (the callback may touch vim.fn). A callback that
+--- stops the tracker (a refused file tears the workspace down) ends the sync.
+function FileTracker:sync()
+    local paths = {}
+    for path in pairs(self._content_watch or {}) do paths[#paths + 1] = path end
+    table.sort(paths)
+    for _, path in ipairs(paths) do
+        if not self._watches[path] then break end
+        local new_content = self._read_file(path)
+        if new_content ~= self._content[path] then
+            self._content[path] = new_content
+            self._callback(path, new_content)
+        end
     end
 end
 

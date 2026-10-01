@@ -1355,28 +1355,56 @@ function M._maybe_delegate_build(root, args, opts)
   end
 
   local connect = opts.connect or require("loomworks.daemon.projection").connect
-  local done, code, cerr = false, nil, nil
+  local service = require("loomworks.daemon.service")
+  -- `accepted` = the daemon took the build (from then on it is the daemon's:
+  -- never re-run in-process). `fallback` = it did not; the in-process path
+  -- runs and reports any refusal itself.
+  local done, code, accepted, fallback, lost, key = false, nil, false, nil, nil, pre[1]
+  local my_task
   -- A CLI build only sends a command and streams — it does not render the
   -- model, so it connects WITHOUT hydrating a projection workspace (lighter, and
   -- independent of model deserialization).
-  connect(root, { hydrate = false }, function(proj, err)
-    if err then cerr = err; done = true; return end
+  connect(root, {
+    hydrate = false,
+    -- The daemon's refusals for this build (gate, conflict, step failure) —
+    -- printed as the in-process `die` would print them.
+    on_notify = function(m)
+      if m.task_id ~= nil and m.task_id == my_task and m.level == "error" then
+        errw("lw: " .. tostring(m.message) .. "\n")
+      end
+    end,
+  }, function(proj, err)
+    if err then fallback = err; done = true; return end
     proj:build({ profile_key = pre[1], extra_args = (#extra > 0) and extra or nil }, {
-      on_accept = function(task_id, aerr)
-        if aerr then cerr = aerr; done = true end
+      on_accept = function(task_id, aerr, reply)
+        if aerr then fallback = aerr; done = true; proj:close(); return end
+        accepted, my_task = true, task_id
+        key = reply and reply.profile_key or key
       end,
       on_output = function(stream, text)
         if stream == "stderr" then io.stderr:write(text) else io.write(text) end
       end,
       on_done = function(c) code = c; done = true; proj:close() end,
+      on_lost = function(lerr) lost = lerr or "daemon_lost"; done = true end,
     })
   end)
-  vim.wait(600000, function() return done end, 25)
-  if cerr then
-    note("lw: daemon build failed (" .. tostring(cerr) .. "); building in-process")
+  -- No timeout: a build takes as long as it takes (as in-process). Ctrl-C
+  -- exits this client; the daemon then cancels the build (spec §19.12).
+  while not done do vim.wait(60000, function() return done end, 25) end
+  if not accepted then
+    local why = tostring(fallback)
+    -- A profile the daemon cannot resolve / a workspace it will not build is
+    -- reported (or onboarded) by the in-process path itself — silently.
+    if not (why:find(service.ERR_PROFILE, 1, true) or why:find(service.ERR_WORKSPACE, 1, true)) then
+      note("lw: daemon build failed (" .. why .. "); building in-process")
+    end
     return nil -- fall back on a delegation error
   end
-  if code == 0 then out("BUILD OK (daemon)") end
+  if lost then
+    errw("lw: lost the connection to the daemon during the build (" .. tostring(lost) .. ")\n")
+    return 1
+  end
+  if code == 0 then out("BUILD OK: " .. tostring(key)) end
   return code or 1
 end
 
@@ -10271,7 +10299,9 @@ Runtime mode: `lw settings set runtime-mode in-process|daemon|auto`, or
 LOOMWORKS_RUNTIME (wins). With `daemon`/`auto`, `lw build <profile> [-- args]`
 is sent to a running daemon (one is started when the host can) and its output
 streamed back; any other build form, an untrusted working copy (`lw help
-trust`), or an unreachable daemon builds in-process.]],
+trust`), or an unreachable daemon builds in-process. The daemon runs the same
+build steps as an in-process build; interrupting `lw build` (Ctrl-C) stops it,
+and so does stopping the daemon.]],
   worktree = [[lw worktree [list]
        lw worktree add <branch> [<start-point>] [--no-pull]
 

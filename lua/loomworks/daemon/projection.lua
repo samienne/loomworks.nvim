@@ -165,8 +165,10 @@ function Projection:_on_task(msg)
 end
 
 --- Delegate a build to the daemon and observe its task stream. `args` is
---- `{ profile_key, extra_args? }`; `cbs` may carry `on_accept(task_id|nil, err)`,
---- `on_output(stream, text)`, `on_progress(fraction, pct)`, `on_done(code)`.
+--- `{ profile_key, extra_args? }`; `cbs` may carry `on_accept(task_id|nil, err,
+--- reply)` (the accepting reply names the resolved `profile_key`),
+--- `on_output(stream, text)`, `on_progress(fraction, pct)`, `on_done(code)`, and
+--- `on_lost(err)` — the daemon connection went away before the task finished.
 --- @param args table
 --- @param cbs? table
 function Projection:build(args, cbs)
@@ -178,7 +180,7 @@ function Projection:build(args, cbs)
         end
         local task_id = reply.task_id
         if task_id then self._task_observers[task_id] = cbs end
-        if cbs.on_accept then cbs.on_accept(task_id, nil) end
+        if cbs.on_accept then cbs.on_accept(task_id, nil, reply) end
     end)
 end
 
@@ -256,6 +258,13 @@ function Projection:_fail_all(err)
         self._pending[id] = nil
         pcall(function() p.timer:stop(); p.timer:close() end)
         pcall(p.cb, nil, err)
+    end
+    -- A task still running when the connection is lost never reports `done`
+    -- to this client: tell its observer instead of leaving it waiting.
+    local observers = self._task_observers or {}
+    self._task_observers = {}
+    for _, obs in pairs(observers) do
+        if obs.on_lost then pcall(obs.on_lost, err) end
     end
 end
 

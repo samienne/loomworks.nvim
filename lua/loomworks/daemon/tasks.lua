@@ -18,6 +18,7 @@
 local protocol = require("loomworks.daemon.protocol")
 
 --- @class loomworks.daemon.TaskStream
+--- @field on_task_done? fun(task_id: integer|string, exit_code: integer) called after a task's `done`
 local TaskStream = {}
 TaskStream.__index = TaskStream
 
@@ -92,6 +93,7 @@ function TaskStream:done(task_id, exit_code)
     self._tasks[task_id] = nil
     self._server:broadcast({ kind = protocol.KIND.task, task_id = task_id,
         phase = "done", exit_code = exit_code })
+    if self.on_task_done then pcall(self.on_task_done, task_id, exit_code) end
 end
 
 --- Broadcast a notification (rendered as vim.notify / stderr, §3.4).

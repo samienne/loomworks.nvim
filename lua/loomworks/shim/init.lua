@@ -387,6 +387,13 @@ function vim.system(cmd, opts, on_exit)
       return result
     end,
     pid = handle and uv.process_get_pid and uv.process_get_pid(handle) or nil,
+    -- As nvim's SystemObj:kill(signal): signal a still-running child (the
+    -- daemon runner cancels a build this way, spec §19.12).
+    kill = function(_, signal)
+      if handle and not result and not handle:is_closing() then
+        pcall(uv.process_kill, handle, signal or "sigterm")
+      end
+    end,
   }
 end
 

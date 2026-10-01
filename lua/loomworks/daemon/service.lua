@@ -14,32 +14,78 @@ local tasks = require("loomworks.daemon.tasks")
 
 local M = {}
 
---- Resolve a profile by its semantic key at the wire boundary.
-local function profile_by_key(ws, key)
-    for _, p in ipairs(ws._profiles or {}) do
-        if p.key == key then return p end
+--- Error-reply prefixes for a build the daemon does not accept. The client
+--- falls back in-process on either, which reports the refusal itself.
+M.ERR_WORKSPACE = "workspace_unavailable"
+M.ERR_PROFILE = "profile_unresolved"
+
+--- Resolve the build's profile argument at the wire boundary with the SAME
+--- matcher the in-process `lw build <profile>` uses (exact key, else an
+--- unambiguous boundary-anchored substring — `loomworks.merge.match_profile`).
+--- A miss or an ambiguity is not built here: the client falls back in-process,
+--- which reports it (or onboards a profile from a configuration set).
+--- @return table|nil profile, string|nil err
+local function resolve_profile(ws, name)
+    local keys, by_key = {}, {}
+    for _, p in ipairs(ws._profiles or {}) do keys[#keys + 1] = p.key; by_key[p.key] = p end
+    local hit, ambiguous = require("loomworks.merge").match_profile(keys, tostring(name or ""))
+    if hit then return by_key[hit] end
+    if ambiguous then
+        return nil, "'" .. tostring(name) .. "' matches multiple profiles: " .. table.concat(ambiguous, ", ")
     end
-    return nil
+    return nil, "no profile matching '" .. tostring(name) .. "'"
 end
 
---- The default build runner: reuse the real planning + streaming spawn
---- (`daemon.runner`). Injectable via `opts.run_build` for tests.
+--- The daemon's LIVE workspace, re-validated before a build acts on it. An
+--- in-process `lw build` loads the workspace fresh from disk; the daemon's is
+--- long-lived, so first apply every pending external change exactly as the
+--- next file poll would (`FileTracker:sync` → `_on_file_changed`): an edited
+--- working copy, a profile created by another `lw`, a discarded working copy
+--- (`lw trust --discard`), a deleted cache (`lw nuke`), and a file that is no
+--- longer trusted (§17.4 — which unloads the workspace). Then refuse unless
+--- the core still holds a loaded workspace; adopt a reloaded one (re-trusted).
+--- @param srv loomworks.daemon.Server
+--- @return table|nil workspace, string|nil err
+local function live_workspace(srv)
+    local core = srv.core
+    local has_core = core and core.get_workspace
+    local ws = has_core and core:get_workspace() or srv.workspace
+    if ws and ws._tracker and ws._tracker.sync then pcall(ws._tracker.sync, ws._tracker) end
+    if not has_core then return ws end
+    local cur = core:get_workspace()
+    if not cur or core._state ~= "initialized" then
+        local e = core.get_setup_error and core:get_setup_error()
+        return nil, (e and e.message) or "the workspace is not loaded"
+    end
+    srv.workspace = cur
+    return cur
+end
+M._live_workspace = live_workspace
+
+--- The default build runner: the in-process build path (`daemon.runner` over
+--- `loomworks.build_run`), streamed. Injectable via `opts.run_build` for tests.
 --- @param srv loomworks.daemon.Server
 --- @param args table { profile_key, extra_args? }
 --- @param task_id integer
-local function default_run_build(srv, args, task_id)
+--- @param ctx { workspace: table, profile: table }
+--- @return table|nil controller with `cancel(reason, code)`
+local function default_run_build(srv, args, task_id, ctx)
     local runner = require("loomworks.daemon.runner")
-    local profile = profile_by_key(srv.workspace, args.profile_key)
-    if not profile then
-        srv.tasks:notify("error", "build", "no such profile: " .. tostring(args.profile_key), task_id)
-        srv.tasks:done(task_id, 1)
-        return
-    end
-    runner.run_build(srv.workspace, profile, srv.tasks, task_id,
-        { extra_args = args.extra_args }, function(_code)
-            -- Durable outcome: the build state changed on disk/cache.
-            srv:notify_model_change({ "build_state" })
-        end)
+    local ws, profile = ctx.workspace, ctx.profile
+    return runner.run_build(ws, profile, srv.tasks, task_id, {
+        extra_args = args.extra_args,
+        -- Stop when the workspace is unloaded or the profile removed under it.
+        is_current = function()
+            if srv.core and srv.core.get_workspace and srv.core:get_workspace() ~= ws then
+                return false, "the workspace was unloaded (refused or reloaded .nvim files)"
+            end
+            if profile._removed then return false, "profile '" .. profile.key .. "' was removed" end
+            return true
+        end,
+    }, function(_code)
+        -- Durable outcome: the build state changed on disk/cache.
+        srv:notify_model_change({ "build_state" })
+    end)
 end
 
 --- The bounded, always-warm header delivered in `welcome` and kept fresh by
@@ -83,6 +129,23 @@ function M.attach(server, opts)
     -- The workspace task stream (§3.4) + the (injectable) build runner.
     server.tasks = server.tasks or tasks.new(server)
     server.run_build = opts.run_build or default_run_build
+    -- Running builds by task id → { conn, ctl } (the launching client + the
+    -- runner's controller), so they can be cancelled.
+    server._builds = server._builds or {}
+    server.tasks.on_task_done = function(task_id) server._builds[task_id] = nil end
+    -- A build is owned by the client that launched it: when that connection
+    -- goes away (Ctrl-C / kill of `lw build`, an editor closing) its builds
+    -- are cancelled — the daemon equivalent of an interrupted in-process build
+    -- (the child dies, the build-dir locks are released, nothing is recorded).
+    server.on_conn_closed = function(srv, conn)
+        for _, b in pairs(srv._builds) do
+            if b.conn == conn then b.ctl.cancel("the client that started it disconnected") end
+        end
+    end
+    -- A stopping daemon (`lw daemon stop`, idle, exit) stops its builds too.
+    server.on_stopping = function(srv, reason)
+        for _, b in pairs(srv._builds) do b.ctl.cancel("the daemon is stopping (" .. tostring(reason) .. ")") end
+    end
 
     -- Warm header for the handshake (§3.5).
     server._header_snapshot = function(self) return header_of(self.workspace) end
@@ -113,10 +176,32 @@ function M.attach(server, opts)
         -- build_state model_change. An outstanding task holds the daemon alive.
         if msg.name == "build" then
             srv:_touch()
-            local task_id = srv:next_task_id()
-            conn.reply({ kind = protocol.KIND.ok, req_id = msg.req_id,
-                outcome = "accepted", task_id = task_id })
-            srv.run_build(srv, msg.args or {}, task_id)
+            -- Validation touches the model (and maybe vim.fn): main loop.
+            local function main(fn) if vim.schedule then vim.schedule(fn) else fn() end end
+            main(function()
+                local args = msg.args or {}
+                local ws, werr = live_workspace(srv)
+                if not ws then
+                    conn.reply({ kind = protocol.KIND.error, req_id = msg.req_id,
+                        error = M.ERR_WORKSPACE .. ": " .. tostring(werr) })
+                    return
+                end
+                local profile, perr = resolve_profile(ws, args.profile_key)
+                if not profile then
+                    conn.reply({ kind = protocol.KIND.error, req_id = msg.req_id,
+                        error = M.ERR_PROFILE .. ": " .. tostring(perr) })
+                    return
+                end
+                local task_id = srv:next_task_id()
+                conn.reply({ kind = protocol.KIND.ok, req_id = msg.req_id,
+                    outcome = "accepted", task_id = task_id, profile_key = profile.key })
+                local ctl = srv.run_build(srv, args, task_id, { workspace = ws, profile = profile })
+                if type(ctl) == "table" and ctl.cancel then
+                    -- The launching client owns the build: its disconnect
+                    -- (Ctrl-C on `lw build`) cancels it (§19.12).
+                    srv._builds[task_id] = { conn = conn, ctl = ctl }
+                end
+            end)
             return
         end
         local outcome, err = commands.apply(srv.workspace, msg.name, msg.args)
