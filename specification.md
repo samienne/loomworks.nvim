@@ -30,6 +30,7 @@ never renumbered, and no top-level `§N` is ever split across two files.
 | §16 | Headless / Standalone Execution | [`spec/core/headless.md`](spec/core/headless.md) |
 | §17 | Workspace Trust | [`spec/core/trust.md`](spec/core/trust.md) |
 | §18 | Remote Execution on Devices | [`spec/core/remote-exec.md`](spec/core/remote-exec.md) |
+| §19 | Workspace Runtime and Daemon (target design, implemented in steps; per-part status) | [`spec/core/daemon.md`](spec/core/daemon.md) |
 
 Implementation-specific specs live in sibling files under `spec/`:
 
@@ -45,7 +46,7 @@ Implementation-specific specs live in sibling files under `spec/`:
 
 Section numbering differs by subtree. The `spec/core/*.md` files are a
 physical partition of the single global core §-namespace: they keep their
-**original** section numbers (§1, §2, …, §18) and do **not** restart at §1.
+**original** section numbers (§1, §2, …, §19) and do **not** restart at §1.
 By contrast, section numbers inside the other `spec/` subtrees
 (`spec/modules/`, `spec/integrations/`, `spec/sdks/`, `spec/ui.md`) are
 local to each file and restart at §1.
@@ -72,6 +73,7 @@ local to each file and restart at §1.
 | Several processes (editor, CLI, background process, older versions) writing the same workspace state: stale-save detection, cache merge, working-copy refusal, writer version stamp | `specification.md` §2.7 (+ §16.6 for the headless host) |
 | Exporting the configuration as a published snapshot, or importing one into the working copy (another machine) | `specification.md` §16.39 (+ §2.4 for the serializer and intent, §17.5 for the signed write) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
+| The workspace runtime: the daemon, `--no-daemon`, runtime lock, workspace operation lock and lock order, journalled multi-file commits, handle/endpoint/auth/version handshake, daemon lifetime, routing operations to the daemon | `specification.md` §19 (rationale and step plan: [`DAEMON.md`](DAEMON.md); + §2.7, §16.6, §18.7 for the existing locks) |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
