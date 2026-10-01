@@ -745,7 +745,9 @@ configuration set, or project it concerns. A `--check` flag makes the
 invocation report a non-zero exit status when any diagnostic is present (for
 CI); without it the overview always exits successfully, since it neither builds
 nor manages state (§16.9). `--check` never changes what is rendered — only the
-exit status.
+exit status. When **no workspace** resolves, `--check` reports a non-zero exit
+status too (a gate run outside a workspace is a misconfigured job), rendering
+the same no-workspace page.
 
 The overview and the single-profile view report the profile's **compiler cache**
 alongside its toolchain: the resolved launcher, or that caching is off /

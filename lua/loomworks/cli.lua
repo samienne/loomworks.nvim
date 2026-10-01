@@ -6983,7 +6983,8 @@ end
 --- `lw status` (also bare `lw`) — one-screen workspace overview. Works outside
 --- a workspace too. Every section is capped to keep it to a single page.
 --- `opts.check` (from `lw status --check`) makes the invocation exit non-zero
---- when any diagnostic is present, for CI; it never changes the rendering.
+--- when any diagnostic is present, or when no workspace resolves here, for CI;
+--- it never changes the rendering.
 --- `opts.submodule` (the submodule dir the root search crossed, spec §1.1)
 --- adds a one-line note that the workspace came from the superproject.
 function M.cmd_status(root, opts)
@@ -6995,7 +6996,9 @@ function M.cmd_status(root, opts)
     local pal0 = status_palette(stdout_supports_color())
     out("")
     out(pal0.inline("lw help") .. pal0.dim(" for every command."))
-    return 0
+    -- A `--check` gate with no workspace is a misconfigured CI job: fail it.
+    -- The page is unchanged — `--check` only sets the exit status (§16.18).
+    return opts.check and 1 or 0
   end
   local ws = load_workspace(root, false) -- pinned info only; skip tool detection
   local pal = status_palette(stdout_supports_color())
@@ -9155,8 +9158,9 @@ Diagnostics come from the same source the editor's Diagnostics page uses:
 per-item warnings/errors also appear inline under the relevant profile,
 configuration set, or project.
 
-  --check         exit non-zero if any diagnostic is present (for CI); without
-                  it, `lw status` always exits 0.
+  --check         exit non-zero if any diagnostic is present, or if there is
+                  no workspace here (for CI); without it, `lw status` always
+                  exits 0.
   --cache-stats   also run the resolved cache tool's own stats query
                   (`ccache -s` / `sccache --show-stats`) and fold it in. Off by
                   default because it spawns the tool.]],
