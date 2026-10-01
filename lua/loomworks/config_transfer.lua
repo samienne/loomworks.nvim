@@ -238,7 +238,8 @@ end
 --- The program-settings review of an import (spec §16.39 "Trust"): the
 --- program-bearing lines of the working copy the import will sign, each
 --- marked `(new)` unless the current working copy holds the same line, and
---- the other-contents lines — in the review format of `lw trust` (§17.4).
+--- the other-contents lines — in the review format of `lw trust` (§17.4),
+--- without its active-profile line (the import summary states that).
 --- @param before table current working copy (raw shape)
 --- @param after table the working copy the import writes (raw shape)
 --- @param modules table|nil module registry
@@ -247,7 +248,13 @@ function M.review(before, after, modules)
     local pf = require("loomworks.program_fields")
     local had = {}
     for _, l in ipairs((pf.review(before, modules))) do had[l] = true end
-    local prog, other = pf.review(after, modules)
+    local prog, review_other = pf.review(after, modules)
+    -- The import summary reports the active profile itself (kept / cleared /
+    -- none); the review's own line would repeat it.
+    local other = {}
+    for _, l in ipairs(review_other) do
+        if not l:find("^active profile: ") then other[#other + 1] = l end
+    end
     local marked, new = {}, 0
     for i, l in ipairs(prog) do
         if had[l] then

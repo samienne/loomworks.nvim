@@ -1621,7 +1621,7 @@ outside a workspace.
 | `lw unlock <profile> \| --all \| --device <serial>` | Clear a stale build-directory lock, or a device lock |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw export [--published] [--no-profiles] [-o <file>]` | Print the whole configuration as a `loomworks.json` (local items too) without writing anything; `--published` = exactly what `lw publish` would write |
-| `lw import <file>\|- [--dry-run] [-y]` | Replace the working configuration with an export (from another machine), after a review; keeps machine-local settings, backs up the old working copy |
+| `lw import <file>\|- [--dry-run] [-y] [--take-name]` | Replace the working configuration with an export (from another machine), after a review; keeps machine-local settings and the workspace name (`--take-name` adopts the export's), backs up the old working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
@@ -1691,7 +1691,8 @@ configuration set and profile — local items included — and writes nothing
 (`--published` prints exactly what `lw publish` would write). Machine-local
 settings (active profile, device selections, variable fills, SDKs, LSP and
 debug-adapter settings) are never exported. `lw import` replaces the working
-configuration with the file's, keeps this machine's own settings, publishes
+configuration with the file's, keeps this machine's own settings and the
+workspace's name (`--take-name` adopts the exported name), publishes
 nothing (an item your working copy already has keeps its local / shared
 choice; a new one is shared only if `loomworks.json` already has it), deletes
 no build directories, and saves the previous working copy as
@@ -2127,8 +2128,10 @@ from (spec §17, `lw help trust`):
   it on confirmation; `lw trust --discard` (or `U`) deletes it instead. After
   upgrading, each existing workspace asks for this once.
 - **Caches are regenerable.** An unsigned build cache (from an earlier
-  loomworks) is discarded and rebuilt automatically — units read as
-  unconfigured and reconfigure into their existing build directories. A cache
+  loomworks) is ignored — units read as unconfigured and reconfigure into
+  their existing build directories — and replaced by the next command that
+  writes the cache; read-only commands (`lw status`, `lw import --dry-run`, ...)
+  leave the file as it is. A cache
   signed on another machine refuses the load until you reset it (`lw nuke`, or
   `<C-n>` on the status page). An unsigned health cache is ignored.
 - **Tool paths come from detection on this machine**, never from the cache. A

@@ -5219,11 +5219,12 @@ end
 --- the caller must then write nothing (the CLI exits).
 ---
 --- `opts.intent` is the global create intent (`--shared` / `--local`), nil for
---- the presence rule. Returns a plan for the report and `commit_import`, or
+--- the presence rule; `opts.take_name` adopts the export's workspace name
+--- (otherwise the workspace keeps its own). Returns a plan for the report and `commit_import`, or
 --- nil, an error, and an error kind (`"json"`, `"working_copy"`, `"invalid"`,
 --- `"load"`).
 --- @param content string the export's text
---- @param opts? { intent: string|nil }
+--- @param opts? { intent: string|nil, take_name: boolean|nil }
 --- @return table|nil plan, string|nil err, string|nil kind
 function Workspace:prepare_import(content, opts)
     opts = opts or {}
@@ -5289,9 +5290,12 @@ function Workspace:prepare_import(content, opts)
         intent = transfer.intents(config, self._shared_baseline, opts.intent, current),
     }
 
-    -- The name: the import's, else what a load derives without one.
+    -- The name (spec §16.39): the target keeps its own; `take_name` adopts
+    -- the export's (an export without one leaves the name as it is).
     local base = self._shared_baseline or {}
-    self.name = config.name or base.name or self.root:match("([^/]+)$") or self.root
+    if opts.take_name and type(config.name) == "string" and config.name ~= "" then
+        self.name = config.name
+    end
 
     local rok, rerr = pcall(self.remerge, self,
         vim.deepcopy(self._shared_baseline or { projects = {} }), nil, cand)
@@ -5373,6 +5377,7 @@ function Workspace:prepare_import(content, opts)
         counts = transfer.counts(inv_after),
         name_before = name_before,
         name_after = self.name,
+        name_exported = type(config.name) == "string" and config.name ~= "" and config.name or nil,
         active_before = before.active_profile,
         active_after = after.active_profile,
         shared_only = shared_only,

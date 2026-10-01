@@ -183,7 +183,7 @@ describe("refusing unsigned / modified .nvim files (§17.4)", function()
         assert.is_not_nil(core:get_workspace())
     end)
 
-    it("an unsigned (pre-trust) cache is discarded unread and replaced by a signed one", function()
+    it("an unsigned (pre-trust) cache is ignored unread; loading does not rewrite it", function()
         local saved = {}
         local core = core_with({
             ["loomworks.json"] = h.make_config_json(),
@@ -197,7 +197,10 @@ describe("refusing unsigned / modified .nvim files (§17.4)", function()
         for _, u in pairs(ws._config_units) do
             assert.is_nil(u.state_value, "no build state comes from an unsigned cache")
         end
-        assert.is_true(#saved >= 1, "the migration rewrites the cache")
+        assert.equals(0, #saved, "loading never writes the cache (read-only commands must not)")
+        -- The first real cache write replaces it (no stale-save refusal).
+        assert.is_true((ws:_save_cache()))
+        assert.equals(1, #saved)
     end)
 
     it("a cache signed elsewhere refuses the load and is not overwritten", function()

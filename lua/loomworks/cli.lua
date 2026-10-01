@@ -3803,6 +3803,9 @@ function M._print_import_plan(plan, label)
   end
   if plan.name_before ~= plan.name_after then
     out(string.format("  %-20s  %s → %s", "name", tostring(plan.name_before), tostring(plan.name_after)))
+  elseif plan.name_exported and plan.name_exported ~= plan.name_after then
+    out(string.format("  %-20s  %s (kept; export says %s — --take-name to use it)", "name",
+      tostring(plan.name_after), plan.name_exported))
   else
     out(string.format("  %-20s  %s (unchanged)", "name", tostring(plan.name_after)))
   end
@@ -3854,15 +3857,16 @@ function M._print_import_plan(plan, label)
   out("")
 end
 
-local IMPORT_USAGE = "usage: lw import <file>|- [--dry-run] [-y]  (see `lw help import`)"
+local IMPORT_USAGE = "usage: lw import <file>|- [--dry-run] [-y] [--take-name]  (see `lw help import`)"
 
 --- `lw import` — replace the working configuration with an export (spec §16.39).
 function M.cmd_import(root, args)
-  local yes, dry, src = false, false, nil
+  local yes, dry, take_name, src = false, false, false, nil
   for i = 2, #args do
     local v = args[i]
     if v == "-y" or v == "--yes" then yes = true
     elseif v == "-n" or v == "--dry-run" then dry = true
+    elseif v == "--take-name" then take_name = true
     elseif v == "-" or v:sub(1, 1) ~= "-" then
       if src then die("import takes one file — " .. IMPORT_USAGE, 2) end
       src = v
@@ -3885,7 +3889,7 @@ function M.cmd_import(root, args)
   -- A working copy not signed by this machine is replaced unread (spec
   -- §16.39): load as if it were absent; the plan says so.
   local ws = load_workspace(root, false, { replace_untrusted_user = true })
-  local plan, err, kind = ws:prepare_import(content, { intent = create_intent })
+  local plan, err, kind = ws:prepare_import(content, { intent = create_intent, take_name = take_name })
   if not plan then
     if kind == "working_copy" then
       die(label .. " is a working copy (.nvim/loomworks.user.json), not an export — on this machine "
@@ -9193,7 +9197,7 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "import" then
     if n == 1 then out("__files__") end
-    if n >= 2 then emit({ "--dry-run", "--yes" }) end
+    if n >= 2 then emit({ "--dry-run", "--yes", "--take-name" }) end
     return 0
   elseif cmd == "worktree" then
     if n == 1 then emit({ "list", "add" }) end
@@ -9665,7 +9669,8 @@ it may run by where a setting comes from:
       (<data dir>/trust.key, never in a repository). A file written by hand,
       by an earlier lw, or copied from elsewhere is REFUSED until you review it.
   .nvim/loomworks.cache.json            build state; used only when signed here.
-      An unsigned one (earlier lw) is discarded and rebuilt automatically; one
+      An unsigned one (earlier lw) is ignored unread and replaced by the next
+      command that writes the cache (read-only commands leave it); one
       signed elsewhere refuses the load until `lw nuke`.
   Tool paths                            always from detection on this machine,
       never from the cache.
@@ -10353,14 +10358,16 @@ you review them — a loomworks.json copied there ignores them.
 
   lw export > app.json             then, on the other machine: lw import app.json
   lw export | ssh build-box 'cd src/app && lw import - --yes']],
-  import = [[lw import <file> [--dry-run] [-y | --yes]       (`-` reads stdin)
+  import = [[lw import <file> [--dry-run] [-y | --yes] [--take-name]   (`-` reads stdin)
 
 Replace this workspace's working configuration (.nvim/loomworks.user.json)
 with one made by `lw export` (any loomworks.json works). Projects,
-configurations, configuration sets, profiles and the workspace name become
-exactly the imported ones. What an export cannot carry stays: SDK
-declarations, language-server options, debug adapters, and — for profiles
-that still exist — the active profile, device selection and variable fills.
+configurations, configuration sets and profiles become exactly the imported
+ones. The workspace keeps its own name (the summary shows the export's when it
+differs); --take-name adopts the exported name instead. What an export cannot
+carry stays: SDK declarations, language-server options, debug adapters, and —
+for profiles that still exist — the active profile, device selection and
+variable fills.
 
 Nothing is published: loomworks.json is untouched. An imported item your
 working copy already has keeps its intent (local / local+shared), so exporting
@@ -10380,6 +10387,7 @@ does not block an import: it is replaced unread — none of its settings is kept
 — after the usual backup.
   -n, --dry-run   show the summary and review, write nothing
   -y, --yes       don't ask (required with --no-input, and when reading stdin)
+  --take-name     use the exported workspace name instead of keeping this one
 
 The previous working copy is saved as .nvim/loomworks.user.json.<time>.bak;
 copy it back over .nvim/loomworks.user.json to undo. A working copy
