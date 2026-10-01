@@ -90,7 +90,9 @@ describe("daemon server (in-process)", function()
         with_key()
         root = H.workspace()
         exited = nil
-        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100, auth_timeout_ms = 400 })
+        -- The unauthenticated timeout is short for the test, but not so short
+        -- that a loaded CI runner times out a real handshake.
+        srv = server_mod.new(root, { exit = function(code) exited = code end, tick_ms = 100, auth_timeout_ms = 2000 })
         assert(srv:start())
     end)
     after_each(function()
@@ -186,7 +188,7 @@ describe("daemon server (in-process)", function()
         assert.is_true(vim.wait(2000, function() return p2.closed end, 10))
         assert.equals(0, p2.bytes)
         local p3 = raw_peer(srv.address) -- says nothing
-        assert.is_true(vim.wait(3000, function() return p3.closed end, 10))
+        assert.is_true(vim.wait(8000, function() return p3.closed end, 10))
         assert.equals(0, p3.bytes)
     end)
 
@@ -241,10 +243,23 @@ describe("daemon server (in-process)", function()
         it("the named pipe carries the protected owner/SYSTEM-only DACL (§19.7)", function()
             local sddl = assert(endpoint.read_dacl(srv.listener))
             local sid = assert(endpoint.user_sid())
+            -- The user as Windows names it back (a SID, or an alias such as
+            -- LA for the built-in Administrator a CI runner runs as).
+            local user = assert(endpoint._normalize_sddl("D:(A;;GA;;;" .. sid .. ")")):match(";;;([^)]+)%)$")
             assert.truthy(sddl:find("^D:P"), sddl)
-            assert.truthy(sddl:find("(D;;[GF]A;;;NU)") or sddl:find("%(D;;%u+;;;NU%)"), sddl)
-            assert.truthy(sddl:find(sid, 1, true), sddl)
-            assert.truthy(sddl:find(";;;SY)", 1, true), sddl)
+            local aces = {}
+            for ace in sddl:gmatch("%(([^)]*)%)") do aces[#aces + 1] = ace end
+            assert.equals(3, #aces, sddl)
+            local function has(kind, who)
+                for _, a in ipairs(aces) do
+                    local k, rights, w2 = a:match("^(%a);;(%u+);;;(.+)$")
+                    if k == kind and w2 == who and (rights == "GA" or rights == "FA") then return true end
+                end
+                return false
+            end
+            assert.is_true(has("D", "NU"), sddl)
+            assert.is_true(has("A", user), sddl)
+            assert.is_true(has("A", "SY"), sddl)
             assert.is_nil(sddl:find(";;;WD)", 1, true), sddl)
             assert.is_nil(sddl:find(";;;AN)", 1, true), sddl)
             assert.is_nil(sddl:find(";;;BA)", 1, true), sddl)

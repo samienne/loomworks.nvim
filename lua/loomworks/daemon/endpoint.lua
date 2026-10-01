@@ -195,6 +195,26 @@ function M.apply_dacl(pipe)
     return true
 end
 
+--- An SDDL string as Windows renders it back (SIDs with a well-known alias,
+--- such as the built-in Administrator's `LA`, come back as the alias).
+--- @param sddl string
+--- @return string|nil
+function M._normalize_sddl(sddl)
+    local w = win()
+    if not w then return nil end
+    local ffi, adv = w.ffi, w.adv
+    local sd = ffi.new("void*[1]")
+    if adv.ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl, 1, sd, nil) == 0 then return nil end
+    local str = ffi.new("char*[1]")
+    local s
+    if adv.ConvertSecurityDescriptorToStringSecurityDescriptorA(sd[0], 1, DACL_INFO, str, nil) ~= 0 then
+        s = ffi.string(str[0])
+        ffi.C.LocalFree(str[0])
+    end
+    ffi.C.LocalFree(sd[0])
+    return s
+end
+
 --- The DACL of a bound pipe as SDDL (tests: read back what was applied).
 --- @param pipe userdata
 --- @return string|nil
