@@ -768,6 +768,7 @@ function M.make_test_deps(files, opts)
         -- on the real file system (spec §19.3 locks are exercised for real in
         -- tests/lock_recovery_spec.lua and tests/op_lock_spec.lua).
         locks = {
+            fake = true,
             op = {
                 acquire = function() return { fake = true } end,
                 release = function() end,

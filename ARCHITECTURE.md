@@ -322,6 +322,7 @@ may import from its own layer or any layer below it, never above.
 | `proc.lua` | Process identity and control (spec §19.5): `start_time(pid, method)` → `"win:…"` (`GetProcessTimes`, FFI) / `"linux:<boot id>:<ticks>"` (`/proc/<pid>/stat`) / `"mac:…"` (`proc_pidinfo`, FFI), `false` = gone (incl. zombie / exited), `nil` = cannot tell; `self_start_time`, `alive(pid, st)`, `descendants(pid)` (Toolhelp32 with creation-time check on Windows, `/proc` or `ps` on POSIX), `kill_tree(pid, st, extra)` (SIGSTOP + enumerate + SIGKILL; Windows terminates through a handle whose start time it verified), `interrupt` (POSIX SIGINT only), `_suspend` / `_resume` (tests: NtSuspendProcess / SIGSTOP) | Decide whether to kill |
 | `lock_break.lua` | `--break-locks[=now]` (spec §19.5 steps 1–3): `parse_flag`, `can_break(info, ctx)` (never another host, an editor holder, this process, or a holder whose start time cannot be checked), `break_holder(info, ctx, opts)` (ask → wait `ASK_MS` → `proc.kill_tree` → verify; every line to `report` and `log`). Process-wide `requested` / `command` / `report` / `log` set by the CLI | Reclaim (the caller's next acquisition does, nonce-checked) |
 | `op_lock.lua` | Workspace operation lock O (spec §19.3): `<root>/.nvim/loomworks.op.lock` on `build_lock`'s path API, acquired through `lock_break.acquire` (fail-fast, `--break-locks`). `acquire(root, op)` → token (re-entrant per process: nested tokens share the lockfile, released with the outermost), `release`, `release_all` (CLI exit hook), `held`, `read`, `ctx()` (the `workspace busy: …` message style), `guard(class, method, op, ws_of)` wraps a method so it runs holding O via `ws:_op_lock` / `ws:_op_unlock` | Take B/D/F locks |
+| `txn.lua` | Crash-consistent multi-file commits (spec §19.4): `begin(root, op)` (re-entrant; takes the three files' save locks in §19.3 order and marks them held — `save_guard._hold` — so the saves inside re-enter them; installs `io._txn_hook`), the hook stages `write_file_atomic` of a workspace file to `<file>.txn-<id>` (flushed) and serves `read_file` the staged bytes; `finish(t)` (one file: rename; several: journal `.nvim/loomworks.txn.json` → per entry `.bak` + rename → dir flush → remove journal), `abort` / `abandon` (remove staged copies), `read_journal` (validation), `recover_locked(root)` (roll forward / refuse), `strays`, `discard_locked`; `_crash_at` test seam | Take O (callers hold it) |
 | `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review) | Decide policy (callers decide what refusal means) |
 | `program_fields.lua` | Program-bearing fields (spec §17.6): `strip(config, modules)` removes them from the parsed shared config before any merge (generic: configuration/override `env`, launches naming command/args/env/working_dir, non-local deploy destinations, shared SDK paths; plus each module's `trust_fields.type_config`), `regraft(raw, ignored)` restores them on publish, `diagnostics(ignored, merged)`, `review(user_data, modules)` for the trust prompt | Know module names |
 | `env_policy.lua` | Environment denylist (spec §17.9): `is_denied(name)` (case-insensitive, prefix entries), `filter(env, opts)` with one-time warnings (silent for a captured tool env that repeats the process's own value) | Touch the process environment |
@@ -551,7 +552,20 @@ editor task path's table), and `Workspace:teardown` releases those and every
 O token in `_op_tokens`. The lock modules come from
 `op_lock.locks(deps, root)`: an injected `deps.locks = { op, build }`, the
 inert `op_lock.INERT` for a root that does not exist on disk (a test's fake
-`/root` never gets lockfiles), else the real modules. The target —
+`/root` never gets lockfiles), else the real modules.
+
+Every O holder's file writes commit through `txn.lua` (§19.4): `op_lock.guard`
+runs the method between `ws:_txn_begin(op)` and `ws:_txn_finish(t)` (or
+`_txn_abort` on an error); `_execute_deletion_unlocked` commits its working
+copy + cache saves that way before any build tree is removed; `lw migrate`
+wraps its whole write phase. `op_lock.acquire` (outermost) runs
+`txn.recover_locked` and refuses with the journal's message when it cannot be
+completed; `Core:setup` runs `Core:_recover_journal(root)` before reading the
+files (waiting up to ~2 s for a writer that still holds O; a refusal is
+`setup_error.journal`). The CLI's exit hook abandons an open transaction
+(`txn.abandon`) before releasing O.
+
+The target —
 one `lw daemon run` per workspace, with `lw` and the plugin as thin clients and
 `--no-daemon` running the same daemon code over a loopback transport — is
 reached in the steps of spec §19.19 (rationale and plan:

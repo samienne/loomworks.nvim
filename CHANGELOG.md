@@ -124,6 +124,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   nothing about it and the closing "no active profile" hint read as if the
   import had cleared one. The summary now says `active profile: none
   (unchanged)` and the hint says none was active before. (#103)
+- A publish, rename, import or profile removal that is killed half-way no
+  longer leaves `loomworks.json`, the working copy and the build cache
+  disagreeing: the files are committed together through a journal, and the
+  next command completes an interrupted commit (or, if a file was changed
+  since, refuses the workspace until `lw unlock --journal` or `lw nuke`). (#101)
 - `lw nuke` (and the editor's nuke) no longer deletes a build directory while
   a build runs in it: it takes every build directory's lock first and refuses
   naming the build. The editor's delete and reset take the build-directory

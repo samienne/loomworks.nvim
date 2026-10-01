@@ -76,11 +76,15 @@ end
 
 --- Acquire the operation lock of `root` for `operation`. Returns a token, or
 --- nil + the refusal message + the holder info. A token whose acquisition
---- reclaimed a dead holder's lock carries that record as `reclaimed`.
+--- reclaimed a dead holder's lock carries that record as `reclaimed`; one
+--- whose acquisition completed a crashed commit's journal (§19.4) carries the
+--- line to report as `recovered`. `opts.no_recover` skips the journal
+--- (`lw unlock --journal`, which discards it).
 --- @param root string
 --- @param operation string
+--- @param opts? { no_recover?: boolean }
 --- @return table|nil token, string|nil message, table|nil info
-function M.acquire(root, operation)
+function M.acquire(root, operation, opts)
     local path = M.path(root)
     local key = norm(path)
     local e = _held[key]
@@ -94,7 +98,17 @@ function M.acquire(root, operation)
     if not h then return nil, msg, info end
     e = { handle = h, refs = 1 }
     _held[key] = e
-    return { key = key, entry = e, reclaimed = h.reclaimed }
+    local tok = { key = key, entry = e, reclaimed = h.reclaimed }
+    if opts and opts.no_recover then return tok end
+    -- A journal left by a crashed commit is completed (or refused) before
+    -- this operation changes anything (spec §19.4); stray staged files go.
+    local status, line = require("loomworks.txn").recover_locked(root)
+    if status == "refused" then
+        M.release(tok)
+        return nil, line, info
+    end
+    if status == "recovered" then tok.recovered = line end
+    return tok
 end
 
 --- Release a token from `acquire` (idempotent). The lockfile goes with the
@@ -160,7 +174,18 @@ function M.guard(class, name, operation, ws_of)
         if not ws or not ws.root or not ws._op_lock then return impl(self, ...) end
         local tok, msg = ws:_op_lock(operation)
         if not tok then return false, msg end
+        -- Its file writes commit together (spec §19.4).
+        local t = ws:_txn_begin(operation)
         local r = pack(pcall(impl, self, ...))
+        if r[1] then
+            local ok_c, cerr = ws:_txn_finish(t)
+            if not ok_c then
+                ws:_op_unlock(tok)
+                return false, cerr
+            end
+        else
+            ws:_txn_abort(t)
+        end
         ws:_op_unlock(tok)
         if not r[1] then error(r[2], 0) end
         return (table.unpack or unpack)(r, 2, r.n)

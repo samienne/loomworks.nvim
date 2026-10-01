@@ -215,7 +215,7 @@ before it releases that deletion's locks.
 
 ### 19.4 Crash-consistent multi-file commits
 
-*Status: future (step 1 of §19.19).*
+*Status: master (step 1 of §19.19).*
 
 A multi-file operation commits its file changes with a **journal**, so that a
 crash at any point leaves either the old state, the new state, or a marked
@@ -269,6 +269,22 @@ entry names one of the three workspace files in `.nvim/` and the staged files
 match `<file>.txn-<hex id>` beside them; anything else refuses the workspace
 as above. Rolling forward never bypasses trust — the renamed files are verified
 on load as any file is (§17.4).
+
+**Implementation notes (master).** The operations that hold O commit through a
+transaction: every write of one of the three files during it is staged (and
+reads of a staged file in that process see the staged bytes), and the
+transaction commits when the operation returns. The F locks of all three
+files are held from the transaction's start to its end (they are held for
+milliseconds: the operations are synchronous). A commit that touched one file
+needs no journal — the rename is the commit point. An ordinary save's
+`.bak` copy is kept: step 4 renames the target to `<file>.bak` before renaming
+the staged file over it, so a crash between the two leaves the target absent,
+which recovery completes like a target with the old content. Recovery runs
+when a process loads the workspace (the editor and every `lw` command) and
+whenever a process acquires O; stray staged files (`<file>.txn-<hex>`, regular
+files beside the three targets, and the journal's `.tmp`) are removed only by
+an O holder. `lw unlock --journal` takes O without completing the journal and
+removes exactly the journal and those stray files.
 
 **Build trees.** Removing build directories (nuke, reset, deletion) is not
 journalled; it keeps the existing crash rule — cache entries are marked

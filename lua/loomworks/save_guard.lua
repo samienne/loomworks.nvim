@@ -153,6 +153,18 @@ end
 -- Write lock
 -- ---------------------------------------------------------------------------
 
+--- Files whose save lock a transaction (loomworks.txn, spec §19.4) holds for
+--- its whole commit: a save inside it re-enters the lock.
+local _txn_held = {}
+
+--- Mark `path`'s save lock as held by the active transaction.
+--- @param path string
+function M._hold(path) _txn_held[path] = true end
+
+--- Clear `_hold`.
+--- @param path string
+function M._unhold(path) _txn_held[path] = nil end
+
 --- Take the save lock for `path` (`<path>.lock`). The lockfile holds the
 --- common lock record (loomworks.lock_record, spec §19.5); its nonce is the
 --- handle's token. Waits up to `opts.wait_ms` (default `WAIT_MS`) for a live
@@ -164,6 +176,7 @@ end
 --- @param opts? { wait_ms?: number }
 --- @return table|nil handle `{ path, token }`
 function M.lock(path, opts)
+    if _txn_held[path] then return { path = path .. ".lock", txn = true, released = false } end
     local u = uv()
     local lock_record = require("loomworks.lock_record")
     local lock_path = path .. ".lock"
@@ -199,7 +212,7 @@ end
 --- remove its successor's). Idempotent.
 --- @param handle table|nil
 function M.unlock(handle)
-    if not handle or handle.released then return end
+    if not handle or handle.released or handle.txn then return end
     handle.released = true
     if require("loomworks.lock_record").still_ours(handle.path, { lock_nonce = handle.token }) then
         pcall(uv().fs_unlink, handle.path)

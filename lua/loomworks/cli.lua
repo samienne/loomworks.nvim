@@ -714,6 +714,7 @@ local function load_workspace(root, wait_tools, opts)
     if e and e.trust and opts and opts.soft_trust then return nil, core, e.trust end
     if e and e.trust then die(M._trust_refusal_message(e.trust)) end
     if e and e.newer then die(e.message) end
+    if e and e.journal then die(e.message) end
     die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
   end
   -- Await tool detection (needed for cold builds + accurate buildability).
@@ -1622,6 +1623,7 @@ function M.cmd_trust(root, args)
     local op_lock = require("loomworks.op_lock")
     local tok, lmsg = op_lock.acquire(root, "trust --discard")
     if not tok then die(lmsg) end
+    if tok.recovered then errw("lw: " .. tok.recovered .. "\n") end
     on_exit(function() op_lock.release(tok) end)
     for _, p in ipairs({ path, path .. ".bak" }) do
       local ok, err = io_mod.rm_rf(p)
@@ -1725,6 +1727,7 @@ function M.cmd_unlock(ws, args, root)
   while args[i] do
     if args[i] == "--all" then all = true; i = i + 1
     elseif args[i] == "--force" then force = true; i = i + 1
+    elseif args[i] == "--journal" then return M._unlock_journal(root or (ws and ws.root))
     elseif args[i] == "--workspace" then workspace = true; i = i + 1
     elseif args[i] == "--device" then
       device_serial = args[i + 1]
@@ -1775,6 +1778,36 @@ function M.cmd_unlock(ws, args, root)
     if code ~= 0 then return code end
   end
   return M._unlock_build_dirs(ws, all, profile_name, force)
+end
+
+--- Discard a stuck commit journal (`lw unlock --journal`, spec §19.4): under
+--- the workspace operation lock (taken WITHOUT completing the journal), remove
+--- exactly `.nvim/loomworks.txn.json` and the stray staged copies of the three
+--- workspace files (`<file>.txn-<hex>`, regular files). The files stay as
+--- they are — possibly a mix of the interrupted operation's old and new state.
+--- @param root string
+--- @return integer exit code
+function M._unlock_journal(root)
+  local txn = require("loomworks.txn")
+  local op_lock = require("loomworks.op_lock")
+  local j, why = txn.read_journal(root)
+  if j == nil and #txn.strays(root) == 0 then
+    out("no commit journal")
+    return 0
+  end
+  local tok, lmsg = op_lock.acquire(root, "unlock --journal", { no_recover = true })
+  if not tok then die(lmsg) end
+  on_exit(function() op_lock.release(tok) end)
+  local removed = txn.discard_locked(root)
+  op_lock.release(tok)
+  for _, p in ipairs(removed) do out("removed " .. p) end
+  if j ~= nil then
+    errw("lw: WARNING: discarded the journal of an interrupted "
+      .. (j and tostring(j.operation or "operation") or ("operation (the journal " .. tostring(why) .. ")"))
+      .. " — the workspace files may now mix its old and new state; check them (`lw status`), or "
+      .. "reset the build state (`lw nuke`)\n")
+  end
+  return 0
 end
 
 --- Clear the workspace operation lock (`lw unlock --workspace`, `--all`):
@@ -3604,6 +3637,7 @@ function M.cmd_migrate(root, args)
   if not ws:_working_copy_fresh() then
     die(require("loomworks.workspace").STALE_USER_MESSAGE .. " — re-run `lw migrate`")
   end
+  local mtxn = ws:_txn_begin("migrate")
   local applied, err = migrate.apply(plan)
   if err then die("migration failed after " .. applied .. " change(s): " .. err) end
 
@@ -3614,7 +3648,9 @@ function M.cmd_migrate(root, args)
     die("migrated the working copy, but publishing failed: " .. tostring(pub_err)
       .. "\n  Run `lw publish` once resolved.")
   end
+  local c_ok, c_err = ws:_txn_finish(mtxn)
   require("loomworks.op_lock").release(op_tok)
+  if not c_ok then die("migration failed: " .. tostring(c_err)) end
   out("")
   out("migrated " .. applied .. " configuration(s); wrote the working copy and "
     .. "regenerated loomworks.json")
@@ -8841,6 +8877,7 @@ function M.cmd_pull(args, opts)
   local op_lock = require("loomworks.op_lock")
   local tok, lmsg = op_lock.acquire(plan.target_root, "pull")
   if not tok then die(lmsg) end
+  if tok.recovered then errw("lw: " .. tok.recovered .. "\n") end
   on_exit(function() op_lock.release(tok) end)
   plan, err = M._plan_pull({ source = source, cwd = opts.cwd, git = opts.git })
   if not plan then die(err) end
@@ -9891,7 +9928,7 @@ Nuke holds the workspace operation lock and the build lock of every build
 directory it removes, so it refuses while a build runs ("cannot nuke: a
 build is running in ...") instead of deleting under it. `--break-locks[=now]`
 stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
-  unlock = [[lw unlock <profile> | <build dir> | --workspace | --all [--force] | --device <serial>
+  unlock = [[lw unlock <profile> | <build dir> | --workspace | --journal | --all [--force] | --device <serial>
 
 Clear build-directory locks. loomworks serializes configure/build/clean on a
 build dir across processes (editor + CLI) with an advisory lockfile that names
@@ -9906,6 +9943,12 @@ heartbeat) is reported with the recovery command, `<command> --break-locks`.
                operation lock
   --workspace  the workspace operation lock (.nvim/loomworks.op.lock), held
                by publish / import / pull / rename / remove / reset / nuke
+  --journal    discard a stuck commit journal (.nvim/loomworks.txn.json) and
+               its staged copies. A multi-file operation that crashed is
+               normally completed by the next command; when it cannot be
+               (a file changed since, a staged copy is missing) the workspace
+               is refused until you discard the journal (the files then stay
+               as they are — possibly mixed) or reset (`lw nuke`).
   --force      also remove the lock of a holder that is running (or hung, or on
                another host) — WITHOUT stopping it: it may still be running and
                writing there. Printed loudly, recorded in .nvim/loomworks.log.
@@ -11328,7 +11371,10 @@ end
 local function main()
   -- A workspace operation lock (spec §19.3) taken inside a guarded operation
   -- is released on every exit path, `die` included.
-  on_exit(function() pcall(function() require("loomworks.op_lock").release_all() end) end)
+  on_exit(function()
+    pcall(function() require("loomworks.txn").abandon() end)
+    pcall(function() require("loomworks.op_lock").release_all() end)
+  end)
   -- Before any dispatch: release held build-dir locks if we're interrupted
   -- (Ctrl-C's SIGINT reaches the whole foreground group and would otherwise
   -- kill lw before its exit hooks run — see install_interrupt_handler).
@@ -11586,7 +11632,7 @@ local function main()
   end
   -- `unlock --device <serial>` needs no workspace (device locks are per user),
   -- nor does `unlock --workspace` (the operation lock is a file under .nvim/).
-  if command == "unlock" and (vim.tbl_contains(a, "--device")
+  if command == "unlock" and (vim.tbl_contains(a, "--device") or vim.tbl_contains(a, "--journal")
       or (vim.tbl_contains(a, "--workspace") and not vim.tbl_contains(a, "--all"))) then
     finish(M.cmd_unlock(nil, a, root))
   end
