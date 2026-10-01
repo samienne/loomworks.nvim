@@ -35,6 +35,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (and any other option in place of a command) is an unknown option: use
   `lw status --check`. (#90)
 
+### Added
+- `lw export` prints the whole workspace configuration as a `loomworks.json`
+  — local items included, machine-local settings never — without writing
+  anything; `--published` prints exactly what `lw publish` would write,
+  `--no-profiles` leaves profiles out, `-o <file>` writes a file. (#PR)
+- `lw import <file>` (or `-` for stdin) replaces the working configuration with
+  an export from another machine: it shows what changes and the program
+  settings it will trust, asks (`--yes` to skip, `--dry-run` to only look),
+  keeps this machine's own settings, publishes nothing, deletes no build
+  directories, and saves the previous working copy as a timestamped `.bak`.
+  (#PR)
+
 ### Changed
 - The working copy and the build cache record the loomworks version that wrote
   them. A file whose format is newer than the running loomworks understands is
@@ -75,6 +87,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - A build cache or working copy written by a newer loomworks was read as
   empty by an older one when it changed while loaded, and the next save
   dropped its contents. (#94)
+- `lw publish`'s "loomworks.json is empty" note now judges exactly what was
+  written. (#PR)
 - Outside a workspace, a mistyped command or option reported "no
   loomworks.json found" instead of the typo. (#90)
 - `lw profile remove` pointed at `lw clean`, which cannot reach a removed

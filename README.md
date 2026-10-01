@@ -1620,6 +1620,8 @@ outside a workspace.
 | `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
 | `lw unlock <profile> \| --all \| --device <serial>` | Clear a stale build-directory lock, or a device lock |
 | `lw publish` | Write `loomworks.json` from the working copy |
+| `lw export [--published] [--no-profiles] [-o <file>]` | Print the whole configuration as a `loomworks.json` (local items too) without writing anything; `--published` = exactly what `lw publish` would write |
+| `lw import <file>\|- [--dry-run] [-y]` | Replace the working configuration with an export (from another machine), after a review; keeps machine-local settings, backs up the old working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
 | `lw worktree [list]` | List the repo's git worktrees and whether loomworks is inited in each |
 | `lw worktree add <branch> [<start-point>] [--no-pull]` | Create a worktree at `<main>/.worktrees/<branch>` (full branch path mirrored) and auto-pull main's config into it (`--no-pull` skips the pull) |
@@ -1675,7 +1677,27 @@ lw pull --dry-run                # preview what it would add/update/keep
 lw pull /path/to/other/checkout  # or pull from an explicit checkout
 ```
 
-It is a **source-wins, non-destructive** item-level merge: items only in this
+A working copy is signed for the machine that wrote it, so `lw pull` cannot
+carry it to **another computer**. Use `lw export` there and `lw import` here:
+
+```sh
+lw export > app-config.json          # on the source machine: the whole config
+lw import app-config.json            # here: review, confirm, replace
+lw export | ssh box 'cd src/app && lw import - --yes'
+```
+
+`lw export` prints, in `loomworks.json` format, every project, configuration,
+configuration set and profile — local items included — and writes nothing
+(`--published` prints exactly what `lw publish` would write). Machine-local
+settings (active profile, device selections, variable fills, SDKs, LSP and
+debug-adapter settings) are never exported. `lw import` replaces the working
+configuration with the file's, keeps this machine's own settings, publishes
+nothing (items `loomworks.json` already has stay published, the rest are
+local), deletes no build directories, and saves the previous working copy as
+`.nvim/loomworks.user.json.<time>.bak`. Importing trusts the file's program
+settings (launch commands, environments), so it shows them and asks first.
+
+`lw pull` is a **source-wins, non-destructive** item-level merge: items only in this
 worktree are kept, items in both take the source's version, items only in the
 source are added. It pulls projects, configuration sets, profiles, SDK
 declarations, per-profile default targets, and the debug-adapter / lsp-option
