@@ -670,6 +670,10 @@ local function load_workspace(root, wait_tools, opts)
   -- its own commands (spec §17.10).
   core._deps.quiet_trust_errors = true
   core._deps.trust_actions = { trust = "lw trust", discard = "lw trust --discard", nuke = "lw nuke" }
+  -- A refused save (spec §2.7: the working copy changed on disk since this
+  -- command read it, or a state file has a newer schema) ends the command:
+  -- `lw: <message>`, exit 1. Nothing was written.
+  core._deps.on_save_refused = function(msg) die(msg) end
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
@@ -701,6 +705,7 @@ local function load_workspace(root, wait_tools, opts)
     -- `lw health` reports a refused working copy as an item instead (§16.36).
     if e and e.trust and opts and opts.soft_trust then return nil, core, e.trust end
     if e and e.trust then die(M._trust_refusal_message(e.trust)) end
+    if e and e.newer then die(e.message) end
     die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
   end
   -- Await tool detection (needed for cold builds + accurate buildability).
@@ -8193,19 +8198,21 @@ function M._plan_pull(opts)
   -- Only a working copy signed by this machine is read, on either side
   -- (spec §16.25, §17.5): a pull must never turn an untrusted file into a
   -- signed one.
-  local function untrusted(root_dir, status)
+  local function untrusted(root_dir, status, detail)
+    -- A newer-schema working copy (spec §2.7) is not untrusted: say so.
+    if status == "newer" then return detail end
     return "the working copy in " .. root_dir .. " is " ..
       (status == "unsigned" and "not signed by this machine" or "modified outside loomworks") ..
       " — review it there first:  lw trust   (run in " .. root_dir .. ")"
   end
-  local src_data, src_status = user.load(source_root)
-  if not src_data then return nil, untrusted(source_root, src_status) end
+  local src_data, src_status, src_detail = user.load(source_root)
+  if not src_data then return nil, untrusted(source_root, src_status, src_detail) end
 
   local tgt_user_path = user.filepath(target_root)
   local tgt_data = {}
   if uv.fs_stat(tgt_user_path) then
-    local d, st = user.load(target_root)
-    if not d then return nil, untrusted(target_root, st) end
+    local d, st, detail = user.load(target_root)
+    if not d then return nil, untrusted(target_root, st, detail) end
     tgt_data = d
   end
 

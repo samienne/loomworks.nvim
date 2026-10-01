@@ -119,10 +119,18 @@ end
 
 --- Update cached content after a self-write.
 --- Prevents the next poll from detecting our own write as an external change.
+--- Pass the bytes actually written: re-reading the file instead could record
+--- another process's write that landed right after ours as our own, and that
+--- change would then never be delivered (spec §2.7). Without `content` the
+--- file is read back (legacy callers).
 --- @param path string
-function FileTracker:mark_written(path)
+--- @param content? string|false the bytes now on disk (false/nil: read back)
+function FileTracker:mark_written(path, content)
     if self._watches[path] then
-        self._content[path] = self._read_file(path)
+        if content == nil or content == false then
+            content = self._read_file(path)
+        end
+        self._content[path] = content
     end
 end
 

@@ -199,14 +199,18 @@ end
 --- @param path string
 --- @param kind "user"|"cache"|"health"
 --- @param tbl table
---- @return boolean ok, string|nil err, string|nil sign_err
+--- The fourth return value is the exact bytes written (on success), so a
+--- caller can record its disk baseline without re-reading the file (a re-read
+--- could pick up another process's write — spec §2.7).
+--- @return boolean ok, string|nil err, string|nil sign_err, string|nil written
 function M.write_json_signed(path, kind, tbl)
     local ok, encoded = pcall(M.encode_sorted, tbl)
     if not ok then return false, "json encode: " .. tostring(encoded) end
     local pretty = M._pretty_json(encoded)
     local signed, sign_err = require("loomworks.trust").sign(kind, pretty)
-    local wok, werr = M.write_file_atomic(path, signed or pretty)
-    return wok, werr, sign_err
+    local bytes = signed or pretty
+    local wok, werr = M.write_file_atomic(path, bytes)
+    return wok, werr, sign_err, wok and bytes or nil
 end
 
 --- The deepest existing directory on `path` (itself or an ancestor), or nil.
