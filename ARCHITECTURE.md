@@ -497,6 +497,23 @@ merges and refusals. A newer-schema file refuses `Core:_on_files_read`
 (`setup_error.newer`; a live workspace is unloaded as for a trust refusal);
 a same-schema newer `written_by` warns once (`save_guard.newer_writer_warning`).
 
+### Workspace runtime / daemon (spec §19 — target design, not yet on master)
+
+Today every host loads the workspace in-process; the pieces of §19 that exist
+on master are the operation-safety primitives above and in §16.6 / §18.7
+(`build_lock.lua`, `remote/device_lock.lua`, `save_guard.lua`). The target —
+one `lw daemon run` per workspace, with `lw` and the plugin as thin clients and
+`--no-daemon` running the same daemon code over a loopback transport — is
+reached in the steps of spec §19.19 (rationale and plan:
+[`DAEMON.md`](DAEMON.md)). The first step lands here, not in a daemon: a
+workspace operation lock (`.nvim/loomworks.op.lock`), the global lock order
+R → O → B → D → F, and journalled multi-file commits
+(`.nvim/loomworks.txn.json`) with dead/hung-holder recovery (§19.5,
+`--break-locks`) on the in-process path, so that every later
+step only changes *where* an operation runs. The experimental implementation
+of the daemon layers (`lua/loomworks/daemon/*`) lives on draft PR #88 and is
+re-cut onto master step by step; this section is expanded as each step lands.
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller
