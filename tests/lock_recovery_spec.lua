@@ -485,3 +485,21 @@ describe("device locks (§18.7 under §19.5)", function()
         device_lock.release(lock)
     end)
 end)
+
+describe("reclaim never moves a replaced record (§19.5)", function()
+    it("a record replaced since it was judged is not renamed aside", function()
+        local path = (vim.fn.tempname():gsub("\\", "/")) .. ".lock"
+        local f = assert(io.open(path, "wb"))
+        f:write(vim.json.encode({ pid = 1, host = "h", lock_nonce = "new-holder" }))
+        f:close()
+        local renamed = false
+        local real = uv.fs_rename
+        uv.fs_rename = function(a, b) if a == path then renamed = true end return real(a, b) end
+        local ok = lock_record.reclaim(path, { lock_nonce = "judged-earlier" })
+        uv.fs_rename = real
+        assert.is_false(ok)
+        assert.is_false(renamed, "the live record was moved aside (restore could lose it)")
+        assert.equals("new-holder", lock_record.read(path, 20).lock_nonce)
+        os.remove(path)
+    end)
+end)

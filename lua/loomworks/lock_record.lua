@@ -162,6 +162,12 @@ end
 --- @return boolean
 function M.reclaim(path, observed)
     local u = uv()
+    -- Re-check right before the rename: a record replaced since it was judged
+    -- is never moved at all, so the restore below (which can lose a record
+    -- written in the rename window) is reached only by a replacement that
+    -- lands between this read and the rename.
+    local cur = M.read(path, math.huge)
+    if not cur or identity(cur) ~= identity(observed) then return false end
     local tmp = path .. ".reclaim." .. M.new_nonce()
     if not u.fs_rename(path, tmp) then return false end
     local got = M.read(tmp, math.huge) or {}
