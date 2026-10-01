@@ -321,6 +321,7 @@ may import from its own layer or any layer below it, never above.
 | `lock_record.lua` | The common lock record and holder classification (spec §19.5): `new(op, extra)` → `{ pid, host, start_time, lock_nonce, kind, operation, action, started_at }` (`holder_kind` = `editor`, the CLI sets `lw`), `read(path, stale_s)`, `classify(info)` → dead / live / hung / stale / stale_foreign, `RECLAIMABLE`, `reclaim(path, observed)` (rename aside, compare nonce, restore if not ours), `still_ours`, `busy_message(info, ctx)` (live / hung / editor / foreign wording with the recovery command), `holder_text`, `operation_of` | Kill processes |
 | `proc.lua` | Process identity and control (spec §19.5): `start_time(pid, method)` → `"win:…"` (`GetProcessTimes`, FFI) / `"linux:<boot id>:<ticks>"` (`/proc/<pid>/stat`) / `"mac:…"` (`proc_pidinfo`, FFI), `false` = gone (incl. zombie / exited), `nil` = cannot tell; `self_start_time`, `alive(pid, st)`, `descendants(pid)` (Toolhelp32 with creation-time check on Windows, `/proc` or `ps` on POSIX), `kill_tree(pid, st, extra)` (SIGSTOP + enumerate + SIGKILL; Windows terminates through a handle whose start time it verified), `interrupt` (POSIX SIGINT only), `_suspend` / `_resume` (tests: NtSuspendProcess / SIGSTOP) | Decide whether to kill |
 | `lock_break.lua` | `--break-locks[=now]` (spec §19.5 steps 1–3): `parse_flag`, `can_break(info, ctx)` (never another host, an editor holder, this process, or a holder whose start time cannot be checked), `break_holder(info, ctx, opts)` (ask → wait `ASK_MS` → `proc.kill_tree` → verify; every line to `report` and `log`). Process-wide `requested` / `command` / `report` / `log` set by the CLI | Reclaim (the caller's next acquisition does, nonce-checked) |
+| `op_lock.lua` | Workspace operation lock O (spec §19.3): `<root>/.nvim/loomworks.op.lock` on `build_lock`'s path API, acquired through `lock_break.acquire` (fail-fast, `--break-locks`). `acquire(root, op)` → token (re-entrant per process: nested tokens share the lockfile, released with the outermost), `release`, `release_all` (CLI exit hook), `held`, `read`, `ctx()` (the `workspace busy: …` message style), `guard(class, method, op, ws_of)` wraps a method so it runs holding O via `ws:_op_lock` / `ws:_op_unlock` | Take B/D/F locks |
 | `trust.lua` | Workspace trust crypto (spec §17.2–§17.3): the per-machine key (`<data dir>/trust.key`, created `O_EXCL` + `0600`), pure-Lua SHA-256/HMAC-SHA256 over LuaJIT `bit` (the content digest is the host's `vim.fn.sha256`), `sign(kind, text)` / `verify(kind, text) → valid|unsigned|invalid, signed_bytes` with the signature as the first member line, `sign_file` (the explicit trust decision, refuses if the file changed since review) | Decide policy (callers decide what refusal means) |
 | `program_fields.lua` | Program-bearing fields (spec §17.6): `strip(config, modules)` removes them from the parsed shared config before any merge (generic: configuration/override `env`, launches naming command/args/env/working_dir, non-local deploy destinations, shared SDK paths; plus each module's `trust_fields.type_config`), `regraft(raw, ignored)` restores them on publish, `diagnostics(ignored, merged)`, `review(user_data, modules)` for the trust prompt | Know module names |
 | `env_policy.lua` | Environment denylist (spec §17.9): `is_denied(name)` (case-insensitive, prefix entries), `filter(env, opts)` with one-time warnings (silent for a captured tool env that repeats the process's own value) | Touch the process environment |
@@ -516,7 +517,41 @@ the editor's `_acquire_file_lock`, the CLI's `with_build_dir_locks` and
 (`M._take_break_locks`, which also records the process as an `lw` holder) and
 acquires through `M._lock_holder_or_die` (break once, retry, else die with
 `lock_record.busy_message`); build directories are taken in canonical order
-(`M._lock_order`, §19.3). The target —
+(`M._lock_order`, §19.3).
+
+The workspace operation lock O (`op_lock.lua`) is taken by the multi-file
+operations of §19.3. Synchronous ones are wrapped at the bottom of
+`workspace.lua` / `project.lua` with `op_lock.guard` (`publish`, `publish_one`,
+`commit_import`, `rename_project`, `rename_configuration_set`, `remove_profile`,
+`Project:rename_configuration`); `Workspace:_op_lock(op)` reports a refusal
+through `deps.on_lock_refused` (the CLI dies) or an error notification. The
+asynchronous deletions are split into a locked entry point and an
+`_…_unlocked` body: `execute_deletion`, `reset_all`, `delete_orphaned_build_dir`
+go through `Workspace:_locked_deletion(op, dirs, start, on_done)`, which takes
+O, then `_deletion_build_locks(dirs)` (sorted, skipping locks this process
+holds), runs the body and releases both when its Future settles. The CLI takes
+O itself where it writes outside the workspace methods: `lw reset` (O, then
+`with_build_dir_locks`, then the re-entrant deletion), `lw trust --discard`,
+`lw pull` (re-planned under O), `lw migrate` (checks `_working_copy_fresh()`
+under O, as its plan predates the lock). `Core:_nuke_files` (editor nuke and
+`lw nuke`) takes O and `Core:_nuke_build_locks` (lockfiles under `.nvim/build/`
+by a depth-bounded `fs_scandir`, plus the loaded workspace's build dirs), removes
+the caches, renames the tree aside (`_nuke_move_aside` →
+`.nvim/build.nuke-<hex>`, plus `_nuke_leftovers` of crashed nukes) and removes
+it with `io.rm_rf_async` under `vim.wait` (`_nuke_remove`, re-waiting after
+an interrupted wait) so the heartbeat timers keep running; a failed rename
+refuses the nuke (tree kept). `Core:nuke_cache` first retires the live
+workspace (`_retire_workspace`: teardown, waiting for its tasks to stop;
+a torn-down workspace's `_save_cache` / `_save_user` write nothing), and
+`_nuke_build_locks` refuses a directory this process still holds.
+`Workspace:teardown` waits up to `TEARDOWN_WAIT_MS` for in-flight deletions
+(`_deletions`) before releasing their locks. `Core:delete_user_prefs` takes O. Deletions hold their
+build locks as counted references in `Workspace._build_dir_file_locks` (the
+editor task path's table), and `Workspace:teardown` releases those and every
+O token in `_op_tokens`. The lock modules come from
+`op_lock.locks(deps, root)`: an injected `deps.locks = { op, build }`, the
+inert `op_lock.INERT` for a root that does not exist on disk (a test's fake
+`/root` never gets lockfiles), else the real modules. The target —
 one `lw daemon run` per workspace, with `lw` and the plugin as thin clients and
 `--no-daemon` running the same daemon code over a loopback transport — is
 reached in the steps of spec §19.19 (rationale and plan:

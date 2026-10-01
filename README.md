@@ -1620,7 +1620,7 @@ outside a workspace.
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
 | `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
-| `lw unlock <profile> \| <build dir> \| --all [--force] \| --device <serial>` | Clear a build-directory lock whose holder is gone (killed, crashed); a running or hung holder's lock is refused unless `--force`, which removes the record WITHOUT stopping the holder (it may still be writing). `--device <serial>` clears a device lock. See [Stuck locks](#stuck-locks) |
+| `lw unlock <profile> \| <build dir> \| --workspace \| --all [--force] \| --device <serial>` | Clear a build-directory lock (or, `--workspace`, the workspace operation lock) whose holder is gone (killed, crashed); a running or hung holder's lock is refused unless `--force`, which removes the record WITHOUT stopping the holder (it may still be writing). `--all` covers every build directory and the operation lock. `--device <serial>` clears a device lock. See [Stuck locks](#stuck-locks) |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw export [--published] [--no-profiles] [-o <file>]` | Print the whole configuration as a `loomworks.json` (local items too) without writing anything; `--published` = exactly what `lw publish` would write |
 | `lw import <file>\|- [--dry-run] [-y]` | Replace the working configuration with an export (from another machine), after a review; keeps machine-local settings, backs up the old working copy |
@@ -1738,8 +1738,14 @@ is kept (run `lw pull` inside it by hand) and the exit is non-zero.
 
 `lw build`, `clean`, `reset`, `run` and `test` lock each build directory they
 use (and a device for a remote run), so the editor and other `lw` processes
-never work in the same directory at once. A lock names its holder: process id,
-host and process start time.
+never work in the same directory at once. Operations that change several
+workspace files at once (publish, import, pull, renames, profile removal,
+reset, nuke, `trust --discard`, and the editor's delete / reset / nuke) also
+take one workspace operation lock, so two of them never interleave; a second
+one fails at once with `workspace busy: publish (pid 4242 on HOST, 3s) — retry
+when it finishes`. `lw nuke` takes the lock of every build directory it
+removes, so it refuses while a build runs instead of deleting under it. A lock
+names its holder: process id, host and process start time.
 
 - **A holder that crashed or was killed** is noticed at once: the next command
   takes over its lock and says what was interrupted. A configure that was
@@ -1749,7 +1755,10 @@ host and process start time.
 - **A holder that hangs** (alive, no heartbeat for ~20 s) is not taken over —
   it could wake up and keep writing. The command stops and prints the fix:
   `lw: build/debug is locked by a hung lw build (pid 4242, no heartbeat for 2m) — recover with: lw build --break-locks`.
-- **`--break-locks`** (on build, clean, reset, run, test, device clean) stops
+- **`--break-locks`** (on every command that takes these locks: build, clean,
+  reset, run, test, nuke, publish, import, pull, migrate, `trust`, the
+  `rename` and `publish` sub-commands of project / config / configset, profile
+  `publish` and `remove`, device clean) stops
   the holder: it asks it to stop (POSIX), waits about 5 s, then kills its
   process tree, recovers the state as above, and runs. `--break-locks=now`
   skips the wait. It also works under `--no-input` (CI). It never touches a

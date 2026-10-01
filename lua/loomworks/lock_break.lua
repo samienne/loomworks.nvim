@@ -117,4 +117,25 @@ function M.break_holder(info, ctx, opts)
     return true
 end
 
+--- Acquire a lock through `try()` (→ handle | nil, classified info). Under a
+--- `--break-locks` request (`M.requested`) a hung or live holder on this host
+--- is broken first and the acquisition retried once. Host-neutral: returns
+--- the handle, or nil + the refusal message + the holder info.
+--- @param try fun(): table|nil, table|nil
+--- @param ctx table busy-message context (lock_record.busy_message)
+--- @return table|nil handle, string|nil message, table|nil info
+function M.acquire(try, ctx)
+    local h, info = try()
+    if h then return h end
+    info = info or {}
+    if M.requested and (info.state == "hung" or info.state == "live") then
+        local ok, berr = M.break_holder(info, ctx, { mode = M.requested })
+        if not ok then return nil, berr, info end
+        h, info = try()
+        if h then return h end
+        info = info or {}
+    end
+    return nil, lock_record.busy_message(info, ctx), info
+end
+
 return M

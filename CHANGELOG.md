@@ -41,8 +41,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Operations that change several workspace files at once (publish, import,
+  pull, cache-propagating renames, profile removal, reset, nuke,
+  `lw trust --discard`, and the editor's delete / reset / nuke) take a
+  workspace operation lock: a second one fails at once with `workspace busy`
+  instead of interleaving its writes. `lw unlock --workspace` clears it when
+  its holder is gone. (#100)
 - `--break-locks` (and `--break-locks=now`) on `lw build`, `clean`, `reset`,
-  `run`, `test` and `lw device clean` recovers a stuck lock: it asks the
+  `run`, `test` and `lw device clean` (and, with the workspace operation lock,
+  `nuke`, `publish`, `import`, `pull`, `migrate`, `trust`, `project` /
+  `config` / `configset` `rename` and `publish`, `profile publish` and
+  `profile remove`) recovers a stuck lock: it asks the
   holder to stop, waits about 5 s (`=now` skips the wait), kills its process
   tree, recovers the interrupted step's state and runs. It never touches a
   process on another host or an editor, and works under `--no-input`. (#99)
@@ -115,6 +124,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   nothing about it and the closing "no active profile" hint read as if the
   import had cleared one. The summary now says `active profile: none
   (unchanged)` and the hint says none was active before. (#103)
+- `lw nuke` (and the editor's nuke) no longer deletes a build directory while
+  a build runs in it: it takes every build directory's lock first and refuses
+  naming the build. The editor's delete and reset take the build-directory
+  locks too, so they refuse while a CLI build uses the directory. (#100)
 - A build recorded by `lw build` while the editor was open could be lost: the
   editor's next save of the build cache overwrote it. Saves now merge with the
   cache on disk, keeping the other process's build records. (#94)

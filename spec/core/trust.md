@@ -292,7 +292,10 @@ comes only from the staging manifest.
   (program-bearing fields first) and asks for confirmation; `--yes` confirms
   non-interactively; `--discard` deletes the working copy instead. `lw nuke`
   resets an invalid build cache (with confirmation; `-y` skips it, and is
-  mandatory in a non-interactive host — the reset posture of §16.30).
+  mandatory in a non-interactive host — the reset posture of §16.30). Both
+  hold the workspace operation lock while they remove files, and nuke also the
+  build lock of every build directory it removes (§19.3): it refuses while a
+  build runs instead of deleting under it.
   `lw help trust` explains this section.
 - **Editor.** The status page shows the refusal with the same actions (trust,
   discard, reset); a trust command shows the summary in a confirmation prompt.

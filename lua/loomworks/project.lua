@@ -1223,4 +1223,10 @@ function Project:delete_launch_config(launch_name)
     return true
 end
 
+
+-- A configuration rename propagates into the cache (working copy + cache):
+-- it runs holding the workspace operation lock (spec §19.3).
+require("loomworks.op_lock").guard(Project, "rename_configuration", "rename",
+    function(p) return p._workspace end)
+
 return Project

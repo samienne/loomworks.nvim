@@ -105,11 +105,11 @@ exception after the transition is a **version-bypass run** (§19.9).
 
 ### 19.3 Operation locks
 
-*Status: master for build-directory locks (§16.6), device locks (§18.7) and
-per-file save locks (§2.7), all with the §19.5 record, and for the canonical
-order of build directories; future for the workspace operation lock, the full
-lock order, and `lw nuke` taking build locks. This is step 1 of §19.19 and
-comes before any lifetime work.*
+*Status: master — build-directory locks (§16.6), device locks (§18.7),
+per-file save locks (§2.7) and the workspace operation lock, all with the
+§19.5 record; the lock order R → O → B → D → F (R does not exist yet, §19.2);
+`lw nuke` and the editor's deletions taking build locks. This is step 1 of
+§19.19 and comes before any lifetime work.*
 
 Every **mutating operation**, on any path (in-process, attached, daemon),
 acquires **all** the locks it needs **before its first side effect**, in the
@@ -171,9 +171,47 @@ lw: cannot nuke: a build is running in build/debug (pid 4242) — wait for it, o
 ```
 
 The CLI exits 1 (the build-directory lock's existing exit codes are
-unchanged); the editor shows an error notification. `lw unlock` (§16.6) also
-clears a stale O lock; dead and hung holders of every class are handled by
-§19.5 (`--break-locks`).
+unchanged); the editor shows an error notification. `lw unlock --workspace`
+(and `lw unlock --all`, §16.6) also clears an O lock whose holder is gone, and
+`--force` one whose holder runs; dead and hung holders of every class are
+handled by §19.5 (`--break-locks`, accepted by every command above).
+
+O is re-entrant within one process: an operation that holds it (the CLI's
+`lw reset`, which takes O and then every build lock before the workspace's
+deletion runs) may call another operation that takes it; the lockfile goes
+with the outermost holder. Likewise a deletion skips the build locks its own
+process already holds.
+
+**Which build locks nuke and deletions take.** A deletion (profile delete or
+reset, orphan delete, `lw reset`) takes the build lock of every build
+directory its plan removes, after O, as a counted reference within its
+process: an editor task on the same directory that the deletion cancels
+releases only its own reference, so the lock stays until the removal ends.
+`lw nuke` removes the whole `.nvim/build/`; it takes the lock of every
+directory under it that has a lockfile (`<dir>.loomworks-lock`, found by a
+depth-bounded, link-free scan — a lockfile marks a directory some process uses
+or used) and of every build directory of the loaded workspace there. Holding
+them, it removes the build and health caches first (so nothing claims a
+configured or built tree from then on), then renames `.nvim/build` to
+`.nvim/build.nuke-<hex>` in one step and removes that tree, keeping its event
+loop running so O keeps heartbeating. A build that starts once the locks are
+gone creates a fresh `.nvim/build`, never a directory inside the tree being
+removed. A tree left aside by a nuke that crashed (a real directory directly
+in `.nvim/` named exactly `build.nuke-<hex>`) is removed by the next nuke.
+Where the rename is impossible (a file in the tree held open on Windows), nuke
+refuses after removing the caches, leaving the tree: removing it in place
+would let a build that starts once the locks go write into a tree being
+deleted. The editor's nuke first stops its own tasks and unloads its
+workspace (which then writes nothing), so its own build neither keeps writing
+into the tree nor recreates the cache; the operation lock is held until the
+removal has really ended.
+
+A build lock that a task of the same process already holds is taken by a
+deletion as a counted reference, not acquired again, so the editor's deletion
+— which takes O while its own task may hold the directory's build lock — never
+waits on itself and cannot deadlock (every cross-process acquisition is
+fail-fast). `Workspace:teardown` lets an in-flight deletion finish (bounded)
+before it releases that deletion's locks.
 
 ### 19.4 Crash-consistent multi-file commits
 
