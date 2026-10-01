@@ -35,6 +35,20 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (and any other option in place of a command) is an unknown option: use
   `lw status --check`. (#90)
 
+### Added
+
+- Experimental, opt-in workspace daemon: `lw daemon status|stop|run|protocol`
+  and the `runtime-mode` setting (`in-process` by default, or `daemon` /
+  `auto`; `LOOMWORKS_RUNTIME` overrides; the plugin reads
+  `setup({ runtime = { mode = ... } })`). With `daemon` or `auto`,
+  `lw build <profile>` runs through a per-workspace daemon and streams its
+  output; anything else, or an untrusted working copy, builds in-process as
+  before. A daemon build says so in one stderr line (`lw: building through the
+  workspace daemon (pid <n>)`), runs the same build steps, gates and cache
+  write-back as an in-process one, ends with the same `BUILD OK` line, and
+  stops when the `lw build` that started it is interrupted. See
+  `lw help daemon`. (#88)
+
 ### Changed
 - `lw status` ends with the everyday commands (build, run, test, clean,
   reset, health, pull, worktree add, publish) and points at `lw help`; outside

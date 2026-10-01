@@ -1626,11 +1626,30 @@ outside a workspace.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw health [<area>...] [--all]` | List the workspace's advisory items in full (never fails) — only what this workspace uses; `--all` for everything, areas (`lw`, `workspace`, `toolchains`, `cache`, `sdks`, `editor`, `launcher`, `submodules`) to narrow it (see [Scope and areas](#scope-and-areas)). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, required items first, the unused ones only with `--all`; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, …) |
+| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, `runtime-mode`, …) |
+| `lw daemon [status\|stop\|run\|protocol]` | Inspect / stop / run the per-workspace daemon (opt-in behind `runtime-mode`; in-process stays the default). `status` also reports the resolved runtime mode (see below); `run` starts the server; `protocol` prints the wire version |
 | `lw release-notes [<version> \| --since <v> \| --all \| -n <N>] [--json]` | What changed in each release, offline, from the notes the running release carries (see "Release notes" under [Standalone `lw` runner](#standalone-lw-runner)) |
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
 | `lw bootstrap upgrade` | `lw bootstrap install --latest`: move the pin to the newest release |
+
+**Runtime mode.** loomworks has an optional long-lived `lw` daemon (one process
+per workspace) that owns the model, files, and build execution and serves both
+the editor and the CLI — so a `lw build` streams into the editor and edits stay
+in sync without file polling. It is **opt-in behind a flag and never the
+default**: in-process stays the default and the permanent fallback, and a client
+falls back to in-process whenever the daemon is absent, crashed, or
+protocol-incompatible. Set the mode in the plugin
+(`require("loomworks").setup({ runtime = { mode = "in-process" } })`) or the CLI
+(`lw settings set runtime-mode daemon`); `LOOMWORKS_RUNTIME` overrides both.
+Values: `in-process` (default), `daemon`, `auto`. `lw daemon status` shows the
+resolved mode and whether a daemon is running; `lw daemon run` starts one;
+`lw daemon stop` retires one. While the daemon is experimental, a build it runs
+announces itself with one stderr line, `lw: building through the workspace
+daemon (pid <n>)`, before its output; an in-process build (including every
+fallback) prints no such line, and both end with the same `BUILD OK: <profile>`.
+See [`DAEMON.md`](DAEMON.md) for the design and
+[`spec/core/daemon.md`](spec/core/daemon.md) §19 for the contract.
 
 `lw profile list` and `lw status` number each profile (a stable position, alphabetical
 by key); that number can be typed in place of the profile name for any command

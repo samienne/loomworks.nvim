@@ -20,6 +20,13 @@ local auto_load_mode = "auto"
 --- @type table
 local task_output_win = {}
 
+--- Configured runtime backend (DAEMON.md §7). The default and permanent
+--- fallback is "in-process"; "daemon"/"auto" are inert on mainline (Phase 0) —
+--- there is no daemon backend yet, so execution stays in-process regardless.
+--- Resolved lazily (env override + validation) via M.runtime_mode().
+--- @type string|nil
+local runtime_mode_config = nil
+
 --- Access the underlying core instance (for advanced use / testing).
 --- @return loomworks.Core
 function M._core()
@@ -81,7 +88,7 @@ end
 --- separately by auto_load when a file is opened, or by calling load()
 --- explicitly.
 --- Refuses to set up if required dependencies (overseer, snacks) are missing.
---- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string }
+--- @param opts? { root?: string, auto_load?: string|false, task_output_win?: table, keys?: boolean, lsp?: boolean|table, progress_max_width?: integer, log_level?: string, runtime?: { mode?: string } }
 function M.setup(opts)
     local ok, err = check_hard_dependencies()
     if not ok then
@@ -91,6 +98,9 @@ function M.setup(opts)
 
     if opts and opts.auto_load ~= nil then
         auto_load_mode = opts.auto_load
+    end
+    if opts and type(opts.runtime) == "table" then
+        runtime_mode_config = opts.runtime.mode
     end
     if opts and opts.task_output_win then
         task_output_win = opts.task_output_win
@@ -146,6 +156,21 @@ end
 --- @return string|false
 function M._auto_load_mode()
     return auto_load_mode
+end
+
+--- Resolve the effective runtime mode (DAEMON.md §7): env override
+--- (`LOOMWORKS_RUNTIME`) > configured `runtime.mode` > "in-process" default. On
+--- mainline (Phase 0) this is informational only — there is no daemon backend,
+--- so the plugin always executes in-process regardless of the resolved mode. A
+--- warning about an invalid value is surfaced via vim.notify (once, at query).
+--- @return string mode
+function M.runtime_mode()
+    local runtime = require("loomworks.daemon.runtime")
+    local mode, warning = runtime.resolve(runtime_mode_config)
+    if warning then
+        vim.notify("loomworks: " .. warning, vim.log.levels.WARN)
+    end
+    return mode
 end
 
 --- Get the merged active configuration set.

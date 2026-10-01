@@ -30,6 +30,7 @@ never renumbered, and no top-level `§N` is ever split across two files.
 | §16 | Headless / Standalone Execution | [`spec/core/headless.md`](spec/core/headless.md) |
 | §17 | Workspace Trust | [`spec/core/trust.md`](spec/core/trust.md) |
 | §18 | Remote Execution on Devices | [`spec/core/remote-exec.md`](spec/core/remote-exec.md) |
+| §19 | Daemon Runtime (experimental, opt-in) | [`spec/core/daemon.md`](spec/core/daemon.md) |
 
 Implementation-specific specs live in sibling files under `spec/`:
 
@@ -45,7 +46,7 @@ Implementation-specific specs live in sibling files under `spec/`:
 
 Section numbering differs by subtree. The `spec/core/*.md` files are a
 physical partition of the single global core §-namespace: they keep their
-**original** section numbers (§1, §2, …, §18) and do **not** restart at §1.
+**original** section numbers (§1, §2, …, §19) and do **not** restart at §1.
 By contrast, section numbers inside the other `spec/` subtrees
 (`spec/modules/`, `spec/integrations/`, `spec/sdks/`, `spec/ui.md`) are
 local to each file and restart at §1.
@@ -70,6 +71,7 @@ local to each file and restart at §1.
 | Release notes: the `CHANGELOG.md` grammar, `lw release-notes`, the upgrade notice, self-update's "what's new", the release gate | `specification.md` §16.37 (+ §16.32 for self-update, §16.24 for pin upgrades) |
 | What the CLI's inline output must reveal: the status footer, next-step and empty-state hints, unknown commands, the help index | `specification.md` §16.38 (+ §16.18 for the overview, §16.7 for usage errors) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
+| Runtime mode, the daemon handle/protocol/broker, or the daemon client stub | `specification.md` §19 (design overview: [`DAEMON.md`](DAEMON.md)) |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in
