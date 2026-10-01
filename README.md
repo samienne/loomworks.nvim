@@ -1582,20 +1582,29 @@ one ran it, so the commands it prints read `./lw.sh …` from `lw.sh` and
 
 ### Commands
 
-`lw` with no command prints workspace status and the active profile. Every
+`lw` with no command prints workspace status and the active profile, and
+ends with the everyday commands (`Common: build, run, test, clean, reset,
+health, pull, worktree add, publish`) and a pointer to `lw help`, which lists
+every command, its sub-commands and the help topics. Commands that create
+something end with the next step (`lw init` names `lw project add`,
+`lw profile create` names `lw build <profile>`), and empty lists name the
+command that fills them. In a fresh git worktree with no profiles, status
+offers `lw pull` to copy the main checkout's. Every
 command has detail under `lw help <command>` (or `lw <command> --help`); a
 sub-command's own section under `lw help <command> <sub>` (or
 `lw <command> <sub> --help`, e.g. `lw profile query --help`). An option a
 command does not know is an error (exit 2, e.g. `lw run --dryrun`), never
-silently ignored; arguments for the program or build tool go after `--`.
+silently ignored; arguments for the program or build tool go after `--`. An
+unknown command is an error too (exit 2, e.g. `lw frobnicate`), inside or
+outside a workspace.
 
 | Command | Description |
 |---|---|
 | `lw init` | Initialize the workspace working copy (`--name` overrides the directory name) |
 | `lw workspace <sub>` | Show / rename the workspace (alias `ws`) |
-| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset` \| `describe`. `describe <project> [<text> \| -m … \| -F <file\|-> \| -e \| --clear] [--json]` prints or sets the [description](#descriptions). `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
-| `lw config <sub>` | `add` \| `set` \| `get` \| `show` \| `rename` \| `describe` project configurations (aliases `configuration`, `cfg`). `rename <project> <old> <new>` (alias `mv`) renames a user configuration in place, updating every set mapping and profile that references it |
-| `lw configset <sub>` | `create` \| `map` \| `show` \| `rename` \| `describe` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
+| `lw project <sub>` | `add` \| `remove` \| `rename` \| `list` \| `show` \| `set` \| `unset` \| `describe` \| `publish`. `describe <project> [<text> \| -m … \| -F <file\|-> \| -e \| --clear] [--json]` prints or sets the [description](#descriptions). `set <project> <variable> [<default>] [--type string\|path]` declares (create-or-update) a project variable; omit `<default>` for a blank the active profile fills. `unset` removes a declaration |
+| `lw config <sub>` | `list` \| `add` \| `show` \| `get` \| `set` \| `unset` \| `rename` \| `describe` \| `remove` \| `publish` project configurations (aliases `configuration`, `cfg`). `rename <project> <old> <new>` (alias `mv`) renames a user configuration in place, updating every set mapping and profile that references it |
+| `lw configset <sub>` | `list` \| `show` \| `create` \| `map` \| `unmap` \| `rename` \| `describe` \| `remove` \| `publish` configuration sets (aliases `configuration-set`, `cs`). `rename <old> <new>` (alias `mv`) renames a set and re-derives referencing profile keys |
 | `lw profile <sub>` | `list` \| `show` \| `select` \| `create` \| `remove` \| `publish` \| `query` \| `set` \| `unset` \| `describe`. `describe <profile> [text/flags]` prints or sets the profile's [description](#descriptions) (the profile is required, never defaulted). `show [<profile>]` prints a one-screen status view scoped to a single profile (default = active). `select <profile>` sets the active profile without a terminal (scriptable), `select --none` clears it; bare `select` is an interactive picker. `set`/`unset [<profile>] <project> <variable> [<value>]` fill/clear a machine-local value for a blank project variable (user.json only) |
 | `lw tools [--cached]` | List detected toolchains (`--cached` reads the cache instead of scanning) |
 | `lw sdk <sub>` | Declare toolchain installations: `types` \| `detect` \| `list` \| `add` \| `remove`. `add <type> <path>` declares an installation detection can't find; `add <type>` (no path) declares the one the provider detects — several → a picker, or under `--no-input` an error listing each as the explicit command. `detect [<type>]` lists what each provider finds on this host (read-only, no workspace needed) |
@@ -1606,9 +1615,9 @@ silently ignored; arguments for the program or build tool go after `--`.
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
-| `lw device <sub>` | `list [--json]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>]` — devices for cross-built programs |
+| `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
 | `lw target [list] [profile]` | List a profile's launchable targets (default = active profile), marking the default with `*`. `lw target set [<profile>] <target>` sets the default; `lw target clear [profile]` clears it |
-| `lw launch <sub>` | `list` \| `add` \| `show` \| `remove` \| `rename` \| `describe` launch configurations. `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
+| `lw launch <sub>` | `list` \| `add` \| `set` \| `show` \| `remove` \| `rename` \| `describe` launch configurations (`--cwd` and `--working-dir` are aliases on `add`/`set`, as on `lw run` / `lw target set`). `rename <project> <old> <new>` (alias `mv`) moves the whole launch (args, env, deploy, device, description) and updates every profile's default target that named it (it warns when the new name is also a build target's, since `lw run <name>` then needs `--launch`/`--target`); a new name (add or rename) has no whitespace, no `/` or `\`, and does not start with `-` (older names keep working); `describe <project> <name> […]` works like the other `describe` commands, and `add` takes `--description <para>`; `show --json` prints the whole launch. `show`/`remove`/`set` take `<project> <name>`, or the `run`-style `[<project>:]<name>` operand / `--project`/`--launch` flags |
 | `lw unlock <profile> \| --all \| --device <serial>` | Clear a stale build-directory lock, or a device lock |
 | `lw publish` | Write `loomworks.json` from the working copy |
 | `lw pull [<source>] [--dry-run]` | Fold another checkout's working config into this one (source-wins; excludes the active profile, workspace name, and device selection). Source defaults to the main git worktree |
@@ -1617,7 +1626,7 @@ silently ignored; arguments for the program or build tool go after `--`.
 | `lw migrate [--check]` | Bring the workspace files up to current conventions (`--check` = CI lint) |
 | `lw health [<area>...] [--all]` | List the workspace's advisory items in full (never fails) — only what this workspace uses; `--all` for everything, areas (`lw`, `workspace`, `toolchains`, `cache`, `sdks`, `editor`, `launcher`, `submodules`) to narrow it (see [Scope and areas](#scope-and-areas)). Actionable suggestions (e.g. "no compiler cache found — install one to speed rebuilds", or "update available" when a newer `lw` release is on your channel) plus informational status (e.g. "Compiler cache: using sccache"). The status overview's compact `N suggestions` line counts only the actionable items. The update check runs only on `lw health` (it makes a network request), never on the passive count. Every run re-checks everything (nothing is reused); inside a workspace the results are then saved to `.nvim/loomworks.health.json` for the passive count. Runs outside a workspace too — the update / channel-override checks still report there. Also lists the **environment inventory** — build tools, compilers, compiler caches, language servers, debug adapters, SDKs, plugins — found (version, path) or missing, required items first, the unused ones only with `--all`; `--json` prints it machine-readably (see [Environment inventory](#environment-inventory)); and, in a git repository with submodules, **submodule drift** notes (see [Submodule drift](#submodule-drift)) |
 | `lw module <sub>` | `install` \| `update` \| `remove` \| `list` acquirable modules (alias `mod`) |
-| `lw settings <...>` | Get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, …) |
+| `lw settings <sub>` | `list` \| `get` \| `set` \| `unset`: get/set `lw`'s own settings (`dev-lua`, `release-url`, `channel`, `release-notes` on/off, …) |
 | `lw release-notes [<version> \| --since <v> \| --all \| -n <N>] [--json]` | What changed in each release, offline, from the notes the running release carries (see "Release notes" under [Standalone `lw` runner](#standalone-lw-runner)) |
 | `lw bootstrap [--json] [--check]` | Status of the repo-local launcher + version pin and what you can do (read-only) |
 | `lw bootstrap install [--version <x.y.z> \| --latest [--channel <c>]] [--pin-only] [--force]` | Write / repair / move the pin (`lw.pin`) and launchers (`lw.sh`, `lw.cmd`) plus their `.gitattributes` / `.gitignore` rules; `--pin-only` writes only the pin |
