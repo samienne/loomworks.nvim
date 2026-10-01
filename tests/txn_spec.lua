@@ -199,6 +199,23 @@ describe("review fixes (§19.4)", function()
         assert.same({}, txn.strays(root))
     end)
 
+    it("a guarded operation that returns nil plus an error commits none of its writes", function()
+        local root = L.make_ws()
+        local ws = cli._load_workspace(root, false)
+        local before = L.read(root .. "/.nvim/loomworks.user.json")
+        local cls = {}
+        function cls.go(w)
+            assert(require("loomworks.io").write_file_atomic(w.root .. "/.nvim/loomworks.user.json", "{}\n"))
+            return nil, "failed after writing" -- the commit_import convention
+        end
+        op_lock.guard(cls, "go", "test", function(w) return w end)
+        local res, err = cls.go(ws)
+        assert.is_nil(res)
+        assert.equals("failed after writing", err)
+        assert.equals(before, L.read(root .. "/.nvim/loomworks.user.json"), "a failed operation committed")
+        assert.same({}, txn.strays(root))
+    end)
+
     it("a deletion whose working-copy commit fails removes no build tree", function()
         local root, dir = L.make_ws()
         local ws = cli._load_workspace(root, false)

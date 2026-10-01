@@ -188,9 +188,9 @@ function M.guard(class, name, operation, ws_of)
         -- Its file writes commit together (spec §19.4).
         local t = ws:_txn_begin(operation)
         local r = pack(pcall(impl, self, ...))
-        if r[1] and r[2] == false then
-            -- The method refused / failed (`false, err`): none of its staged
-            -- writes is committed.
+        if r[1] and (r[2] == false or (r[2] == nil and r[3] ~= nil)) then
+            -- The method refused / failed (`false, err`, or `nil, err` as
+            -- `commit_import` reports): none of its staged writes is committed.
             ws:_txn_abort(t)
         elseif r[1] then
             local ok_c, cerr = ws:_txn_finish(t)
