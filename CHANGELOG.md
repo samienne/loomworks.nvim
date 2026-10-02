@@ -144,19 +144,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Visual Studio developer prompt (anything started from a cmd.exe, such as a
   `.cmd` shim) now builds through the daemon; it used to fall back to an
   in-process build without a word, because the daemon refused the hidden
-  `=C:` / `=ExitCode` entries of such an environment. (#PRNUM)
+  `=C:` / `=ExitCode` entries of such an environment. (#118)
 - Workspace daemon: a build the daemon does not run now always says why in
   one line (`lw: the workspace daemon declined the build (<reason>); running
   without it`, or `... could not take the build (<reason>) ...`); only
-  `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI` stay silent. (#PRNUM)
+  `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI` stay silent. (#118)
 - Windows, workspace daemon: Ctrl-C (or Git Bash's `kill -INT`) now cancels a
   routed build even when `lw` was started with Ctrl-C disabled (`start /b`, a
-  new process group); the build used to run to completion. (#PRNUM)
+  new process group); the build used to run to completion. (#118)
 - Windows, workspace daemon: the daemon no longer fails to update its handle
-  (`could not write the handle: EPERM`) while a client is reading it. (#PRNUM)
+  (`could not write the handle: EPERM`) while a client is reading it. (#118)
 - `lw help daemon` no longer claims a paused reader (`lw build | less`) pauses
   the build tool at once: up to about 4 MiB of output is buffered first.
-  (#PRNUM)
+  (#118)
 - Linux/macOS: a build, configure, clean or test step killed by a signal
   (the out-of-memory killer, `kill -9` on the build tool) no longer counts as
   a success. `lw build` used to record the step as built and print `BUILD OK`;
