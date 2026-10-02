@@ -22,8 +22,9 @@ local M = {}
 --- The wire protocol version (spec §19.8). 1 was draft PR #88 (unauthenticated);
 --- 2 adds the mutual handshake and the frozen control subset; 3 the routed
 --- `build` request and its task stream (§19.15); 4 the observer role and the
---- `model_change` / `retiring` broadcasts (§19.11, §19.12, §19.16).
-M.PROTOCOL = 4
+--- `model_change` / `retiring` broadcasts (§19.11, §19.12, §19.16); 5 the
+--- routed `test` request (the batch `lw test`, §19.15).
+M.PROTOCOL = 5
 
 local function uv() return vim.uv or vim.loop end
 

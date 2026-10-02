@@ -2251,6 +2251,7 @@ end
 --- (one file per unit — a label suffix when a profile runs several).
 function M.cmd_test(ws, args)
   local overseer = require("loomworks.overseer")
+  local build_run = require("loomworks.build_run")
   -- Split on `--`: everything after is forwarded to the native test runner.
   local pre, extra, seen_sep = {}, {}, false
   for i = 2, #args do
@@ -2310,50 +2311,28 @@ function M.cmd_test(ws, args)
     local test_steps, units = overseer.plan_profile_test(profile,
       { extra_args = (#extra > 0) and extra or nil, junit = junit })
     if not test_steps or #test_steps == 0 then
-      out("no tests to run for profile '" .. profile.key .. "'" ..
-        ((units and units > 0) and " — its modules expose no test runner" or ""))
+      out(build_run.no_tests_line(profile, units))
       return
     end
 
-    -- ctest's --output-junit and the meson copy target both need the directory
-    -- to exist up front.
-    if junit then
-      local dir = junit:match("^(.*)/[^/]+$")
-      if dir then assert(require("loomworks.io").mkdir_p(dir)) end
-    end
+    local okj, jerr = build_run.prepare_junit(junit)
+    if not okj then die(jerr) end
 
     local failed, wrote = {}, {}
     for _, step in ipairs(test_steps) do
       out(string.format("==> [test] %s", step.name or "?"))
       local code = run_spec(step, ws.root)
       if code ~= 0 then failed[#failed + 1] = step.name or "?" end
-      -- Materialize JUnit at the caller's path. When the runner wrote it to its
-      -- own fixed location (meson), copy it over; when it wrote there directly
-      -- (ctest), just confirm. Runs even for failed tests — CI wants the report.
-      if step.junit_dest and step.junit_out then
-        if norm_cmp(step.junit_out) ~= norm_cmp(step.junit_dest) then
-          if uv.fs_stat(step.junit_out) then
-            uv.fs_copyfile(step.junit_out, step.junit_dest)
-            wrote[#wrote + 1] = step.junit_dest
-          else
-            errw("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
-          end
-        elseif uv.fs_stat(step.junit_dest) then
-          wrote[#wrote + 1] = step.junit_dest
-        else
-          errw("lw: warning: no JUnit output for " .. (step.name or "?") .. "\n")
-        end
-      end
+      -- JUnit at the caller's path, also for a failed run (CI wants it).
+      local path, warning = build_run.junit_result(step)
+      if path then wrote[#wrote + 1] = path elseif warning then errw(warning) end
     end
 
     for _, p in ipairs(wrote) do out("JUnit: " .. p) end
 
-    if #failed > 0 then
-      die(string.format("%d of %d test run(s) failed: %s",
-        #failed, #test_steps, table.concat(failed, ", ")), 1)
-    end
-    out(string.format("TESTS OK: %s (%d run%s)", profile.key, #test_steps,
-      #test_steps == 1 and "" or "s"))
+    local ok_line, failure = build_run.test_summary(profile, failed, #test_steps)
+    if failure then die(failure, 1) end
+    out(ok_line)
   end)
   return 0
 end
@@ -2823,14 +2802,8 @@ end
 --- naming the kit and platform, pointing at `lw test --target`.
 --- @param profile loomworks.Profile
 function M._refuse_foreign_batch(profile)
-  for _, pp in ipairs(profile:projects()) do
-    local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
-    if token then
-      die(string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
-        .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
-        profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key))
-    end
-  end
+  local msg = require("loomworks.build_run").foreign_batch_refusal(profile)
+  if msg then die(msg) end
 end
 
 --- Run named test executables (spec §16.16, §18.6): build the profile, then
@@ -7539,8 +7512,8 @@ M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 
 --- Workspace commands routed to the workspace daemon (spec §19.15): their
 --- ensure step waits longer for a slow daemon (§19.10) before they run
---- in-process.
-M.ROUTED_COMMANDS = { build = true }
+--- in-process. `test`: its batch form (§19.19 step 5).
+M.ROUTED_COMMANDS = { build = true, test = true }
 
 --- Keep the workspace daemon running before a workspace command (spec §19.1,
 --- §19.10; loomworks.daemon.ensure). Never fails the command. Returns what
@@ -7565,8 +7538,9 @@ function M._ensure_daemon(root, routed)
   return outcome
 end
 
---- The one stderr line of a `lw build` the daemon does not run although this
---- command has one (spec §19.15): `lw: <what> (<reason>); running without it`.
+--- The one stderr line of a `lw build` / `lw test` the daemon does not run
+--- although this command has one (spec §19.15): `lw: <what> (<reason>);
+--- running without it`.
 --- @param what string
 --- @param reason string
 --- @return string
@@ -7589,14 +7563,16 @@ function M._runtime_reason(st)
   return "the workspace runtime: " .. require("loomworks.daemon.inspect").row(st, "daemon")
 end
 
---- The one stderr line a build routed to the daemon prints before its output
---- while the daemon is opt-in (spec §19.15): `lw: building through the
---- workspace daemon (pid <n>)`. Dim on a color-capable stderr.
+--- The one stderr line an operation routed to the daemon prints before its
+--- output while the daemon is opt-in (spec §19.15): `lw: building through the
+--- workspace daemon (pid <n>)` (`testing …` for `lw test`). Dim on a
+--- color-capable stderr.
 --- @param pid integer|nil the daemon's pid
 --- @param color? boolean override the stderr color probe (tests)
+--- @param op? "build"|"test" (default "build")
 --- @return string
-function M._delegation_line(pid, color)
-  local line = "lw: building through the workspace daemon"
+function M._delegation_line(pid, color, op)
+  local line = "lw: " .. (op == "test" and "testing" or "building") .. " through the workspace daemon"
   if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
   if color == nil then color = M._stderr_supports_color() end
   if color then return term.sgr("2") .. line .. term.sgr("0") end
@@ -7628,6 +7604,42 @@ function M._build_request(args)
   end
   if pre[2] then return nil end
   req.profile = pre[1]
+  return req
+end
+
+--- The request a `lw test` argv routes as (spec §19.15): the same parse as
+--- `cmd_test` — `{ profile?, junit?, extra }`, `junit` made absolute against
+--- this process's working directory as `cmd_test` does. Returns "target" for
+--- the named-executable form (`--target`, not carried in this step), or nil
+--- when `cmd_test` would refuse the arguments or they carry a form the daemon
+--- does not (device options without `--target`; `cmd_test` reports them).
+--- @param args string[] argv, args[1] == "test"
+--- @return table|"target"|nil
+function M._test_request(args)
+  local req = { extra = {} }
+  local pre, seen_sep = {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then req.extra[#req.extra + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
+  end
+  for _, a in ipairs(pre) do
+    if a == "--target" then return "target" end
+  end
+  local i = 1
+  while pre[i] do
+    local a = pre[i]
+    if a == "--junit" then
+      if not pre[i + 1] then return nil end
+      req.junit = resolve_abs_out(pre[i + 1], user_cwd())
+      i = i + 2
+    elseif a:sub(1, 1) == "-" or req.profile then
+      return nil
+    else
+      req.profile = a
+      i = i + 1
+    end
+  end
   return req
 end
 
@@ -7668,7 +7680,19 @@ function M._enable_console_ctrl_c()
   return ok and res == true
 end
 
---- Route `lw build` to the workspace daemon (spec §19.15, §19.19 step 3).
+--- Route `lw build` to the workspace daemon (spec §19.15, §19.19 step 3):
+--- `_delegate("build", …)`.
+--- @param root string
+--- @param args string[]
+--- @param ensured string|nil
+--- @param opts? table
+--- @return integer|nil exit code
+function M._delegate_build(root, args, ensured, opts)
+  return M._delegate("build", root, args, ensured, opts)
+end
+
+--- Route `lw build` or the batch `lw test` to the workspace daemon (spec
+--- §19.15, §19.19 steps 3 and 5).
 --- Only when this command has a daemon (`ensured` is "used", "launched" or
 --- "restarted" — runtime-mode daemon, not `--no-daemon` / CI, versions
 --- matched), the arguments parse, `--break-locks` is not given (it stays
@@ -7676,16 +7700,19 @@ end
 --- (nothing was done), or the exit code once the daemon refused or ran the
 --- build — an accepted build is NEVER re-run in-process. The daemon runs the
 --- build in this process's environment (sent with the request).
+--- `lw test --target` (the named-executable form) stays in-process with one
+--- line (§19.15).
+--- @param op "build"|"test"
 --- @param root string
 --- @param args string[]
 --- @param ensured string|nil
 --- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer }
 --- @return integer|nil exit code
-function M._delegate_build(root, args, ensured, opts)
+function M._delegate(op, root, args, ensured, opts)
   opts = opts or {}
   local inspect = require("loomworks.daemon.inspect")
   local function could_not(reason)
-    note(M._not_routed_line("the workspace daemon could not take the build", reason))
+    note(M._not_routed_line("the workspace daemon could not take the " .. op, reason))
     return nil
   end
   -- Every outcome that does not route in daemon mode prints one line saying
@@ -7694,12 +7721,16 @@ function M._delegate_build(root, args, ensured, opts)
   -- `--no-daemon` / LOOMWORKS_NO_DAEMON / CI.
   if ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
   if ensured ~= "used" and ensured ~= "launched" and ensured ~= "restarted" then return nil end
-  if require("loomworks.lock_break").requested then
-    return could_not("--break-locks runs the build in this process")
+  -- An argument cmd_build / cmd_test refuses, and a workspace the machine
+  -- refuses: the in-process path reports them (that is the line).
+  local req
+  if op == "test" then req = M._test_request(args) else req = M._build_request(args) end
+  if req == "target" then
+    return could_not("--target runs test executables in this process")
   end
-  -- An argument cmd_build refuses, and a workspace the machine refuses: the
-  -- in-process path reports them (that is the line).
-  local req = M._build_request(args)
+  if require("loomworks.lock_break").requested then
+    return could_not("--break-locks runs the " .. op .. " in this process")
+  end
   if not req or not M._daemon_workspace_trusted(root) then return nil end
   local st = inspect.state(root)
   if st.kind ~= "live" then return could_not(M._runtime_reason(st)) end
@@ -7730,7 +7761,7 @@ function M._delegate_build(root, args, ensured, opts)
     note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
     return nil
   end
-  -- Ctrl-C cancels the routed build (§19.15): the interrupt handler runs the
+  -- Ctrl-C cancels the routed operation (§19.15): the interrupt handler runs the
   -- exit hooks — this one drops the connection first, which the daemon takes
   -- as the cancellation — and exits 130. The build's own processes are the
   -- daemon's, not in this console, so the interrupt must reach THIS process:
@@ -7738,7 +7769,7 @@ function M._delegate_build(root, args, ensured, opts)
   on_exit(function() pcall(conn.close, conn) end)
   M._enable_console_ctrl_c()
   local reply, rerr
-  conn:request({ kind = "build", args = req, interactive = interactive(), command = "lw build",
+  conn:request({ kind = op, args = req, interactive = interactive(), command = "lw " .. op,
     env = require("loomworks.daemon.envscope").capture() }, function(r, e)
     reply, rerr = r, e
     if not r then return end
@@ -7747,7 +7778,7 @@ function M._delegate_build(root, args, ensured, opts)
     for _, n in ipairs(type(r.notes) == "table" and r.notes or {}) do errw(tostring(n) .. "\n") end
     if r.outcome == "accepted" then
       task_id, accepted = r.task_id, true
-      note(M._delegation_line(r.pid))
+      note(M._delegation_line(r.pid, nil, op))
     end
   end)
   -- No timeout: loading the workspace or a build takes as long as it takes
@@ -7774,7 +7805,7 @@ function M._delegate_build(root, args, ensured, opts)
   end
   if reply.outcome == "declined" then
     conn:close()
-    note(M._not_routed_line("the workspace daemon declined the build", reply.reason or "no reason given"))
+    note(M._not_routed_line("the workspace daemon declined the " .. op, reply.reason or "no reason given"))
     return nil
   end
   if reply.outcome == "refused" then
@@ -7788,7 +7819,7 @@ function M._delegate_build(root, args, ensured, opts)
   waiting(function() return done ~= nil end)
   conn:close()
   if not done then
-    errw("lw: lost the connection to the workspace daemon during the build — it was not re-run here\n")
+    errw("lw: lost the connection to the workspace daemon during the " .. op .. " — it was not re-run here\n")
     return 1
   end
   if done.error then die(tostring(done.error), done.code) end
@@ -12209,10 +12240,11 @@ local function main()
     finish(M.cmd_target(root, a))
   end
 
-  -- `lw build` routed to the workspace daemon (spec §19.15, §19.19 step 3):
+  -- `lw build` and the batch `lw test` routed to the workspace daemon (spec
+  -- §19.15, §19.19 steps 3 and 5):
   -- nil = not routed (every other case runs in-process exactly as before).
-  if command == "build" then
-    local routed = M._delegate_build(root, a, ensured)
+  if command == "build" or command == "test" then
+    local routed = M._delegate(command, root, a, ensured)
     if routed then finish(routed) end
   end
 

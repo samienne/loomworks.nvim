@@ -551,6 +551,9 @@ function Server:_dispatch_request(conn, msg)
     elseif msg.kind == K.build and self.service then
         -- Routed operations (§19.15, §19.19 step 3).
         return self.service:on_build(conn, msg)
+    elseif msg.kind == K.test and self.service then
+        -- The batch `lw test` (§19.15, §19.19 step 5).
+        return self.service:on_test(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end

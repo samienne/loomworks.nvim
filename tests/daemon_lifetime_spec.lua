@@ -358,10 +358,11 @@ describe("ensure (§19.9 through a workspace command)", function()
             assert.truthy(ms < 1000, ms .. " ms")
         end)
 
-        it("lw build asks for the routed bound; other workspace commands do not", function()
+        it("lw build and lw test ask for the routed bound; other workspace commands do not", function()
             local cli = require("loomworks.cli")
             assert.is_true(cli.ROUTED_COMMANDS.build)
-            for _, c in ipairs({ "profiles", "test", "run", "clean", "configure" }) do
+            assert.is_true(cli.ROUTED_COMMANDS.test)
+            for _, c in ipairs({ "profiles", "run", "clean", "configure" }) do
                 assert.is_nil(cli.ROUTED_COMMANDS[c], c)
             end
             local seen = {}

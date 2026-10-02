@@ -693,7 +693,7 @@ re-cut onto master step by step; this section is expanded as each step lands.
   are one stderr line, never a failed command. Each step waits at most
   `ensure.STEP_MS` (~1 s: connect + handshake, `status`, `ping`;
   `LW_TEST_DAEMON_STEP_MS` lengthens it for loaded test runs) — or, with
-  `opts.routed` (a `lw build`, `cli.M.ROUTED_COMMANDS`),
+  `opts.routed` (a `lw build` or `lw test`, `cli.M.ROUTED_COMMANDS`),
   `ensure.ROUTED_STEP_MS` (~5 s, never below `STEP_MS`); a daemon
   still `starting` is waited for at most that long, once; the handle's
   endpoint must pass `endpoint.check` before anything is connected to.
@@ -777,7 +777,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
 - `shim/init.lua` `vim.system` — `stdout` / `stderr` callbacks (nvim
   semantics; a streamed run finishes after both pipes' EOF, at most
   `STREAM_GRACE_MS` after the exit) and `:kill()`.
-- `cli.lua` client — `M._delegate_build(root, args, ensured)` after
+- `cli.lua` client — `M._delegate_build(root, args, ensured)` (since step 5
+  `M._delegate("build", …)`) after
   `M._ensure_daemon` (which now returns its outcome) in `main()`:
   `M._build_request` (the `cmd_build` parse), `M._daemon_workspace_trusted`,
   `endpoint.check`, `client.session` with an `on_message` printer (`line` →
@@ -825,6 +826,29 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `(daemon)` rows + "Show output" scratch buffer in `ui/sections/tasks.lua`
   (`init.get_daemon_tasks`), fidget handles keyed `daemon:<id>`, the lualine
   spinner counts `daemon_task_*`; `:LoomworksDaemon [status|connect]`.
+
+**Step 5, first operation moved: the batch `lw test` (spec §19.15)** adds:
+
+- `build_run.lua` — the host-neutral test-run pieces both hosts use:
+  `foreign_batch_refusal`, `no_tests_line`, `prepare_junit`, `junit_result`
+  (copy/confirm a runner's JUnit file, or the warning line), `test_summary`.
+  `cli.cmd_test` is rewritten onto them.
+- `daemon/runner.lua` — `run(svc, ctx)` takes `ctx.op` (`"build"` | `"test"`).
+  A test run takes the same locks, plans the for-test build
+  (`plan{ for_test = true }`; no steps goes straight to the tests), then —
+  locks still held — `ensure_unit_targets`, `overseer.plan_profile_test` and
+  each runner through the same streamed `spawn` as a build step, continuing
+  after a failed runner; the task meta's `kind` is the op, cancellations end
+  `<op> stopped: <reason>`.
+- `daemon/service.lua` — `on_build` / `on_test` → `_on_operation(op, …)`
+  (validates `junit`; resolves with usage `lw <op> <profile>`; refuses a
+  foreign kit's test run); `server.lua` dispatches `test`; `protocol.KIND.test`;
+  protocol 5.
+- `cli.lua` — `M._delegate(op, root, args, ensured)` (`_delegate_build` is
+  `_delegate("build", …)`), `M._test_request` (the `cmd_test` parse;
+  `"target"` for `--target`, which prints the not-routed line and runs
+  in-process), `M._delegation_line(pid, color, op)`;
+  `ROUTED_COMMANDS.test`.
 
 ### Workspace trust (spec §17)
 
