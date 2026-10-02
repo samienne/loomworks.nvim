@@ -202,7 +202,7 @@ out=$(cd "$TMP" && "$LW" daemon list --under "$under")
 printf '%s\n' "$out"
 case "$out" in *"$apid "*"/a"*"$bpid "*"/b"*"2 daemons (2 idle)"*) ok "list shows both daemons with their roots" ;; *) bad "list: $out" ;; esac
 js=$(cd "$TMP" && "$LW" daemon list --json --under "$under")
-case "$js" in *'"schema":1'*'"state":"live"'*) ok "list --json" ;; *) bad "list --json: $js" ;; esac
+case "$js" in *'"state":"live"'*'"schema":1'*) ok "list --json" ;; *) bad "list --json: $js" ;; esac
 ms=$(printf '%s' "$js" | sed -n 's/.*"scan_ms":\([0-9]*\).*/\1/p')
 if [ -n "$ms" ] && [ "$ms" -lt 3000 ]; then ok "scan took $ms ms"; else bad "scan_ms '$ms'"; fi
 out=$(cd "$TMP" && "$LW" daemon stop --all --under "$under") || bad "stop --all failed: $out"
