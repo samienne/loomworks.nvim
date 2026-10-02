@@ -329,7 +329,8 @@ end
 
 --- @class loomworks.HousekeepingOpts
 --- @field root? string the workspace root (its `.nvim/tmp`)
---- @field all? boolean add pinned releases and every legacy runtime log
+--- @field all? boolean add the pinned releases unused for the threshold
+--- @field legacy_logs_any_age? boolean legacy runtime logs of any age (`lw cleanup`)
 --- @field pinned_age? integer pinned threshold (seconds); implies the pinned part
 --- @field now? integer
 --- @field data? string per-user data directory
@@ -493,7 +494,7 @@ local function scan_device_locks(items, ctx, dir)
 end
 
 local function scan_legacy_logs(items, ctx, dir)
-    local min = ctx.all and 0 or M.AGE.legacy_log
+    local min = ctx.legacy_any and 0 or M.AGE.legacy_log
     for _, n in ipairs(names(dir)) do
         local h = n:match("^(%x+)%.log$") or n:match("^(%x+)%.log%.1$")
         if h and #h == 16 then consider(items, ctx, dir, n, "file", "runtime log", min) end
@@ -665,6 +666,7 @@ function M.collect(opts)
     local ctx = {
         now = opts.now or os.time(),
         all = opts.all and true or false,
+        legacy_any = opts.legacy_logs_any_age and true or false,
         pinned_age = opts.pinned_age or (opts.all and M.PINNED_DEFAULT or nil),
         kept_pinned = 0,
         running = {},
@@ -884,7 +886,7 @@ function M.startup(root, opts)
         if not claim(data, now) then return end
         local o = {}
         for k, v in pairs(opts) do o[k] = v end
-        o.root, o.data, o.now, o.all, o.pinned_age = root, data, now, false, nil
+        o.root, o.data, o.now, o.all, o.pinned_age, o.legacy_logs_any_age = root, data, now, false, nil, nil
         local items, info = M.collect(o)
         removed, failed, bytes = 0, 0, 0
         for _, it in ipairs(items) do
@@ -993,7 +995,10 @@ function M.cmd(root, args, host, opts)
     end
     local c = {}
     for k, v in pairs(opts or {}) do c[k] = v end
-    c.root, c.all, c.pinned_age = root, o.all, o.pinned_age
+    -- The legacy runtime logs are listed whatever their age: this lw writes
+    -- the log inside the workspace, so the old location only holds what
+    -- earlier versions left (housekeeping keeps 30 days, spec §16.40).
+    c.root, c.all, c.pinned_age, c.legacy_logs_any_age = root, o.all, o.pinned_age, true
     local now = c.now or os.time()
     c.now = now
     local items, info = M.collect(c)
@@ -1011,7 +1016,7 @@ function M.cmd(root, args, host, opts)
     if #items == 0 then
         out("lw cleanup: nothing to clean up.")
         if kept then out(kept) end
-        if not info.pinned then out("(`--all` also prunes pinned releases unused for 30 days.)") end
+        if not info.pinned then out("(`--all` adds the pinned releases unused for 30 days.)") end
         return 0
     end
     local total = 0

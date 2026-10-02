@@ -627,16 +627,22 @@ re-cut onto master step by step; this section is expanded as each step lands.
   Linux own-uid `/proc/<pid>/comm`, macOS `proc_listallpids` + `proc_name`,
   `ps` fallback) → exe-name candidates (`lw`, `lw-*`, `luvi`, `nvim`) →
   `proc.cmdline` + `proc.is_daemon_for` → `--root` → classified from that
-  root's R and handle (live / starting / hung / stray / unknown_root).
-  `command.lua` renders it (`lw daemon list [--json]`) and drives
+  root's R and handle (live / starting / hung / stray / unknown_root; a
+  daemon with no R yet that started under `STARTING_GRACE_S` ago is
+  starting), plus `same_key` from the handle's `key_id` against
+  `auth.own_key_id()` (read-only; never creates the machine key).
+  `command.lua` renders it (`lw daemon list [--json]`; table rows and the
+  summary come from one list via `command.rows` / `discover.counts`) and drives
   `stop --all` / `kill --all` through the per-workspace `M.stop` with a host
-  whose `die` raises (one result per daemon); `kill --all --strays` re-reads
+  whose `die` raises (one result per daemon), skipping a daemon of another
+  data dir (`same_key == false`) without connecting; `kill --all --strays` re-reads
   a stray's command line and start time before `proc.kill_tree`. The health
   provider `suggestions.daemon_count_provider` prints the count.
 - `protocol.lua` — `<len>\n<json>` framing; the decoder checks the length
   prefix against the cap (64 KiB before authentication, 16 MiB after) before
   buffering a payload.
-- `auth.lua` — K = HMAC(trust key, `loomworks-daemon-v1`), nonces, the two
+- `auth.lua` — K = HMAC(trust key, `loomworks-daemon-v1`), the handle's
+  non-secret `key_id` (16 hex of HMAC(K, `loomworks-daemon-key-id-v1`)), nonces, the two
   endpoint-bound proofs, constant-time compare (pure-Lua HMAC from
   `trust.lua`).
 - `endpoint.lua` — the address (Windows pipe name hashed from user + root;

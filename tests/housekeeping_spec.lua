@@ -142,7 +142,7 @@ describe("housekeeping (spec §16.40)", function()
         local log = sb.data .. "/daemon/logs/0123456789abcdef.log"
         age(log, NOW - 5 * 86400)
         assert.is_nil(paths_of(hk.collect(opts(sb)))[log])
-        assert.is_truthy(paths_of(hk.collect(opts(sb, { all = true })))[log])
+        assert.is_truthy(paths_of(hk.collect(opts(sb, { legacy_logs_any_age = true })))[log])
         -- A modification time in the future counts as recent.
         local dl = sb.data .. "/.dl-0.1.40.zip"
         age(dl, NOW + 86400 * 3)
@@ -391,6 +391,38 @@ describe("lw cleanup (spec §16.40)", function()
         assert.is_truthy(r.text:find("lw cleanup --yes --all", 1, true), r.text)
         local r2 = run({ "cleanup", "--pinned-older-than", "90d" }, opts(sb, { pin_version = "0.1.31" }))
         assert.is_nil(r2.text:find("lua-0.1.30", 1, true), r2.text)
+    end)
+
+    it("plain lw cleanup lists legacy runtime logs of any age; the startup pass keeps 30 days", function()
+        local log = write(sb.data .. "/daemon/logs/0123456789abcdef.log")
+        local log1 = write(sb.data .. "/daemon/logs/0123456789abcdef.log.1")
+        age(log, NOW - 86400); age(log1, NOW - 60)
+        local r = run({ "cleanup" }, opts(sb))
+        assert.equals(0, r.code)
+        assert.is_nil(r.text:find("nothing to clean up", 1, true), r.text)
+        assert.is_truthy(r.text:find("runtime log  " .. log .. " ", 1, true), r.text)
+        assert.is_truthy(r.text:find(log1, 1, true), r.text)
+        -- The silent startup pass's set (housekeeping) leaves them until 30 days.
+        local got = paths_of(hk.collect(opts(sb)))
+        assert.is_nil(got[log]); assert.is_nil(got[log1])
+        assert.is_true(hk.startup(nil, opts(sb, { now = NOW })) ~= nil)
+        assert.is_true(exists(log)); assert.is_true(exists(log1))
+        -- --yes removes them.
+        local y = run({ "cleanup", "--yes" }, opts(sb))
+        assert.equals(0, y.code, y.text)
+        assert.is_false(exists(log)); assert.is_false(exists(log1))
+    end)
+
+    it("says exactly what --all adds (pinned releases only), in the hint and the help", function()
+        local r = run({ "cleanup" }, opts(sb))
+        assert.is_truthy(r.text:find("nothing to clean up", 1, true), r.text)
+        assert.is_truthy(r.text:find("`--all` adds the pinned releases unused for 30 days", 1, true), r.text)
+        -- `lw help cleanup` (the HELP table's source text).
+        local src = read((vim.uv or vim.loop).cwd() .. "/lua/loomworks/cli.lua")
+        local help = src:match("\n  cleanup = %[%[(.-)%]%]")
+        assert.is_truthy(help, "no cleanup help topic")
+        assert.is_nil(help:find("every old runtime log", 1, true), help)
+        assert.is_truthy(help:find("days (that is all it adds)", 1, true), help)
     end)
 
     it("reports a removal that fails and exits 1", function()

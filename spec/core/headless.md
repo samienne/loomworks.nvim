@@ -3802,7 +3802,7 @@ versions left behind:
 
 | Leftover | Removed |
 |---|---|
-| `<data>/daemon/logs/<16 hex digits>.log`, `<data>/daemon/logs/<16 hex digits>.log.1` | when unmodified for 30 days; at any age by `lw cleanup --all` |
+| `<data>/daemon/logs/<16 hex digits>.log`, `<data>/daemon/logs/<16 hex digits>.log.1` | by housekeeping when unmodified for 30 days; by `lw cleanup` at any age |
 | `<tmp>/lw-test-<hex>.xml` | when older than 24 hours |
 | `<tmp>/lw-describe-<hex>.txt` | when older than 7 days |
 
@@ -3887,11 +3887,16 @@ prompts.
 - `--yes` (`-y`) removes them and reports each removal. An item that cannot
   be removed (in use, permission) is named with the reason, and the command
   then exits 1. `--dry-run` together with `--yes` is a usage error (exit 2).
-- The **default set** is the housekeeping set, whatever the stamp says.
+- The **default set** is the housekeeping set, whatever the stamp says, plus
+  every legacy runtime log whatever its age: this version never writes the
+  old location, so whatever is there is a leftover, and a dry run lists it
+  before anything is removed. (Housekeeping, which removes without asking,
+  keeps the 30-day age: a repository pinning a release older than this rule
+  still writes there.)
 - `--all` adds the **pinned releases unused for 30 days**
-  (`<data>/pinned/<sha256>/lua-<ver>/`, `<data>/pinned/lw-<ver>-<asset>`), and
-  every legacy runtime log whatever its age. It also counts the pinned
-  releases it keeps.
+  (`<data>/pinned/<sha256>/lua-<ver>/`, `<data>/pinned/lw-<ver>-<asset>`) —
+  only those — and counts the pinned releases it keeps. With nothing to remove
+  and no `--all`, the command says what `--all` would add.
 - `--pinned-older-than <duration>` sets that 30-day threshold and implies the
   pinned part of `--all`. A duration is a whole number of seconds, or a whole
   number with `s`, `m`, `h` or `d` (`90d`, `12h`). An invalid duration is a
