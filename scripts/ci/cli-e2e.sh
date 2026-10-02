@@ -313,7 +313,7 @@ sleeper_alive() {
     if is_windows_host; then
         powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='cmake.exe'\" | Where-Object { \$_.CommandLine -like '*-E sleep 61*' }).Count" 2>/dev/null | tr -d '\r' | grep -qv '^0$'
     else
-        ps -A -o args= | grep -q "cmake -E sleep 61"
+        ps -A -o args= | grep -q "[c]make -E sleep 61"
     fi
 }
 test_daemon_build() {

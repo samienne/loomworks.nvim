@@ -20,6 +20,25 @@ local function read(path)
     local t = f:read("*a"); f:close(); return t
 end
 
+--- `s` with every spelling of `root` replaced: as the test names it and as
+--- lw stores it (its real path: a runner's temp dir can be an 8.3 short
+--- path; case-insensitive on Windows).
+local function unroot(s, root)
+    local forms = { root, ((uv.fs_realpath(root) or root):gsub("\\", "/")) }
+    for _, r in ipairs(forms) do
+        if H.is_win then
+            local i = s:lower():find(r:lower(), 1, true)
+            while i do
+                s = s:sub(1, i - 1) .. "<ROOT>" .. s:sub(i + #r)
+                i = s:lower():find(r:lower(), 1, true)
+            end
+        else
+            s = s:gsub(vim.pesc(r), "<ROOT>")
+        end
+    end
+    return s
+end
+
 --- The workspace's persisted build state, comparable across two roots:
 --- verified, decoded, the root replaced, timestamps and the config hash masked.
 local function cache_of(root, key_path)
@@ -35,7 +54,8 @@ local function cache_of(root, key_path)
             if type(k) == "string" and (k:match("_at$") or k:match("^last_")) then return "<time>" end
             -- A hash of loomworks.json, whose step commands name the root.
             if k == "loomworks_hash" then return "<hash>" end
-            return (v:gsub(vim.pesc(root), "<ROOT>"))
+            v = unroot(v, root)
+            return v
         end
         if type(v) ~= "table" then return v end
         local out = {}
@@ -45,7 +65,7 @@ local function cache_of(root, key_path)
     return walk(t)
 end
 
-local function norm(s, root) return (s:gsub("\r\n", "\n"):gsub(vim.pesc(root), "<ROOT>")) end
+local function norm(s, root) return unroot((s:gsub("\r\n", "\n")), root) end
 
 local function drop_notice(s)
     return (s:gsub("lw: building through the workspace daemon %(pid %d+%)\n", ""))
