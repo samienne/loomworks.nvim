@@ -740,7 +740,13 @@ commands that need no workspace (`status`, `health`, `pull`, `worktree`,
 `unlock`) never do; the `Runtime` row says the daemon "starts on the next
 command". The ensure step of a command waits about a second per step at most
 (connect + handshake, `ping`), and for a daemon still starting at most about
-a second, once, before running without it. A `lw daemon run` that finds the runtime lock
+a second, once, before running without it. A command the daemon would run (a
+routed `lw build`, §19.15) waits up to about 5 seconds instead, for each step
+and for the one wait on a starting daemon: under machine load a healthy daemon
+can miss the second, and the build would then run in-process exactly when the
+daemon helps most. A daemon already classified hung (§19.5: alive, heartbeat
+stale) is reported at once either way; the longer bound only applies to a
+live-but-slow one. A `lw daemon run` that finds the runtime lock
 held exits with status 3, which the launching client reads as "another daemon
 won".*
 

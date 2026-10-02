@@ -277,6 +277,102 @@ describe("ensure (§19.9 through a workspace command)", function()
         other:close()
         assert.is_true(vim.wait(2000, function() return exited ~= nil end, 10))
     end)
+    -- The ensure bound of a routed `lw build` (§19.10): a healthy daemon that
+    -- answers the handshake late (a loaded machine) still takes the build; a
+    -- command that only keeps the daemon alive keeps the ~1 s bound.
+    describe("the routed bound", function()
+        local saved_step, saved_routed
+        before_each(function()
+            saved_step, saved_routed = ensure.STEP_MS, ensure.ROUTED_STEP_MS
+            ensure.STEP_MS, ensure.ROUTED_STEP_MS = 1000, 5000
+        end)
+        after_each(function() ensure.STEP_MS, ensure.ROUTED_STEP_MS = saved_step, saved_routed end)
+        local function delay_handshake(ms)
+            local real = srv._handshake
+            local state = { delayed = 0 }
+            srv._handshake = function(self, conn, msg)
+                if msg.kind == "auth" and state.delayed == 0 then
+                    state.delayed = 1
+                    local t = uv.new_timer()
+                    t:start(ms, 0, function() t:close(); pcall(real, self, conn, msg) end)
+                    return
+                end
+                return real(self, conn, msg)
+            end
+            state.restore = function() srv._handshake = real end
+            return state
+        end
+        local function timed(extra)
+            local notes = {}
+            local o = { config = { ["runtime-mode"] = "daemon" }, note = function(l) notes[#notes + 1] = l end,
+                log = function() end, launch = function() error("must not launch") end,
+                getenv = function() return nil end }
+            for k, v in pairs(extra or {}) do o[k] = v end
+            local t0 = uv.hrtime()
+            local out = ensure.ensure(root, o)
+            return out, notes, (uv.hrtime() - t0) / 1e6
+        end
+
+        it("never shortens the step, and the test hook lengthens both", function()
+            assert.equals(1000, ensure.step_ms(false))
+            assert.equals(5000, ensure.step_ms(true))
+            ensure.STEP_MS = 30000
+            assert.equals(30000, ensure.step_ms(true))
+        end)
+
+        it("a slow but healthy daemon still takes a routed build", function()
+            local d = delay_handshake(2500)
+            local out, notes, ms = timed({ routed = true })
+            d.restore()
+            assert.equals(1, d.delayed)
+            assert.equals("used", out, table.concat(notes, " | "))
+            assert.same({}, notes)
+            assert.truthy(ms >= 2400, ms .. " ms")
+        end)
+
+        it("a command that only keeps it alive still gives up after about a second", function()
+            local d = delay_handshake(2500)
+            local out, notes, ms = timed()
+            assert.equals(1, d.delayed)
+            assert.equals("failed", out)
+            assert.equals(1, #notes)
+            assert.truthy(notes[1]:find("could not reach the workspace daemon", 1, true), notes[1])
+            assert.truthy(ms < 2400, ms .. " ms")
+            -- The late handshake lands on the closed connection: nothing breaks.
+            vim.wait(2000, function() return false end, 50)
+            d.restore()
+            assert.equals("used", (timed()))
+        end)
+
+        it("a hung daemon is reported at once to a routed build too", function()
+            local t = os.time() - 120
+            uv.fs_utime(dpaths.lock_path(root), t, t)
+            local out, notes, ms = timed({ routed = true })
+            assert.equals("hung", out)
+            assert.equals(1, #notes)
+            assert.truthy(notes[1]:find("is not responding — recover with: lw daemon stop --force", 1, true), notes[1])
+            assert.truthy(ms < 1000, ms .. " ms")
+        end)
+
+        it("lw build asks for the routed bound; other workspace commands do not", function()
+            local cli = require("loomworks.cli")
+            assert.is_true(cli.ROUTED_COMMANDS.build)
+            for _, c in ipairs({ "profiles", "test", "run", "clean", "configure" }) do
+                assert.is_nil(cli.ROUTED_COMMANDS[c], c)
+            end
+            local seen = {}
+            local real = ensure.ensure
+            ensure.ensure = function(_, o) seen[#seen + 1] = o.routed; return "off" end
+            local ok, err = pcall(function()
+                cli._ensure_daemon(root, cli.ROUTED_COMMANDS.build)
+                cli._ensure_daemon(root, cli.ROUTED_COMMANDS.profiles)
+            end)
+            ensure.ensure = real
+            assert.is_true(ok, tostring(err))
+            assert.same({ true, false }, seen)
+        end)
+    end)
+
     it("an idle daemon of another version is replaced", function()
         srv.identity = "0.1.0"
         local launched = false

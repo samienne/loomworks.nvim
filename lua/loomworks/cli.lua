@@ -7513,15 +7513,23 @@ end
 --- settings, help, daemon …).
 M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 
+--- Workspace commands routed to the workspace daemon (spec §19.15): their
+--- ensure step waits longer for a slow daemon (§19.10) before they run
+--- in-process.
+M.ROUTED_COMMANDS = { build = true }
+
 --- Keep the workspace daemon running before a workspace command (spec §19.1,
 --- §19.10; loomworks.daemon.ensure). Never fails the command. Returns what
 --- happened (loomworks.daemon.ensure.ensure's outcome; nil on an error).
+--- `routed`: the command would be routed to the daemon (`lw build`), which
+--- gives a live-but-slow daemon the longer bound (ensure.ROUTED_STEP_MS).
 --- @param root string
+--- @param routed? boolean
 --- @return string|nil
-function M._ensure_daemon(root)
+function M._ensure_daemon(root, routed)
   local ok, outcome = pcall(function()
     return require("loomworks.daemon.ensure").ensure(root, {
-      config = read_config(), flag = M._no_daemon, note = note,
+      config = read_config(), flag = M._no_daemon, note = note, routed = routed == true,
       log = require("loomworks.daemon.rlog").writer(root),
     })
   end)
@@ -10341,7 +10349,8 @@ LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
 In `daemon` mode every workspace command (not `lw status`, `health`, `help`,
 `settings`, `pull`, `worktree`, `trust`, `nuke`, `unlock`, `daemon …`) first
 makes sure the daemon runs: it connects (and pings it, waiting about a second
-at most) or starts one in the background, then runs exactly as before, except
+at most; `lw build`, which the daemon runs, waits up to about 5 seconds for a
+slow one) or starts one in the background, then runs exactly as before, except
 `lw build`, which runs in the daemon: one dim line says so
 (`lw: building through the workspace daemon (pid N)`), then the build's output
 and result are the same as without it. Ctrl-C (or the end of `lw`) stops the
@@ -12067,12 +12076,13 @@ local function main()
   if not root then die("no loomworks.json found (searched up from cwd) — `lw init` to create one") end
 
   -- In `runtime-mode daemon` every workspace command keeps the workspace
-  -- daemon running (spec §19.1, §19.19 step 2); nothing is routed to it yet.
+  -- daemon running (spec §19.1, §19.19 step 2); `lw build` is then routed to
+  -- it (below), so its ensure gives a slow daemon longer (§19.10).
   -- Not the recovery commands: `trust` / `nuke` repair a refused workspace
   -- and `unlock` clears stuck locks — none of them may wait on (or start) a
   -- daemon.
   local ensured
-  if not M.NO_DAEMON_COMMANDS[command] then ensured = M._ensure_daemon(root) end
+  if not M.NO_DAEMON_COMMANDS[command] then ensured = M._ensure_daemon(root, M.ROUTED_COMMANDS[command]) end
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).
