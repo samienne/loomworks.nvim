@@ -41,6 +41,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon (`runtime-mode daemon`): `lw run` now builds, deploys
+  and resolves the launch in the workspace daemon, with the same output and
+  exit code, after one dim line `lw: preparing the run through the workspace
+  daemon (pid N)`; the program itself still runs in your terminal, as the
+  `lw` process's child, so stopping or restarting the daemon never touches it
+  and no lock is held while it runs. Runs on a device stay in-process and say
+  so in one line. The daemon protocol is now version 6: an older daemon is
+  restarted when idle. (#130)
 - Experimental daemon (`runtime-mode daemon`): `lw test` (the batch form,
   `lw test [<profile>] [--junit <file>] [-- <args>]`) now runs in the
   workspace daemon like `lw build`, with the same output, JUnit files and exit

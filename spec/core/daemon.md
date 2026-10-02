@@ -691,7 +691,8 @@ pipe would hand the user's credentials to that host.
 `daemon/client.lua`; protocol version 3: 2 plus the routed `build` request
 and its task stream, §19.15; protocol version 4: 3 plus the observer role,
 `model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16; protocol
-version 5: 4 plus the routed `test` request, §19.15); the rest of the
+version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
+plus the `prepare_run` request, §19.15); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -942,7 +943,10 @@ reference-based. Read-only queries run on the client's projection.
 `daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
 `_delegate`), and for the batch form of `lw test` (`lw test [<profile>]
 [--junit <file>] [-- <args>]`, §16.16; `lw test --target` stays in-process,
-see Routing); observed by the editor (§19.16); other operations future.*
+see Routing), and for the preparation of `lw run` (§16.17; see Run;
+`run_prep.lua`, the client's `_finish_routed_run`; device runs stay
+in-process, see Routing); observed by the editor (§19.16); other operations
+future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1030,6 +1034,73 @@ profile '<p>'…`, `TESTS OK: <profile> (<n> run[s])`, or the failure `<k> of
 <n> test run(s) failed: <names>` with exit 1. A build step that fails ends the
 test run as it ends a build.
 
+**Run.** `lw run` (§16.17) is split: the daemon **prepares** the launch, the
+client **executes** it. The program is the user's own — interactive,
+possibly long-running, attached to a terminal — so it never runs in the
+daemon.
+
+`prepare_run { args, interactive, env, command }` — `args` carries the parsed
+command line: `profile` and `target` (the operands, §16.17; no `target` for
+the default target), `project` (`--project`), `kind` (`--target` /
+`--launch`), `cwd` (`--cwd`, sent as given: the launch resolves it as
+in-process — variables expanded, relative to the workspace root), `extra` (the arguments after `--`), `no_build` (`--no-build`, also
+set by `--dry-run`), `quiet` (`--print` / `--dry-run`) and `prefix` (true when
+`--prefix` is given). The wrapper itself and the report format stay with the
+client and do not change what is prepared; `prefix` only lets the daemon
+refuse a device target, after the validity gate and before deploy, with the
+in-process `--prefix cannot wrap a device target …` line. The outcomes are those of `build`; it is also `declined` for a
+profile with a foreign kit (see Routing). An accepted request runs as a task
+(`meta.kind = run`) that does, and prints, exactly what the in-process run
+does before its `running …` line, in the same order:
+
+1. unless `no_build`, the profile's build: the build-directory locks taken as
+   for a build, the build steps above (every gate and line), then the locks
+   **released** — as in-process, they are held for the build only;
+2. the launch target resolved against the built tree (§16.17, "Launch target
+   selection": the named target, else the default target, else the sole
+   launchable one; the same messages for none, ambiguous and unset) and its
+   validity gate;
+3. unless `no_build`, the deploy steps (§8), after the locks were released,
+   as in-process;
+4. the launch spec resolved — variables and `${VAR}` expanded in the client's
+   environment (Environment, below).
+
+`done` then carries `exit_code` 0 and `launch = { name, cmd, args, cwd, env }`
+— the resolved command, its arguments (a command configuration's declared
+arguments, then `extra`), the absolute working directory and, in `env`, only
+the launch's own contribution over the client's environment (the overrides
+§16.17 "Command inspection" reports), never a whole environment — or a
+nonzero exit code and the in-process failure line (a failed build, no such
+target, a failed deploy, `cannot resolve launch: …`). The task, and every
+lock, ends before the program starts; the daemon keeps nothing of the run.
+
+The client then closes its daemon connection and finishes the run as the
+in-process host does after resolving: `--print` / `--dry-run` print the
+report (with the not-built note); otherwise it prints `running <name> [cwd:
+<cwd>]: <argv>` and executes `<prefix> <cmd> <args>` itself — attached to its
+terminal (inherited standard input, output and error; on Windows not hidden),
+in `cwd`, with its own environment plus `env`, the program resolved on its own
+search path as in-process (§5.10). The program's exit status is `lw run`'s.
+Under `--print` / `--dry-run` the client writes the whole task stream to
+standard error, so standard output carries only the report. Hence:
+
+- **Not the daemon's.** The program is the client's child. It holds no lock,
+  task or connection: `lw daemon stop|kill|restart`, a retire for a version
+  change and an idle exit never touch it, and it does not keep the daemon
+  busy (§19.11). Ctrl-C while it runs reaches it and the client through their
+  console, as in-process; Ctrl-C during the preparation cancels the task
+  (Cancellation).
+- **Concurrent runs.** Any number of `lw run` may run at once. Their
+  preparations are serialized by the build-directory locks like any builds;
+  their programs are not.
+- **A build while the program runs** proceeds, as in-process. On Windows a
+  running executable cannot be overwritten, so a build that relinks it fails
+  at that step as it does today; nothing is added for it (no lock held across
+  the run, no retry, no warning).
+- **Terminal.** The program's output never passes through the daemon: it has
+  the client's real terminal (colour, size, redraws), unlike the build's
+  tools above.
+
 **Environment.** A routed build behaves as if the client process had run it.
 The client sends its **whole environment** with the request; the daemon
 applies it to the operation and to nothing else:
@@ -1095,8 +1166,11 @@ retire, root removed, lost lock), or the workspace or the operation's subject
 is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
 that step, releases its locks and ends the task nonzero (`build stopped:
-<reason>`; `test stopped: <reason>` for a test run). A client that loses the connection after its operation was
-accepted reports a failure; it never re-runs the operation another way. A
+<reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
+for a run's preparation). A client that loses the connection after its operation was
+accepted reports a failure; it never re-runs the operation another way (for a
+run: it starts no program). Cancellation ends with the task: a run's program,
+started after it, is never the daemon's to stop (Run). A
 connection that owns a running operation is never dropped for silence
 (§19.11); the CLI also pings while it waits. The step's processes are the
 daemon's, not in the client's console, so the interrupt must reach the
@@ -1144,6 +1218,36 @@ step — its device locks, staging and liveness stay with the client process —
 and prints `lw: the workspace daemon could not take the test (--target runs
 test executables in this process); running without it`.
 
+`lw run` (step 5) is routed by the same rules for its preparation
+(Run), an argument `cmd_run` refuses taking the place of one `cmd_build`
+refuses (`--print` with `--prefix` among them), and its lines name the run:
+`lw: the workspace daemon declined the run (<reason>); running without it`,
+`lw: the workspace daemon could not take the run (<reason>); running without
+it` and `lw: preparing the run through the workspace daemon (pid N)` (before
+the build's output; on standard error like the others). A run on a device
+(§16.17, §18) is not carried in this step — its device locks, staging and the
+remote program's liveness stay with the client process:
+
+- a device option (`--device`, `--fresh`, `--timeout`, `--no-wait`, a log
+  option; §18.3) prints `lw: the workspace daemon could not take the run
+  (device options run the program on a device in this process); running
+  without it`;
+- a profile one of whose units builds with a foreign kit (§18.1, the kit's
+  execution platform — known before anything is built) is `declined` before
+  any side effect: `lw: the workspace daemon declined the run (profile '<p>'
+  builds for <platform>; device runs stay in this process); running without
+  it`;
+- a target found foreign only by probing its built artifact (§18.1, no kit
+  platform) is known only after the daemon built it: the task ends with
+  `exit_code` 0, no `launch`, and `device = true`, before any deploy; the
+  client prints `lw: the workspace daemon could not take the run (<name> runs
+  on a device in this process); continuing without it` and continues
+  in-process from the deploy (deploy → stage → execute, §18.4–§18.5) without
+  building again.
+
+The editor's own run and debug launches stay in-process in this step
+(§19.16).
+
 ### 19.16 The editor as a client
 
 *Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
@@ -1159,6 +1263,15 @@ loaded. *(Future:)* such an attached editor also serves the endpoint. It is
 then the workspace's shared daemon, owned by the editor process, and CLI
 clients connect to it instead of being refused as busy. It ends when the
 editor closes the workspace.
+
+*(Future:)* The editor's run and debug launches (§8.6) take the CLI's split
+(§19.15, Run): `prepare_run` in the daemon, then the returned launch spec
+handed to the editor's task runner (run) or to the debugger as the debuggee's
+program, arguments, working directory and environment (debug). The program
+is then the editor's, never the daemon's. Until the editor moves its
+operations to commands, its launches stay in-process; the observer shows a
+CLI run's preparation as a remote task (`kind = run`) like a build, and never
+the program.
 
 **Step 4: the observer.** In `daemon` mode (the setup option `runtime.mode` or
 `LOOMWORKS_RUNTIME`, with `LOOMWORKS_NO_DAEMON` and `CI` as in §19.1), each
@@ -1239,8 +1352,16 @@ build form both ways — the same output, exit code and persisted cache;
 and the batch `lw test` (`tests/daemon_test_cli_spec.lua`: passing, failing,
 runner arguments, JUnit (also a runner that wrote none), a failed build, an
 unknown or missing profile, both ways — the same output, exit code, JUnit
-files and persisted cache); the projection half
-#88.*
+files and persisted cache) and `lw run`
+(`tests/daemon_run_cli_spec.lua`: the default target, a named build target
+and command configuration, the two-operand form, forwarded arguments,
+`--cwd`, `--prefix`, `--print[=json]`, `--dry-run`, `--no-build`, a failed
+build, a failed deploy, an unknown, ambiguous or unset target, the program's
+exit status, both ways — the same output, exit code, deploy records and
+persisted cache; plus: the program runs after the task ended and every lock
+was released (a `lw build` of the profile proceeds while it runs), it
+survives `lw daemon stop`, two runs at once, the not-carried device forms
+print their line); the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -1273,6 +1394,8 @@ runtime is deferred until that module is actively developed.
 5. **Remaining operations**, one at a time, each with a parity test (§19.17);
    then the loopback transport, so attached runs use the same code; then the
    CLI and the editor stop loading the workspace themselves. Routed so far:
-   the batch `lw test`.
+   the batch `lw test`; the preparation of `lw run` (§19.15, Run; protocol
+   6) — the program runs in the client; device runs and the editor's
+   launches stay in-process.
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

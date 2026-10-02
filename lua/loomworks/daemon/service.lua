@@ -34,6 +34,13 @@
 ---
 --- **Request** `{ kind = "test", args = { profile?, junit?, extra? }, … }` —
 --- the same outcomes; also "refused" for a foreign kit's profile (§18.6).
+---
+--- **Request** `{ kind = "prepare_run", args = { profile?, target?, project?,
+--- kind?, cwd?, extra?, no_build?, quiet? }, … }` (§19.15 "Run") — the same
+--- outcomes; also "declined" for a profile one of whose units builds with a
+--- foreign kit (device runs stay in the client). The task builds, selects,
+--- deploys and resolves the launch; its `done` carries the resolved `launch`
+--- (or `device = true`) and the client executes the program.
 
 local build_run = require("loomworks.build_run")
 local envscope = require("loomworks.daemon.envscope")
@@ -213,9 +220,31 @@ function Service:on_test(conn, msg)
     return self:_on_operation("test", conn, msg)
 end
 
+--- Handle a `prepare_run` request (the preparation of `lw run`, spec §19.15
+--- "Run") on an authenticated connection.
+--- @param conn table
+--- @param msg table
+function Service:on_run(conn, msg)
+    return self:_on_operation("run", conn, msg)
+end
+
+--- Is `a` (a `prepare_run` request's args) well-formed?
+--- @param a table
+--- @return boolean
+local function run_args_ok(a)
+    for _, k in ipairs({ "target", "project", "cwd" }) do
+        if a[k] ~= nil and type(a[k]) ~= "string" then return false end
+    end
+    if a.kind ~= nil and a.kind ~= "target" and a.kind ~= "launch" then return false end
+    for _, k in ipairs({ "no_build", "quiet", "prefix" }) do
+        if a[k] ~= nil and type(a[k]) ~= "boolean" then return false end
+    end
+    return true
+end
+
 --- A routed operation's request: validate it, then accept it in a model
 --- segment.
---- @param op "build"|"test"
+--- @param op "build"|"test"|"run"
 --- @param conn table
 --- @param msg table
 function Service:_on_operation(op, conn, msg)
@@ -241,14 +270,15 @@ function Service:_on_operation(op, conn, msg)
             if type(v) ~= "string" then return ctx.reply({ outcome = "declined", reason = "malformed request" }) end
         end
     end
-    if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string") then
+    if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")
+        or (op == "run" and not run_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     self:with_model(ctx, function() self:_accept(ctx) end)
 end
 
---- The model segment that accepts (or refuses / declines) a build or a test
---- run.
+--- The model segment that accepts (or refuses / declines) a build, a test
+--- run or a run's preparation.
 function Service:_accept(ctx)
     if ctx.conn.closed then return end
     local ws, refusal, decline = self:live(ctx)
@@ -261,7 +291,7 @@ function Service:_accept(ctx)
     end
     local a = ctx.args
     local profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
-        usage = "lw " .. ctx.op .. " <profile>" })
+        usage = ctx.op == "run" and "lw run <profile> <target>" or ("lw " .. ctx.op .. " <profile>") })
     if action == "onboard" then
         return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
     end
@@ -273,6 +303,13 @@ function Service:_accept(ctx)
     if foreign then
         return ctx.reply({ outcome = "refused", message = foreign, exit_code = 1, notes = ctx.notes })
     end
+    -- A run of a profile built by a foreign kit is a device run: its device
+    -- locks, staging and program liveness stay with the client (§19.15).
+    local platform = ctx.op == "run" and require("loomworks.run_prep").kit_platform(profile) or nil
+    if platform then
+        return ctx.reply({ outcome = "declined", reason = "profile '" .. profile.key .. "' builds for "
+            .. platform .. "; device runs stay in this process" })
+    end
     local task = self.tasks:create(ctx.conn)
     ctx.task, ctx.ws, ctx.profile = task, ws, profile
     ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile.key, pid = self.server.pid,
@@ -282,6 +319,10 @@ function Service:_accept(ctx)
     local args
     if ctx.op == "test" then
         args = { extra = extra, junit = a.junit }
+    elseif ctx.op == "run" then
+        -- (The program's arguments: an empty list is still a list.)
+        args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
+            no_build = a.no_build == true, quiet = a.quiet == true, prefix = a.prefix == true }
     else
         args = { extra = extra, targets = (a.targets and #a.targets > 0) and a.targets or nil,
             force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true }

@@ -216,10 +216,14 @@ end
 --- End the task (idempotent).
 --- @param exit_code integer
 --- @param err? string the refusal / failure (printed as `lw: <err>`)
-function Task:done(exit_code, err)
+--- @param fields? table more fields of the `done` event (a run's `launch` /
+---   `device`, §19.15 "Run")
+function Task:done(exit_code, err, fields)
     if self.finished then return end
     self.finished = true
-    self:_emit({ phase = "done", exit_code = exit_code, error = err })
+    local msg = { phase = "done", exit_code = exit_code, error = err }
+    for k, v in pairs(fields or {}) do msg[k] = v end
+    self:_emit(msg)
     local s = self.stream
     if s.tasks[self.id] then
         s.tasks[self.id] = nil

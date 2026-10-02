@@ -554,6 +554,10 @@ function Server:_dispatch_request(conn, msg)
     elseif msg.kind == K.test and self.service then
         -- The batch `lw test` (§19.15, §19.19 step 5).
         return self.service:on_test(conn, msg)
+    elseif msg.kind == K.prepare_run and self.service then
+        -- The preparation of `lw run` (§19.15 "Run"); the program runs in
+        -- the client.
+        return self.service:on_run(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end
