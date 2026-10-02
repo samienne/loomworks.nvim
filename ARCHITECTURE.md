@@ -686,7 +686,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   §19.5 sequence `stop --force` / `kill` also use) and relaunched; problems
   are one stderr line, never a failed command. Each step waits at most
   `ensure.STEP_MS` (~1 s: connect + handshake, `status`, `ping`;
-  `LW_TEST_DAEMON_STEP_MS` lengthens it for loaded test runs); a daemon
+  `LW_TEST_DAEMON_STEP_MS` lengthens it for loaded test runs) — or, with
+  `opts.routed` (a `lw build`, `cli.M.ROUTED_COMMANDS`),
+  `ensure.ROUTED_STEP_MS` (~5 s, never below `STEP_MS`); a daemon
   still `starting` is waited for at most that long, once; the handle's
   endpoint must pass `endpoint.check` before anything is connected to.
   `cli.M.NO_DAEMON_COMMANDS` (`trust`, `nuke`, `unlock`) skips the ensure. `cli.lua` calls it as `M._ensure_daemon(root)` right
