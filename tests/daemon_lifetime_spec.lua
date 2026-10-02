@@ -358,22 +358,29 @@ describe("ensure (§19.9 through a workspace command)", function()
             assert.truthy(ms < 1000, ms .. " ms")
         end)
 
-        it("lw build asks for the routed bound; other workspace commands do not", function()
+        it("lw build and lw test ask for the routed bound; other workspace commands do not", function()
             local cli = require("loomworks.cli")
             assert.is_true(cli.ROUTED_COMMANDS.build)
-            for _, c in ipairs({ "profiles", "test", "run", "clean", "configure" }) do
+            assert.is_true(cli.ROUTED_COMMANDS.test)
+            for _, c in ipairs({ "profiles", "run", "clean", "configure" }) do
                 assert.is_nil(cli.ROUTED_COMMANDS[c], c)
             end
+            -- `lw test --target` stays in-process (§19.15): the plain bound.
+            assert.is_true(cli._routed_command({ "build", "dev" }))
+            assert.is_true(cli._routed_command({ "test", "dev", "--junit", "j.xml" }))
+            assert.is_false(cli._routed_command({ "test", "dev", "--target", "app" }))
+            assert.is_false(cli._routed_command({ "profiles" }))
             local seen = {}
             local real = ensure.ensure
             ensure.ensure = function(_, o) seen[#seen + 1] = o.routed; return "off" end
             local ok, err = pcall(function()
-                cli._ensure_daemon(root, cli.ROUTED_COMMANDS.build)
-                cli._ensure_daemon(root, cli.ROUTED_COMMANDS.profiles)
+                cli._ensure_daemon(root, cli._routed_command({ "build" }))
+                cli._ensure_daemon(root, cli._routed_command({ "profiles" }))
+                cli._ensure_daemon(root, cli._routed_command({ "test", "dev", "--target", "app" }))
             end)
             ensure.ensure = real
             assert.is_true(ok, tostring(err))
-            assert.same({ true, false }, seen)
+            assert.same({ true, false, false }, seen)
         end)
     end)
 

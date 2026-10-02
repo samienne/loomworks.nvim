@@ -169,6 +169,12 @@ describe("lw build routed through an in-process daemon (§19.15)", function()
             err_lines[1])
     end)
 
+    it("lw test --target prints its own line even when the runtime is held elsewhere", function()
+        assert.is_nil(cli._delegate("test", root, { "test", "dev", "--target", "app" }, "elsewhere"))
+        assert.same({ "lw: the workspace daemon could not take the test (--target runs test executables in this "
+            .. "process); running without it" }, err_lines)
+    end)
+
     it("in-process mode and an explicit opt-out print nothing", function()
         assert.is_nil(cli._delegate_build(root, { "build", "dev" }, "off"))
         assert.is_nil(cli._delegate_build(root, { "build", "dev" }, nil))

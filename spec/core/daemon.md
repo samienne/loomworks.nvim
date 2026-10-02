@@ -690,8 +690,9 @@ pipe would hand the user's credentials to that host.
 (`daemon/protocol.lua`, `daemon/auth.lua`, `daemon/server.lua`,
 `daemon/client.lua`; protocol version 3: 2 plus the routed `build` request
 and its task stream, §19.15; protocol version 4: 3 plus the observer role,
-`model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16); the rest of
-the broadcasts #88.*
+`model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16; protocol
+version 5: 4 plus the routed `test` request, §19.15); the rest of the
+broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -939,8 +940,9 @@ reference-based. Read-only queries run on the client's projection.
 [--target <name>]… [--force] [--reconfigure] [-v] [-- <args>]`) in
 `runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
 `daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
-`_delegate_build`); observed by the editor (§19.16);
-other operations future.*
+`_delegate`), and for the batch form of `lw test` (`lw test [<profile>]
+[--junit <file>] [-- <args>]`, §16.16; `lw test --target` stays in-process,
+see Routing); observed by the editor (§19.16); other operations future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -985,6 +987,15 @@ parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
   §16.9) and a request in a different environment while another build runs
   in it (see Environment).
 
+`test { args, interactive, env, command }` — the batch form of `lw test`
+(§16.16) — has the same outcomes; `args` carries `profile`, `junit` (the
+`--junit` path, made absolute by the client against its working directory, as
+the in-process host does) and `extra` (the arguments after `--`, for the
+native test runner). It is also `refused` when the profile builds with a
+foreign kit (§18.6, the in-process refusal pointing at `lw test --target`).
+Its task's `meta.kind` is `test`. In this section "build" stands for either
+operation unless a rule names one.
+
 **Same behaviour.** An operation run in the daemon is behaviorally identical to
 the in-process operation it replaces — the same step sequence, locks, gates,
 status lines, cache write-back, failure lines and exit codes — differing only
@@ -1006,6 +1017,18 @@ colour variable is added for it: such variables (`CLICOLOR_FORCE`, …) reach
 every process of the build, including ones whose output a build script
 captures, so they would change what a build does; a user who wants colour sets
 them in the environment of `lw build`, which the step receives.
+
+For a test run it is the sequence of §16.16: the build-directory locks taken
+as for a build and held across the build AND the test runs (a native runner
+may rebuild), the build steps above in their for-test form (a unit whose
+runner rebuilds itself is not built separately; no steps → no `building
+profile:` line), the units' targets parsed, then one `==> [test] <name>` line
+per native runner, every runner run even after one failed, its JUnit file
+materialized at the requested path (a warning line when the runner wrote
+none) and `JUnit: <path>` lines, and finally either `no tests to run for
+profile '<p>'…`, `TESTS OK: <profile> (<n> run[s])`, or the failure `<k> of
+<n> test run(s) failed: <names>` with exit 1. A build step that fails ends the
+test run as it ends a build.
 
 **Environment.** A routed build behaves as if the client process had run it.
 The client sends its **whole environment** with the request; the daemon
@@ -1072,7 +1095,7 @@ retire, root removed, lost lock), or the workspace or the operation's subject
 is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
 that step, releases its locks and ends the task nonzero (`build stopped:
-<reason>`). A client that loses the connection after its operation was
+<reason>`; `test stopped: <reason>` for a test run). A client that loses the connection after its operation was
 accepted reports a failure; it never re-runs the operation another way. A
 connection that owns a running operation is never dropped for silence
 (§19.11); the CLI also pings while it waits. The step's processes are the
@@ -1109,6 +1132,17 @@ workspace daemon could not take the build (<reason>); running without it`.
 While the daemon is opt-in, an accepted build prints one dim line on standard
 error before its output — `lw: building through the workspace daemon (pid N)`
 — which is removed when the default flips; a refusal prints neither.
+
+`lw test` (step 5) is routed by the same rules, an argument `cmd_test` refuses
+taking the place of one `cmd_build` refuses (device options without
+`--target` among them), and its lines name the test: `lw: the workspace daemon
+declined the test (<reason>); running without it`, `lw: the workspace daemon
+could not take the test (<reason>); running without it` and `lw: testing
+through the workspace daemon (pid N)`. Its named-executable form, `lw test
+--target <exe>…` (local or on a device, §16.16, §18), is not carried in this
+step — its device locks, staging and liveness stay with the client process —
+and prints `lw: the workspace daemon could not take the test (--target runs
+test executables in this process); running without it`.
 
 ### 19.16 The editor as a client
 
@@ -1201,8 +1235,12 @@ keeps running in-process.
 
 *Status: master for `lw build` (`tests/daemon_build_cli_spec.lua`: every
 build form both ways — the same output, exit code and persisted cache;
-`tests/daemon_build_service_spec.lua`, `tests/daemon_real_build_spec.lua`);
-the projection half #88.*
+`tests/daemon_build_service_spec.lua`, `tests/daemon_real_build_spec.lua`)
+and the batch `lw test` (`tests/daemon_test_cli_spec.lua`: passing, failing,
+runner arguments, JUnit (also a runner that wrote none), a failed build, an
+unknown or missing profile, both ways — the same output, exit code, JUnit
+files and persisted cache); the projection half
+#88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -1234,6 +1272,7 @@ runtime is deferred until that module is actively developed.
 4. **Editor connects** — observer + keepalive (§19.16). *(Done.)*
 5. **Remaining operations**, one at a time, each with a parity test (§19.17);
    then the loopback transport, so attached runs use the same code; then the
-   CLI and the editor stop loading the workspace themselves.
+   CLI and the editor stop loading the workspace themselves. Routed so far:
+   the batch `lw test`.
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

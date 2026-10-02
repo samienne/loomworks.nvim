@@ -1,5 +1,6 @@
 --- loomworks/daemon/service.lua — the daemon's live workspace and the
---- `build` operation (spec §19.15, §19.19 step 3).
+--- routed operations: `build` and the batch `test` (spec §19.15, §19.19
+--- steps 3 and 5).
 ---
 --- **Live workspace.** The daemon loads its workspace on the first operation
 --- (through the host's loader — the same load as the in-process path, which
@@ -30,6 +31,9 @@
 ---   * "declined" (`reason`) — before any side effect: the daemon does not
 ---     carry this request (interactive profile onboarding; a different
 ---     environment while another build runs). The client runs in-process.
+---
+--- **Request** `{ kind = "test", args = { profile?, junit?, extra? }, … }` —
+--- the same outcomes; also "refused" for a foreign kit's profile (§18.6).
 
 local build_run = require("loomworks.build_run")
 local envscope = require("loomworks.daemon.envscope")
@@ -198,10 +202,28 @@ end
 --- @param conn table
 --- @param msg table
 function Service:on_build(conn, msg)
+    return self:_on_operation("build", conn, msg)
+end
+
+--- Handle a `test` request (the batch `lw test`, spec §19.15) on an
+--- authenticated connection.
+--- @param conn table
+--- @param msg table
+function Service:on_test(conn, msg)
+    return self:_on_operation("test", conn, msg)
+end
+
+--- A routed operation's request: validate it, then accept it in a model
+--- segment.
+--- @param op "build"|"test"
+--- @param conn table
+--- @param msg table
+function Service:_on_operation(op, conn, msg)
     local srv = self.server
     local env, eerr = envscope.validate(msg.env)
-    local ctx = { conn = conn, env = env, args = type(msg.args) == "table" and msg.args or {},
-        interactive = msg.interactive == true, command = type(msg.command) == "string" and msg.command or "lw build" }
+    local ctx = { op = op, conn = conn, env = env, args = type(msg.args) == "table" and msg.args or {},
+        interactive = msg.interactive == true,
+        command = type(msg.command) == "string" and msg.command or ("lw " .. op) }
     function ctx.reply(fields)
         ctx.replied = true
         fields.kind = protocol.KIND.ok
@@ -219,13 +241,14 @@ function Service:on_build(conn, msg)
             if type(v) ~= "string" then return ctx.reply({ outcome = "declined", reason = "malformed request" }) end
         end
     end
-    if a.profile ~= nil and type(a.profile) ~= "string" then
+    if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string") then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     self:with_model(ctx, function() self:_accept(ctx) end)
 end
 
---- The model segment that accepts (or refuses / declines) a build.
+--- The model segment that accepts (or refuses / declines) a build or a test
+--- run.
 function Service:_accept(ctx)
     if ctx.conn.closed then return end
     local ws, refusal, decline = self:live(ctx)
@@ -237,25 +260,36 @@ function Service:_accept(ctx)
         return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
     end
     local a = ctx.args
-    local profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive })
+    local profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
+        usage = "lw " .. ctx.op .. " <profile>" })
     if action == "onboard" then
         return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
     end
     if not profile then
         return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
     end
+    -- A foreign kit's registered tests cannot run on this host (§18.6).
+    local foreign = ctx.op == "test" and build_run.foreign_batch_refusal(profile) or nil
+    if foreign then
+        return ctx.reply({ outcome = "refused", message = foreign, exit_code = 1, notes = ctx.notes })
+    end
     local task = self.tasks:create(ctx.conn)
     ctx.task, ctx.ws, ctx.profile = task, ws, profile
     ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile.key, pid = self.server.pid,
         notes = ctx.notes })
     local runner = require("loomworks.daemon.runner")
+    local extra = (a.extra and #a.extra > 0) and a.extra or nil
+    local args
+    if ctx.op == "test" then
+        args = { extra = extra, junit = a.junit }
+    else
+        args = { extra = extra, targets = (a.targets and #a.targets > 0) and a.targets or nil,
+            force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true }
+    end
     local run = runner.run(self, {
-        task = task, ws = ws, profile = profile, env = ctx.env, command = ctx.command,
-        args = { extra = (a.extra and #a.extra > 0) and a.extra or nil,
-            targets = (a.targets and #a.targets > 0) and a.targets or nil,
-            force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true },
+        op = ctx.op, task = task, ws = ws, profile = profile, env = ctx.env, command = ctx.command, args = args,
     })
-    self.server:log("build %s (task %d) accepted", profile.key, task.id)
+    self.server:log("%s %s (task %d) accepted", ctx.op, profile.key, task.id)
     if run and not run.finished then
         run.ctx = ctx
         self.runs[run] = true
@@ -266,7 +300,7 @@ end
 function Service:on_run_done(run)
     self.runs[run] = nil
     if run.task then
-        self.server:log("build task %d ended%s", run.task.id,
+        self.server:log("%s task %d ended%s", run.op or "build", run.task.id,
             run.cancelled and (": " .. tostring(run.cancel_reason)) or "")
     end
 end
@@ -310,7 +344,9 @@ function Service:on_stopping(reason)
     local build_lock = require("loomworks.build_lock")
     for run in pairs(self.runs) do
         for _, h in ipairs(run.held or {}) do build_lock.release(h) end
-        if run.task then run.task:done(run.cancel_code or 1, "build stopped: the workspace daemon stopped") end
+        if run.task then
+            run.task:done(run.cancel_code or 1, (run.op or "build") .. " stopped: the workspace daemon stopped")
+        end
     end
 end
 

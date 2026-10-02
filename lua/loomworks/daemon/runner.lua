@@ -1,5 +1,6 @@
 --- loomworks/daemon/runner.lua — run a profile build in the daemon (spec
---- §19.15), streaming it on the task stream.
+--- §19.15), streaming it on the task stream — or a batch test run (`lw test`,
+--- §16.16): the same locks and for-test build, then each native test runner.
 ---
 --- It runs the SAME step sequence as the in-process `lw build`
 --- (`cli.run_build_steps` over `loomworks.build_run`):
@@ -171,16 +172,28 @@ end
 
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
+--- @field op "build"|"test" the operation
 --- @field cancelled boolean
+--- @field cancel_reason string|nil
+--- @field cancel_code integer|nil
+--- @field finished boolean|nil
+--- @field held table[] the build-directory lock handles held
+--- @field child table|nil the running step { obj, pid, start }
+--- @field ctx table|nil the service request that started it
+--- @field cancel fun(reason?: string, code?: integer)
 
---- Run a build.
+--- Run a build, or a batch test run (`ctx.op == "test"`, spec §16.16, §19.15):
+--- the same locks and build steps (in their for-test form), then — the locks
+--- still held — each native test runner, every one even after one failed.
 --- @param svc table the build service (with_model, host)
---- @param ctx table the request: { env, args, command, task, ws, profile }
+--- @param ctx table the request: { op?, env, args, command, task, ws, profile }
 --- @return loomworks.daemon.BuildRun
 function M.run(svc, ctx)
     local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
+    local op = ctx.op == "test" and "test" or "build"
+    local testing = op == "test"
     local build_lock = require("loomworks.build_lock")
-    local run = { task = task, cancelled = false, held = {} }
+    local run = { task = task, op = op, cancelled = false, held = {} }
     ctx.run = run
 
     local function release_all()
@@ -194,8 +207,8 @@ function M.run(svc, ctx)
         task:done(code, err)
         if svc.on_run_done then svc:on_run_done(run) end
     end
-    local function stopped()
-        return "build stopped: " .. tostring(run.cancel_reason)
+    local function stopped(why)
+        return op .. " stopped: " .. tostring(why or run.cancel_reason)
     end
 
     --- Stop the run (idempotent; a no-op once finished).
@@ -212,66 +225,28 @@ function M.run(svc, ctx)
         end
     end
 
-    -- The current workspace/profile still the ones this build runs in?
+    -- The current workspace/profile still the ones this run runs in?
     local function current()
         if svc.ws ~= ws then return false, "the workspace was unloaded (refused or reloaded .nvim files)" end
         if profile._removed then return false, "profile '" .. profile.key .. "' was removed" end
         return true
     end
 
-    local steps, i = nil, 0
-    local next_step
-
-    local function step_done(step, code, signal)
-        run.child = nil
-        task:set_flow(nil)
-        -- A cancelled step ends the run as cancelled, whatever its exit (the
-        -- kill itself may be reported as a signal).
-        if run.cancelled then return finish(run.cancel_code, stopped()) end
-        -- (Idempotent: a step a signal ended fails with 128 + signal.)
-        code, signal = build_run.exit_status(code, signal)
-        build_run.after_step(ws, step, code)
-        -- A refused save (§2.7) ends the build as the in-process host's `die`
-        -- does, before anything else runs.
-        if ctx.refused then return finish(1, ctx.refused) end
-        if code ~= 0 then
-            local th = step.kind == "build" and svc.host.unknown_target_hint
-                and svc.host.unknown_target_hint(ws, step, args.targets) or nil
-            return finish(code, build_run.failure_message(step, code, th, signal))
-        end
-        task:progress(i / #steps)
-        next_step()
-    end
-
-    next_step = function()
-        if run.cancelled then return finish(run.cancel_code, stopped()) end
-        local okc, why = current()
-        if not okc then return finish(1, "build stopped: " .. tostring(why)) end
-        i = i + 1
-        if i > #steps then
-            release_all()
-            task:line("out", "BUILD OK: " .. profile.key)
-            return finish(0)
-        end
-        local step = steps[i]
-        task:progress((i - 1) / #steps)
-        local ok_g, g_err = build_run.before_step(ws, step, { force = args.force })
-        if not ok_g then return finish(1, g_err) end
-        for _, line in ipairs(build_run.step_lines(ws, step, { verbose = args.verbose })) do
-            task:line("out", line)
-        end
+    --- Spawn `step` streamed, in the client's environment; `on_exit(code,
+    --- signal)` runs in a model segment once it exited. A step that cannot be
+    --- spawned is reported as the in-process run_spec reports it (127).
+    local function spawn(step, on_exit)
         local spec, herr = build_run.spawn_spec(step, ws.root)
         if not spec then
-            -- As the in-process run_spec: report, then a 127 step failure.
             task:line("err", "lw: " .. tostring(herr) .. "\n")
-            return step_done(step, 127)
+            return on_exit(127)
         end
         local env = envscope.with_overlay(ctx.env, spec.env)
         local child = {}
         child.obj = M.spawn({ cmd = spec.cmd, cwd = spec.cwd, env = env }, {
             output = function(stream, text) task:output(stream, text) end,
             done = function(code, signal)
-                svc:with_model(ctx, function() step_done(step, code, signal) end)
+                svc:with_model(ctx, function() on_exit(code, signal) end)
             end,
         })
         child.pid = child.obj and child.obj.pid or nil
@@ -283,19 +258,121 @@ function M.run(svc, ctx)
         end
     end
 
+    --- A step exited. True when that ended the run (it was cancelled: the
+    --- kill itself may be reported as any exit).
+    local function ended_by_cancel()
+        run.child = nil
+        task:set_flow(nil)
+        if run.cancelled then finish(run.cancel_code, stopped()); return true end
+        return false
+    end
+
+    -- Progress: a test run spends the first half building.
+    local function progress(f) task:progress(testing and f / 2 or f) end
+
+    -- ---- the test phase (op == "test"), after the build steps -------------
+    local tsteps, ti, failed, wrote = nil, 0, {}, {}
+    local next_test
+    local function test_done(step, code, signal)
+        if ended_by_cancel() then return end
+        code = build_run.exit_status(code, signal)
+        if code ~= 0 then failed[#failed + 1] = step.name or "?" end
+        -- JUnit at the caller's path, also for a failed run (CI wants it).
+        local path, warning = build_run.junit_result(step)
+        if path then wrote[#wrote + 1] = path elseif warning then task:line("err", warning) end
+        task:progress(0.5 + ti / #tsteps / 2)
+        next_test()
+    end
+    next_test = function()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        ti = ti + 1
+        if ti > #tsteps then
+            release_all()
+            for _, p in ipairs(wrote) do task:line("out", "JUnit: " .. p) end
+            local ok_line, failure = build_run.test_summary(profile, failed, #tsteps)
+            if failure then return finish(1, failure) end
+            task:line("out", ok_line)
+            return finish(0)
+        end
+        local step = tsteps[ti]
+        task:line("out", string.format("==> [test] %s", step.name or "?"))
+        spawn(step, function(code, signal) test_done(step, code, signal) end)
+    end
+    local function test_phase()
+        -- Parse the units' targets before planning: a test step's run
+        -- environment (sibling DLL dirs on Windows) derives from them.
+        for _, pp in ipairs(profile:projects()) do build_run.ensure_unit_targets(ws, pp._config_unit) end
+        local ts, units = require("loomworks.overseer").plan_profile_test(profile,
+            { extra_args = args.extra, junit = args.junit })
+        if not ts or #ts == 0 then
+            release_all()
+            task:line("out", build_run.no_tests_line(profile, units))
+            return finish(0)
+        end
+        local okj, jerr = build_run.prepare_junit(args.junit)
+        if not okj then return finish(1, jerr) end
+        tsteps = ts
+        next_test()
+    end
+
+    -- ---- the build steps ---------------------------------------------------
+    local steps, i = nil, 0
+    local next_step
+
+    local function step_done(step, code, signal)
+        if ended_by_cancel() then return end
+        -- (Idempotent: a step a signal ended fails with 128 + signal.)
+        code, signal = build_run.exit_status(code, signal)
+        build_run.after_step(ws, step, code)
+        -- A refused save (§2.7) ends the build as the in-process host's `die`
+        -- does, before anything else runs.
+        if ctx.refused then return finish(1, ctx.refused) end
+        if code ~= 0 then
+            local th = step.kind == "build" and svc.host.unknown_target_hint
+                and svc.host.unknown_target_hint(ws, step, args.targets) or nil
+            return finish(code, build_run.failure_message(step, code, th, signal))
+        end
+        progress(i / #steps)
+        next_step()
+    end
+
+    next_step = function()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        i = i + 1
+        if i > #steps then
+            if testing then return test_phase() end
+            release_all()
+            task:line("out", "BUILD OK: " .. profile.key)
+            return finish(0)
+        end
+        local step = steps[i]
+        progress((i - 1) / #steps)
+        local ok_g, g_err = build_run.before_step(ws, step, { force = args.force })
+        if not ok_g then return finish(1, g_err) end
+        for _, line in ipairs(build_run.step_lines(ws, step, { verbose = args.verbose })) do
+            task:line("out", line)
+        end
+        spawn(step, function(code, signal) step_done(step, code, signal) end)
+    end
+
     -- The profile and its units as semantic keys: an observer resolves them
     -- to its own domain objects (spec §19.15, §19.16).
     local units = {}
     for _, pp in ipairs(profile:projects()) do
         units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
     end
-    task:start({ name = profile.key, kind = "build", profile = profile.key, units = units })
+    task:start({ name = profile.key, kind = op, profile = profile.key, units = units })
     -- Locks first, exactly like the in-process with_build_dir_locks: every
-    -- build directory, canonical order, fail-fast.
+    -- build directory, canonical order, fail-fast. A test run holds them
+    -- across the build AND the test runs (a native runner may rebuild).
     local lock_break = require("loomworks.lock_break")
     for _, bd in ipairs(build_run.lock_order(build_run.profile_build_dirs(profile))) do
         local shown = ws._display_build_dir and ws:_display_build_dir(bd) or bd
-        local lctx = { what = shown, command = ctx.command or "lw build", unlock = shown }
+        local lctx = { what = shown, command = ctx.command or ("lw " .. op), unlock = shown }
         local h, msg = lock_break.acquire(function()
             local hh, _, info = build_lock.acquire(bd, "build", lctx)
             return hh, info
@@ -309,13 +386,22 @@ function M.run(svc, ctx)
     end
 
     local plan_err
-    steps, plan_err = build_run.plan(profile, {
-        extra_args = args.extra,
-        build_targets = args.targets,
-        reconfigure = args.reconfigure,
-    })
+    if testing then
+        -- The for-test build: a unit whose runner rebuilds itself is not
+        -- built separately; the arguments after `--` are the test runner's.
+        steps, plan_err = build_run.plan(profile, { for_test = true })
+    else
+        steps, plan_err = build_run.plan(profile, {
+            extra_args = args.extra,
+            build_targets = args.targets,
+            reconfigure = args.reconfigure,
+        })
+    end
     if not steps then finish(1, plan_err); return run end
-    if #steps == 0 then finish(1, build_run.nothing_to_build_message(profile)); return run end
+    if #steps == 0 then
+        if testing then test_phase(); return run end
+        finish(1, build_run.nothing_to_build_message(profile)); return run
+    end
     task:line("out", "building profile: " .. profile.key)
     -- The same trust notice as the in-process build (spec §17.10, §19.15).
     local tn = build_run.trust_notice(ws, profile)

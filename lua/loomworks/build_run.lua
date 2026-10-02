@@ -700,4 +700,92 @@ function M.failure_message(step, code, extra_hint, signal)
         .. (hint and ("\nlw: " .. hint) or "")
 end
 
+-- ---------------------------------------------------------------------------
+-- Headless test runs (§16.16) — the batch `lw test` around the build steps,
+-- shared by the in-process host (cli.lua `cmd_test`) and the workspace daemon
+-- (daemon/runner.lua, §19.15): every line and refusal is returned as the text
+-- the CLI prints.
+-- ---------------------------------------------------------------------------
+
+local function is_win() return package.config:sub(1, 1) == "\\" end
+
+--- A path for comparison: forward slashes, no trailing slash, case-folded on
+--- Windows.
+local function norm_cmp(p)
+    p = tostring(p):gsub("\\", "/"):gsub("/+$", "")
+    if is_win() then p = p:lower() end
+    return p
+end
+
+--- The refusal of a batch test run for a profile that builds with a foreign
+--- (cross) kit: its registered tests cannot run on this host (spec §15
+--- invariant 19, §18.6). nil when every unit builds for the host.
+--- @param profile table
+--- @return string|nil
+function M.foreign_batch_refusal(profile)
+    for _, pp in ipairs(profile:projects()) do
+        local token, tool = require("loomworks.remote.foreign").unit_platform(pp._config_unit)
+        if token then
+            return string.format("profile '%s' builds with kit %s for %s; its registered tests cannot run "
+                .. "on this host.\n  run test executables on a device: lw test %s --target <exe> [-- <args>]",
+                profile.key, tostring(tool and (tool.key or tool.label) or "?"), token, profile.key)
+        end
+    end
+    return nil
+end
+
+--- The line of a test run whose profile has no native test runner.
+--- @param profile table
+--- @param units integer|nil the number of units planned
+--- @return string
+function M.no_tests_line(profile, units)
+    return "no tests to run for profile '" .. profile.key .. "'" ..
+        ((units and units > 0) and " — its modules expose no test runner" or "")
+end
+
+--- Create the directory of a requested JUnit file up front (ctest's
+--- --output-junit and the copy of a runner's own file both need it).
+--- @param junit string|nil absolute path
+--- @return boolean ok, string|nil err
+function M.prepare_junit(junit)
+    local dir = junit and junit:match("^(.*)/[^/]+$")
+    if not dir then return true end
+    local ok, err = require("loomworks.io").mkdir_p(dir)
+    if not ok then return false, "cannot create " .. dir .. ": " .. tostring(err) end
+    return true
+end
+
+--- Materialize a test step's JUnit file at the caller's path, after the step
+--- ran (also when it failed — CI wants the report): copied from the runner's
+--- own location when it wrote elsewhere (meson), confirmed when it wrote
+--- there directly (ctest). Returns the written path, or a warning line (with
+--- its newline) when the runner wrote none; nothing when none was requested.
+--- @param step table a test step (overseer.plan_profile_test)
+--- @return string|nil path, string|nil warning
+function M.junit_result(step)
+    if not (step.junit_dest and step.junit_out) then return nil end
+    local uv = vim.uv or vim.loop
+    local warning = "lw: warning: no JUnit output for " .. (step.name or "?") .. "\n"
+    if norm_cmp(step.junit_out) ~= norm_cmp(step.junit_dest) then
+        if not uv.fs_stat(step.junit_out) then return nil, warning end
+        uv.fs_copyfile(step.junit_out, step.junit_dest)
+        return step.junit_dest
+    end
+    if uv.fs_stat(step.junit_dest) then return step.junit_dest end
+    return nil, warning
+end
+
+--- The outcome of a test run: the success line, or the failure message
+--- (`lw: <message>`, exit 1).
+--- @param profile table
+--- @param failed string[] the names of the runners that failed
+--- @param n integer the number of runners run
+--- @return string|nil ok_line, string|nil failure
+function M.test_summary(profile, failed, n)
+    if #failed > 0 then
+        return nil, string.format("%d of %d test run(s) failed: %s", #failed, n, table.concat(failed, ", "))
+    end
+    return string.format("TESTS OK: %s (%d run%s)", profile.key, n, n == 1 and "" or "s")
+end
+
 return M
