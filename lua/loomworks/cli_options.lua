@@ -103,6 +103,8 @@ M.COMMANDS = {
   tools = spec({ flags = { "--cached" } }),
   trust = spec({ flags = { "-y", "--yes", "--discard", "--break-locks" }, eq = BREAK_EQ }),
   nuke = spec({ flags = { "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
+  cleanup = spec({ flags = { "--dry-run", "--yes", "-y", "--all" }, valued = { "--pinned-older-than" },
+    eq = { "--pinned-older-than=" } }),
   migrate = spec({ flags = { "--check", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
   pull = spec({ flags = { "--dry-run", "-n", "--break-locks" }, eq = BREAK_EQ }),
   ["release-notes"] = spec({ flags = { "--all", "--json" }, valued = { "--since", "-n" },

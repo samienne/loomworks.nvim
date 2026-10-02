@@ -137,6 +137,13 @@ for v in $hosts; do
     *) bad "v$v: release-notes printed no notes: $LAST_OUT" ;; esac
   check "$lw" "v$v" "0" tools
   check "$lw" "v$v" "0" status
+  # lw cleanup (spec 16.40) is bundle-side: every host runs it.
+  : > "$T/data/.dl-0.0.1.zip"; touch -t 200101010000 "$T/data/.dl-0.0.1.zip"
+  check "$lw" "v$v" "0" cleanup --dry-run
+  case "$LAST_OUT" in *".dl-0.0.1.zip"*) ok "v$v: cleanup --dry-run lists a leftover" ;;
+    *) bad "v$v: cleanup --dry-run: $LAST_OUT" ;; esac
+  check "$lw" "v$v" "0" cleanup --yes
+  [ ! -e "$T/data/.dl-0.0.1.zip" ] && ok "v$v: cleanup --yes removed it" || bad "v$v: the leftover remains"
   # health exits non-zero when it reports actionable items; either is fine here.
   check "$lw" "v$v" "0 1" health
   # A host from before self-update (< v0.1.29) cannot be replaced by it: health

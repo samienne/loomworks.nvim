@@ -3724,5 +3724,99 @@ do
   paths.rm_rf(dir)
 end
 
+print("loomworks.housekeeping - leftovers outside the workspace under luvi (spec §16.40)")
+do
+  local vim = require("loomworks.shim")
+  local hk = require("loomworks.housekeeping")
+  local win = package.config:sub(1, 1) == "\\"
+  local now = os.time()
+  local old = now - 40 * 86400
+  local base = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-hk-" .. tostring(uv.hrtime())
+  paths.mkdirp(base)
+  base = (uv.fs_realpath(base) or base):gsub("\\", "/")
+  local data, tmp, outside = base .. "/data", base .. "/tmp", base .. "/outside"
+  for _, d in ipairs({ data, tmp, outside, data .. "/pinned" }) do paths.mkdirp(d) end
+  local function put(p, s) local f = assert(io.open(p, "wb")); f:write(s or "x"); f:close(); return p end
+  put(outside .. "/precious.txt", "precious")
+  local o = { data = data, tmp_dirs = { tmp }, run_dirs = {}, sockets = false, exe = false,
+    bundle = false, pin_version = false, now = now }
+  -- A leftover, aged; and a near miss.
+  local dl = put(data .. "/.dl-0.1.40.zip"); uv.fs_utime(dl, old, old)
+  local near = put(data .. "/.dl-0.1.40.zip.keep"); uv.fs_utime(near, old, old)
+  -- A file symlink and a directory link at leftover names (POSIX; Windows: junction).
+  local flink = data .. "/.dl-0.1.41.zip"
+  local fl = uv.fs_symlink(outside .. "/precious.txt", flink)
+  local dlink = data .. "/.stage-0.1.41"
+  local dli = uv.fs_symlink(outside, dlink, win and { junction = true } or nil)
+  local items = hk.collect(o)
+  local got = {}
+  for _, it in ipairs(items) do got[it.path] = true end
+  ok(got[dl] and not got[near], "an aged leftover is found, a near-miss name is not")
+  ok(not got[flink] and not got[dlink], "links at leftover names are never candidates  (file link: "
+    .. tostring(fl) .. ", dir link: " .. tostring(dli) .. ")")
+  for _, it in ipairs(items) do hk.remove(it, now) end
+  ok(uv.fs_lstat(dl) == nil and uv.fs_lstat(near) ~= nil, "the leftover is removed, the near miss kept")
+  eq(readfile(outside .. "/precious.txt"), "precious", "a link target is never touched")
+  -- The startup pass: once, then not again within the day.
+  local dl2 = put(data .. "/.dl-0.1.42.zip"); uv.fs_utime(dl2, old, old)
+  local r1 = hk.startup(nil, o)
+  ok(r1 == 1 and uv.fs_lstat(dl2) == nil, "startup removes it  (" .. tostring(r1) .. ")")
+  local dl3 = put(data .. "/.dl-0.1.43.zip"); uv.fs_utime(dl3, old, old)
+  ok(hk.startup(nil, o) == nil and uv.fs_lstat(dl3) ~= nil, "startup runs at most once a day")
+  if not win then
+    -- Sockets (spec §16.40 rule 5): a stale one (nobody listens) goes, a live
+    -- one stays, both owned by us in a 0700 directory.
+    local rd = base .. "/run"
+    assert(uv.fs_mkdir(rd, tonumber("700", 8)))
+    local stale = rd .. "/0123456789abcdef.sock"
+    local live = rd .. "/fedcba9876543210.sock"
+    -- Bind elsewhere and rename into place: libuv unlinks the name it bound
+    -- on close, so the renamed file survives with nobody listening.
+    local s1 = uv.new_pipe(false)
+    assert(s1:bind(rd .. "/tmp1.sock"))
+    assert(uv.fs_rename(rd .. "/tmp1.sock", stale))
+    s1:close()
+    local s2 = uv.new_pipe(false)
+    assert(s2:bind(live))
+    s2:listen(4, function() end)
+    vim.wait(50)
+    for _, p in ipairs({ stale, live }) do uv.fs_utime(p, now - 7200, now - 7200) end
+    local so = { data = base .. "/nodata", tmp_dirs = {}, run_dirs = { rd }, sockets = true, exe = false, now = now }
+    local sit = hk.collect(so)
+    local sg = {}
+    for _, it in ipairs(sit) do sg[it.path] = it end
+    ok(sg[stale] ~= nil and sg[live] == nil, "a socket refusing connections is stale; a listening one is not")
+    for _, it in ipairs(sit) do hk.remove(it, now) end
+    ok(uv.fs_lstat(stale) == nil and uv.fs_lstat(live) ~= nil, "the stale socket is removed, the live one kept")
+    -- A daemon rebinding the name between test and removal is put back.
+    local s3 = uv.new_pipe(false)
+    assert(s3:bind(rd .. "/tmp3.sock")); assert(uv.fs_rename(rd .. "/tmp3.sock", stale)); s3:close()
+    uv.fs_utime(stale, now - 7200, now - 7200)
+    local again = hk.collect(so)
+    local item
+    for _, it in ipairs(again) do if it.path == stale then item = it end end
+    ok(item ~= nil, "the second stale socket is found")
+    if item then
+      uv.fs_unlink(stale)
+      local s4 = uv.new_pipe(false)
+      assert(s4:bind(stale)); s4:listen(4, function() end)
+      uv.fs_utime(stale, now - 7200, now - 7200)
+      local rok = hk.remove(item, now)
+      ok(not rok and uv.fs_lstat(stale) ~= nil and uv.fs_lstat(stale).type == "socket",
+        "a socket rebound meanwhile is put back")
+      s4:close()
+    end
+    -- A run directory that is not 0700 is never cleaned.
+    assert(uv.fs_chmod(rd, tonumber("755", 8)))
+    local s5 = uv.new_pipe(false)
+    assert(s5:bind(rd .. "/tmp5.sock")); assert(uv.fs_rename(rd .. "/tmp5.sock", stale)); s5:close()
+    uv.fs_utime(stale, now - 7200, now - 7200)
+    eq(#hk.collect(so), 0, "a run directory that is not 0700 is skipped")
+    s2:close()
+    vim.wait(20)
+  end
+  paths.rm_rf(base)
+end
+
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

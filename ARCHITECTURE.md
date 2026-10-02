@@ -1662,6 +1662,12 @@ expose. The verifier lives in `lua/boot/verify.lua`; see below.
   modules/<name>/lua/**      acquired modules (spec §16.20); .module.json record
   cache/tools.json           machine-level tool cache (Windows; elsewhere it is
                              $XDG_CACHE_HOME/loomworks/tools.json, default ~/.cache)
+  pinned/<sha256>/lua-<ver>/ pinned bundles (spec §16.22); mtime = last use
+  pinned/lw-<ver>-<asset>    pinned host binaries (spec §16.23); mtime = last use
+  daemon/                    the daemon's working directory (empty)
+  device-locks/              per-device locks + leftover records (spec §18.7)
+  trust.key                  machine key (spec §17.2)
+  .housekeeping              stamp of the last startup housekeeping pass
 <config>/loomworks/config.json   dev source + default_source (spec §16.11)
 ```
 
@@ -1669,6 +1675,27 @@ Spec §16.40 is the complete list of what lw keeps outside a workspace. A
 workspace operation's temporary files (the gtest results of `lw test
 <target>`, the `describe -e` buffer) go to `<root>/.nvim/tmp/` through
 `housekeeping.tmp_path` (system temp only when that cannot be created).
+
+`housekeeping.lua` also owns leftover removal outside the workspace.
+`collect(opts)` scans only fixed directories one level deep (`<data>`,
+`pinned`, `pinned/<sha256>` for `--all`, `modules`, default `device-locks`,
+the legacy `daemon/logs`, the temp dirs, the `lw` host's directory for
+`.old`/`.new`, the POSIX socket dirs, `<root>/.nvim/tmp`); each must be a real
+directory whose realpath is the expected one (`fixed`), and an entry is a
+candidate only on an exact name match, the right lstat type and its age
+(`M.AGE`). Items carry a `remove` override where removal is not a plain
+`io.rm_rf`: device locks (dead holder, no program record; `lock_record.reclaim`
+by nonce), sockets (connect refused -> rename aside, inode check, put back),
+pinned bundle dirs (rename to `.trash-<nonce>`, then rm_rf, then rmdir the
+`<sha256>` dir). `remove(item)` re-checks type and age first and treats a path
+already gone as removed (concurrent passes). `startup(root)` is called by
+`cli.main()` for every command that resolves a root (after `daemon` and
+`cleanup` dispatch), inside a pcall: it claims `<data>/.housekeeping` (mtime;
+created O_EXCL) at most once per `INTERVAL`, removes the default set, and logs
+one line to the runtime log. `cmd(root, args, host)` is `lw cleanup`. It is
+bundle-side so every host runs it (only `boot.pin` is used, through pcall);
+the one host-side piece is `main.lua` setting the pinned bundle's and binary's
+mtime on each pinned run.
 
 Release bundles are versioned directories; activation writes a *new*
 `lua-<ver>/` and never overwrites a running one (spec §16.13). "Highest

@@ -41,6 +41,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw cleanup` lists what lw left behind outside the workspace after an
+  interrupted run (partial downloads and staging directories, temporary
+  files, a dead holder's device lock, a stale daemon socket, files earlier
+  versions kept outside the workspace), with sizes; `lw cleanup --yes`
+  removes them, `--all` also prunes pinned releases no repository has used
+  for 30 days (`--pinned-older-than 90d`). lw also removes such leftovers by
+  itself, silently, once a day at the start of a command. (#PRB)
 - `lw daemon list` (experimental daemon): every workspace daemon of yours on
   this machine with its root, pid, uptime, state, clients and version, found
   by scanning processes (nothing is written outside your workspaces); `--json`
