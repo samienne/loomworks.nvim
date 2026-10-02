@@ -411,4 +411,30 @@ describe("save_guard primitives", function()
     sg.unlock(h3)
     assert.is_nil((vim.uv or vim.loop).fs_stat(path .. ".lock"))
   end)
+
+  -- A reclaim can use up the whole wait (a loaded Windows runner: every file
+  -- operation of the read / rename / unlink is scanned). The lock it freed is
+  -- then still taken, never given up on (CI run 37007580436: line above).
+  it("the write lock is taken after a reclaim that outlasted the wait", function()
+    local u = vim.uv or vim.loop
+    local lock_record = require("loomworks.lock_record")
+    local dir = vim.fn.tempname():gsub("\\", "/")
+    vim.fn.mkdir(dir, "p")
+    local path = dir .. "/f.json"
+    local fd = assert(io.open(path .. ".lock", "w")); fd:write("{}"); fd:close()
+    local old = os.time() - 3600
+    assert(u.fs_utime(path .. ".lock", old, old))
+    local orig = lock_record.reclaim
+    lock_record.reclaim = function(...)
+      u.sleep(120) -- longer than the 50 ms wait
+      return orig(...)
+    end
+    local ok, h = pcall(sg.lock, path, { wait_ms = 50 })
+    lock_record.reclaim = orig
+    assert(ok, h)
+    assert.is_not_nil(h)
+    assert.is_not_nil(u.fs_stat(path .. ".lock"))
+    sg.unlock(h)
+    assert.is_nil(u.fs_stat(path .. ".lock"))
+  end)
 end)

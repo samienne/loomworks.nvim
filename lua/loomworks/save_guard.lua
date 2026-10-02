@@ -201,15 +201,23 @@ function M.lock(path, opts)
         -- out: save without the lock.
         if code ~= "EEXIST" then return nil end
         local info = lock_record.read(lock_path, M.STALE_SECONDS)
+        local reclaimed = false
         if info then
             info.state = lock_record.classify(info)
             -- Atomic, nonce-checked reclaim: only the process whose rename
             -- wins removes the record it judged.
-            if lock_record.RECLAIMABLE[info.state] then lock_record.reclaim(lock_path, info) end
+            if lock_record.RECLAIMABLE[info.state] then
+                reclaimed = lock_record.reclaim(lock_path, info) == true
+            end
         end
+        -- A lock this attempt just freed is taken at once, even when the
+        -- reclaim used up the wait (slow file operations on a loaded
+        -- machine): giving up would save without the lock it freed.
         -- (no info: the holder just released it — retry at once)
-        if u.hrtime() >= deadline then return nil end
-        if info then u.sleep(5) end
+        if not reclaimed then
+            if u.hrtime() >= deadline then return nil end
+            if info then u.sleep(5) end
+        end
     end
 end
 
