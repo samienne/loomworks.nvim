@@ -25,6 +25,28 @@ function M.read_file(path)
     return data, nil
 end
 
+--- Append `data` to `path` (created when missing) as one write that lands
+--- whole at the end of the file even while other processes append to it at
+--- the same moment: opened with libuv's O_APPEND, which on Windows is
+--- FILE_APPEND_DATA access — the system puts every write at the end. The C
+--- runtime's `io.open(path, "a")` does not: on Windows it seeks to the end,
+--- then writes, and two writers that seek together write at the same offset —
+--- one line overwrites the other (a log line lost; seen on fresh logs, where
+--- a client and the daemon it launched write their first lines at once).
+--- @param path string
+--- @param data string
+--- @param mode? integer creation mode (default 0644)
+--- @return integer|nil size the file's size after the write, string|nil err
+function M.append(path, data, mode)
+    local fd, err = uv.fs_open(path, "a", mode or 420)
+    if not fd then return nil, err end
+    local _, werr = uv.fs_write(fd, data, -1)
+    local st = uv.fs_fstat(fd)
+    uv.fs_close(fd)
+    if werr then return nil, werr end
+    return st and st.size or 0
+end
+
 --- The exclusive create (O_CREAT|O_EXCL; tests inject failures here).
 --- @return integer|nil fd, string|nil err, string|nil code
 function M._open_exclusive(path, mode)

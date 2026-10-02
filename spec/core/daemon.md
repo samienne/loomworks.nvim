@@ -498,9 +498,16 @@ may use it. A malformed handle is reported as unreadable, never as a live
 daemon. A daemon that finds its handle removed while it runs rewrites it.
 A rewrite stages the new file and renames it over the handle; on Windows that
 rename fails while another process has the handle open (a client reading it,
-an indexer, a scanner), so it is retried for a bounded fraction of a second.
-A rewrite that still fails leaves the previous handle in place, never a
-partial one, and removes its staged file.
+an indexer, a scanner — opening it with delete sharing does not help: only a
+rename's source may be open), so each rewrite retries it with backoff for a
+bounded time (the daemon's own loop for about a quarter of a second). A
+rewrite that still fails leaves the previous handle in place, never a partial
+one, and removes its staged file; the daemon then rewrites again on a backoff
+(up to about a second apart) and on every heartbeat until a rewrite succeeds,
+so clients never keep reading an outdated `clients`/`busy`, and notes it in the
+runtime log only once it has kept failing for a few seconds. The heartbeat
+still refreshes the published file's time meanwhile. A record identical to the
+one last written is not rewritten.
 
 **Runtime row.** `lw status` shows one `Runtime` line computed **only** from the
 handle and the runtime lock — it never launches or connects:
@@ -745,7 +752,10 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
   on POSIX they are `/dev/null`); the daemon writes its own **runtime log**
   inside the workspace, `<root>/.nvim/loomworks.daemon.log`, capped at a few
   megabytes with one rotated predecessor (`.log.1`). Each line is appended
-  with the file opened and closed again, so no process keeps it open. A write
+  with the file opened and closed again, so no process keeps it open, and as
+  one atomic append (the system places the write at the end of the file:
+  O_APPEND, on Windows append-only access), so lines that a client and the
+  daemon it just launched write at the same moment are both kept. A write
   creates `.nvim/` only when the workspace root exists, and never creates the
   root: a daemon whose workspace was removed does not bring it back. A file at
   the log's name that is not lw's runtime log is never written, rotated or
@@ -796,7 +806,10 @@ same-host daemon, asks it for `status` (clients, running operations, versions);
 it never launches. `lw daemon stop` sends `stop` (the daemon exits as above)
 and waits (about 10 s) for the runtime lock to be released; it never kills —
 a daemon that does not stop in time is reported as not responding, with
-`lw daemon stop --force` as the remedy. `lw daemon stop --force` and
+`lw daemon stop --force` as the remedy. A daemon still starting (it holds the
+runtime lock, its handle is not published yet) is first given the same
+window to publish its handle — a slow start on a loaded machine is not "not
+responding". `lw daemon stop --force` and
 `lw daemon kill` are the forced recovery of §19.5. Stopping when no daemon runs
 succeeds with nothing to do. A daemon on another host is never stopped or
 killed from here (the command names the host); a stale one is reclaimed per

@@ -291,8 +291,17 @@ function M.stop(root, host, opts)
     if opts.force then return M.force(root, host, st, true) end
     if st.kind == "hung" then host.die(not_responding(lk), 1) end
     if st.kind == "starting" then
-        vim.wait(3000, function() st = inspect.state(root); return st.kind ~= "starting" end, 50)
-        if st.kind ~= "live" then host.die(not_responding(lk), 1) end
+        -- A daemon that holds R (its heartbeat fresh) but has not published
+        -- its handle yet: on a loaded machine its start, or a handle rewrite
+        -- a reader keeps blocking (§19.6), can take seconds. Wait the stop
+        -- window for it (a fixed 3 s used to call such a daemon "not
+        -- responding"); one that exited meanwhile is handled as what is left.
+        vim.wait(M.STOP_WAIT_MS, function() st = inspect.state(root); return st.kind ~= "starting" end, 50)
+        if st.kind == "starting" or st.kind == "hung" then host.die(not_responding(lk), 1) end
+        if st.kind ~= "live" then
+            if opts._again then host.die(not_responding(lk), 1) end
+            return M.stop(root, host, vim.tbl_extend("force", opts, { _again = true }))
+        end
     end
     -- Ask until R is released, within STOP_WAIT_MS. The request itself may use
     -- what is left of that window: a healthy daemon slowed down by a loaded

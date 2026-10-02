@@ -120,24 +120,67 @@ function Server:_handle_record()
     }
 end
 
---- Rewrite the handle soon (client count changed): coalesced on a 0 ms
---- timer so a slow filesystem (a virus scanner holding the staged file)
---- never delays a handshake or a reply.
-function Server:_handle_changed()
+--- The handle rewrite (§19.6): how long one rewrite may retry a rename that
+--- a reader blocks while the loop waits (ms), the backoff of the later
+--- retries (ms; the last value repeats until it succeeds), and how long it
+--- may keep failing before the runtime log says so (ms).
+M.HANDLE_SYNC_MS = 250
+M.HANDLE_RETRY_MS = { 50, 100, 250, 500, 1000 }
+M.HANDLE_LOG_AFTER_MS = 5000
+
+--- Rewrite the handle in `delay_ms` (default 0): coalesced on one timer so a
+--- slow filesystem (a virus scanner holding the staged file) never delays a
+--- handshake or a reply; the rewrite publishes the record as it is then.
+--- @param delay_ms? integer
+function Server:_handle_changed(delay_ms)
     if self.stopped or self._handle_pending then return end
     self._handle_pending = true
     local t = uv.new_timer()
-    t:start(0, 0, function()
+    t:start(delay_ms or 0, 0, function()
         pcall(function() t:close() end)
         self._handle_pending = false
-        self:_write_handle()
+        self:_guard(self._write_handle)
     end)
 end
 
+--- Publish the handle record (§19.6). Skipped when this daemon last wrote
+--- exactly this record and the file is still there (the heartbeat refreshes
+--- its time): every rewrite is a rename a reader can block. A rename a
+--- reader keeps blocking (Windows) is retried for HANDLE_SYNC_MS, then again
+--- on a backoff (HANDLE_RETRY_MS) and on every heartbeat until it succeeds:
+--- clients never keep reading an outdated record because one rewrite lost
+--- the race. The runtime log says so once when it has failed for
+--- HANDLE_LOG_AFTER_MS (at once for an error a retry cannot cure).
+--- @return boolean|nil written (nil while it is failing)
 function Server:_write_handle()
-    if self.stopped or not self.address then return end
-    local ok, err = handle.write(self.root, self:_handle_record())
-    if not ok then self:log("could not write the handle: %s", tostring(err)) end
+    if self.stopped or not self.address then return nil end
+    local rec = self:_handle_record()
+    local data = handle.encode(rec)
+    if data == self._handle_data and not self._handle_dirty
+            and uv.fs_stat(require("loomworks.daemon.paths").handle_path(self.root)) then
+        return true
+    end
+    local ok, err, code = handle.write(self.root, rec, { budget_ms = M.HANDLE_SYNC_MS })
+    uv.update_time()
+    if ok then
+        if self._handle_logged then
+            self:log("wrote the handle after %d ms of failures", uv.now() - self._handle_failing_since)
+        end
+        self._handle_data, self._handle_dirty = data, false
+        self._handle_failing_since, self._handle_logged, self._handle_retries = nil, nil, 0
+        return true
+    end
+    self._handle_dirty = true
+    self._handle_failing_since = self._handle_failing_since or uv.now()
+    self._handle_retries = (self._handle_retries or 0) + 1
+    local transient = handle.transient(code)
+    if not self._handle_logged
+            and (not transient or uv.now() - self._handle_failing_since >= M.HANDLE_LOG_AFTER_MS) then
+        self._handle_logged = true
+        self:log("could not write the handle: %s (retrying)", tostring(err))
+    end
+    self:_handle_changed(M.HANDLE_RETRY_MS[math.min(self._handle_retries, #M.HANDLE_RETRY_MS)])
+    return nil
 end
 
 --- Start serving. Returns true, or nil + message + exit status (EXIT_HELD
@@ -220,7 +263,10 @@ function Server:_tick()
     if not rlock.still_ours(self.R) then
         return self:_lost_lock()
     end
-    if not handle.touch(self.root) then self:_write_handle() end
+    -- The heartbeat keeps the published handle fresh even while a rewrite is
+    -- still failing; a failing rewrite (or a removed handle) is retried here.
+    local touched = handle.touch(self.root)
+    if self._handle_dirty or not touched then self:_write_handle() end
     self:lifetime()
 end
 

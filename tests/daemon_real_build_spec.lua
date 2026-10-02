@@ -96,7 +96,7 @@ describe("a real cmake build through the daemon", function()
         assert.is_nil(r.stdout:find("[configure]", 1, true), r.stdout)
         assert.is_nil(r.stderr:find("building through the workspace daemon", 1, true))
 
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 end)
 

@@ -159,11 +159,11 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
         assert.equals(da.start_time, ia.start_time)
         assert.is_true(doc.scan_ms < 5000, "scan took " .. doc.scan_ms .. " ms")
         -- Stop alpha: it is gone from the list.
-        assert.equals(0, H.lw({ "daemon", "stop" }, { env = env, cwd = a }).code)
+        assert.equals(0, H.stop_daemon(a, env).code)
         doc = list_json(dir, env)
         assert.is_nil(by_pid(doc, ia.pid))
         assert.is_truthy(by_pid(doc, ib.pid))
-        assert.equals(0, H.lw({ "daemon", "stop" }, { env = env, cwd = b }).code)
+        assert.equals(0, H.stop_daemon(b, env).code)
         assert.equals(0, #list_json(dir, env).daemons)
     end)
 

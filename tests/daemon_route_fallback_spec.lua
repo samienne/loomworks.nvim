@@ -222,35 +222,115 @@ while vim.uv.now() - t0 < %d do handle.read(%q); vim.uv.sleep(1); vim.uv.update_
         end
     end)
 
-    it("a rename that keeps failing removes the staged file and keeps the previous handle", function()
+    --- Make `uv.fs_rename` fail with `code` for the first `ms` milliseconds
+    --- (a reader holding the handle open), then rename for real. Returns the
+    --- restore function and a counter.
+    local function blocked_rename(ms, code)
+        local orig, t0, stat = uv.fs_rename, uv.hrtime(), { calls = 0 }
+        uv.fs_rename = function(a, b)
+            stat.calls = stat.calls + 1
+            if (uv.hrtime() - t0) / 1e6 < ms then return nil, code .. ": operation not permitted", code end
+            return orig(a, b)
+        end
+        return function() uv.fs_rename = orig end, stat
+    end
+
+    it("a rename a reader blocks for longer than a fraction of a second still succeeds", function()
+        -- A loaded machine: readers kept the rename failing for 0.6 s (the
+        -- retry used to give up after about 0.2 s and log EPERM).
         local root = H.workspace()
         assert.is_true(handle.write(root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 1 }))
-        local orig, calls = uv.fs_rename, 0
-        local ok, err
-        local okp, perr = pcall(function()
-            uv.fs_rename = function() calls = calls + 1; return nil, "EPERM: operation not permitted", "EPERM" end
-            ok, err = handle.write(root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 2 })
-        end)
-        uv.fs_rename = orig
-        assert.is_true(okp, perr)
+        local restore, stat = blocked_rename(600, "EPERM")
+        local okp, ok, err = pcall(handle.write, root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 2 })
+        restore()
+        assert.is_true(okp, tostring(ok))
+        assert.is_true(ok, tostring(err))
+        assert.truthy(stat.calls > 1)
+        assert.equals(2, handle.read(root).n)
+        for name in vim.fs.dir(root .. "/.nvim") do
+            assert.is_nil(name:find(".tmp-", 1, true), name)
+        end
+    end)
+
+    it("a rename that keeps failing stops within its budget, removes the staged file, keeps the handle", function()
+        local root = H.workspace()
+        assert.is_true(handle.write(root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 1 }))
+        local restore, stat = blocked_rename(math.huge, "EPERM")
+        local t0 = uv.hrtime()
+        local okp, ok, err, code = pcall(handle.write, root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 2 },
+            { budget_ms = 150 })
+        local ms = (uv.hrtime() - t0) / 1e6
+        restore()
+        assert.is_true(okp, tostring(ok))
         assert.is_nil(ok)
         assert.truthy(tostring(err):find("EPERM", 1, true))
-        assert.equals(handle.RENAME_ATTEMPTS, calls)
+        assert.equals("EPERM", code)
+        assert.truthy(stat.calls > 1, stat.calls)
+        -- Bounded: never past the budget (plus one rename and a loaded scheduler).
+        assert.truthy(ms < 150 + 1000, ms)
         assert.equals(1, handle.read(root).n)
         for name in vim.fs.dir(root .. "/.nvim") do
             assert.is_nil(name:find(".tmp-", 1, true), name)
         end
         -- Any other failure is not retried.
-        calls = 0
-        okp, perr = pcall(function()
-            uv.fs_rename = function() calls = calls + 1; return nil, "ENOENT: no such file", "ENOENT" end
-            ok = handle.write(root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 3 })
-        end)
-        uv.fs_rename = orig
-        assert.is_true(okp, perr)
+        restore, stat = blocked_rename(math.huge, "ENOENT")
+        okp, ok = pcall(handle.write, root, { pid = 1, host = "h", endpoint = "e", protocol = 1, n = 3 })
+        restore()
+        assert.is_true(okp, tostring(ok))
         assert.is_nil(ok)
-        assert.equals(1, calls)
+        assert.equals(1, stat.calls)
         assert.equals(1, handle.read(root).n)
+    end)
+
+    it("the daemon keeps retrying a rewrite readers block, so clients never keep an outdated handle", function()
+        -- The rename keeps failing for 1.5 s while a client connects: more
+        -- than one rewrite's own retry. The daemon used to log
+        -- `could not write the handle: EPERM` and leave the handle at
+        -- `clients = 0` until the next change.
+        local d = H.tmp()
+        trust._set_key_path(d .. "/trust.key")
+        local root = H.workspace()
+        local lines = {}
+        local srv = server_mod.new(root, { exit = function() end, tick_ms = 60000,
+            log = function(l) lines[#lines + 1] = l end })
+        assert.is_true((srv:start()))
+        assert.equals(0, handle.read(root).clients)
+        local restore = blocked_rename(1500, "EPERM")
+        local okp, perr = pcall(function()
+            local conn = assert(client.session(srv.address))
+            assert.is_true(vim.wait(20000, function()
+                local h = handle.read(root)
+                return h and h.clients == 1
+            end, 20))
+            conn:close()
+        end)
+        restore()
+        srv:stop("test")
+        trust._set_key_path(nil)
+        assert.is_true(okp, tostring(perr))
+        for _, l in ipairs(lines) do
+            assert.is_nil(l:find("could not write the handle", 1, true), l)
+        end
+        for name in vim.fs.dir(root .. "/.nvim") do
+            assert.is_nil(name:find(".tmp-", 1, true), name)
+        end
+    end)
+
+    it("an unchanged record is not rewritten (every rewrite is a rename a reader can block)", function()
+        local d = H.tmp()
+        trust._set_key_path(d .. "/trust.key")
+        local root = H.workspace()
+        local srv = server_mod.new(root, { exit = function() end, tick_ms = 60000 })
+        assert.is_true((srv:start()))
+        local restore, stat = blocked_rename(0, "EPERM")
+        local ok1 = srv:_write_handle()
+        local ok2 = srv:_write_handle()
+        restore()
+        srv:stop("test")
+        trust._set_key_path(nil)
+        assert.is_true(ok1)
+        assert.is_true(ok2)
+        assert.equals(0, stat.calls)
     end)
 end)
 

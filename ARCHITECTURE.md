@@ -601,9 +601,13 @@ re-cut onto master step by step; this section is expanded as each step lands.
 - `rlock.lua` — the runtime lock R on the build-lock primitive
   (`build_lock.try_acquire_path`, the §19.5 record plus `mode`, `command`,
   `host_version`).
-- `handle.lua` — the handle: atomic write (staged + rename), validated read
-  (malformed = unreadable), `remove(root, expect)` of exactly the named
-  daemon's regular file.
+- `handle.lua` — the handle: atomic write (staged + rename; on Windows a
+  rename a reader blocks is retried with backoff within `budget_ms`, default
+  `RENAME_BUDGET_MS` ~2 s), validated read (malformed = unreadable),
+  `remove(root, expect)` of exactly the named daemon's regular file.
+  `Server:_write_handle` gives each rewrite `HANDLE_SYNC_MS` (~0.25 s, the loop
+  waits), then retries on a timer backoff (`HANDLE_RETRY_MS`) and on every
+  tick while `_handle_dirty`, skipping a record identical to the last written.
 - `inspect.lua` — the state of the runtime from those two files only (none /
   live / starting / hung / foreign / attached / stale / unreadable) and the
   `Runtime` row text; `M._runtime_row` in `cli.lua` renders it in
@@ -681,7 +685,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   under `--break-locks` recovered through `command.recover` (the non-exiting
   §19.5 sequence `stop --force` / `kill` also use) and relaunched; problems
   are one stderr line, never a failed command. Each step waits at most
-  `ensure.STEP_MS` (~1 s: connect + handshake, `status`, `ping`); a daemon
+  `ensure.STEP_MS` (~1 s: connect + handshake, `status`, `ping`;
+  `LW_TEST_DAEMON_STEP_MS` lengthens it for loaded test runs); a daemon
   still `starting` is waited for at most that long, once; the handle's
   endpoint must pass `endpoint.check` before anything is connected to.
   `cli.M.NO_DAEMON_COMMANDS` (`trust`, `nuke`, `unlock`) skips the ensure. `cli.lua` calls it as `M._ensure_daemon(root)` right
@@ -689,9 +694,12 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `pull`, `worktree`, `settings`, `help`, `daemon …` never launch); `main()`
   strips the global `--no-daemon` into `M._no_daemon`.
 - `rlog.lua` — the runtime log `<root>/.nvim/loomworks.daemon.log` (2 MB +
-  one `.1`; spec §16.40 moved it out of `<state>/logs/`), written with libuv /
-  plain io only so the daemon can log from libuv callbacks (`writer(root)`
-  resolves the path up front). It appends only to a regular file (`lstat`;
+  one `.1`; spec §16.40 moved it out of `<state>/logs/`), written with libuv
+  only so the daemon can log from libuv callbacks (`writer(root)` resolves the
+  path up front). Each line is one libuv O_APPEND write (on Windows
+  FILE_APPEND_DATA: concurrent writers never overwrite each other, which the C
+  runtime's `"a"` mode — seek, then write — does; `log.lua` appends through
+  `io.append` for the same reason). It appends only to a regular file (`lstat`;
   a missing one is created `O_EXCL`), creates `.nvim/` only under an existing
   root, and `lw daemon status` prints its path. `main()` points
   `lock_break.log` at it for every command with a root; `lw unlock --force`
