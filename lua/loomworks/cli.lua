@@ -2896,8 +2896,8 @@ function M._test_targets(ws, profile, names, opts, deps)
       local xml
       if fw == "gtest" then
         results_requested = true
-        -- (no vim.fn.tempname in the standalone host)
-        xml = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-test-" .. require("loomworks.remote.transport").nonce() .. ".xml"
+        -- In the workspace's .nvim/tmp, not the system temp dir (§16.40).
+        xml = require("loomworks.housekeeping").tmp_path(ws.root, "lw-test-", ".xml")
         spec.args[#spec.args + 1] = "--gtest_output=xml:" .. xml
       end
       local argv = { spec.cmd }
@@ -5502,8 +5502,8 @@ function M._describe_edit(prefill, what, root)
     die("no editor: set $VISUAL or $EDITOR, or give the description with -m, "
       .. "-F <file>, -F - or as an argument")
   end
-  local path = (uv.os_tmpdir():gsub("\\", "/")) .. "/lw-describe-"
-    .. require("loomworks.remote.transport").nonce() .. ".txt"
+  -- In the workspace's .nvim/tmp, not the system temp dir (§16.40).
+  local path = require("loomworks.housekeeping").tmp_path(root, "lw-describe-", ".txt")
   local f = io.open(path, "wb")
   if not f then die("cannot create a temporary file for the editor") end
   f:write((prefill or "") .. "\n\n"
@@ -10342,11 +10342,10 @@ when the workspace directory is removed, or when its lock is taken over.
 
 Files: .nvim/loomworks.daemon.lock (the runtime lock: one runtime per
 workspace), .nvim/loomworks.daemon.json (the handle a client finds the daemon
-by), and the runtime log <data dir>/daemon/logs/<hash>.log (one per
-workspace, 2 MB + one rotated .1): the daemon's starts, stops and refusals,
-every launch, and every kill and forced unlock (`lw daemon kill`,
-`--break-locks`, `lw unlock --force`). <data dir> is %LOCALAPPDATA%\loomworks,
-$XDG_DATA_HOME/loomworks or ~/.local/share/loomworks (LOOMWORKS_DATA_DIR).]],
+by), and the runtime log .nvim/loomworks.daemon.log (2 MB + one rotated .1):
+the daemon's starts, stops and refusals, every launch, and every kill and
+forced unlock (`lw daemon kill`, `--break-locks`, `lw unlock --force`).
+`lw daemon status` names the log.]],
   unlock = [[lw unlock <profile> | <build dir> | --workspace | --journal | --all [--force] | --device <serial>
 
 Clear build-directory locks. loomworks serializes configure/build/clean on a

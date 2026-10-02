@@ -1,14 +1,18 @@
 --- loomworks/daemon/rlog.lua — the runtime log (spec §19.10, §19.5).
 ---
---- One file per workspace in the per-user state directory,
---- `<state>/logs/<root hash>.log`, capped at `MAX_BYTES` with one rotated
---- predecessor (`.log.1`). The daemon writes its lifecycle there (start,
+--- One file per workspace, inside it: `<root>/.nvim/loomworks.daemon.log`
+--- (spec §16.40), capped at `MAX_BYTES` with one rotated predecessor
+--- (`.log.1`). The daemon writes its lifecycle there (start,
 --- reclaimed locks, refused connections, stop reason); every client records
 --- the launches it makes or fails, and every kill and forced unlock (§19.5).
 ---
---- Append-only, one whole line per write; several processes may append at
---- once. Rotation is best-effort (a failed rename just retries later), and
---- removes only `<log>.1` — the one rotated predecessor of this exact file.
+--- Append-only, one whole line per write (opened and closed again, so no
+--- process holds the file); several processes may append at once. A write
+--- creates the log's directory (`.nvim/`) only when ITS parent (the workspace
+--- root) exists — never the root itself, so a daemon whose workspace was
+--- removed does not bring it back. Rotation is best-effort (a failed rename
+--- just retries later), and removes only `<log>.1` — the one rotated
+--- predecessor of this exact file.
 
 local paths = require("loomworks.daemon.paths")
 
@@ -38,9 +42,25 @@ end
 function M.write_path(p, line)
     pcall(function()
         local dir = p:match("^(.*)/[^/]+$")
-        if dir and not uv().fs_stat(dir) then M._mkdirp(dir) end
-        local st = uv().fs_stat(p)
-        if st and st.size and st.size > M.MAX_BYTES then
+        if dir and not uv().fs_stat(dir) then
+            local parent = dir:match("^(.*)/[^/]+$")
+            local pst = parent and uv().fs_stat(parent)
+            if not (pst and pst.type == "directory") then return end
+            pcall(uv().fs_mkdir, dir, tonumber("755", 8))
+        end
+        -- The log sits in the workspace's `.nvim/`, which a repository can
+        -- ship: only ever append to a regular file this process sees as one
+        -- (lstat), and create a missing one exclusively — O_EXCL never
+        -- follows a link planted at the name.
+        local st = uv().fs_lstat(p)
+        if st and st.type ~= "file" then return end
+        if not st then
+            local fd = uv().fs_open(p, "wx", tonumber("644", 8))
+            if fd then uv().fs_close(fd) end
+            st = uv().fs_lstat(p)
+            if not st or st.type ~= "file" then return end
+        end
+        if st.size and st.size > M.MAX_BYTES then
             local old = p .. ".1"
             local ost = uv().fs_lstat(old)
             if not ost or ost.type == "file" then
@@ -54,15 +74,6 @@ function M.write_path(p, line)
             uv().os_getpid and uv().os_getpid() or 0, (tostring(line):gsub("[\r\n]+", " "))))
         f:close()
     end)
-end
-
---- mkdir -p with libuv only (callable from libuv callbacks in the editor).
---- @param dir string
-function M._mkdirp(dir)
-    if uv().fs_stat(dir) then return end
-    local parent = dir:match("^(.+)/[^/]+$")
-    if parent and parent ~= dir and not parent:match("^%a:$") then M._mkdirp(parent) end
-    pcall(uv().fs_mkdir, dir, tonumber("700", 8))
 end
 
 --- A logging function bound to `root` (its path resolved now, so the

@@ -3,9 +3,11 @@
 ---
 ---   <root>/.nvim/loomworks.daemon.lock   the runtime lock R (§19.2)
 ---   <root>/.nvim/loomworks.daemon.json   the handle: discovery only (§19.6)
+---   <root>/.nvim/loomworks.daemon.log    the runtime log (§19.10)
 ---   <state>/                             the per-user state directory: the
----                                        daemon's working directory and its
----                                        runtime logs (§19.10)
+---                                        daemon's working directory (§19.10)
+---   <state>/logs/                        where earlier versions kept the
+---                                        runtime logs (legacy, §16.40)
 ---
 --- `<state>` is `<data dir>/daemon`, the per-user data directory of the `lw`
 --- host (boot.paths: %LOCALAPPDATA%\loomworks, $XDG_DATA_HOME/loomworks or
@@ -46,8 +48,8 @@ function M.short_hash(s)
     return vim.fn.sha256(s):sub(1, 16)
 end
 
---- The short hash naming a workspace's per-user files (runtime log, POSIX
---- socket).
+--- The short hash naming a workspace's per-user files (the POSIX socket;
+--- earlier versions also named the runtime log by it).
 --- @param root string
 --- @return string
 function M.root_hash(root)
@@ -78,12 +80,19 @@ function M.state_dir()
     return M.data_dir() .. "/daemon"
 end
 
---- The runtime log of a workspace (§19.10): one file per workspace, named by
---- the root hash.
+--- The runtime log of a workspace (§19.10): inside the workspace, beside the
+--- runtime lock and the handle.
 --- @param root string
 --- @return string
 function M.log_path(root)
-    return M.state_dir() .. "/logs/" .. M.root_hash(root) .. ".log"
+    return M.norm_root(root) .. "/.nvim/loomworks.daemon.log"
+end
+
+--- Where versions before §16.40 kept the runtime logs (`<hash>.log`), now
+--- only a source of leftovers for housekeeping.
+--- @return string
+function M.legacy_log_dir()
+    return M.state_dir() .. "/logs"
 end
 
 M._hash_key = hash_key

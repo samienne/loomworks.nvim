@@ -688,9 +688,12 @@ re-cut onto master step by step; this section is expanded as each step lands.
   after the workspace-required guard in `main()` (so `status`, `health`,
   `pull`, `worktree`, `settings`, `help`, `daemon …` never launch); `main()`
   strips the global `--no-daemon` into `M._no_daemon`.
-- `rlog.lua` — the runtime log `<state>/logs/<root hash>.log` (2 MB + one
-  `.1`), written with libuv / plain io only so the daemon can log from libuv
-  callbacks (`writer(root)` resolves the path up front). `main()` points
+- `rlog.lua` — the runtime log `<root>/.nvim/loomworks.daemon.log` (2 MB +
+  one `.1`; spec §16.40 moved it out of `<state>/logs/`), written with libuv /
+  plain io only so the daemon can log from libuv callbacks (`writer(root)`
+  resolves the path up front). It appends only to a regular file (`lstat`;
+  a missing one is created `O_EXCL`), creates `.nvim/` only under an existing
+  root, and `lw daemon status` prints its path. `main()` points
   `lock_break.log` at it for every command with a root; `lw unlock --force`
   (build dir, operation lock, active device lock) records through
   `M._record_recovery`.
@@ -1662,6 +1665,11 @@ expose. The verifier lives in `lua/boot/verify.lua`; see below.
 <config>/loomworks/config.json   dev source + default_source (spec §16.11)
 ```
 
+Spec §16.40 is the complete list of what lw keeps outside a workspace. A
+workspace operation's temporary files (the gtest results of `lw test
+<target>`, the `describe -e` buffer) go to `<root>/.nvim/tmp/` through
+`housekeeping.tmp_path` (system temp only when that cannot be created).
+
 Release bundles are versioned directories; activation writes a *new*
 `lua-<ver>/` and never overwrites a running one (spec §16.13). "Highest
 valid version wins"; older bundles are GC'd; rollback = prefer the previous
@@ -2087,6 +2095,7 @@ loomworks.nvim/
 │   │   ├── compiler_cache.lua        Compiler-cache launcher resolution (policy→binary, PATH-gated)
 │   │   ├── suggestions.lua           Advisory suggestion framework (`lw health`, status count line)
 │   │   ├── health_cache.lua          Suggestion-result cache (`.nvim/loomworks.health.json`, local/network/inventory tiers)
+│   │   ├── housekeeping.lua           Per-user state outside the workspace (§16.40): `.nvim/tmp` paths, housekeeping, `lw cleanup`
 │   │   ├── trust.lua                 Machine key + HMAC signatures on .nvim state (spec §17)
 │   │   ├── program_fields.lua        Shared program-bearing fields: strip / regraft / diagnose / review
 │   │   ├── config_transfer.lua       `lw export` / `lw import` helpers: inventory/diff, import intents, export text
