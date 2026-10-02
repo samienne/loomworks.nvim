@@ -7632,6 +7632,9 @@ function M._run_request(args)
   local req = {
     extra = r.extra_args, no_build = r.no_build, quiet = r.print_mode ~= nil,
     project = r.proj_scope, kind = r.kind, cwd = r.cwd_override,
+    -- (Only whether a wrapper is given: it refuses a device target before
+    -- any deploy, as in-process; the wrapper itself stays here.)
+    prefix = (r.prefix_tokens and #r.prefix_tokens > 0) or nil,
   }
   -- The §16.17 operand grammar (`_run_selection`): one operand is a target.
   if #pos >= 2 then req.profile, req.target = pos[1], pos[2] else req.target = pos[1] end
@@ -7646,16 +7649,22 @@ end
 --- @param root string
 --- @param req table the request sent (`_run_request`)
 --- @param r loomworks.cli.RunArgs
---- @param done table { code, launch?, device? }
+--- @param done table { code, launch?, device?, profile_key? } (`profile_key`: the
+--- `accepted` reply's)
 --- @return integer
 function M._finish_routed_run(root, req, r, done)
   if done.device then
     local ws = load_workspace(root)
-    local positionals = {}
-    if req.profile then positionals = { req.profile, req.target } elseif req.target then positionals = { req.target } end
-    local profile, target_name
-    profile, target_name, ws = M._run_selection(ws, positionals)
-    local lt, serr = require("loomworks.run_prep").select(ws, profile, target_name, r.proj_scope, r.kind)
+    -- The profile the daemon built (its `accepted` reply), never re-resolved:
+    -- the active profile may have changed since.
+    local profile
+    for _, p in ipairs(ws._profiles or {}) do
+      if p.key == done.profile_key then profile = p; break end
+    end
+    if not profile then
+      die("profile '" .. tostring(done.profile_key) .. "' the workspace daemon built is gone — it was not run here")
+    end
+    local lt, serr = require("loomworks.run_prep").select(ws, profile, req.target, r.proj_scope, r.kind)
     if not lt then die(serr) end
     local f = M._foreign_of(lt)
     note("lw: the workspace daemon could not take the run (" .. tostring(f and f.name or lt:display_name())
@@ -7701,16 +7710,39 @@ end
 --- not matter (the build's own processes in the console still get it and the
 --- build stops), but a routed build's processes are the daemon's, so only
 --- this client can cancel it. `SetConsoleCtrlHandler(NULL, FALSE)`; a no-op
---- elsewhere or without the FFI. Returns whether it was applied.
+--- elsewhere, without the FFI, or when Ctrl-C was not disabled. Returns
+--- whether it changed the state — only then `_restore_console_ctrl_c` puts it
+--- back, before a routed run's program starts (it inherits this process's
+--- state, as in-process). The prior state is the process parameters'
+--- `CONSOLE_IGNORE_CTRL_C` flag (bit 0 of `ConsoleFlags`, which
+--- `SetConsoleCtrlHandler(NULL, …)` maintains); when it cannot be read,
+--- nothing is changed.
 --- @return boolean
 function M._enable_console_ctrl_c()
   if package.config:sub(1, 1) ~= "\\" then return false end
   local ok, res = pcall(function()
     local ffi = require("ffi")
     pcall(ffi.cdef, "int SetConsoleCtrlHandler(void *handler, int add);")
+    pcall(ffi.cdef, "void *RtlGetCurrentPeb(void);")
+    local peb = ffi.cast("uint8_t *", ffi.load("ntdll").RtlGetCurrentPeb())
+    local x64 = ffi.abi("64bit")
+    local params = ffi.cast("uint8_t **", peb + (x64 and 0x20 or 0x10))[0]
+    if params == nil then return false end
+    local flags = ffi.cast("uint32_t *", params + (x64 and 0x18 or 0x14))[0]
+    if require("bit").band(flags, 1) == 0 then return false end
     return ffi.C.SetConsoleCtrlHandler(nil, 0) ~= 0
   end)
   return ok and res == true
+end
+
+--- Undo `_enable_console_ctrl_c` (it returned true): Ctrl-C disabled again,
+--- as this process was started.
+function M._restore_console_ctrl_c()
+  pcall(function()
+    local ffi = require("ffi")
+    pcall(ffi.cdef, "int SetConsoleCtrlHandler(void *handler, int add);")
+    ffi.C.SetConsoleCtrlHandler(nil, 1)
+  end)
 end
 
 --- Route `lw build` to the workspace daemon (spec §19.15, §19.19 step 3):
@@ -7783,7 +7815,7 @@ function M._delegate(op, root, args, ensured, opts)
   local client = require("loomworks.daemon.client")
   local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
   if not eok then return could_not(ewhy) end
-  local task_id, done, accepted = nil, nil, false
+  local task_id, done, accepted, profile_key = nil, nil, false, nil
   local function on_message(m)
     if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
     if m.phase == "line" then
@@ -7798,7 +7830,8 @@ function M._delegate(op, root, args, ensured, opts)
       -- into CR CR LF on Windows).
       M._raw_write((m.stream == "stderr" or quiet) and 2 or 1, tostring(m.text or ""))
     elseif m.phase == "done" then
-      done = { code = tonumber(m.exit_code) or 1, error = m.error, launch = m.launch, device = m.device == true }
+      done = { code = tonumber(m.exit_code) or 1, error = m.error, launch = m.launch, device = m.device == true,
+        profile_key = profile_key }
     end
   end
   local session = opts.session or client.session
@@ -7813,7 +7846,7 @@ function M._delegate(op, root, args, ensured, opts)
   -- daemon's, not in this console, so the interrupt must reach THIS process:
   -- on Windows it may have been started with Ctrl-C disabled.
   on_exit(function() pcall(conn.close, conn) end)
-  M._enable_console_ctrl_c()
+  local ctrl_c_enabled = M._enable_console_ctrl_c()
   local reply, rerr
   conn:request({ kind = op == "run" and "prepare_run" or op, args = req, interactive = interactive(),
     command = "lw " .. op, env = require("loomworks.daemon.envscope").capture() }, function(r, e)
@@ -7824,6 +7857,7 @@ function M._delegate(op, root, args, ensured, opts)
     for _, n in ipairs(type(r.notes) == "table" and r.notes or {}) do errw(tostring(n) .. "\n") end
     if r.outcome == "accepted" then
       task_id, accepted = r.task_id, true
+      profile_key = type(r.profile_key) == "string" and r.profile_key or nil
       note(M._delegation_line(r.pid, nil, op))
     end
   end)
@@ -7864,6 +7898,9 @@ function M._delegate(op, root, args, ensured, opts)
   end
   waiting(function() return done ~= nil end)
   conn:close()
+  -- The routed operation ended: this process's Ctrl-C state as it started,
+  -- before a run's program (or the in-process device run) inherits it.
+  if ctrl_c_enabled then M._restore_console_ctrl_c() end
   if not done then
     errw("lw: lost the connection to the workspace daemon during the " .. op .. " — it was not re-run here\n")
     return 1

@@ -341,6 +341,12 @@ function M.run(svc, ctx)
         if not lt then return finish(1, serr) end
         local verr = rp.validity_error(lt)
         if verr then return finish(1, verr) end
+        -- A wrapper (`--prefix`, kept by the client) wraps LOCAL execution:
+        -- a device target is refused before any deploy, as in-process.
+        if args.prefix and lt:requires_device() then
+            return finish(1, "--prefix cannot wrap a device target ('" .. lt:display_name() ..
+                "') — a local wrapper does not apply to on-device execution.")
+        end
         -- A foreign artifact runs on a device, in the client (§19.15): before
         -- any deploy, which the client then does itself.
         if rp.foreign_of(lt) then return finish(0, nil, { device = true }) end

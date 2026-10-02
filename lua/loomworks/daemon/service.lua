@@ -236,7 +236,7 @@ local function run_args_ok(a)
         if a[k] ~= nil and type(a[k]) ~= "string" then return false end
     end
     if a.kind ~= nil and a.kind ~= "target" and a.kind ~= "launch" then return false end
-    for _, k in ipairs({ "no_build", "quiet" }) do
+    for _, k in ipairs({ "no_build", "quiet", "prefix" }) do
         if a[k] ~= nil and type(a[k]) ~= "boolean" then return false end
     end
     return true
@@ -322,7 +322,7 @@ function Service:_accept(ctx)
     elseif ctx.op == "run" then
         -- (The program's arguments: an empty list is still a list.)
         args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
-            no_build = a.no_build == true, quiet = a.quiet == true }
+            no_build = a.no_build == true, quiet = a.quiet == true, prefix = a.prefix == true }
     else
         args = { extra = extra, targets = (a.targets and #a.targets > 0) and a.targets or nil,
             force = a.force == true, reconfigure = a.reconfigure == true, verbose = a.verbose == true }
