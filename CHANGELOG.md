@@ -180,6 +180,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- `lw status` says what is trusted: a new `Trust` row shows whether your local
+  config is present (signed on this machine) and how many program settings
+  in `loomworks.json` are ignored, and a build affected by them prints one
+  line saying so (in-process and through the daemon). The status title is the
+  workspace's name, so a directory called `untrusted` read like a trust state.
+  `lw help trust` no longer says a working copy copied from elsewhere is
+  refused: one this machine signed stays trusted in any workspace here; only
+  one from another machine (or edited by hand) is refused. (#125)
 - Windows, workspace daemon: on a busy machine the daemon could still log
   `could not write the handle: EPERM` and leave `lw status` and clients
   reading an outdated client count or busy state until the next change. It
