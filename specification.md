@@ -72,6 +72,7 @@ local to each file and restart at §1.
 | What the CLI's inline output must reveal: the status footer, next-step and empty-state hints, unknown commands, the help index | `specification.md` §16.38 (+ §16.18 for the overview, §16.7 for usage errors) |
 | Several processes (editor, CLI, background process, older versions) writing the same workspace state: stale-save detection, cache merge, working-copy refusal, writer version stamp | `specification.md` §2.7 (+ §16.6 for the headless host) |
 | Exporting the configuration as a published snapshot, or importing one into the working copy (another machine) | `specification.md` §16.39 (+ §2.4 for the serializer and intent, §17.5 for the signed write) |
+| What lw keeps outside the workspace (per-user data, temp files, pinned releases), housekeeping of crash leftovers, `lw cleanup` | `specification.md` §16.40 (+ §19.7, §19.10 for the daemon's socket and runtime log) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
 | The workspace runtime: the daemon, `--no-daemon`, runtime lock, workspace operation lock and lock order, journalled multi-file commits, handle/endpoint/auth/version handshake, daemon lifetime, routing operations to the daemon | `specification.md` §19 (rationale and step plan: [`DAEMON.md`](DAEMON.md); + §2.7, §16.6, §18.7 for the existing locks) |
 
@@ -301,6 +302,13 @@ belongs in the matching `spec/` file.
     rendered inert in every host (§17.11). Absence is the default: an empty
     description is never stored, and loading, merging, publishing, reverting,
     renaming and pulling never drop a present one (§1.10, §2.4).
+
+21. **Workspace state stays in the workspace**: What a workspace's own
+    operations produce (its runtime log, temporary results and editor files)
+    is kept under its `.nvim/`. Outside the workspace only the bounded
+    per-user state of §16.40 is kept, and a leftover of an interrupted process
+    there is removed by the next run or by `lw cleanup` — only by exact name,
+    never through a link, never while in use (§16.40).
 
 ---
 

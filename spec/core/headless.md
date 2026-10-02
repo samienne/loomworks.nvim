@@ -624,7 +624,8 @@ that cannot emit JUnit reports that without failing the run.
 A headless test invocation MAY instead name one or more **test
 executables** (build targets). Each named target is built, then run directly —
 not through the native batch runner — with its framework's machine-readable
-results option (§8.9), and its outcome is judged per §18.6 (exit status, parsed
+results option (§8.9), writing the results file to the workspace's
+`.nvim/tmp/` (§16.40) and removing it once read, and its outcome is judged per §18.6 (exit status, parsed
 failures, missing results, crash reports). A named target that is **foreign**
 (§18.1) runs on a device (§18.5–§18.6; device selection §18.3) and its results
 file is pulled back; a host-runnable one runs locally. Caller-forwarded
@@ -2774,7 +2775,8 @@ bytes, not the terminal rendering.
 Combining two sources, or `--clear` with a source, is a usage error. `-e` may be
 combined with `-m`, `-F` or `<text>`, which then pre-fill the editor, as in git.
 
-**Editor.** `-e` opens `$VISUAL`, then `$EDITOR`, on a temporary file. The file
+**Editor.** `-e` opens `$VISUAL`, then `$EDITOR`, on a temporary file in the
+workspace's `.nvim/tmp/` (§16.40), removed afterwards. The file
 is pre-filled with the current description (or the pre-fill), followed by
 comment lines starting with `#` that name the item and explain the format. On
 save, the `#` lines are removed (the stored text is never commented) and the
@@ -3725,3 +3727,200 @@ three places:
 - the help for pull names export and import for another machine;
 - a pull whose source working copy is not signed by this machine, which is the
   usual sign that it was copied from elsewhere, adds that line too.
+
+### 16.40 Per-user state outside the workspace
+
+*Status: the moves into the workspace (runtime log, `.nvim/tmp/`) and this
+specification — first PR; housekeeping, `lw cleanup` and the host's last-use
+update — second PR.*
+
+What a workspace's own operations produce lives **inside the workspace**, under
+`<root>/.nvim/`. Outside the workspace, `lw` keeps only the per-user state
+listed in this section. Every item is **bounded**, and every transient item an
+interrupted process can leave behind (a crash, a kill, a power loss) is
+**self-healing**: the next `lw` run removes it (housekeeping, below), and
+`lw cleanup` removes it on request. No other location outside the workspace is
+written, and nothing outside the names listed here is ever removed.
+
+**Locations.**
+
+- `<data>`: the per-user data directory, `%LOCALAPPDATA%\loomworks` on
+  Windows, else `$XDG_DATA_HOME/loomworks` or `~/.local/share/loomworks`.
+  `LOOMWORKS_DATA_DIR` overrides it.
+- `<config>`: `%APPDATA%\loomworks`, else `$XDG_CONFIG_HOME/loomworks` or
+  `~/.config/loomworks`.
+- `<cache>`: the tool cache directory, `%LOCALAPPDATA%\loomworks\cache` on
+  Windows, else `$XDG_CACHE_HOME/loomworks` or `~/.cache/loomworks`.
+- `<run>`: the POSIX per-user socket directories of §19.7.
+- `<tmp>`: the operating system's temporary directory (`%TEMP%` on Windows).
+- `<exe>`: the installed `lw` binary.
+
+**Kept.** Each item is bounded as stated. Housekeeping never removes one,
+except where the last column says so.
+
+| Item | Bound | Removed by |
+|---|---|---|
+| `<config>/config.json` | one file | the user (`lw settings`) |
+| `<data>/trust.key` | one key (§17.2) | never |
+| `<cache>/tools.json` | one file | rewritten by a tool scan |
+| `<data>/release-notes-seen` | one line (§16.37) | never |
+| `<data>/lua-<ver>/` | the newest three releases (§16.13) | self-update |
+| `<data>/modules/<name>/` | the installed modules (§16.20) | module removal |
+| `<data>/pinned/<sha256>/lua-<ver>/`, `<data>/pinned/lw-<ver>-<asset>` | the pinned releases in use (§16.22, §16.23) | `lw cleanup --all`, once unused for 30 days |
+| `<data>/daemon/` | an empty directory, the daemon's working directory (§19.10) | never |
+| `<data>/device-locks/<serial>.lock` | one per device, while an operation on it runs (§18.7) | its holder; housekeeping once the holder is provably gone |
+| `<data>/device-locks/<serial>.leftover` | one per device with a program left running on it (§18.7) | the run that stops the program; never housekeeping |
+| `<run>/<hash>.sock` | one per running daemon (§19.7) | the daemon; housekeeping once stale |
+| `<data>/.housekeeping` | one empty stamp file | never |
+| `<exe>` | the binary | the user |
+
+**Transient.** These exist only while an operation runs. One that is still
+there afterwards was left by an interrupted process: a **leftover**. A
+leftover is removed once it is older than the age given, by modification time
+(a time in the future counts as recent).
+
+| Leftover | Made by | Removed when older than |
+|---|---|---|
+| `<data>/.dl-<ver>.zip`, `<data>/.stage-<ver>/` | self-update (§16.13) | 24 hours |
+| `<data>/pinned/.dl-<sha256>-<ver>.zip`, `<data>/pinned/.stage-<sha256>-<ver>/`, `<data>/pinned/lw-<ver>-<asset>.dl` | pinned provisioning (§16.22, §16.23) | 24 hours |
+| `<data>/pinned/.trash-<nonce>/` | pruning a pinned release (below) | any age |
+| `<data>/modules/.dl-<name>.zip`, `<data>/modules/.stage-<name>/` | module installation (§16.20) | 24 hours |
+| `<data>/release-notes-seen.tmp`, `<data>/release-notes-seen.tmp<digits>` | recording the seen release (§16.37) | 24 hours |
+| `<data>/device-locks/<serial>.leftover.tmp.<pid>`, `<data>/device-locks/<serial>.lock.reclaim.<nonce>` | device-lock writes and reclaims (§18.7, §19.5) | 24 hours |
+| `<tmp>/lw_vcvars_<arch>_<16 hex digits>.bat` (Windows) | the MSVC environment probe | 1 hour |
+| `<exe>.new` | host self-update (§16.32) | 24 hours |
+| `<exe>.old` (Windows) | host self-update (§16.32) | any age (it cannot be removed while it still runs) |
+
+**Legacy locations.** Earlier versions kept the following outside the
+workspace. This version keeps them inside it (below), and removes what earlier
+versions left behind:
+
+| Leftover | Removed |
+|---|---|
+| `<data>/daemon/logs/<16 hex digits>.log`, `<data>/daemon/logs/<16 hex digits>.log.1` | when unmodified for 30 days; at any age by `lw cleanup --all` |
+| `<tmp>/lw-test-<hex>.xml` | when older than 24 hours |
+| `<tmp>/lw-describe-<hex>.txt` | when older than 7 days |
+
+**Inside the workspace.** The runtime log is `<root>/.nvim/loomworks.daemon.log`,
+with one rotated predecessor (§19.10). The results file of a named test
+executable (§16.16) is `<root>/.nvim/tmp/lw-test-<hex>.xml`, and the editor
+buffer of a description (§16.35) is `<root>/.nvim/tmp/lw-describe-<hex>.txt`.
+`.nvim/tmp/` is created when first needed (`.nvim/` only when the workspace
+root exists; the root itself is never created). Each file is removed after
+use. A leftover there is removed by housekeeping and by `lw cleanup` run in
+that workspace, after 24 hours (results) or 7 days (editor buffers). If
+`.nvim/tmp/` cannot be created, the file is made in `<tmp>` under the same
+name, where a leftover is a legacy-location leftover.
+
+**Last use of a pinned release.** A host that redirects to a pinned release
+(§16.23) sets the modification time of the pinned bundle directory and of the
+pinned host binary to the current time. Hosts older than this rule do not, so
+for them the time of provisioning stands in for the last use. A pruned release
+that such a host still needs is provisioned again (downloaded and verified,
+§16.22) on its next use.
+
+#### Housekeeping
+
+A command-line invocation removes leftovers at the start of its run:
+
+- **When.** In every command that resolves a workspace root (found or not),
+  except `daemon` and `cleanup`, at most once per 24 hours per user. The stamp
+  file `<data>/.housekeeping` records the last pass. A run claims the pass by
+  setting the stamp's modification time before it starts. Two processes that
+  claim at once both run the pass, which is safe: every removal tolerates a
+  concurrent remover. The editor host never runs it.
+- **What.** Exactly the leftovers in the tables above whose age has passed,
+  and the leftovers in the current workspace's `.nvim/tmp/`. Never the pinned
+  releases (only `lw cleanup --all` prunes them), and never a legacy runtime
+  log modified within 30 days.
+- **Bounded.** It reads only the fixed directories above, one level deep. It
+  never walks a tree, except a leftover directory it removes. It stops
+  reading `<tmp>` after 10,000 entries. Its socket tests wait about a second
+  in all, at most.
+- **Silent.** It never prints, never prompts, never changes the exit status
+  and never stops the command. Every error is swallowed. When the run is in a
+  workspace and the pass removed something or failed to, it writes one line
+  to the runtime log (§19.10).
+- **In the bundle.** It lives in the release bundle, not the host. Every
+  host then runs it, including hosts older than this rule, which load the
+  newest bundle (§16.14), and it needs no host interface newer than the oldest
+  host in use. Only the last-use update above is host-side; on an older host
+  its absence makes pruning earlier, never unsafe.
+
+#### `lw cleanup`
+
+```
+lw cleanup [--dry-run | --yes] [--all] [--pinned-older-than <duration>]
+```
+
+Lists what `lw` left outside the workspace and, on request, removes it. It
+needs no workspace, never loads one, never starts the daemon and never
+prompts.
+
+- **A dry run is the default** (`--dry-run` makes it explicit). It lists each
+  item it would remove: a short kind, the path, the size (for a directory, the
+  sum of its files) and the age. Then the total, and that `--yes` removes
+  them. With nothing to remove it says so. Exit 0.
+- `--yes` (`-y`) removes them and reports each removal. An item that cannot
+  be removed (in use, permission) is named with the reason, and the command
+  then exits 1. `--dry-run` together with `--yes` is a usage error (exit 2).
+- The **default set** is the housekeeping set, whatever the stamp says.
+- `--all` adds the **pinned releases unused for 30 days**
+  (`<data>/pinned/<sha256>/lua-<ver>/`, `<data>/pinned/lw-<ver>-<asset>`), and
+  every legacy runtime log whatever its age. It also counts the pinned
+  releases it keeps.
+- `--pinned-older-than <duration>` sets that 30-day threshold and implies the
+  pinned part of `--all`. A duration is a whole number of seconds, or a whole
+  number with `s`, `m`, `h` or `d` (`90d`, `12h`). An invalid duration is a
+  usage error.
+- A `--yes` run also sets the housekeeping stamp.
+
+A pinned release is **never** pruned when it is
+
+- the release that the nearest `lw.pin` above the current directory pins (its
+  version; for the bundle, also its pinned bundle hash);
+- the running executable or the running bundle;
+- used within the threshold (by modification time).
+
+It is removed by first renaming it, in one step, to
+`<data>/pinned/.trash-<nonce>`. A rename that fails (on Windows: a file in it
+is in use) skips the item. Then the renamed tree is removed. A `<sha256>/`
+directory left empty is removed with `rmdir`.
+
+#### Removal safety
+
+Every removal by housekeeping and `lw cleanup` follows these rules:
+
+1. **Exact names.** An entry is a candidate only when its whole name matches
+   its pattern above. Versions are safe release versions (§16.22),
+   `<sha256>` is 64 lowercase hex digits, `<name>` is a valid module name
+   (§16.20), `<arch>` is a known `vcvarsall` architecture, nonces and hashes
+   are hex digits of the stated length, and `<pid>` is digits. A near miss is
+   never touched.
+2. **Fixed parents.** A candidate is a direct child of one of the fixed
+   directories: `<data>`, `<data>/pinned`, `<data>/pinned/<sha256>`,
+   `<data>/modules`, `<data>/device-locks` (in its default location only),
+   `<data>/daemon/logs`, `<tmp>`, the directory of `<exe>`, a `<run>`
+   directory, and `<root>/.nvim/tmp`. The directory must be a real directory
+   (`lstat`: not a symbolic link or junction), and its resolved path must be
+   the resolved location expected; below `<data>`, it must lie under the
+   resolved `<data>` with a separator boundary.
+3. **No links.** Entries are examined with `lstat`. A candidate name that is
+   a symbolic link or junction is never touched, nor followed. A file
+   candidate must be a regular file, a directory candidate a directory, a
+   socket candidate a socket. Inside a leftover directory being removed, links
+   are removed as links, never followed. Removing a hard link removes only
+   that name.
+4. **Age before removal.** A leftover is removed only past its age. Nothing
+   younger is touched.
+5. **Never in use.** A device lock is removed only when its holder is
+   provably gone (same host, no process with its id and start time, §19.5)
+   and it records no running program (§18.7), and only by the nonce-checked
+   reclaim of §19.5. A socket is removed only when it lies in a per-user
+   directory of §19.7 (a real directory owned by the user, mode `0700`), is a
+   socket owned by the user, is older than an hour and **refuses a
+   connection**. It is first moved aside; if what was moved is not the file
+   tested (a daemon bound the name meanwhile), it is put back. Pinned releases
+   follow the rules above.
+6. **Never anything else.** The kept items, `.leftover` files, the
+   `<data>/daemon/` directory, and anything not listed here are never removed.

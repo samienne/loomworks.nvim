@@ -622,7 +622,10 @@ system **and** gated by authentication (§19.8).
   `$TMPDIR` / `/tmp` with a `loomworks-<uid>` directory). The socket is named by
   a short hash of the normalized workspace root, so the path fits the `sun_path`
   limit (about 104 bytes on macOS, 108 on Linux) regardless of repository depth.
-  A stale socket file is unlinked only while holding the runtime lock.
+  A stale socket file is unlinked by a daemon or client only while holding
+  the runtime lock. Outside that, only housekeeping and `lw cleanup` remove a
+  socket, under the conditions of §16.40 (it refuses a connection, is older
+  than an hour, and is put back if a daemon bound the name meanwhile).
 - **Windows:** a named pipe whose name contains a hash of the user and the
   workspace root. Immediately after creating it, the daemon replaces its
   security descriptor (`SetSecurityInfo` through the host's foreign-function
@@ -739,9 +742,14 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
 
 - **Detached**, in a new process group/session, with **no inherited standard
   handles** (on Windows, standard input, output and error are not inherited;
-  on POSIX they are `/dev/null`); the daemon writes its own **runtime log** to
-  the per-user state directory, one file per workspace (named by the root
-  hash), capped at a few megabytes with one rotated predecessor.
+  on POSIX they are `/dev/null`); the daemon writes its own **runtime log**
+  inside the workspace, `<root>/.nvim/loomworks.daemon.log`, capped at a few
+  megabytes with one rotated predecessor (`.log.1`). Each line is appended
+  with the file opened and closed again, so no process keeps it open. A write
+  creates `.nvim/` only when the workspace root exists, and never creates the
+  root: a daemon whose workspace was removed does not bring it back. `lw daemon
+  status` names the log when it exists. (Earlier versions kept it in the
+  per-user state directory; §16.40 removes those files.)
 - **Working directory**: the per-user state directory — never the workspace,
   so the daemon never holds the workspace directory open or busy.
 - **Environment**: the client's, de-duplicated (on Windows case-insensitively,
