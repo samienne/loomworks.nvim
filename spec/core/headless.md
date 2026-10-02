@@ -3788,8 +3788,12 @@ leftover is removed once it is older than the age given, by modification time
 | `<data>/release-notes-seen.tmp`, `<data>/release-notes-seen.tmp<digits>` | recording the seen release (§16.37) | 24 hours |
 | `<data>/device-locks/<serial>.leftover.tmp.<pid>`, `<data>/device-locks/<serial>.lock.reclaim.<nonce>` | device-lock writes and reclaims (§18.7, §19.5) | 24 hours |
 | `<tmp>/lw_vcvars_<arch>_<16 hex digits>.bat` (Windows) | the MSVC environment probe | 1 hour |
+| `<run>/<hash>.sock.reclaim.<nonce>` | removing a stale socket (below) | 1 hour |
 | `<exe>.new` | host self-update (§16.32) | 24 hours |
 | `<exe>.old` (Windows) | host self-update (§16.32) | any age (it cannot be removed while it still runs) |
+
+`<exe>.new` and `<exe>.old` are looked for only beside a running `lw` host:
+not in the editor, and not beside a bare runtime running a source tree.
 
 **Legacy locations.** Earlier versions kept the following outside the
 workspace. This version keeps them inside it (below), and removes what earlier
@@ -3877,15 +3881,16 @@ prompts.
 
 A pinned release is **never** pruned when it is
 
-- the release that the nearest `lw.pin` above the current directory pins (its
-  version; for the bundle, also its pinned bundle hash);
+- of the version that the nearest `lw.pin` above the current directory pins
+  (whatever its hash);
 - the running executable or the running bundle;
 - used within the threshold (by modification time).
 
-It is removed by first renaming it, in one step, to
+A pinned bundle directory is removed by first renaming it, in one step, to
 `<data>/pinned/.trash-<nonce>`. A rename that fails (on Windows: a file in it
 is in use) skips the item. Then the renamed tree is removed. A `<sha256>/`
-directory left empty is removed with `rmdir`.
+directory left empty is removed with `rmdir`. A pinned host binary is
+unlinked (on Windows a running one cannot be, and is skipped).
 
 #### Removal safety
 
