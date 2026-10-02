@@ -286,6 +286,15 @@ function M.nuke_cache(root)
     core:nuke_cache(root)
 end
 
+--- Would a nuke of `root` run now (no other process's build or workspace
+--- operation in the way)? Checked before the confirmation, so a refused nuke
+--- shows only its refusal. Returns true, or nil + the refusal message.
+--- @param root string
+--- @return boolean|nil ok, string|nil message
+function M.nuke_check(root)
+    return core:nuke_check(root, { skip_own = true })
+end
+
 --- Delete user.json and reload the workspace.
 --- @param root string
 function M.delete_user_prefs(root)

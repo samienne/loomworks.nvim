@@ -354,6 +354,14 @@ function Tree:_confirm_nuke()
     local err = lw.get_setup_error()
     local root = (ws and ws.root) or (err and err.root) or require("loomworks.workspace").resolve_root()
 
+    -- Refuse before listing what would be deleted (a build of another
+    -- process, or its workspace operation, is in the way): the refusal only.
+    local ok, why = lw.nuke_check(root)
+    if not ok then
+        vim.notify("loomworks: " .. tostring(why), vim.log.levels.ERROR)
+        return
+    end
+
     local lines = {
         "  Reset workspace cache",
         "",

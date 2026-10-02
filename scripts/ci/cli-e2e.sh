@@ -271,8 +271,10 @@ JSON
     pid=$(lock_pid "$lockf")
     ( cd "$ws" && run_lw nuke -y ) > "$out" 2>&1
     rc=$?
-    if [ $rc -ne 0 ] && grep -q "a build is running in" "$out" && [ -d "$ws/.nvim/build" ] \
-        && [ -f "$ws/.nvim/loomworks.cache.json" ]; then
+    # The refusal alone, one line: no "Will delete" list first, no double prefix.
+    if [ $rc -ne 0 ] && grep -q "^lw: cannot nuke: a build is running in" "$out" \
+        && ! grep -q -e "Will delete" -e "nuke failed" -e "loomworks: " "$out" \
+        && [ -d "$ws/.nvim/build" ] && [ -f "$ws/.nvim/loomworks.cache.json" ]; then
         ok "locks: nuke refuses while a build runs and deletes nothing"
     else note_fail "locks: nuke during a running build" $rc; fi
     rm -f "$ws/slow-build"

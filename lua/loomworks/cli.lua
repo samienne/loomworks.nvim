@@ -1551,6 +1551,15 @@ function M.cmd_trust(root, args)
   local status, content = trust.verify("user", text)
 
   if discard then
+    -- Removes the working copy and its backup: the workspace operation lock
+    -- (spec §19.3) keeps a concurrent publish / import out of the middle. It
+    -- is taken before the notice and any prompt, so a refusal prints alone:
+    -- held from here with --yes; with a prompt only checked (a lock held
+    -- across a blocking prompt stops heartbeating) and taken after the answer.
+    local op_lock = require("loomworks.op_lock")
+    local tok, lmsg = op_lock.acquire(root, "trust --discard")
+    if not tok then die(lmsg) end
+    if not yes then op_lock.release(tok) end
     out("Will delete " .. path .. " (the working copy: profiles, local configuration, settings).")
     if not yes then
       if not interactive() then
@@ -1558,12 +1567,9 @@ function M.cmd_trust(root, args)
       end
       local answer = (prompt_line("Discard it? [y/N]") or ""):lower()
       if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+      tok, lmsg = op_lock.acquire(root, "trust --discard")
+      if not tok then die(lmsg) end
     end
-    -- Removes the working copy and its backup: the workspace operation lock
-    -- (spec §19.3) keeps a concurrent publish / import out of the middle.
-    local op_lock = require("loomworks.op_lock")
-    local tok, lmsg = op_lock.acquire(root, "trust --discard")
-    if not tok then die(lmsg) end
     if tok.recovered then errw("lw: " .. tok.recovered .. "\n") end
     on_exit(function() op_lock.release(tok) end)
     for _, p in ipairs({ path, path .. ".bak" }) do
@@ -1626,6 +1632,25 @@ function M.cmd_nuke(root, args)
     if v == "-y" or v == "--yes" then yes = true
     else die("unknown argument '" .. v .. "' — usage: lw nuke [-y]") end
   end
+  local core = require("loomworks")._core()
+  -- The locks first (spec §19.3), BEFORE the list of what would go and any
+  -- prompt: a refused nuke prints only its refusal. With -y they are held
+  -- from here to the deletion. Otherwise they are only checked here (taken
+  -- and released: a lock held across a blocking prompt stops heartbeating)
+  -- and taken again once confirmed; the check never breaks a holder —
+  -- `--break-locks` acts only on the confirmed nuke.
+  local st, why
+  if yes then
+    st, why = core:_nuke_begin(root)
+    if not st then die(M._nuke_message(why)) end
+  else
+    local lock_break = require("loomworks.lock_break")
+    local requested = lock_break.requested
+    lock_break.requested = nil
+    local ok, cwhy = core:nuke_check(root)
+    lock_break.requested = requested
+    if not ok and not requested then die(M._nuke_message(cwhy)) end
+  end
   local targets = {
     root .. "/.nvim/build/",
     require("loomworks.cache").filepath(root),
@@ -1639,20 +1664,40 @@ function M.cmd_nuke(root, args)
     end
     local answer = (prompt_line("Reset the build cache? [y/N]") or ""):lower()
     if answer ~= "y" and answer ~= "yes" then die("aborted — nothing was deleted") end
+    st, why = core:_nuke_begin(root)
+    if not st then die(M._nuke_message(why)) end
   end
-  local core = require("loomworks")._core()
   local errors = {}
   local saved_notify = core._deps.notify
   core._deps.notify = function(msg, level)
-    if level and level >= vim.log.levels.ERROR then errors[#errors + 1] = tostring(msg) end
+    if level and level >= vim.log.levels.ERROR then errors[#errors + 1] = M._nuke_message(msg) end
   end
-  local done = core:_nuke_files(root)
+  local done = core:_nuke_run(st)
   core._deps.notify = saved_notify
-  if not done or #errors > 0 then
-    die("nuke failed" .. (#errors > 0 and (":\n  " .. table.concat(errors, "\n  ")) or ""))
-  end
+  if not done or #errors > 0 then die(M._nuke_failure(errors)) end
   out("NUKED: build state removed — the next build reconfigures from scratch.")
   return 0
+end
+
+--- A core nuke message as the CLI prints it: core's own `loomworks: `
+--- prefix dropped (`die` adds `lw: `).
+--- @param msg any
+--- @return string
+function M._nuke_message(msg)
+  return (tostring(msg or "nuke failed"):gsub("^loomworks: ", ""))
+end
+
+--- The message for the errors a running nuke reported: one refusal stands
+--- alone (`cannot nuke: …`), one failure reads `nuke failed: …`, several go
+--- on their own lines under `nuke failed:`.
+--- @param errors string[] already stripped (`_nuke_message`)
+--- @return string
+function M._nuke_failure(errors)
+  if #errors == 0 then return "nuke failed" end
+  if #errors == 1 then
+    return errors[1]:find("^cannot nuke: ") and errors[1] or ("nuke failed: " .. errors[1])
+  end
+  return "nuke failed:\n  " .. table.concat(errors, "\n  ")
 end
 
 --- `lw unlock <profile|dir> | --all [--force]` — clear build-dir locks
