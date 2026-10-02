@@ -109,6 +109,21 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- `lw cleanup` (without `--all`) now lists the runtime logs earlier versions
+  kept in the data directory (`daemon/logs`) whatever their age: they are
+  always leftovers now that the log lives in the workspace. `--all` adds only
+  the pinned releases unused for 30 days, as its help now says. The automatic
+  daily pass still waits 30 days for those logs. (#126)
+- `lw daemon list` STATE uses the documented states: `live` (with `busy` or
+  `idle <time>`), `starting`, `hung`, `stray`, `unknown root`; a daemon that
+  was just launched and has not taken its workspace's lock yet is `starting`,
+  not a stray. Every column is filled (`-` when unknown), a stray's reason
+  follows its root, and a development build's version is shortened. (#126)
+- `lw daemon list` marks a daemon started with another loomworks data
+  directory (another `LOOMWORKS_DATA_DIR`, such as a test run's) as
+  `other data dir` (`--json`: `same_key`), and `lw daemon stop --all` /
+  `kill --all` skip it with a plain message instead of calling its endpoint
+  untrusted; it no longer makes the command exit 1. (#126)
 - In daemon mode, `lw build` waits up to about 5 seconds (instead of about one)
   for a slow but healthy workspace daemon to answer before running the build
   without it: under machine load the build no longer falls back in-process
