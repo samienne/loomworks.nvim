@@ -223,6 +223,18 @@ describe("lw test through the workspace daemon (real processes)", function()
             assert.same(cache_of(a, env.data .. "/trust.key"), cache_of(b, env.data .. "/trust.key"), what)
             assert.same(files_of(a .. "/reports"), files_of(b .. "/reports"), what)
         end
+        -- A relative --junit from a subdirectory lands under the CLIENT's
+        -- working directory on both paths (the daemon's cwd is the root).
+        do
+            local args = { "--no-input", "test", "dev", "--junit", "sub-reports/s.xml" }
+            local ra = H.lw({ "--no-daemon", unpack(args) }, { env = env, cwd = a .. "/app" })
+            local rb = H.lw(args, { env = env, cwd = b .. "/app" })
+            assert.equals(ra.code, rb.code, ra.stderr .. "\n---\n" .. rb.stderr)
+            assert.truthy(rb.stderr:find(NOTICE, 1, true), rb.stderr)
+            assert.truthy(next(files_of(a .. "/app/sub-reports")), "in-process JUnit not under the client cwd")
+            assert.same(files_of(a .. "/app/sub-reports"), files_of(b .. "/app/sub-reports"))
+            assert.is_nil(next(files_of(b .. "/sub-reports")), "routed JUnit resolved against the daemon's cwd")
+        end
         -- The forms did run: a pass, a failure that still ran the other
         -- runner, the runner arguments and the JUnit files.
         local ok = lw(b, { "--no-input", "test", "dev", "--", "-R", "x" })

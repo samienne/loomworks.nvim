@@ -7515,6 +7515,18 @@ M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 --- in-process. `test`: its batch form (§19.19 step 5).
 M.ROUTED_COMMANDS = { build = true, test = true }
 
+--- Would argv `args` be routed to the daemon, for the ensure step's bound
+--- (§19.10)? A routed command, except `lw test --target` (it stays in-process,
+--- §19.15), which gets the plain non-routed ensure.
+--- @param args string[]
+--- @return boolean
+function M._routed_command(args)
+  local command = args[1]
+  if not M.ROUTED_COMMANDS[command] then return false end
+  if command == "test" and M._test_request(args) == "target" then return false end
+  return true
+end
+
 --- Keep the workspace daemon running before a workspace command (spec §19.1,
 --- §19.10; loomworks.daemon.ensure). Never fails the command. Returns what
 --- happened (loomworks.daemon.ensure.ensure's outcome; nil on an error).
@@ -7719,15 +7731,17 @@ function M._delegate(op, root, args, ensured, opts)
   -- why (§19.15): ensure() printed it for a bypass, a newer daemon, a hung,
   -- starting or unstartable one; "off" is in-process mode or an explicit
   -- `--no-daemon` / LOOMWORKS_NO_DAEMON / CI.
-  if ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
-  if ensured ~= "used" and ensured ~= "launched" and ensured ~= "restarted" then return nil end
+  local have = ensured == "used" or ensured == "launched" or ensured == "restarted"
+  if not have and ensured ~= "elsewhere" then return nil end
   -- An argument cmd_build / cmd_test refuses, and a workspace the machine
   -- refuses: the in-process path reports them (that is the line).
   local req
   if op == "test" then req = M._test_request(args) else req = M._build_request(args) end
+  -- `--target` always says why in its own words, whatever the runtime is.
   if req == "target" then
     return could_not("--target runs test executables in this process")
   end
+  if ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
   if require("loomworks.lock_break").requested then
     return could_not("--break-locks runs the " .. op .. " in this process")
   end
@@ -12158,7 +12172,7 @@ local function main()
   -- and `unlock` clears stuck locks — none of them may wait on (or start) a
   -- daemon.
   local ensured
-  if not M.NO_DAEMON_COMMANDS[command] then ensured = M._ensure_daemon(root, M.ROUTED_COMMANDS[command]) end
+  if not M.NO_DAEMON_COMMANDS[command] then ensured = M._ensure_daemon(root, M._routed_command(a)) end
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).
