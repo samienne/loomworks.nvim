@@ -7858,6 +7858,9 @@ function Workspace:_start_tracking(paths)
         end,
         schedule = self._core._deps.schedule,
         read_file = self._core._deps.io.read_file,
+        -- The workspace daemon applies external changes itself, right before
+        -- each operation and in that client's environment (spec §19.15).
+        manual = self._core._deps.manual_file_tracking or nil,
     })
     self._tracker:watch(paths.config)
     self._tracker:watch(paths.user)

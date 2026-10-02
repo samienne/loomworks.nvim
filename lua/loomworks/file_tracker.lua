@@ -21,6 +21,9 @@ local io_mod = require("loomworks.io")
 --- @field interval? number poll interval in ms (default 2000)
 --- @field read_file? fun(path: string): string|nil, string|nil injectable for testing
 --- @field schedule? fun(fn: function) injectable for testing
+--- @field manual? boolean no polling: changes are delivered only by `sync()`
+---   (the workspace daemon, which applies external changes right before each
+---   operation, spec §19.15)
 
 --- Create a new FileTracker.
 --- @param opts loomworks.FileTrackerOpts
@@ -33,6 +36,8 @@ function FileTracker.new(opts)
     self._interval = opts.interval or 2000
     self._read_file = opts.read_file or io_mod.read_file
     self._schedule = opts.schedule or vim.schedule
+    self._manual = opts.manual or false
+    self._order = {}
     return self
 end
 
@@ -40,10 +45,15 @@ end
 --- If the file doesn't exist, content is stored as nil.
 --- @param path string absolute file path
 function FileTracker:watch(path)
-    if self._watches[path] then return end
+    if self._watches[path] ~= nil then return end
 
     -- Seed with current content
     self._content[path] = self._read_file(path)
+    self._order[#self._order + 1] = path
+    if self._manual then
+        self._watches[path] = false
+        return
+    end
 
     local poll = uv.new_fs_poll()
     if not poll then return end
@@ -74,7 +84,9 @@ end
 --- @param path string absolute path
 --- @param on_signal fun(path: string) called on each detected change
 function FileTracker:watch_signal(path, on_signal)
-    if self._watches[path] then return end
+    if self._watches[path] ~= nil then return end
+    -- A manual tracker never polls (no signal watches either).
+    if self._manual then return end
 
     local poll = uv.new_fs_poll()
     if not poll then return end
@@ -93,13 +105,32 @@ end
 --- @param path string
 function FileTracker:unwatch(path)
     local poll = self._watches[path]
-    if poll then
-        poll:stop()
-        if not poll:is_closing() then
-            poll:close()
+    if poll ~= nil then
+        if poll then
+            poll:stop()
+            if not poll:is_closing() then
+                poll:close()
+            end
         end
         self._watches[path] = nil
         self._content[path] = nil
+    end
+end
+
+--- Deliver every pending change NOW, synchronously, exactly as the next poll
+--- would: each content-watched path is re-read (in the order it was watched)
+--- and the callback fires for one whose content differs from the last known.
+--- A path a callback stopped watching (a refused file reloads the workspace,
+--- spec §17.4, which stops this tracker) is skipped.
+function FileTracker:sync()
+    for _, path in ipairs(vim.list_extend({}, self._order)) do
+        if self._watches[path] ~= nil then
+            local new_content = self._read_file(path)
+            if new_content ~= self._content[path] then
+                self._content[path] = new_content
+                self._callback(path, new_content)
+            end
+        end
     end
 end
 
@@ -126,7 +157,7 @@ end
 --- @param path string
 --- @param content? string|false the bytes now on disk (false/nil: read back)
 function FileTracker:mark_written(path, content)
-    if self._watches[path] then
+    if self._watches[path] ~= nil then
         if content == nil or content == false then
             content = self._read_file(path)
         end

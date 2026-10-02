@@ -349,6 +349,9 @@ function M.run_server(root, args, host)
         log = require("loomworks.daemon.rlog").writer(root),
         idle_seconds = rt.idle_seconds(host.config),
     })
+    -- Routed operations (§19.15, §19.19 step 3): the build service, with the
+    -- host's workspace load (loaded on the first build, then kept live).
+    if host.build then require("loomworks.daemon.service").attach(srv, host.build) end
     local ok, err, code = srv:start()
     if not ok then
         if code == server_mod.EXIT_HELD then

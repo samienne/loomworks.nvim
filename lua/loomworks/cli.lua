@@ -659,11 +659,32 @@ end
 --- @param opts? { soft_trust?: boolean, replace_untrusted_user?: boolean }
 --- @return table|nil workspace, table core, table|nil trust refusal
 local function load_workspace(root, wait_tools, opts)
+  local ws, core, fail = M._load_workspace_soft(root, wait_tools, opts)
+  if ws then return ws, core end
+  if completion_mode then return nil end
+  -- `lw health` reports a refused working copy as an item instead (§16.36).
+  if fail.trust and opts and opts.soft_trust then return nil, core, fail.trust end
+  die(fail.message)
+end
+
+--- Bootstrap a live, remerged Workspace headlessly without exiting: the load
+--- behind `load_workspace`, also used by the workspace daemon (spec §19.15),
+--- which reports a refusal to its client instead of exiting. Returns
+--- `ws, core`, or `nil, core, { message, trust? }` — `message` is exactly
+--- what `lw` prints for that refusal. `opts.handlers` (the daemon) replaces
+--- the exiting hooks: `notify(msg, level)` and `refused(msg)` (a refused
+--- save or workspace operation lock); it also makes the file tracker manual.
+--- @param root string
+--- @param wait_tools? boolean
+--- @param opts? { soft_trust?: boolean, replace_untrusted_user?: boolean, handlers?: table }
+--- @return table|nil ws, table core, table|nil failure
+function M._load_workspace_soft(root, wait_tools, opts)
   local lw = require("loomworks")
   local core = lw._core()
+  local handlers = opts and opts.handlers
   -- Route notifications to stderr (warnings/errors only); the editor's
   -- info chatter is noise on a CLI.
-  core._deps.notify = function(msg, level)
+  core._deps.notify = handlers and handlers.notify or function(msg, level)
     if not level or level >= vim.log.levels.WARN then
       errw(tostring(msg) .. "\n")
     end
@@ -678,10 +699,13 @@ local function load_workspace(root, wait_tools, opts)
   -- A refused save (spec §2.7: the working copy changed on disk since this
   -- command read it, or a state file has a newer schema) ends the command:
   -- `lw: <message>`, exit 1. Nothing was written.
-  core._deps.on_save_refused = function(msg) die(msg) end
+  core._deps.on_save_refused = handlers and handlers.refused or function(msg) die(msg) end
   -- A refused workspace operation lock (spec §19.3: another process runs a
   -- multi-file operation) ends the command too, before anything was changed.
-  core._deps.on_lock_refused = function(msg) die(msg) end
+  core._deps.on_lock_refused = handlers and handlers.refused or function(msg) die(msg) end
+  -- The daemon applies external file changes itself, before each operation
+  -- (spec §19.15): its tracker never polls.
+  core._deps.manual_file_tracking = handlers and true or nil
   -- Skip the automatic background target scan — it can spawn a per-build-dir
   -- meson/python subprocess (~2s) on every load. Commands that need targets
   -- (`lw run`, `lw target`, the status Targets section) parse them on demand for
@@ -703,25 +727,28 @@ local function load_workspace(root, wait_tools, opts)
     return core._state == "initialized" or core._state == "uninitialized"
   end, 25)
   if not ok then
-    if completion_mode then return nil end
-    die("timed out loading workspace at " .. root)
+    return nil, core, { message = "timed out loading workspace at " .. root }
   end
   local ws = lw.get_workspace()
   if not ws then
-    if completion_mode then return nil end
-    local e = core.get_setup_error and core:get_setup_error()
-    -- `lw health` reports a refused working copy as an item instead (§16.36).
-    if e and e.trust and opts and opts.soft_trust then return nil, core, e.trust end
-    if e and e.trust then die(M._trust_refusal_message(e.trust)) end
-    if e and e.newer then die(e.message) end
-    if e and e.journal then die(e.message) end
-    die("failed to load workspace" .. (e and e.message and (": " .. e.message) or ""))
+    return nil, core, M._setup_failure(core)
   end
   -- Await tool detection (needed for cold builds + accurate buildability).
   if wait_tools ~= false then
     vim.wait(45000, function() return ws._tool_state == "scanned" end, 25)
   end
   return ws, core
+end
+
+--- The refusal of a workspace core that has no workspace (its setup error),
+--- as `lw` prints it: `{ message, trust? }`.
+--- @param core table
+--- @return table
+function M._setup_failure(core)
+  local e = core.get_setup_error and core:get_setup_error()
+  if e and e.trust then return { message = M._trust_refusal_message(e.trust), trust = e.trust } end
+  if e and (e.newer or e.journal) then return { message = e.message } end
+  return { message = "failed to load workspace" .. (e and e.message and (": " .. e.message) or "") }
 end
 -- Test seam: load a real workspace the way dispatch does (build/clean/reset).
 M._load_workspace = load_workspace
@@ -760,27 +787,6 @@ local function profile_numbering(ws)
   return { list = list, number = number }
 end
 M._profile_numbering = profile_numbering
-
---- If `arg` is a pure integer (`^%d+$`), resolve it as the 1-based index into
---- the stable profile numbering (`profile_numbering`); out of range dies with
---- the valid range. Returns the profile, or `nil` when `arg` is not a bare
---- number, so the caller falls through to its own name/key matching (profile
---- keys are never bare integers, so there is no ambiguity). Shared by every
---- profile resolver that accepts a number; `lw profile query` deliberately does
---- not take this path (keys only).
---- @param ws table
---- @param arg string|nil
---- @return table|nil profile
-local function profile_by_number(ws, arg)
-  if type(arg) ~= "string" or not arg:match("^%d+$") then return nil end
-  local order = profile_numbering(ws)
-  local total = #order.list
-  local n = tonumber(arg)
-  if n < 1 or n > total then
-    die("profile number " .. n .. " out of range (1.." .. total .. "); see `lw profile list`")
-  end
-  return order.list[n]
-end
 
 --- Hint lines for mapping project `pkey` (configuration `cfg`, a literal name
 --- or the `<config>` placeholder) into a configuration set (spec §16.38): `map`
@@ -883,19 +889,10 @@ end
 --- @param opts { no_number: boolean }|nil
 --- @return table|nil profile
 local function match_profile_arg(ws, name, opts)
-  local profiles = ws._profiles or {}
-  if not (opts and opts.no_number) then
-    local by_num = profile_by_number(ws, name)
-    if by_num then return by_num end
-  end
-  local keys, by_key = {}, {}
-  for _, p in ipairs(profiles) do keys[#keys + 1] = p.key; by_key[p.key] = p end
-  local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
-  if hit then return by_key[hit] end
-  if ambiguous then
-    die("'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", "))
-  end
-  return nil
+  -- loomworks.build_run.match_profile (host-neutral, shared with the daemon).
+  local hit, err = require("loomworks.build_run").match_profile(ws, name, opts)
+  if err then die(err) end
+  return hit
 end
 M._match_profile_arg = match_profile_arg
 
@@ -912,36 +909,11 @@ M._match_profile_arg = match_profile_arg
 --- @param opts { no_number: boolean, usage: string }|nil
 --- @return table profile
 local function resolve_profile(ws, name, opts)
-  local profiles = ws._profiles or {}
-  if name then
-    local hit = match_profile_arg(ws, name, opts)
-    if hit then return hit end
-    die("no profile matching '" .. name .. "'. Run `lw profile list` to list.")
-  end
-  -- No profile given. Non-interactive mode deliberately does NOT fall back to
-  -- the active/selected profile (or the single-profile shortcut): the active
-  -- profile is mutable shared state in user.json that a parallel run or a
-  -- committed dev setting could change under a CI build, so we require it
-  -- spelled out for a deterministic, contention-free result.
-  if not interactive() then
-    local keys = {}
-    for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
-    table.sort(keys)
-    die("no profile specified — non-interactive mode never uses the active profile\n" ..
-      "  and never infers one (not even when only one profile exists).\n" ..
-      "  pass one explicitly (a unique substring works): " ..
-      (opts and opts.usage or "lw <command> <profile>") .. "\n" ..
-      "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
-      "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically")
-  end
-  local active = ws._active_profile_key
-  if active then
-    for _, p in ipairs(profiles) do
-      if p.key == active then return p end
-    end
-  end
-  if #profiles == 1 then return profiles[1] end
-  die("no profile specified and no unambiguous default — run `lw profile select`")
+  -- loomworks.build_run.resolve_profile; the refusals are its messages.
+  local o = { no_number = opts and opts.no_number, usage = opts and opts.usage, interactive = interactive() }
+  local p, err = require("loomworks.build_run").resolve_profile(ws, name, o)
+  if not p then die(err) end
+  return p
 end
 M._resolve_profile = resolve_profile
 
@@ -1025,38 +997,13 @@ end
 --- (default `lw build <profile>`; test/clean/reset/run pass their own).
 --- @param usage? string
 local function resolve_build_target(ws, name, usage)
-  local profiles = ws._profiles or {}
   usage = usage or "lw build <profile>"
-
-  -- A concrete profile match (number index, exact key, or unambiguous
-  -- boundary-anchored substring — the shared matcher) always wins. A miss
-  -- (nil) falls through to the config-set onboarding / CI-refuse branches.
-  if name then
-    local hit = match_profile_arg(ws, name)
-    if hit then return hit, ws end
-  else
-    if not interactive() then return resolve_profile(ws, nil, { usage = usage }), ws end
-    local active = ws._active_profile_key
-    if active then for _, p in ipairs(profiles) do if p.key == active then return p, ws end end end
-    if #profiles == 1 then return profiles[1], ws end
-    if #profiles > 1 then
-      die("no profile specified and no active default — `lw profile select`, or `" .. usage .. "`")
-    end
-  end
-
-  -- No profile matched. Non-interactive → strict error with the exact commands.
-  if not interactive() then
-    if name then
-      for _, s in ipairs(ws._config_sets or {}) do
-        if s.name == name then
-          die("'" .. name .. "' is a configuration set with no profile yet — " ..
-            "create one:\n  lw profile create " .. name .. " <tool> --activate   " ..
-            "(tools: `lw tools`)\n  then: lw build")
-        end
-      end
-    end
-    return resolve_profile(ws, name, { usage = usage }), ws
-  end
+  -- The match / refusal rules are loomworks.build_run.resolve_target's (shared
+  -- with the workspace daemon, spec §19.15); only onboarding is this host's.
+  local p, err = require("loomworks.build_run").resolve_target(ws, name,
+    { usage = usage, interactive = interactive() })
+  if p then return p, ws end
+  if err then die(err) end
 
   -- Onboard: build a config set by creating a profile for it.
   local sets = ws._config_sets or {}
@@ -1172,6 +1119,8 @@ local function unknown_target_hint(ws, step, targets)
   return #lines > 0 and table.concat(lines, "\nlw: ") or nil
 end
 
+M._unknown_target_hint = unknown_target_hint
+
 --- Run a profile's build steps (configure + build), dying on any failure.
 --- Returns the number of steps run (0 = nothing buildable).
 --- @param opts? table { for_test?: boolean, extra_args?: string[], build_targets?: string[], force?: boolean, reconfigure?: boolean, quiet?: boolean, verbose?: boolean }
@@ -1268,15 +1217,7 @@ M._with_build_dir_locks = with_build_dir_locks -- exported for tests
 --- @param dirs string[]
 --- @return string[]
 function M._lock_order(dirs)
-  local seen, keyed = {}, {}
-  for _, d in ipairs(dirs or {}) do
-    local k = norm_cmp(d)
-    if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
-  end
-  table.sort(keyed, function(a, b) return a.k < b.k end)
-  local out = {}
-  for _, e in ipairs(keyed) do out[#out + 1] = e.d end
-  return out
+  return require("loomworks.build_run").lock_order(dirs)
 end
 
 --- Acquire one lock through `try()` (→ handle | nil, classified info), dying
@@ -7584,7 +7525,40 @@ end
 --- @return table
 function M._daemon_host()
   return { out = out, note = note, errw = errw, die = die, config = read_config(), finish = finish,
-    on_exit = on_exit }
+    on_exit = on_exit, build = M._daemon_build_host() }
+end
+
+--- What the workspace daemon's build service (loomworks.daemon.service,
+--- spec §19.15) needs from this host: the workspace load of the in-process
+--- path — never exiting, refusals returned as the text `lw` prints — and the
+--- `--target` failure hint.
+--- @return table
+function M._daemon_build_host()
+  local function core() return require("loomworks")._core() end
+  return {
+    load = function(root, handlers)
+      local ws, _, fail = M._load_workspace_soft(root, true, { handlers = handlers })
+      if ws then return ws end
+      return nil, fail and fail.message
+    end,
+    unload = function() core():shutdown() end,
+    -- nil while the core (re)loads: a refused file put it back through
+    -- setup (§17.4), and its old workspace must not be used meanwhile.
+    current = function()
+      local c = core()
+      return c._state == "initialized" and c:get_workspace() or nil
+    end,
+    settle = function(ms)
+      vim.wait(ms, function()
+        local c = core()
+        return c._state == "initialized" or c._state == "uninitialized"
+      end, 25)
+      local ws = core():get_workspace()
+      if ws then vim.wait(ms, function() return ws._tool_state == "scanned" end, 25) end
+    end,
+    setup_error = function() return M._setup_failure(core()).message end,
+    unknown_target_hint = function(ws, step, targets) return M._unknown_target_hint(ws, step, targets) end,
+  }
 end
 
 --- `lw daemon <sub>` (spec §19.11) — loomworks.daemon.command.

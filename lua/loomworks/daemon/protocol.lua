@@ -36,6 +36,9 @@ M.KIND = {
     -- replies (frozen)
     ok = "ok",
     error = "error",
+    -- routed operations (§19.15): a request and its task stream
+    build = "build",
+    task = "task",
 }
 
 --- Encode a message table as a frame.
