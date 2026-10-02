@@ -1016,7 +1016,14 @@ do
   -- an lw host; a plain shell is not, and is never killed.
   local me_args = proc.cmdline(me, proc.self_start_time())
   ok(type(me_args) == "table" and #me_args > 0, "proc.cmdline reads this process's command line")
-  ok(proc.is_lw(me_args), "a luvi host counts as an lw process  (" .. tostring(me_args and me_args[1]) .. ")")
+  -- This run is `luvi tests/standalone`: a luvi running another app is not an
+  -- lw host; the same luvi running the loomworks app (`lua/`) is.
+  ok(not proc.is_lw(me_args), "a luvi running another app is not an lw process  ("
+    .. table.concat(me_args or {}, " ") .. ")")
+  ok(proc.is_lw({ me_args and me_args[1] or "luvi", root .. "/lua", "--", "build" }),
+    "a luvi running the loomworks app counts as an lw process")
+  ok(proc.is_lw({ me_args and me_args[1] or "luvi", "../../../lua", "--", "help" }),
+    "a luvi running the loomworks app by a relative path counts as an lw process")
   do
     local stranger = sleeper(30)
     vim.wait(300)

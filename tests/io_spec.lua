@@ -273,3 +273,80 @@ describe("io", function()
         end)
     end)
 end)
+
+describe("exclusive create retry (a leftover held delete-pending, Windows)", function()
+    local real_open, real_ms
+    before_each(function()
+        real_open, real_ms = io_mod._open_exclusive, io_mod.CREATE_RETRY_MS
+        io_mod.CREATE_RETRY_MS = 1
+    end)
+    after_each(function()
+        io_mod._open_exclusive, io_mod.CREATE_RETRY_MS = real_open, real_ms
+    end)
+
+    --- Fail the first `n` creates with `code`, then create for real.
+    local function failing(n, code)
+        local calls = 0
+        io_mod._open_exclusive = function(path, mode)
+            calls = calls + 1
+            if calls <= n then return nil, code .. ": operation not permitted: " .. path, code end
+            return real_open(path, mode)
+        end
+        return function() return calls end
+    end
+
+    it("write_fresh retries a create that fails while the old file lingers, then succeeds", function()
+        for _, code in ipairs({ "EPERM", "EEXIST", "EACCES" }) do
+            local dir = make_tmpdir()
+            local tmp = dir .. "/f.json.tmp"
+            write_raw(tmp, "stale")
+            local calls = failing(2, code)
+            local ok, err = io_mod.write_fresh(tmp, "new", 438)
+            assert.is_true(ok, err)
+            assert.equals(3, calls())
+            assert.equals("new", io_mod.read_file(tmp))
+        end
+    end)
+
+    it("write_fresh gives up after the bounded retries and returns the error", function()
+        local dir = make_tmpdir()
+        local calls = failing(1000, "EPERM")
+        local ok, err = io_mod.write_fresh(dir .. "/g.tmp", "x", 438)
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("EPERM", 1, true), err)
+        assert.equals(io_mod.CREATE_RETRIES, calls())
+        local okw, werr = io_mod.write_file_atomic(dir .. "/h.json", "{}")
+        assert.is_false(okw)
+        assert.truthy(tostring(werr):find("write tmp", 1, true), werr)
+    end)
+
+    it("write_exclusive retries EPERM but never EEXIST (callers pick another name)", function()
+        local dir = make_tmpdir()
+        local calls = failing(2, "EPERM")
+        assert.is_true(io_mod.write_exclusive(dir .. "/a", "1"))
+        assert.equals(3, calls())
+        calls = failing(1000, "EPERM")
+        local ok, _, code = io_mod.write_exclusive(dir .. "/b", "1")
+        assert.is_false(ok)
+        assert.equals("EPERM", code)
+        assert.equals(io_mod.CREATE_RETRIES, calls())
+        io_mod._open_exclusive = real_open
+        write_raw(dir .. "/c", "old")
+        calls = failing(0, "EPERM")
+        local ok2, _, code2 = io_mod.write_exclusive(dir .. "/c", "1")
+        assert.is_false(ok2)
+        assert.equals("EEXIST", code2)
+        assert.equals(1, calls())
+        assert.equals("old", io_mod.read_file(dir .. "/c"))
+    end)
+
+    it("write_fresh never retries through a directory at the name", function()
+        local dir = make_tmpdir()
+        vim.fn.mkdir(dir .. "/d.tmp", "p")
+        local calls = failing(0, "EPERM")
+        local ok = io_mod.write_fresh(dir .. "/d.tmp", "x", 438)
+        assert.is_false(ok)
+        assert.equals(1, calls())
+        assert.equals("directory", uv.fs_lstat(dir .. "/d.tmp").type)
+    end)
+end)

@@ -25,6 +25,16 @@ function M.read_file(path)
     return data, nil
 end
 
+--- The exclusive create (O_CREAT|O_EXCL; tests inject failures here).
+--- @return integer|nil fd, string|nil err, string|nil code
+function M._open_exclusive(path, mode)
+    return uv.fs_open(path, "wx", mode)
+end
+
+--- Bounded retry of an exclusive create that a lingering handle blocks.
+M.CREATE_RETRIES = 5
+M.CREATE_RETRY_MS = 50
+
 --- Create `path` EXCLUSIVELY (O_CREAT|O_EXCL: never through an existing file,
 --- a hard link to another file, or a symbolic link — whose target is never
 --- opened) and write `data` to it, flushed. Returns true, or false + error +
@@ -34,7 +44,24 @@ end
 --- @param mode? integer
 --- @return boolean ok, string|nil err, string|nil code
 function M.write_exclusive(path, data, mode)
-    local fd, err, code = uv.fs_open(path, "wx", mode or 438)
+    -- A leftover at that name held open by an antivirus scanner or indexer
+    -- stays "delete pending" after unlink on Windows, and the exclusive create
+    -- fails with EPERM/EACCES until the last handle closes: retried briefly
+    -- (the timing of write_file_atomic's rename retry). EEXIST is an answer
+    -- (callers choose another name or clear it), never retried here.
+    local ok, err, code
+    for i = 1, M.CREATE_RETRIES do
+        ok, err, code = M._create_once(path, data, mode)
+        if ok or (code ~= "EPERM" and code ~= "EACCES") then break end
+        if i < M.CREATE_RETRIES then uv.sleep(M.CREATE_RETRY_MS) end
+    end
+    return ok, err, code
+end
+
+--- One exclusive create + flushed write (no retry).
+--- @return boolean ok, string|nil err, string|nil code
+function M._create_once(path, data, mode)
+    local fd, err, code = M._open_exclusive(path, mode or 438)
     if not fd then return false, err, code end
     local _, werr = uv.fs_write(fd, data, 0)
     pcall(uv.fs_fsync, fd)
@@ -57,9 +84,20 @@ end
 --- @param mode? integer
 --- @return boolean ok, string|nil err
 function M.write_fresh(tmp, data, mode)
-    local st = uv.fs_lstat(tmp)
-    if st and st.type ~= "directory" then pcall(uv.fs_unlink, tmp) end
-    local ok, err = M.write_exclusive(tmp, data, mode)
+    -- Retried briefly (Windows): a leftover held open by an antivirus scanner
+    -- or indexer lingers "delete pending" after the unlink, so the create
+    -- fails (EEXIST/EPERM/EACCES) until its last handle closes. Each attempt
+    -- clears the name again (a non-directory only; never following a link)
+    -- and creates exclusively. The final failure is returned as before.
+    local ok, err, code
+    for i = 1, M.CREATE_RETRIES do
+        local st = uv.fs_lstat(tmp)
+        if st and st.type ~= "directory" then pcall(uv.fs_unlink, tmp) end
+        ok, err, code = M._create_once(tmp, data, mode)
+        if ok or (code ~= "EEXIST" and code ~= "EPERM" and code ~= "EACCES") then break end
+        if st and st.type == "directory" then break end
+        if i < M.CREATE_RETRIES then uv.sleep(M.CREATE_RETRY_MS) end
+    end
     return ok, err
 end
 

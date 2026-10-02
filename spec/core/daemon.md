@@ -374,7 +374,11 @@ let go within the wait:
 2. **Kill** — only once the process the record names is verified to be such
    a holder: its command line (Windows: the process's command line; Linux:
    `/proc/<pid>/cmdline`; macOS: `KERN_PROCARGS2`) is an `lw` host — the `lw`
-   binary or a pinned copy, a development `luvi` run, or the nvim-hosted
+   binary, a release host under its download name (`lw-linux-x86_64`, …) or a
+   pinned copy `lw-<version>-<asset>` (§16.24); `luvi` running the loomworks
+   app (a source directory named `lua` or `lua-<version>`, which when given as
+   an absolute path must hold `loomworks/cli.lua` — a `luvi` running any other
+   app is not an `lw` host); or the nvim-hosted
    `nvim … -l …/loomworks/cli.lua` — and, for a daemon holder,
    `lw … daemon run` (for this workspace when it names one with `--root`).
    A record is data from a shared directory: one naming an unrelated process
@@ -528,7 +532,13 @@ system **and** gated by authentication (§19.8).
 
 Clients read the address from the handle, and use it only when it is an
 address a daemon of this workspace binds — on Windows exactly the pipe name
-above, on POSIX one of the per-user socket paths. Any other address (a
+above; on POSIX one of the per-user socket paths of the client's own
+environment, or — since the daemon binds the first path of the environment
+that launched it, which a client from ssh, cron, `sudo -u` or a container may
+not share — any `<dir>/<root hash>.sock` named for this workspace where `dir`
+is a real directory (not a link) owned by the caller with mode `0700` and the
+file is a socket owned by the caller, whatever the current environment. A
+socket is removed only under the same conditions. Any other address (a
 remote `\\host\pipe\…`, another user's socket) marks the handle as
 untrusted: nothing is connected to, and the command says so. The handle sits
 in a `.nvim/` other local users may be able to write; connecting to a remote
