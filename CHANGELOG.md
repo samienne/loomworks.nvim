@@ -114,7 +114,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   without it: under machine load the build no longer falls back in-process
   exactly when the daemon helps most. Other commands keep the one-second
   bound, and a daemon that stopped responding is still reported at once.
-  (#000)
+  (#124)
 - `lw test <target>` writes its gtest results file, and `lw ... describe -e`
   its editor buffer, in the workspace's `.nvim/tmp/` instead of the system
   temporary directory, and removes them after use: an interrupted run no
