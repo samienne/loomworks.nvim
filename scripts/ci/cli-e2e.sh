@@ -300,6 +300,118 @@ JSON
     fi
 }
 
+# `lw build` routed through the workspace daemon (spec §19.15, §19.19 step 3)
+# with the real host binary on every OS: a real cmake build (the notice, the
+# streamed tool output, BUILD OK, and a cache the in-process path agrees
+# with), the client's environment reaching the build step (not the daemon's),
+# and an interrupted client cancelling the build (step process gone, lock
+# released, the next build OK). CI sets CI=true, which selects in-process:
+# LOOMWORKS_NO_DAEMON=0 overrides it here.
+daemon_lw() { LOOMWORKS_RUNTIME=daemon LOOMWORKS_NO_DAEMON=0 $LW --no-input "$@"; }
+# Is a `cmake -E sleep` process still running?
+sleeper_alive() {
+    if is_windows_host; then
+        powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='cmake.exe'\" | Where-Object { \$_.CommandLine -like '*-E sleep 61*' }).Count" 2>/dev/null | tr -d '\r' | grep -qv '^0$'
+    else
+        ps -A -o args= | grep -q "[c]make -E sleep 61"
+    fi
+}
+test_daemon_build() {
+    say "lw build through the workspace daemon"
+    local ws="$TMP/daemon-cmake" sh="$TMP/daemon-shell" out="$TMP/out.txt" err="$TMP/err.txt" rc
+    mkdir -p "$ws/app"
+    cat > "$ws/app/CMakeLists.txt" <<'CM'
+cmake_minimum_required(VERSION 3.16)
+project(app CXX)
+add_executable(app main.cpp)
+CM
+    cat > "$ws/app/main.cpp" <<'CPP'
+#include <cstdio>
+int main(){ std::printf("APP-RAN-daemon\n"); return 0; }
+CPP
+    cd "$ws" || { bad "daemon: cd"; return; }
+    run_lw init > "$out" 2>&1 || { note_fail "daemon: init" $?; return; }
+    run_lw project add ./app cmake > "$out" 2>&1 || { note_fail "daemon: project add" $?; return; }
+    local tool; tool=$(pick_tool)
+    if [ -z "$tool" ]; then note_fail "daemon: no toolchain detected" 0; return; fi
+    run_lw configset create Debug app=variant:Debug > "$out" 2>&1 || { note_fail "daemon: configset" $?; return; }
+    run_lw profile create Debug "$tool" > "$out" 2>&1 || { note_fail "daemon: profile create" $?; return; }
+    local prof="Debug:$tool"
+
+    daemon_lw build "$prof" > "$out" 2> "$err"; rc=$?
+    cat "$err" >> "$out"
+    if grep -q "^lw: building through the workspace daemon (pid [0-9]*)" "$err"; then ok "daemon: the build is routed (notice)"
+    else note_fail "daemon: no delegation notice" $rc; fi
+    if [ $rc -eq 0 ] && grep -qF "BUILD OK: $prof" "$out"; then ok "daemon: BUILD OK"
+    else note_fail "daemon: routed cmake build" $rc; fi
+    if grep -qE '\[[0-9]+/[0-9]+\]|Linking|Building' "$out"; then ok "daemon: real tool output streamed"
+    else note_fail "daemon: no streamed tool output" 0; fi
+    run_lw --no-daemon build "$prof" > "$out" 2>&1; rc=$?
+    if [ $rc -eq 0 ] && ! grep -q "\[configure\]" "$out" && ! grep -q "workspace daemon" "$out"; then
+        ok "daemon: in-process build agrees with the daemon's cache (no reconfigure)"
+    else note_fail "daemon: in-process after routed build" $rc; fi
+    daemon_lw daemon stop > /dev/null 2>&1
+
+    # A shell project whose build prints its environment, or sleeps.
+    mkdir -p "$sh/App"
+    write_shell_cfg() {
+        cat > "$sh/loomworks.json" <<JSON
+{"projects":{"App":{"path":"App","shell":{
+  "build_dir":"\${workspace_root}/out/b",
+  "configure_cmd":["cmake","-E","echo","configured"],
+  "build_cmd":$1,
+  "configurations":{"Debug":{}}}}},
+ "configuration_sets":{"Dev":{"App":"Debug"}}}
+JSON
+    }
+    write_shell_cfg '["cmake","-E","environment"]'
+    cd "$sh" || { bad "daemon: cd shell"; return; }
+    run_lw profile create Dev > "$out" 2>&1 || { note_fail "daemon: shell profile" $?; return; }
+    # The daemon starts in an environment the build must not see.
+    LW_E2E_VAR=daemon-side daemon_lw daemon restart > "$out" 2>&1 || { note_fail "daemon: restart" $?; return; }
+    LW_E2E_VAR=client-side daemon_lw build Dev > "$out" 2>&1; rc=$?
+    if [ $rc -eq 0 ] && grep -q "building through the workspace daemon" "$out" \
+        && grep -q "LW_E2E_VAR=client-side" "$out" && ! grep -q "daemon-side" "$out"; then
+        ok "daemon: the build runs in the client's environment"
+    else note_fail "daemon: client environment" $rc; fi
+
+    # Interrupted client: the daemon kills the step, releases the lock.
+    write_shell_cfg '["cmake","-E","sleep","61"]'
+    # (The lw process itself in the background — not a function's subshell —
+    # so the signals below reach it.)
+    LOOMWORKS_RUNTIME=daemon LOOMWORKS_NO_DAEMON=0 $LW --no-input build Dev > "$TMP/bg.txt" 2>&1 &
+    local bg=$!
+    if ! wait_lock_op "$sh" build > /dev/null; then
+        cp "$TMP/bg.txt" "$out"; note_fail "daemon: background build never reached the build step" 1
+        kill -9 "$bg" 2>/dev/null; daemon_lw daemon kill > /dev/null 2>&1; return
+    fi
+    sleep 1
+    kill -INT "$bg" 2>/dev/null; sleep 1; kill -9 "$bg" 2>/dev/null; wait "$bg" 2>/dev/null
+    local n=0
+    while [ $n -lt 100 ] && { [ -n "$(find "$sh" -name '*.loomworks-lock' 2>/dev/null)" ] || sleeper_alive; }; do
+        sleep 0.2; n=$((n + 1))
+    done
+    if [ -z "$(find "$sh" -name '*.loomworks-lock' 2>/dev/null)" ] && ! sleeper_alive; then
+        ok "daemon: an interrupted client cancels the build (step killed, lock released)"
+    else
+        cp "$TMP/bg.txt" "$out"; note_fail "daemon: cancellation left the step or the lock" 1
+    fi
+    write_shell_cfg '["cmake","-E","echo","rebuilt"]'
+    daemon_lw build Dev > "$out" 2>&1; rc=$?
+    if [ $rc -eq 0 ] && grep -q "rebuilt" "$out" && grep -q "BUILD OK: Dev" "$out"; then
+        ok "daemon: the next build runs"
+    else note_fail "daemon: build after cancellation" $rc; fi
+
+    local dpid; dpid=$(lock_pid "$sh/.nvim/loomworks.daemon.lock")
+    daemon_lw daemon stop > "$out" 2>&1 || note_fail "daemon: stop" $?
+    sleep 1
+    if [ -n "$dpid" ] && { if is_windows_host; then tasklist //FI "PID eq $dpid" 2>/dev/null | grep -q " $dpid "; \
+        else kill -0 "$dpid" 2>/dev/null; fi; }; then
+        bad "daemon: the daemon (pid $dpid) is still running"; kill_tree "$dpid"
+    else ok "daemon: no daemon left running"; fi
+    if sleeper_alive; then bad "daemon: a build step survived"; fi
+}
+
 # Drive one module's project through the full CLI flow.
 #   $1 = label (for messages)   $2 = module (meson|cmake)
 #   $3 = workspace dir with app/ inside   $4 = marker to grep in `lw run` output
@@ -516,6 +628,9 @@ test_module_commands
 
 # Toolchain-independent lock recovery (spec §19.5).
 test_lock_recovery
+
+# lw build through the workspace daemon (spec §19.15).
+test_daemon_build
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

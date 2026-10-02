@@ -41,6 +41,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental, opt-in (`runtime-mode daemon`): `lw build` runs in the
+  workspace daemon, in every form (`--target`, `--force`, `--reconfigure`,
+  `-v`, `-- <args>`), with the same output, exit code and build state as
+  without it, after one dim line `lw: building through the workspace daemon
+  (pid N)`. The build runs in the environment of the `lw build` that asked for
+  it (sent over the private, authenticated endpoint; never written anywhere),
+  Ctrl-C stops it in the daemon, and it takes the same build-directory locks
+  as an editor or `lw --no-daemon` build. `--no-daemon`, CI,
+  `--break-locks` and interactive profile creation build without the daemon,
+  as before. (#113)
 - Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
   default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
   workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`

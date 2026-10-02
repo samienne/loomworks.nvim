@@ -687,6 +687,60 @@ re-cut onto master step by step; this section is expanded as each step lands.
   stops; a removed root stops it (checked before the lock, which went with
   the root; its own socket is then removed although R is gone).
 
+**Step 3 (`lw build` routed, spec §19.15)** adds:
+
+- `build_run.lua` (shared with the in-process `lw build`) — also the
+  host-neutral profile resolution (`match_profile`, `resolve_profile`,
+  `resolve_target`: a profile, or the exact refusal text, or `"onboard"`)
+  and `lock_order`; `cli.lua`'s `match_profile_arg` / `resolve_profile` /
+  `resolve_build_target` / `_lock_order` are wrappers that `die` with that
+  text (only the interactive onboarding stays in `cli.lua`).
+- `daemon/service.lua` — attached to the server by `lw daemon run`
+  (`command.run_server`, host = `cli.M._daemon_build_host()`: the non-exiting
+  load `M._load_workspace_soft` with daemon handlers — notifications and
+  refused saves report into the running request — and a manual file
+  tracker). Holds the live workspace + the environment signature it was
+  loaded in; `live(ctx)` reloads on another environment (declines while a
+  build runs) or a journal, else `FileTracker:sync()` (a refusal re-runs core
+  setup → `settle` → the setup error is the refusal). `with_model(ctx, fn)`:
+  the FIFO of model segments, drained on the main loop (`vim.schedule`),
+  each inside `envscope.with(ctx.env, …)`. `on_build` → `_accept` (live,
+  `build_run.resolve_target`, reply accepted / refused / declined) →
+  `runner.run`. `on_conn_closed` / `on_stopping` cancel runs; `owns_task`
+  exempts an owner from the silence rule; `tasks.on_change` sets the
+  handle's `busy` and ends a retiring daemon when idle.
+- `daemon/runner.lua` — the build: locks (`lock_break.acquire` over
+  `build_lock.acquire`, kind `daemon` from the server, dead-holder recovery
+  lines), `build_run.plan`, per step `before_step` → `step_lines` →
+  `spawn_spec` → `M.spawn` (`vim.system` with `clear_env` and the client's
+  environment ⊕ the step's, streaming callbacks) → `after_step` in a model
+  segment, the refused-save check, `failure_message` (+ the host's
+  `--target` hint); `cancel` kills the child with `proc.kill_tree(pid,
+  start time)` and finishes without recording.
+- `daemon/tasks.lua` — tasks owned by a connection; `line` / `output` /
+  `progress` / `done` events, unbounded to the owner, capped for observers.
+- `daemon/envscope.lua` — `with(env, fn)` switches the process environment
+  (`uv.os_setenv` / `os_unsetenv`) and restores it; `signature` (minus `_`,
+  `PWD`, `OLDPWD`, `SHLVL`); `with_overlay` (Windows case-insensitive);
+  `install()` makes `os.getenv` read through libuv on Windows (the CRT copy
+  is not updated by `SetEnvironmentVariableW`).
+- `file_tracker.lua` — `manual` (no `fs_poll`; `watch_signal` a no-op) and
+  `sync()` (deliver every pending change now, in watch order);
+  `Workspace:_start_tracking` passes `deps.manual_file_tracking`.
+- `shim/init.lua` `vim.system` — `stdout` / `stderr` callbacks (nvim
+  semantics; a streamed run finishes after both pipes' EOF, at most
+  `STREAM_GRACE_MS` after the exit) and `:kill()`.
+- `cli.lua` client — `M._delegate_build(root, args, ensured)` after
+  `M._ensure_daemon` (which now returns its outcome) in `main()`:
+  `M._build_request` (the `cmd_build` parse), `M._daemon_workspace_trusted`,
+  `endpoint.check`, `client.session` with an `on_message` printer (`line` →
+  `out` / `note` / `errw`; `output` → `M._raw_write` to fd 1/2, no text-mode
+  translation), the notice from the reply callback (`M._delegation_line`,
+  dim per `M._stderr_supports_color`), keepalive pings while waiting,
+  `die(error, exit_code)` / exit code on `done`. `launch.self_argv` puts the
+  checkout on the runtime path for the nvim-hosted daemon (modules resolve
+  there).
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller

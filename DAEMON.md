@@ -121,7 +121,7 @@ transition: they are what makes version-bypass runs and older versions safe.
 |--|--|--|
 | **1. Operation locks** | §19.3/§19.4 on the in-process path: `loomworks.op.lock`, lock-order audit (incl. device run vs build locks), nuke takes build locks, journal + recovery, lock records with start time + holder kind, dead/hung classification, `--break-locks`, `lw unlock --force` / `--journal`. | Concurrency tests: publish ∥ rename, nuke ∥ build, import ∥ publish; the §19.5 recovery tests (crash at every commit point → old or new; pid reuse; foreign host; editor-held). |
 | **2. Lifetime** | Server + mutual HMAC auth (§19.8), Windows DACL, launch recipe (§19.10), lifetime rules (§19.11), version handshake (§19.9), `lw daemon status`/`stop`/`restart`/`kill` and `stop --force`, runtime log, Runtime row, `--no-daemon` (= in-process for now). Opt-in `runtime-mode daemon`: every workspace command keeps the daemon running though it only answers `ping`/`status`. | Weeks of daily use with the daemon resident: no stray processes, no stuck locks, clean restart after self-update, Windows job-object kills recover; §19.5 tests: daemon killed mid-build → automatic recovery, suspended daemon → reported hung, `--break-locks` recovers. |
-| **3. First operation: `lw build`** | Re-cut #88's delegation (parity-tested there) onto step 1–2 foundations; all build forms. | Build parity test; delegated builds in the LumeEditor peer session. |
+| **3. First operation: `lw build`** | Re-cut #88's delegation (parity-tested there) onto step 1–2 foundations; all build forms. *Implemented (§19.15): every form routed in `runtime-mode daemon`, in the client's environment; `--break-locks` and interactive onboarding stay in-process.* | Build parity test; delegated builds in the LumeEditor peer session. |
 | **4. Editor connects** | Plugin resolves `lw`, launches/connects, keepalive, observes task streams and model changes; still runs its own operations in-process. | CLI build visible live in the status page; editor reload/exit never orphans or kills a busy daemon. |
 | **5. Remaining operations** | One at a time (configure/clean/reset, run/test, profile/project mutations, publish/import/pull, devices), each with a parity test; then the loopback transport; then CLI and plugin stop loading the workspace themselves. | Each operation's parity test green; the in-process loader has no callers except loopback. |
 | **6. Flip default** | `runtime-mode` default becomes shared daemon. | Weeks of betas with the LumeEditor peer session, zero incidents. |
@@ -173,14 +173,15 @@ Evidence from the daemon lifetime spike (2026-09), each with its fix and where
 - **Network drives** — heartbeat by mtime works across hosts but clock skew
   shifts staleness; locks record host so foreign holders are never killed.
 - **Environment leakage** — `LOOMWORKS_LUA` and `LW_ROOT` forwarded to the
-  daemon leak into the build children it spawns; strip loomworks-internal
-  variables from task environments.
+  daemon would leak into the build children it spawns. *Resolved for routed
+  builds (step 3):* a step runs with exactly the requesting client's
+  environment plus its own variables (§19.15), never the daemon's.
 - **Stale environment (step 3)** — the daemon keeps the environment of the
-  client that launched it (step 2 documents this; `lw daemon restart` picks
-  up a new one). Once builds are routed, a build must run with the
-  *requesting* client's environment (PATH, compiler and SDK variables), not
-  the daemon's: send the client environment with the request, or refuse to
-  route when it differs.
+  client that launched it. *Resolved (§19.15):* the client sends its whole
+  environment with a routed build; the daemon runs the build's model work
+  and its steps in it, and reloads its workspace when the environment differs
+  from the one it was loaded in (declining while another build runs). Only
+  the operations still in-process are unaffected, as before.
 - **Known limitations of recovery** (§19.5): on Windows an `lw` holder in
   another console cannot reliably be interrupted, so recovery goes straight to
   the kill; process start time needs per-OS code (`GetProcessTimes`, `/proc`,
