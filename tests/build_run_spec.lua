@@ -139,16 +139,19 @@ describe("build_run", function()
                 assert.same({ "AppRunner" }, steps[1].build_targets)
             end)
 
-            it("refuses an ambiguous or unknown operand without planning", function()
+            it("refuses an ambiguous operand without planning", function()
                 local planned = false
                 stub(overseer, "plan_profile_build", function() planned = true; return {} end)
                 local steps, err = build_run.plan(profile(), { build_targets = { "Common" } })
                 assert.is_nil(steps)
                 assert.matches("App:Common, Lib:Common", err)
-                steps, err = build_run.plan(profile(), { build_targets = { "Lib:AppRunner" } })
-                assert.is_nil(steps)
-                assert.matches("not among Lib's known targets", err)
                 assert.is_false(planned)
+            end)
+
+            it("gives a name no list has to every project, a qualified one to its project", function()
+                plan_returns({}, nil)
+                build_run.plan(profile(), { build_targets = { "install", "Lib:docs" } })
+                assert.same({ [App] = { "install" }, [Lib] = { "install", "docs" } }, seen_opts.build_targets_for)
             end)
 
             it("split_target_ref qualifies only with a profile project", function()

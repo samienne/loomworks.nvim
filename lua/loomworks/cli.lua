@@ -10056,12 +10056,12 @@ for a deterministic build. The CI pattern is:
                 repeatable (cmake `--build --target <name>…`, meson `compile
                 <name>…`; e.g. an EXCLUDE_FROM_ALL target). Name it as
                 `lw target` lists it (<project>:<target>) or bare when only one
-                project has it; only the projects named are built. An
-                ambiguous or unknown name is refused before anything runs,
-                with close matches (a target lw does not list, e.g. `install`
-                or a custom target, goes after `--` in the build tool's own
-                syntax: `-- --target install`). Not supported for shell /
-                typescript projects. Tab-completes.
+                project lists it; only the projects named are built. A bare
+                name several projects list is refused, naming the choices; one
+                no project lists (e.g. `install`, a custom target) goes to
+                every project's build tool, and a failure suggests close
+                matches. Not supported for shell / typescript projects.
+                Tab-completes.
   --force        build even if it overwrites an artifact another built profile
                 owns (that profile is marked stale).
   --reconfigure  force a FULL reconfigure of every project before building

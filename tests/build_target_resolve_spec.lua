@@ -8,7 +8,8 @@
 --- target was not among LumeEditor's known targets. `--target` now accepts the
 --- form `lw target` prints (and an unambiguous bare name), resolves it against
 --- the known target lists BEFORE anything runs, and gives the build tool the
---- bare name in that project's build directory only.
+--- bare name in that project's build directory only. A name no list has
+--- (`install`, a custom target) still goes to every project's build tool.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 
@@ -170,22 +171,34 @@ describe("lw build --target: operand resolution (§16.4)", function()
         assert.truthy(stderr:find("ambiguous", 1, true), stderr)
     end)
 
-    it("an unknown bare name is lw's refusal with close matches; the build tool never runs", function()
+    it("a bare name no project lists goes to every project's build tool; a failure names close matches", function()
         both_known()
-        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "AppRuner" })
+        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "AppRuner" },
+            function(step) return step.kind == "build" and 1 or 0 end)
         assert.equals(1, code)
-        assert.equals(0, #spawned, "the build tool must not run")
+        local b = build_steps(spawned)
+        assert.equals(1, #b, "the first failing build step ends the build")
+        assert.is_true(has_seq(b[1].cmd, { "--target", "AppRuner" }))
         assert.truthy(stderr:find("did you mean 'App:AppRunner'", 1, true), stderr)
-        assert.falsy(stderr:find("unknown target", 1, true), stderr)
     end)
 
-    it("an unknown qualified target is refused up front, naming close matches in that project", function()
+    it("an unlisted target such as `install` passes through to every project, as before", function()
         both_known()
-        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "App:AppRuner" })
-        assert.equals(1, code)
-        assert.equals(0, #spawned)
-        assert.truthy(stderr:find("not among App's known targets", 1, true), stderr)
-        assert.truthy(stderr:find("did you mean 'AppRunner'", 1, true), stderr)
+        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "install" })
+        assert.is_nil(code, stderr)
+        local b = build_steps(spawned)
+        assert.equals(2, #b)
+        for _, s in ipairs(b) do assert.is_true(has_seq(s.cmd, { "--target", "install" }), table.concat(s.cmd, " ")) end
+    end)
+
+    it("a qualified target the project does not list still goes to that project only", function()
+        both_known()
+        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "Lib:docs" })
+        assert.is_nil(code, stderr)
+        local b = build_steps(spawned)
+        assert.equals(1, #b)
+        assert.equals(unit_of(profile, "Lib"), b[1].unit)
+        assert.is_true(has_seq(b[1].cmd, { "--target", "docs" }))
     end)
 
     it("several operands may select different projects", function()
@@ -215,14 +228,13 @@ describe("lw build --target: operand resolution (§16.4)", function()
         assert.is_true(has_seq(b[1].cmd, { "--target", "tool:exe" }))
     end)
 
-    it("a bare name no known list has goes to the projects whose list is not known yet", function()
+    it("a bare name one project lists builds there even when another project's list is not known", function()
         configured(unit_of(profile, "App"), { AppRunner = { type = "executable" } })
-        -- Lib is unconfigured: its target list is not known, its build tool decides.
-        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "Gen" })
+        -- Lib is unconfigured: its list is not known.
+        local spawned, code, stderr = run_build(ws, { "build", profile.key, "--target", "AppRunner" })
         assert.is_nil(code, stderr)
         local b = build_steps(spawned)
         assert.equals(1, #b)
-        assert.equals(unit_of(profile, "Lib"), b[1].unit)
-        assert.is_true(has_seq(b[1].cmd, { "--target", "Gen" }))
+        assert.equals(unit_of(profile, "App"), b[1].unit)
     end)
 end)

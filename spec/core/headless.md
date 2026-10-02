@@ -162,33 +162,29 @@ they could be appended to (§8.1).
 `lw target` lists (§16.18, `<project>:<target>`), or the bare target name.
 `<project>:<target>` is **project-qualified** only when `<project>` names one
 of the profile's projects (a module's own target syntax may contain `:`);
-otherwise the whole operand is a bare name. Every operand is resolved to
-`(project, target)` against the profile's projects' **known target lists**
-before anything runs — no configure, no build tool — so a refusal is lw's
-message, never the build tool's:
+otherwise the whole operand is a bare name. Every operand is resolved to the
+projects that build it before anything runs (no configure, no build tool),
+using the profile's projects' **known target lists**:
 
-- a qualified operand selects that project; when its target list is known and
-  lacks the target, the build is refused, naming close matches in that project;
-- a bare name present in exactly one project's known list selects that project;
-  present in several, it is refused as ambiguous, listing the qualified
-  candidates (`<project>:<target>`);
-- a bare name in no known list is refused, naming close matches across the
-  profile (qualified) — unless some project's list is not known, in which case
-  it is given to those projects and their build tool decides; when such a
-  build fails, the closing message names each requested target the
-  (then-known) list lacks, with close matches.
+- a qualified operand selects that project;
+- a bare name present in exactly one project's known list selects that
+  project; present in several, it is refused as ambiguous before anything
+  runs, listing the qualified candidates (`<project>:<target>`);
+- a bare name in no known list — a target the module does not introspect
+  (e.g. a cmake custom/utility target, or a build-system target such as
+  `install`), one of a project whose list is not known yet, or a misspelling —
+  is given to every project of the profile, and their build tool decides.
 
-A project's target list is **known** when its build is configured on this
-machine and needs no configure now (§5.2; a configure can change its targets),
-and the module introspects targets (§8). The list holds only what the module
-introspects — e.g. not cmake utility targets or build-system targets such as
-`install`; such a target is built with the build tool's own syntax after `--`
-(e.g. `lw build <profile> -- --target install`), which reaches every project
-unresolved. The build tool receives the **bare** target name, in the selected
-project's build directory; a project no operand selects is neither configured
-nor built by that invocation. The same project-qualification rule (a prefix
-counts only when it names one of the profile's projects) applies to every
-target operand: `lw run` (§16.17), `lw test --target` (§16.16) and
+When a `--target` build fails, the closing message names each requested target
+the failing project's (then-known) list lacks, with close matches from the
+profile's projects in the qualified form. A project's target list is
+**known** when its build is configured on this machine and needs no configure
+now (§5.2; a configure can change its targets), and the module introspects
+targets (§8). The build tool receives the **bare** target name, in each
+selected project's build directory; a project no operand selects is neither
+configured nor built by that invocation. The same project-qualification rule
+(a prefix counts only when it names one of the profile's projects) applies to
+every target operand: `lw run` (§16.17), `lw test --target` (§16.16) and
 `lw target set`. A build routed through the workspace daemon (§19.15) resolves
 its operands identically — the resolution is part of the shared build plan.
 

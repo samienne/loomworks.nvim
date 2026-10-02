@@ -311,8 +311,11 @@ end
 --- Resolve `--target` operands to the projects that build them (§16.4), against
 --- each project's KNOWN target list — a unit configured here that needs no
 --- configure now (a configure can change its targets) and whose module
---- introspects targets. Returns a map Project → bare target names (projects
---- absent from it are not built), or nil + lw's refusal. Never runs anything.
+--- introspects targets. A qualified operand goes to its project; a bare name
+--- to the one project whose list has it (several → refused as ambiguous), or,
+--- in no known list, to every project (the build tool decides). Returns a map
+--- Project → bare target names (projects absent from it are not built), or
+--- nil + lw's refusal. Never runs anything.
 --- @param profile loomworks.Profile
 --- @param names string[]
 --- @param opts? { reconfigure?: boolean }
@@ -340,34 +343,16 @@ function M.resolve_build_targets(profile, names, opts)
         for _, x in ipairs(list) do if x == t then return end end
         list[#list + 1] = t
     end
-    local function sorted_ids(set)
-        local ids = {}
-        for id in pairs(set) do ids[#ids + 1] = id end
-        table.sort(ids)
-        return ids
-    end
-    local escape = "\n  (a target lw does not list — e.g. a custom or build-system target — goes "
-        .. "after `--` in the build tool's own syntax)"
     for _, name in ipairs(names) do
         local qproj, bare = M.split_target_ref(profile, name)
         if qproj then
-            local e
-            for _, x in ipairs(entries) do if x.project == qproj then e = x end end
-            if e.known and not e.known[bare] then
-                local near = M.close_matches(bare, sorted_ids(e.known))
-                return nil, string.format("target '%s' is not among %s's known targets%s%s", bare,
-                    qproj.key, #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "",
-                    escape)
-            end
+            -- Scoped to that project even when its list lacks the name (a
+            -- target lw does not list); the build tool decides.
             add(qproj, bare)
         else
-            local hits, unknown, all = {}, {}, {}
+            local hits = {}
             for _, e in ipairs(entries) do
-                if not e.known then unknown[#unknown + 1] = e
-                else
-                    if e.known[bare] then hits[#hits + 1] = e end
-                    for _, id in ipairs(sorted_ids(e.known)) do all[#all + 1] = { project = e.project, id = id } end
-                end
+                if e.known and e.known[bare] then hits[#hits + 1] = e end
             end
             if #hits > 1 then
                 local labels = {}
@@ -376,36 +361,25 @@ function M.resolve_build_targets(profile, names, opts)
                     .. "projects: %s\n  qualify it as <project>:<target>", bare, table.concat(labels, ", "))
             elseif #hits == 1 then
                 add(hits[1].project, bare)
-            elseif #unknown > 0 then
-                -- Not resolvable here: the build tool of every project whose
-                -- list is not known decides (the failure hint names the rest).
-                for _, e in ipairs(unknown) do add(e.project, bare) end
             else
-                -- Match on the bare names, report the qualified form.
-                local ids, seen = {}, {}
-                for _, c in ipairs(all) do
-                    if not seen[c.id] then seen[c.id] = true; ids[#ids + 1] = c.id end
-                end
-                local near = {}
-                for _, b in ipairs(M.close_matches(bare, ids)) do
-                    for _, c in ipairs(all) do
-                        if c.id == b then near[#near + 1] = c.project.key .. ":" .. c.id end
-                    end
-                end
-                return nil, string.format("target '%s' is not among the known targets of profile '%s'%s%s",
-                    bare, tostring(profile.key),
-                    #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "", escape)
+                -- In no known list (a custom / build-system target such as
+                -- `install`, a project not configured yet, or a typo): every
+                -- project gets it, as a plain `--target` always did; the
+                -- build tool decides and a failure names close matches.
+                for _, e in ipairs(entries) do add(e.project, bare) end
             end
         end
     end
     return picks
 end
 
---- After a failed `--target` build: name each requested target the unit's
---- parsed target list does not contain, with close matches. Advisory only —
---- it covers a project whose list was not known when the build was planned
---- (§16.4). `targets` are the bare names this step built (`step.build_targets`
---- when planned). nil when there is nothing to say.
+--- After a failed `--target` build: name each target this step requested
+--- that its project's parsed target list does not contain, with close matches
+--- from every project of the profile, in the `<project>:<target>` form `lw
+--- target` lists (§16.4). Advisory: the lists omit targets a module does not
+--- introspect, so such a name was handed to the build tool, which decided.
+--- `targets` are the bare names the step built (`step.build_targets` when
+--- planned). nil when there is nothing to say.
 --- @param ws loomworks.Workspace
 --- @param step table
 --- @param targets? string[]
@@ -413,17 +387,41 @@ end
 function M.unknown_target_hint(ws, step, targets)
     targets = step.build_targets or targets
     if not (targets and step.unit) then return nil end
-    pcall(M.ensure_unit_targets, ws, step.unit, { refresh = true })
+    local units = { step.unit }
+    if step.profile and step.profile.projects then
+        units = {}
+        for _, pp in ipairs(step.profile:projects()) do
+            if pp._config_unit then units[#units + 1] = pp._config_unit end
+        end
+    end
+    local cands, ids, seen = {}, {}, {}
+    for _, u in ipairs(units) do
+        pcall(M.ensure_unit_targets, ws, u, { refresh = true })
+        local proj = u._project
+        if type(u.targets) == "table" and proj then
+            for id in pairs(u.targets) do
+                cands[#cands + 1] = { project = proj, id = id }
+                if not seen[id] then seen[id] = true; ids[#ids + 1] = id end
+            end
+        end
+    end
     local known = step.unit.targets
     if type(known) ~= "table" or not next(known) then return nil end
-    local names = {}
-    for id in pairs(known) do names[#names + 1] = id end
-    table.sort(names)
+    table.sort(ids)
+    table.sort(cands, function(x, y)
+        if x.project.key ~= y.project.key then return x.project.key < y.project.key end
+        return x.id < y.id
+    end)
     local lines = {}
     local project = step.unit._project and step.unit._project.key or "the project"
     for _, t in ipairs(targets) do
         if not known[t] then
-            local near = M.close_matches(t, names)
+            local near = {}
+            for _, b in ipairs(M.close_matches(t, ids)) do
+                for _, c in ipairs(cands) do
+                    if c.id == b then near[#near + 1] = c.project.key .. ":" .. c.id end
+                end
+            end
             lines[#lines + 1] = string.format("target '%s' is not among %s's known targets%s", t,
                 project, #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "")
         end
