@@ -57,7 +57,17 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field skip table<string, boolean> daemons never connected to again ("pid:start")
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
---- @field _child table|nil the daemon this observer launched (until it is live or exited)
+--- @field _child table|nil the daemon this observer launched (until it is live or exited): `{ pid, code }`
+--- @field _binary string|nil the host binary it was launched from
+--- @field _connecting table|nil the one connection attempt in flight (single-flight token)
+--- @field _watch userdata|nil the handle-watch timer
+--- @field _keepalive userdata|nil the keepalive ping timer
+--- @field _dropped boolean|nil the last connection dropped (keeps its note while waiting)
+--- @field _retired_note boolean|nil the connection is being closed because the daemon retires
+--- @field opts table the attach options (test seams, see `attach`)
+--- @field watch_ms integer handle-watch interval
+--- @field keepalive_ms integer keepalive ping interval
+--- @field warning string|nil an invalid runtime-mode value that was ignored (shown on the Runtime line)
 local Observer = {}
 Observer.__index = Observer
 
@@ -127,7 +137,9 @@ function Observer:start(explicit)
     if self.state == "stopped" then return end
     if explicit then self.skip = {} end
     self:_start_watch()
-    if self.conn then return end
+    -- Single-flight: one connection, one attempt, one launch at a time.
+    if self.conn or self._connecting then return end
+    if self._child and self._child.code == nil then return end
     local st = self:_inspect()
     if st.kind == "live" then return self:_connect(st) end
     if st.kind == "none" or st.kind == "stale" or st.kind == "unreadable" then
@@ -182,12 +194,17 @@ end
 --- One watch tick: a launched daemon that exited early is a note; a live
 --- daemon we are not connected to is connected to (unless skipped).
 function Observer:_on_watch()
-    if self.conn or self.state == "connecting" then return end
+    if self.conn or self._connecting then return end
     local st = self:_inspect()
     local child = self._child
-    if child and child.code ~= nil and child.code ~= require("loomworks.daemon.server").EXIT_HELD
-            and st.kind ~= "live" then
+    -- The launched daemon exited without becoming the live one. EXIT_HELD
+    -- means some runtime holds R — another daemon (then it is live or
+    -- starting and is picked up below) or an attached lw command (noted).
+    if child and child.code ~= nil and st.kind ~= "live" and st.kind ~= "starting" then
         self._child = nil
+        if child.code == require("loomworks.daemon.server").EXIT_HELD then
+            return self:_set("waiting", M.state_note(st))
+        end
         return self:_set("waiting", "could not start the workspace daemon (it exited with status "
             .. tostring(child.code) .. ")")
     end
@@ -214,6 +231,7 @@ function Observer:_connect(st)
     local connect = self.opts.connect or require("loomworks.daemon.client").connect
     self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
     local target = { pid = h.pid, start_time = h.start_time }
+    self._connecting = target
     connect(h.endpoint, {
         client = "editor", role = "observer", timeout_ms = M.CONNECT_MS,
         on_message = function(msg) vim.schedule(function() self:_on_message(msg) end) end,
@@ -224,10 +242,13 @@ function Observer:_connect(st)
 end
 
 function Observer:_on_connected(target, conn, err)
-    if self.state == "stopped" then
-        if conn then conn:close() end
+    -- Only the attempt in flight counts; anything else (stopped meanwhile,
+    -- superseded) closes the connection it got.
+    if self.state == "stopped" or self._connecting ~= target or self.conn then
+        if conn then conn.on_close = nil; conn:close() end
         return
     end
+    self._connecting = nil
     if not conn then
         if err == "untrusted" then self.skip[daemon_id(target.pid, target.start_time)] = true end
         return self:_set("waiting", "could not reach the workspace daemon (pid " .. tostring(target.pid)
@@ -327,8 +348,10 @@ function Observer:_on_message(msg)
         local d = self.daemon
         if d then self.skip[daemon_id(d.pid, d.start_time)] = true end
         local c = self.conn
-        if c then c:close() end -- _on_closed (scheduled) records the drop
-        self._retired_note = true
+        if c then
+            self._retired_note = true
+            c:close() -- _on_closed (scheduled) records the drop
+        end
         return
     elseif msg.kind == "task" then
         return self:_on_task(msg)

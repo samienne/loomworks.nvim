@@ -36,7 +36,7 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         env = H.env({ LOOMWORKS_DATA_DIR = vim.env.LOOMWORKS_DATA_DIR, LOOMWORKS_RUNTIME = "daemon",
             LW_TEST_SLEEP = "1500" })
         seen = { started = 0, stopped = 0 }
-        on("daemon_task_started", function() seen.started = seen.started + 1 end)
+        on("daemon_task_started", function(d) seen.started = seen.started + 1; seen.task = d.task end)
         on("daemon_task_stopped", function(d) seen.stopped = seen.stopped + 1; seen.last = d.task end)
         core = require("loomworks")._core()
         core:setup({ root = root })
@@ -81,14 +81,15 @@ describe("the editor observes the workspace daemon (§19.16)", function()
 
         -- A build from a terminal, routed to the daemon (§19.15).
         local b = H.lw_start({ "build", "dev" }, { env = env, cwd = root })
-        assert.is_true(vim.wait(60000, function() return #ws:get_daemon_tasks() == 1 end, 20), b.stderr())
-        local task = ws:get_daemon_tasks()[1]
+        -- (The event, not a poll of the running tasks: a fast build can be
+        -- over between two polls.)
+        assert.is_true(vim.wait(60000, function() return seen.started == 1 end, 20), b.stderr())
+        local task = seen.task
         assert.equals("dev", task.profile_name)
         assert.equals(ws:get_profiles()[1], task.profile)
         -- Resolved to the editor's own ConfigUnit, by reference.
         assert.equals(unit, task.units[1].unit)
-        assert.equals("building", unit:state())
-        assert.equals(1, seen.started)
+        if not task.finished then assert.equals("building", unit:state()) end
 
         assert.is_true(b.wait(120000))
         assert.equals(0, b.code, b.stderr())

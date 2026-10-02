@@ -232,12 +232,22 @@ describe("the observer (§19.16)", function()
 
     it("keeps the connection alive with pings; drops on stop and never relaunches", function()
         s = new_server(root)
-        s.srv.keepalive_ms = 200 -- silent for 600 ms: dropped
+        -- Silent for 3 s: dropped. (Not shorter: the whole suite runs at once,
+        -- and on a saturated runner one loop iteration of this process — which
+        -- serves both the server and the observer — can take longer than a
+        -- sub-second window; the observer was then dropped, reconnected, and
+        -- missed the task started meanwhile.)
+        s.srv.keepalive_ms = 1000
+        local silent = assert(client.session(s.srv.address, { client = "editor", role = "observer" }))
         local spawned = 0
         obs = attach({ spawn = function() spawned = spawned + 1 end, resolve = function() return "lw" end })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        vim.wait(1500)
+        local conn = obs.conn
+        -- The silent observer is dropped; the pinging one stays, on the same
+        -- connection.
+        assert.is_true(vim.wait(20000, function() return silent.closed end, 20))
         assert.equals("connected", obs.state)
+        assert.equals(conn, obs.conn)
         assert.equals(1, s.srv:observer_count())
         -- A task running when the daemon goes away ends with it.
         local owner_client = assert(client.session(s.srv.address))
@@ -287,6 +297,51 @@ describe("the observer (§19.16)", function()
         vim.wait(300)
         assert.equals(1, connects)
         assert.equals(1, closed)
+    end)
+
+    it("connect and launch are single-flight; a superseded connection is closed", function()
+        local cbs = {}
+        local live = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } }
+        obs = attach({ inspect = function() return live end, check = function() return true end,
+            connect = function(_, _, cb) cbs[#cbs + 1] = cb end })
+        assert.equals(1, #cbs)
+        obs:start(true) -- `:LoomworksDaemon connect` while connecting
+        obs:start(true)
+        vim.wait(200)
+        assert.equals(1, #cbs)
+        -- A late answer to an attempt that is no longer in flight is closed.
+        local stale = { closed = 0 }
+        function stale.close() stale.closed = stale.closed + 1 end
+        obs:_on_connected({ pid = 1 }, stale)
+        assert.equals(1, stale.closed)
+        assert.is_nil(obs.conn)
+        obs:stop(); obs = nil
+        -- Launching: a second connect does not start a second daemon.
+        local spawned = 0
+        obs = attach({ inspect = function() return { kind = "none" } end, resolve = function() return "lw" end,
+            spawn = function() spawned = spawned + 1; return { pid = 1 } end })
+        assert.equals("launching", obs.state)
+        obs:start(true)
+        assert.equals(1, spawned)
+    end)
+
+    it("a launched daemon that exits because an lw command holds the runtime is a note, not 'starting'", function()
+        local child = { pid = 1 }
+        local st = { kind = "none" }
+        obs = attach({ inspect = function() return st end, resolve = function() return "lw" end,
+            spawn = function() return child end })
+        assert.equals("launching", obs.state)
+        st = { kind = "attached", lock = { pid = 77 } }
+        child.code = server_mod.EXIT_HELD
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
+        assert.truthy(obs:runtime_line():find("held by an lw command (pid 77)", 1, true), obs:runtime_line())
+        assert.is_nil(obs._child)
+    end)
+
+    it("a `retiring` with no connection does not mark the next drop as a retirement", function()
+        obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end })
+        obs:_on_message({ kind = "retiring" })
+        assert.is_nil(obs._retired_note)
     end)
 
     it("workspace teardown stops the observer and closes its connection", function()
