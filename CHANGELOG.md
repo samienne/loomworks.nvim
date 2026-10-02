@@ -149,6 +149,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - A build step whose program cannot be started now says why (`lw: cannot
   start <program>: <reason>`), the same with or without the workspace
   daemon. (#117)
+- `lw build --target` accepts a target exactly as `lw target` lists it,
+  `<project>:<target>`, and builds it in that project only (the build tool
+  used to get the qualified name and fail with `ninja: error: unknown
+  target`). A bare name that one project lists builds in that project only;
+  one that several projects list is refused, naming the `<project>:<target>`
+  choices. Any other name (`install`, a custom target) still goes to the
+  build tool as before, and a failure names close matches as
+  `<project>:<target>`. The same applies through the workspace daemon. (#116)
 - Workspace daemon (experimental, `runtime-mode daemon`): a routed
   `lw build` whose output is not being read (`lw build | less`, paused) no
   longer makes the daemon hold the whole build output in memory; the build

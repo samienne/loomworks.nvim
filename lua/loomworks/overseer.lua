@@ -398,10 +398,12 @@ end
 --- Does not change the active profile. Uses registered ProfileProject and
 --- Project objects instead of recomputing from scratch.
 --- @param profile loomworks.Profile
---- @param opts? { force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
+--- @param opts? { force_full_reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table<loomworks.Project, string[]> }
 ---   forwarded to the module context (§8.1): force_full_reconfigure makes every
 ---   configure take the module's full path; build_args / build_targets are the
----   caller's build request for the build tasks (headless `lw build`, §16.4)
+---   caller's build request for the build tasks (headless `lw build`, §16.4);
+---   build_targets_for (the resolved `--target` operands) replaces
+---   build_targets per project and skips every project it does not name
 --- @return table|nil task_defs_by_action { configure = {...}, build = {...} }
 local function collect_profile_tasks(profile, opts)
     opts = opts or {}
@@ -419,6 +421,10 @@ local function collect_profile_tasks(profile, opts)
     for _, pp in ipairs(pps) do
         local project = pp._project
         if not project then goto continue end
+
+        -- A resolved `--target` request (§16.4) builds only the projects it
+        -- selected, each with its own bare target names.
+        if opts.build_targets_for and not opts.build_targets_for[project] then goto continue end
 
         local mod = project._module and project._module.impl or nil
         if not mod or not mod.tasks then goto continue end
@@ -461,7 +467,7 @@ local function collect_profile_tasks(profile, opts)
             recorded_options = pp._config_unit and pp._config_unit._cached_options or nil,
             force_full_reconfigure = (opts.force_full_reconfigure or orphan_state) or nil,
             build_args = opts.build_args,
-            build_targets = opts.build_targets,
+            build_targets = opts.build_targets_for and opts.build_targets_for[project] or opts.build_targets,
         }
 
         local pt = mod.progress_parser
@@ -1077,7 +1083,7 @@ end
 --- ready-to-spawn `{cmd, cwd, env}`. Intended for headless runners — it
 --- requires no overseer.nvim and launches nothing.
 --- @param profile loomworks.Profile
---- @param opts? table { for_test?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[] }
+--- @param opts? table { for_test?: boolean, reconfigure?: boolean, build_args?: string[], build_targets?: string[], build_targets_for?: table }
 ---   for_test drops the build step of any unit whose native test runner
 ---   self-rebuilds — configuration is still planned for every unit; reconfigure
 ---   forces a FULL reconfigure of every unit (`lw build --reconfigure`, §16.4);
@@ -1092,6 +1098,7 @@ function M.plan_profile_build(profile, opts)
         force_full_reconfigure = opts.reconfigure or nil,
         build_args = opts.build_args,
         build_targets = opts.build_targets,
+        build_targets_for = opts.build_targets_for,
     })
     if not all_tasks then return nil end
     local needs_configure = filter_unconfigured_tasks(all_tasks, opts.reconfigure)

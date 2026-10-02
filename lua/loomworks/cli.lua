@@ -1064,70 +1064,20 @@ end
 M._record_step = function(ws, step, ok) return require("loomworks.build_run").record(ws, step, ok) end
 M._runs_batch_file = function(cmd) return require("loomworks.build_run").runs_batch_file(cmd) end
 
---- Up to three of `candidates` close to `name` (case-insensitive substring
---- either way, or a small edit distance), nearest first.
---- @param name string
---- @param candidates string[]
---- @return string[]
+--- Up to three of `candidates` close to `name` (loomworks.build_run).
 local function close_matches(name, candidates)
-  local function dist(a, b)
-    local prev = {}
-    for j = 0, #b do prev[j] = j end
-    for i = 1, #a do
-      local cur = { [0] = i }
-      for j = 1, #b do
-        local cost = a:sub(i, i) == b:sub(j, j) and 0 or 1
-        cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
-      end
-      prev = cur
-    end
-    return prev[#b]
-  end
-  local lname, limit = name:lower(), math.max(1, math.floor(#name / 3))
-  local scored = {}
-  for _, c in ipairs(candidates) do
-    local lc = c:lower()
-    local d = dist(lname, lc)
-    if d <= limit or lc:find(lname, 1, true) or lname:find(lc, 1, true) then
-      scored[#scored + 1] = { name = c, d = d }
-    end
-  end
-  table.sort(scored, function(a, b)
-    if a.d ~= b.d then return a.d < b.d end
-    return a.name < b.name
-  end)
-  local outl = {}
-  for i = 1, math.min(3, #scored) do outl[i] = scored[i].name end
-  return outl
+  return require("loomworks.build_run").close_matches(name, candidates)
 end
 M._close_matches = close_matches
 
--- Defined with the test runner below; used by the --target failure hint.
+-- Defined with the test runner below.
 local ensure_unit_targets
 
---- After a failed `--target` build: name each requested target the unit's
---- parsed target list does not contain, with close matches. Advisory only —
---- the list omits targets a module does not introspect (e.g. cmake custom /
---- utility targets), so `--target` is never refused up front on it; the build
---- tool is the authority. nil when there is nothing to say.
+--- After a failed `--target` build: the build tool's unknown targets, named
+--- with close matches (loomworks.build_run.unknown_target_hint, §16.4).
 --- @return string|nil
 local function unknown_target_hint(ws, step, targets)
-  if not (targets and step.unit) then return nil end
-  pcall(ensure_unit_targets, ws, step.unit)
-  local known = step.unit.targets
-  if type(known) ~= "table" or not next(known) then return nil end
-  local names = {}
-  for id in pairs(known) do names[#names + 1] = id end
-  local lines = {}
-  local project = step.unit._project and step.unit._project.key or "the project"
-  for _, t in ipairs(targets) do
-    if not known[t] then
-      local near = close_matches(t, names)
-      lines[#lines + 1] = string.format("target '%s' is not among %s's known targets%s", t,
-        project, #near > 0 and (" — did you mean '" .. table.concat(near, "', '") .. "'?") or "")
-    end
-  end
-  return #lines > 0 and table.concat(lines, "\nlw: ") or nil
+  return require("loomworks.build_run").unknown_target_hint(ws, step, targets)
 end
 
 M._unknown_target_hint = unknown_target_hint
@@ -2283,30 +2233,10 @@ function M.cmd_device(sub, root, args)
     "lw device clean [--device <serial>]")
 end
 
---- Ensure a config unit's build targets are parsed — the headless equivalent
---- of the editor's post-configure scan (workspace.lua). No-op if already
---- parsed or the module exposes no target introspection. Requires a configured
---- build dir, so the caller must build first.
+--- Ensure a config unit's build targets are parsed (loomworks.build_run).
+--- Requires a configured build dir, so the caller must build first.
 ensure_unit_targets = function(ws, unit)
-  if not unit or unit.targets then return end
-  local project = unit._project
-  local mod = project and project._module and project._module.impl
-  local build_dir = unit.build_dir and unit:build_dir()
-  if not (mod and mod.parse_targets and build_dir) then return end
-  -- Only a build dir this machine configured (signed cache, spec §17.8).
-  if unit.configured_here and not unit:configured_here() then return end
-  -- config_name is the module build type (e.g. "Debug"); matters for
-  -- multi-config generators, ignored by single-config ones.
-  local cfg = unit.configuration and unit:configuration()
-  local config_name = (cfg and cfg.module_config and cfg.module_config.variant)
-    or (unit._cached_module_config and unit._cached_module_config.variant)
-    or (unit.variant and unit:variant())
-  local ok, targets = pcall(mod.parse_targets, {
-    build_dir = build_dir,
-    project_path = ws.root .. "/" .. (project.path or project.key),
-    config_name = config_name,
-  })
-  if ok and targets then unit:set_targets(targets) end
+  return require("loomworks.build_run").ensure_unit_targets(ws, unit)
 end
 
 --- `lw test [profile] [--junit <file>] [-- <args>]` — build a profile, then run
@@ -2491,8 +2421,8 @@ end
 local function match_targets(ws, profile, name, proj_scope, kind, all)
   local scope, bare = proj_scope, name
   if not scope then
-    local pfx, rest = name:match("^([^:]+):(.+)$")
-    if pfx and profile:project(pfx) then scope, bare = pfx, rest end
+    local qproj, rest = require("loomworks.build_run").split_target_ref(profile, name)
+    if qproj then scope, bare = qproj.key, rest end
   end
   all = all or launchable_targets(ws, profile)
   local matches = {}
@@ -6290,18 +6220,8 @@ local function target_set(root, args)
   local profile = resolve_profile(ws, profile_name, -- nil → active (interactive) / dies in CI
     { usage = "lw target set <profile> <target>" })
 
-  -- Resolve <target> to a candidate (same rules as `lw run`).
-  local bare = target_name
-  if not scope then
-    local pfx = target_name:match("^([^:]+):(.+)$")
-    if pfx and profile:project(pfx) then scope, bare = pfx, target_name:match("^[^:]+:(.+)$") end
-  end
-  local all = launchable_targets(ws, profile)
-  local matches = {}
-  for _, c in ipairs(all) do
-    if c.name == bare and (not scope or c.project.key == scope)
-      and (not kind or c.kind == kind) then matches[#matches + 1] = c end
-  end
+  -- Resolve <target> to a candidate (the same matcher as `lw run`).
+  local matches, all = match_targets(ws, profile, target_name, scope, kind)
   if #matches == 0 then
     local labels = {}
     for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
@@ -9678,7 +9598,8 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "build" and n >= 2 and a[n] == "--target" then
     -- `lw build <profile> --target <TAB>`: the named profile's parsed build
-    -- targets (read from its configured build dirs; none before a configure).
+    -- targets (read from its configured build dirs; none before a configure),
+    -- bare and in the project-qualified form `lw target` lists (§16.4).
     local ws_c = comp_ws(root)
     local names = {}
     for _, p in ipairs(ws_c and ws_c._profiles or {}) do
@@ -9688,6 +9609,7 @@ function M.cmd_complete(cword, words)
           pcall(ensure_unit_targets, ws_c, unit)
           for id in pairs(unit and type(unit.targets) == "table" and unit.targets or {}) do
             names[#names + 1] = id
+            if pp._project then names[#names + 1] = pp._project.key .. ":" .. id end
           end
         end
       end
@@ -10132,10 +10054,14 @@ for a deterministic build. The CI pattern is:
 
   --target <name>  build just this target instead of the default set;
                 repeatable (cmake `--build --target <name>…`, meson `compile
-                <name>…`; e.g. an EXCLUDE_FROM_ALL target). Applies to every
-                project of the profile. Not supported for shell / typescript
-                projects. A misspelt name fails in the build tool, and lw then
-                suggests close matches from the parsed targets. Tab-completes.
+                <name>…`; e.g. an EXCLUDE_FROM_ALL target). Name it as
+                `lw target` lists it (<project>:<target>) or bare when only one
+                project has it; only the projects named are built. An
+                ambiguous or unknown name is refused before anything runs,
+                with close matches (a target lw does not list, e.g. `install`
+                or a custom target, goes after `--` in the build tool's own
+                syntax: `-- --target install`). Not supported for shell /
+                typescript projects. Tab-completes.
   --force        build even if it overwrites an artifact another built profile
                 owns (that profile is marked stale).
   --reconfigure  force a FULL reconfigure of every project before building

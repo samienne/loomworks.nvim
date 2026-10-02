@@ -115,6 +115,51 @@ describe("build_run", function()
             assert.same({ "ninja", "-k", "0" }, steps[1].cmd)
         end)
 
+        -- The resolution is part of the plan, so the in-process `lw build` and
+        -- a daemon-routed build (§19.15, both call build_run.plan) resolve
+        -- `--target` operands identically (§16.4).
+        describe("--target operands", function()
+            local App, Lib = { key = "App" }, { key = "Lib" }
+            local function unit(project, targets)
+                return { _project = project, targets = targets, configure_reason = function() return nil end }
+            end
+            local function profile()
+                local pps = {
+                    { _project = App, _config_unit = unit(App, { AppRunner = {}, Common = {} }) },
+                    { _project = Lib, _config_unit = unit(Lib, { Common = {} }) },
+                }
+                return { key = "dev", projects = function() return pps end }
+            end
+
+            it("resolves the qualified form to the project and its bare name, before the module plan", function()
+                plan_returns({ { kind = "build", name = "b", cmd = { "ninja", "AppRunner" },
+                    applied_build_targets = true, unit = { _project = App } } })
+                local steps = build_run.plan(profile(), { build_targets = { "App:AppRunner" } })
+                assert.same({ [App] = { "AppRunner" } }, seen_opts.build_targets_for)
+                assert.same({ "AppRunner" }, steps[1].build_targets)
+            end)
+
+            it("refuses an ambiguous or unknown operand without planning", function()
+                local planned = false
+                stub(overseer, "plan_profile_build", function() planned = true; return {} end)
+                local steps, err = build_run.plan(profile(), { build_targets = { "Common" } })
+                assert.is_nil(steps)
+                assert.matches("App:Common, Lib:Common", err)
+                steps, err = build_run.plan(profile(), { build_targets = { "Lib:AppRunner" } })
+                assert.is_nil(steps)
+                assert.matches("not among Lib's known targets", err)
+                assert.is_false(planned)
+            end)
+
+            it("split_target_ref qualifies only with a profile project", function()
+                local p = profile()
+                local proj, bare = build_run.split_target_ref(p, "Lib:x:y")
+                assert.equals(Lib, proj); assert.equals("x:y", bare)
+                proj, bare = build_run.split_target_ref(p, "foo:executable")
+                assert.is_nil(proj); assert.equals("foo:executable", bare)
+            end)
+        end)
+
         it("refuses forwarded args for a batch-file build", function()
             plan_returns({ { kind = "build", name = "b", cmd = { "cmd", "/c", "!LOOMWORKS_VCVARS_BAT!" } } })
             local steps, err = build_run.plan({}, { extra_args = { "-k", "0" } })
