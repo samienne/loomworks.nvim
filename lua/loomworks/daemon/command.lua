@@ -134,6 +134,10 @@ function M.status(root, host)
             out("  answers      no (" .. tostring(err) .. ") — lw daemon stop --force recovers a hung daemon")
         end
     end
+    -- The runtime log (§19.10), when there is one.
+    local logp = require("loomworks.daemon.paths").log_path(root)
+    local lst = (vim.uv or vim.loop).fs_lstat(logp)
+    if lst and lst.type == "file" then out("Log            " .. logp) end
     return 0
 end
 

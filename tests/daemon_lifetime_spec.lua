@@ -156,19 +156,46 @@ describe("lifetime rules (§19.11, in-process server)", function()
         local all = table.concat(lines, "\n")
         assert.truthy(all:find("serving", 1, true))
         assert.truthy(all:find("stopping: idle", 1, true))
-        -- The file writer: one file per workspace, rotated past the cap.
+        -- The file writer: one file per workspace, inside it (§16.40),
+        -- rotated past the cap; nothing in the per-user data directory.
         local saved = os.getenv("LOOMWORKS_DATA_DIR")
         vim.env.LOOMWORKS_DATA_DIR = d
         local saved_max = rlog.MAX_BYTES
         rlog.MAX_BYTES = 100
         for i = 1, 5 do rlog.write(root, "line " .. i .. string.rep("x", 40)) end
         local p = rlog.path(root)
-        assert.truthy(p:find(d, 1, true) == 1)
-        assert.truthy(p:find(dpaths.root_hash(root) .. ".log", 1, true))
+        assert.equals(dpaths.norm_root(root) .. "/.nvim/loomworks.daemon.log", p)
         assert.truthy(uv.fs_stat(p .. ".1"))
         assert.truthy(uv.fs_stat(p).size <= 200)
+        assert.is_nil(uv.fs_stat(d .. "/daemon/logs"))
         rlog.MAX_BYTES = saved_max
         vim.env.LOOMWORKS_DATA_DIR = saved
+    end)
+
+    it("runtime log: never recreates a removed workspace, never writes through a planted link", function()
+        local base = vim.fn.tempname():gsub("\\", "/")
+        -- A removed root: no write, nothing created.
+        rlog.write(base .. "/gone", "x")
+        assert.is_nil(uv.fs_stat(base .. "/gone"))
+        -- An existing root without .nvim: .nvim is created (one level).
+        vim.fn.mkdir(base .. "/ws", "p")
+        rlog.write(base .. "/ws", "first")
+        local body = assert(io.open(base .. "/ws/.nvim/loomworks.daemon.log")):read("*a")
+        assert.truthy(body:find("first", 1, true))
+        -- A link planted at the log's name is never written through.
+        vim.fn.mkdir(base .. "/ws2/.nvim", "p")
+        local target = base .. "/victim.txt"
+        local f = assert(io.open(target, "wb")); f:write("keep"); f:close()
+        local linked = uv.fs_symlink(target, base .. "/ws2/.nvim/loomworks.daemon.log")
+        if linked then
+            rlog.write(base .. "/ws2", "planted")
+            assert.equals("keep", assert(io.open(target, "rb")):read("*a"))
+        end
+        -- A directory at the name is left alone.
+        vim.fn.mkdir(base .. "/ws3/.nvim/loomworks.daemon.log", "p")
+        rlog.write(base .. "/ws3", "dir")
+        assert.equals("directory", uv.fs_lstat(base .. "/ws3/.nvim/loomworks.daemon.log").type)
+        vim.fn.delete(base, "rf")
     end)
 end)
 
@@ -254,7 +281,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.equals(0, r.code, r.stderr)
         assert.equals(lk.pid, rlock.read(root).pid)
         -- The runtime log names the launch.
-        local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
+        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
         assert.truthy(log:find("launched the workspace daemon (pid " .. lk.pid, 1, true), log)
         assert.truthy(log:find("serving", 1, true), log)
         assert.equals(0, lw({ "daemon", "stop" }).code)
@@ -300,7 +327,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.truthy(r.stderr:find("is not responding — recover with: lw daemon stop --force", 1, true), r.stderr)
         assert.is_true(H.alive(lk.pid, lk.start_time))
         assert.equals(0, lw({ "daemon", "kill" }).code)
-        local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
+        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
         assert.truthy(log:find("killed", 1, true), log)
     end)
 
@@ -347,7 +374,7 @@ describe("runtime-mode daemon with real processes", function()
         local f = assert(io.open(root .. "/.nvim/loomworks.op.lock", "w")); f:write(vim.json.encode(rec)); f:close()
         local r = lw({ "--no-daemon", "unlock", "--workspace", "--force" })
         assert.equals(0, r.code, r.stderr)
-        local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
+        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
         assert.truthy(log:find("lw unlock --force: removed the workspace operation lock held by pid 4242", 1, true), log)
     end)
 end)

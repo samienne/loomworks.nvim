@@ -71,7 +71,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   runs through it yet). `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true`
   never start it; it exits after `daemon-idle-timeout` (default 1h) without
   clients, or when the workspace is removed. Kills and forced unlocks are now
-  recorded in a per-workspace runtime log under the lw data directory. (#107)
+  recorded in the workspace's runtime log, `.nvim/loomworks.daemon.log`
+  (`lw daemon status` names it). (#107, #121)
 - Operations that change several workspace files at once (publish, import,
   pull, cache-propagating renames, profile removal, reset, nuke,
   `lw trust --discard`, and the editor's delete / reset / nuke) take a
@@ -101,6 +102,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- `lw test <target>` writes its gtest results file, and `lw ... describe -e`
+  its editor buffer, in the workspace's `.nvim/tmp/` instead of the system
+  temporary directory, and removes them after use: an interrupted run no
+  longer leaves them outside the workspace. (#121)
 - `lw import`: an item the working copy already has keeps its intent (local or
   local+shared); only new items take theirs from `loomworks.json`. Exporting
   and importing on the same workspace no longer turns shared items local.

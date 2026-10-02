@@ -265,20 +265,25 @@ describe("named test executables on the host", function()
                 return { cmd = s.cmd, args = vim.deepcopy(o.extra_args or {}), cwd = s.cwd, env = s.env }
             end,
         }
-        local seen
+        local seen, xml
         local res = capture(function()
             return cli._test_targets({ root = root }, { key = "Host" }, { "Local" },
                 { extra = { "--x" }, dev = cli._new_device_opts() }, {
                     build = function() end, resolve_target = function() return lt end,
                     run_spec = function(step)
                         seen = step.cmd
-                        local xml = step.cmd[#step.cmd]:match("^%-%-gtest_output=xml:(.+)$")
+                        xml = step.cmd[#step.cmd]:match("^%-%-gtest_output=xml:(.+)$")
                         fx.write(xml, gtest_xml({ { name = "a" }, { name = "b", fail = true } }))
                         return 0
                     end,
                 })
         end)
         gtest.probe_sync = orig
+        -- The results file is in the workspace's .nvim/tmp (spec §16.40) and
+        -- is removed once read.
+        assert.equals((root:gsub("\\", "/")) .. "/.nvim/tmp/", xml:sub(1, #root + 11))
+        assert.truthy(xml:match("/lw%-test%-%x+%.xml$"), xml)
+        assert.is_nil((vim.uv or vim.loop).fs_stat(xml))
         require("loomworks.io").rm_rf(root)
         assert.is_false(res.ok)
         assert.is_table(seen, tostring(res.ret))

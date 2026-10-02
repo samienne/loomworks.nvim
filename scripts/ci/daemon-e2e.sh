@@ -166,7 +166,8 @@ if [ -n "$mpid" ] && alive "$mpid"; then ok "started daemon pid $mpid"; else bad
 if [ $((t1 - t0)) -lt 15000 ]; then ok "lw profiles | cat returned in $((t1 - t0)) ms"; else bad "lw profiles | cat took $((t1 - t0)) ms"; fi
 t0=$(now_ms); lw profiles | cat >/dev/null; t1=$(now_ms)
 [ "$(pid_of "$LOCK")" = "$mpid" ] && ok "next command reused it ($((t1 - t0)) ms)" || bad "next command started another daemon"
-logf=$(ls "$TMP"/data/daemon/logs/*.log 2>/dev/null | head -1)
+logf="$WS/.nvim/loomworks.daemon.log"
+[ -d "$TMP/data/daemon/logs" ] && bad "a runtime log outside the workspace ($TMP/data/daemon/logs)" || ok "no runtime log outside the workspace"
 grep -q "launched the workspace daemon" "$logf" 2>/dev/null && ok "runtime log records the launch" || bad "no launch in the runtime log ($logf)"
 
 say "the daemon exits when its workspace is removed"
