@@ -67,36 +67,66 @@ M.VOLATILE_PREFIXES = { "VSCODE_", WIN and "CONEMU" or "ConEmu" }
 local function key(k) return WIN and k:upper() or k end
 M._key = key
 
+--- Is `k` one of the Windows environment block's hidden `=`-prefixed
+--- entries — cmd.exe's per-drive working directories (`=C:` = `C:\src`) and
+--- `=ExitCode`, inherited by every process a cmd.exe (or a `.cmd` / `.bat`
+--- shim, or a console started from one) runs? They are not variables (no
+--- `getenv` reads them, `SetEnvironmentVariable` is not how they are made),
+--- but they are part of the block an in-process build's step inherits.
+--- @param k string
+--- @return boolean
+function M.special(k)
+    return WIN and k:sub(1, 1) == "=" and #k > 1 and not k:find("=", 2, true)
+end
+
 --- Is the variable (by comparison key) ignored by `signature`?
+--- The `=`-prefixed entries change with every `cd` and every command of a
+--- cmd.exe session.
 --- @param kk string
 --- @return boolean
 function M.volatile(kk)
-    if M.VOLATILE[kk] then return true end
+    if M.VOLATILE[kk] or M.special(kk) then return true end
     for _, p in ipairs(M.VOLATILE_PREFIXES) do
         if kk:sub(1, #p) == p then return true end
     end
     return false
 end
 
---- This process's environment as a dict.
+--- Can the entry `k` = `v` travel in a request (`validate` accepts it)?
+--- A name is non-empty, without `=` (except a Windows `=`-prefixed entry,
+--- `special`) or NUL; a value is without NUL.
+--- @param k any
+--- @param v any
+--- @return boolean
+local function valid_entry(k, v)
+    if type(k) ~= "string" or type(v) ~= "string" or k == "" or k:find("%z") or v:find("%z") then
+        return false
+    end
+    return not k:find("=", 1, true) or M.special(k)
+end
+
+--- This process's environment as a dict — every entry a request can carry
+--- (`valid_entry`; the process environment never holds another).
 --- @return table<string, string>
 function M.capture()
     local e = {}
-    for k, v in pairs(uv.os_environ()) do e[k] = v end
+    for k, v in pairs(uv.os_environ()) do
+        if valid_entry(k, v) then e[k] = v end
+    end
     return e
 end
 
 --- Validate an environment received on the wire: a dict of string → string.
---- Returns it, or nil + why.
+--- Returns it, or nil + why (naming the variable, never its value).
 --- @param env any
 --- @return table|nil env, string|nil err
 function M.validate(env)
     if type(env) ~= "table" then return nil, "no environment" end
     local n = 0
     for k, v in pairs(env) do
-        if type(k) ~= "string" or type(v) ~= "string" or k == "" or k:find("[=%z]")
-            or v:find("%z") then
-            return nil, "malformed environment variable"
+        if not valid_entry(k, v) then
+            local name = type(k) == "string" and (k:gsub("[%c]", "?")) or tostring(k)
+            return nil, "malformed environment variable '" .. name:sub(1, 64) .. "'"
         end
         n = n + 1
     end
@@ -120,14 +150,19 @@ function M.signature(env)
     return table.concat(lines, "\n")
 end
 
---- Make the process environment exactly `env`.
+--- Make the process environment exactly `env` — its variables: the
+--- Windows `=`-prefixed entries (`special`) are left as they are on both
+--- sides (they are this process's per-drive directories, and nothing the
+--- model reads); they reach a build step through `with_overlay`.
 --- @param env table<string, string>
 function M.apply(env)
     local cur = uv.os_environ()
     local want = {}
-    for k, v in pairs(env) do want[key(k)] = { k, v } end
+    for k, v in pairs(env) do
+        if not M.special(k) then want[key(k)] = { k, v } end
+    end
     for k in pairs(cur) do
-        if not want[key(k)] then pcall(uv.os_unsetenv, k) end
+        if not want[key(k)] and not M.special(k) then pcall(uv.os_unsetenv, k) end
     end
     for _, w in pairs(want) do
         if cur[w[1]] ~= w[2] then pcall(uv.os_setenv, w[1], w[2]) end

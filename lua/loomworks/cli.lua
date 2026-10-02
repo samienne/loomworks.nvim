@@ -7525,7 +7525,36 @@ function M._ensure_daemon(root)
       log = require("loomworks.daemon.rlog").writer(root),
     })
   end)
-  return ok and outcome or nil
+  if not ok then
+    -- Never silent (§19.15): the command runs without the daemon, and says so.
+    note("lw: could not use the workspace daemon (" .. (tostring(outcome):match("[^\n]*")) .. "); running without it")
+    return nil
+  end
+  return outcome
+end
+
+--- The one stderr line of a `lw build` the daemon does not run although this
+--- command has one (spec §19.15): `lw: <what> (<reason>); running without it`.
+--- @param what string
+--- @param reason string
+--- @return string
+function M._not_routed_line(what, reason)
+  return "lw: " .. what .. " (" .. tostring(reason) .. "); running without it"
+end
+
+--- Why the workspace runtime `st` (loomworks.daemon.inspect) is not a daemon
+--- this command can use, for `_not_routed_line`.
+--- @param st table
+--- @return string
+function M._runtime_reason(st)
+  local lk = st.lock or {}
+  local pid = tostring(lk.pid or (st.handle or {}).pid or "?")
+  if st.kind == "foreign" then return "it runs on " .. tostring(lk.host or "?") .. ", pid " .. pid end
+  if st.kind == "attached" then
+    return "the workspace runtime is held by " .. require("loomworks.daemon.rlock").holder_text(lk) .. ", pid " .. pid
+  end
+  if st.kind == "starting" then return "it is still starting, pid " .. pid end
+  return "the workspace runtime: " .. require("loomworks.daemon.inspect").row(st, "daemon")
 end
 
 --- The one stderr line a build routed to the daemon prints before its output
@@ -7588,6 +7617,25 @@ function M._daemon_workspace_trusted(root)
   return true
 end
 
+--- Windows: make this process receive the console's Ctrl-C again. A process
+--- started with Ctrl-C disabled — `start /b`, a new process group (as Git
+--- Bash runs a native program it signals with `kill -INT`), or inherited from
+--- a parent that ignores it — never sees the interrupt; in-process that did
+--- not matter (the build's own processes in the console still get it and the
+--- build stops), but a routed build's processes are the daemon's, so only
+--- this client can cancel it. `SetConsoleCtrlHandler(NULL, FALSE)`; a no-op
+--- elsewhere or without the FFI. Returns whether it was applied.
+--- @return boolean
+function M._enable_console_ctrl_c()
+  if package.config:sub(1, 1) ~= "\\" then return false end
+  local ok, res = pcall(function()
+    local ffi = require("ffi")
+    pcall(ffi.cdef, "int SetConsoleCtrlHandler(void *handler, int add);")
+    return ffi.C.SetConsoleCtrlHandler(nil, 0) ~= 0
+  end)
+  return ok and res == true
+end
+
 --- Route `lw build` to the workspace daemon (spec §19.15, §19.19 step 3).
 --- Only when this command has a daemon (`ensured` is "used", "launched" or
 --- "restarted" — runtime-mode daemon, not `--no-daemon` / CI, versions
@@ -7603,14 +7651,29 @@ end
 --- @return integer|nil exit code
 function M._delegate_build(root, args, ensured, opts)
   opts = opts or {}
+  local inspect = require("loomworks.daemon.inspect")
+  local function could_not(reason)
+    note(M._not_routed_line("the workspace daemon could not take the build", reason))
+    return nil
+  end
+  -- Every outcome that does not route in daemon mode prints one line saying
+  -- why (§19.15): ensure() printed it for a bypass, a newer daemon, a hung,
+  -- starting or unstartable one; "off" is in-process mode or an explicit
+  -- `--no-daemon` / LOOMWORKS_NO_DAEMON / CI.
+  if ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
   if ensured ~= "used" and ensured ~= "launched" and ensured ~= "restarted" then return nil end
-  if require("loomworks.lock_break").requested then return nil end
+  if require("loomworks.lock_break").requested then
+    return could_not("--break-locks runs the build in this process")
+  end
+  -- An argument cmd_build refuses, and a workspace the machine refuses: the
+  -- in-process path reports them (that is the line).
   local req = M._build_request(args)
   if not req or not M._daemon_workspace_trusted(root) then return nil end
-  local st = require("loomworks.daemon.inspect").state(root)
-  if st.kind ~= "live" then return nil end
+  local st = inspect.state(root)
+  if st.kind ~= "live" then return could_not(M._runtime_reason(st)) end
   local client = require("loomworks.daemon.client")
-  if not require("loomworks.daemon.endpoint").check(root, st.handle.endpoint) then return nil end
+  local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
+  if not eok then return could_not(ewhy) end
   local task_id, done, accepted = nil, nil, false
   local function on_message(m)
     if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
@@ -7635,6 +7698,13 @@ function M._delegate_build(root, args, ensured, opts)
     note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
     return nil
   end
+  -- Ctrl-C cancels the routed build (§19.15): the interrupt handler runs the
+  -- exit hooks — this one drops the connection first, which the daemon takes
+  -- as the cancellation — and exits 130. The build's own processes are the
+  -- daemon's, not in this console, so the interrupt must reach THIS process:
+  -- on Windows it may have been started with Ctrl-C disabled.
+  on_exit(function() pcall(conn.close, conn) end)
+  M._enable_console_ctrl_c()
   local reply, rerr
   conn:request({ kind = "build", args = req, interactive = interactive(), command = "lw build",
     env = require("loomworks.daemon.envscope").capture() }, function(r, e)
@@ -7668,12 +7738,11 @@ function M._delegate_build(root, args, ensured, opts)
     conn:close()
     -- Nothing was accepted: run without it, as for a daemon that cannot be
     -- started (§19.10).
-    note("lw: the workspace daemon could not take the build (" .. tostring(rerr or "connection lost")
-      .. "); running without it")
-    return nil
+    return could_not(rerr or "connection lost")
   end
   if reply.outcome == "declined" then
     conn:close()
+    note(M._not_routed_line("the workspace daemon declined the build", reply.reason or "no reason given"))
     return nil
   end
   if reply.outcome == "refused" then
@@ -7682,8 +7751,7 @@ function M._delegate_build(root, args, ensured, opts)
   end
   if not accepted then
     conn:close()
-    note("lw: the workspace daemon could not take the build (unexpected reply); running without it")
-    return nil
+    return could_not("unexpected reply")
   end
   waiting(function() return done ~= nil end)
   conn:close()
@@ -10219,7 +10287,8 @@ at most) or starts one in the background, then runs exactly as before, except
 (`lw: building through the workspace daemon (pid N)`), then the build's output
 and result are the same as without it. Ctrl-C (or the end of `lw`) stops the
 build in the daemon. `lw build --break-locks` and creating a missing profile
-interactively still run without it. A daemon of another lw version is
+interactively still run without it. Whenever a build does not run in the
+daemon, one line says why (only the opt-outs below are silent). A daemon of another lw version is
 replaced when idle; a busy one is asked to exit when idle and the command runs
 without it (one line says so). If it cannot start, does not answer, or is
 still starting, one line says so and the command runs without it. A daemon
@@ -10236,15 +10305,18 @@ daemon over the private endpoint below; it is never written anywhere. Other
 work of a started daemon keeps the environment of the command that started
 it. Builds from two terminals (tabs, panes, SSH sessions) share the daemon's
 loaded workspace: variables that only name the terminal or session
-(WT_SESSION, TMUX_PANE, SSH_TTY, VSCODE_*, ...) do not count as a different
+(WT_SESSION, TMUX_PANE, SSH_TTY, VSCODE_*, cmd.exe's hidden =C: entries,
+...) do not count as a different
 environment; any other difference (PATH, a compiler variable) reloads it.
 
 A routed build's tools write into a pipe, not your terminal (as with
 `lw build | tee`): ninja prints every [n/N] line instead of one status line,
 and tools that colour only on a terminal do not. lw adds no colour variable
 (it would reach every process of the build); set one yourself, e.g.
-CLICOLOR_FORCE=1, and the build gets it. A reader that stops reading
-(`lw build | less`, paused) pauses the build tool, as without the daemon.
+CLICOLOR_FORCE=1, and the build gets it. When the reader of lw's output
+stops reading (`lw build | less`, paused), the daemon keeps up to about
+4 MiB of the build's output for it, then pauses the build tool until it reads
+again (as without the daemon); no output is lost or reordered.
 
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
