@@ -13,8 +13,10 @@
 -- non-zero, printed no summary, or was still running at the deadline, and
 -- exits non-zero only then. It also reports a file whose child exited but
 -- whose stdout/stderr stayed open (a leaked descendant process holding the
--- pipes — plenary would wait for it), the slowest files, and the files slow
--- to exit after their summary (RUN_SPECS_SLOW_EXIT_MS, default 1000).
+-- pipes — plenary would wait for it) and the slowest files. With
+-- RUN_SPECS_SLOW_EXIT_MS=<ms> it also lists the files slower than that to exit
+-- after their summary (measured in this process's event loop, so a busy
+-- runner adds to it: indicative only, off by default).
 --
 -- A child that exits 1 after a clean summary is typically Nvim's own exit
 -- path: when its event loop does not close within 2 s at exit (a libuv
@@ -298,10 +300,10 @@ local function read_file(path)
     return t
 end
 
--- Exit latency: from the summary's last line to the child's exit. A child
--- that needs seconds to exit after its tests (nvim waits up to 2 s for its
--- event loop to close, then exits 1) is flagged even when it got away with 0.
-local SLOW_EXIT_MS = tonumber(vim.env.RUN_SPECS_SLOW_EXIT_MS or "") or 1000
+-- Exit latency: from the summary's last line to the child's exit (nvim waits
+-- up to 2 s for its event loop to close at exit, then exits 1). Shown in the
+-- failure table; listed for every file only on request.
+local SLOW_EXIT_MS = tonumber(vim.env.RUN_SPECS_SLOW_EXIT_MS or "")
 
 local problems, warnings, slow_exits = {}, {}, {}
 local tot_pass, tot_fail, tot_err = 0, 0, 0
@@ -337,7 +339,7 @@ for _, r in ipairs(runs) do
     if r.pipes_held then
         table.insert(warnings, r)
     end
-    if r.lag and r.lag > SLOW_EXIT_MS then
+    if SLOW_EXIT_MS and r.lag and r.lag > SLOW_EXIT_MS then
         table.insert(slow_exits, r)
     end
 end
