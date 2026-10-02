@@ -21,8 +21,9 @@ local M = {}
 
 --- The wire protocol version (spec §19.8). 1 was draft PR #88 (unauthenticated);
 --- 2 adds the mutual handshake and the frozen control subset; 3 the routed
---- `build` request and its task stream (§19.15).
-M.PROTOCOL = 3
+--- `build` request and its task stream (§19.15); 4 the observer role and the
+--- `model_change` / `retiring` broadcasts (§19.11, §19.12, §19.16).
+M.PROTOCOL = 4
 
 local function uv() return vim.uv or vim.loop end
 
@@ -138,6 +139,21 @@ function M.matches(peer, opts)
     local s, ps = M.schemas(), peer.schemas
     if type(ps) ~= "table" or ps.user ~= s.user or ps.cache ~= s.cache then return false, "schemas" end
     if not (opts and opts.editor) and peer.lw_version ~= M.identity() then return false, "version" end
+    return true
+end
+
+--- May an editor OBSERVE a daemon with these announced versions (spec §19.9,
+--- §19.16)? An equal protocol and schemas no newer than ours; the host version
+--- may differ. Returns false + what is wrong ("protocol" | "schemas").
+--- @param peer table
+--- @return boolean ok, string|nil what
+function M.observer_compatible(peer)
+    if type(peer) ~= "table" or peer.protocol ~= M.PROTOCOL then return false, "protocol" end
+    local ps = peer.schemas
+    if type(ps) ~= "table" or type(ps.user) ~= "number" or type(ps.cache) ~= "number" then
+        return false, "schemas"
+    end
+    if M.peer_schemas_newer(peer) then return false, "schemas" end
     return true
 end
 

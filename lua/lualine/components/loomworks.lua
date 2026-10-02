@@ -146,6 +146,15 @@ local function attach_events()
         _running_count = math.max(0, _running_count - 1)
         if _running_count == 0 then stop_timer() end
     end)
+    -- A build observed in the workspace daemon (spec §19.16) spins the same.
+    events.on("daemon_task_started", function()
+        _running_count = _running_count + 1
+        maybe_start_timer()
+    end)
+    events.on("daemon_task_stopped", function()
+        _running_count = math.max(0, _running_count - 1)
+        if _running_count == 0 then stop_timer() end
+    end)
 end
 
 -- ---------------------------------------------------------------------------

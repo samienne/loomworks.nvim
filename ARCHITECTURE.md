@@ -788,6 +788,44 @@ re-cut onto master step by step; this section is expanded as each step lands.
   checkout on the runtime path for the nvim-hosted daemon (modules resolve
   there).
 
+**Step 4 (the editor observes, spec §19.16)** adds:
+
+- `daemon/observer.lua` — one Observer per loaded Workspace in daemon runtime
+  mode (`init.setup` hooks `workspace_changed` → `observer.attach(ws)`; the
+  CLI never calls setup, so it never attaches). Owned by the workspace
+  (`ws._daemon_observer`), stopped first in `Workspace:teardown`. `start`
+  (load / `:LoomworksDaemon connect`) connects to a live daemon or launches
+  one through `launch.spawn(root, { argv = { <host binary> } })` without a
+  blocking readiness wait; a uv timer (`WATCH_MS`) watches the handle and
+  connects when a live daemon appears — the only way back after a drop (never
+  a relaunch). `client.connect` with `client = "editor"`, `role =
+  "observer"`, `on_message` / `on_close` (both only `vim.schedule`);
+  `version.observer_compatible`; daemons `retiring` / incompatible / untrusted
+  go into `skip` (pid:start). Keepalive `ping` timer. `model_change` (seq /
+  generation) → `ws._tracker:sync()`. `task` events → RemoteTasks; events
+  `daemon_task_started|progress|stopped`, `daemon_runtime_changed`.
+- `daemon/remote_task.lua` — RemoteTask: resolves `start` meta once at the
+  wire boundary (profile by key among `ws:get_profiles()`, units through that
+  profile's ProfileProjects to their ConfigUnit); unresolved keys stay names
+  for display; keeps output (≤ `OUTPUT_CAP_BYTES`), `follow` for the output
+  buffer; `attach_units` / `detach_units` set `ConfigUnit._remote_task`
+  (`ConfigUnit:state()` reports `building` while it runs).
+- `daemon/host_binary.lua` — `LOOMWORKS_LW` > provisioned pinned binary
+  (`boot.pin` + `boot.paths.data_dir()/pinned/lw-<ver>-<asset>`) > `lw` on
+  `PATH` (`.exe` on Windows).
+- Server: hello `role` → `conn.observer`; `active_clients()` (non-observers)
+  gates retirement (`_maybe_retire`, also from `service`'s `tasks.on_change`);
+  `retire` broadcasts `retiring` to observers; `welcome.retiring`;
+  `status.observers`; `model_changed()` (seq + generation) — called by the
+  service's `written` handler, which `cli._load_workspace_soft` installs as
+  `deps.on_written`, fired by `Workspace:_record_written` (every committed
+  user/cache write). `runner` adds `profile` + `units` to the task meta.
+  Protocol 4.
+- UI: the status page's `Runtime:` header line (`init.daemon_runtime_line`),
+  `(daemon)` rows + "Show output" scratch buffer in `ui/sections/tasks.lua`
+  (`init.get_daemon_tasks`), fidget handles keyed `daemon:<id>`, the lualine
+  spinner counts `daemon_task_*`; `:LoomworksDaemon [status|connect]`.
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller

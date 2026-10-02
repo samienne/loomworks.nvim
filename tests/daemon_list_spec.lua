@@ -154,7 +154,7 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
             assert.equals("number", type(d.uptime_s))
             assert.equals("string", type(d.lw_version))
             assert.equals("string", type(d.start_time))
-            assert.equals(3, d.protocol)
+            assert.equals(require("loomworks.daemon.version").PROTOCOL, d.protocol)
         end
         assert.equals(da.start_time, ia.start_time)
         assert.is_true(doc.scan_ms < 5000, "scan took " .. doc.scan_ms .. " ms")

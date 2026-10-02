@@ -41,6 +41,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental, opt-in (`runtime = { mode = "daemon" }` in the plugin setup,
+  or `LOOMWORKS_RUNTIME=daemon`): the editor connects to the workspace daemon
+  and shows the builds it runs, such as `lw build` in a terminal, as fidget
+  progress, `building` units on the status page and in the statusline, and a
+  `(daemon)` row in the Tasks section with the build's output. The editor's
+  own builds still run in the editor. It starts the daemon from the `lw` it
+  finds (`LOOMWORKS_LW`, the pinned `lw`, `lw` on `PATH`) when a workspace
+  opens or on `:LoomworksDaemon connect`, never after `lw daemon stop`, and
+  picks up the daemon's build results at once. (#PR)
 - `lw cleanup` lists what lw left behind outside the workspace after an
   interrupted run (partial downloads and staging directories, temporary
   files, a dead holder's device lock, a stale daemon socket, files earlier

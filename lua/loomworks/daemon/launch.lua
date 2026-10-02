@@ -137,11 +137,14 @@ end
 
 --- Spawn the daemon (no wait). Returns { pid, exited = fun(): integer|nil }
 --- or nil + reason.
+--- `opts.argv` replaces the own-executable prefix: the editor launches the
+--- host binary it resolved (spec §19.16), never its own plugin source.
 --- @param root string
---- @param opts? { args?: string[] } extra `daemon run` arguments
+--- @param opts? { args?: string[], argv?: string[] } extra `daemon run` arguments; the executable prefix
 --- @return table|nil child, string|nil err
 function M.spawn(root, opts)
-    local argv, aerr = M.self_argv()
+    local argv, aerr
+    if opts and opts.argv then argv = vim.list_extend({}, opts.argv) else argv, aerr = M.self_argv() end
     if not argv then return nil, aerr end
     local exe = table.remove(argv, 1)
     for _, a in ipairs({ "daemon", "run", "--root", root }) do argv[#argv + 1] = a end

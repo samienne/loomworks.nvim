@@ -64,9 +64,7 @@ function M.attach(server, host)
             if not busy then server.idle_since = os.time() end
             server:_handle_changed()
         end
-        if not busy and server.retiring and server.n_clients == 0 and not server.stopped then
-            server:stop("retired (idle after a version mismatch)", 0)
-        end
+        if not busy then server:_maybe_retire() end
     end
     envscope.install()
     server.service = self
@@ -126,6 +124,8 @@ function Service:handlers()
             if c then c.refused = c.refused or tostring(msg) end
             self.server:log("refused: %s", tostring(msg))
         end,
+        -- A committed write of a state file: tell the clients (§19.12).
+        written = function() self.server:model_changed() end,
     }
 end
 

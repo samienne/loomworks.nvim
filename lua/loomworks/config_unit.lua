@@ -34,6 +34,7 @@
 --- @field _task_id number|nil current overseer task ID
 --- @field _last_task_id number|nil most recent overseer task ID
 --- @field _action string|nil "configure" or "build" while running
+--- @field _remote_task loomworks.RemoteTask|nil a task observed in the workspace daemon that runs this unit (spec §19.16); runtime only
 --- @field _progress loomworks.ProgressUpdate|nil
 --- @field _start_time number|nil clock() value when task started
 --- @field _last_progress_notify number|nil clock() value of last progress notify
@@ -303,6 +304,10 @@ function ConfigUnit:state()
     if self._action then
         return self._action == "configure" and "configuring" or "building"
     end
+    -- A build another client runs in the workspace daemon (spec §19.16).
+    if self._remote_task and not self._remote_task.finished then
+        return self._remote_task.action == "configure" and "configuring" or "building"
+    end
     local state = self.state_value
     if not state then return "unconfigured" end
     -- Map cached status names to ConfigUnitState names
@@ -322,6 +327,31 @@ end
 --- @return string|nil "configure" or "build"
 function ConfigUnit:running_action()
     return self._action
+end
+
+--- Mark this unit as run by a task observed in the workspace daemon (spec
+--- §19.16). Reporting only: it never blocks an editor operation (the
+--- cross-process build-directory locks do).
+--- @param task loomworks.RemoteTask
+function ConfigUnit:begin_remote_task(task)
+    self._remote_task = task
+    self:_notify()
+end
+
+--- Clear the mark `task` set (a later task's mark is left alone).
+--- @param task loomworks.RemoteTask
+function ConfigUnit:end_remote_task(task)
+    if self._remote_task ~= task then return end
+    self._remote_task = nil
+    self:_notify()
+end
+
+--- The task observed in the workspace daemon that runs this unit, if any.
+--- @return loomworks.RemoteTask|nil
+function ConfigUnit:remote_task()
+    local t = self._remote_task
+    if t and not t.finished then return t end
+    return nil
 end
 
 --- Check if this unit is being deleted/cleaned.
