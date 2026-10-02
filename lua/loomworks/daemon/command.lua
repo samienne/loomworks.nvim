@@ -27,7 +27,7 @@ local lock_record = require("loomworks.lock_record")
 
 local M = {}
 
-M.SUBS = { "status", "stop", "restart", "kill", "run" }
+M.SUBS = { "status", "list", "stop", "restart", "kill", "run" }
 
 --- How long `stop` waits for the daemon to release R (§19.11).
 M.STOP_WAIT_MS = 10000
@@ -386,6 +386,180 @@ function M.restart(root, host, args)
     return 0
 end
 
+-- ---------------------------------------------------------------------------
+-- Every daemon of this user (spec §19.6.1)
+-- ---------------------------------------------------------------------------
+
+--- The `--under <dir>` filter, made absolute against the cwd.
+local function under_of(args, host)
+    local u = opt_value(args, "--under")
+    if not u then
+        for i = 3, #args do
+            if args[i] == "--under" then host.die("--under needs a directory", 2) end
+        end
+        return nil
+    end
+    u = u:gsub("\\", "/")
+    if not (u:match("^/") or u:match("^%a:/")) then
+        u = ((vim.uv or vim.loop).cwd():gsub("\\", "/")) .. "/" .. u
+    end
+    return (u:gsub("/+$", ""))
+end
+
+local STATE_TEXT = { starting = "starting", hung = "not responding", stray = "stray", unknown_root = "stray" }
+
+--- The STATE column of one entry.
+function M.state_text(e)
+    if e.state == "live" then
+        if e.busy then return "busy" end
+        if (e.clients or 0) > 0 then return "active" end
+        if e.idle_since then return "idle " .. age(os.time() - e.idle_since) end
+        return "idle"
+    end
+    return STATE_TEXT[e.state] or tostring(e.state)
+end
+
+--- The JSON shape of one entry (§19.6.1; absent values are null).
+local function json_entry(e)
+    local null = vim.NIL
+    local function v(x) if x == nil then return null end return x end
+    return {
+        pid = e.pid, start_time = v(e.start_time), root = v(e.root), state = e.state, reason = v(e.reason),
+        uptime_s = v(e.uptime_s), started_at = v(e.started_at), clients = v(e.clients), busy = v(e.busy),
+        idle_since = v(e.idle_since), lw_version = v(e.lw_version), protocol = v(e.protocol),
+        endpoint = v(e.endpoint),
+    }
+end
+
+--- The summary line's counts text: "3 daemons (1 idle, 1 stray)".
+function M.summary(list)
+    local n, idle, stray = require("loomworks.daemon.discover").counts(list)
+    local extra = {}
+    if idle > 0 then extra[#extra + 1] = idle .. " idle" end
+    if stray > 0 then extra[#extra + 1] = stray .. " stray" end
+    return n .. (n == 1 and " daemon" or " daemons") .. (#extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or "")
+end
+
+--- `lw daemon list [--json] [--under <dir>]`. Never launches, connects or
+--- signals; writes nothing.
+--- @param args string[]
+--- @param host table
+--- @return integer
+function M.list(args, host)
+    local list, ms = require("loomworks.daemon.discover").list({ under = under_of(args, host) })
+    if has(args, "--json") then
+        -- (Built by hand so an empty list is `[]` under every host's encoder.)
+        local enc = require("loomworks.io").encode_sorted
+        local ds = {}
+        for _, e in ipairs(list) do ds[#ds + 1] = enc(json_entry(e)) end
+        host.out(string.format('{"daemons":[%s],"scan_ms":%d,"schema":1}', table.concat(ds, ","),
+            math.floor(ms + 0.5)))
+        return 0
+    end
+    if #list == 0 then
+        host.out("no workspace daemons are running")
+        return 0
+    end
+    local rows = { { "PID", "UPTIME", "STATE", "CLIENTS", "VERSION", "ROOT" } }
+    for _, e in ipairs(list) do
+        local root = e.root or "(root unknown)"
+        if e.reason and (e.state == "stray") then root = root .. "  (" .. e.reason .. ")" end
+        rows[#rows + 1] = {
+            tostring(e.pid), e.uptime_s and age(e.uptime_s) or "?", M.state_text(e),
+            e.clients and tostring(e.clients) or "-", e.lw_version and tostring(e.lw_version) or "-", root,
+        }
+    end
+    local w = {}
+    for _, r in ipairs(rows) do
+        for i = 1, #r - 1 do w[i] = math.max(w[i] or 0, #r[i]) end
+    end
+    for _, r in ipairs(rows) do
+        local cells = {}
+        for i = 1, #r - 1 do cells[i] = r[i] .. string.rep(" ", w[i] - #r[i]) end
+        cells[#r] = r[#r]
+        host.out(table.concat(cells, "  "))
+    end
+    host.out(M.summary(list) .. " — stop them with: lw daemon stop --all")
+    return 0
+end
+
+--- Kill a stray daemon (§19.6.1): only after its command line is read again
+--- and is still `lw … daemon run` for that root with the same start time;
+--- never this process or an ancestor. If it held its workspace's runtime
+--- lock, that lock is reclaimed (§19.5). Returns true or false + reason.
+function M.kill_stray(e)
+    local proc = require("loomworks.proc")
+    local args = proc.cmdline(e.pid, e.start_time)
+    if not args or not proc.is_daemon_for(args, e.root) or (e.root == nil and require("loomworks.daemon.discover")
+            .root_of(args) ~= nil) then
+        return false, "it is no longer the daemon that was listed (not killed)"
+    end
+    if proc.ancestors()[e.pid] then return false, "it is this process or its ancestor (not killed)" end
+    local ok, err = proc.kill_tree(e.pid, e.start_time)
+    if not ok then return false, err end
+    if e.root then
+        M.record(e.root, string.format("lw daemon kill --all --strays: killed the stray daemon (pid %d)", e.pid))
+        local lk = rlock.read(e.root)
+        if lk and lk.pid == e.pid and lk.start_time == e.start_time then M.clear_stale(e.root, lk) end
+    end
+    return true
+end
+
+--- `lw daemon stop --all [--force]` / `lw daemon kill --all [--strays]`
+--- (§19.6.1): the per-workspace stop / kill for every listed daemon that is
+--- its workspace's runtime; strays only with `--strays` (kill). Exit 0 when
+--- no listed daemon is left running, else 1.
+--- @param args string[]
+--- @param host table
+--- @param opts { force?: boolean, kill?: boolean }
+--- @return integer
+function M.stop_all(args, host, opts)
+    local strays = has(args, "--strays")
+    if strays and not opts.kill then host.die("--strays kills: use `lw daemon kill --all --strays`", 2) end
+    local list = require("loomworks.daemon.discover").list({ under = under_of(args, host) })
+    if #list == 0 then
+        host.out("no workspace daemons are running")
+        return 0
+    end
+    local proc = require("loomworks.proc")
+    local left = 0
+    for _, e in ipairs(list) do
+        local label = (e.root or "(root unknown)") .. ": "
+        if e.state == "stray" or e.state == "unknown_root" then
+            if strays then
+                local ok, why = M.kill_stray(e)
+                if ok then
+                    host.out(label .. "killed the stray daemon (pid " .. e.pid .. ")")
+                else
+                    host.note("lw: " .. label .. "stray daemon pid " .. e.pid .. ": " .. tostring(why))
+                    left = left + 1
+                end
+            else
+                host.note(string.format("lw: %sskipped stray daemon pid %d (%s) — kill it with: "
+                    .. "lw daemon kill --all --strays", label, e.pid, tostring(e.reason or "not its workspace's runtime")))
+                left = left + 1
+            end
+        else
+            local died
+            local sub = {
+                out = function(line) host.out(label .. line) end,
+                note = function(line) host.note((line:gsub("^lw: ", "lw: " .. label))) end,
+                die = function(msg) died = msg; error("lw-daemon-stop-all", 0) end,
+                finish = function() error("lw-daemon-stop-all", 0) end,
+                config = host.config,
+            }
+            local ok, err = pcall(M.stop, e.root, sub, { force = opts.force, kill = opts.kill })
+            if not ok and err ~= "lw-daemon-stop-all" then died = tostring(err) end
+            if died then host.note("lw: " .. label .. died) end
+            if proc.alive(e.pid, e.start_time) == true then
+                vim.wait(2000, function() return proc.alive(e.pid, e.start_time) ~= true end, 50)
+            end
+            if proc.alive(e.pid, e.start_time) == true then left = left + 1 end
+        end
+    end
+    return left == 0 and 0 or 1
+end
+
 --- Dispatch `lw daemon [<sub>]`.
 --- @param sub string|nil
 --- @param root string|nil
@@ -396,10 +570,17 @@ function M.run(sub, root, args, host)
     sub = sub or "status"
     if sub == "status" then return M.status(root, host) end
     if sub == "run" then return M.run_server(root, args, host) end
+    if sub == "list" then return M.list(args, host) end
     local known = { stop = true, kill = true, restart = true }
     if not known[sub] then
         host.die("unknown daemon subcommand '" .. tostring(sub) .. "' — use " .. table.concat(M.SUBS, "|")
             .. " (see `lw help daemon`)", 2)
+    end
+    if has(args, "--all") and sub ~= "restart" then
+        return M.stop_all(args, host, { force = has(args, "--force"), kill = sub == "kill" })
+    end
+    if has(args, "--strays") or opt_value(args, "--under") then
+        host.die("--strays and --under go with --all (`lw daemon kill --all --strays`)", 2)
     end
     if not root then host.die("no loomworks.json found (searched up from cwd)") end
     if sub == "restart" then return M.restart(root, host, args) end

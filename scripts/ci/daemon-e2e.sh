@@ -12,6 +12,7 @@
 #   - in `runtime-mode daemon` a workspace command starts it (not `lw status`,
 #     `--no-daemon`, CI) and returns at once; the next one reuses it;
 #   - it exits when its workspace is removed and after the idle timeout;
+#   - `lw daemon list` shows two daemons with their roots; `stop --all` stops both;
 #   - no daemon process is left running at the end.
 #
 #   LW=<path to lw> bash scripts/ci/daemon-e2e.sh
@@ -187,6 +188,28 @@ i=0; while alive "$ipid" && [ $i -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
 if ! alive "$ipid"; then ok "idle daemon pid $ipid exited by itself"; else bad "idle daemon $ipid kept running"; fi
 [ ! -e "$LOCK" ] && [ ! -e "$HANDLE" ] && ok "idle exit removed its files" || bad "idle exit left files"
 unset LOOMWORKS_RUNTIME
+
+say "lw daemon list / stop --all (process scan, spec 19.6.1)"
+rm -f "$TMP/config/loomworks/config.json"
+LS="$TMP/list"; mkdir -p "$LS/a" "$LS/b"
+printf '{"projects":{}}\n' > "$LS/a/loomworks.json"; printf '{"projects":{}}\n' > "$LS/b/loomworks.json"
+(cd "$LS/a" && "$LW" daemon restart >/dev/null) || bad "restart a"
+(cd "$LS/b" && "$LW" daemon restart >/dev/null) || bad "restart b"
+apid=$(pid_of "$LS/a/.nvim/loomworks.daemon.lock"); track "$apid"
+bpid=$(pid_of "$LS/b/.nvim/loomworks.daemon.lock"); track "$bpid"
+under=$(native "$LS")
+out=$(cd "$TMP" && "$LW" daemon list --under "$under")
+printf '%s\n' "$out"
+case "$out" in *"$apid "*"/a"*"$bpid "*"/b"*"2 daemons (2 idle)"*) ok "list shows both daemons with their roots" ;; *) bad "list: $out" ;; esac
+js=$(cd "$TMP" && "$LW" daemon list --json --under "$under")
+case "$js" in *'"schema":1'*'"state":"live"'*) ok "list --json" ;; *) bad "list --json: $js" ;; esac
+ms=$(printf '%s' "$js" | sed -n 's/.*"scan_ms":\([0-9]*\).*/\1/p')
+if [ -n "$ms" ] && [ "$ms" -lt 3000 ]; then ok "scan took $ms ms"; else bad "scan_ms '$ms'"; fi
+out=$(cd "$TMP" && "$LW" daemon stop --all --under "$under") || bad "stop --all failed: $out"
+printf '%s\n' "$out"
+wait_gone "$apid" && wait_gone "$bpid" && ok "stop --all stopped both" || bad "stop --all left a daemon"
+out=$(cd "$TMP" && "$LW" daemon list --under "$under")
+case "$out" in *"no workspace daemons are running"*) ok "list empty after stop --all" ;; *) bad "list after: $out" ;; esac
 
 say "no daemon left running"
 left=""
