@@ -3730,9 +3730,8 @@ three places:
 
 ### 16.40 Per-user state outside the workspace
 
-*Status: the moves into the workspace (runtime log, `.nvim/tmp/`) and this
-specification — first PR; housekeeping, `lw cleanup` and the host's last-use
-update — second PR.*
+*Status: implemented — the moves into the workspace (#121); housekeeping,
+`lw cleanup` and the host's last-use update (#122).*
 
 What a workspace's own operations produce lives **inside the workspace**, under
 `<root>/.nvim/`. Outside the workspace, `lw` keeps only the per-user state

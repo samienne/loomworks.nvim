@@ -47,7 +47,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   versions kept outside the workspace), with sizes; `lw cleanup --yes`
   removes them, `--all` also prunes pinned releases no repository has used
   for 30 days (`--pinned-older-than 90d`). lw also removes such leftovers by
-  itself, silently, once a day at the start of a command. (#PRB)
+  itself, silently, once a day at the start of a command. (#122)
 - `lw daemon list` (experimental daemon): every workspace daemon of yours on
   this machine with its root, pid, uptime, state, clients and version, found
   by scanning processes (nothing is written outside your workspaces); `--json`
