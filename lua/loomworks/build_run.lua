@@ -18,6 +18,149 @@
 
 local M = {}
 
+-- ---------------------------------------------------------------------------
+-- Profile resolution (§16.9) — host-neutral: every refusal is returned as the
+-- exact message the CLI prints (`lw: <message>`, exit 1), so the in-process
+-- host and the workspace daemon (§19.15) refuse identically.
+-- ---------------------------------------------------------------------------
+
+--- The stable positional numbering of profiles (sorted by key, 1..N) — the
+--- numbers every listing shows and a bare-integer argument selects.
+--- @param ws table
+--- @return table[] list
+function M.profile_order(ws)
+    local list = {}
+    for _, p in ipairs(ws._profiles or {}) do list[#list + 1] = p end
+    table.sort(list, function(a, b) return a.key < b.key end)
+    return list
+end
+
+--- The single NAMED-profile matcher: a bare integer is the stable positional
+--- index (unless `opts.no_number`), then the exact key, then an unambiguous
+--- boundary-anchored substring (`merge.match_profile`). Returns the profile,
+--- nil on a miss, or nil + the refusal (number out of range, ambiguous).
+--- @param ws table
+--- @param name string
+--- @param opts? { no_number?: boolean }
+--- @return table|nil profile, string|nil err
+function M.match_profile(ws, name, opts)
+    if not (opts and opts.no_number) and type(name) == "string" and name:match("^%d+$") then
+        local list = M.profile_order(ws)
+        local n = tonumber(name)
+        if n < 1 or n > #list then
+            return nil, "profile number " .. n .. " out of range (1.." .. #list .. "); see `lw profile list`"
+        end
+        return list[n]
+    end
+    local keys, by_key = {}, {}
+    for _, p in ipairs(ws._profiles or {}) do keys[#keys + 1] = p.key; by_key[p.key] = p end
+    local hit, ambiguous = require("loomworks.merge").match_profile(keys, name)
+    if hit then return by_key[hit] end
+    if ambiguous then
+        return nil, "'" .. name .. "' matches multiple profiles: " .. table.concat(ambiguous, ", ")
+    end
+    return nil
+end
+
+--- Resolve the profile a command operates on: the named one, else — only when
+--- interactive — the active profile, else the only one. Non-interactive mode
+--- never uses the active profile nor infers one (a deterministic CI result).
+--- Returns the profile or nil + the refusal.
+--- @param ws table
+--- @param name string|nil
+--- @param opts? { no_number?: boolean, usage?: string, interactive?: boolean }
+--- @return table|nil profile, string|nil err
+function M.resolve_profile(ws, name, opts)
+    opts = opts or {}
+    local profiles = ws._profiles or {}
+    if name then
+        local hit, err = M.match_profile(ws, name, opts)
+        if err then return nil, err end
+        if hit then return hit end
+        return nil, "no profile matching '" .. name .. "'. Run `lw profile list` to list."
+    end
+    if not opts.interactive then
+        local keys = {}
+        for _, p in ipairs(profiles) do keys[#keys + 1] = p.key end
+        table.sort(keys)
+        return nil, "no profile specified — non-interactive mode never uses the active profile\n" ..
+            "  and never infers one (not even when only one profile exists).\n" ..
+            "  pass one explicitly (a unique substring works): " ..
+            (opts.usage or "lw <command> <profile>") .. "\n" ..
+            "  profiles: " .. (next(keys) and table.concat(keys, ", ") or "(none — `lw profile create`)") .. "\n" ..
+            "  scripts: `lw profile query <profile> <project> <field>` resolves keys deterministically"
+    end
+    local active = ws._active_profile_key
+    if active then
+        for _, p in ipairs(profiles) do
+            if p.key == active then return p end
+        end
+    end
+    if #profiles == 1 then return profiles[1] end
+    return nil, "no profile specified and no unambiguous default — run `lw profile select`"
+end
+
+--- Resolve the profile a build (and clean / test / reset / run) targets
+--- (§16.9). Returns the profile; or nil + the refusal; or nil, nil, "onboard"
+--- when no profile matches and the caller is interactive — the host then
+--- onboards a profile from a configuration set (prompts; never in a daemon).
+--- @param ws table
+--- @param name string|nil
+--- @param opts? { usage?: string, interactive?: boolean }
+--- @return table|nil profile, string|nil err, string|nil action
+function M.resolve_target(ws, name, opts)
+    opts = opts or {}
+    local profiles = ws._profiles or {}
+    local usage = opts.usage or "lw build <profile>"
+    -- A concrete profile match always wins; a miss falls through to the
+    -- configuration-set onboarding / non-interactive refusal below.
+    if name then
+        local hit, err = M.match_profile(ws, name)
+        if err then return nil, err end
+        if hit then return hit end
+    else
+        if not opts.interactive then return M.resolve_profile(ws, nil, { usage = usage }) end
+        local active = ws._active_profile_key
+        if active then for _, p in ipairs(profiles) do if p.key == active then return p end end end
+        if #profiles == 1 then return profiles[1] end
+        if #profiles > 1 then
+            return nil, "no profile specified and no active default — `lw profile select`, or `" .. usage .. "`"
+        end
+    end
+    if not opts.interactive then
+        if name then
+            for _, s in ipairs(ws._config_sets or {}) do
+                if s.name == name then
+                    return nil, "'" .. name .. "' is a configuration set with no profile yet — " ..
+                        "create one:\n  lw profile create " .. name .. " <tool> --activate   " ..
+                        "(tools: `lw tools`)\n  then: lw build"
+                end
+            end
+        end
+        return M.resolve_profile(ws, name, { usage = usage })
+    end
+    return nil, nil, "onboard"
+end
+
+--- Build directories in the canonical lock order of spec §19.3: by
+--- normalized path (§2.3 normalization: forward slashes, no trailing slash,
+--- lowercased on Windows), duplicates dropped.
+--- @param dirs string[]
+--- @return string[]
+function M.lock_order(dirs)
+    local win = package.config:sub(1, 1) == "\\"
+    local seen, keyed = {}, {}
+    for _, d in ipairs(dirs or {}) do
+        local k = d:gsub("\\", "/"):gsub("/+$", "")
+        if win then k = k:lower() end
+        if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
+    end
+    table.sort(keyed, function(a, b) return a.k < b.k end)
+    local out = {}
+    for _, e in ipairs(keyed) do out[#out + 1] = e.d end
+    return out
+end
+
 --- The distinct build directories a profile's projects map to — the set the
 --- per-build-directory advisory lock (§16.6) covers for one build.
 --- @param profile loomworks.Profile

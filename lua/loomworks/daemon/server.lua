@@ -11,7 +11,8 @@
 ---   3. serve: every connection must authenticate first (§19.8 — only
 ---      `hello` / `auth`, 64 KiB frame cap, ~5 s, no broadcast before
 ---      `welcome`); then the frozen control requests `ping`, `status`, `stop`,
----      `retire` (nothing else is routed in step 2 of §19.19);
+---      `retire`, and — with a build service attached (`lw daemon run`,
+---      loomworks.daemon.service) — the routed `build` operation (§19.15);
 ---   4. heartbeat (about 5 s): R's own timer refreshes the lock; the server
 ---      refreshes the handle (rewriting it if it was removed) and checks that
 ---      R still carries its record — a replaced record means the lock was
@@ -229,7 +230,10 @@ end
 function Server:lifetime()
     local now = uv.now()
     for conn in pairs(self.conns) do
-        if conn.authed and now - conn.last_seen > 3 * self.keepalive_ms then
+        -- A connection that owns a running operation is its terminal: it is
+        -- never dropped for silence (its client pings anyway, §19.15).
+        if conn.authed and now - conn.last_seen > 3 * self.keepalive_ms
+                and not (self.service and self.service:owns_task(conn)) then
             self:_close(conn, "silent for three keepalive intervals")
         end
     end
@@ -265,6 +269,10 @@ end
 --- @param code? integer exit status (default 0)
 function Server:stop(reason, code)
     if self.stopped then return end
+    -- Running operations end first (§19.11, §19.15): their step processes
+    -- are killed and their build locks released while this process still
+    -- holds R; their clients are told before the connections close.
+    if self.service then pcall(self.service.on_stopping, self.service, reason) end
     self.stopped = true
     self:log("stopping: %s", tostring(reason))
     for conn in pairs(self.conns) do pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end) end
@@ -301,6 +309,8 @@ function Server:_close(conn, why)
     pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end)
     self.conns[conn] = nil
     if why then self:log("closed a connection: %s", why) end
+    -- Its operations belong to it: cancelled (§19.15).
+    if conn.authed and self.service then pcall(self.service.on_conn_closed, self.service, conn) end
     if conn.authed then
         self.n_clients = self.n_clients - 1
         if self.n_clients == 0 then self.idle_since = os.time() end
@@ -433,6 +443,9 @@ function Server:_dispatch_request(conn, msg)
         self.retiring = true
         self:log("retiring: a client of another version asked; exits when idle")
         return reply({})
+    elseif msg.kind == K.build and self.service then
+        -- Routed operations (§19.15, §19.19 step 3).
+        return self.service:on_build(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end

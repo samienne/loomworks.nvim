@@ -548,7 +548,8 @@ pipe would hand the user's credentials to that host.
 
 *Status: master for framing, authentication and the frozen control subset
 (`daemon/protocol.lua`, `daemon/auth.lua`, `daemon/server.lua`,
-`daemon/client.lua`; protocol version 2); broadcasts #88.*
+`daemon/client.lua`; protocol version 3: 2 plus the routed `build` request
+and its task stream, §19.15); broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -658,8 +659,10 @@ exit, all clients connect to the winner.
 
 *Status: master (`daemon/server.lua`, `daemon/command.lua`). A `lw` command
 connects for a moment (handshake, `ping`) and leaves; the keepalive rule
-applies to every authenticated connection. A `retire`d daemon exits when its
-last authenticated client disconnects (there are no tasks in step 2).*
+applies to every authenticated connection, except one that owns a running
+operation (§19.15). A running build makes the daemon busy (handle `busy`); a
+`retire`d daemon exits when it has no authenticated client and no running
+build.*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a
@@ -740,41 +743,127 @@ reference-based. Read-only queries run on the client's projection.
 
 ### 19.15 Task stream and delegated operations
 
-*Status: #88 for `lw build <profile> [-- args]`; other forms and operations
-future.*
+*Status: master for `lw build` in all its forms (`lw build [<profile>]
+[--target <name>]… [--force] [--reconfigure] [-v] [-- <args>]`) in
+`runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
+`daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
+`_delegate_build`); broadcasts to observers without a consumer until step 4;
+other operations future.*
 
-A running operation streams `progress`, `output` and `notify` events on a
-**task stream**, separate from model changes and observable by every
-connected client (a build started by the CLI streams into the editor). The
-stream coalesces progress (a tick only when the integer percent advances) and
-bounds output per task (a single truncation notice past the cap); model
-changes are never dropped. The durable outcome arrives as a `model_change`.
+A running operation streams `task` events on a **task stream**, separate from
+model changes and observable by every connected client (a build started by the
+CLI streams into the editor): `start`, `line` (one of loomworks's own lines —
+a status line on standard output, a note on standard error), `output` (a
+step's raw bytes, `stdout` or `stderr`), `progress` (coalesced: a tick only
+when the integer percent advances) and `done` (`exit_code`, and the refusal or
+failure the client prints as `lw: <error>`). The client that started the task
+— its **owner** — receives every event, unbounded: the stream is its
+terminal. Other clients observe it with output bounded per task (a single
+truncation notice past the cap). Model changes are never dropped; the durable
+outcome arrives as a `model_change` (§19.12, with step 4).
+
+**Request.** `build { args, interactive, env, command }` — `args` carries the
+parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
+`verbose`). The reply's `outcome` is one of:
+
+- `accepted` (`task_id`, `profile_key`, `pid`) — the build runs as a task owned
+  by this connection;
+- `refused` (`message`, `exit_code`) — before any side effect: the workspace
+  is refused (§17.4, a journal it cannot complete §19.4, a newer schema §2.7)
+  or the profile argument does not resolve (§16.9). The client prints it as
+  the in-process host does and exits with that code;
+- `declined` (`reason`) — before any side effect: the daemon does not carry
+  this request; the client runs it on the in-process path. It declines the
+  interactive onboarding of a profile from a configuration set (prompts,
+  §16.9) and a request in a different environment while another build runs
+  in it (see Environment).
 
 **Same behaviour.** An operation run in the daemon is behaviorally identical to
 the in-process operation it replaces — the same step sequence, locks, gates,
 status lines, cache write-back, failure lines and exit codes — differing only
 in how a step is spawned (streamed) and how a refusal travels (on the stream,
 printed by the client exactly as the in-process host prints it). For a build
-this is the shared build-step sequence of §16.4 / §16.6 / §16.28 / §5.1 / §5.10.
+this is the shared build-step sequence of §16.4 / §16.6 / §16.28 / §5.1 / §5.10:
+the build-directory locks of §16.6 taken up front in canonical order with the
+§19.5 record (holder kind `daemon`, the operation rewritten configure → build),
+a dead holder's lock reclaimed with the interrupted step's state recovered,
+the build gate, the artifact-conflict gate (`--force`), the full-reconfigure
+reset, the configure record and the cache write-back under the save guard
+(§2.7 — a refused save ends the build with its message, as in-process), the
+failure line with the `--target` hint, and `BUILD OK: <profile>`. Only the
+build tool's own terminal detection differs: its output reaches the client
+through a pipe, as when the in-process build is piped (`lw build | tee`).
 
-**Live workspace.** Before accepting an operation the daemon applies every
-pending external change to its files exactly as its file watcher would
-(including trust refusal, §17.4), then resolves arguments as the in-process
-host does (§16.9).
+**Environment.** A routed build behaves as if the client process had run it.
+The client sends its **whole environment** with the request; the daemon
+applies it to the operation and to nothing else:
+
+- every piece of model work for the request (the live-workspace sync or
+  reload, argument resolution, planning, gates, cache write-back) runs with
+  the daemon's process environment switched to the client's and restored
+  afterwards — so `${VAR}` expansions, tool and program resolution on `PATH`
+  and probes the module spawns see the client's values. These pieces run one
+  at a time (a FIFO), so two clients never see each other's environment;
+- each step is spawned with exactly the client's environment plus the step's
+  own variables (§8.1, on Windows replacing a name that differs only in case)
+  — never the daemon's launch environment, whose loomworks-internal variables
+  (`LOOMWORKS_LUA`, `LW_ROOT`) therefore do not leak into builds;
+- the daemon's workspace model is kept for the environment it was loaded in:
+  a request whose environment differs (ignoring `_`, `PWD`, `OLDPWD`,
+  `SHLVL`, which a shell changes between commands) reloads the workspace from
+  disk first, as an in-process load in that environment would read it; while
+  another build runs in the daemon, such a request is declined instead.
+
+The whole environment is sent because a subset cannot be chosen safely:
+compiler, SDK and `vcvarsall` variables (`INCLUDE`, `LIB`, `WindowsSdkDir`,
+`VCToolsInstallDir`, …), cache tools and `${VAR}` references in the
+configuration can use any name, and an in-process build inherits them all.
+It may contain secrets; it never leaves the machine: it is sent only after
+the mutual authentication of §19.8, over the owner-only endpoint of §19.7, to
+a process of the same user, is held in memory for the request only, and is
+never written to the runtime log, the handle or any workspace file. The
+client's working directory is not sent: the client resolves the workspace
+root, and every step runs in its own absolute directory (the step's, or the
+root) on both paths.
+
+**Live workspace.** The daemon loads its workspace on its first operation
+(the same load as the in-process path) and keeps it. Its file tracker does
+not poll: before accepting each operation the daemon applies every pending
+external change to its files exactly as its file watcher would — including a
+trust refusal (§17.4), which unloads the workspace and is returned as
+`refused` — completes or refuses a commit journal by reloading (§19.4), and
+waits for a tool rescan a changed `loomworks.json` started. It then resolves
+arguments as the in-process host does (§16.9; the same matcher, the same
+messages, the client's interactivity).
 
 **Cancellation.** An operation belongs to its client. When that client
-disconnects, the daemon stops, or the workspace or the operation's subject is
-unloaded/removed, the daemon terminates the running step's process tree,
-records nothing for that step, releases its locks and ends the task nonzero. A
-client that loses the connection after its operation was accepted reports a
-failure; it never re-runs the operation another way.
+disconnects (Ctrl-C ends `lw`), the daemon stops (`lw daemon stop`, idle,
+retire, root removed, lost lock), or the workspace or the operation's subject
+is unloaded/removed, the daemon terminates the running step's process tree
+(identity-verified by process id and start time, §19.5), records nothing for
+that step, releases its locks and ends the task nonzero (`build stopped:
+<reason>`). A client that loses the connection after its operation was
+accepted reports a failure; it never re-runs the operation another way. A
+connection that owns a running operation is never dropped for silence
+(§19.11); the CLI also pings while it waits.
 
 **Routing.** A client routes an operation to the daemon only when the daemon
 carries every argument form the client was given; any other form runs on the
 in-process path (transition) and a workspace the machine would refuse (§17.4)
-is never routed. While the daemon is opt-in, a routed operation prints one dim
-line before its output — `lw: building through the workspace daemon (pid N)` —
-which is removed when the default flips.
+is never routed. For `lw build` in step 3: routed in `runtime-mode daemon`
+when this command has a matching daemon (it was used, launched or restarted
+by the version handshake, §19.9/§19.10), the arguments parse, and the working
+copy and cache verify; **not routed** — the in-process path exactly as
+before — with `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI` (§19.1),
+`--break-locks` (its ask-and-kill recovery stays with the client process), a
+version bypass, a daemon that is hung, starting, foreign or could not be
+started, and an argument `cmd_build` refuses (it reports it). A daemon that
+cannot be reached, or fails before accepting, is reported in one line and the
+build runs in-process: `lw: the workspace daemon could not take the build
+(<reason>); running without it`. While the daemon is opt-in, an accepted
+build prints one dim line on standard error before its output — `lw:
+building through the workspace daemon (pid N)` — which is removed when the
+default flips; a refusal or a declined request prints none.
 
 ### 19.16 The editor as a client
 
@@ -800,7 +889,10 @@ protocol or schema) is shown inline and handled as a version-bypass run
 
 ### 19.17 Parity
 
-*Status: #88 (build).*
+*Status: master for `lw build` (`tests/daemon_build_cli_spec.lua`: every
+build form both ways — the same output, exit code and persisted cache;
+`tests/daemon_build_service_spec.lua`, `tests/daemon_real_build_spec.lua`);
+the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -828,7 +920,7 @@ runtime is deferred until that module is actively developed.
 2. **Lifetime** — §19.2, §19.6–§19.11 behind `runtime-mode daemon`: the
    daemon starts and stays running, answering `ping`/`status` only; `lw daemon
    status|stop|restart|kill`; the runtime log; the Runtime row.
-3. **First operation** — `lw build` routed to the daemon (§19.15).
+3. **First operation** — `lw build` routed to the daemon (§19.15). *(Done.)*
 4. **Editor connects** — observer + keepalive (§19.16).
 5. **Remaining operations**, one at a time, each with a parity test (§19.17);
    then the loopback transport, so attached runs use the same code; then the

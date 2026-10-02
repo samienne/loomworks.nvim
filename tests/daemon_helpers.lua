@@ -79,7 +79,10 @@ end
 function M.lw(args, opts)
     local out, err = uv.new_pipe(false), uv.new_pipe(false)
     local obuf, ebuf, code = {}, {}, nil
-    local argv = { "--headless", "-u", "NONE", "-l", M.CLI }
+    -- Modules resolve on the runtime path (plugin_loader): `-u NONE` needs
+    -- the checkout on it to build anything.
+    local argv = { "--headless", "-u", "NONE", "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")",
+        "-l", M.CLI }
     for _, a in ipairs(args) do argv[#argv + 1] = a end
     local t0 = uv.hrtime()
     local h, pid = uv.spawn(vim.v.progpath, {
@@ -99,6 +102,87 @@ function M.lw(args, opts)
     end
     return { code = code, stdout = table.concat(obuf), stderr = table.concat(ebuf),
         ms = (uv.hrtime() - t0) / 1e6, pid = pid }
+end
+
+--- Start `lw <args>` without waiting (a build to interrupt). Returns
+--- { pid, start, stdout(), stderr(), code (nil while running), kill(signal) }.
+--- @param args string[]
+--- @param opts { env: table, cwd?: string }
+function M.lw_start(args, opts)
+    local out, err = uv.new_pipe(false), uv.new_pipe(false)
+    local obuf, ebuf = {}, {}
+    local argv = { "--headless", "-u", "NONE", "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")",
+        "-l", M.CLI }
+    for _, a in ipairs(args) do argv[#argv + 1] = a end
+    local r = {}
+    local h, pid = uv.spawn(vim.v.progpath, {
+        args = argv, cwd = opts.cwd, env = env_list(opts.env.vars), stdio = { nil, out, err },
+    }, function(c) r.code = c end)
+    assert(h, "spawn failed: " .. tostring(pid))
+    out:read_start(function(_, d) if d then obuf[#obuf + 1] = d end end)
+    err:read_start(function(_, d) if d then ebuf[#ebuf + 1] = d end end)
+    r.pid, r.start = pid, proc.start_time(pid)
+    function r.stdout() return table.concat(obuf) end
+    function r.stderr() return table.concat(ebuf) end
+    function r.kill(sig) pcall(uv.process_kill, h, sig or "sigkill") end
+    function r.wait(ms)
+        local ok = vim.wait(ms or 60000, function() return r.code ~= nil end, 10)
+        if ok then pcall(function() out:close(); err:close(); h:close() end) end
+        return ok
+    end
+    return r
+end
+
+--- The step script of `shell_workspace` (run by nvim -l): prints
+--- `step <kind> FOO=<LW_TEST_FOO> ONLY=<LW_TEST_ONLY>` on stdout and a line
+--- on stderr; writes its pid to $LW_TEST_PIDFILE; sleeps $LW_TEST_SLEEP ms;
+--- exits 3 when $LW_TEST_FAIL names its kind.
+M.STEP = [[
+local kind = arg[1]
+local pf = os.getenv("LW_TEST_PIDFILE")
+if pf then local f = io.open(pf .. "." .. kind, "w"); f:write(tostring(vim.uv.os_getpid())); f:close() end
+io.write("step " .. kind .. " FOO=" .. tostring(os.getenv("LW_TEST_FOO")) .. " ONLY="
+    .. tostring(os.getenv("LW_TEST_ONLY")) .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
+io.stderr:write("stderr of " .. kind .. string.char(10))
+local ms = tonumber(os.getenv("LW_TEST_SLEEP") or "")
+if ms then vim.uv.sleep(ms) end
+if os.getenv("LW_TEST_FAIL") == kind then os.exit(3) end
+]]
+
+--- A workspace with one `shell` project `app` (configure + build both run
+--- the STEP script through this nvim) and a configuration set `dev`
+--- (app=Debug). `opts.profile`: also write a signed working copy with the
+--- profile `dev` (the trust key must already be set, in-process tests).
+--- @param opts? { profile?: boolean }
+--- @return string root
+function M.shell_workspace(opts)
+    local root = tmp()
+    vim.fn.mkdir(root .. "/app", "p")
+    vim.fn.mkdir(root .. "/.nvim", "p")
+    local step = root .. "/step.lua"
+    local f = io.open(step, "w"); f:write(M.STEP); f:close()
+    local nv = (vim.v.progpath:gsub("\\", "/"))
+    local function cmd(kind) return { nv, "--headless", "-u", "NONE", "-l", step, kind } end
+    local cfg = {
+        projects = { app = { path = "app", shell = {
+            build_dir = "${workspace_root}/out/${variant}",
+            configure_cmd = cmd("configure"), build_cmd = cmd("build"),
+            configurations = { Debug = vim.empty_dict() },
+        } } },
+        configuration_sets = { dev = { app = "Debug" } },
+    }
+    f = io.open(root .. "/loomworks.json", "w"); f:write(vim.json.encode(cfg)); f:close()
+    if opts and opts.profile then
+        local trust = require("loomworks.trust")
+        local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
+        -- (No `assert(x)` as a value: under busted it is luassert's, which
+        -- returns nothing.)
+        local signed, serr = trust.sign("user", trust.encode(user))
+        if not signed then error(serr) end
+        f = io.open(root .. "/.nvim/loomworks.user.json", "wb")
+        f:write(signed); f:close()
+    end
+    return root
 end
 
 --- Daemon processes this spec started or found, killed by `cleanup`.
