@@ -414,6 +414,46 @@ JSON
     if sleeper_alive; then bad "daemon: a build step survived"; fi
 }
 
+# A build step that a signal kills (OOM killer, `kill -9` on the build tool)
+# fails the build with 128 + signal, names the signal, and is never recorded
+# as built — in-process and routed through the daemon (spec §16.7, §19.15).
+# POSIX only: libuv reports such a process as exit code 0 + the signal, which
+# used to read as success. (Windows has no such signals.)
+test_signal_exit() {
+    is_windows_host && return 0
+    say "a build step killed by a signal fails the build"
+    local ws="$TMP/signal-exit" out="$TMP/out.txt" rc
+    mkdir -p "$ws/App"
+    cd "$ws" || { bad "signal: cd"; return; }
+    local sig code name
+    for sig in KILL TERM; do
+        case $sig in KILL) code=137; name="signal 9 (SIGKILL)" ;; TERM) code=143; name="signal 15 (SIGTERM)" ;; esac
+        cat > "$ws/loomworks.json" <<JSON
+{"projects":{"App":{"path":"App","shell":{
+  "build_dir":"\${workspace_root}/out/b",
+  "configure_cmd":["sh","-c","exit 0"],
+  "build_cmd":["sh","-c","kill -$sig \$\$"],
+  "configurations":{"Debug":{}}}}},
+ "configuration_sets":{"Dev":{"App":"Debug"}}}
+JSON
+        rm -rf "$ws/.nvim"
+        run_lw profile create Dev > "$out" 2>&1 || { note_fail "signal: profile create" $?; return; }
+        local how
+        for how in in-process daemon; do
+            if [ "$how" = daemon ]; then daemon_lw build Dev > "$out" 2>&1; rc=$?
+            else run_lw --no-daemon build Dev > "$out" 2>&1; rc=$?; fi
+            if [ $rc -eq $code ] && grep -qF "lw: build failed (killed by $name): App" "$out" \
+                && ! grep -q "BUILD OK" "$out"; then
+                ok "signal: SIG$sig fails the build $how (exit $rc, signal named)"
+            else note_fail "signal: SIG$sig build $how (exit $rc, want $code)" $rc; fi
+            if grep -q '"built"' "$ws/.nvim/loomworks.cache.json" 2>/dev/null; then
+                bad "signal: SIG$sig build $how recorded as built"
+            else ok "signal: SIG$sig build $how not recorded as built"; fi
+        done
+        daemon_lw daemon stop > /dev/null 2>&1
+    done
+}
+
 # Drive one module's project through the full CLI flow.
 #   $1 = label (for messages)   $2 = module (meson|cmake)
 #   $3 = workspace dir with app/ inside   $4 = marker to grep in `lw run` output
@@ -633,6 +673,9 @@ test_lock_recovery
 
 # lw build through the workspace daemon (spec §19.15).
 test_daemon_build
+
+# A build step killed by a signal fails the build (spec §16.7; POSIX).
+test_signal_exit
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
