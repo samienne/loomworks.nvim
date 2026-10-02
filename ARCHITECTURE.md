@@ -595,7 +595,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   files.
 - `version.lua` — what the handshake compares: `PROTOCOL`, the host identity
   (release version, or `<version>+dev.<fingerprint>` over the source files'
-  paths/sizes/mtimes for a development build) and the schema versions.
+  paths/sizes/mtimes for a development build — the on-disk root `lua_root()`,
+  else a `luvi <dir>` bundle's directory `bundle_dir()`; only a fused
+  executable fingerprints the executable) and the schema versions.
 - `rlock.lua` — the runtime lock R on the build-lock primitive
   (`build_lock.try_acquire_path`, the §19.5 record plus `mode`, `command`,
   `host_version`).
@@ -706,22 +708,37 @@ re-cut onto master step by step; this section is expanded as each step lands.
   the FIFO of model segments, drained on the main loop (`vim.schedule`),
   each inside `envscope.with(ctx.env, …)`. `on_build` → `_accept` (live,
   `build_run.resolve_target`, reply accepted / refused / declined) →
-  `runner.run`. `on_conn_closed` / `on_stopping` cancel runs; `owns_task`
+  `runner.run`. `on_conn_closed` (scheduled off the read callback — the
+  tree kill polls) / `on_stopping` cancel runs; `owns_task`
   exempts an owner from the silence rule; `tasks.on_change` sets the
   handle's `busy` and ends a retiring daemon when idle.
 - `daemon/runner.lua` — the build: locks (`lock_break.acquire` over
   `build_lock.acquire`, kind `daemon` from the server, dead-holder recovery
   lines), `build_run.plan`, per step `before_step` → `step_lines` →
-  `spawn_spec` → `M.spawn` (`vim.system` with `clear_env` and the client's
-  environment ⊕ the step's, streaming callbacks) → `after_step` in a model
+  `spawn_spec` → `M.spawn` (its own `uv.spawn` with exactly the client's
+  environment ⊕ the step's, hidden on Windows; stdout/stderr read in order,
+  `done` after exit + both EOFs (≤ `EOF_GRACE_MS` while read); `pause` /
+  `resume` = `read_stop` / `read_start` of both pipes, `abandon` stops reading
+  for a cancelled step) → `task:set_flow(obj)` → `after_step` in a model
   segment, the refused-save check, `failure_message` (+ the host's
   `--target` hint); `cancel` kills the child with `proc.kill_tree(pid,
-  start time)` and finishes without recording.
+  start time)` (falling back to the child's own `kill("sigkill")` when that
+  does not confirm it gone), abandons its pipes and finishes without
+  recording.
 - `daemon/tasks.lua` — tasks owned by a connection; `line` / `output` /
-  `progress` / `done` events, unbounded to the owner, capped for observers.
+  `progress` / `done` events. Owner: every event, flow-controlled — past
+  `OWNER_HIGH` queued bytes on its socket (`get_write_queue_size`) the task
+  pauses the step's flow, and each completed owner write resumes it once the
+  queue is below `OWNER_LOW`. Observers: `OBSERVER_CAP_BYTES` of output per
+  task each, then one truncation notice; past `OBSERVER_QUEUE_MAX` queued
+  bytes an observer is closed unless it owns a running task.
 - `daemon/envscope.lua` — `with(env, fn)` switches the process environment
-  (`uv.os_setenv` / `os_unsetenv`) and restores it; `signature` (minus `_`,
-  `PWD`, `OLDPWD`, `SHLVL`); `with_overlay` (Windows case-insensitive);
+  (`uv.os_setenv` / `os_unsetenv`; on Windows adding
+  `NoDefaultCurrentDirectoryInExePath=1` when `env` lacks it) and restores
+  it; `signature` (minus `VOLATILE` names and `VOLATILE_PREFIXES`: the
+  shell's `_`/`PWD`/`OLDPWD`/`SHLVL` and per-terminal / multiplexer / SSH /
+  session variables, `VSCODE_*`; upper-cased on Windows); `with_overlay`
+  (Windows case-insensitive);
   `install()` makes `os.getenv` read through libuv on Windows (the CRT copy
   is not updated by `SetEnvironmentVariableW`).
 - `file_tracker.lua` — `manual` (no `fs_poll`; `watch_signal` a no-op) and

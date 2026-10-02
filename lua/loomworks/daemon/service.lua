@@ -278,12 +278,20 @@ function Service:owns_task(conn)
     return #self.tasks:owned_by(conn) > 0
 end
 
---- The owning client disconnected: cancel its builds (§19.15).
+--- The owning client disconnected: cancel its builds (§19.15). Called from
+--- the connection's read callback, so the cancellation — which kills the
+--- step's process tree and waits for it to go — runs on the main loop
+--- afterwards, never inside the callback.
 --- @param conn table
 function Service:on_conn_closed(conn)
+    local mine = {}
     for run in pairs(self.runs) do
-        if run.ctx.conn == conn then run.cancel("the client that started it disconnected", 130) end
+        if run.ctx.conn == conn then mine[#mine + 1] = run end
     end
+    if #mine == 0 then return end
+    vim.schedule(function()
+        for _, run in ipairs(mine) do run.cancel("the client that started it disconnected", 130) end
+    end)
 end
 
 --- The daemon is stopping: cancel every build, synchronously (kill the step,

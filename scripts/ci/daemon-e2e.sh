@@ -45,12 +45,29 @@ HANDLE="$WS/.nvim/loomworks.daemon.json"
 
 lw() { (cd "$WS" && "$LW" "$@"); }
 pid_of() { sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
-alive() {
+# A process's identity: its start time and command (Windows: the MSYS `ps -W`
+# row of that Windows pid; elsewhere `ps -o lstart=,comm=`). Empty when no
+# such process runs.
+ident() {
+  [ -n "$1" ] || return 0
   if [ "$os" = windows ]; then
-    tasklist //FI "PID eq $1" 2>/dev/null | grep -q " $1 "
+    ps -W 2>/dev/null | awk -v p="$1" '$4 == p { $1 = $2 = $3 = $4 = $5 = $6 = ""; print; exit }'
   else
-    kill -0 "$1" 2>/dev/null
+    ps -o lstart=,comm= -p "$1" 2>/dev/null
   fi
+}
+# Is pid $1 running — and, once `track`ed, still the SAME process? A pid
+# alone is not enough: Windows reuses pids quickly, so a daemon that exited
+# could otherwise be "still running" as an unrelated process with its pid.
+alive() {
+  local now want
+  now=$(ident "$1")
+  [ -n "$now" ] || return 1
+  # Never tracked: the pid alone. Tracked when already gone (empty identity):
+  # whatever runs with that pid now is another process.
+  [ -e "$TMP/ident.$1" ] || return 0
+  want=$(cat "$TMP/ident.$1")
+  [ -n "$want" ] && [ "$now" = "$want" ]
 }
 wait_gone() { local i=0; while alive "$1" && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; ! alive "$1"; }
 force_kill() {
@@ -59,7 +76,12 @@ force_kill() {
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo $(( $(date +%s) * 1000 )); }
 
 ALL_PIDS=""
-track() { [ -n "$1" ] && ALL_PIDS="$ALL_PIDS $1"; }
+# Remember a daemon (pid + identity) for the final check and the cleanup.
+track() {
+  [ -n "$1" ] || return 0
+  ALL_PIDS="$ALL_PIDS $1"
+  [ -e "$TMP/ident.$1" ] || ident "$1" > "$TMP/ident.$1"
+}
 cleanup() {
   for p in $ALL_PIDS; do alive "$p" && force_kill "$p"; done
   rm -rf "$TMP"

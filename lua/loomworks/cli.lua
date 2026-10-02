@@ -10294,7 +10294,17 @@ A routed build runs in the environment of the `lw build` that asked for it
 (its PATH, compiler and SDK variables, …): lw sends its environment to the
 daemon over the private endpoint below; it is never written anywhere. Other
 work of a started daemon keeps the environment of the command that started
-it.
+it. Builds from two terminals (tabs, panes, SSH sessions) share the daemon's
+loaded workspace: variables that only name the terminal or session
+(WT_SESSION, TMUX_PANE, SSH_TTY, VSCODE_*, ...) do not count as a different
+environment; any other difference (PATH, a compiler variable) reloads it.
+
+A routed build's tools write into a pipe, not your terminal (as with
+`lw build | tee`): ninja prints every [n/N] line instead of one status line,
+and tools that colour only on a terminal do not. lw adds no colour variable
+(it would reach every process of the build); set one yourself, e.g.
+CLICOLOR_FORCE=1, and the build gets it. A reader that stops reading
+(`lw build | less`, paused) pauses the build tool, as without the daemon.
 
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
