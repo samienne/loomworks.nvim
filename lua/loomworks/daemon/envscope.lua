@@ -30,16 +30,53 @@ local M = {}
 
 local WIN = package.config:sub(1, 1) == "\\"
 
---- Variables a shell changes between two commands of one session; a
---- difference in them alone does not make the daemon reload its workspace
---- (`signature`). They are still applied to the scope and the build steps.
-M.VOLATILE = { ["_"] = true, PWD = true, OLDPWD = true, SHLVL = true }
+--- Variables that differ between two commands of one shell session, or
+--- between two terminals (tabs, panes, SSH sessions, editor terminals) of one
+--- user: a difference in them alone does not make the daemon reload its
+--- workspace or decline a concurrent build (`signature`). They are still
+--- applied to the scope and passed to the build steps unchanged.
+---
+--- A deny-list, not an allow-list of what the model reads: what a load reads
+--- is open-ended (`${VAR}` in any configuration field, module and SDK probes,
+--- compiler / vcvars / cache-tool variables, third-party module plugins), and
+--- a variable missed by an allow-list would silently build with a model read
+--- in another environment — a reload too many only costs time.
+M.VOLATILE = {}
+for _, k in ipairs({
+    -- the shell itself
+    "_", "PWD", "OLDPWD", "SHLVL",
+    -- terminal emulators / multiplexers (per window, tab or pane)
+    "WT_SESSION", "WT_PROFILE_ID", "TERM_SESSION_ID", "ITERM_SESSION_ID", "TERM_PROGRAM_VERSION",
+    "WINDOWID", "KONSOLE_DBUS_SESSION", "KONSOLE_DBUS_WINDOW", "KONSOLE_DBUS_SERVICE",
+    "ALACRITTY_WINDOW_ID", "ALACRITTY_SOCKET", "KITTY_WINDOW_ID", "KITTY_PID", "KITTY_LISTEN_ON",
+    "WEZTERM_PANE", "WEZTERM_UNIX_SOCKET", "TMUX", "TMUX_PANE", "STY", "WINDOW",
+    "ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_SESSION_NAME", "GNOME_TERMINAL_SCREEN",
+    "SECURITYSESSIONID", "NVIM", "NVIM_LISTEN_ADDRESS", "GPG_TTY",
+    -- login / SSH sessions
+    "SSH_CLIENT", "SSH_CONNECTION", "SSH_TTY", "SSH_AUTH_SOCK", "XDG_SESSION_ID", "XDG_VTNR",
+}) do M.VOLATILE[WIN and k:upper() or k] = true end
+
+--- Name prefixes of such variables (editor-integrated terminals' IPC
+--- handles: VS Code's `VSCODE_GIT_IPC_HANDLE`, `VSCODE_IPC_HOOK_CLI`, …;
+--- ConEmu's per-console `ConEmu*`).
+M.VOLATILE_PREFIXES = { "VSCODE_", WIN and "CONEMU" or "ConEmu" }
 
 --- The comparison key of a variable name (case-insensitive on Windows).
 --- @param k string
 --- @return string
 local function key(k) return WIN and k:upper() or k end
 M._key = key
+
+--- Is the variable (by comparison key) ignored by `signature`?
+--- @param kk string
+--- @return boolean
+function M.volatile(kk)
+    if M.VOLATILE[kk] then return true end
+    for _, p in ipairs(M.VOLATILE_PREFIXES) do
+        if kk:sub(1, #p) == p then return true end
+    end
+    return false
+end
 
 --- This process's environment as a dict.
 --- @return table<string, string>
@@ -77,7 +114,7 @@ function M.signature(env)
     local lines = {}
     for k, v in pairs(env) do
         local kk = key(k)
-        if not M.VOLATILE[kk] then lines[#lines + 1] = kk .. "=" .. v end
+        if not M.volatile(kk) then lines[#lines + 1] = kk .. "=" .. v end
     end
     table.sort(lines)
     return table.concat(lines, "\n")
@@ -99,13 +136,29 @@ end
 
 --- Run `fn` with the process environment switched to `env` (nil: as is),
 --- restoring the previous environment afterwards — also when `fn` raises
---- (the error is re-raised).
+--- (the error is re-raised). On Windows the scope keeps
+--- `NoDefaultCurrentDirectoryInExePath=1` (spec §5.10) even when the client's
+--- environment lacks it (a client hosted by the editor): a program a probe
+--- runs by name is never taken from the current directory.
 --- @param env table<string, string>|nil
 --- @param fn fun(): any
 --- @return any
 function M.with(env, fn)
     if not env then return fn() end
     local saved = M.capture()
+    if WIN then
+        local exe = require("loomworks.exe")
+        local has = false
+        for k in pairs(env) do
+            if key(k) == key(exe.NO_CWD_ENV) then has = true; break end
+        end
+        if not has then
+            local e = {}
+            for k, v in pairs(env) do e[k] = v end
+            e[exe.NO_CWD_ENV] = "1"
+            env = e
+        end
+    end
     M.apply(env)
     local res = { xpcall(fn, debug.traceback) }
     M.apply(saved)

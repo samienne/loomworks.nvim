@@ -44,6 +44,19 @@ function Conn:request(msg, cb)
     pcall(function() self.pipe:write(protocol.encode(msg)) end)
 end
 
+--- Stop reading from the daemon (test seam: a client blocked writing a
+--- paused terminal stops reading its connection the same way).
+function Conn:pause_reading()
+    if self.closed or not self._reader then return end
+    pcall(function() self.pipe:read_stop() end)
+end
+
+--- Read again after `pause_reading`.
+function Conn:resume_reading()
+    if self.closed or not self._reader then return end
+    pcall(function() self.pipe:read_start(self._reader) end)
+end
+
 --- Close the connection (idempotent).
 function Conn:close()
     if self.closed then return end
@@ -89,7 +102,7 @@ function M.connect(endpoint, opts, cb)
     local ok_c = pcall(function()
         pipe:connect(endpoint, function(cerr)
             if cerr then return finish(nil, M.ERR_CONNECT, tostring(cerr)) end
-            pipe:read_start(function(rerr, chunk)
+            conn._reader = function(rerr, chunk)
                 if rerr or not chunk then
                     if not done then return finish(nil, M.ERR_CLOSED) end
                     return conn:close()
@@ -128,7 +141,8 @@ function M.connect(endpoint, opts, cb)
                         end
                     end
                 end
-            end)
+            end
+            pipe:read_start(conn._reader)
             pcall(function() pipe:write(hello) end)
         end)
     end)

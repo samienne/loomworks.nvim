@@ -31,29 +31,137 @@ local envscope = require("loomworks.daemon.envscope")
 
 local M = {}
 
---- Spawn a step (test seam). `sink.output(stream, text)`, `sink.done(code)`.
+local uv = vim.uv or vim.loop
+local WIN = package.config:sub(1, 1) == "\\"
+
+--- After a step exits, how long to wait for its output pipes to reach EOF
+--- (a grandchild may keep one open — e.g. MSVC's mspdbsrv) while they are
+--- being read. A paused pipe is not waited on: its data stays in the pipe
+--- until the owner caught up.
+M.EOF_GRACE_MS = 500
+
+--- Spawn a step (test seam): the program in `spec.cmd` (argv[1] already
+--- resolved, loomworks.exe.harden_spec), with exactly `spec.env`, its output
+--- streamed to `sink.output(stream, text)` in order and `sink.done(code)`
+--- called once the process exited and its output was read. The returned
+--- object controls it:
+---   * `pause()` / `resume()` stop and restart reading its stdout and stderr
+---     (owner flow control, loomworks.daemon.tasks): a paused step's tool
+---     blocks on its full pipe, as on a paused terminal;
+---   * `kill(signal)` signals the process;
+---   * `abandon()` stops reading for good (a cancelled step): `done` follows
+---     as soon as the process exited, without waiting for its output.
+--- Returns nil (and calls `sink.done(127)`) when it cannot be spawned.
 --- @param spec { cmd: string[], cwd: string, env: table }
 --- @param sink table
---- @return table|nil obj with `pid` and `kill`
+--- @return table|nil obj with `pid`, `kill`, `pause`, `resume`, `abandon`
 function M.spawn(spec, sink)
-    return vim.system(spec.cmd, {
-        cwd = spec.cwd,
-        env = spec.env,
-        clear_env = true,
-        stdout = function(_, data) if data and data ~= "" then sink.output("stdout", data) end end,
-        stderr = function(_, data) if data and data ~= "" then sink.output("stderr", data) end end,
-    }, function(res) sink.done(res.code or 0) end)
+    local so, se = uv.new_pipe(false), uv.new_pipe(false)
+    local env = {}
+    for k, v in pairs(spec.env or {}) do env[#env + 1] = k .. "=" .. tostring(v) end
+    local exe = spec.cmd[1]
+    -- cmd.exe reads forward-slash path components as switches.
+    if WIN then exe = exe:gsub("/", "\\") end
+    local args = {}
+    for i = 2, #spec.cmd do args[i - 1] = spec.cmd[i] end
+    local obj = { paused = false }
+    local exit_code, finished, abandoned, grace = nil, false, false, nil
+    local open = { stdout = true, stderr = true }
+    local pipes = { stdout = so, stderr = se }
+    local readers = {}
+    local function close_pipe(name)
+        local p = pipes[name]
+        open[name] = false
+        pcall(function() p:read_stop() end)
+        pcall(function() if not p:is_closing() then p:close() end end)
+    end
+    local function finish()
+        if finished then return end
+        finished = true
+        if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
+        close_pipe("stdout"); close_pipe("stderr")
+        sink.done(exit_code or 0)
+    end
+    local function maybe_finish()
+        if finished or exit_code == nil then return end
+        if abandoned or (not open.stdout and not open.stderr) then return finish() end
+        -- Exited, a pipe still open: wait a little for its EOF, but only
+        -- while it is being read.
+        if obj.paused or grace then return end
+        grace = uv.new_timer()
+        grace:start(M.EOF_GRACE_MS, 0, function() finish() end)
+    end
+    for _, name in ipairs({ "stdout", "stderr" }) do
+        readers[name] = function(err, data)
+            if finished or abandoned then return end
+            if data and not err then
+                if data ~= "" then sink.output(name, data) end
+                return
+            end
+            close_pipe(name)
+            maybe_finish()
+        end
+    end
+    local handle, pid
+    handle, pid = uv.spawn(exe, {
+        args = args, stdio = { nil, so, se }, cwd = spec.cwd, env = env, hide = WIN,
+    }, function(code)
+        pcall(function() handle:close() end)
+        exit_code = code
+        maybe_finish()
+    end)
+    if not handle then
+        pcall(function() so:close() end)
+        pcall(function() se:close() end)
+        sink.output("stderr", "spawn failed: " .. tostring(spec.cmd[1]) .. ": " .. tostring(pid) .. "\n")
+        sink.done(127)
+        return nil
+    end
+    obj.pid = pid
+    so:read_start(readers.stdout)
+    se:read_start(readers.stderr)
+    function obj.kill(_, signal)
+        if exit_code == nil then pcall(uv.process_kill, handle, signal or "sigterm") end
+    end
+    function obj.pause()
+        if obj.paused or finished then return end
+        obj.paused = true
+        for name, p in pairs(pipes) do
+            if open[name] then pcall(function() p:read_stop() end) end
+        end
+        if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
+    end
+    function obj.resume()
+        if not obj.paused or finished then return end
+        obj.paused = false
+        for name, p in pairs(pipes) do
+            if open[name] then pcall(function() p:read_start(readers[name]) end) end
+        end
+        maybe_finish()
+    end
+    function obj.abandon()
+        if finished then return end
+        abandoned = true
+        close_pipe("stdout"); close_pipe("stderr")
+        maybe_finish()
+    end
+    return obj
 end
 
---- Kill a spawned step's process tree (test seam).
+--- Kill a spawned step's process tree (test seam): the identity-verified
+--- tree kill, else (no start time, or the tree kill could not confirm the
+--- process gone) a direct kill of the child. Then stop reading its output:
+--- the step ends as soon as the process exited.
 --- @param child { obj: table, pid: integer|nil, start: string|nil }
 function M.kill(child)
     local proc = require("loomworks.proc")
+    local gone = false
     if child.pid and type(child.start) == "string" then
-        local ok = pcall(proc.kill_tree, child.pid, child.start)
-        if ok then return end
+        local ok, res = pcall(proc.kill_tree, child.pid, child.start)
+        gone = ok and res == true
     end
-    if child.obj and child.obj.kill then pcall(child.obj.kill, child.obj, "sigkill") end
+    if not gone and child.obj and child.obj.kill then pcall(child.obj.kill, child.obj, "sigkill") end
+    if child.obj and child.obj.abandon then pcall(child.obj.abandon, child.obj) end
 end
 
 --- @class loomworks.daemon.BuildRun
@@ -111,6 +219,7 @@ function M.run(svc, ctx)
 
     local function step_done(step, code)
         run.child = nil
+        task:set_flow(nil)
         if run.cancelled then return finish(run.cancel_code, stopped()) end
         build_run.after_step(ws, step, code)
         -- A refused save (§2.7) ends the build as the in-process host's `die`
@@ -158,7 +267,11 @@ function M.run(svc, ctx)
         })
         child.pid = child.obj and child.obj.pid or nil
         if child.pid then child.start = require("loomworks.proc").start_time(child.pid) end
-        if not run.finished and child.obj then run.child = child end
+        if not run.finished and child.obj then
+            run.child = child
+            -- The owner's flow control pauses / resumes this step's output.
+            task:set_flow(child.obj)
+        end
     end
 
     task:start({ name = profile.key, kind = "build" })

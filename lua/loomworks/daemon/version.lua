@@ -7,10 +7,15 @@
 --- dev executable — has no release identity, so it compares a **source
 --- fingerprint** instead: `<changelog version>+dev.<hash>` (e.g.
 --- `0.1.44+dev.3f2a9c01d4e5b6a7`), where the hash covers the path, size and
---- modification time of every Lua file under the source's `loomworks/` (or,
---- for a fused executable, the executable itself). Editing any source file
---- therefore makes a dev client and a dev daemon mismatch, exactly as a
---- self-update does for a release.
+--- modification time of every Lua file under the source's `loomworks/`
+--- whenever the sources are on disk — an on-disk root (`--dev`,
+--- `LOOMWORKS_LUA`, the editor's checkout) or a directory bundle
+--- (`luvi <dir> --`, whose modules load from that directory) — and only for a
+--- fused executable, whose sources cannot change under it, the executable
+--- itself. Editing any source file therefore makes a dev client and a dev
+--- daemon mismatch, exactly as a self-update does for a release (the daemon is
+--- restarted when idle, retired when busy, §19.9). The fingerprint stats every
+--- source file once per process (about 10 ms).
 
 local M = {}
 
@@ -60,6 +65,20 @@ local function tree_fingerprint(dir)
     return vim.fn.sha256(table.concat(entries, "\n")):sub(1, 16)
 end
 
+--- The directory a `luvi <dir>` host runs its bundle from, when it holds the
+--- loomworks sources (nil for a fused executable, whose bundle base is the
+--- executable file, and outside luvi).
+--- @return string|nil
+function M.bundle_dir()
+    local ok, luvi = pcall(require, "luvi")
+    local base = ok and type(luvi) == "table" and type(luvi.bundle) == "table" and luvi.bundle.base or nil
+    if type(base) ~= "string" or base == "" then return nil end
+    base = base:gsub("\\", "/"):gsub("/+$", "")
+    local st = uv().fs_stat(base .. "/loomworks")
+    if st and st.type == "directory" then return base end
+    return nil
+end
+
 local function exe_fingerprint()
     local ok, exe = pcall(uv().exepath)
     if not ok or type(exe) ~= "string" then return "unknown" end
@@ -81,7 +100,7 @@ function M.identity()
     local okb, base = pcall(function() return require("loomworks.save_guard").version() end)
     base = (okb and type(base) == "string" and base) or "0.0.0"
     base = base:gsub("%+dev$", "")
-    local root = M.lua_root()
+    local root = M.lua_root() or M.bundle_dir()
     local fp = root and tree_fingerprint(root .. "/loomworks") or exe_fingerprint()
     _identity = base .. "+dev." .. fp
     return _identity

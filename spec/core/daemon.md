@@ -602,7 +602,11 @@ Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
 protocol version, host version and the working-copy and cache schema versions
 in the handshake. A CLI client **matches** a daemon when all of them are equal
-(a development build compares its source fingerprint as its version). An editor
+(a development build compares its source fingerprint as its version: the
+paths, sizes and modification times of its Lua sources whenever they are on
+disk — a development source tree or a directory bundle — so editing a source
+is a mismatch; only a fused executable, whose sources cannot change, uses the
+executable itself). An editor
 client matches when protocol and schemas are equal (its own code ships with the
 plugin, §19.16).
 
@@ -765,9 +769,17 @@ a status line on standard output, a note on standard error), `output` (a
 step's raw bytes, `stdout` or `stderr`), `progress` (coalesced: a tick only
 when the integer percent advances) and `done` (`exit_code`, and the refusal or
 failure the client prints as `lw: <error>`). The client that started the task
-— its **owner** — receives every event, unbounded: the stream is its
-terminal. Other clients observe it with output bounded per task (a single
-truncation notice past the cap). Model changes are never dropped; the durable
+— its **owner** — receives every event, unbounded and in order: the stream is
+its terminal. It is **flow-controlled**: when a few megabytes wait unread on
+the owner's connection (a client that stopped reading, e.g. `lw build | less`
+paused), the daemon stops reading the running step's output until the owner
+caught up, so the build tool blocks on its full pipe exactly as it blocks on a
+paused terminal in-process, and the daemon's memory stays bounded;
+cancellation still applies while paused. Other clients **observe** it with
+output bounded per task by bytes (a few megabytes each, then a single
+truncation notice); an observer whose connection falls further behind than a
+bound is disconnected (it connects again to re-attach) — unless it owns a
+running operation itself, which then only misses observed events. Model changes are never dropped; the durable
 outcome arrives as a `model_change` (§19.12, with step 4).
 
 **Request.** `build { args, interactive, env, command }` — `args` carries the
@@ -800,7 +812,13 @@ reset, the configure record and the cache write-back under the save guard
 (§2.7 — a refused save ends the build with its message, as in-process), the
 failure line with the `--target` hint, and `BUILD OK: <profile>`. Only the
 build tool's own terminal detection differs: its output reaches the client
-through a pipe, as when the in-process build is piped (`lw build | tee`).
+through a pipe, as when the in-process build is piped (`lw build | tee`) — so
+a tool that colours or redraws only on a terminal does not (ninja prints every
+`[n/N]` line instead of one updating status line, compilers drop colour). No
+colour variable is added for it: such variables (`CLICOLOR_FORCE`, …) reach
+every process of the build, including ones whose output a build script
+captures, so they would change what a build does; a user who wants colour sets
+them in the environment of `lw build`, which the step receives.
 
 **Environment.** A routed build behaves as if the client process had run it.
 The client sends its **whole environment** with the request; the daemon
@@ -808,8 +826,9 @@ applies it to the operation and to nothing else:
 
 - every piece of model work for the request (the live-workspace sync or
   reload, argument resolution, planning, gates, cache write-back) runs with
-  the daemon's process environment switched to the client's and restored
-  afterwards — so `${VAR}` expansions, tool and program resolution on `PATH`
+  the daemon's process environment switched to the client's (on Windows
+  keeping `NoDefaultCurrentDirectoryInExePath=1`, §5.10, when the client's
+  lacks it) and restored afterwards — so `${VAR}` expansions, tool and program resolution on `PATH`
   and probes the module spawns see the client's values. These pieces run one
   at a time (a FIFO), so two clients never see each other's environment;
 - each step is spawned with exactly the client's environment plus the step's
@@ -817,10 +836,20 @@ applies it to the operation and to nothing else:
   — never the daemon's launch environment, whose loomworks-internal variables
   (`LOOMWORKS_LUA`, `LW_ROOT`) therefore do not leak into builds;
 - the daemon's workspace model is kept for the environment it was loaded in:
-  a request whose environment differs (ignoring `_`, `PWD`, `OLDPWD`,
-  `SHLVL`, which a shell changes between commands) reloads the workspace from
-  disk first, as an in-process load in that environment would read it; while
-  another build runs in the daemon, such a request is declined instead.
+  a request whose environment differs reloads the workspace from disk first,
+  as an in-process load in that environment would read it; while another
+  build runs in the daemon, such a request is declined instead. The
+  comparison ignores variables that differ between two commands of one shell
+  (`_`, `PWD`, `OLDPWD`, `SHLVL`) and between two terminals of one user — the
+  terminal's, multiplexer's, SSH and login session's per-window/pane/session
+  identifiers (`WT_SESSION`, `TERM_SESSION_ID`, `TMUX`, `TMUX_PANE`, `STY`,
+  `WINDOWID`, `SSH_CONNECTION`, `SSH_TTY`, `SSH_AUTH_SOCK`, `GPG_TTY`,
+  `XDG_SESSION_ID`, editor terminals' IPC handles `VSCODE_*`, …; names compared
+  case-insensitively on Windows); these still reach the step unchanged. It is a
+  list of what to ignore, not of what to compare: what a load reads is
+  open-ended (`${VAR}` references, module and SDK probes, compiler and
+  `vcvarsall` variables), and a variable missed by a list of what to compare
+  would build with a model read in another environment.
 
 The whole environment is sent because a subset cannot be chosen safely:
 compiler, SDK and `vcvarsall` variables (`INCLUDE`, `LIB`, `WindowsSdkDir`,
