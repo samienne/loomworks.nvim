@@ -747,8 +747,9 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
   megabytes with one rotated predecessor (`.log.1`). Each line is appended
   with the file opened and closed again, so no process keeps it open. A write
   creates `.nvim/` only when the workspace root exists, and never creates the
-  root: a daemon whose workspace was removed does not bring it back. `lw daemon
-  status` names the log when it exists. (Earlier versions kept it in the
+  root: a daemon whose workspace was removed does not bring it back. A file at
+  the log's name that is not lw's runtime log is never written, rotated or
+  removed (§16.40). `lw daemon status` names the log when it exists. (Earlier versions kept it in the
   per-user state directory; §16.40 removes those files.)
 - **Working directory**: the per-user state directory — never the workspace,
   so the daemon never holds the workspace directory open or busy.

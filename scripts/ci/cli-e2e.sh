@@ -40,6 +40,10 @@ mkdir -p "$TMP/lwdata"
 if command -v cygpath >/dev/null 2>&1; then export LOOMWORKS_DATA_DIR="$(cygpath -m "$TMP/lwdata")"
 else export LOOMWORKS_DATA_DIR="$TMP/lwdata"; fi
 trap 'rm -rf "$TMP"' EXIT
+# No startup housekeeping (spec 16.40) in the lw runs below: it would scan the
+# runner's real temp and socket directories. test_cleanup turns it on with
+# those directories sandboxed.
+export LOOMWORKS_NO_HOUSEKEEPING=1
 
 # Pick a toolchain key for the given module from `run_lw tools`, preferring a
 # self-contained gcc/clang over MSVC (which needs a dev environment), then the
@@ -414,6 +418,48 @@ JSON
     if sleeper_alive; then bad "daemon: a build step survived"; fi
 }
 
+# lw cleanup and the startup housekeeping pass (spec §16.40): leftovers of
+# interrupted runs in the per-user data directory are listed by a dry run,
+# removed by the next lw runs (several at once), and near misses and recent
+# items are kept. Toolchain-independent.
+test_cleanup() {
+    say "lw cleanup + housekeeping (spec 16.40)"
+    local out="$TMP/out.txt" d="$TMP/hkdata" t="$TMP/hktmp" dn tn rc i pids=""
+    mkdir -p "$d/modules" "$d/.stage-0.1.40/x" "$t"
+    : > "$d/trust.key"   # an lw data directory (marker)
+    if command -v cygpath >/dev/null 2>&1; then dn="$(cygpath -m "$d")"; tn="$(cygpath -m "$t")"
+    else dn="$d"; tn="$t"; fi
+    : > "$d/.dl-0.1.40.zip"; : > "$d/modules/.dl-ohos.zip"; : > "$d/.dl-0.1.40.zip.keep"
+    touch -t 200101010000 "$d/.dl-0.1.40.zip" "$d/.stage-0.1.40" "$d/modules/.dl-ohos.zip" "$d/.dl-0.1.40.zip.keep"
+    : > "$d/.dl-0.1.41.zip"
+    (cd "$TMP" && LOOMWORKS_DATA_DIR="$dn" run_lw cleanup --dry-run) > "$out" 2>&1; rc=$?
+    if [ $rc -eq 0 ] && grep -q "dry run" "$out" && grep -q "\.dl-0\.1\.40\.zip " "$out" \
+        && grep -q "\.stage-0\.1\.40" "$out" && ! grep -q "0\.1\.41" "$out" && ! grep -q "\.keep" "$out"; then
+        ok "cleanup --dry-run lists the aged leftovers only"
+    else note_fail "cleanup --dry-run" "$rc"; fi
+    sed 's/^/  | /' "$out"
+    [ -e "$d/.dl-0.1.40.zip" ] && ok "a dry run removes nothing" || bad "a dry run removed something"
+    # Four lw processes at once: each may claim the pass; all succeed.
+    for i in 1 2 3 4; do
+        ( cd "$TMP" && LOOMWORKS_NO_HOUSEKEEPING= TMP="$tn" TEMP="$tn" TMPDIR="$tn" XDG_RUNTIME_DIR="$tn" \
+            LOOMWORKS_DATA_DIR="$dn" run_lw status >/dev/null 2>&1; echo $? > "$TMP/hk.$i" ) &
+        pids="$pids $!"
+    done
+    wait $pids
+    for i in 1 2 3 4; do
+        [ "$(cat "$TMP/hk.$i")" = "0" ] || bad "lw status $i exited $(cat "$TMP/hk.$i") during housekeeping"
+    done
+    if [ ! -e "$d/.dl-0.1.40.zip" ] && [ ! -e "$d/.stage-0.1.40" ] && [ ! -e "$d/modules/.dl-ohos.zip" ]; then
+        ok "concurrent lw runs removed the leftovers"
+    else bad "leftovers remain after the startup pass: $(ls -A "$d" "$d/modules" | tr '\n' ' ')"; fi
+    [ -e "$d/.dl-0.1.41.zip" ] && [ -e "$d/.dl-0.1.40.zip.keep" ] && [ -f "$d/.housekeeping" ] \
+        && ok "recent items and near misses kept; stamp written" || bad "recent / near-miss item removed or no stamp"
+    (cd "$TMP" && LOOMWORKS_DATA_DIR="$dn" run_lw cleanup) > "$out" 2>&1; rc=$?
+    [ $rc -eq 0 ] && grep -q "nothing to clean up" "$out" && ok "then: nothing to clean up" || note_fail "cleanup after pass" "$rc"
+    (cd "$TMP" && LOOMWORKS_DATA_DIR="$dn" run_lw cleanup --yes --dry-run) > "$out" 2>&1; rc=$?
+    [ $rc -eq 2 ] && ok "--yes with --dry-run is a usage error" || note_fail "cleanup --yes --dry-run" "$rc"
+}
+
 # A build step that a signal kills (OOM killer, `kill -9` on the build tool)
 # fails the build with 128 + signal, names the signal, and is never recorded
 # as built — in-process and routed through the daemon (spec §16.7, §19.15).
@@ -676,6 +722,9 @@ test_daemon_build
 
 # A build step killed by a signal fails the build (spec §16.7; POSIX).
 test_signal_exit
+
+# lw cleanup + the startup housekeeping pass (spec §16.40).
+test_cleanup
 
 printf '\n=== summary: %d passed, %d failed ===\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

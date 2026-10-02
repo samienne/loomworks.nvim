@@ -20,6 +20,11 @@ vim.opt.shadafile = "NONE"
 -- clears it where it tests the count.
 vim.env.LOOMWORKS_TEST_NO_DAEMON_SCAN = "1"
 
+-- No startup housekeeping (spec §16.40) in any lw the suite spawns: it would
+-- scan and clean the machine's real temp and socket directories.
+-- tests/housekeeping_spec drives it explicitly (`force`, sandboxed dirs).
+vim.env.LOOMWORKS_NO_HOUSEKEEPING = "1"
+
 -- Hermetic per-user state: every spec file gets its own data directory (the
 -- trust key, the workspace runtime's state and runtime logs, spec §17.2,
 -- §19.10) and its own lw settings, so a test run never writes the real

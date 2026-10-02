@@ -45,6 +45,8 @@ function M.env(extra)
         vars[k] = nil
     end
     vars.LOOMWORKS_DATA_DIR = data
+    -- Spawned lw never runs the startup housekeeping (spec §16.40).
+    vars.LOOMWORKS_NO_HOUSEKEEPING = "1"
     -- The suite runs every spec file at once: give a daemon start, and a
     -- handshake, room on a loaded machine.
     vars.LW_TEST_DAEMON_READY_MS = "60000"

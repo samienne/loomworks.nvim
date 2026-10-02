@@ -196,13 +196,18 @@ directory safety before merging:
    directories (`<data>`, `<data>/pinned[/<sha256>]`, `<data>/modules`, default
    `<data>/device-locks`, `<data>/daemon/logs`, `<tmp>`, the exe's directory,
    the `<run>` socket dirs, `<root>/.nvim/tmp`) whose whole name matches an
-   exact pattern (validated version / sha256 / module name / arch / hex nonce),
-   past the pattern's age. Parents are real directories (lstat) whose realpath
+   exact pattern (release version `<n>.<n>.<n>[tail]` / sha256 / module name /
+   arch / hex nonce), past the pattern's age, and only when `<data>` carries an
+   lw marker (`is_lw_data`: trust.key, stamp, pinned/, a lua-<ver> release). Parents are real directories (lstat) whose realpath
    is the expected one (under `<data>` separator-bounded); a candidate that is
    a link/junction is skipped, file/dir/socket type must match; removal via
-   `io.rm_rf` (links unlinked, never followed). Never in use: device locks only
+   `housekeeping._rm_tree` (links unlinked, never followed; chmod only on a
+   single-link file); POSIX temp entries only of this uid; `<exe>.old` only on
+   Windows. Never in use: device locks only
    dead-holder + no program record via `lock_record.reclaim`; sockets only
-   refused-connection + 1 h old + inode-checked move-aside; pinned releases
+   refused-connection + 1 h old + not a running daemon's hash (process scan)
+   + inode/dev/mtime-checked move-aside, the moved socket never unlinked when
+   put-back finds the name taken; pinned releases
    never the current `lw.pin`'s, the running exe/bundle, or used within the
    threshold, and renamed to `.trash-<nonce>` before rm_rf. Never `.leftover`,
    trust.key, config, releases, modules.

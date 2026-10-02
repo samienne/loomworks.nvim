@@ -7814,6 +7814,12 @@ end
 --- @param root string|nil
 --- @param args string[]
 --- @return integer
+--- `lw cleanup [--dry-run | --yes] [--all] [--pinned-older-than <dur>]`
+--- (spec §16.40).
+function M.cmd_cleanup(root, args)
+  return require("loomworks.housekeeping").cmd(root, args, { out = out, die = die })
+end
+
 function M.cmd_daemon(root, args)
   return require("loomworks.daemon.command").run(args[2], root, args, M._daemon_host())
 end
@@ -9586,6 +9592,7 @@ local COMP_COMMANDS = {
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "export", "import", "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes", "daemon",
+  "cleanup",
   "--no-input",
 }
 
@@ -9654,6 +9661,14 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "daemon" then
     if n == 1 then emit(require("loomworks.daemon.command").SUBS) end
+    return 0
+  elseif cmd == "cleanup" then
+    if a[n] == "--pinned-older-than" then emit({ "30d", "90d" }); return 0 end
+    local c = {}
+    for _, v in ipairs({ "--dry-run", "--yes", "--all", "--pinned-older-than" }) do
+      if not has(a, v) then c[#c + 1] = v end
+    end
+    emit(c)
     return 0
   elseif cmd == "settings" then
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
@@ -10244,6 +10259,34 @@ Nuke holds the workspace operation lock and the build lock of every build
 directory it removes, so it refuses while a build runs ("cannot nuke: a
 build is running in ...") instead of deleting under it. `--break-locks[=now]`
 stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
+  cleanup = [[lw cleanup [--dry-run | --yes] [--all] [--pinned-older-than <duration>]
+
+List, and with --yes remove, what lw left behind outside the workspace:
+downloads and staging directories of an interrupted self-update, pinned
+provisioning or module install, temporary files, the MSVC environment probe's
+batch file, a self-update's lw.new / lw.old, a device lock or daemon socket
+whose owner is gone, and files earlier versions kept outside the workspace
+(runtime logs, test results, description buffers). Only exact lw names in
+lw's own directories are touched, never through a link, never while in use.
+
+  --dry-run   list only (the default): kind, path, size, age, and the total
+  --yes, -y   remove them; exit 1 if one could not be removed (in use, ...)
+  --all       also prune pinned releases (<data dir>/pinned) not used for 30
+              days, and every old runtime log; never the release this
+              repository's lw.pin pins, nor the running lw
+  --pinned-older-than <duration>
+              the pinned-release threshold, e.g. 90d, 12h (implies the pinned
+              part of --all)
+
+lw also does this by itself: once a day, at the start of a command, it
+silently removes the same leftovers (pinned releases excepted), and notes it
+in the workspace's .nvim/loomworks.daemon.log.
+
+What lw keeps outside the workspace on purpose: its settings (config.json),
+the machine key (trust.key), the tool scan cache (tools.json), the newest three
+releases, installed modules, pinned releases in use, and the empty daemon
+working directory. <data dir> is %LOCALAPPDATA%\loomworks,
+$XDG_DATA_HOME/loomworks or ~/.local/share/loomworks (LOOMWORKS_DATA_DIR).]],
   daemon = [[lw daemon [status] | list [--json] | stop [--force] | kill | restart [--force] | run [--root <dir>]
        lw daemon stop --all [--force] | kill --all [--strays]   [--under <dir>]
 
@@ -11698,6 +11741,7 @@ Usage: lw [command] [args]
                     (experimental, opt-in: runtime-mode)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)
+  cleanup           list / remove what lw left outside the workspace (--yes, --all)
   test  [profile]   build a profile, then run its tests (real exit code)
   run [target]      build, then execute a target on the active profile
   run <profile> <target>  same, on a named profile
@@ -11951,6 +11995,19 @@ local function main()
   if command == "daemon" then
     finish(M.cmd_daemon(root, a))
   end
+  -- `cleanup` lists / removes what lw left outside the workspace (spec
+  -- §16.40); no workspace needed, none loaded.
+  if command == "cleanup" then
+    finish(M.cmd_cleanup(root, a))
+  end
+  -- Housekeeping (spec §16.40): once a day, remove leftovers of interrupted
+  -- lw runs outside the workspace, and record the last use of a pinned
+  -- release this process runs from. Silent; never fails the command.
+  pcall(function()
+    local hk = require("loomworks.housekeeping")
+    hk.touch_running()
+    hk.startup(root)
+  end)
 
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then

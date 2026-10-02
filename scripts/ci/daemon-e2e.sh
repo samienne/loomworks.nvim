@@ -35,6 +35,9 @@ say() { printf '\n=== %s ===\n' "$*"; }
 TMP=$(mktemp -d)
 native() { if [ "$os" = windows ]; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 export LOOMWORKS_DATA_DIR="$(native "$TMP/data")"
+# No startup housekeeping (spec 16.40): it would scan the runner's real temp
+# and socket directories (and probe this test's daemon sockets).
+export LOOMWORKS_NO_HOUSEKEEPING=1
 export XDG_CONFIG_HOME="$TMP/config" APPDATA="$(native "$TMP/config")"
 unset LOOMWORKS_RUNTIME LOOMWORKS_NO_DAEMON CI LW_ROOT || true
 

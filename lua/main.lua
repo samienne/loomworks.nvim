@@ -273,6 +273,10 @@ if pinned_sentinel and not dev_opt_in then
         ": " .. tostring(err) .. "\n")
       exit(1)
     end
+    -- Record its last use (spec §16.40): `lw cleanup --all` prunes pinned
+    -- releases unused for long. The directory's mtime, never a file inside
+    -- it (the bundle tree must stay byte-identical to the release).
+    pcall(uv.fs_utime, dir, os.time(), os.time())
     luaroot, source_kind = dir, "release"
   end
 end
@@ -532,6 +536,10 @@ do
         ": " .. tostring(verr) .. "\n")
       exit(1)
     end
+    -- Record the last use of both (spec §16.40): `lw cleanup --all` prunes
+    -- pinned releases unused for long.
+    pcall(uv.fs_utime, vdir, os.time(), os.time())
+    pcall(uv.fs_utime, bin, os.time(), os.time())
     local okl, lerr = upd.check_legacy_pinned_bundle(
       pin_root .. "/.nvim/cache/lua-" .. p.version, vdir)
     if not okl then

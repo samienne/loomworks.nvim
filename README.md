@@ -1615,6 +1615,7 @@ outside a workspace.
 | `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
 | `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
+| `lw cleanup [--dry-run \| --yes] [--all] [--pinned-older-than <dur>]` | List (default) or remove (`--yes`) what `lw` left behind outside the workspace after an interrupted run: download/staging leftovers, temporary files, a dead holder's device lock, a stale daemon socket. `--all` also prunes pinned releases unused for 30 days (`--pinned-older-than 90d` sets that). `lw` does the same by itself once a day. See [What lw keeps outside the workspace](#what-lw-keeps-outside-the-workspace) |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
@@ -2098,12 +2099,34 @@ workspace-root/
     ├── loomworks.health.json    Always gitignored. Advisory suggestion cache
     │                            (`lw health` / `N suggestions`); self-healing,
     │                            recomputed if missing or stale.
+    ├── loomworks.daemon.log     The workspace daemon's runtime log (2 MB + one .1).
+    ├── tmp/                     Temporary files of `lw test <target>` and
+    │                            `describe -e`, removed after use.
     └── build/
         ├── ProjectA/
         │   ├── Debug/
         │   └── Release/
         └── ProjectB/
 ```
+
+### What lw keeps outside the workspace
+
+Everything a workspace's operations produce stays under its `.nvim/`. Outside
+it, `lw` keeps only per-user state (spec §16.40): its settings
+(`config.json`), the machine key (`trust.key`), the tool scan cache
+(`tools.json`), the newest three releases, installed modules, the pinned
+releases repositories use, and an empty daemon working directory, in the data
+directory (`%LOCALAPPDATA%\loomworks`, `$XDG_DATA_HOME/loomworks` or
+`~/.local/share/loomworks`; `LOOMWORKS_DATA_DIR` overrides it).
+
+A `lw` that is killed or loses power mid-operation can leave a partial
+download, a staging directory or a temporary file behind. The next `lw`
+command removes such leftovers (once a day, silently, after they are a day
+old), and `lw cleanup` lists them, `lw cleanup --yes` removes them now.
+`lw cleanup --all` also prunes pinned releases no repository has used for 30
+days (never the one the current repository pins). Only exact `lw` names in
+`lw`'s own directories are ever removed, never through a link, never while in
+use.
 
 ### Editor and `lw` at the same time
 
