@@ -50,6 +50,10 @@ function M.env(extra)
     -- The suite runs every spec file at once: give a daemon start, and a
     -- handshake, room on a loaded machine.
     vars.LW_TEST_DAEMON_READY_MS = "60000"
+    -- ... and each step of a command's ensure (connect + handshake, ping),
+    -- whose 1 s budget a healthy daemon can miss there: the command then
+    -- runs without it and prints a line the parity tests do not expect.
+    vars.LW_TEST_DAEMON_STEP_MS = "30000"
     if M.is_win then vars.APPDATA = cfg else vars.XDG_CONFIG_HOME = cfg end
     for k, v in pairs(extra or {}) do vars[k] = v or nil end
     return { vars = vars, data = data, config = cfg }
@@ -193,6 +197,23 @@ function M.shell_workspace(opts)
         f:write(signed); f:close()
     end
     return root
+end
+
+--- `lw daemon stop` in `root`, then wait until the stopped daemon's process
+--- has exited. stop returns once the runtime lock is released, a moment
+--- before the process is gone — on a loaded machine a while: a test that
+--- ends (or lists processes) right there would find it still running.
+--- @param root string
+--- @param env table from M.env
+--- @return table result of M.lw
+function M.stop_daemon(root, env)
+    local lk = require("loomworks.daemon.rlock").read(root)
+    if lk and type(lk.pid) == "number" then M.track(lk.pid, lk.start_time) end
+    local r = M.lw({ "daemon", "stop" }, { env = env, cwd = root })
+    if r.code == 0 and lk and type(lk.start_time) == "string" then
+        vim.wait(30000, function() return not M.alive(lk.pid, lk.start_time) end, 50)
+    end
+    return r
 end
 
 --- Daemon processes this spec started or found, killed by `cleanup`.

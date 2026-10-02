@@ -332,7 +332,7 @@ describe("runtime-mode daemon with real processes", function()
         env.vars.LOOMWORKS_NO_DAEMON = "0"
         assert.equals(0, lw({ "profiles" }).code)
         assert.truthy(H.track_root(root))
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("a launch failure is one line and the command still runs", function()
@@ -376,7 +376,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.truthy(now, "no fresh daemon")
         assert.are_not.equal(lk.pid, now.pid)
         assert.is_true(H.alive(now.pid, now.start_time))
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("the daemon exits by itself after the idle timeout", function()

@@ -23,8 +23,10 @@ local M = {}
 --- The latency budget of the ensure path (§19.10 keeps read-only commands
 --- fast): each step with a daemon (connect + handshake, `status`, `ping`)
 --- waits at most this long, and a daemon still starting is waited for at
---- most this long, once per command.
-M.STEP_MS = 1000
+--- most this long, once per command. `LW_TEST_DAEMON_STEP_MS` lengthens it
+--- for test suites that run real `lw` processes on a heavily loaded machine
+--- (as `LW_TEST_DAEMON_READY_MS` does the launch's readiness wait).
+M.STEP_MS = tonumber(os.getenv("LW_TEST_DAEMON_STEP_MS") or "") or 1000
 
 --- How long a client waits for a stopped daemon to release R before it
 --- gives up on replacing it.

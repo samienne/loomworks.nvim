@@ -159,6 +159,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- Windows, workspace daemon: on a busy machine the daemon could still log
+  `could not write the handle: EPERM` and leave `lw status` and clients
+  reading an outdated client count or busy state until the next change. It
+  now keeps retrying the update until it lands, and logs only when it keeps
+  failing for several seconds. (#123)
+- `lw daemon stop` no longer calls a daemon that is still starting (slow on a
+  loaded machine) "not responding" after 3 s; it waits the same ~10 s as for
+  a running daemon. (#123)
+- Windows: lines written to `.nvim/loomworks.log` at the same moment by the
+  editor and `lw` commands are no longer lost (one overwrote the other).
+  (#123)
 - Windows, workspace daemon: `lw build` run from cmd.exe, PowerShell or a
   Visual Studio developer prompt (anything started from a cmd.exe, such as a
   `.cmd` shim) now builds through the daemon; it used to fall back to an

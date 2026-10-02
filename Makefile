@@ -13,8 +13,12 @@ test:
 	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedDirectory $(TESTS_DIR)/ {minimal_init = '$(INIT_FILE)', timeout = $(TEST_TIMEOUT)}"
 
 ## Run a single test file: make test-file FILE=tests/config_spec.lua
+## Run in this nvim, as each file of `make test` is: PlenaryBustedFile would
+## spawn it under plenary's fixed 50 s budget and, past it, exit 1 and drop
+## the run mid-test (on a loaded machine the daemon specs take longer,
+## leaving the daemons they started running).
 test-file:
-	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedFile $(FILE)"
+	nvim --headless -u $(INIT_FILE) -c "lua require('plenary.busted').run('$(FILE)')"
 
 ## Run the standalone bootstrap tests (boot.verify / boot.json) under luvi.
 ## These exercise luvi's OpenSSL and so cannot run under nvim/busted.

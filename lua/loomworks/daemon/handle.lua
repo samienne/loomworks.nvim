@@ -91,52 +91,80 @@ function M._suffix()
     return string.format("%x%x", uv().hrtime() % 0x7fffffff, math.random(0, 0x7fffffff))
 end
 
---- The rename retry of `write` (Windows): attempts, and the sleep before
---- each retry (ms; the last value repeats). Bounded — about 0.2 s at most —
---- because the daemon's loop waits meanwhile.
-M.RENAME_ATTEMPTS = 8
-M.RENAME_DELAYS_MS = { 2, 5, 10, 20, 40 }
+--- The rename retry of `write` (Windows): its time budget (ms) and the
+--- sleeps between attempts (ms; the last value repeats). A reader holds the
+--- handle open for well under a millisecond, but on a loaded machine (every
+--- client polling it, an indexer, an antivirus scan) the rename can keep
+--- failing for longer than the 0.2 s this used to allow; a caller that must
+--- not block that long (the daemon's loop) passes a smaller `budget_ms` and
+--- retries later itself (loomworks.daemon.server).
+M.RENAME_BUDGET_MS = 2000
+M.RENAME_DELAYS_MS = { 2, 5, 10, 20, 40, 80, 160, 250 }
+
+--- Is a failed rename worth retrying (a reader holding the handle open)?
+--- @param code string|nil the libuv error name
+--- @return boolean
+function M.transient(code)
+    return code == "EPERM" or code == "EACCES" or code == "EBUSY"
+end
+
+--- The bytes `write` publishes for `rec` (the computed `age`, `stale`,
+--- `valid` left out).
+--- @param rec table
+--- @return string
+function M.encode(rec)
+    local body = {}
+    for k, v in pairs(rec) do
+        if k ~= "age" and k ~= "stale" and k ~= "valid" then body[k] = v end
+    end
+    return vim.json.encode(body)
+end
 
 --- Write the handle atomically: staged to `<handle>.tmp-<random>` created
 --- exclusively (never through a file or link planted in a shared `.nvim/`),
 --- then renamed over the handle. On Windows the rename fails (EPERM/EACCES)
 --- while another process has the handle open — a client reading it, an
---- indexer or a scanner — so it is retried briefly (`RENAME_ATTEMPTS`). A
---- rename that still fails removes the staged file (that exact name, a
---- regular file this call created) and leaves the previous handle as it was:
---- never a partial one.
+--- indexer or a scanner: libuv opens files with FILE_SHARE_DELETE, but
+--- replacing a file that is open still fails (only the SOURCE of a rename
+--- may be open) — so it is retried with backoff for at most `budget_ms`
+--- (default `RENAME_BUDGET_MS`). A rename that still fails removes the staged
+--- file (that exact name, a regular file this call created) and leaves the
+--- previous handle as it was: never a partial one.
 --- @param root string
 --- @param rec table
---- @return boolean|nil ok, string|nil err
-function M.write(root, rec)
+--- @param opts? { budget_ms?: integer }
+--- @return boolean|nil ok, string|nil err, string|nil code the libuv error name
+function M.write(root, rec, opts)
     local path = paths.handle_path(root)
     local dir = path:match("^(.*)/[^/]+$")
     if dir and not uv().fs_stat(dir) then pcall(vim.fn.mkdir, dir, "p") end
-    local body = {}
-    for k, v in pairs(rec) do
-        if k ~= "age" and k ~= "stale" and k ~= "valid" then body[k] = v end
-    end
-    local data = vim.json.encode(body)
-    local tmp, err
+    local data = M.encode(rec)
+    local tmp, err, ecode
     for _ = 1, 3 do
         local cand = path .. ".tmp-" .. M._suffix()
         local ok, werr, code = require("loomworks.io").write_exclusive(cand, data, tonumber("644", 8))
         if ok then tmp = cand; break end
-        err = werr
+        err, ecode = werr, code
         if code ~= "EEXIST" then break end
     end
-    if not tmp then return nil, err end
-    local rerr
-    for i = 1, M.RENAME_ATTEMPTS do
+    if not tmp then return nil, err, ecode end
+    local budget = (opts and opts.budget_ms) or M.RENAME_BUDGET_MS
+    local t0 = uv().hrtime()
+    local rerr, rcode
+    local i = 0
+    while true do
+        i = i + 1
         local ok_r, e, code = uv().fs_rename(tmp, path)
         if ok_r then return true end
-        rerr = e
-        if (code ~= "EPERM" and code ~= "EACCES") or i == M.RENAME_ATTEMPTS then break end
-        uv().sleep(M.RENAME_DELAYS_MS[math.min(i, #M.RENAME_DELAYS_MS)])
+        rerr, rcode = e, code
+        if not M.transient(code) then break end
+        local delay = M.RENAME_DELAYS_MS[math.min(i, #M.RENAME_DELAYS_MS)]
+        if (uv().hrtime() - t0) / 1e6 + delay > budget then break end
+        uv().sleep(delay)
     end
     local lst = uv().fs_lstat(tmp)
     if lst and lst.type == "file" then pcall(uv().fs_unlink, tmp) end
-    return nil, rerr
+    return nil, rerr, rcode
 end
 
 --- Refresh the handle's modification time (the heartbeat). Returns false
