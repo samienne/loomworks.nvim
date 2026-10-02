@@ -222,13 +222,17 @@ while vim.uv.now() - t0 < %d do handle.read(%q); vim.uv.sleep(1); vim.uv.update_
         end
     end)
 
-    --- Make `uv.fs_rename` fail with `code` for the first `ms` milliseconds
-    --- (a reader holding the handle open), then rename for real. Returns the
+    --- Make `uv.fs_rename` fail with `code` for `ms` milliseconds from its
+    --- first call (a reader holding the handle open), then rename for real.
+    --- The window starts at the first rename, not here: staging the file
+    --- before it can take longer than `ms` on a loaded runner, and the first
+    --- rename would then succeed untested (CI run 37011157980). Returns the
     --- restore function and a counter.
     local function blocked_rename(ms, code)
-        local orig, t0, stat = uv.fs_rename, uv.hrtime(), { calls = 0 }
+        local orig, t0, stat = uv.fs_rename, nil, { calls = 0 }
         uv.fs_rename = function(a, b)
             stat.calls = stat.calls + 1
+            t0 = t0 or uv.hrtime()
             if (uv.hrtime() - t0) / 1e6 < ms then return nil, code .. ": operation not permitted", code end
             return orig(a, b)
         end
