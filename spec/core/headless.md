@@ -153,14 +153,40 @@ them on the native build command before any wrapping, so they take effect
 exactly as if typed on that command (e.g. cmake `--build <dir> --target <t>
 <args>`, meson `compile -C <dir> <t> <args>`), whatever toolchain environment
 the build runs in. An argument the build's wrapper cannot pass through
-faithfully is refused with the reason, never dropped. Targets are applied to
-every project of the profile; a project whose module does not support target
-selection makes a `--target` build an error, as does forwarding arguments to a
-module that neither accepts them nor runs a command they could be appended to
-(§8.1). Targets are not refused up front against the unit's introspected
-target list (it can omit targets the module does not introspect); the build
-tool decides, and when such a build fails the closing message names each
-requested target the list lacks, with close matches.
+faithfully is refused with the reason, never dropped. A project whose module
+does not support target selection makes a `--target` build an error, as does
+forwarding arguments to a module that neither accepts them nor runs a command
+they could be appended to (§8.1).
+
+**Naming a build target.** A `--target` operand takes exactly the form
+`lw target` lists (§16.18, `<project>:<target>`), or the bare target name.
+`<project>:<target>` is **project-qualified** only when `<project>` names one
+of the profile's projects (a module's own target syntax may contain `:`);
+otherwise the whole operand is a bare name. Every operand is resolved to the
+projects that build it before anything runs (no configure, no build tool),
+using the profile's projects' **known target lists**:
+
+- a qualified operand selects that project;
+- a bare name present in exactly one project's known list selects that
+  project; present in several, it is refused as ambiguous before anything
+  runs, listing the qualified candidates (`<project>:<target>`);
+- a bare name in no known list — a target the module does not introspect
+  (e.g. a cmake custom/utility target, or a build-system target such as
+  `install`), one of a project whose list is not known yet, or a misspelling —
+  is given to every project of the profile, and their build tool decides.
+
+When a `--target` build fails, the closing message names each requested target
+the failing project's (then-known) list lacks, with close matches from the
+profile's projects in the qualified form. A project's target list is
+**known** when its build is configured on this machine and needs no configure
+now (§5.2; a configure can change its targets), and the module introspects
+targets (§8). The build tool receives the **bare** target name, in each
+selected project's build directory; a project no operand selects is neither
+configured nor built by that invocation. The same project-qualification rule
+(a prefix counts only when it names one of the profile's projects) applies to
+every target operand: `lw run` (§16.17), `lw test --target` (§16.16) and
+`lw target set`. A build routed through the workspace daemon (§19.15) resolves
+its operands identically — the resolution is part of the shared build plan.
 
 A build is additionally gated by the output-artifact conflict rule (§16.28):
 a unit whose build would overwrite an artifact currently owned by another

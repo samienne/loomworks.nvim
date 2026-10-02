@@ -217,7 +217,7 @@ describe("lw build: forwarded build-tool args reach the build tool", function()
             function(step) return step.kind == "build" and 1 or 0 end)
         assert.equals(1, code)
         assert.matches("AppRuner", stderr)
-        assert.matches("did you mean 'AppRunner'", stderr)
+        assert.truthy(stderr:find("did you mean 'App:AppRunner'", 1, true), stderr)
     end)
 end)
 
