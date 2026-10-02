@@ -487,8 +487,15 @@ by `daemon/server.lua`), the Runtime row and `lw daemon status`.*
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
 schemas = { user, cache }, session_generation, started_at, clients, busy,
-idle_since, lock_nonce }` (`start_time` is the daemon's process start time of
-§19.5, `lock_nonce` its runtime-lock record's nonce). A development build's
+idle_since, lock_nonce, key_id }` (`start_time` is the daemon's process start time of
+§19.5, `lock_nonce` its runtime-lock record's nonce). `key_id` is a
+non-secret fingerprint of the daemon key K it authenticates with (§19.8): the
+first 16 hex digits of HMAC-SHA256(K, `"loomworks-daemon-key-id-v1"`). It
+tells, without connecting, whether a daemon belongs to this lw's data
+directory (machine key) — a daemon of another `LOOMWORKS_DATA_DIR`, such as a
+test run's, has another key and could never complete the handshake with this
+lw. It is one-way under its own label and is never part of a proof. A
+development build's
 `lw_version` is its source fingerprint (§19.9). It
 refreshes the file's modification time on its heartbeat and rewrites it when
 `clients`/`busy` change. Liveness is judged by the heartbeat, never by probing
@@ -569,10 +576,16 @@ and handle (§19.6) are read — files only:
 | State | Test |
 |--|--|
 | `live` | R names this process (pid and start time) and the handle names it too; clients, busy, idle time and version come from the handle |
-| `starting` | R names it, no handle yet |
+| `starting` | R names it, no handle yet; or R is absent and the process started less than 30 seconds ago (a daemon takes R first thing — until then it is starting, not a stray) |
 | `hung` | R names it and its heartbeat is stale (§19.5) |
 | `stray` | R names another holder or none, the handle names another process, or the root directory is gone — a daemon that is not its workspace's runtime (it lost its lock, is exiting, or was left over); never connected to |
 | `unknown root` | no `--root` on its command line |
+
+A daemon whose handle names it is also marked by its key: `same_key` is false
+when the handle's `key_id` (§19.6) is not this lw's — a daemon of another
+loomworks data directory — and null when the handle has no `key_id` (an
+older daemon) or does not name it. Computing this lw's key id only reads the
+machine key; none is created.
 
 A handle or lock record that names a process the scan did not find (dead, or
 its pid reused by another program) produces no entry: the list shows
@@ -582,19 +595,30 @@ list; its workspace's `Runtime` row shows it (§19.6).
 **Output.**
 
 ```
-PID    UPTIME  STATE      CLIENTS  VERSION  ROOT
-4242   2h      idle 12m   0        0.1.43   /home/me/src/app
-4310   5m      busy       1        0.1.43   /home/me/src/lib
-4388   1m      stray      -        -        /tmp/old-checkout  (the runtime lock names pid 4401)
-3 daemons (1 idle, 1 stray) — stop them with: lw daemon stop --all
+PID    UPTIME  STATE           CLIENTS  VERSION  ROOT
+4242   2h      live, idle 12m  0        0.1.43   /home/me/src/app
+4310   5m      live, busy      1        0.1.43   /home/me/src/lib
+4388   1m      stray           -        -        /tmp/old-checkout  (the runtime lock names pid 4401)
+4410   3m      live, idle 3m   0        0.1.43   /tmp/test-ws  (other data dir)
+4 daemons (2 idle, 1 stray, 1 other data dir) — stop them with: lw daemon stop --all
 ```
+
+There is one row per daemon — exactly the entries `--json` prints for the
+same scan — and the summary counts those rows. Every column is filled: `-`
+where the value is unknown (the clients and version of a daemon whose handle
+does not name it; an uptime whose start time cannot be converted). STATE is
+the state above (`unknown root` for `unknown_root`); a `live` daemon adds
+`busy` or `idle <time>` (with clients, plain `live`). A daemon that is not
+`live` or `hung` has its reason after the root, and one of another data
+directory `other data dir`. A development build's version is shown with its
+source fingerprint cut to 8 hex digits (`--json` has it whole).
 
 No daemon: `no workspace daemons are running`. `--under <dir>` keeps the
 daemons whose root lies under `<dir>` (separator-bounded, case-insensitive on
 Windows); a daemon with an unknown root is then left out. `--json` prints
 `{ schema = 1, scan_ms, daemons = [ { pid, start_time, root, state, reason,
 uptime_s, started_at, clients, busy, idle_since, lw_version, protocol,
-endpoint } ] }` (absent values are `null`), sorted by root.
+endpoint, same_key } ] }` (absent values are `null`), sorted by root.
 
 **Stopping all.** `lw daemon stop --all [--force]` and `lw daemon kill --all`
 (each accepting `--under <dir>`) apply `lw daemon stop [--force]` /
@@ -609,8 +633,14 @@ after its command line is read again and is still `lw … daemon run` for that
 root (or with no `--root`, for an unknown root) with the same start time,
 never this process or one of its ancestors; if it held its workspace's runtime
 lock, the lock is then reclaimed per §19.5. `--strays` is refused without
-`kill --all`. The exit status is 0 when no listed daemon is left running, 1
-otherwise.
+`kill --all`. A daemon of **another data directory** (`same_key` false) is not
+this lw's: `stop --all` and `kill --all` skip it with `<root>: daemon pid <pid>
+belongs to another loomworks data dir (different key) — skipped` and never
+connect to it (`kill --all --strays` still kills such a daemon when it is a
+stray, as above). A daemon whose handle has no `key_id` and whose handshake
+then does not verify is reported and skipped the same way, as one that did not
+prove this lw's daemon key. Neither counts as left running: the exit status
+is 0 when none of this lw's listed daemons is left running, 1 otherwise.
 
 **Health.** `lw health` (area `lw`) shows one informational line when this
 user runs any daemon on this host: `2 workspace daemons running (1 idle) —
@@ -815,7 +845,12 @@ a daemon that does not stop in time is reported as not responding, with
 `lw daemon stop --force` as the remedy. A daemon still starting (it holds the
 runtime lock, its handle is not published yet) is first given the same
 window to publish its handle — a slow start on a loaded machine is not "not
-responding". `lw daemon stop --force` and
+responding". A daemon whose handle's `key_id` (§19.6) is not this lw's is
+not asked: `lw daemon stop` says it belongs to another loomworks data dir
+(different key) and exits 1 without connecting; one that does not prove this
+lw's key in the handshake is reported the same way (it belongs to another data
+dir or is not a loomworks daemon), and nothing more is sent to it. `lw daemon
+stop --force` and
 `lw daemon kill` are the forced recovery of §19.5. Stopping when no daemon runs
 succeeds with nothing to do. A daemon on another host is never stopped or
 killed from here (the command names the host); a stale one is reclaimed per

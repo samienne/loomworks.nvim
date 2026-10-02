@@ -28,6 +28,28 @@ function M.key()
     return from_hex(trust.hmac_sha256_hex(mk, M.LABEL))
 end
 
+M.KEY_ID_LABEL = "loomworks-daemon-key-id-v1"
+
+--- The non-secret fingerprint of a daemon key K, published in the handle
+--- (`key_id`, spec §19.6): the first 16 hex digits of HMAC(K, KEY_ID_LABEL).
+--- It tells which loomworks data directory (machine key) a daemon belongs
+--- to without connecting; a one-way value under its own label, it reveals
+--- nothing usable about K and is never part of a proof.
+--- @param key string K
+--- @return string
+function M.key_id(key)
+    return trust.hmac_sha256_hex(key, M.KEY_ID_LABEL):sub(1, 16)
+end
+
+--- This lw's key id, read-only: nil when there is no machine key (none is
+--- ever created for it).
+--- @return string|nil
+function M.own_key_id()
+    local ok, mk = pcall(trust.key, false)
+    if not ok or type(mk) ~= "string" then return nil end
+    return M.key_id(from_hex(trust.hmac_sha256_hex(mk, M.LABEL)))
+end
+
 --- 32 random bytes as hex.
 --- @return string|nil nonce, string|nil err
 function M.nonce()

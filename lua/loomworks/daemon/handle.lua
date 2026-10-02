@@ -7,7 +7,7 @@
 ---
 ---   { pid, host, os, start_time, endpoint, protocol, lw_version,
 ---     schemas = { user, cache }, session_generation, started_at,
----     clients, busy, idle_since, lock_nonce }
+---     clients, busy, idle_since, lock_nonce, key_id }
 ---
 --- (`start_time` and `lock_nonce` tie the handle to the daemon's process and
 --- its runtime-lock record.) It refreshes the file's modification time on its

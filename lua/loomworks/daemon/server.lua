@@ -117,6 +117,8 @@ function Server:_handle_record()
         busy = self.busy,
         idle_since = (self.n_clients == 0 and not self.busy) and self.idle_since or nil,
         lock_nonce = self.R and self.R.record and self.R.record.lock_nonce or nil,
+        -- Which data directory's key this daemon authenticates with (§19.6).
+        key_id = self.key and auth.key_id(self.key) or nil,
     }
 end
 

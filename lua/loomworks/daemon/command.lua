@@ -82,6 +82,29 @@ function M.request(st, kind, timeout_ms)
     return require("loomworks.daemon.client").call(h.endpoint, kind, { timeout_ms = timeout_ms or 2000 })
 end
 
+--- The per-daemon text for a daemon of another loomworks data directory
+--- (spec §19.6.1): its handle's `key_id` is not this lw's.
+M.OTHER_KEY_TEXT = "belongs to another loomworks data dir (different key)"
+M.OTHER_KEY_HINT = " — stop it with that LOOMWORKS_DATA_DIR set, or with `lw daemon stop --force` in its workspace"
+
+--- Does this handle name a daemon key other than this lw's (none, when this
+--- lw has no machine key)? False when the handle does not say (no `key_id`:
+--- an older daemon).
+--- @param h table|nil a handle (loomworks.daemon.handle.read)
+--- @return boolean
+function M.other_key(h)
+    if not (h and h.valid and type(h.key_id) == "string") then return false end
+    return require("loomworks.daemon.auth").own_key_id() ~= h.key_id
+end
+
+--- What to say about an endpoint whose handshake did not verify.
+--- @param h table|nil the handle
+--- @return string
+function M.unauthenticated_text(h)
+    return "the daemon at " .. tostring(h and h.endpoint) .. " did not prove this lw's daemon key: it "
+        .. M.OTHER_KEY_TEXT .. " or is not a loomworks daemon"
+end
+
 --- Ask a live daemon for its status over the endpoint (frozen `status`).
 --- @return table|nil reply, string|nil err
 function M.query(st, timeout_ms)
@@ -121,7 +144,9 @@ function M.status(root, host)
         out("  endpoint     " .. tostring(h.endpoint))
         if type(h.started_at) == "number" then out("  started      " .. age(os.time() - h.started_at) .. " ago") end
     end
-    if st.kind == "live" then
+    if st.kind == "live" and M.other_key(h) then
+        out("  answers      NOT ASKED — it " .. M.OTHER_KEY_TEXT)
+    elseif st.kind == "live" then
         local r, err = M.query(st, 5000)
         if r then
             out(string.format("  answers      %d client%s%s", tonumber(r.clients) or 0, r.clients == 1 and "" or "s",
@@ -129,7 +154,7 @@ function M.status(root, host)
         elseif tostring(err):match("^untrusted handle") then
             out("  answers      NOT ASKED — " .. tostring(err))
         elseif tostring(err):match("^untrusted") then
-            out("  answers      NO — the endpoint did not authenticate as this machine's daemon (untrusted)")
+            out("  answers      NO — " .. M.unauthenticated_text(h))
         else
             out("  answers      no (" .. tostring(err) .. ") — lw daemon stop --force recovers a hung daemon")
         end
@@ -311,6 +336,9 @@ function M.stop(root, host, opts)
     -- — reported as "not responding" although the daemon was fine. A request
     -- that fails early (the pipe busy, a connection reset) is sent again. A
     -- hung daemon is still reported after STOP_WAIT_MS, as before.
+    -- A daemon of another loomworks data directory (its handle names another
+    -- key, §19.6) cannot authenticate with this lw: nothing is sent to it.
+    if M.other_key(st.handle) then host.die("the workspace daemon " .. M.OTHER_KEY_TEXT .. M.OTHER_KEY_HINT, 1) end
     local uv = vim.uv or vim.loop
     uv.update_time()
     local deadline = uv.now() + M.STOP_WAIT_MS
@@ -321,9 +349,8 @@ function M.stop(root, host, opts)
             local r, err = M.query_stop(st, math.max(M.RETRY_MS, deadline - uv.now()))
             if err and tostring(err):match("^untrusted handle") then host.die(tostring(err), 1) end
             if err and tostring(err):match("^untrusted") then
-                host.die("the daemon endpoint " .. tostring(st.handle.endpoint) .. " did not authenticate as "
-                    .. "this machine's daemon (untrusted) — not sending it anything; `lw daemon stop --force` "
-                    .. "stops the runtime lock's holder", 1)
+                host.die(M.unauthenticated_text(st.handle) .. " — nothing was sent to it; `lw daemon stop "
+                    .. "--force` stops the runtime lock's holder", 1)
             end
             sent = r ~= nil
         end
@@ -419,17 +446,47 @@ local function under_of(args, host)
     return (u:gsub("/+$", ""))
 end
 
-local STATE_TEXT = { starting = "starting", hung = "not responding", stray = "stray", unknown_root = "stray" }
-
---- The STATE column of one entry.
+--- The STATE column of one entry: the §19.6.1 state (`live`, `starting`,
+--- `hung`, `stray`, `unknown root`), a live one with what it is doing.
 function M.state_text(e)
     if e.state == "live" then
-        if e.busy then return "busy" end
-        if (e.clients or 0) > 0 then return "active" end
-        if e.idle_since then return "idle " .. age(os.time() - e.idle_since) end
-        return "idle"
+        if e.busy then return "live, busy" end
+        if (e.clients or 0) > 0 then return "live" end
+        if e.idle_since then return "live, idle " .. age(os.time() - e.idle_since) end
+        return "live, idle"
     end
-    return STATE_TEXT[e.state] or tostring(e.state)
+    if e.state == "unknown_root" then return "unknown root" end
+    return tostring(e.state or "-")
+end
+
+--- The VERSION column: a development build's long source fingerprint is cut
+--- to 8 hex digits (`--json` has it whole).
+function M.version_text(v)
+    if type(v) ~= "string" or v == "" then return "-" end
+    return (v:gsub("(%+dev%.%x%x%x%x%x%x%x%x)%x+$", "%1"))
+end
+
+--- The ROOT column: the root, then why a daemon that is not plainly live is
+--- what it is, and a daemon of another data directory said so.
+function M.root_text(e)
+    local notes = {}
+    if e.state ~= "live" and e.state ~= "hung" and e.reason then notes[#notes + 1] = e.reason end
+    if e.same_key == false then notes[#notes + 1] = "other data dir" end
+    return (e.root or "(root unknown)") .. (#notes > 0 and ("  (" .. table.concat(notes, "; ") .. ")") or "")
+end
+
+--- One table row per entry, every column filled (`-` when unknown).
+--- @param list table[]
+--- @return string[][] rows (the header first)
+function M.rows(list)
+    local rows = { { "PID", "UPTIME", "STATE", "CLIENTS", "VERSION", "ROOT" } }
+    for _, e in ipairs(list) do
+        rows[#rows + 1] = {
+            tostring(e.pid or "-"), e.uptime_s and age(e.uptime_s) or "-", M.state_text(e),
+            e.clients and tostring(e.clients) or "-", M.version_text(e.lw_version), M.root_text(e),
+        }
+    end
+    return rows
 end
 
 --- The JSON shape of one entry (§19.6.1; absent values are null).
@@ -440,16 +497,18 @@ local function json_entry(e)
         pid = e.pid, start_time = v(e.start_time), root = v(e.root), state = e.state, reason = v(e.reason),
         uptime_s = v(e.uptime_s), started_at = v(e.started_at), clients = v(e.clients), busy = v(e.busy),
         idle_since = v(e.idle_since), lw_version = v(e.lw_version), protocol = v(e.protocol),
-        endpoint = v(e.endpoint),
+        endpoint = v(e.endpoint), same_key = v(e.same_key),
     }
 end
 
---- The summary line's counts text: "3 daemons (1 idle, 1 stray)".
+--- The summary line's counts text: "3 daemons (1 idle, 1 stray, 1 other
+--- data dir)" — counted from the same entries the rows show.
 function M.summary(list)
-    local n, idle, stray = require("loomworks.daemon.discover").counts(list)
+    local n, idle, stray, other = require("loomworks.daemon.discover").counts(list)
     local extra = {}
     if idle > 0 then extra[#extra + 1] = idle .. " idle" end
     if stray > 0 then extra[#extra + 1] = stray .. " stray" end
+    if other > 0 then extra[#extra + 1] = other .. " other data dir" end
     return n .. (n == 1 and " daemon" or " daemons") .. (#extra > 0 and (" (" .. table.concat(extra, ", ") .. ")") or "")
 end
 
@@ -473,15 +532,7 @@ function M.list(args, host)
         host.out("no workspace daemons are running")
         return 0
     end
-    local rows = { { "PID", "UPTIME", "STATE", "CLIENTS", "VERSION", "ROOT" } }
-    for _, e in ipairs(list) do
-        local root = e.root or "(root unknown)"
-        if e.reason and (e.state == "stray") then root = root .. "  (" .. e.reason .. ")" end
-        rows[#rows + 1] = {
-            tostring(e.pid), e.uptime_s and age(e.uptime_s) or "?", M.state_text(e),
-            e.clients and tostring(e.clients) or "-", e.lw_version and tostring(e.lw_version) or "-", root,
-        }
-    end
+    local rows = M.rows(list)
     local w = {}
     for _, r in ipairs(rows) do
         for i = 1, #r - 1 do w[i] = math.max(w[i] or 0, #r[i]) end
@@ -538,7 +589,10 @@ function M.stop_all(args, host, opts)
     local left = 0
     for _, e in ipairs(list) do
         local label = (e.root or "(root unknown)") .. ": "
-        if e.state == "stray" or e.state == "unknown_root" then
+        if e.same_key == false and not (strays and (e.state == "stray" or e.state == "unknown_root")) then
+            -- Not this lw's: another data directory's daemon (a test run's).
+            host.note(string.format("lw: %sdaemon pid %d %s — skipped", label, e.pid, M.OTHER_KEY_TEXT))
+        elseif e.state == "stray" or e.state == "unknown_root" then
             if strays then
                 local ok, why = M.kill_stray(e)
                 if ok then
@@ -563,11 +617,18 @@ function M.stop_all(args, host, opts)
             }
             local ok, err = pcall(M.stop, e.root, sub, { force = opts.force, kill = opts.kill })
             if not ok and err ~= "lw-daemon-stop-all" then died = tostring(err) end
-            if died then host.note("lw: " .. label .. died) end
-            if proc.alive(e.pid, e.start_time) == true then
-                vim.wait(2000, function() return proc.alive(e.pid, e.start_time) ~= true end, 50)
+            if died and died:find(" did not prove this lw's daemon key", 1, true) then
+                -- An older daemon of another data directory (its handle has
+                -- no key id, so the list could not tell): not this lw's.
+                host.note(string.format("lw: %sdaemon pid %d did not prove this lw's daemon key: it %s "
+                    .. "or is not a loomworks daemon — skipped", label, e.pid, M.OTHER_KEY_TEXT))
+            else
+                if died then host.note("lw: " .. label .. died) end
+                if proc.alive(e.pid, e.start_time) == true then
+                    vim.wait(2000, function() return proc.alive(e.pid, e.start_time) ~= true end, 50)
+                end
+                if proc.alive(e.pid, e.start_time) == true then left = left + 1 end
             end
-            if proc.alive(e.pid, e.start_time) == true then left = left + 1 end
         end
     end
     return left == 0 and 0 or 1

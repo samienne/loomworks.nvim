@@ -10280,15 +10280,16 @@ lw's own directories are touched, never through a link, never while in use.
   --dry-run   list only (the default): kind, path, size, age, and the total
   --yes, -y   remove them; exit 1 if one could not be removed (in use, ...)
   --all       also prune pinned releases (<data dir>/pinned) not used for 30
-              days, and every old runtime log; never the release this
+              days (that is all it adds); never the release this
               repository's lw.pin pins, nor the running lw
   --pinned-older-than <duration>
               the pinned-release threshold, e.g. 90d, 12h (implies the pinned
               part of --all)
 
 lw also does this by itself: once a day, at the start of a command, it
-silently removes the same leftovers (pinned releases excepted), and notes it
-in the workspace's .nvim/loomworks.daemon.log.
+silently removes the same leftovers (pinned releases excepted, and old runtime
+logs only once unmodified for 30 days), and notes it in the workspace's
+.nvim/loomworks.daemon.log.
 
 What lw keeps outside the workspace on purpose: its settings (config.json),
 the machine key (trust.key), the tool scan cache (tools.json), the newest three
@@ -10331,8 +10332,10 @@ exactly as before.
             (--under <dir>: only those workspaces), one line each, through
             each workspace's runtime lock with the rules above. Strays are
             skipped unless `lw daemon kill --all --strays`, which kills them
-            after checking each is still that daemon. Exit 1 when one is
-            left running.
+            after checking each is still that daemon. A daemon of another
+            loomworks data dir (another LOOMWORKS_DATA_DIR, a test run's;
+            `list` marks it "other data dir") is not this lw's and is
+            skipped. Exit 1 when one of this lw's is left running.
 
 A daemon on another host (a shared drive) is never stopped or killed from
 here: run the command there. Kills are printed on stderr.

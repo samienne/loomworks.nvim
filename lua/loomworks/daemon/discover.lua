@@ -9,11 +9,17 @@
 --- read (files only) to classify it:
 ---
 ---   live          R and the handle name this process
----   starting      R names it, no handle yet
+---   starting      R names it, no handle yet — or no R at all yet and the
+---                 process started within STARTING_GRACE_S (a daemon takes R
+---                 first thing; until then it is starting, not a stray)
 ---   hung          R names it, heartbeat stale
 ---   stray         R names another holder / none, the handle names another
 ---                 process, or the root is gone
 ---   unknown_root  no `--root` on its command line
+---
+--- Each entry also carries `same_key`: whether the daemon's handle names this
+--- lw's daemon key (`key_id`, §19.6) — false for a daemon of another loomworks
+--- data directory (a test run's, say), nil when its handle does not say.
 ---
 --- Never launches, connects to or signals anything; writes nothing.
 
@@ -21,6 +27,10 @@ local proc = require("loomworks.proc")
 local paths = require("loomworks.daemon.paths")
 
 local M = {}
+
+--- A daemon with no runtime lock that started less than this many seconds
+--- ago is `starting`: it has not taken its lock yet (§19.6.1).
+M.STARTING_GRACE_S = 30
 
 local function uv() return vim.uv or vim.loop end
 
@@ -71,8 +81,9 @@ end
 
 --- Classify one found daemon from its workspace's files (§19.6.1).
 --- @param d table from `scan`
+--- @param own_key_id? string|false this lw's key id (default: computed; false: none)
 --- @return table entry
-function M.classify(d)
+function M.classify(d, own_key_id)
     local e = { pid = d.pid, start_time = d.start_time, root = d.root, args = d.args }
     local t = proc.start_epoch(d.start_time)
     if t then e.uptime_s = math.max(0, math.floor(os.time() - t)) end
@@ -92,23 +103,35 @@ function M.classify(d)
         return rec and rec.pid == d.pid and (rec.start_time == nil or rec.start_time == d.start_time)
     end
     e.lock = lk
+    -- The handle describes this process: its key, and (when live) its counts.
+    local mine = h and h.valid and names_me(h)
+    if mine and type(h.key_id) == "string" then
+        if own_key_id == nil then own_key_id = require("loomworks.daemon.auth").own_key_id() or false end
+        e.key_id = h.key_id
+        e.same_key = own_key_id ~= false and h.key_id == own_key_id
+    end
     if not names_me(lk) then
+        if lk == nil and not (h and h.valid and not mine) and e.uptime_s and e.uptime_s < M.STARTING_GRACE_S then
+            -- Launched moments ago: it takes R first thing (§19.10).
+            e.state, e.reason = "starting", "no runtime lock yet"
+            return e
+        end
         e.state = "stray"
         e.reason = lk and lk.pid and ("the runtime lock names pid " .. tostring(lk.pid)) or "no runtime lock"
         return e
     end
-    if h and h.valid and not names_me(h) then
+    if h and h.valid and not mine then
         e.state, e.reason = "stray", "the handle names pid " .. tostring(h.pid)
         return e
     end
     if lk.state == "hung" then
         e.state = "hung"
-    elseif h and h.valid then
+    elseif mine then
         e.state = "live"
     else
         e.state = "starting"
     end
-    if h and h.valid then
+    if mine then
         e.clients = tonumber(h.clients) or 0
         e.busy = h.busy and true or false
         e.idle_since = (e.clients == 0 and not e.busy and type(h.idle_since) == "number") and h.idle_since or nil
@@ -140,9 +163,10 @@ function M.list(opts)
     opts = opts or {}
     local found, ms = M.scan()
     local out = {}
+    local own = require("loomworks.daemon.auth").own_key_id() or false
     for _, d in ipairs(found) do
         if not opts.under or (d.root and M.under(d.root, opts.under)) then
-            out[#out + 1] = M.classify(d)
+            out[#out + 1] = M.classify(d, own)
         end
     end
     table.sort(out, function(a, b)
@@ -153,16 +177,18 @@ function M.list(opts)
     return out, ms
 end
 
---- Counts for the summary line: total, idle, stray (stray + unknown root).
+--- Counts for the summary line: total, idle, stray (stray + unknown root),
+--- of another data directory (`same_key == false`).
 --- @param list table[]
---- @return integer n, integer idle, integer stray
+--- @return integer n, integer idle, integer stray, integer other
 function M.counts(list)
-    local n, idle, stray = #list, 0, 0
+    local n, idle, stray, other = #list, 0, 0, 0
     for _, e in ipairs(list) do
         if e.state == "live" and not e.busy and (e.clients or 0) == 0 then idle = idle + 1 end
         if e.state == "stray" or e.state == "unknown_root" then stray = stray + 1 end
+        if e.same_key == false then other = other + 1 end
     end
-    return n, idle, stray
+    return n, idle, stray, other
 end
 
 return M

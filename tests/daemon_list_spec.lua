@@ -275,6 +275,163 @@ describe("lw daemon list with real daemons (§19.6.1)", function()
     end)
 end)
 
+describe("lw daemon list display (field findings, §19.6.1)", function()
+    after_each(function() H.cleanup() end)
+
+    --- Every state the scan can produce, with what each would carry.
+    local function sample()
+        local now = os.time()
+        return {
+            { pid = 4242, start_time = "win:1", root = "C:/w/app", state = "live", uptime_s = 7200, clients = 0,
+                busy = false, idle_since = now - 720, lw_version = "0.1.43", protocol = 3, endpoint = "e1",
+                same_key = true },
+            { pid = 4310, start_time = "win:2", root = "C:/w/lib", state = "live", uptime_s = 300, clients = 1,
+                busy = false, lw_version = "0.1.42+dev.34399bdb9585dd99", protocol = 3, endpoint = "e2" },
+            { pid = 4311, start_time = "win:3", root = "C:/w/busy", state = "live", uptime_s = 30, clients = 1,
+                busy = true, lw_version = "0.1.43", protocol = 3, endpoint = "e3" },
+            { pid = 4388, start_time = "win:4", root = "C:/w/old", state = "stray", reason = "no runtime lock",
+                uptime_s = 60 },
+            { pid = 4389, start_time = "win:5", root = "C:/w/new", state = "starting", reason = "no runtime lock yet",
+                uptime_s = 1 },
+            { pid = 4390, start_time = "win:6", root = "C:/w/hung", state = "hung", uptime_s = 600, clients = 0,
+                busy = false, lw_version = "0.1.43" },
+            { pid = 4391, start_time = "win:7", state = "unknown_root", reason = "no --root on its command line" },
+            { pid = 4392, start_time = "win:8", root = "C:/t/test-ws", state = "live", uptime_s = 5, clients = 0,
+                busy = false, idle_since = now - 3, lw_version = "0.1.43", same_key = false },
+        }
+    end
+
+    local function run_list(list, args)
+        local orig = discover.list
+        discover.list = function() return list, 12 end
+        local out = {}
+        local ok, err = pcall(command.list, args, { out = function(l) out[#out + 1] = l end,
+            die = function(m) error(m) end })
+        discover.list = orig
+        assert.is_true(ok, tostring(err))
+        return out
+    end
+
+    it("the table has exactly the --json entries, every column filled, counts matching the rows", function()
+        local list = sample()
+        local doc = vim.json.decode(run_list(list, { "lw", "daemon", "list", "--json" })[1])
+        local lines = run_list(list, { "lw", "daemon", "list" })
+        assert.equals(#doc.daemons + 2, #lines, table.concat(lines, "\n")) -- header + rows + summary
+        local rows = command.rows(list)
+        assert.equals(#doc.daemons + 1, #rows)
+        for i, d in ipairs(doc.daemons) do
+            local line = lines[i + 1]
+            assert.truthy(line:find("^" .. d.pid .. "%s"), line)
+            for c = 1, 6 do
+                assert.is_true(type(rows[i + 1][c]) == "string" and rows[i + 1][c] ~= "", "empty column " .. c
+                    .. " in: " .. line)
+                assert.is_nil(rows[i + 1][c]:find("?", 1, true), line)
+            end
+        end
+        -- Summary: counted from those rows.
+        assert.truthy(lines[#lines]:find("^8 daemons %(2 idle, 2 stray, 1 other data dir%)"), lines[#lines])
+        -- Unknown values are `-`: the unknown root's uptime, clients and version.
+        local unknown = lines[8]
+        assert.truthy(unknown:find("^4391%s+%-%s+unknown root%s+%-%s+%-%s+%(root unknown%)"), unknown)
+    end)
+
+    it("STATE uses the documented vocabulary (live / starting / hung / stray / unknown root)", function()
+        local words = { live = true, starting = true, hung = true, stray = true, ["unknown root"] = true }
+        local seen = {}
+        for _, e in ipairs(sample()) do
+            local t = command.state_text(e)
+            local head = t:match("^unknown root") or t:match("^[%a]+")
+            assert.is_true(words[head] == true, "not a documented state: " .. t)
+            seen[t] = true
+        end
+        assert.is_true(seen["live"], vim.inspect(seen))          -- live with a client (was "active")
+        assert.is_true(seen["live, busy"], vim.inspect(seen))
+        assert.is_true(seen["hung"], vim.inspect(seen))          -- (was "not responding")
+        assert.is_true(seen["unknown root"], vim.inspect(seen))  -- (was "stray")
+        assert.is_true(seen["live, idle 12m"], vim.inspect(seen))
+        -- Reasons and the other data dir go after the root; a dev fingerprint is cut.
+        local lines = run_list(sample(), { "lw", "daemon", "list" })
+        local text = table.concat(lines, "\n")
+        assert.truthy(text:find("C:/w/old  (no runtime lock)", 1, true), text)
+        assert.truthy(text:find("C:/w/new  (no runtime lock yet)", 1, true), text)
+        assert.truthy(text:find("C:/t/test-ws  (other data dir)", 1, true), text)
+        assert.truthy(text:find("0.1.42+dev.34399bdb ", 1, true), text)
+        assert.is_nil(text:find("34399bdb9585", 1, true), text)
+    end)
+
+    it("the PID column is the scanned process, never a pid a lock or handle record names", function()
+        local list = sample()
+        list[4].reason = "the runtime lock names pid 8"
+        local lines = run_list(list, { "lw", "daemon", "list" })
+        assert.truthy(lines[5]:find("^4388%s"), lines[5])
+        for i = 2, #lines - 1 do assert.is_nil(lines[i]:find("^8%s"), lines[i]) end
+    end)
+
+    it("a just-launched daemon without its runtime lock yet is starting, an old one a stray", function()
+        local dir = H.tmp()
+        local root = ws(dir, "young")
+        -- A real young process standing in for a daemon that has not taken R.
+        local child = uv.spawn(vim.v.progpath, { args = { "--headless", "-u", "NONE", "--cmd", "sleep 20" } },
+            function() end)
+        assert.is_truthy(child)
+        local pid = child:get_pid()
+        local st = proc.start_time(pid)
+        H.track(pid, st)
+        local d = { pid = pid, start_time = st, root = root, args = { "lw", "daemon", "run", "--root", root } }
+        local e = discover.classify(d, false)
+        assert.equals("starting", e.state, vim.inspect(e))
+        assert.equals("no runtime lock yet", e.reason)
+        local grace = discover.STARTING_GRACE_S
+        discover.STARTING_GRACE_S = 0
+        e = discover.classify(d, false)
+        discover.STARTING_GRACE_S = grace
+        assert.equals("stray", e.state)
+        assert.equals("no runtime lock", e.reason)
+        H.cleanup()
+        pcall(function() child:close() end)
+    end)
+
+    it("a daemon of another data dir: list marks it, stop --all skips it calmly, its own data dir stops it",
+        function()
+            local env_a, env_b, dir = H.env(), H.env(), parent()
+            local a = ws(dir, "alpha")
+            local ia = start(a, env_a)
+            -- The handle carries the non-secret key id of A's data dir.
+            local h = handle.read(a)
+            assert.equals("string", type(h.key_id), vim.inspect(h))
+            assert.equals(16, #h.key_id)
+            -- Listed from env A: same key; from env B: another data dir.
+            local da = by_pid(list_json(dir, env_a), ia.pid)
+            assert.equals(true, da.same_key)
+            local db = by_pid(list_json(dir, env_b), ia.pid)
+            assert.equals(false, db.same_key)
+            assert.equals("live", db.state)
+            local r = H.lw({ "daemon", "list", "--under", dir }, { env = env_b, cwd = H.tmp() })
+            assert.truthy(r.stdout:find(a .. "  (other data dir)", 1, true), r.stdout)
+            assert.truthy(r.stdout:find("1 daemon (1 idle, 1 other data dir)", 1, true), r.stdout)
+            -- stop --all from env B: skipped (exit 0, nothing of B's left), never connected to.
+            r = H.lw({ "daemon", "stop", "--all", "--under", dir }, { env = env_b, cwd = H.tmp() })
+            assert.equals(0, r.code, r.stdout .. r.stderr)
+            assert.truthy(r.stderr:find(a .. ": daemon pid " .. ia.pid .. " belongs to another loomworks data "
+                .. "dir (different key) — skipped", 1, true), r.stderr)
+            assert.is_nil(r.stderr:find("untrusted", 1, true), r.stderr)
+            assert.is_true(H.alive(ia.pid, ia.start_time))
+            -- The per-workspace stop from env B says the same, exit 1.
+            r = H.lw({ "daemon", "stop" }, { env = env_b, cwd = a })
+            assert.equals(1, r.code, r.stdout .. r.stderr)
+            assert.truthy(r.stderr:find("belongs to another loomworks data dir (different key)", 1, true), r.stderr)
+            assert.is_true(H.alive(ia.pid, ia.start_time))
+            r = H.lw({ "daemon", "status" }, { env = env_b, cwd = a })
+            assert.truthy(r.stdout:find("NOT ASKED — it belongs to another loomworks data dir", 1, true), r.stdout)
+            -- Its own data dir stops it.
+            r = H.lw({ "daemon", "stop", "--all", "--under", dir }, { env = env_a, cwd = H.tmp() })
+            assert.equals(0, r.code, r.stdout .. r.stderr)
+            assert.truthy(r.stdout:find(a .. ": stopped the workspace daemon (pid " .. ia.pid .. ")", 1, true),
+                r.stdout)
+            assert.is_true(vim.wait(10000, function() return not H.alive(ia.pid, ia.start_time) end, 50))
+        end)
+end)
+
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()
