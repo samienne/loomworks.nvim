@@ -3816,13 +3816,23 @@ end
 --- writes). Test seam: replace `M._raw_stdout`.
 --- @param s string
 function M._raw_stdout(s)
+  M._raw_write(1, s)
+end
+
+--- Write `s` raw to file descriptor `fd` (1 or 2), after flushing both
+--- buffered streams (so the order with our own lines holds).
+--- @param fd integer
+--- @param s string
+function M._raw_write(fd, s)
   io.stdout:flush()
+  io.stderr:flush()
   local pos = 1
   while pos <= #s do
-    local ok, n = pcall(uv.fs_write, 1, s:sub(pos))
+    local ok, n = pcall(uv.fs_write, fd, s:sub(pos))
     if not ok or type(n) ~= "number" or n <= 0 then
-      io.stdout:write(s:sub(pos))
-      io.stdout:flush()
+      local f = fd == 2 and io.stderr or io.stdout
+      f:write(s:sub(pos))
+      f:flush()
       return
     end
     pos = pos + n
@@ -7235,6 +7245,28 @@ local function stdout_supports_color()
 end
 M._stdout_supports_color = stdout_supports_color
 
+--- The stderr counterpart of `stdout_supports_color` (same NO_COLOR / tty /
+--- Windows-VT gates, probed on fd 2) — for the dim one-line notes `lw` writes
+--- to stderr, e.g. the daemon-delegation line (spec §19.15).
+--- @return boolean
+function M._stderr_supports_color()
+  if os.getenv("NO_COLOR") then return false end
+  local ok, h = pcall(uv.guess_handle, 2)
+  if not ok or h ~= "tty" then return false end
+  if not is_windows() then return true end
+  windows_vt_enabled() -- declares the console functions (and enables stdout)
+  local enabled = false
+  pcall(function()
+    local ffi = require("ffi")
+    local hh = ffi.C.GetStdHandle(0xFFFFFFF4) -- (DWORD)-12, STD_ERROR_HANDLE
+    local mode = ffi.new("unsigned long[1]")
+    if ffi.C.GetConsoleMode(hh, mode) == 0 then return end
+    if ffi.C.SetConsoleMode(hh, bit.bor(tonumber(mode[0]), 0x0004)) == 0 then return end
+    enabled = true
+  end)
+  return enabled
+end
+
 --- Best-effort width of the output terminal, in columns. A real stdout tty is
 --- measured via libuv (`new_tty` + `get_winsize`); a redirected / piped /
 --- captured run (every test) falls back to `$COLUMNS`, then a sensible default
@@ -7503,15 +7535,185 @@ end
 M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 
 --- Keep the workspace daemon running before a workspace command (spec §19.1,
---- §19.10; loomworks.daemon.ensure). Never fails the command.
+--- §19.10; loomworks.daemon.ensure). Never fails the command. Returns what
+--- happened (loomworks.daemon.ensure.ensure's outcome; nil on an error).
 --- @param root string
+--- @return string|nil
 function M._ensure_daemon(root)
-  pcall(function()
-    require("loomworks.daemon.ensure").ensure(root, {
+  local ok, outcome = pcall(function()
+    return require("loomworks.daemon.ensure").ensure(root, {
       config = read_config(), flag = M._no_daemon, note = note,
       log = require("loomworks.daemon.rlog").writer(root),
     })
   end)
+  return ok and outcome or nil
+end
+
+--- The one stderr line a build routed to the daemon prints before its output
+--- while the daemon is opt-in (spec §19.15): `lw: building through the
+--- workspace daemon (pid <n>)`. Dim on a color-capable stderr.
+--- @param pid integer|nil the daemon's pid
+--- @param color? boolean override the stderr color probe (tests)
+--- @return string
+function M._delegation_line(pid, color)
+  local line = "lw: building through the workspace daemon"
+  if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
+  if color == nil then color = M._stderr_supports_color() end
+  if color then return term.sgr("2") .. line .. term.sgr("0") end
+  return line
+end
+
+--- The request a `lw build` argv routes as (spec §19.15): the same parse as
+--- `cmd_build` — `{ profile?, targets, extra, force, reconfigure, verbose }` —
+--- or nil when `cmd_build` would refuse the arguments (it then reports them).
+--- @param args string[] argv, args[1] == "build"
+--- @return table|nil
+function M._build_request(args)
+  local req = { targets = {}, extra = {}, force = false, reconfigure = false, verbose = false }
+  local pre, seen_sep, i = {}, false, 2
+  while i <= #args do
+    local a = args[i]
+    if not seen_sep and a == "--" then seen_sep = true
+    elseif seen_sep then req.extra[#req.extra + 1] = a
+    elseif a == "--force" then req.force = true
+    elseif a == "--reconfigure" then req.reconfigure = true
+    elseif a == "--verbose" or a == "-v" then req.verbose = true
+    elseif a == "--target" or a:match("^%-%-target=") then
+      local name = a:match("^%-%-target=(.*)$")
+      if not name then i = i + 1; name = args[i] end
+      if not name or name == "" or name == "--" or name:sub(1, 1) == "-" then return nil end
+      req.targets[#req.targets + 1] = name
+    else pre[#pre + 1] = a end
+    i = i + 1
+  end
+  if pre[2] then return nil end
+  req.profile = pre[1]
+  return req
+end
+
+--- Would this machine refuse the workspace's working copy or cache (§17.4)?
+--- Such a workspace is never routed (§19.15): the in-process path reports the
+--- refusal with its remedies.
+--- @param root string
+--- @return boolean
+function M._daemon_workspace_trusted(root)
+  local trust = require("loomworks.trust")
+  local function read(path)
+    local f = io.open(path, "rb"); if not f then return nil end
+    local t = f:read("*a"); f:close(); return t
+  end
+  local utext = read(require("loomworks.user").filepath(root))
+  if utext and trust.verify("user", utext) ~= "valid" then return false end
+  local ctext = read(require("loomworks.cache").filepath(root))
+  if ctext and trust.verify("cache", ctext) == "invalid" then return false end
+  return true
+end
+
+--- Route `lw build` to the workspace daemon (spec §19.15, §19.19 step 3).
+--- Only when this command has a daemon (`ensured` is "used", "launched" or
+--- "restarted" — runtime-mode daemon, not `--no-daemon` / CI, versions
+--- matched), the arguments parse, `--break-locks` is not given (it stays
+--- in-process), and the workspace is trusted. Returns nil to run in-process
+--- (nothing was done), or the exit code once the daemon refused or ran the
+--- build — an accepted build is NEVER re-run in-process. The daemon runs the
+--- build in this process's environment (sent with the request).
+--- @param root string
+--- @param args string[]
+--- @param ensured string|nil
+--- @param opts? { session?: function, keepalive_ms?: integer }
+--- @return integer|nil exit code
+function M._delegate_build(root, args, ensured, opts)
+  opts = opts or {}
+  if ensured ~= "used" and ensured ~= "launched" and ensured ~= "restarted" then return nil end
+  if require("loomworks.lock_break").requested then return nil end
+  local req = M._build_request(args)
+  if not req or not M._daemon_workspace_trusted(root) then return nil end
+  local st = require("loomworks.daemon.inspect").state(root)
+  if st.kind ~= "live" then return nil end
+  local client = require("loomworks.daemon.client")
+  if not require("loomworks.daemon.endpoint").check(root, st.handle.endpoint) then return nil end
+  local task_id, done, accepted = nil, nil, false
+  local function on_message(m)
+    if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
+    if m.phase == "line" then
+      local text = tostring(m.text or "")
+      if m.stream == "out" then out(text); io.stdout:flush()
+      elseif m.stream == "note" then note(text)
+      else errw(text) end
+    elseif m.phase == "output" then
+      -- A step's raw bytes, as the in-process child writes them to the
+      -- inherited terminal: written to the file descriptor directly, never
+      -- through the C runtime's text mode (which would turn the tool's CRLF
+      -- into CR CR LF on Windows).
+      M._raw_write(m.stream == "stderr" and 2 or 1, tostring(m.text or ""))
+    elseif m.phase == "done" then
+      done = { code = tonumber(m.exit_code) or 1, error = m.error }
+    end
+  end
+  local session = opts.session or client.session
+  local conn, cerr = session(st.handle.endpoint, { timeout_ms = 5000, on_message = on_message })
+  if not conn then
+    note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
+    return nil
+  end
+  local reply, rerr
+  conn:request({ kind = "build", args = req, interactive = interactive(), command = "lw build",
+    env = require("loomworks.daemon.envscope").capture() }, function(r, e)
+    reply, rerr = r, e
+    if not r then return end
+    -- Printed here, before any task event of it is dispatched (they can
+    -- arrive in the same read).
+    for _, n in ipairs(type(r.notes) == "table" and r.notes or {}) do errw(tostring(n) .. "\n") end
+    if r.outcome == "accepted" then
+      task_id, accepted = r.task_id, true
+      note(M._delegation_line(r.pid))
+    end
+  end)
+  -- No timeout: loading the workspace or a build takes as long as it takes
+  -- (as in-process). The connection is kept alive with pings; Ctrl-C ends
+  -- this process and the daemon cancels the build (§19.15).
+  local keepalive = opts.keepalive_ms or tonumber(os.getenv("LW_TEST_DAEMON_KEEPALIVE_MS") or "")
+    or require("loomworks.daemon.server").KEEPALIVE_MS
+  local last_ping = uv.now()
+  local function waiting(cond)
+    while not cond() and not conn.closed do
+      vim.wait(keepalive, function() return cond() or conn.closed end, 10)
+      if not cond() and not conn.closed and uv.now() - last_ping >= keepalive then
+        last_ping = uv.now()
+        conn:request({ kind = "ping" }, function() end)
+      end
+    end
+  end
+  waiting(function() return reply ~= nil or rerr ~= nil end)
+  if not reply then
+    conn:close()
+    -- Nothing was accepted: run without it, as for a daemon that cannot be
+    -- started (§19.10).
+    note("lw: the workspace daemon could not take the build (" .. tostring(rerr or "connection lost")
+      .. "); running without it")
+    return nil
+  end
+  if reply.outcome == "declined" then
+    conn:close()
+    return nil
+  end
+  if reply.outcome == "refused" then
+    conn:close()
+    die(tostring(reply.message), tonumber(reply.exit_code) or 1)
+  end
+  if not accepted then
+    conn:close()
+    note("lw: the workspace daemon could not take the build (unexpected reply); running without it")
+    return nil
+  end
+  waiting(function() return done ~= nil end)
+  conn:close()
+  if not done then
+    errw("lw: lost the connection to the workspace daemon during the build — it was not re-run here\n")
+    return 1
+  end
+  if done.error then die(tostring(done.error), done.code) end
+  return done.code
 end
 
 --- Record a kill or forced unlock in the runtime log (spec §19.5, §19.10).
@@ -9993,8 +10195,9 @@ stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
 
 EXPERIMENTAL, opt-in. The workspace daemon is one long-lived `lw` process per
 workspace that will, step by step, run the workspace's operations for every
-client (the editor and each `lw` command). Nothing is routed through it yet:
-with the default runtime mode, `in-process`, lw behaves exactly as before.
+client (the editor and each `lw` command). So far `lw build` runs through it
+(in `daemon` mode); with the default runtime mode, `in-process`, lw behaves
+exactly as before.
 
   status    (also bare `lw daemon`) the runtime mode and the workspace's
             daemon: pid, host, version, endpoint, heartbeat, and what a live
@@ -10026,8 +10229,12 @@ LOOMWORKS_RUNTIME environment variable (wins). `lw status` shows it on its
 In `daemon` mode every workspace command (not `lw status`, `health`, `help`,
 `settings`, `pull`, `worktree`, `trust`, `nuke`, `unlock`, `daemon …`) first
 makes sure the daemon runs: it connects (and pings it, waiting about a second
-at most) or starts one in the background, then runs exactly as before — no
-operation goes through the daemon yet. A daemon of another lw version is
+at most) or starts one in the background, then runs exactly as before, except
+`lw build`, which runs in the daemon: one dim line says so
+(`lw: building through the workspace daemon (pid N)`), then the build's output
+and result are the same as without it. Ctrl-C (or the end of `lw`) stops the
+build in the daemon. `lw build --break-locks` and creating a missing profile
+interactively still run without it. A daemon of another lw version is
 replaced when idle; a busy one is asked to exit when idle and the command runs
 without it (one line says so). If it cannot start, does not answer, or is
 still starting, one line says so and the command runs without it. A daemon
@@ -10038,9 +10245,11 @@ CI=true (LOOMWORKS_NO_DAEMON=0 overrides CI). CI is detected by the `CI`
 variable only: Jenkins and Azure Pipelines do not set it — set
 LOOMWORKS_NO_DAEMON=1 there.
 
-A started daemon keeps the environment of the command that started it (its
-PATH, compiler variables, …) for its whole life; restart it
-(`lw daemon restart`) after changing them.
+A routed build runs in the environment of the `lw build` that asked for it
+(its PATH, compiler and SDK variables, …): lw sends its environment to the
+daemon over the private endpoint below; it is never written anywhere. Other
+work of a started daemon keeps the environment of the command that started
+it.
 
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
@@ -11723,7 +11932,8 @@ local function main()
   -- Not the recovery commands: `trust` / `nuke` repair a refused workspace
   -- and `unlock` clears stuck locks — none of them may wait on (or start) a
   -- daemon.
-  if not M.NO_DAEMON_COMMANDS[command] then M._ensure_daemon(root) end
+  local ensured
+  if not M.NO_DAEMON_COMMANDS[command] then ensured = M._ensure_daemon(root) end
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).
@@ -11803,6 +12013,13 @@ local function main()
   -- its own workspace load (build-free, like status) — no tool detection.
   if command == "target" then
     finish(M.cmd_target(root, a))
+  end
+
+  -- `lw build` routed to the workspace daemon (spec §19.15, §19.19 step 3):
+  -- nil = not routed (every other case runs in-process exactly as before).
+  if command == "build" then
+    local routed = M._delegate_build(root, a, ensured)
+    if routed then finish(routed) end
   end
 
   local ws = load_workspace(root)
