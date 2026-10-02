@@ -11,7 +11,7 @@
 ---   foreign       R held by a daemon on another host (heartbeat fresh)
 ---   attached      R held by an attached run (§19.2) or another lw command
 ---   stale         a handle (or lock) whose daemon is gone: R free, dead or
----                 stale — `lw daemon stop` clears it
+---                 stale — the next command recovers it (daemon mode), or `lw daemon stop`
 ---   unreadable    a malformed handle and no live holder
 
 local rlock = require("loomworks.daemon.rlock")
@@ -19,6 +19,10 @@ local handle = require("loomworks.daemon.handle")
 local lock_record = require("loomworks.lock_record")
 
 local M = {}
+
+--- What clears a stale or unreadable handle: any workspace command in daemon
+--- mode reclaims a dead holder and relaunches; `lw daemon stop` clears it in any mode.
+M.RECOVER_HINT = "the next workspace command recovers it (daemon mode), or lw daemon stop"
 
 --- @param root string
 --- @return table state { kind, lock?, handle? }
@@ -90,11 +94,11 @@ function M.row(st, mode, own_version)
     elseif k == "attached" then
         return string.format("attached: %s (pid %s)", rlock.holder_text(lk), pid)
     elseif k == "unreadable" then
-        return "unreadable daemon handle — lw daemon stop clears it"
+        return "unreadable daemon handle — " .. M.RECOVER_HINT
     end
     -- stale
     local age = h.age or lk.age
-    return string.format("stale daemon handle (pid %s, %s ago) — lw daemon stop clears it", pid, age_text(age))
+    return string.format("stale daemon handle (pid %s, %s ago) — %s", pid, age_text(age), M.RECOVER_HINT)
 end
 
 return M

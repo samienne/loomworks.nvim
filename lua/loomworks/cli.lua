@@ -10070,7 +10070,8 @@ PATH, compiler variables, …) for its whole life; restart it
 
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
-`daemon-idle-timeout` without any (setting; seconds or 30m / 1h; default 1h),
+`daemon-idle-timeout` without any (setting: seconds, or a number with s, m or h
+such as 90s, 2m, 30m, 1h; default 1h),
 when the workspace directory is removed, or when its lock is taken over.
 
 Files: .nvim/loomworks.daemon.lock (the runtime lock: one runtime per
