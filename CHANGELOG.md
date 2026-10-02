@@ -157,6 +157,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - `lw help daemon` no longer claims a paused reader (`lw build | less`) pauses
   the build tool at once: up to about 4 MiB of output is buffered first.
   (#118)
+- Windows: MSVC builds, configures and `lw run` no longer print
+  `'vswhere.exe' is not recognized as an internal or external command` after
+  `==> [build]` / `==> [configure]`. loomworks now puts the Visual Studio
+  Installer folder (where `vswhere.exe` lives) on the PATH of every
+  vcvarsall run, when it exists and is not already there. (#119)
 - Linux/macOS: a build, configure, clean or test step killed by a signal
   (the out-of-memory killer, `kill -9` on the build tool) no longer counts as
   a success. `lw build` used to record the step as built and print `BUILD OK`;
