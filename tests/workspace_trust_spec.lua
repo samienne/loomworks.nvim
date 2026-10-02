@@ -653,4 +653,115 @@ describe("version-control queries disable repository hooks (§17.8)", function()
     end)
 end)
 
+-- ===========================================================================
+-- What the status page and a build say about trust (§17.3, §17.6, §17.10).
+-- Field report: a working copy copied from another workspace on this machine
+-- loaded and built, and the status title read "loomworks — untrusted" — the
+-- workspace's NAME (its directory), not a trust state. These pin that a
+-- same-machine copy is trusted by design (the root is not bound) and that the
+-- page and a build say plainly what is trusted and what is ignored.
+describe("trust on the status page and in a build (§17.10)", function()
+    local cli = require("loomworks.cli")
+    local roots = {}
+    local function root_dir()
+        local r = tmpdir(); roots[#roots + 1] = r; return r
+    end
+    before_each(function() require("loomworks")._core()._workspace = nil end)
+    after_each(function()
+        require("loomworks")._core()._workspace = nil
+        for _, r in ipairs(roots) do vim.fn.delete(r, "rf") end
+        roots = {}
+    end)
+
+    local SHARED = {
+        projects = { App = {
+            path = ".",
+            shell = {
+                build_dir = "${workspace_root}/out",
+                configure_cmd = { "configure-it" }, build_cmd = { "build-it" },
+                env = { MARKER = "from-shared" },
+                configurations = { Debug = { env = { MARKER2 = "from-shared" } } },
+            },
+            launch = { serve = { command = "C:/benign/tool.exe" } },
+        } },
+        configuration_sets = { dev = { App = "Debug" } },
+    }
+    local function signed_user(extra)
+        local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
+        for k, v in pairs(extra or {}) do user[k] = v end
+        return assert(trust.sign("user", trust.encode(user)))
+    end
+    local function profile_of(ws, key)
+        for _, p in ipairs(ws._profiles or {}) do if p.key == key then return p end end
+    end
+    local function status(root)
+        return capture(function() return cli.cmd_status(root, { can_pull = false }) end)
+    end
+
+    it("a working copy signed here stays valid when copied to another workspace (root not bound, §17.3)", function()
+        local a, b = root_dir(), root_dir()
+        local text = signed_user({ projects = { App = { shell = vim.empty_dict(), launch = {
+            serve = { command = "C:/benign/tool.exe" } } } } })
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        write(b .. "/loomworks.json", vim.json.encode(SHARED))
+        write(a .. "/.nvim/loomworks.user.json", text)
+        write(b .. "/.nvim/loomworks.user.json", text)
+        assert.equals("valid", (trust.verify("user", read(b .. "/.nvim/loomworks.user.json"))))
+        local l = capture(function() return cli._load_workspace(b, false) end)
+        assert.is_nil(l.exit_code, l.stderr)
+        -- Its program settings are used: no "ignored" diagnostic for the launch
+        -- the working copy supplies.
+        for _, d in ipairs(l.ret:diagnostics()) do
+            assert.is_nil(d.message:find("launch.serve", 1, true), d.message)
+        end
+    end)
+
+    it("the Trust row: a signed working copy is used; no working copy says so", function()
+        local a = root_dir()
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        write(a .. "/.nvim/loomworks.user.json", signed_user())
+        local r = status(a)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.matches("Trust%s+local config signed on this machine", r.stdout)
+
+        require("loomworks")._core()._workspace = nil
+        local b = root_dir()
+        write(b .. "/loomworks.json", vim.json.encode(SHARED))
+        local r2 = status(b)
+        assert.is_nil(r2.exit_code, r2.stderr)
+        assert.matches("Trust%s+no local config", r2.stdout)
+    end)
+
+    it("the Trust row counts the program settings ignored in loomworks.json", function()
+        local a = root_dir()
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        local r = status(a)
+        assert.is_nil(r.exit_code, r.stderr)
+        -- shell.env, configurations.Debug.env, launch.serve
+        assert.matches("3 program settings in loomworks.json ignored", r.stdout, 1, true)
+        assert.matches("lw help trust", r.stdout, 1, true)
+    end)
+
+    it("a build notice names the ignored program settings of the profile's projects", function()
+        local a = root_dir()
+        write(a .. "/loomworks.json", vim.json.encode(SHARED))
+        write(a .. "/.nvim/loomworks.user.json", signed_user())
+        local l = capture(function() return cli._load_workspace(a, false) end)
+        assert.is_nil(l.exit_code, l.stderr)
+        local ws = l.ret
+        local profile = assert(profile_of(ws, "dev"))
+        local line = require("loomworks.build_run").trust_notice(ws, profile)
+        assert.equals("lw: 3 program settings in loomworks.json ignored — only your local config "
+            .. "may name programs or environment (`lw status` lists them; lw help trust)", line)
+        -- The working copy supplying one: it is used, and no longer counted.
+        require("loomworks")._core()._workspace = nil
+        write(a .. "/.nvim/loomworks.user.json", signed_user({ projects = { App = { shell = vim.empty_dict(), launch = {
+            serve = { command = "C:/benign/tool.exe" } } } } }))
+        local l2 = capture(function() return cli._load_workspace(a, false) end)
+        assert.is_nil(l2.exit_code, l2.stderr)
+        line = require("loomworks.build_run").trust_notice(l2.ret, assert(profile_of(l2.ret, "dev")))
+        assert.matches("^lw: 2 program settings", line)
+    end)
+end)
+
 end)

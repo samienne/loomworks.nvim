@@ -2191,10 +2191,20 @@ from (spec §17, `lw help trust`):
   Every write by `lw` or the editor signs the `.nvim` files with a per-machine
   key (`trust.key` in your per-user data directory, never in a repository). A
   working copy written by hand, by an earlier loomworks, or copied from
-  elsewhere is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
+  another machine is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
   / `T` on the status page) lists the program settings it contains and re-signs
   it on confirmation; `lw trust --discard` (or `U`) deletes it instead. After
-  upgrading, each existing workspace asks for this once.
+  upgrading, each existing workspace asks for this once. The signature does not
+  bind the directory: a working copy this machine signed stays trusted when you
+  move or copy it to another workspace on this machine (or seed a git
+  worktree), and its profiles, tools and launch commands are used there as-is.
+- **`lw status` shows the trust state on its `Trust` row**: whether your local
+  config is present (a refused one stops every command with the `lw trust`
+  instructions instead) and how many program settings in `loomworks.json` are
+  ignored. A build whose profile is affected prints one line saying so, on
+  both the in-process and the daemon path. The status title is the workspace's
+  *name* (a directory called `untrusted` shows as `loomworks — untrusted`), not
+  a trust state.
 - **Caches are regenerable.** An unsigned build cache (from an earlier
   loomworks) is ignored — units read as unconfigured and reconfigure into
   their existing build directories — and replaced by the next command that
@@ -2203,7 +2213,10 @@ from (spec §17, `lw help trust`):
   signed on another machine refuses the load until you reset it (`lw nuke`, or
   `<C-n>` on the status page). An unsigned health cache is ignored.
 - **Tool paths come from detection on this machine**, never from the cache. A
-  profile whose toolchain isn't detected here is not buildable.
+  profile whose toolchain isn't detected here is not buildable. A profile only
+  selects a detected toolchain by key; what that runs (the compiler, a
+  developer-environment script such as `vcvarsall.bat`) is what detection
+  found here.
 - **Opening a workspace runs nothing it names**: language servers start only
   with binaries/arguments from your signed working copy, detection, or `PATH`;
   SDK paths are probed only from the signed working copy; targets and tests are
