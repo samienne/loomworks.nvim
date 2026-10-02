@@ -169,19 +169,12 @@ M._posix_sh_quote = posix_sh_quote
 --- / target-backed launch resolves a FULL env (inherited + a PATH prepend), so
 --- diffing against the inherited env reduces it to exactly the launch's
 --- contribution — never the whole inherited environment (spec §16.17 "Command
---- inspection"). Returns a plain table (possibly empty).
+--- inspection"). Returns a plain table (possibly empty). loomworks.run_prep
+--- (shared with the workspace daemon's `prepare_run`, §19.15).
 --- @param env table<string,string>|nil
 --- @return table<string,string>
 local function launch_env_overrides(env)
-  if not env then return {} end
-  local inherited = {}
-  local ok, cur = pcall(function() return vim.fn.environ() end)
-  if ok and type(cur) == "table" then inherited = cur end
-  local ov = {}
-  for k, v in pairs(env) do
-    if inherited[k] ~= v then ov[k] = v end
-  end
-  return ov
+  return require("loomworks.run_prep").env_overrides(env)
 end
 M._launch_env_overrides = launch_env_overrides
 
@@ -472,6 +465,8 @@ function M._set_create_intent(v) create_intent = v end
 local function interactive()
   if force_noninteractive then return false end
   if M._test_interactive ~= nil then return M._test_interactive end
+  -- (Tests of a spawned `lw` without a terminal: the interactive defaults.)
+  if os.getenv("LW_TEST_INTERACTIVE") == "1" then return true end
   local ok, h = pcall(uv.guess_handle, 0)
   return ok and h == "tty"
 end
@@ -2342,79 +2337,31 @@ end
 -- Launch configurations + run
 -- ---------------------------------------------------------------------------
 
---- Enumerate launchable targets in a profile: command launch configs and
---- executable build targets across the profile's mapped projects. Each entry:
---- `{ kind = "launch"|"target", project = Project, name = string, target_id? = string }`.
---- Parses targets on demand (build first).
+--- The launch-target enumeration, formatting and matching of `lw run` /
+--- `lw target` / `lw test --target` live in loomworks.run_prep (shared with
+--- the workspace daemon's `prepare_run`, §19.15); these are its local names.
+--- `launchable_targets(ws, profile)` → candidates
+--- `{ kind = "launch"|"target", project, name, target_id? }` (parses targets
+--- on demand: build first).
 local function launchable_targets(ws, profile)
-  local list = {}
-  for _, pp in ipairs(profile:projects()) do
-    local unit = pp._config_unit
-    local project = unit and unit._project
-    if project then
-      if type(project.launch) == "table" then
-        local names = {}
-        for lname, cfg in pairs(project.launch) do
-          if type(cfg) == "table" and (cfg.command or cfg.target) then names[#names + 1] = lname end
-        end
-        table.sort(names)
-        for _, lname in ipairs(names) do
-          list[#list + 1] = { kind = "launch", project = project, name = lname }
-        end
-      end
-      ensure_unit_targets(ws, unit)
-      if type(unit.targets) == "table" then
-        local ids = {}
-        for id in pairs(unit.targets) do ids[#ids + 1] = id end
-        table.sort(ids)
-        for _, id in ipairs(ids) do
-          local t = unit.targets[id]
-          if t and t.is_executable and t:is_executable() then
-            local dname = (t.display_name and t:display_name()) or id
-            list[#list + 1] = { kind = "target", project = project, name = dname, target_id = id }
-          end
-        end
-      end
-    end
-  end
-  return list
+  return require("loomworks.run_prep").launchable_targets(ws, profile)
 end
 
 --- Format a candidate for messages: `project:name (kind)`.
 local function fmt_cand(c)
-  return c.project.key .. ":" .. c.name .. " (" .. c.kind .. ")"
+  return require("loomworks.run_prep").fmt_cand(c)
 end
 
 --- Build a LaunchTarget object from a resolved candidate.
 local function candidate_launch_target(ws, profile, c)
-  local descriptor = { project = c.project.key }
-  if c.kind == "target" then descriptor.target = c.target_id else descriptor.launch = c.name end
-  return require("loomworks.launch_target").new(ws, profile, descriptor)
+  return require("loomworks.run_prep").candidate_launch_target(ws, profile, c)
 end
 
---- Match a run operand `name` against a profile's launchable targets, honoring
---- an explicit `--project` scope, a `project:name` prefix (only when the prefix
---- is a known project in this profile — target ids may themselves contain ':'),
---- and a `--target`/`--launch` kind filter. Pure and non-dying: returns the
---- matching candidates (0 = none, 1 = unique, >1 = ambiguous) plus the full
---- candidate list for error messages. Shared by the one- and two-operand
---- named-target paths (spec §16.17); runs after the build, so build targets
---- are enumerated. `all` (the candidate list) defaults to `launchable_targets`
---- and is injectable for testing.
+--- Match a run operand `name` against a profile's launchable targets
+--- (loomworks.run_prep.match_targets; `all` is injectable for testing).
 --- @return table matches, table all
 local function match_targets(ws, profile, name, proj_scope, kind, all)
-  local scope, bare = proj_scope, name
-  if not scope then
-    local qproj, rest = require("loomworks.build_run").split_target_ref(profile, name)
-    if qproj then scope, bare = qproj.key, rest end
-  end
-  all = all or launchable_targets(ws, profile)
-  local matches = {}
-  for _, c in ipairs(all) do
-    if c.name == bare and (not scope or c.project.key == scope)
-      and (not kind or c.kind == kind) then matches[#matches + 1] = c end
-  end
-  return matches, all
+  return require("loomworks.run_prep").match_targets(ws, profile, name, proj_scope, kind, all)
 end
 M._match_targets = match_targets
 
@@ -2451,14 +2398,113 @@ function M._run_selection(ws, positionals, deps)
   return profile, nil, ws
 end
 
+--- The device options of `lw run` / `lw test` (spec §18.3), each mapped to
+--- whether it takes a value — what `_run_request` recognizes without parsing
+--- them (a run with any of them is not routed, §19.15).
+M.RUN_DEVICE_OPTIONS = { ["--device"] = true, ["--timeout"] = true, ["--query-timeout"] = true,
+  ["--transfer-timeout"] = true, ["--log"] = true, ["--fresh"] = false, ["--no-wait"] = false }
+
+--- @class loomworks.cli.RunArgs
+--- @field positionals string[] the pre-`--` operands (§16.17 grammar: 0, 1 or 2)
+--- @field proj_scope string|nil `--project`
+--- @field kind "target"|"launch"|nil `--target` / `--launch`
+--- @field cwd_override string|nil `--cwd` / `--working-dir`, verbatim
+--- @field prefix_tokens string[] `--prefix`, shell-word split
+--- @field print_mode "sh"|"json"|nil `--print` / `--dry-run` report format
+--- @field dry_run boolean
+--- @field no_build boolean `--no-build` (also set by `--dry-run`)
+--- @field extra_args string[] the arguments after `--`
+--- @field dev table device options (DEV.new_device_opts)
+--- @field device_option boolean a device option was given
+
+--- Parse a `lw run` argv (args[1] == "run"). `fail(msg)` reports a refusal
+--- (cmd_run: die); `device(argv, i, o)` consumes a device option at
+--- `argv[i]` into `o` (cmd_run: DEV.parse_device_opt), returning false when
+--- it is none.
+--- @param args string[]
+--- @param fail fun(msg: string)
+--- @param device fun(argv: string[], i: integer, o: table): boolean
+--- @return loomworks.cli.RunArgs
+function M._parse_run_args(args, fail, device)
+  -- Split on `--`: everything after is forwarded verbatim to the program.
+  local pre, extra_args, seen_sep = {}, {}, false
+  for i = 2, #args do
+    if not seen_sep and args[i] == "--" then seen_sep = true
+    elseif seen_sep then extra_args[#extra_args + 1] = args[i]
+    else pre[#pre + 1] = args[i] end
+  end
+  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`), a
+  -- per-invocation `--cwd <dir>`, the launch `--prefix`, `--print`/`--dry-run`,
+  -- and `--no-build`; remaining pre-`--` tokens are positional and follow the
+  -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
+  -- the forwarded (post-`--`) args.
+  local r = { positionals = {}, prefix_tokens = {}, no_build = false, dry_run = false,
+    extra_args = extra_args, dev = DEV.new_device_opts(), device_option = false }
+  local i = 1
+  while pre[i] do
+    if pre[i] == "--project" then r.proj_scope = pre[i + 1]; i = i + 2
+    elseif pre[i] == "--target" then r.kind = "target"; i = i + 1
+    elseif pre[i] == "--launch" then r.kind = "launch"; i = i + 1
+    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then r.cwd_override = pre[i + 1]; i = i + 2
+    elseif pre[i] == "--prefix" then
+      local val = pre[i + 1]
+      if val == nil then
+        return fail("--prefix requires a wrapper command (e.g. `--prefix valgrind` or " ..
+          "`--prefix 'valgrind --leak-check=full'`)")
+      end
+      for _, tok in ipairs(shell_split(val)) do r.prefix_tokens[#r.prefix_tokens + 1] = tok end
+      i = i + 2
+    elseif pre[i] == "--print" or pre[i] == "--dry-run" then
+      r.print_mode, r.dry_run = "sh", r.dry_run or pre[i] == "--dry-run"; i = i + 1
+    elseif pre[i]:match("^%-%-print=") or pre[i]:match("^%-%-dry%-run=") then
+      r.dry_run = r.dry_run or pre[i]:match("^%-%-dry%-run=") ~= nil
+      local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
+      if fmt ~= "sh" and fmt ~= "json" then
+        return fail("--print format must be 'sh' or 'json' (got '" .. fmt .. "')")
+      end
+      r.print_mode = fmt; i = i + 1
+    elseif pre[i] == "--no-build" then r.no_build = true; i = i + 1
+    elseif device(pre, i, r.dev) then r.device_option = true; i = r.dev._next
+    else r.positionals[#r.positionals + 1] = pre[i]; i = i + 1 end
+  end
+  -- --dry-run is the pure read-only report: it never builds or deploys.
+  if r.dry_run then r.no_build = true end
+
+  if r.print_mode and #r.prefix_tokens > 0 then
+    -- --print reports the bare resolved command; a wrapper is a run-execution
+    -- concern. Combining them is contradictory — reject rather than guess.
+    return fail("--print and --prefix are mutually exclusive: --print reports the " ..
+      "resolved command (compose your own wrapper), --prefix runs under one.")
+  end
+  return r
+end
+
+--- The options of `_run_launch_target` for a parsed run.
+--- @param r loomworks.cli.RunArgs
+--- @return table
+function M._run_target_opts(r)
+  local d = r.dev
+  return {
+    prefix_tokens = r.prefix_tokens,
+    print_mode = r.print_mode,
+    no_build = r.no_build,
+    dry_run = r.dry_run,
+    extra_args = r.extra_args,
+    cwd_override = r.cwd_override,
+    device = d.device, fresh = d.fresh, timeout = d.timeout,
+    timeouts = d.timeouts, log_options = d.log_options, no_wait = d.no_wait,
+  }
+end
+
 --- `lw run [<target>] [-- prog-args…]` / `lw run <profile> <target>` — resolve a
 --- profile and a launch target, then build → deploy → execute. The pre-`--`
 --- operands follow the §16.17 grammar: none → the resolved profile's default
 --- target; one → that target on the resolved profile (never a profile selector);
 --- two → the named target on the named profile. Args after `--` are forwarded to
 --- the program. Returns its exit code. Routes through the editor's LaunchTarget
---- seams (resolve_launch_spec / deploy_sync) so headless
---- and editor launches stay identical.
+--- seams (resolve_launch_spec / deploy_sync, via loomworks.run_prep — shared
+--- with the workspace daemon's `prepare_run`, §19.15) so headless and editor
+--- launches stay identical.
 ---
 --- Options (spec §16.17):
 ---   --prefix <cmd>   interpose a wrapper before the resolved command — the
@@ -2475,125 +2521,30 @@ end
 ---                     not built yet is still reported, with a note on stderr.
 ---   --no-build        skip the build+deploy (inspect / run what is already built).
 function M.cmd_run(ws, args)
-  -- Split on `--`: everything after is forwarded verbatim to the program.
-  local pre, extra_args, seen_sep = {}, {}, false
-  for i = 2, #args do
-    if not seen_sep and args[i] == "--" then seen_sep = true
-    elseif seen_sep then extra_args[#extra_args + 1] = args[i]
-    else pre[#pre + 1] = args[i] end
-  end
-  -- Disambiguation flags (`--project <key>`, `--target`, `--launch`), a
-  -- per-invocation `--cwd <dir>`, the launch `--prefix`, `--print`/`--dry-run`,
-  -- and `--no-build`; remaining pre-`--` tokens are positional and follow the
-  -- §16.17 operand grammar (0/1/2). None of the options consume the operands or
-  -- the forwarded (post-`--`) args.
-  local positionals, proj_scope, kind, cwd_override = {}, nil, nil, nil
-  local prefix_tokens, print_mode, no_build, dry_run = {}, nil, false, false
-  local dev_opts = DEV.new_device_opts()
-  local i = 1
-  while pre[i] do
-    if pre[i] == "--project" then proj_scope = pre[i + 1]; i = i + 2
-    elseif pre[i] == "--target" then kind = "target"; i = i + 1
-    elseif pre[i] == "--launch" then kind = "launch"; i = i + 1
-    elseif pre[i] == "--cwd" or pre[i] == "--working-dir" then cwd_override = pre[i + 1]; i = i + 2
-    elseif pre[i] == "--prefix" then
-      local val = pre[i + 1]
-      if val == nil then
-        die("--prefix requires a wrapper command (e.g. `--prefix valgrind` or " ..
-          "`--prefix 'valgrind --leak-check=full'`)")
-      end
-      for _, tok in ipairs(shell_split(val)) do prefix_tokens[#prefix_tokens + 1] = tok end
-      i = i + 2
-    elseif pre[i] == "--print" or pre[i] == "--dry-run" then
-      print_mode, dry_run = "sh", dry_run or pre[i] == "--dry-run"; i = i + 1
-    elseif pre[i]:match("^%-%-print=") or pre[i]:match("^%-%-dry%-run=") then
-      dry_run = dry_run or pre[i]:match("^%-%-dry%-run=") ~= nil
-      local fmt = pre[i]:gsub("^%-%-[%w%-]+=", "")
-      if fmt ~= "sh" and fmt ~= "json" then
-        die("--print format must be 'sh' or 'json' (got '" .. fmt .. "')")
-      end
-      print_mode = fmt; i = i + 1
-    elseif pre[i] == "--no-build" then no_build = true; i = i + 1
-    elseif DEV.parse_device_opt(pre, i, dev_opts) then i = dev_opts._next
-    else positionals[#positionals + 1] = pre[i]; i = i + 1 end
-  end
-  -- --dry-run is the pure read-only report: it never builds or deploys.
-  if dry_run then no_build = true end
-
-  if print_mode and #prefix_tokens > 0 then
-    -- --print reports the bare resolved command; a wrapper is a run-execution
-    -- concern. Combining them is contradictory — reject rather than guess.
-    die("--print and --prefix are mutually exclusive: --print reports the " ..
-      "resolved command (compose your own wrapper), --prefix runs under one.")
-  end
+  local r = M._parse_run_args(args, die, DEV.parse_device_opt)
 
   -- Determine (profile, target) from the operand count (§16.17). The profile is
   -- resolved here; a named target is matched AFTER the build below, so build
   -- targets are enumerated.
   local profile, target_name
-  profile, target_name, ws = M._run_selection(ws, positionals)
+  profile, target_name, ws = M._run_selection(ws, r.positionals)
 
   -- Build the profile first (configures + builds); dies on failure. Build
   -- targets and the default target's artifact resolve against the built tree.
   -- `--no-build` (and `--dry-run`, which implies it) skips build+deploy
   -- (inspect/run what is already built). Under `--print` the build streams to
-  -- stderr (quiet) so our stdout carries only the report line. The build-dir lock is held only for the build — released
-  -- before the launch, which just executes the artifact and may run
-  -- indefinitely.
-  if not no_build then
+  -- stderr (quiet) so our stdout carries only the report line. The build-dir
+  -- lock is held only for the build — released before the launch, which just
+  -- executes the artifact and may run indefinitely.
+  if not r.no_build then
     with_build_locks(profile, "build", function()
-      M._run_build_steps(profile, ws, { quiet = print_mode ~= nil })
+      M._run_build_steps(profile, ws, { quiet = r.print_mode ~= nil })
     end)
   end
 
-  local lt
-  if target_name then
-    local matches, all = match_targets(ws, profile, target_name, proj_scope, kind)
-    if #matches == 0 then
-      local labels = {}
-      for _, c in ipairs(all) do labels[#labels + 1] = fmt_cand(c) end
-      die("no launch target '" .. target_name .. "' in profile '" .. profile.key .. "'.\n" ..
-        "  available: " .. (next(labels) and table.concat(labels, ", ") or "(none)") .. "\n" ..
-        "  a target on a different profile: lw run <profile> <target>")
-    elseif #matches > 1 then
-      local labels = {}
-      for _, c in ipairs(matches) do labels[#labels + 1] = fmt_cand(c) end
-      die("'" .. target_name .. "' is ambiguous: " .. table.concat(labels, ", ") ..
-        "\n  qualify with `--target`/`--launch`, `--project <key>`, or `<project>:<name>`.")
-    end
-    lt = candidate_launch_target(ws, profile, matches[1])
-  else
-    -- No name → the profile's default target.
-    for _, pp in ipairs(profile:projects()) do ensure_unit_targets(ws, pp._config_unit) end
-    lt = profile:default_target()
-    if not lt then
-      local cands = launchable_targets(ws, profile)
-      if #cands == 1 then
-        lt = candidate_launch_target(ws, profile, cands[1])
-      elseif #cands == 0 then
-        die("nothing to run in profile '" .. profile.key ..
-          "' — no launch configs or executable targets.")
-      else
-        local labels = {}
-        for _, c in ipairs(cands) do labels[#labels + 1] = fmt_cand(c) end
-        die("no default target set for profile '" .. profile.key .. "'.\n" ..
-          "  set one:      lw target set " .. profile.key .. " <target>\n" ..
-          "  or name one:  lw run " .. profile.key .. " <target>\n" ..
-          "  candidates:   " .. table.concat(labels, ", "))
-      end
-    end
-  end
-
-  return M._run_launch_target(lt, ws, {
-    prefix_tokens = prefix_tokens,
-    print_mode = print_mode,
-    no_build = no_build,
-    dry_run = dry_run,
-    extra_args = extra_args,
-    cwd_override = cwd_override,
-    device = dev_opts.device, fresh = dev_opts.fresh, timeout = dev_opts.timeout,
-    timeouts = dev_opts.timeouts, log_options = dev_opts.log_options, no_wait = dev_opts.no_wait,
-  })
+  local lt, serr = require("loomworks.run_prep").select(ws, profile, target_name, r.proj_scope, r.kind)
+  if not lt then die(serr) end
+  return M._run_launch_target(lt, ws, M._run_target_opts(r))
 end
 
 --- The editor-shared deploy → resolve → (report | prefix-exec) tail of a run,
@@ -2632,16 +2583,7 @@ end
 --- @param lt loomworks.LaunchTarget
 --- @return loomworks.ForeignArtifact|nil
 function M._foreign_of(lt)
-  local target = lt._launch_config and lt._config_target or lt._target
-  if lt._launch_config and not lt._launch_config.target then return nil end
-  if not (target and target.artifact) then return nil end
-  local unit = target._config_unit or lt._config_unit
-  local bd = unit and unit.build_dir and unit:build_dir()
-  if not bd then return nil end
-  local artifact = require("loomworks.paths").artifact_path(bd, target.artifact)
-  local f = require("loomworks.remote.foreign").classify(unit, artifact)
-  if f then f.target = target end
-  return f
+  return require("loomworks.run_prep").foreign_of(lt)
 end
 
 --- Run a foreign build target on a device (spec §16.17, §18.5): deploy on the
@@ -2736,15 +2678,12 @@ end
 --- (implementation of `_run_launch_target`, after the device-option check)
 function M._run_launch_target_impl(lt, ws, opts, deps)
   deps = deps or {}
-  local run = deps.run_spec or run_spec
+  local rp = require("loomworks.run_prep")
   local prefix_tokens = opts.prefix_tokens or {}
 
   -- Validity gate (stale descriptor / invalid profile or configuration).
-  local ok, reasons = lt:is_valid()
-  if not ok then
-    die("launch target is not runnable: " ..
-      table.concat(type(reasons) == "table" and reasons or { "invalid" }, "; "))
-  end
+  local verr = rp.validity_error(lt)
+  if verr then die(verr) end
 
   -- A prefix wraps LOCAL execution; a device target runs on the device, where a
   -- host-side wrapper does not apply (device launch is deferred anyway, §16.17).
@@ -2766,12 +2705,23 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
     if not dok then die("deploy failed: " .. tostring(derr)) end
   end
 
-  local spec, serr = lt:resolve_launch_spec({
-    extra_args = opts.extra_args, working_dir = opts.cwd_override })
-  -- An unresolved build-target artifact reports its reason here and exits
-  -- non-zero — reported, never guessed (§16.3 / §16.18).
-  if not spec then die("cannot resolve launch: " .. tostring(serr)) end
+  local spec, serr = rp.resolve_spec(lt, opts)
+  if not spec then die(serr) end
+  return M._run_resolved(spec, opts, ws.root, deps)
+end
 
+--- Finish a run whose launch spec is resolved — in-process, or as returned by
+--- the workspace daemon's `prepare_run` (§19.15 "Run"): `--print` /
+--- `--dry-run` report it (§16.17 "Command inspection"); otherwise print
+--- `running <name> [cwd: <cwd>]: <argv>` and execute `<prefix> <cmd> <args>`
+--- in this process, on its terminal. Returns the exit code.
+--- @param spec { name: string, cmd: string, args: string[]|nil, cwd: string|nil, env: table|nil }
+--- @param opts { prefix_tokens?: string[], print_mode?: "sh"|"json", dry_run?: boolean }
+--- @param root string the workspace root (the cwd when the spec has none)
+--- @param deps? { run_spec?: function }
+--- @return integer
+function M._run_resolved(spec, opts, root, deps)
+  local run = deps and deps.run_spec or run_spec
   -- --print / --dry-run: report the resolved invocation, never execute (§16.17
   -- "Command inspection").
   if opts.print_mode then
@@ -2783,18 +2733,18 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
       and not uv.fs_stat(cmd) then
       errw("note: " .. cmd .. " is not built yet\n")
     end
-    return emit_run_print(spec, opts.print_mode, ws.root)
+    return emit_run_print(spec, opts.print_mode, root)
   end
 
   -- Build the launched argv (prefix, then cmd, then args) and execute it in the
   -- launch's resolved cwd/env on the real terminal, so an interactive wrapper
   -- (gdb, valgrind) drives the tty. The wrapper process's exit status becomes
   -- the invocation's (§16.17 "Launch prefix").
-  local full = build_run_argv(prefix_tokens, spec)
-  out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
+  local full = build_run_argv(opts.prefix_tokens, spec)
+  out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or root,
     table.concat(full, " ")))
   -- (Only the status: a program a signal ended exits 128 + signal.)
-  return (run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root))
+  return (run({ cmd = full, cwd = spec.cwd, env = spec.env }, root))
 end
 
 --- The batch runner is a host program that would execute the profile's test
@@ -7512,18 +7462,21 @@ M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 
 --- Workspace commands routed to the workspace daemon (spec §19.15): their
 --- ensure step waits longer for a slow daemon (§19.10) before they run
---- in-process. `test`: its batch form (§19.19 step 5).
-M.ROUTED_COMMANDS = { build = true, test = true }
+--- in-process. `test`: its batch form (§19.19 step 5); `run`: its preparation
+--- (§19.15 "Run"; the program runs here).
+M.ROUTED_COMMANDS = { build = true, test = true, run = true }
 
 --- Would argv `args` be routed to the daemon, for the ensure step's bound
---- (§19.10)? A routed command, except `lw test --target` (it stays in-process,
---- §19.15), which gets the plain non-routed ensure.
+--- (§19.10)? A routed command, except `lw test --target` and a `lw run` with a
+--- device option (they stay in-process, §19.15), which get the plain
+--- non-routed ensure.
 --- @param args string[]
 --- @return boolean
 function M._routed_command(args)
   local command = args[1]
   if not M.ROUTED_COMMANDS[command] then return false end
   if command == "test" and M._test_request(args) == "target" then return false end
+  if command == "run" and M._run_request(args) == "device" then return false end
   return true
 end
 
@@ -7577,14 +7530,15 @@ end
 
 --- The one stderr line an operation routed to the daemon prints before its
 --- output while the daemon is opt-in (spec §19.15): `lw: building through the
---- workspace daemon (pid <n>)` (`testing …` for `lw test`). Dim on a
---- color-capable stderr.
+--- workspace daemon (pid <n>)` (`testing …` for `lw test`, `preparing the
+--- run …` for `lw run`). Dim on a color-capable stderr.
 --- @param pid integer|nil the daemon's pid
 --- @param color? boolean override the stderr color probe (tests)
---- @param op? "build"|"test" (default "build")
+--- @param op? "build"|"test"|"run" (default "build")
 --- @return string
 function M._delegation_line(pid, color, op)
-  local line = "lw: " .. (op == "test" and "testing" or "building") .. " through the workspace daemon"
+  local what = ({ test = "testing", run = "preparing the run" })[op] or "building"
+  local line = "lw: " .. what .. " through the workspace daemon"
   if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
   if color == nil then color = M._stderr_supports_color() end
   if color then return term.sgr("2") .. line .. term.sgr("0") end
@@ -7655,6 +7609,73 @@ function M._test_request(args)
   return req
 end
 
+--- The request a `lw run` argv routes as (spec §19.15 "Run"): the same parse
+--- as `cmd_run` (`_parse_run_args`) — `{ profile?, target?, project?, kind?,
+--- cwd?, extra, no_build, quiet }` — and, second, what stays with this client
+--- (the parsed run: wrapper, report format). "device" when a device option is
+--- given (a device run stays in-process); nil when `cmd_run` would refuse the
+--- arguments (it then reports them). `cwd` is sent as given: the launch
+--- resolves it as in-process (variables expanded, relative to the workspace
+--- root).
+--- @param args string[] argv, args[1] == "run"
+--- @return table|"device"|nil req, loomworks.cli.RunArgs|nil run
+function M._run_request(args)
+  local seen_sep = false
+  for i = 2, #args do
+    if args[i] == "--" then seen_sep = true end
+    if not seen_sep and M.RUN_DEVICE_OPTIONS[args[i]] ~= nil then return "device" end
+  end
+  local ok, r = pcall(M._parse_run_args, args, function() error("refused", 0) end,
+    function() return false end)
+  if not ok or type(r) ~= "table" then return nil end
+  local pos = r.positionals
+  local req = {
+    extra = r.extra_args, no_build = r.no_build, quiet = r.print_mode ~= nil,
+    project = r.proj_scope, kind = r.kind, cwd = r.cwd_override,
+  }
+  -- The §16.17 operand grammar (`_run_selection`): one operand is a target.
+  if #pos >= 2 then req.profile, req.target = pos[1], pos[2] else req.target = pos[1] end
+  return req, r
+end
+
+--- Finish a `lw run` whose preparation the workspace daemon did (spec §19.15
+--- "Run"): its `done` carries the resolved `launch`, executed (or reported)
+--- here; or `device = true` — the target runs on a device, which stays in this
+--- process: say so, then continue in-process from the deploy without building
+--- again. Returns the exit code.
+--- @param root string
+--- @param req table the request sent (`_run_request`)
+--- @param r loomworks.cli.RunArgs
+--- @param done table { code, launch?, device? }
+--- @return integer
+function M._finish_routed_run(root, req, r, done)
+  if done.device then
+    local ws = load_workspace(root)
+    local positionals = {}
+    if req.profile then positionals = { req.profile, req.target } elseif req.target then positionals = { req.target } end
+    local profile, target_name
+    profile, target_name, ws = M._run_selection(ws, positionals)
+    local lt, serr = require("loomworks.run_prep").select(ws, profile, target_name, r.proj_scope, r.kind)
+    if not lt then die(serr) end
+    local f = M._foreign_of(lt)
+    note("lw: the workspace daemon could not take the run (" .. tostring(f and f.name or lt:display_name())
+      .. " runs on a device in this process); continuing without it")
+    return M._run_launch_target(lt, ws, M._run_target_opts(r))
+  end
+  local l = done.launch
+  if type(l) ~= "table" or type(l.cmd) ~= "string" then
+    die("the workspace daemon returned no launch for the run — it was not run here")
+  end
+  local spec = { name = tostring(l.name or l.cmd), cmd = l.cmd, cwd = type(l.cwd) == "string" and l.cwd or nil,
+    args = {}, env = nil }
+  for _, a in ipairs(type(l.args) == "table" and l.args or {}) do spec.args[#spec.args + 1] = tostring(a) end
+  if type(l.env) == "table" and next(l.env) then
+    spec.env = {}
+    for k, v in pairs(l.env) do spec.env[tostring(k)] = tostring(v) end
+  end
+  return M._run_resolved(spec, M._run_target_opts(r), spec.cwd or root)
+end
+
 --- Would this machine refuse the workspace's working copy or cache (§17.4)?
 --- Such a workspace is never routed (§19.15): the in-process path reports the
 --- refusal with its remedies.
@@ -7703,8 +7724,10 @@ function M._delegate_build(root, args, ensured, opts)
   return M._delegate("build", root, args, ensured, opts)
 end
 
---- Route `lw build` or the batch `lw test` to the workspace daemon (spec
---- §19.15, §19.19 steps 3 and 5).
+--- Route `lw build`, the batch `lw test` or the preparation of `lw run` to
+--- the workspace daemon (spec §19.15, §19.19 steps 3 and 5). A routed run's
+--- program then runs here, after the connection was closed
+--- (`_finish_routed_run`).
 --- Only when this command has a daemon (`ensured` is "used", "launched" or
 --- "restarted" — runtime-mode daemon, not `--no-daemon` / CI, versions
 --- matched), the arguments parse, `--break-locks` is not given (it stays
@@ -7712,9 +7735,9 @@ end
 --- (nothing was done), or the exit code once the daemon refused or ran the
 --- build — an accepted build is NEVER re-run in-process. The daemon runs the
 --- build in this process's environment (sent with the request).
---- `lw test --target` (the named-executable form) stays in-process with one
---- line (§19.15).
---- @param op "build"|"test"
+--- `lw test --target` (the named-executable form) and a `lw run` with a
+--- device option stay in-process with one line (§19.15).
+--- @param op "build"|"test"|"run"
 --- @param root string
 --- @param args string[]
 --- @param ensured string|nil
@@ -7735,12 +7758,21 @@ function M._delegate(op, root, args, ensured, opts)
   if not have and ensured ~= "elsewhere" then return nil end
   -- An argument cmd_build / cmd_test refuses, and a workspace the machine
   -- refuses: the in-process path reports them (that is the line).
-  local req
-  if op == "test" then req = M._test_request(args) else req = M._build_request(args) end
-  -- `--target` always says why in its own words, whatever the runtime is.
+  local req, run_args
+  if op == "test" then req = M._test_request(args)
+  elseif op == "run" then req, run_args = M._run_request(args)
+  else req = M._build_request(args) end
+  -- `--target` / a device option always says why in its own words, whatever
+  -- the runtime is.
   if req == "target" then
     return could_not("--target runs test executables in this process")
   end
+  if req == "device" then
+    return could_not("device options run the program on a device in this process")
+  end
+  -- `lw run --print` / `--dry-run`: the whole task stream on stderr, so
+  -- stdout carries only the report (§19.15 "Run").
+  local quiet = op == "run" and req and req.quiet
   if ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
   if require("loomworks.lock_break").requested then
     return could_not("--break-locks runs the " .. op .. " in this process")
@@ -7756,17 +7788,17 @@ function M._delegate(op, root, args, ensured, opts)
     if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
     if m.phase == "line" then
       local text = tostring(m.text or "")
-      if m.stream == "out" then out(text); io.stdout:flush()
-      elseif m.stream == "note" then note(text)
+      if m.stream == "out" and not quiet then out(text); io.stdout:flush()
+      elseif m.stream == "out" or m.stream == "note" then note(text)
       else errw(text) end
     elseif m.phase == "output" then
       -- A step's raw bytes, as the in-process child writes them to the
       -- inherited terminal: written to the file descriptor directly, never
       -- through the C runtime's text mode (which would turn the tool's CRLF
       -- into CR CR LF on Windows).
-      M._raw_write(m.stream == "stderr" and 2 or 1, tostring(m.text or ""))
+      M._raw_write((m.stream == "stderr" or quiet) and 2 or 1, tostring(m.text or ""))
     elseif m.phase == "done" then
-      done = { code = tonumber(m.exit_code) or 1, error = m.error }
+      done = { code = tonumber(m.exit_code) or 1, error = m.error, launch = m.launch, device = m.device == true }
     end
   end
   local session = opts.session or client.session
@@ -7783,8 +7815,8 @@ function M._delegate(op, root, args, ensured, opts)
   on_exit(function() pcall(conn.close, conn) end)
   M._enable_console_ctrl_c()
   local reply, rerr
-  conn:request({ kind = op, args = req, interactive = interactive(), command = "lw " .. op,
-    env = require("loomworks.daemon.envscope").capture() }, function(r, e)
+  conn:request({ kind = op == "run" and "prepare_run" or op, args = req, interactive = interactive(),
+    command = "lw " .. op, env = require("loomworks.daemon.envscope").capture() }, function(r, e)
     reply, rerr = r, e
     if not r then return end
     -- Printed here, before any task event of it is dispatched (they can
@@ -7837,6 +7869,9 @@ function M._delegate(op, root, args, ensured, opts)
     return 1
   end
   if done.error then die(tostring(done.error), done.code) end
+  -- A run: the task (and every lock) ended; the program runs here, never the
+  -- daemon's (§19.15 "Run").
+  if op == "run" and done.code == 0 then return M._finish_routed_run(root, req, run_args, done) end
   return done.code
 end
 
@@ -12257,7 +12292,7 @@ local function main()
   -- `lw build` and the batch `lw test` routed to the workspace daemon (spec
   -- §19.15, §19.19 steps 3 and 5):
   -- nil = not routed (every other case runs in-process exactly as before).
-  if command == "build" or command == "test" then
+  if command == "build" or command == "test" or command == "run" then
     local routed = M._delegate(command, root, a, ensured)
     if routed then finish(routed) end
   end

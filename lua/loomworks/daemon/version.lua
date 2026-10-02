@@ -23,8 +23,9 @@ local M = {}
 --- 2 adds the mutual handshake and the frozen control subset; 3 the routed
 --- `build` request and its task stream (§19.15); 4 the observer role and the
 --- `model_change` / `retiring` broadcasts (§19.11, §19.12, §19.16); 5 the
---- routed `test` request (the batch `lw test`, §19.15).
-M.PROTOCOL = 5
+--- routed `test` request (the batch `lw test`, §19.15); 6 the `prepare_run`
+--- request (the preparation of `lw run`, §19.15 "Run").
+M.PROTOCOL = 6
 
 local function uv() return vim.uv or vim.loop end
 

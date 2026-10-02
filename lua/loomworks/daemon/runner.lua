@@ -1,6 +1,10 @@
 --- loomworks/daemon/runner.lua — run a profile build in the daemon (spec
 --- §19.15), streaming it on the task stream — or a batch test run (`lw test`,
---- §16.16): the same locks and for-test build, then each native test runner.
+--- §16.16): the same locks and for-test build, then each native test runner —
+--- or the preparation of `lw run` (§19.15 "Run"): the same locks and build
+--- (unless `no_build`), the locks released, then the launch target selected,
+--- deployed and its launch spec resolved (loomworks.run_prep), returned in
+--- the task's `done` for the client to execute.
 ---
 --- It runs the SAME step sequence as the in-process `lw build`
 --- (`cli.run_build_steps` over `loomworks.build_run`):
@@ -172,7 +176,7 @@ end
 
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
---- @field op "build"|"test" the operation
+--- @field op "build"|"test"|"run" the operation
 --- @field cancelled boolean
 --- @field cancel_reason string|nil
 --- @field cancel_code integer|nil
@@ -184,14 +188,20 @@ end
 
 --- Run a build, or a batch test run (`ctx.op == "test"`, spec §16.16, §19.15):
 --- the same locks and build steps (in their for-test form), then — the locks
---- still held — each native test runner, every one even after one failed.
+--- still held — each native test runner, every one even after one failed; or
+--- the preparation of a run (`ctx.op == "run"`, §19.15 "Run"): the build (not
+--- under `args.no_build`), the locks released, then `prepare` (target, gate,
+--- deploy, launch spec), ending the task with `launch` or `device`.
 --- @param svc table the build service (with_model, host)
 --- @param ctx table the request: { op?, env, args, command, task, ws, profile }
 --- @return loomworks.daemon.BuildRun
 function M.run(svc, ctx)
     local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
-    local op = ctx.op == "test" and "test" or "build"
+    local op = (ctx.op == "test" or ctx.op == "run") and ctx.op or "build"
     local testing = op == "test"
+    local running = op == "run"
+    -- `lw run --print` / `--dry-run` keep the build's lines off stdout (§16.17).
+    local out_stream = (running and args.quiet) and "note" or "out"
     local build_lock = require("loomworks.build_lock")
     local run = { task = task, op = op, cancelled = false, held = {} }
     ctx.run = run
@@ -200,11 +210,11 @@ function M.run(svc, ctx)
         for _, h in ipairs(run.held) do build_lock.release(h) end
         run.held = {}
     end
-    local function finish(code, err)
+    local function finish(code, err, fields)
         if run.finished then return end
         run.finished = true
         release_all()
-        task:done(code, err)
+        task:done(code, err, fields)
         if svc.on_run_done then svc:on_run_done(run) end
     end
     local function stopped(why)
@@ -317,6 +327,38 @@ function M.run(svc, ctx)
         next_test()
     end
 
+    -- ---- the run's preparation (op == "run"), after the build ---------------
+    -- Exactly what the in-process `lw run` does before its `running …` line
+    -- (cli.cmd_run, `_run_launch_target_impl`), over loomworks.run_prep; the
+    -- locks are already released (deploy runs without them, as in-process).
+    local function prepare()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        local rp = require("loomworks.run_prep")
+        -- (Refreshed: this unit's targets may predate the build.)
+        local lt, serr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
+        if not lt then return finish(1, serr) end
+        local verr = rp.validity_error(lt)
+        if verr then return finish(1, verr) end
+        -- A foreign artifact runs on a device, in the client (§19.15): before
+        -- any deploy, which the client then does itself.
+        if rp.foreign_of(lt) then return finish(0, nil, { device = true }) end
+        if not args.no_build then
+            local dok, derr = lt:deploy_sync()
+            if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
+            if ctx.refused then return finish(1, ctx.refused) end
+        end
+        local spec, rerr = rp.resolve_spec(lt, { extra_args = args.extra, cwd_override = args.cwd })
+        if not spec then return finish(1, rerr) end
+        -- The environment is the client's here (envscope): `env` is the
+        -- launch's own contribution over it, never a whole environment.
+        finish(0, nil, { launch = {
+            name = spec.name, cmd = spec.cmd, args = spec.args or {}, cwd = spec.cwd or ws.root,
+            env = rp.env_overrides(spec.env),
+        } })
+    end
+
     -- ---- the build steps ---------------------------------------------------
     local steps, i = nil, 0
     local next_step
@@ -346,6 +388,8 @@ function M.run(svc, ctx)
         if i > #steps then
             if testing then return test_phase() end
             release_all()
+            -- A run's build ends without a line of its own (as in-process).
+            if running then return prepare() end
             task:line("out", "BUILD OK: " .. profile.key)
             return finish(0)
         end
@@ -354,7 +398,7 @@ function M.run(svc, ctx)
         local ok_g, g_err = build_run.before_step(ws, step, { force = args.force })
         if not ok_g then return finish(1, g_err) end
         for _, line in ipairs(build_run.step_lines(ws, step, { verbose = args.verbose })) do
-            task:line("out", line)
+            task:line(out_stream, line)
         end
         spawn(step, function(code, signal) step_done(step, code, signal) end)
     end
@@ -366,6 +410,8 @@ function M.run(svc, ctx)
         units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
     end
     task:start({ name = profile.key, kind = op, profile = profile.key, units = units })
+    -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
+    if running and args.no_build then prepare(); return run end
     -- Locks first, exactly like the in-process with_build_dir_locks: every
     -- build directory, canonical order, fail-fast. A test run holds them
     -- across the build AND the test runs (a native runner may rebuild).
@@ -392,7 +438,8 @@ function M.run(svc, ctx)
         steps, plan_err = build_run.plan(profile, { for_test = true })
     else
         steps, plan_err = build_run.plan(profile, {
-            extra_args = args.extra,
+            -- (A run's `extra` are the program's arguments, not the build's.)
+            extra_args = not running and args.extra or nil,
             build_targets = args.targets,
             reconfigure = args.reconfigure,
         })
@@ -400,9 +447,11 @@ function M.run(svc, ctx)
     if not steps then finish(1, plan_err); return run end
     if #steps == 0 then
         if testing then test_phase(); return run end
+        -- Nothing to build: a run goes on with what is there (as in-process).
+        if running then release_all(); prepare(); return run end
         finish(1, build_run.nothing_to_build_message(profile)); return run
     end
-    task:line("out", "building profile: " .. profile.key)
+    task:line(out_stream, "building profile: " .. profile.key)
     -- The same trust notice as the in-process build (spec §17.10, §19.15).
     local tn = build_run.trust_notice(ws, profile)
     if tn then task:line("note", tn) end

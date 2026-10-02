@@ -703,7 +703,9 @@ so the optional operands are never ambiguous with program arguments.
 **Shared code paths.** Resolution, dependency build, deploy, and the launch
 command/spec are the same seams the editor drives; the headless runner differs
 only in executing the resolved spec directly rather than through the editor's
-task runner (§16.1).
+task runner (§16.1). Through the workspace daemon (§19.15, Run) the same seams
+run in the daemon up to the resolved spec, and the invoking client executes
+it, with the attachment, exit status and output rules above unchanged.
 
 **Setting the default target** is a management operation (§16.9): it selects,
 per profile, the default build target and writes it to the working copy

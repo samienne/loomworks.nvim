@@ -358,17 +358,22 @@ describe("ensure (§19.9 through a workspace command)", function()
             assert.truthy(ms < 1000, ms .. " ms")
         end)
 
-        it("lw build and lw test ask for the routed bound; other workspace commands do not", function()
+        it("lw build, lw test and lw run ask for the routed bound; other workspace commands do not", function()
             local cli = require("loomworks.cli")
             assert.is_true(cli.ROUTED_COMMANDS.build)
             assert.is_true(cli.ROUTED_COMMANDS.test)
-            for _, c in ipairs({ "profiles", "run", "clean", "configure" }) do
+            assert.is_true(cli.ROUTED_COMMANDS.run)
+            for _, c in ipairs({ "profiles", "clean", "configure" }) do
                 assert.is_nil(cli.ROUTED_COMMANDS[c], c)
             end
-            -- `lw test --target` stays in-process (§19.15): the plain bound.
+            -- `lw test --target` and a device run stay in-process (§19.15):
+            -- the plain bound.
             assert.is_true(cli._routed_command({ "build", "dev" }))
             assert.is_true(cli._routed_command({ "test", "dev", "--junit", "j.xml" }))
             assert.is_false(cli._routed_command({ "test", "dev", "--target", "app" }))
+            assert.is_true(cli._routed_command({ "run", "dev", "app", "--", "--device" }))
+            assert.is_false(cli._routed_command({ "run", "app", "--device", "X" }))
+            assert.is_false(cli._routed_command({ "run", "app", "--fresh" }))
             assert.is_false(cli._routed_command({ "profiles" }))
             local seen = {}
             local real = ensure.ensure
