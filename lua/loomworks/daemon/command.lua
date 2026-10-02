@@ -31,6 +31,9 @@ M.SUBS = { "status", "stop", "restart", "kill", "run" }
 
 --- How long `stop` waits for the daemon to release R (§19.11).
 M.STOP_WAIT_MS = 10000
+--- Between two `stop` requests that got no answer (`stop` asks again while
+--- STOP_WAIT_MS lasts).
+M.RETRY_MS = 250
 --- How long `stop --force` waits after asking before it kills (§19.5 step 1).
 M.ASK_MS = 5000
 
@@ -119,7 +122,7 @@ function M.status(root, host)
         if type(h.started_at) == "number" then out("  started      " .. age(os.time() - h.started_at) .. " ago") end
     end
     if st.kind == "live" then
-        local r, err = M.query(st)
+        local r, err = M.query(st, 5000)
         if r then
             out(string.format("  answers      %d client%s%s", tonumber(r.clients) or 0, r.clients == 1 and "" or "s",
                 r.retiring and ", retiring (exits when idle)" or ""))
@@ -246,8 +249,8 @@ function M.record(root, line)
 end
 
 --- Send `stop` (best effort, short timeout). Returns the reply or nil.
-function M.query_stop(st)
-    return M.request(st, "stop", 2000)
+function M.query_stop(st, timeout_ms)
+    return M.request(st, "stop", timeout_ms or 2000)
 end
 
 --- `lw daemon stop [--force]` / `lw daemon kill`.
@@ -287,14 +290,43 @@ function M.stop(root, host, opts)
         vim.wait(3000, function() st = inspect.state(root); return st.kind ~= "starting" end, 50)
         if st.kind ~= "live" then host.die(not_responding(lk), 1) end
     end
-    local _, err = M.query_stop(st)
-    if err and tostring(err):match("^untrusted handle") then host.die(tostring(err), 1) end
-    if err and tostring(err):match("^untrusted") then
-        host.die("the daemon endpoint " .. tostring(st.handle.endpoint) .. " did not authenticate as this "
-            .. "machine's daemon (untrusted) — not sending it anything; `lw daemon stop --force` stops the "
-            .. "runtime lock's holder", 1)
+    -- Ask until R is released, within STOP_WAIT_MS. The request itself may use
+    -- what is left of that window: a healthy daemon slowed down by a loaded
+    -- machine (CI running every spec at once; an antivirus holding the
+    -- handle file it rewrites) could take longer than a fixed 2 s to answer
+    -- the handshake, and the client then gave up before `stop` was even sent
+    -- — reported as "not responding" although the daemon was fine. A request
+    -- that fails early (the pipe busy, a connection reset) is sent again. A
+    -- hung daemon is still reported after STOP_WAIT_MS, as before.
+    local uv = vim.uv or vim.loop
+    uv.update_time()
+    local deadline = uv.now() + M.STOP_WAIT_MS
+    local sent = false
+    while true do
+        if not sent then
+            uv.update_time()
+            local r, err = M.query_stop(st, math.max(M.RETRY_MS, deadline - uv.now()))
+            if err and tostring(err):match("^untrusted handle") then host.die(tostring(err), 1) end
+            if err and tostring(err):match("^untrusted") then
+                host.die("the daemon endpoint " .. tostring(st.handle.endpoint) .. " did not authenticate as "
+                    .. "this machine's daemon (untrusted) — not sending it anything; `lw daemon stop --force` "
+                    .. "stops the runtime lock's holder", 1)
+            end
+            sent = r ~= nil
+        end
+        uv.update_time()
+        local left = deadline - uv.now()
+        if left <= 0 then break end
+        -- Once `stop` was accepted, wait out the rest; otherwise re-check
+        -- shortly and ask again.
+        if wait_released(root, lk, sent and left or math.min(left, M.RETRY_MS)) then
+            host.out("stopped the workspace daemon (pid " .. tostring(lk.pid) .. ")")
+            return 0
+        end
+        uv.update_time()
+        if uv.now() >= deadline then break end
     end
-    if not wait_released(root, lk, M.STOP_WAIT_MS) then host.die(not_responding(lk), 1) end
+    if not wait_released(root, lk, 0) then host.die(not_responding(lk), 1) end
     host.out("stopped the workspace daemon (pid " .. tostring(lk.pid) .. ")")
     return 0
 end
