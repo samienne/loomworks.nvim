@@ -1,0 +1,468 @@
+--- loomworks/daemon/runner.lua — run a profile build in the daemon (spec
+--- §19.15), streaming it on the task stream — or a batch test run (`lw test`,
+--- §16.16): the same locks and for-test build, then each native test runner —
+--- or the preparation of `lw run` (§19.15 "Run"): the same locks and build
+--- (unless `no_build`), the locks released, then the launch target selected,
+--- deployed and its launch spec resolved (loomworks.run_prep), returned in
+--- the task's `done` for the client to execute.
+---
+--- It runs the SAME step sequence as the in-process `lw build`
+--- (`cli.run_build_steps` over `loomworks.build_run`):
+---
+---   take every build-directory lock (canonical order, fail-fast, a dead
+---   holder reclaimed with its state recovered, §19.3 / §19.5)
+---   → plan (gate, module plan, build request)
+---   → per step: before_step (lock record names the step, conflict gate,
+---               full-reconfigure reset) → step_lines → spawn_spec → run
+---               → after_step (cache write-back) → failure line + exit code
+---   → release the locks → `BUILD OK: <profile>`
+---
+--- and differs only in how a step is spawned (asynchronously, its output
+--- streamed; in the requesting client's environment) and how a refusal
+--- travels (as the task's `done` error, printed by the client exactly as the
+--- in-process host prints it).
+---
+--- All model work (lock acquisition, planning, gates, cache write-back) runs
+--- in the service's serialized model segments (`svc:with_model`), inside the
+--- client's environment; only the child processes run in between.
+---
+--- **Cancellation** (§19.15): `cancel(reason)` kills the running step's
+--- process tree (the identity-verified kill of §19.5: the child's pid AND
+--- start time), records nothing for that step, releases the locks and ends
+--- the task nonzero.
+
+local build_run = require("loomworks.build_run")
+local envscope = require("loomworks.daemon.envscope")
+
+local M = {}
+
+local uv = vim.uv or vim.loop
+local WIN = package.config:sub(1, 1) == "\\"
+
+--- After a step exits, how long to wait for its output pipes to reach EOF
+--- (a grandchild may keep one open — e.g. MSVC's mspdbsrv) while they are
+--- being read. A paused pipe is not waited on: its data stays in the pipe
+--- until the owner caught up.
+M.EOF_GRACE_MS = 500
+
+--- Spawn a step (test seam): the program in `spec.cmd` (argv[1] already
+--- resolved, loomworks.exe.harden_spec), with exactly `spec.env`, its output
+--- streamed to `sink.output(stream, text)` in order and `sink.done(code,
+--- signal)` called once the process exited and its output was read — `code`
+--- as build_run.exit_status maps it (a signal that ended the process: 128 +
+--- signal, and `signal` names it; else nil). The returned
+--- object controls it:
+---   * `pause()` / `resume()` stop and restart reading its stdout and stderr
+---     (owner flow control, loomworks.daemon.tasks): a paused step's tool
+---     blocks on its full pipe, as on a paused terminal;
+---   * `kill(signal)` signals the process;
+---   * `abandon()` stops reading for good (a cancelled step): `done` follows
+---     as soon as the process exited, without waiting for its output.
+--- Returns nil (and calls `sink.done(127)`) when it cannot be spawned.
+--- @param spec { cmd: string[], cwd: string, env: table }
+--- @param sink table
+--- @return table|nil obj with `pid`, `kill`, `pause`, `resume`, `abandon`
+function M.spawn(spec, sink)
+    local so, se = uv.new_pipe(false), uv.new_pipe(false)
+    local env = {}
+    for k, v in pairs(spec.env or {}) do env[#env + 1] = k .. "=" .. tostring(v) end
+    local exe = spec.cmd[1]
+    -- cmd.exe reads forward-slash path components as switches.
+    if WIN then exe = exe:gsub("/", "\\") end
+    local args = {}
+    for i = 2, #spec.cmd do args[i - 1] = spec.cmd[i] end
+    local obj = { paused = false }
+    local exit_code, exit_signal, finished, abandoned, grace = nil, nil, false, false, nil
+    local open = { stdout = true, stderr = true }
+    local pipes = { stdout = so, stderr = se }
+    local readers = {}
+    local function close_pipe(name)
+        local p = pipes[name]
+        open[name] = false
+        pcall(function() p:read_stop() end)
+        pcall(function() if not p:is_closing() then p:close() end end)
+    end
+    local function finish()
+        if finished then return end
+        finished = true
+        if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
+        close_pipe("stdout"); close_pipe("stderr")
+        sink.done(exit_code or 0, exit_signal)
+    end
+    local function maybe_finish()
+        if finished or exit_code == nil then return end
+        if abandoned or (not open.stdout and not open.stderr) then return finish() end
+        -- Exited, a pipe still open: wait a little for its EOF, but only
+        -- while it is being read.
+        if obj.paused or grace then return end
+        grace = uv.new_timer()
+        grace:start(M.EOF_GRACE_MS, 0, function() finish() end)
+    end
+    for _, name in ipairs({ "stdout", "stderr" }) do
+        readers[name] = function(err, data)
+            if finished or abandoned then return end
+            if data and not err then
+                if data ~= "" then sink.output(name, data) end
+                return
+            end
+            close_pipe(name)
+            maybe_finish()
+        end
+    end
+    local handle, pid
+    handle, pid = uv.spawn(exe, {
+        args = args, stdio = { nil, so, se }, cwd = spec.cwd, env = env, hide = WIN,
+    }, function(code, signal)
+        pcall(function() handle:close() end)
+        -- A process a signal ended (POSIX: code 0 + the signal) fails with
+        -- 128 + signal (§16.7).
+        exit_code, exit_signal = build_run.exit_status(code, signal)
+        maybe_finish()
+    end)
+    if not handle then
+        pcall(function() so:close() end)
+        pcall(function() se:close() end)
+        -- As the in-process run_spec reports it.
+        sink.output("stderr", build_run.spawn_failure_line(spec.cmd[1], pid) .. "\n")
+        sink.done(127)
+        return nil
+    end
+    obj.pid = pid
+    so:read_start(readers.stdout)
+    se:read_start(readers.stderr)
+    function obj.kill(_, signal)
+        if exit_code == nil then pcall(uv.process_kill, handle, signal or "sigterm") end
+    end
+    function obj.pause()
+        if obj.paused or finished then return end
+        obj.paused = true
+        for name, p in pairs(pipes) do
+            if open[name] then pcall(function() p:read_stop() end) end
+        end
+        if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
+    end
+    function obj.resume()
+        if not obj.paused or finished then return end
+        obj.paused = false
+        for name, p in pairs(pipes) do
+            if open[name] then pcall(function() p:read_start(readers[name]) end) end
+        end
+        maybe_finish()
+    end
+    function obj.abandon()
+        if finished then return end
+        abandoned = true
+        close_pipe("stdout"); close_pipe("stderr")
+        maybe_finish()
+    end
+    return obj
+end
+
+--- Kill a spawned step's process tree (test seam): the identity-verified
+--- tree kill, else (no start time, or the tree kill could not confirm the
+--- process gone) a direct kill of the child. Then stop reading its output:
+--- the step ends as soon as the process exited.
+--- @param child { obj: table, pid: integer|nil, start: string|nil }
+function M.kill(child)
+    local proc = require("loomworks.proc")
+    local gone = false
+    if child.pid and type(child.start) == "string" then
+        local ok, res = pcall(proc.kill_tree, child.pid, child.start)
+        gone = ok and res == true
+    end
+    if not gone and child.obj and child.obj.kill then pcall(child.obj.kill, child.obj, "sigkill") end
+    if child.obj and child.obj.abandon then pcall(child.obj.abandon, child.obj) end
+end
+
+--- @class loomworks.daemon.BuildRun
+--- @field task loomworks.daemon.Task
+--- @field op "build"|"test"|"run" the operation
+--- @field cancelled boolean
+--- @field cancel_reason string|nil
+--- @field cancel_code integer|nil
+--- @field finished boolean|nil
+--- @field held table[] the build-directory lock handles held
+--- @field child table|nil the running step { obj, pid, start }
+--- @field ctx table|nil the service request that started it
+--- @field cancel fun(reason?: string, code?: integer)
+
+--- Run a build, or a batch test run (`ctx.op == "test"`, spec §16.16, §19.15):
+--- the same locks and build steps (in their for-test form), then — the locks
+--- still held — each native test runner, every one even after one failed; or
+--- the preparation of a run (`ctx.op == "run"`, §19.15 "Run"): the build (not
+--- under `args.no_build`), the locks released, then `prepare` (target, gate,
+--- deploy, launch spec), ending the task with `launch` or `device`.
+--- @param svc table the build service (with_model, host)
+--- @param ctx table the request: { op?, env, args, command, task, ws, profile }
+--- @return loomworks.daemon.BuildRun
+function M.run(svc, ctx)
+    local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
+    local op = (ctx.op == "test" or ctx.op == "run") and ctx.op or "build"
+    local testing = op == "test"
+    local running = op == "run"
+    -- `lw run --print` / `--dry-run` keep the build's lines off stdout (§16.17).
+    local out_stream = (running and args.quiet) and "note" or "out"
+    local build_lock = require("loomworks.build_lock")
+    local run = { task = task, op = op, cancelled = false, held = {} }
+    ctx.run = run
+
+    local function release_all()
+        for _, h in ipairs(run.held) do build_lock.release(h) end
+        run.held = {}
+    end
+    local function finish(code, err, fields)
+        if run.finished then return end
+        run.finished = true
+        release_all()
+        task:done(code, err, fields)
+        if svc.on_run_done then svc:on_run_done(run) end
+    end
+    local function stopped(why)
+        return op .. " stopped: " .. tostring(why or run.cancel_reason)
+    end
+
+    --- Stop the run (idempotent; a no-op once finished).
+    function run.cancel(reason, code)
+        if run.cancelled or run.finished then return end
+        run.cancelled = true
+        run.cancel_reason = reason or "cancelled"
+        run.cancel_code = code or 1
+        if run.child then
+            -- Its exit (any code) then finishes the run without recording.
+            M.kill(run.child)
+        else
+            svc:with_model(ctx, function() finish(run.cancel_code, stopped()) end)
+        end
+    end
+
+    -- The current workspace/profile still the ones this run runs in?
+    local function current()
+        if svc.ws ~= ws then return false, "the workspace was unloaded (refused or reloaded .nvim files)" end
+        if profile._removed then return false, "profile '" .. profile.key .. "' was removed" end
+        return true
+    end
+
+    --- Spawn `step` streamed, in the client's environment; `on_exit(code,
+    --- signal)` runs in a model segment once it exited. A step that cannot be
+    --- spawned is reported as the in-process run_spec reports it (127).
+    local function spawn(step, on_exit)
+        local spec, herr = build_run.spawn_spec(step, ws.root)
+        if not spec then
+            task:line("err", "lw: " .. tostring(herr) .. "\n")
+            return on_exit(127)
+        end
+        local env = envscope.with_overlay(ctx.env, spec.env)
+        local child = {}
+        child.obj = M.spawn({ cmd = spec.cmd, cwd = spec.cwd, env = env }, {
+            output = function(stream, text) task:output(stream, text) end,
+            done = function(code, signal)
+                svc:with_model(ctx, function() on_exit(code, signal) end)
+            end,
+        })
+        child.pid = child.obj and child.obj.pid or nil
+        if child.pid then child.start = require("loomworks.proc").start_time(child.pid) end
+        if not run.finished and child.obj then
+            run.child = child
+            -- The owner's flow control pauses / resumes this step's output.
+            task:set_flow(child.obj)
+        end
+    end
+
+    --- A step exited. True when that ended the run (it was cancelled: the
+    --- kill itself may be reported as any exit).
+    local function ended_by_cancel()
+        run.child = nil
+        task:set_flow(nil)
+        if run.cancelled then finish(run.cancel_code, stopped()); return true end
+        return false
+    end
+
+    -- Progress: a test run spends the first half building.
+    local function progress(f) task:progress(testing and f / 2 or f) end
+
+    -- ---- the test phase (op == "test"), after the build steps -------------
+    local tsteps, ti, failed, wrote = nil, 0, {}, {}
+    local next_test
+    local function test_done(step, code, signal)
+        if ended_by_cancel() then return end
+        code = build_run.exit_status(code, signal)
+        if code ~= 0 then failed[#failed + 1] = step.name or "?" end
+        -- JUnit at the caller's path, also for a failed run (CI wants it).
+        local path, warning = build_run.junit_result(step)
+        if path then wrote[#wrote + 1] = path elseif warning then task:line("err", warning) end
+        task:progress(0.5 + ti / #tsteps / 2)
+        next_test()
+    end
+    next_test = function()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        ti = ti + 1
+        if ti > #tsteps then
+            release_all()
+            for _, p in ipairs(wrote) do task:line("out", "JUnit: " .. p) end
+            local ok_line, failure = build_run.test_summary(profile, failed, #tsteps)
+            if failure then return finish(1, failure) end
+            task:line("out", ok_line)
+            return finish(0)
+        end
+        local step = tsteps[ti]
+        task:line("out", string.format("==> [test] %s", step.name or "?"))
+        spawn(step, function(code, signal) test_done(step, code, signal) end)
+    end
+    local function test_phase()
+        -- Parse the units' targets before planning: a test step's run
+        -- environment (sibling DLL dirs on Windows) derives from them.
+        for _, pp in ipairs(profile:projects()) do build_run.ensure_unit_targets(ws, pp._config_unit) end
+        local ts, units = require("loomworks.overseer").plan_profile_test(profile,
+            { extra_args = args.extra, junit = args.junit })
+        if not ts or #ts == 0 then
+            release_all()
+            task:line("out", build_run.no_tests_line(profile, units))
+            return finish(0)
+        end
+        local okj, jerr = build_run.prepare_junit(args.junit)
+        if not okj then return finish(1, jerr) end
+        tsteps = ts
+        next_test()
+    end
+
+    -- ---- the run's preparation (op == "run"), after the build ---------------
+    -- Exactly what the in-process `lw run` does before its `running …` line
+    -- (cli.cmd_run, `_run_launch_target_impl`), over loomworks.run_prep; the
+    -- locks are already released (deploy runs without them, as in-process).
+    local function prepare()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        local rp = require("loomworks.run_prep")
+        -- (Refreshed: this unit's targets may predate the build.)
+        local lt, serr = rp.select(ws, profile, args.target, args.project, args.kind, { refresh = true })
+        if not lt then return finish(1, serr) end
+        local verr = rp.validity_error(lt)
+        if verr then return finish(1, verr) end
+        -- A wrapper (`--prefix`, kept by the client) wraps LOCAL execution:
+        -- a device target is refused before any deploy, as in-process.
+        if args.prefix and lt:requires_device() then
+            return finish(1, "--prefix cannot wrap a device target ('" .. lt:display_name() ..
+                "') — a local wrapper does not apply to on-device execution.")
+        end
+        -- A foreign artifact runs on a device, in the client (§19.15): before
+        -- any deploy, which the client then does itself.
+        if rp.foreign_of(lt) then return finish(0, nil, { device = true }) end
+        if not args.no_build then
+            local dok, derr = lt:deploy_sync()
+            if not dok then return finish(1, "deploy failed: " .. tostring(derr)) end
+            if ctx.refused then return finish(1, ctx.refused) end
+        end
+        local spec, rerr = rp.resolve_spec(lt, { extra_args = args.extra, cwd_override = args.cwd })
+        if not spec then return finish(1, rerr) end
+        -- The environment is the client's here (envscope): `env` is the
+        -- launch's own contribution over it, never a whole environment.
+        finish(0, nil, { launch = {
+            name = spec.name, cmd = spec.cmd, args = spec.args or {}, cwd = spec.cwd or ws.root,
+            env = rp.env_overrides(spec.env),
+        } })
+    end
+
+    -- ---- the build steps ---------------------------------------------------
+    local steps, i = nil, 0
+    local next_step
+
+    local function step_done(step, code, signal)
+        if ended_by_cancel() then return end
+        -- (Idempotent: a step a signal ended fails with 128 + signal.)
+        code, signal = build_run.exit_status(code, signal)
+        build_run.after_step(ws, step, code)
+        -- A refused save (§2.7) ends the build as the in-process host's `die`
+        -- does, before anything else runs.
+        if ctx.refused then return finish(1, ctx.refused) end
+        if code ~= 0 then
+            local th = step.kind == "build" and svc.host.unknown_target_hint
+                and svc.host.unknown_target_hint(ws, step, args.targets) or nil
+            return finish(code, build_run.failure_message(step, code, th, signal))
+        end
+        progress(i / #steps)
+        next_step()
+    end
+
+    next_step = function()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        i = i + 1
+        if i > #steps then
+            if testing then return test_phase() end
+            release_all()
+            -- A run's build ends without a line of its own (as in-process).
+            if running then return prepare() end
+            task:line("out", "BUILD OK: " .. profile.key)
+            return finish(0)
+        end
+        local step = steps[i]
+        progress((i - 1) / #steps)
+        local ok_g, g_err = build_run.before_step(ws, step, { force = args.force })
+        if not ok_g then return finish(1, g_err) end
+        for _, line in ipairs(build_run.step_lines(ws, step, { verbose = args.verbose })) do
+            task:line(out_stream, line)
+        end
+        spawn(step, function(code, signal) step_done(step, code, signal) end)
+    end
+
+    -- The profile and its units as semantic keys: an observer resolves them
+    -- to its own domain objects (spec §19.15, §19.16).
+    local units = {}
+    for _, pp in ipairs(profile:projects()) do
+        units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
+    end
+    task:start({ name = profile.key, kind = op, profile = profile.key, units = units })
+    -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
+    if running and args.no_build then prepare(); return run end
+    -- Locks first, exactly like the in-process with_build_dir_locks: every
+    -- build directory, canonical order, fail-fast. A test run holds them
+    -- across the build AND the test runs (a native runner may rebuild).
+    local lock_break = require("loomworks.lock_break")
+    for _, bd in ipairs(build_run.lock_order(build_run.profile_build_dirs(profile))) do
+        local shown = ws._display_build_dir and ws:_display_build_dir(bd) or bd
+        local lctx = { what = shown, command = ctx.command or ("lw " .. op), unlock = shown }
+        local h, msg = lock_break.acquire(function()
+            local hh, _, info = build_lock.acquire(bd, "build", lctx)
+            return hh, info
+        end, lctx)
+        if not h then finish(1, msg); return run end
+        run.held[#run.held + 1] = h
+        if h.reclaimed and ws._recover_interrupted_build_dir then
+            local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
+            if line then task:line("err", "lw: " .. line .. "\n") end
+        end
+    end
+
+    local plan_err
+    if testing then
+        -- The for-test build: a unit whose runner rebuilds itself is not
+        -- built separately; the arguments after `--` are the test runner's.
+        steps, plan_err = build_run.plan(profile, { for_test = true })
+    else
+        steps, plan_err = build_run.plan(profile, {
+            -- (A run's `extra` are the program's arguments, not the build's.)
+            extra_args = not running and args.extra or nil,
+            build_targets = args.targets,
+            reconfigure = args.reconfigure,
+        })
+    end
+    if not steps then finish(1, plan_err); return run end
+    if #steps == 0 then
+        if testing then test_phase(); return run end
+        -- Nothing to build: a run goes on with what is there (as in-process).
+        if running then release_all(); prepare(); return run end
+        finish(1, build_run.nothing_to_build_message(profile)); return run
+    end
+    task:line(out_stream, "building profile: " .. profile.key)
+    -- The same trust notice as the in-process build (spec §17.10, §19.15).
+    local tn = build_run.trust_notice(ws, profile)
+    if tn then task:line("note", tn) end
+    next_step()
+    return run
+end
+
+return M

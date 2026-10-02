@@ -36,6 +36,15 @@ M.KIND = {
     -- replies (frozen)
     ok = "ok",
     error = "error",
+    -- routed operations (§19.15): a request and its task stream
+    build = "build",
+    test = "test",
+    prepare_run = "prepare_run",
+    task = "task",
+    -- broadcasts (§19.11, §19.12): a committed write of a state file; the
+    -- daemon was retired (observers disconnect)
+    model_change = "model_change",
+    retiring = "retiring",
 }
 
 --- Encode a message table as a frame.

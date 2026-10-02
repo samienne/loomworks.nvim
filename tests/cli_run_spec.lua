@@ -139,7 +139,8 @@ describe("cli._match_targets (post-build target resolution)", function()
     end)
 
     it("honors a --project scope and a project:name prefix", function()
-        local profile = { project = function() return true end } -- "app" is a known project
+        -- "app" is one of the profile's projects (build_run.split_target_ref).
+        local profile = { projects = function() return { { _project = { key = "app" } } } end }
         assert.equals(1, #cli._match_targets(nil, profile, "app:myexe", nil, nil, BUILT))
         assert.equals(1, #cli._match_targets(nil, {}, "myexe", "app", nil, BUILT))
         assert.equals(0, #cli._match_targets(nil, {}, "myexe", "other", nil, BUILT))

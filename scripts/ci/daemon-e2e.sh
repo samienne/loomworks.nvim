@@ -12,6 +12,7 @@
 #   - in `runtime-mode daemon` a workspace command starts it (not `lw status`,
 #     `--no-daemon`, CI) and returns at once; the next one reuses it;
 #   - it exits when its workspace is removed and after the idle timeout;
+#   - `lw daemon list` shows two daemons with their roots; `stop --all` stops both;
 #   - no daemon process is left running at the end.
 #
 #   LW=<path to lw> bash scripts/ci/daemon-e2e.sh
@@ -34,6 +35,9 @@ say() { printf '\n=== %s ===\n' "$*"; }
 TMP=$(mktemp -d)
 native() { if [ "$os" = windows ]; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 export LOOMWORKS_DATA_DIR="$(native "$TMP/data")"
+# No startup housekeeping (spec 16.40): it would scan the runner's real temp
+# and socket directories (and probe this test's daemon sockets).
+export LOOMWORKS_NO_HOUSEKEEPING=1
 export XDG_CONFIG_HOME="$TMP/config" APPDATA="$(native "$TMP/config")"
 unset LOOMWORKS_RUNTIME LOOMWORKS_NO_DAEMON CI LW_ROOT || true
 
@@ -45,12 +49,29 @@ HANDLE="$WS/.nvim/loomworks.daemon.json"
 
 lw() { (cd "$WS" && "$LW" "$@"); }
 pid_of() { sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
-alive() {
+# A process's identity: its start time and command (Windows: the MSYS `ps -W`
+# row of that Windows pid; elsewhere `ps -o lstart=,comm=`). Empty when no
+# such process runs.
+ident() {
+  [ -n "$1" ] || return 0
   if [ "$os" = windows ]; then
-    tasklist //FI "PID eq $1" 2>/dev/null | grep -q " $1 "
+    ps -W 2>/dev/null | awk -v p="$1" '$4 == p { $1 = $2 = $3 = $4 = $5 = $6 = ""; print; exit }'
   else
-    kill -0 "$1" 2>/dev/null
+    ps -o lstart=,comm= -p "$1" 2>/dev/null
   fi
+}
+# Is pid $1 running — and, once `track`ed, still the SAME process? A pid
+# alone is not enough: Windows reuses pids quickly, so a daemon that exited
+# could otherwise be "still running" as an unrelated process with its pid.
+alive() {
+  local now want
+  now=$(ident "$1")
+  [ -n "$now" ] || return 1
+  # Never tracked: the pid alone. Tracked when already gone (empty identity):
+  # whatever runs with that pid now is another process.
+  [ -e "$TMP/ident.$1" ] || return 0
+  want=$(cat "$TMP/ident.$1")
+  [ -n "$want" ] && [ "$now" = "$want" ]
 }
 wait_gone() { local i=0; while alive "$1" && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; ! alive "$1"; }
 force_kill() {
@@ -59,7 +80,12 @@ force_kill() {
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo $(( $(date +%s) * 1000 )); }
 
 ALL_PIDS=""
-track() { [ -n "$1" ] && ALL_PIDS="$ALL_PIDS $1"; }
+# Remember a daemon (pid + identity) for the final check and the cleanup.
+track() {
+  [ -n "$1" ] || return 0
+  ALL_PIDS="$ALL_PIDS $1"
+  [ -e "$TMP/ident.$1" ] || ident "$1" > "$TMP/ident.$1"
+}
 cleanup() {
   for p in $ALL_PIDS; do alive "$p" && force_kill "$p"; done
   rm -rf "$TMP"
@@ -143,7 +169,8 @@ if [ -n "$mpid" ] && alive "$mpid"; then ok "started daemon pid $mpid"; else bad
 if [ $((t1 - t0)) -lt 15000 ]; then ok "lw profiles | cat returned in $((t1 - t0)) ms"; else bad "lw profiles | cat took $((t1 - t0)) ms"; fi
 t0=$(now_ms); lw profiles | cat >/dev/null; t1=$(now_ms)
 [ "$(pid_of "$LOCK")" = "$mpid" ] && ok "next command reused it ($((t1 - t0)) ms)" || bad "next command started another daemon"
-logf=$(ls "$TMP"/data/daemon/logs/*.log 2>/dev/null | head -1)
+logf="$WS/.nvim/loomworks.daemon.log"
+[ -d "$TMP/data/daemon/logs" ] && bad "a runtime log outside the workspace ($TMP/data/daemon/logs)" || ok "no runtime log outside the workspace"
 grep -q "launched the workspace daemon" "$logf" 2>/dev/null && ok "runtime log records the launch" || bad "no launch in the runtime log ($logf)"
 
 say "the daemon exits when its workspace is removed"
@@ -165,6 +192,28 @@ i=0; while alive "$ipid" && [ $i -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
 if ! alive "$ipid"; then ok "idle daemon pid $ipid exited by itself"; else bad "idle daemon $ipid kept running"; fi
 [ ! -e "$LOCK" ] && [ ! -e "$HANDLE" ] && ok "idle exit removed its files" || bad "idle exit left files"
 unset LOOMWORKS_RUNTIME
+
+say "lw daemon list / stop --all (process scan, spec 19.6.1)"
+rm -f "$TMP/config/loomworks/config.json"
+LS="$TMP/list"; mkdir -p "$LS/a" "$LS/b"
+printf '{"projects":{}}\n' > "$LS/a/loomworks.json"; printf '{"projects":{}}\n' > "$LS/b/loomworks.json"
+(cd "$LS/a" && "$LW" daemon restart >/dev/null) || bad "restart a"
+(cd "$LS/b" && "$LW" daemon restart >/dev/null) || bad "restart b"
+apid=$(pid_of "$LS/a/.nvim/loomworks.daemon.lock"); track "$apid"
+bpid=$(pid_of "$LS/b/.nvim/loomworks.daemon.lock"); track "$bpid"
+under=$(native "$LS")
+out=$(cd "$TMP" && "$LW" daemon list --under "$under")
+printf '%s\n' "$out"
+case "$out" in *"$apid "*"/a"*"$bpid "*"/b"*"2 daemons (2 idle)"*) ok "list shows both daemons with their roots" ;; *) bad "list: $out" ;; esac
+js=$(cd "$TMP" && "$LW" daemon list --json --under "$under")
+case "$js" in *'"state":"live"'*'"schema":1'*) ok "list --json" ;; *) bad "list --json: $js" ;; esac
+ms=$(printf '%s' "$js" | sed -n 's/.*"scan_ms":\([0-9]*\).*/\1/p')
+if [ -n "$ms" ] && [ "$ms" -lt 3000 ]; then ok "scan took $ms ms"; else bad "scan_ms '$ms'"; fi
+out=$(cd "$TMP" && "$LW" daemon stop --all --under "$under") || bad "stop --all failed: $out"
+printf '%s\n' "$out"
+wait_gone "$apid" && wait_gone "$bpid" && ok "stop --all stopped both" || bad "stop --all left a daemon"
+out=$(cd "$TMP" && "$LW" daemon list --under "$under")
+case "$out" in *"no workspace daemons are running"*) ok "list empty after stop --all" ;; *) bad "list after: $out" ;; esac
 
 say "no daemon left running"
 left=""

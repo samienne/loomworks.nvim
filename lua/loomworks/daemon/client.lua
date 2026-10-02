@@ -30,6 +30,9 @@ M.ERR_CLOSED = "closed"         -- the daemon closed the connection
 --- @field pipe userdata
 --- @field challenge table the daemon's announced versions (protocol, lw_version, schemas, session_generation)
 --- @field welcome table
+--- @field closed boolean|nil
+--- @field on_close fun(conn: loomworks.daemon.Conn)|nil called once when the connection closes
+---   after it was established (either side; runs in a libuv callback)
 local Conn = {}
 Conn.__index = Conn
 
@@ -44,6 +47,19 @@ function Conn:request(msg, cb)
     pcall(function() self.pipe:write(protocol.encode(msg)) end)
 end
 
+--- Stop reading from the daemon (test seam: a client blocked writing a
+--- paused terminal stops reading its connection the same way).
+function Conn:pause_reading()
+    if self.closed or not self._reader then return end
+    pcall(function() self.pipe:read_stop() end)
+end
+
+--- Read again after `pause_reading`.
+function Conn:resume_reading()
+    if self.closed or not self._reader then return end
+    pcall(function() self.pipe:read_start(self._reader) end)
+end
+
 --- Close the connection (idempotent).
 function Conn:close()
     if self.closed then return end
@@ -52,11 +68,13 @@ function Conn:close()
     local p = self._pending
     self._pending = {}
     for _, cb in pairs(p) do pcall(cb, nil, M.ERR_CLOSED) end
+    if self.on_close then pcall(self.on_close, self) end
 end
 
 --- Connect to `endpoint` and authenticate. `cb(conn|nil, err, detail)`.
---- opts: { client = "cli"|"editor", timeout_ms, key (tests: K override),
----         on_message = fun(msg) for broadcasts }
+--- opts: { client = "cli"|"editor", role = "observer"|nil (§19.16), timeout_ms,
+---         key (tests: K override), on_message = fun(msg) for broadcasts,
+---         on_close = fun(conn) once an established connection closes }
 --- @param endpoint string
 --- @param opts table|nil
 --- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil)
@@ -71,7 +89,7 @@ function M.connect(endpoint, opts, cb)
     -- version fingerprint's sha256) inside libuv callbacks.
     local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = protocol.VERSION,
         lw_version = version.identity(), schemas = version.schemas(),
-        client = opts.client or "cli", nonce = nc })
+        client = opts.client or "cli", role = opts.role, nonce = nc })
     local pipe = uv.new_pipe(false)
     local conn = setmetatable({ pipe = pipe, _pending = {}, endpoint = endpoint }, Conn)
     local done = false
@@ -89,7 +107,7 @@ function M.connect(endpoint, opts, cb)
     local ok_c = pcall(function()
         pipe:connect(endpoint, function(cerr)
             if cerr then return finish(nil, M.ERR_CONNECT, tostring(cerr)) end
-            pipe:read_start(function(rerr, chunk)
+            conn._reader = function(rerr, chunk)
                 if rerr or not chunk then
                     if not done then return finish(nil, M.ERR_CLOSED) end
                     return conn:close()
@@ -116,6 +134,7 @@ function M.connect(endpoint, opts, cb)
                     elseif state == "auth" then
                         if msg.kind ~= protocol.KIND.welcome then return finish(nil, M.ERR_CLOSED) end
                         conn.welcome = msg
+                        conn.on_close = opts.on_close
                         state = "ready"
                         finish(conn)
                     else
@@ -128,7 +147,8 @@ function M.connect(endpoint, opts, cb)
                         end
                     end
                 end
-            end)
+            end
+            pipe:read_start(conn._reader)
             pcall(function() pipe:write(hello) end)
         end)
     end)

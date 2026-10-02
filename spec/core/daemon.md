@@ -33,7 +33,7 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 
 *Status: master for the transition values — the host setting `runtime-mode`
 (`in-process` | `daemon`), `LOOMWORKS_RUNTIME`, the editor option
-`runtime.mode` (informational until §19.19 step 4) — and the selection of
+`runtime.mode` (the editor observes the daemon in `daemon` mode, §19.16) — and the selection of
 attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
 (`daemon/runtime.lua`); the end-state values future.*
 
@@ -175,7 +175,15 @@ lw: cannot nuke: a build is running in build/debug (pid 4242) — wait for it, o
 ```
 
 The CLI exits 1 (the build-directory lock's existing exit codes are
-unchanged); the editor shows an error notification. `lw unlock --workspace`
+unchanged); the editor shows an error notification. The refusal is one line
+with one prefix. Nuke and `lw trust --discard` take (or check) their locks
+**before** they list what they would delete or ask for confirmation, so a
+refused one prints only its refusal: with `-y` / `--yes` the locks are held
+from then until the deletion ends; a confirmation (the CLI prompt, the
+editor's dialog) only checks them — taken and released, never breaking a
+holder — and the locks are taken again once confirmed (`--break-locks` acts
+then). The editor's check passes over its own builds, which its nuke stops
+before taking the locks. `lw unlock --workspace`
 (and `lw unlock --all`, §16.6) also clears an O lock whose holder is gone, and
 `--force` one whose holder runs; dead and hung holders of every class are
 handled by §19.5 (`--break-locks`, accepted by every command above).
@@ -479,8 +487,15 @@ by `daemon/server.lua`), the Runtime row and `lw daemon status`.*
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
 schemas = { user, cache }, session_generation, started_at, clients, busy,
-idle_since, lock_nonce }` (`start_time` is the daemon's process start time of
-§19.5, `lock_nonce` its runtime-lock record's nonce). A development build's
+idle_since, lock_nonce, key_id }` (`start_time` is the daemon's process start time of
+§19.5, `lock_nonce` its runtime-lock record's nonce). `key_id` is a
+non-secret fingerprint of the daemon key K it authenticates with (§19.8): the
+first 16 hex digits of HMAC-SHA256(K, `"loomworks-daemon-key-id-v1"`). It
+tells, without connecting, whether a daemon belongs to this lw's data
+directory (machine key) — a daemon of another `LOOMWORKS_DATA_DIR`, such as a
+test run's, has another key and could never complete the handshake with this
+lw. It is one-way under its own label and is never part of a proof. A
+development build's
 `lw_version` is its source fingerprint (§19.9). It
 refreshes the file's modification time on its heartbeat and rewrites it when
 `clients`/`busy` change. Liveness is judged by the heartbeat, never by probing
@@ -488,6 +503,18 @@ the pid (§16.6). The handle is **discovery only**: the runtime lock (§19.2)
 decides who the runtime is, and the handshake (§19.8) decides whether a client
 may use it. A malformed handle is reported as unreadable, never as a live
 daemon. A daemon that finds its handle removed while it runs rewrites it.
+A rewrite stages the new file and renames it over the handle; on Windows that
+rename fails while another process has the handle open (a client reading it,
+an indexer, a scanner — opening it with delete sharing does not help: only a
+rename's source may be open), so each rewrite retries it with backoff for a
+bounded time (the daemon's own loop for about a quarter of a second). A
+rewrite that still fails leaves the previous handle in place, never a partial
+one, and removes its staged file; the daemon then rewrites again on a backoff
+(up to about a second apart) and on every heartbeat until a rewrite succeeds,
+so clients never keep reading an outdated `clients`/`busy`, and notes it in the
+runtime log only once it has kept failing for a few seconds. The heartbeat
+still refreshes the published file's time meanwhile. A record identical to the
+one last written is not rewritten.
 
 **Runtime row.** `lw status` shows one `Runtime` line computed **only** from the
 handle and the runtime lock — it never launches or connects:
@@ -499,15 +526,125 @@ Runtime   daemon on OTHERHOST (pid 4242)
 Runtime   attached: lw build (pid 4242)
 Runtime   no daemon (starts on the next command)
 Runtime   in-process
-Runtime   stale daemon handle (pid 4242, 3h ago) — lw daemon stop clears it
+Runtime   stale daemon handle (pid 4242, 3h ago) — the next workspace command recovers it (daemon mode), or lw daemon stop
 Runtime   daemon pid 4242 is not responding (no heartbeat for 2m) — lw daemon stop --force
 Runtime   daemon pid 4242 (starting)
-Runtime   unreadable daemon handle — lw daemon stop clears it
+Runtime   unreadable daemon handle — the next workspace command recovers it (daemon mode), or lw daemon stop
 ```
 
 `no daemon (starts on the next command)` is shown in `daemon` mode,
 `in-process` in `in-process` mode, when neither the runtime lock nor a handle
 exists.
+
+#### 19.6.1 Listing every daemon of this user
+
+*Status: master — `daemon/discover.lua` (the scan), `proc.processes`,
+`lw daemon list`, `lw daemon stop --all` / `kill --all [--strays]`, the
+`lw health` count line.*
+
+`lw daemon list` lists every workspace daemon of the calling user **on this
+host**, in any workspace, run from anywhere (no workspace needed). It is found
+by a **process scan** — there is no per-user registry: lw writes nothing
+outside the workspaces for it, so a crash or a power loss leaves no file to go
+stale. It never launches, connects to or signals a daemon, and writes nothing.
+
+**Scan.**
+
+1. Enumerate the processes of this host with their executable names —
+   Windows: one Toolhelp snapshot (`szExeFile`); Linux: `/proc/<pid>` entries
+   **owned by the caller's uid** (name from `comm`); macOS: `proc_listallpids`
+   + `proc_name` (fallback `ps -x -o pid=,comm=`).
+2. Keep the candidates whose executable base name (lowercased, without
+   `.exe`) is `lw`, starts with `lw-`, or is `luvi` or `nvim` — the hosts of
+   §19.5 step 2. This process is skipped.
+3. Read each candidate's command line (§19.5: Windows the process command
+   line, Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`) and its start
+   time; keep those that are `lw … daemon run` by the §19.5 identity rules. A
+   command line that cannot be read (another user's process, access denied)
+   is skipped.
+4. The daemon's workspace is its `--root <dir>` (or `--root=<dir>`) argument —
+   every launched daemon has one (§19.10). One run by hand without it is
+   listed with **root unknown**.
+
+The scan is bounded by the number of processes; the command lines read are
+only the candidates'. It takes tens of milliseconds for a few hundred
+processes; `--json` reports the time it took.
+
+**Classification.** For each daemon with a root, its runtime lock R (§19.2)
+and handle (§19.6) are read — files only:
+
+| State | Test |
+|--|--|
+| `live` | R names this process (pid and start time) and the handle names it too; clients, busy, idle time and version come from the handle |
+| `starting` | R names it, no handle yet; or R is absent and the process started less than 30 seconds ago (a daemon takes R first thing — until then it is starting, not a stray) |
+| `hung` | R names it and its heartbeat is stale (§19.5) |
+| `stray` | R names another holder or none, the handle names another process, or the root directory is gone — a daemon that is not its workspace's runtime (it lost its lock, is exiting, or was left over); never connected to |
+| `unknown root` | no `--root` on its command line |
+
+A daemon whose handle names it is also marked by its key: `same_key` is false
+when the handle's `key_id` (§19.6) is not this lw's — a daemon of another
+loomworks data directory — and null when the handle has no `key_id` (an
+older daemon) or does not name it. Computing this lw's key id only reads the
+machine key; none is created.
+
+A handle or lock record that names a process the scan did not find (dead, or
+its pid reused by another program) produces no entry: the list shows
+processes, not files. A daemon on another host is not on this host's process
+list; its workspace's `Runtime` row shows it (§19.6).
+
+**Output.**
+
+```
+PID    UPTIME  STATE           CLIENTS  VERSION  ROOT
+4242   2h      live, idle 12m  0        0.1.43   /home/me/src/app
+4310   5m      live, busy      1        0.1.43   /home/me/src/lib
+4388   1m      stray           -        -        /tmp/old-checkout  (the runtime lock names pid 4401)
+4410   3m      live, idle 3m   0        0.1.43   /tmp/test-ws  (other data dir)
+4 daemons (2 idle, 1 stray, 1 other data dir) — stop them with: lw daemon stop --all
+```
+
+There is one row per daemon — exactly the entries `--json` prints for the
+same scan — and the summary counts those rows. Every column is filled: `-`
+where the value is unknown (the clients and version of a daemon whose handle
+does not name it; an uptime whose start time cannot be converted). STATE is
+the state above (`unknown root` for `unknown_root`); a `live` daemon adds
+`busy` or `idle <time>` (with clients, plain `live`). A daemon that is not
+`live` or `hung` has its reason after the root, and one of another data
+directory `other data dir`. A development build's version is shown with its
+source fingerprint cut to 8 hex digits (`--json` has it whole).
+
+No daemon: `no workspace daemons are running`. `--under <dir>` keeps the
+daemons whose root lies under `<dir>` (separator-bounded, case-insensitive on
+Windows); a daemon with an unknown root is then left out. `--json` prints
+`{ schema = 1, scan_ms, daemons = [ { pid, start_time, root, state, reason,
+uptime_s, started_at, clients, busy, idle_since, lw_version, protocol,
+endpoint, same_key } ] }` (absent values are `null`), sorted by root.
+
+**Stopping all.** `lw daemon stop --all [--force]` and `lw daemon kill --all`
+(each accepting `--under <dir>`) apply `lw daemon stop [--force]` /
+`lw daemon kill` (§19.11, §19.5) to the workspace of every `live`, `starting`
+or `hung` daemon listed — through that workspace's runtime lock, with all its
+rules: never another host, never an editor holder, plain `stop` never kills,
+a kill only of the holder its lock record names, identity-verified. One line
+per daemon, prefixed with its root. A **stray** or **unknown root** daemon is
+not its workspace's runtime and cannot be asked to stop: it is skipped with a
+hint, unless `lw daemon kill --all --strays` was given, which kills it — only
+after its command line is read again and is still `lw … daemon run` for that
+root (or with no `--root`, for an unknown root) with the same start time,
+never this process or one of its ancestors; if it held its workspace's runtime
+lock, the lock is then reclaimed per §19.5. `--strays` is refused without
+`kill --all`. A daemon of **another data directory** (`same_key` false) is not
+this lw's: `stop --all` and `kill --all` skip it with `<root>: daemon pid <pid>
+belongs to another loomworks data dir (different key) — skipped` and never
+connect to it (`kill --all --strays` still kills such a daemon when it is a
+stray, as above). A daemon whose handle has no `key_id` and whose handshake
+then does not verify is reported and skipped the same way, as one that did not
+prove this lw's daemon key. Neither counts as left running: the exit status
+is 0 when none of this lw's listed daemons is left running, 1 otherwise.
+
+**Health.** `lw health` (area `lw`) shows one informational line when this
+user runs any daemon on this host: `2 workspace daemons running (1 idle) —
+lw daemon list`.
 
 ### 19.7 Endpoint and access control
 
@@ -522,7 +659,10 @@ system **and** gated by authentication (§19.8).
   `$TMPDIR` / `/tmp` with a `loomworks-<uid>` directory). The socket is named by
   a short hash of the normalized workspace root, so the path fits the `sun_path`
   limit (about 104 bytes on macOS, 108 on Linux) regardless of repository depth.
-  A stale socket file is unlinked only while holding the runtime lock.
+  A stale socket file is unlinked by a daemon or client only while holding
+  the runtime lock. Outside that, only housekeeping and `lw cleanup` remove a
+  socket, under the conditions of §16.40 (it refuses a connection, is older
+  than an hour, and is put back if a daemon bound the name meanwhile).
 - **Windows:** a named pipe whose name contains a hash of the user and the
   workspace root. Immediately after creating it, the daemon replaces its
   security descriptor (`SetSecurityInfo` through the host's foreign-function
@@ -548,7 +688,12 @@ pipe would hand the user's credentials to that host.
 
 *Status: master for framing, authentication and the frozen control subset
 (`daemon/protocol.lua`, `daemon/auth.lua`, `daemon/server.lua`,
-`daemon/client.lua`; protocol version 2); broadcasts #88.*
+`daemon/client.lua`; protocol version 3: 2 plus the routed `build` request
+and its task stream, §19.15; protocol version 4: 3 plus the observer role,
+`model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16; protocol
+version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
+plus the `prepare_run` request, §19.15); the rest of the
+broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -559,13 +704,15 @@ handler error yields a typed error reply, never a crash.
 HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and *E* the endpoint
 address from the handle.
 
-1. client → `hello { protocol, lw_version, schemas, client = cli|editor, nonce = Nc }`
+1. client → `hello { protocol, lw_version, schemas, client = cli|editor, role?, nonce = Nc }`
+   (`role = "observer"`: a client that only watches, §19.16 — an addition a
+   daemon of an older protocol ignores)
 2. daemon → `challenge { protocol, lw_version, schemas, session_generation,
    server_nonce = Ns, server_proof = HMAC(K, "server\n" .. E .. "\n" .. Nc .. "\n" .. Ns) }`
 3. client verifies `server_proof`; on failure it closes the connection without
    sending anything else and reports the endpoint as untrusted. Otherwise →
    `auth { client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc) }`
-4. daemon verifies → `welcome { header, seq, clients, busy }` (§19.13).
+4. daemon verifies → `welcome { header, seq, clients, busy, retiring }` (§19.13).
 
 Nonces are 32 random bytes (hex); proofs are compared in constant time. Before
 `welcome` the daemon accepts only `hello` and `auth`, caps a frame at 64 KiB
@@ -593,9 +740,14 @@ Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
 protocol version, host version and the working-copy and cache schema versions
 in the handshake. A CLI client **matches** a daemon when all of them are equal
-(a development build compares its source fingerprint as its version). An editor
-client matches when protocol and schemas are equal (its own code ships with the
-plugin, §19.16).
+(a development build compares its source fingerprint as its version: the
+paths, sizes and modification times of its Lua sources whenever they are on
+disk — a development source tree or a directory bundle — so editing a source
+is a mismatch; only a fused executable, whose sources cannot change, uses the
+executable itself). An editor
+client **observing** a daemon (§19.16) needs less: an equal protocol and schemas
+no newer than its own — the daemon's host version may differ (the editor's
+code ships with the plugin, the daemon's with the resolved host binary).
 
 On a mismatch, after authenticating:
 
@@ -625,7 +777,13 @@ commands that need no workspace (`status`, `health`, `pull`, `worktree`,
 `unlock`) never do; the `Runtime` row says the daemon "starts on the next
 command". The ensure step of a command waits about a second per step at most
 (connect + handshake, `ping`), and for a daemon still starting at most about
-a second, once, before running without it. A `lw daemon run` that finds the runtime lock
+a second, once, before running without it. A command the daemon would run (a
+routed `lw build`, §19.15) waits up to about 5 seconds instead, for each step
+and for the one wait on a starting daemon: under machine load a healthy daemon
+can miss the second, and the build would then run in-process exactly when the
+daemon helps most. A daemon already classified hung (§19.5: alive, heartbeat
+stale) is reported at once either way; the longer bound only applies to a
+live-but-slow one. A `lw daemon run` that finds the runtime lock
 held exits with status 3, which the launching client reads as "another daemon
 won".*
 
@@ -634,9 +792,18 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
 
 - **Detached**, in a new process group/session, with **no inherited standard
   handles** (on Windows, standard input, output and error are not inherited;
-  on POSIX they are `/dev/null`); the daemon writes its own **runtime log** to
-  the per-user state directory, one file per workspace (named by the root
-  hash), capped at a few megabytes with one rotated predecessor.
+  on POSIX they are `/dev/null`); the daemon writes its own **runtime log**
+  inside the workspace, `<root>/.nvim/loomworks.daemon.log`, capped at a few
+  megabytes with one rotated predecessor (`.log.1`). Each line is appended
+  with the file opened and closed again, so no process keeps it open, and as
+  one atomic append (the system places the write at the end of the file:
+  O_APPEND, on Windows append-only access), so lines that a client and the
+  daemon it just launched write at the same moment are both kept. A write
+  creates `.nvim/` only when the workspace root exists, and never creates the
+  root: a daemon whose workspace was removed does not bring it back. A file at
+  the log's name that is not lw's runtime log is never written, rotated or
+  removed (§16.40). `lw daemon status` names the log when it exists. (Earlier versions kept it in the
+  per-user state directory; §16.40 removes those files.)
 - **Working directory**: the per-user state directory — never the workspace,
   so the daemon never holds the workspace directory open or busy.
 - **Environment**: the client's, de-duplicated (on Windows case-insensitively,
@@ -658,12 +825,21 @@ exit, all clients connect to the winner.
 
 *Status: master (`daemon/server.lua`, `daemon/command.lua`). A `lw` command
 connects for a moment (handshake, `ping`) and leaves; the keepalive rule
-applies to every authenticated connection. A `retire`d daemon exits when its
-last authenticated client disconnects (there are no tasks in step 2).*
+applies to every authenticated connection, except one that owns a running
+operation (§19.15). A running build makes the daemon busy (handle `busy`); a
+`retire`d daemon exits when it has no authenticated client and no running
+build.*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a
   connection silent for three intervals is dropped as half-open.
+- **Observers and retirement.** A `retire`d daemon broadcasts `retiring` to
+  every connected observer (§19.16), and `welcome` carries `retiring` for one
+  that connects later; an observer then disconnects and does not reconnect to
+  that daemon. Observer connections never hold off retirement: a retiring
+  daemon exits once it has no running build and no authenticated client other
+  than observers. (They still count for the idle timeout and in `clients`.)
+  `status` reports `observers`, the number of observer connections.
 - **Idle exit.** With no connection, no running task and no request for the
   idle timeout — setting `daemon-idle-timeout`, default 1 hour — the daemon
   exits.
@@ -680,17 +856,38 @@ same-host daemon, asks it for `status` (clients, running operations, versions);
 it never launches. `lw daemon stop` sends `stop` (the daemon exits as above)
 and waits (about 10 s) for the runtime lock to be released; it never kills —
 a daemon that does not stop in time is reported as not responding, with
-`lw daemon stop --force` as the remedy. `lw daemon stop --force` and
+`lw daemon stop --force` as the remedy. A daemon still starting (it holds the
+runtime lock, its handle is not published yet) is first given the same
+window to publish its handle — a slow start on a loaded machine is not "not
+responding". A daemon whose handle's `key_id` (§19.6) is not this lw's is
+not asked: `lw daemon stop` says it belongs to another loomworks data dir
+(different key) and exits 1 without connecting; one that does not prove this
+lw's key in the handshake is reported the same way (it belongs to another data
+dir or is not a loomworks daemon), and nothing more is sent to it. `lw daemon
+stop --force` and
 `lw daemon kill` are the forced recovery of §19.5. Stopping when no daemon runs
 succeeds with nothing to do. A daemon on another host is never stopped or
 killed from here (the command names the host); a stale one is reclaimed per
 §19.5. `lw daemon restart` is stop then launch (`--force` applies to the
 stop). None of these require the
-workspace to load.
+workspace to load. `lw daemon list` and `lw daemon stop --all` /
+`kill --all` act on every daemon of this user on this host (§19.6.1).
 
 ### 19.12 Wire identity and change broadcasts
 
-*Status: #88.*
+*Status: master for the coarse `model_change` broadcast (`daemon/server.lua`
+`model_changed`, sent after each committed write of a state file by the
+daemon — the working copy or the cache, `Workspace:_record_written`), whose
+client re-reads the files (§19.16); the opaque-id registry, scope snapshots
+and the re-pull protocol #88.*
+
+**Step 4 form.** `model_change { seq, session_generation }`: `seq` advances by
+one per broadcast within a session. The editor, which still loads the
+workspace from disk itself, answers it by applying the change to its files at
+once — its file tracker's pending-change delivery (§2, the same reload the
+poll would make a moment later) — rather than re-pulling a snapshot. A
+broadcast at or below the last `seq` of the same session generation is
+ignored; a new generation is always applied.
 
 The daemon keeps a session-local **opaque-id registry** keyed by object
 identity: an id is assigned once, survives renames (it follows the object, not
@@ -740,67 +937,431 @@ reference-based. Read-only queries run on the client's projection.
 
 ### 19.15 Task stream and delegated operations
 
-*Status: #88 for `lw build <profile> [-- args]`; other forms and operations
+*Status: master for `lw build` in all its forms (`lw build [<profile>]
+[--target <name>]… [--force] [--reconfigure] [-v] [-- <args>]`) in
+`runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
+`daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
+`_delegate`), and for the batch form of `lw test` (`lw test [<profile>]
+[--junit <file>] [-- <args>]`, §16.16; `lw test --target` stays in-process,
+see Routing), and for the preparation of `lw run` (§16.17; see Run;
+`run_prep.lua`, the client's `_finish_routed_run`; device runs stay
+in-process, see Routing); observed by the editor (§19.16); other operations
 future.*
 
-A running operation streams `progress`, `output` and `notify` events on a
-**task stream**, separate from model changes and observable by every
-connected client (a build started by the CLI streams into the editor). The
-stream coalesces progress (a tick only when the integer percent advances) and
-bounds output per task (a single truncation notice past the cap); model
-changes are never dropped. The durable outcome arrives as a `model_change`.
+A running operation streams `task` events on a **task stream**, separate from
+model changes and observable by every connected client (a build started by the
+CLI streams into the editor): `start` (`meta = { name, kind, profile, units }`
+— `profile` the profile's key, `units` one `{ project, configuration }` per
+project of the profile, the project key and its configuration unit's key;
+semantic keys, which a client resolves to its own domain objects at the
+boundary, §19.14), `line` (one of loomworks's own lines —
+a status line on standard output, a note on standard error), `output` (a
+step's raw bytes, `stdout` or `stderr`), `progress` (coalesced: a tick only
+when the integer percent advances) and `done` (`exit_code`, and the refusal or
+failure the client prints as `lw: <error>`). The client that started the task
+— its **owner** — receives every event, unbounded and in order: the stream is
+its terminal. It is **flow-controlled**: when a few megabytes wait unread on
+the owner's connection (a client that stopped reading, e.g. `lw build | less`
+paused), the daemon stops reading the running step's output until the owner
+caught up, so the build tool then blocks on its full pipe as it blocks on a
+paused terminal in-process, and the daemon's memory stays bounded. Up to that
+bound (about 4 MiB) the output is buffered, so a reader paused briefly does
+not pause the tool — a build whose whole output fits finishes while the reader
+waits, and the reader still gets all of it, in order;
+cancellation still applies while paused. Other clients **observe** it with
+output bounded per task by bytes (a few megabytes each, then a single
+truncation notice); an observer whose connection falls further behind than a
+bound is disconnected (it connects again to re-attach) — unless it owns a
+running operation itself, which then only misses observed events. Model changes are never dropped; the durable
+outcome arrives as a `model_change` (§19.12).
+
+**Request.** `build { args, interactive, env, command }` — `args` carries the
+parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
+`verbose`). The reply's `outcome` is one of:
+
+- `accepted` (`task_id`, `profile_key`, `pid`) — the build runs as a task owned
+  by this connection;
+- `refused` (`message`, `exit_code`) — before any side effect: the workspace
+  is refused (§17.4, a journal it cannot complete §19.4, a newer schema §2.7)
+  or the profile argument does not resolve (§16.9). The client prints it as
+  the in-process host does and exits with that code;
+- `declined` (`reason`) — before any side effect: the daemon does not carry
+  this request; the client runs it on the in-process path. It declines the
+  interactive onboarding of a profile from a configuration set (prompts,
+  §16.9) and a request in a different environment while another build runs
+  in it (see Environment).
+
+`test { args, interactive, env, command }` — the batch form of `lw test`
+(§16.16) — has the same outcomes; `args` carries `profile`, `junit` (the
+`--junit` path, made absolute by the client against its working directory, as
+the in-process host does) and `extra` (the arguments after `--`, for the
+native test runner). It is also `refused` when the profile builds with a
+foreign kit (§18.6, the in-process refusal pointing at `lw test --target`).
+Its task's `meta.kind` is `test`. In this section "build" stands for either
+operation unless a rule names one.
 
 **Same behaviour.** An operation run in the daemon is behaviorally identical to
 the in-process operation it replaces — the same step sequence, locks, gates,
 status lines, cache write-back, failure lines and exit codes — differing only
 in how a step is spawned (streamed) and how a refusal travels (on the stream,
 printed by the client exactly as the in-process host prints it). For a build
-this is the shared build-step sequence of §16.4 / §16.6 / §16.28 / §5.1 / §5.10.
+this is the shared build-step sequence of §16.4 / §16.6 / §16.28 / §5.1 / §5.10:
+the build-directory locks of §16.6 taken up front in canonical order with the
+§19.5 record (holder kind `daemon`, the operation rewritten configure → build),
+a dead holder's lock reclaimed with the interrupted step's state recovered,
+the build gate, the artifact-conflict gate (`--force`), the full-reconfigure
+reset, the configure record and the cache write-back under the save guard
+(§2.7 — a refused save ends the build with its message, as in-process), the
+failure line with the `--target` hint, and `BUILD OK: <profile>`. Only the
+build tool's own terminal detection differs: its output reaches the client
+through a pipe, as when the in-process build is piped (`lw build | tee`) — so
+a tool that colours or redraws only on a terminal does not (ninja prints every
+`[n/N]` line instead of one updating status line, compilers drop colour). No
+colour variable is added for it: such variables (`CLICOLOR_FORCE`, …) reach
+every process of the build, including ones whose output a build script
+captures, so they would change what a build does; a user who wants colour sets
+them in the environment of `lw build`, which the step receives.
 
-**Live workspace.** Before accepting an operation the daemon applies every
-pending external change to its files exactly as its file watcher would
-(including trust refusal, §17.4), then resolves arguments as the in-process
-host does (§16.9).
+For a test run it is the sequence of §16.16: the build-directory locks taken
+as for a build and held across the build AND the test runs (a native runner
+may rebuild), the build steps above in their for-test form (a unit whose
+runner rebuilds itself is not built separately; no steps → no `building
+profile:` line), the units' targets parsed, then one `==> [test] <name>` line
+per native runner, every runner run even after one failed, its JUnit file
+materialized at the requested path (a warning line when the runner wrote
+none) and `JUnit: <path>` lines, and finally either `no tests to run for
+profile '<p>'…`, `TESTS OK: <profile> (<n> run[s])`, or the failure `<k> of
+<n> test run(s) failed: <names>` with exit 1. A build step that fails ends the
+test run as it ends a build.
+
+**Run.** `lw run` (§16.17) is split: the daemon **prepares** the launch, the
+client **executes** it. The program is the user's own — interactive,
+possibly long-running, attached to a terminal — so it never runs in the
+daemon.
+
+`prepare_run { args, interactive, env, command }` — `args` carries the parsed
+command line: `profile` and `target` (the operands, §16.17; no `target` for
+the default target), `project` (`--project`), `kind` (`--target` /
+`--launch`), `cwd` (`--cwd`, sent as given: the launch resolves it as
+in-process — variables expanded, relative to the workspace root), `extra` (the arguments after `--`), `no_build` (`--no-build`, also
+set by `--dry-run`), `quiet` (`--print` / `--dry-run`) and `prefix` (true when
+`--prefix` is given). The wrapper itself and the report format stay with the
+client and do not change what is prepared; `prefix` only lets the daemon
+refuse a device target, after the validity gate and before deploy, with the
+in-process `--prefix cannot wrap a device target …` line. The outcomes are those of `build`; it is also `declined` for a
+profile with a foreign kit (see Routing). An accepted request runs as a task
+(`meta.kind = run`) that does, and prints, exactly what the in-process run
+does before its `running …` line, in the same order:
+
+1. unless `no_build`, the profile's build: the build-directory locks taken as
+   for a build, the build steps above (every gate and line), then the locks
+   **released** — as in-process, they are held for the build only;
+2. the launch target resolved against the built tree (§16.17, "Launch target
+   selection": the named target, else the default target, else the sole
+   launchable one; the same messages for none, ambiguous and unset) and its
+   validity gate;
+3. unless `no_build`, the deploy steps (§8), after the locks were released,
+   as in-process;
+4. the launch spec resolved — variables and `${VAR}` expanded in the client's
+   environment (Environment, below).
+
+`done` then carries `exit_code` 0 and `launch = { name, cmd, args, cwd, env }`
+— the resolved command, its arguments (a command configuration's declared
+arguments, then `extra`), the absolute working directory and, in `env`, only
+the launch's own contribution over the client's environment (the overrides
+§16.17 "Command inspection" reports), never a whole environment — or a
+nonzero exit code and the in-process failure line (a failed build, no such
+target, a failed deploy, `cannot resolve launch: …`). The task, and every
+lock, ends before the program starts; the daemon keeps nothing of the run.
+
+The client then closes its daemon connection and finishes the run as the
+in-process host does after resolving: `--print` / `--dry-run` print the
+report (with the not-built note); otherwise it prints `running <name> [cwd:
+<cwd>]: <argv>` and executes `<prefix> <cmd> <args>` itself — attached to its
+terminal (inherited standard input, output and error; on Windows not hidden),
+in `cwd`, with its own environment plus `env`, the program resolved on its own
+search path as in-process (§5.10). The program's exit status is `lw run`'s.
+Under `--print` / `--dry-run` the client writes the whole task stream to
+standard error, so standard output carries only the report. Hence:
+
+- **Not the daemon's.** The program is the client's child. It holds no lock,
+  task or connection: `lw daemon stop|kill|restart`, a retire for a version
+  change and an idle exit never touch it, and it does not keep the daemon
+  busy (§19.11). Ctrl-C while it runs reaches it and the client through their
+  console, as in-process; Ctrl-C during the preparation cancels the task
+  (Cancellation).
+- **Concurrent runs.** Any number of `lw run` may run at once. Their
+  preparations are serialized by the build-directory locks like any builds;
+  their programs are not.
+- **A build while the program runs** proceeds, as in-process. On Windows a
+  running executable cannot be overwritten, so a build that relinks it fails
+  at that step as it does today; nothing is added for it (no lock held across
+  the run, no retry, no warning).
+- **Terminal.** The program's output never passes through the daemon: it has
+  the client's real terminal (colour, size, redraws), unlike the build's
+  tools above.
+
+**Environment.** A routed build behaves as if the client process had run it.
+The client sends its **whole environment** with the request; the daemon
+applies it to the operation and to nothing else:
+
+- every piece of model work for the request (the live-workspace sync or
+  reload, argument resolution, planning, gates, cache write-back) runs with
+  the daemon's process environment switched to the client's (on Windows
+  keeping `NoDefaultCurrentDirectoryInExePath=1`, §5.10, when the client's
+  lacks it) and restored afterwards — so `${VAR}` expansions, tool and program resolution on `PATH`
+  and probes the module spawns see the client's values. These pieces run one
+  at a time (a FIFO), so two clients never see each other's environment;
+- each step is spawned with exactly the client's environment plus the step's
+  own variables (§8.1, on Windows replacing a name that differs only in case)
+  — never the daemon's launch environment, whose loomworks-internal variables
+  (`LOOMWORKS_LUA`, `LW_ROOT`) therefore do not leak into builds;
+- the daemon's workspace model is kept for the environment it was loaded in:
+  a request whose environment differs reloads the workspace from disk first,
+  as an in-process load in that environment would read it; while another
+  build runs in the daemon, such a request is declined instead. The
+  comparison ignores variables that differ between two commands of one shell
+  (`_`, `PWD`, `OLDPWD`, `SHLVL`) and between two terminals of one user — the
+  terminal's, multiplexer's, SSH and login session's per-window/pane/session
+  identifiers (`WT_SESSION`, `TERM_SESSION_ID`, `TMUX`, `TMUX_PANE`, `STY`,
+  `WINDOWID`, `SSH_CONNECTION`, `SSH_TTY`, `SSH_AUTH_SOCK`, `GPG_TTY`,
+  `XDG_SESSION_ID`, editor terminals' IPC handles `VSCODE_*`, …; names compared
+  case-insensitively on Windows), and the hidden `=`-prefixed entries of a
+  Windows environment block (cmd.exe's per-drive directories `=C:` and
+  `=ExitCode`, which every process started from a cmd.exe — a `.cmd` shim, a
+  PowerShell or developer prompt opened from one — inherits); these still
+  reach the step unchanged, and the `=` entries are never applied to the
+  daemon's own process environment. It is a
+  list of what to ignore, not of what to compare: what a load reads is
+  open-ended (`${VAR}` references, module and SDK probes, compiler and
+  `vcvarsall` variables), and a variable missed by a list of what to compare
+  would build with a model read in another environment.
+
+The whole environment is sent because a subset cannot be chosen safely:
+compiler, SDK and `vcvarsall` variables (`INCLUDE`, `LIB`, `WindowsSdkDir`,
+`VCToolsInstallDir`, …), cache tools and `${VAR}` references in the
+configuration can use any name, and an in-process build inherits them all.
+It may contain secrets; it never leaves the machine: it is sent only after
+the mutual authentication of §19.8, over the owner-only endpoint of §19.7, to
+a process of the same user, is held in memory for the request only, and is
+never written to the runtime log, the handle or any workspace file. The
+client's working directory is not sent: the client resolves the workspace
+root, and every step runs in its own absolute directory (the step's, or the
+root) on both paths.
+
+**Live workspace.** The daemon loads its workspace on its first operation
+(the same load as the in-process path) and keeps it. Its file tracker does
+not poll: before accepting each operation the daemon applies every pending
+external change to its files exactly as its file watcher would — including a
+trust refusal (§17.4), which unloads the workspace and is returned as
+`refused` — completes or refuses a commit journal by reloading (§19.4), and
+waits for a tool rescan a changed `loomworks.json` started. It then resolves
+arguments as the in-process host does (§16.9; the same matcher, the same
+messages, the client's interactivity).
 
 **Cancellation.** An operation belongs to its client. When that client
-disconnects, the daemon stops, or the workspace or the operation's subject is
-unloaded/removed, the daemon terminates the running step's process tree,
-records nothing for that step, releases its locks and ends the task nonzero. A
-client that loses the connection after its operation was accepted reports a
-failure; it never re-runs the operation another way.
+disconnects (Ctrl-C ends `lw`: the interrupt handler drops the connection,
+which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
+retire, root removed, lost lock), or the workspace or the operation's subject
+is unloaded/removed, the daemon terminates the running step's process tree
+(identity-verified by process id and start time, §19.5), records nothing for
+that step, releases its locks and ends the task nonzero (`build stopped:
+<reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
+for a run's preparation). A client that loses the connection after its operation was
+accepted reports a failure; it never re-runs the operation another way (for a
+run: it starts no program). Cancellation ends with the task: a run's program,
+started after it, is never the daemon's to stop (Run). A
+connection that owns a running operation is never dropped for silence
+(§19.11); the CLI also pings while it waits. The step's processes are the
+daemon's, not in the client's console, so the interrupt must reach the
+client itself: on Windows a routed client re-enables the console's Ctrl-C for
+its process (a process started with it disabled — `start /b`, a new process
+group, as Git Bash starts the native program it then signals with `kill
+-INT` — would otherwise never see it, while in-process the build's own
+processes in that console still stop).
 
 **Routing.** A client routes an operation to the daemon only when the daemon
 carries every argument form the client was given; any other form runs on the
 in-process path (transition) and a workspace the machine would refuse (§17.4)
-is never routed. While the daemon is opt-in, a routed operation prints one dim
-line before its output — `lw: building through the workspace daemon (pid N)` —
-which is removed when the default flips.
+is never routed. For `lw build` in step 3: routed in `runtime-mode daemon`
+when this command has a matching daemon (it was used, launched or restarted
+by the version handshake, §19.9/§19.10), the arguments parse, and the working
+copy and cache verify; **not routed** — the in-process path exactly as
+before — with `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI` (§19.1),
+`--break-locks` (its ask-and-kill recovery stays with the client process), a
+version bypass, a daemon that is hung, starting, foreign or could not be
+started, and an argument `cmd_build` refuses (it reports it). In
+`runtime-mode daemon`, a build the daemon does not run is never silent:
+except for the explicit opt-outs (`--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`)
+and the cases the in-process path itself reports (an argument `cmd_build`
+refuses, a workspace the machine refuses), exactly one line on standard error
+says why, and the build runs in-process. The version handshake's and the
+launch's lines (§19.9, §19.10) are that line for a version bypass, a newer
+daemon, and a daemon that is hung, still starting or could not be started; a
+declined request prints `lw: the workspace daemon declined the build
+(<reason>); running without it`; every other case — a runtime held by another
+lw command or another host, `--break-locks`, a daemon that cannot be reached
+or fails before accepting, a failed endpoint check — prints `lw: the
+workspace daemon could not take the build (<reason>); running without it`.
+While the daemon is opt-in, an accepted build prints one dim line on standard
+error before its output — `lw: building through the workspace daemon (pid N)`
+— which is removed when the default flips; a refusal prints neither.
+
+`lw test` (step 5) is routed by the same rules, an argument `cmd_test` refuses
+taking the place of one `cmd_build` refuses (device options without
+`--target` among them), and its lines name the test: `lw: the workspace daemon
+declined the test (<reason>); running without it`, `lw: the workspace daemon
+could not take the test (<reason>); running without it` and `lw: testing
+through the workspace daemon (pid N)`. Its named-executable form, `lw test
+--target <exe>…` (local or on a device, §16.16, §18), is not carried in this
+step — its device locks, staging and liveness stay with the client process —
+and prints `lw: the workspace daemon could not take the test (--target runs
+test executables in this process); running without it`.
+
+`lw run` (step 5) is routed by the same rules for its preparation
+(Run), an argument `cmd_run` refuses taking the place of one `cmd_build`
+refuses (`--print` with `--prefix` among them), and its lines name the run:
+`lw: the workspace daemon declined the run (<reason>); running without it`,
+`lw: the workspace daemon could not take the run (<reason>); running without
+it` and `lw: preparing the run through the workspace daemon (pid N)` (before
+the build's output; on standard error like the others). A run on a device
+(§16.17, §18) is not carried in this step — its device locks, staging and the
+remote program's liveness stay with the client process:
+
+- a device option (`--device`, `--fresh`, `--timeout`, `--no-wait`, a log
+  option; §18.3) prints `lw: the workspace daemon could not take the run
+  (device options run the program on a device in this process); running
+  without it`;
+- a profile one of whose units builds with a foreign kit (§18.1, the kit's
+  execution platform — known before anything is built) is `declined` before
+  any side effect: `lw: the workspace daemon declined the run (profile '<p>'
+  builds for <platform>; device runs stay in this process); running without
+  it`;
+- a target found foreign only by probing its built artifact (§18.1, no kit
+  platform) is known only after the daemon built it: the task ends with
+  `exit_code` 0, no `launch`, and `device = true`, before any deploy; the
+  client prints `lw: the workspace daemon could not take the run (<name> runs
+  on a device in this process); continuing without it` and continues
+  in-process from the deploy (deploy → stage → execute, §18.4–§18.5) without
+  building again.
+
+The editor's own run and debug launches stay in-process in this step
+(§19.16).
 
 ### 19.16 The editor as a client
 
-*Status: future (§19.19 step 4).*
+*Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
+`daemon/host_binary.lua`, `daemon/remote_task.lua`); commands and the attached
+editor future.*
 
-The editor uses the **same daemon as the CLI**: it resolves a host binary with
-the broker precedence of the runtime
-resolution (`LOOMWORKS_LW`, the repository pin §16.21, `lw` on the search path,
-a previously provisioned runtime; never a fetch), launches `lw daemon run` from
-it when no daemon is live (§19.10), connects, authenticates and holds a
-keepalive (§19.11). In the first editor step it **observes** only — task
-streams and model changes from operations started elsewhere — while running
-its own operations in-process; operations then move to commands in the order
-of §19.19. With no host binary, the editor runs the daemon code inside its own
-process over the loopback transport, taking the runtime lock as an attached
-run (§19.2) for as long as its workspace is loaded. *(Future:)* such an
-attached editor also serves the endpoint — it is then the workspace's shared
-daemon, owned by the editor process, and CLI clients connect to it instead of
-being refused as busy; it ends when the editor closes the workspace. A version mismatch it
-cannot repair by restarting (its plugin code and the resolved binary differ in
-protocol or schema) is shown inline and handled as a version-bypass run
-(§19.9); the editor does not launch the daemon from its own plugin source.
+**End state.** The editor uses the **same daemon as the CLI**. It connects,
+authenticates and holds a keepalive (§19.11). Operations move from the editor
+to commands in the order of §19.19. With no host binary, the editor runs the
+daemon code inside its own process over the loopback transport, taking the
+runtime lock as an attached run (§19.2) for as long as its workspace is
+loaded. *(Future:)* such an attached editor also serves the endpoint. It is
+then the workspace's shared daemon, owned by the editor process, and CLI
+clients connect to it instead of being refused as busy. It ends when the
+editor closes the workspace.
+
+*(Future:)* The editor's run and debug launches (§8.6) take the CLI's split
+(§19.15, Run): `prepare_run` in the daemon, then the returned launch spec
+handed to the editor's task runner (run) or to the debugger as the debuggee's
+program, arguments, working directory and environment (debug). The program
+is then the editor's, never the daemon's. Until the editor moves its
+operations to commands, its launches stay in-process; the observer shows a
+CLI run's preparation as a remote task (`kind = run`) like a build, and never
+the program.
+
+**Step 4: the observer.** In `daemon` mode (the setup option `runtime.mode` or
+`LOOMWORKS_RUNTIME`, with `LOOMWORKS_NO_DAEMON` and `CI` as in §19.1), each
+workspace the editor loads gets an **observer**. It watches the task streams
+and model changes of operations started elsewhere (a `lw build` in a
+terminal). It runs none of the editor's own operations, which stay on the
+in-process path. In `in-process` mode nothing below happens.
+
+- **Host binary.** The observer resolves a host binary in this order:
+  - `LOOMWORKS_LW` (an existing file);
+  - the repository pin (§16.21): the pinned version's host binary already
+    provisioned in the per-user pinned cache (§16.22) — the editor never
+    downloads one, and does not re-hash a file the provisioning host verified;
+  - `lw` on the search path (on Windows an `.exe`).
+
+  With none, the status page shows one inline note (no host binary: running
+  in-process). The editor never launches a daemon from its own plugin source,
+  and runs no loopback runtime until §19.19 step 5. It still watches for a
+  daemon another client starts and observes that one.
+- **Launch.** The observer launches `<binary> daemon run --root <root>`
+  (§19.10: detached, no inherited handles, the state directory as working
+  directory) only when no daemon is live on workspace load or on an explicit
+  `:LoomworksDaemon connect`. Readiness is not awaited in a blocking wait: the
+  observer watches the handle. An early exit other than "another daemon won"
+  is a note. A daemon that is starting, hung, of another host, or attached is
+  not launched over; the observer notes it and watches.
+- **Connect.** The observer handshakes as `client = "editor"`,
+  `role = "observer"`. It observes a daemon whose protocol equals its own and
+  whose schemas are not newer (§19.9; the host version may differ).
+  - **Incompatible daemon.** The observer notes it (protocol or schemas) and
+    closes. It neither restarts nor retires that daemon, and does not connect
+    to it again.
+  - **Keepalive.** While connected it sends `ping` about every 30 s.
+- **Never relaunch.** When the connection drops, the observer never launches
+  a daemon by itself — the daemon stopped (`lw daemon stop`), crashed, was
+  retired or dropped this observer. This keeps `lw daemon stop` meaningful.
+  It watches the handle (about every 2 s) and connects again when a live
+  daemon appears. It skips one it was told is `retiring` or found
+  incompatible, identified by pid and start time.
+- **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
+  disconnects at once, so a version change completes (§19.11).
+- **Model changes.** On `model_change` the editor applies its files' pending
+  changes at once (§19.12).
+- **Tasks.** Each observed task becomes a **remote task** in the editor.
+  - **Resolving.** Its `start` meta is resolved at the boundary. The profile
+    key is looked up among the workspace's profiles. Each unit is matched to
+    that profile's project-in-profile with the same project key and
+    configuration-unit key, and through it to its configuration unit. A key
+    that does not resolve (another working copy, a profile the editor has not
+    loaded yet) is kept and shown **by name only**; no domain object is
+    created or hydrated for it.
+  - **Running state.** A resolved configuration unit reports `building`
+    for the task's lifetime, without the editor running anything. It never blocks an
+    editor operation: the cross-process build-directory locks (§16.6) do.
+  - **Output.** The task's lines and output are kept, capped at about 1 MiB
+    per task, then one truncation notice.
+  - **End.** A task ends on `done`, or when the connection drops (it is then
+    shown as ended "the workspace daemon disconnected").
+  - **UI.** The editor shows remote tasks in progress (fidget), in the status
+    page's Tasks section marked `(daemon)` (spec/ui.md §1.9), and in the
+    status line as an in-process build of the same units.
+- **Teardown.** Unloading or swapping the workspace stops its observer: the
+  timers stop, the connection closes, remote tasks are cleared. The daemon
+  keeps running (§19.11).
+- **Quiet degradation.** Every problem is the observer's one current note,
+  shown on the status page's Runtime line, never a notification or a repeated
+  message.
+
+A version mismatch the editor cannot repair by restarting (its plugin code and
+the resolved binary differ in protocol or schemas) is shown inline. The editor
+keeps running in-process.
 
 ### 19.17 Parity
 
-*Status: #88 (build).*
+*Status: master for `lw build` (`tests/daemon_build_cli_spec.lua`: every
+build form both ways — the same output, exit code and persisted cache;
+`tests/daemon_build_service_spec.lua`, `tests/daemon_real_build_spec.lua`)
+and the batch `lw test` (`tests/daemon_test_cli_spec.lua`: passing, failing,
+runner arguments, JUnit (also a runner that wrote none), a failed build, an
+unknown or missing profile, both ways — the same output, exit code, JUnit
+files and persisted cache) and `lw run`
+(`tests/daemon_run_cli_spec.lua`: the default target, a named build target
+and command configuration, the two-operand form, forwarded arguments,
+`--cwd`, `--prefix`, `--print[=json]`, `--dry-run`, `--no-build`, a failed
+build, a failed deploy, an unknown, ambiguous or unset target, the program's
+exit status, both ways — the same output, exit code, deploy records and
+persisted cache; plus: the program runs after the task ended and every lock
+was released (a `lw build` of the profile proceeds while it runs), it
+survives `lw daemon stop`, two runs at once, the not-carried device forms
+print their line); the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -828,10 +1389,13 @@ runtime is deferred until that module is actively developed.
 2. **Lifetime** — §19.2, §19.6–§19.11 behind `runtime-mode daemon`: the
    daemon starts and stays running, answering `ping`/`status` only; `lw daemon
    status|stop|restart|kill`; the runtime log; the Runtime row.
-3. **First operation** — `lw build` routed to the daemon (§19.15).
-4. **Editor connects** — observer + keepalive (§19.16).
+3. **First operation** — `lw build` routed to the daemon (§19.15). *(Done.)*
+4. **Editor connects** — observer + keepalive (§19.16). *(Done.)*
 5. **Remaining operations**, one at a time, each with a parity test (§19.17);
    then the loopback transport, so attached runs use the same code; then the
-   CLI and the editor stop loading the workspace themselves.
+   CLI and the editor stop loading the workspace themselves. Routed so far:
+   the batch `lw test`; the preparation of `lw run` (§19.15, Run; protocol
+   6) — the program runs in the client; device runs and the editor's
+   launches stay in-process.
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

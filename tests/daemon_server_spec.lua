@@ -104,6 +104,58 @@ describe("daemon server (in-process)", function()
         trust._set_key_path(nil)
     end)
 
+    it("lw daemon stop waits for a starting daemon's handle instead of calling it unresponsive", function()
+        -- A daemon that holds R but has not published its handle yet
+        -- ("starting"): here its handle rewrite stays blocked for 4 s (readers
+        -- holding the file open on a loaded machine). stop used to give such a
+        -- daemon 3 s, then report "not responding".
+        local cmd = require("loomworks.daemon.command")
+        assert.is_true(uv.fs_unlink(dpaths.handle_path(root)))
+        local orig, t0 = uv.fs_rename, uv.hrtime()
+        uv.fs_rename = function(a, b)
+            if (uv.hrtime() - t0) / 1e6 < 4000 then return nil, "EPERM: operation not permitted", "EPERM" end
+            return orig(a, b)
+        end
+        local out = {}
+        local host = { out = function(l) out[#out + 1] = l end, note = function() end,
+            die = function(m, c) error({ die = m, code = c }, 0) end }
+        local ok, err = pcall(function()
+            assert.equals("starting", require("loomworks.daemon.inspect").state(root).kind)
+            return cmd.stop(root, host, {})
+        end)
+        uv.fs_rename = orig
+        assert.is_true(ok, vim.inspect(err))
+        assert.equals(0, exited)
+        assert.truthy(table.concat(out):find("stopped the workspace daemon", 1, true))
+    end)
+
+    it("lw daemon stop waits out a slow handshake instead of calling the daemon unresponsive", function()
+        -- A healthy daemon on a loaded machine (CI runs every spec at once)
+        -- answered the handshake after the old fixed 2 s request budget: the
+        -- client gave up before sending `stop`, then reported "not responding".
+        local cmd = require("loomworks.daemon.command")
+        local real = srv._handshake
+        local delayed = 0
+        srv._handshake = function(self, conn, msg)
+            if msg.kind == "auth" and delayed == 0 then
+                delayed = delayed + 1
+                local t = uv.new_timer()
+                t:start(2600, 0, function() t:close(); real(self, conn, msg) end)
+                return
+            end
+            return real(self, conn, msg)
+        end
+        local out = {}
+        local host = { out = function(l) out[#out + 1] = l end, note = function() end,
+            die = function(m, c) error({ die = m, code = c }, 0) end }
+        local ok, err = pcall(cmd.stop, root, host, {})
+        srv._handshake = real
+        assert.is_true(ok, vim.inspect(err))
+        assert.equals(1, delayed)
+        assert.equals(0, exited)
+        assert.truthy(table.concat(out):find("stopped the workspace daemon", 1, true))
+    end)
+
     it("holds the runtime lock and publishes the handle", function()
         local lk = rlock.read(root)
         assert.equals("daemon", lk.kind)
@@ -536,7 +588,7 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         assert.equals(1, running)
         local lk = rlock.read(root)
         assert.truthy(vim.tbl_contains(pids, lk.pid))
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("a suspended daemon: stop reports it not responding; stop --force kills and clears it", function()
@@ -582,7 +634,7 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         -- And a new daemon starts at once (the dead holder's lock is reclaimed).
         assert.equals(0, lw({ "daemon", "restart" }).code)
         H.track_root(root)
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("a daemon on another host is never stopped or killed from here", function()
@@ -826,6 +878,9 @@ end)
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()
-        assert.equals(0, H.leftovers, "a test left a daemon process running")
+        -- Never a process left behind, even by a failed test (cleanup kills).
+        assert.equals(0, H.survivors, "a daemon process survived the cleanup")
+        assert.equals(0, H.leftovers, "a test left a daemon process running (killed by the cleanup; "
+            .. "if a test above failed, this follows from it)")
     end)
 end)

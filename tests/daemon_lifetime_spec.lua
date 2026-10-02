@@ -60,7 +60,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
     local function start(opts)
         opts = opts or {}
         opts.exit = function(code) exited = code end
-        opts.tick_ms = 100
+        opts.tick_ms = opts.tick_ms or 100
         opts.auth_timeout_ms = 30000 -- a real handshake on a loaded runner
         srv = server_mod.new(root, opts)
         assert(srv:start())
@@ -96,13 +96,17 @@ describe("lifetime rules (§19.11, in-process server)", function()
 
     -- The keepalive rule is checked by calling the tick's `lifetime()` on a
     -- connection whose last traffic is set back in time (deterministic on a
-    -- loaded runner); the timer drives the same function.
+    -- loaded runner); the timer drives the same function, so these servers
+    -- get a tick that never fires during the test: a tick due between
+    -- `age_conns` and the server reading the client's ping would drop the
+    -- connection as silent ("closed" — CI run 37004512884).
+    local NO_TICK = 3600000
     local function age_conns(ms)
         for conn in pairs(srv.conns) do conn.last_seen = uv.now() - ms end
     end
 
     it("drops a connection silent for three keepalive intervals", function()
-        start({ keepalive_ms = 1000 })
+        start({ keepalive_ms = 1000, tick_ms = NO_TICK })
         local conn = assert(client.session(srv.address))
         assert.equals(1, srv:client_count())
         age_conns(2500)
@@ -116,7 +120,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
     end)
 
     it("a ping counts as traffic", function()
-        start({ keepalive_ms = 1000 })
+        start({ keepalive_ms = 1000, tick_ms = NO_TICK })
         local conn = assert(client.session(srv.address))
         age_conns(3500)
         assert(client.request(conn, { kind = "ping" }))
@@ -156,19 +160,77 @@ describe("lifetime rules (§19.11, in-process server)", function()
         local all = table.concat(lines, "\n")
         assert.truthy(all:find("serving", 1, true))
         assert.truthy(all:find("stopping: idle", 1, true))
-        -- The file writer: one file per workspace, rotated past the cap.
+        -- The file writer: one file per workspace, inside it (§16.40),
+        -- rotated past the cap; nothing in the per-user data directory.
         local saved = os.getenv("LOOMWORKS_DATA_DIR")
         vim.env.LOOMWORKS_DATA_DIR = d
         local saved_max = rlog.MAX_BYTES
         rlog.MAX_BYTES = 100
         for i = 1, 5 do rlog.write(root, "line " .. i .. string.rep("x", 40)) end
         local p = rlog.path(root)
-        assert.truthy(p:find(d, 1, true) == 1)
-        assert.truthy(p:find(dpaths.root_hash(root) .. ".log", 1, true))
+        assert.equals(dpaths.norm_root(root) .. "/.nvim/loomworks.daemon.log", p)
         assert.truthy(uv.fs_stat(p .. ".1"))
         assert.truthy(uv.fs_stat(p).size <= 200)
+        assert.is_nil(uv.fs_stat(d .. "/daemon/logs"))
         rlog.MAX_BYTES = saved_max
         vim.env.LOOMWORKS_DATA_DIR = saved
+    end)
+
+    it("runtime log: never recreates a removed workspace, never writes through a planted link", function()
+        local base = vim.fn.tempname():gsub("\\", "/")
+        -- A removed root: no write, nothing created.
+        rlog.write(base .. "/gone", "x")
+        assert.is_nil(uv.fs_stat(base .. "/gone"))
+        -- An existing root without .nvim: .nvim is created (one level).
+        vim.fn.mkdir(base .. "/ws", "p")
+        rlog.write(base .. "/ws", "first")
+        local body = assert(io.open(base .. "/ws/.nvim/loomworks.daemon.log")):read("*a")
+        assert.truthy(body:find("first", 1, true))
+        -- A link planted at the log's name is never written through.
+        vim.fn.mkdir(base .. "/ws2/.nvim", "p")
+        local target = base .. "/victim.txt"
+        local f = assert(io.open(target, "wb")); f:write("keep"); f:close()
+        local linked = uv.fs_symlink(target, base .. "/ws2/.nvim/loomworks.daemon.log")
+        if linked then
+            rlog.write(base .. "/ws2", "planted")
+            assert.equals("keep", assert(io.open(target, "rb")):read("*a"))
+        end
+        -- A directory at the name is left alone.
+        vim.fn.mkdir(base .. "/ws3/.nvim/loomworks.daemon.log", "p")
+        rlog.write(base .. "/ws3", "dir")
+        assert.equals("directory", uv.fs_lstat(base .. "/ws3/.nvim/loomworks.daemon.log").type)
+        vim.fn.delete(base, "rf")
+    end)
+
+    it("runtime log: a file that is not lw's (e.g. shipped by the repository) is never written, rotated or removed", function()
+        local base = vim.fn.tempname():gsub("\\", "/")
+        local function put(p, body)
+            vim.fn.mkdir(vim.fn.fnamemodify(p, ":h"), "p")
+            local f = assert(io.open(p, "wb")); f:write(body); f:close()
+        end
+        local function get(p) local f = io.open(p, "rb"); if not f then return nil end; local b = f:read("*a"); f:close(); return b end
+        local saved_max = rlog.MAX_BYTES
+        rlog.MAX_BYTES = 10
+        -- A foreign log, over the cap: left exactly as it is, no .1 made.
+        local log = base .. "/ws/.nvim/loomworks.daemon.log"
+        put(log, "# committed by someone\nnot a runtime log line\n")
+        rlog.write(base .. "/ws", "line")
+        assert.equals("# committed by someone\nnot a runtime log line\n", get(log))
+        assert.is_nil(uv.fs_lstat(log .. ".1"))
+        -- An lw log over the cap with a foreign .1: the .1 is kept, nothing rotated.
+        local log2 = base .. "/ws2/.nvim/loomworks.daemon.log"
+        put(log2, "2026-10-02T10:00:00Z pid 1 started the workspace daemon\n")
+        put(log2 .. ".1", "precious\n")
+        rlog.write(base .. "/ws2", "line")
+        assert.equals("precious\n", get(log2 .. ".1"))
+        -- An lw log over the cap with no .1 rotates as before.
+        local log3 = base .. "/ws3/.nvim/loomworks.daemon.log"
+        put(log3, "2026-10-02T10:00:00Z pid 1 started the workspace daemon\n")
+        rlog.write(base .. "/ws3", "next")
+        assert.truthy(get(log3 .. ".1"))
+        assert.truthy((get(log3) or ""):find("next", 1, true))
+        rlog.MAX_BYTES = saved_max
+        vim.fn.delete(base, "rf")
     end)
 end)
 
@@ -219,6 +281,114 @@ describe("ensure (§19.9 through a workspace command)", function()
         other:close()
         assert.is_true(vim.wait(2000, function() return exited ~= nil end, 10))
     end)
+    -- The ensure bound of a routed `lw build` (§19.10): a healthy daemon that
+    -- answers the handshake late (a loaded machine) still takes the build; a
+    -- command that only keeps the daemon alive keeps the ~1 s bound.
+    describe("the routed bound", function()
+        local saved_step, saved_routed
+        before_each(function()
+            saved_step, saved_routed = ensure.STEP_MS, ensure.ROUTED_STEP_MS
+            ensure.STEP_MS, ensure.ROUTED_STEP_MS = 1000, 5000
+        end)
+        after_each(function() ensure.STEP_MS, ensure.ROUTED_STEP_MS = saved_step, saved_routed end)
+        local function delay_handshake(ms)
+            local real = srv._handshake
+            local state = { delayed = 0 }
+            srv._handshake = function(self, conn, msg)
+                if msg.kind == "auth" and state.delayed == 0 then
+                    state.delayed = 1
+                    local t = uv.new_timer()
+                    t:start(ms, 0, function() t:close(); pcall(real, self, conn, msg) end)
+                    return
+                end
+                return real(self, conn, msg)
+            end
+            state.restore = function() srv._handshake = real end
+            return state
+        end
+        local function timed(extra)
+            local notes = {}
+            local o = { config = { ["runtime-mode"] = "daemon" }, note = function(l) notes[#notes + 1] = l end,
+                log = function() end, launch = function() error("must not launch") end,
+                getenv = function() return nil end }
+            for k, v in pairs(extra or {}) do o[k] = v end
+            local t0 = uv.hrtime()
+            local out = ensure.ensure(root, o)
+            return out, notes, (uv.hrtime() - t0) / 1e6
+        end
+
+        it("never shortens the step, and the test hook lengthens both", function()
+            assert.equals(1000, ensure.step_ms(false))
+            assert.equals(5000, ensure.step_ms(true))
+            ensure.STEP_MS = 30000
+            assert.equals(30000, ensure.step_ms(true))
+        end)
+
+        it("a slow but healthy daemon still takes a routed build", function()
+            local d = delay_handshake(2500)
+            local out, notes, ms = timed({ routed = true })
+            d.restore()
+            assert.equals(1, d.delayed)
+            assert.equals("used", out, table.concat(notes, " | "))
+            assert.same({}, notes)
+            assert.truthy(ms >= 2400, ms .. " ms")
+        end)
+
+        it("a command that only keeps it alive still gives up after about a second", function()
+            local d = delay_handshake(2500)
+            local out, notes, ms = timed()
+            assert.equals(1, d.delayed)
+            assert.equals("failed", out)
+            assert.equals(1, #notes)
+            assert.truthy(notes[1]:find("could not reach the workspace daemon", 1, true), notes[1])
+            assert.truthy(ms < 2400, ms .. " ms")
+            -- The late handshake lands on the closed connection: nothing breaks.
+            vim.wait(2000, function() return false end, 50)
+            d.restore()
+            assert.equals("used", (timed()))
+        end)
+
+        it("a hung daemon is reported at once to a routed build too", function()
+            local t = os.time() - 120
+            uv.fs_utime(dpaths.lock_path(root), t, t)
+            local out, notes, ms = timed({ routed = true })
+            assert.equals("hung", out)
+            assert.equals(1, #notes)
+            assert.truthy(notes[1]:find("is not responding — recover with: lw daemon stop --force", 1, true), notes[1])
+            assert.truthy(ms < 1000, ms .. " ms")
+        end)
+
+        it("lw build, lw test and lw run ask for the routed bound; other workspace commands do not", function()
+            local cli = require("loomworks.cli")
+            assert.is_true(cli.ROUTED_COMMANDS.build)
+            assert.is_true(cli.ROUTED_COMMANDS.test)
+            assert.is_true(cli.ROUTED_COMMANDS.run)
+            for _, c in ipairs({ "profiles", "clean", "configure" }) do
+                assert.is_nil(cli.ROUTED_COMMANDS[c], c)
+            end
+            -- `lw test --target` and a device run stay in-process (§19.15):
+            -- the plain bound.
+            assert.is_true(cli._routed_command({ "build", "dev" }))
+            assert.is_true(cli._routed_command({ "test", "dev", "--junit", "j.xml" }))
+            assert.is_false(cli._routed_command({ "test", "dev", "--target", "app" }))
+            assert.is_true(cli._routed_command({ "run", "dev", "app", "--", "--device" }))
+            assert.is_false(cli._routed_command({ "run", "app", "--device", "X" }))
+            assert.is_false(cli._routed_command({ "run", "app", "--fresh" }))
+            assert.is_false(cli._routed_command({ "profiles" }))
+            local seen = {}
+            local real = ensure.ensure
+            ensure.ensure = function(_, o) seen[#seen + 1] = o.routed; return "off" end
+            local ok, err = pcall(function()
+                cli._ensure_daemon(root, cli._routed_command({ "build" }))
+                cli._ensure_daemon(root, cli._routed_command({ "profiles" }))
+                cli._ensure_daemon(root, cli._routed_command({ "test", "dev", "--target", "app" }))
+            end)
+            ensure.ensure = real
+            assert.is_true(ok, tostring(err))
+            assert.same({ true, false, false }, seen)
+        end)
+    end)
+
     it("an idle daemon of another version is replaced", function()
         srv.identity = "0.1.0"
         local launched = false
@@ -254,7 +424,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.equals(0, r.code, r.stderr)
         assert.equals(lk.pid, rlock.read(root).pid)
         -- The runtime log names the launch.
-        local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
+        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
         assert.truthy(log:find("launched the workspace daemon (pid " .. lk.pid, 1, true), log)
         assert.truthy(log:find("serving", 1, true), log)
         assert.equals(0, lw({ "daemon", "stop" }).code)
@@ -274,7 +444,7 @@ describe("runtime-mode daemon with real processes", function()
         env.vars.LOOMWORKS_NO_DAEMON = "0"
         assert.equals(0, lw({ "profiles" }).code)
         assert.truthy(H.track_root(root))
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("a launch failure is one line and the command still runs", function()
@@ -300,7 +470,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.truthy(r.stderr:find("is not responding — recover with: lw daemon stop --force", 1, true), r.stderr)
         assert.is_true(H.alive(lk.pid, lk.start_time))
         assert.equals(0, lw({ "daemon", "kill" }).code)
-        local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
+        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
         assert.truthy(log:find("killed", 1, true), log)
     end)
 
@@ -318,7 +488,7 @@ describe("runtime-mode daemon with real processes", function()
         assert.truthy(now, "no fresh daemon")
         assert.are_not.equal(lk.pid, now.pid)
         assert.is_true(H.alive(now.pid, now.start_time))
-        assert.equals(0, lw({ "daemon", "stop" }).code)
+        assert.equals(0, H.stop_daemon(root, env).code)
     end)
 
     it("the daemon exits by itself after the idle timeout", function()
@@ -347,7 +517,7 @@ describe("runtime-mode daemon with real processes", function()
         local f = assert(io.open(root .. "/.nvim/loomworks.op.lock", "w")); f:write(vim.json.encode(rec)); f:close()
         local r = lw({ "--no-daemon", "unlock", "--workspace", "--force" })
         assert.equals(0, r.code, r.stderr)
-        local log = assert(io.open(env.data .. "/daemon/logs/" .. dpaths.root_hash(root) .. ".log")):read("*a")
+        local log = assert(io.open(root .. "/.nvim/loomworks.daemon.log")):read("*a")
         assert.truthy(log:find("lw unlock --force: removed the workspace operation lock held by pid 4242", 1, true), log)
     end)
 end)
@@ -450,6 +620,9 @@ end)
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()
-        assert.equals(0, H.leftovers, "a test left a daemon process running")
+        -- Never a process left behind, even by a failed test (cleanup kills).
+        assert.equals(0, H.survivors, "a daemon process survived the cleanup")
+        assert.equals(0, H.leftovers, "a test left a daemon process running (killed by the cleanup; "
+            .. "if a test above failed, this follows from it)")
     end)
 end)

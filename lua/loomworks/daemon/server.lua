@@ -11,12 +11,20 @@
 ---   3. serve: every connection must authenticate first (§19.8 — only
 ---      `hello` / `auth`, 64 KiB frame cap, ~5 s, no broadcast before
 ---      `welcome`); then the frozen control requests `ping`, `status`, `stop`,
----      `retire` (nothing else is routed in step 2 of §19.19);
+---      `retire`, and — with a build service attached (`lw daemon run`,
+---      loomworks.daemon.service) — the routed `build` operation (§19.15);
 ---   4. heartbeat (about 5 s): R's own timer refreshes the lock; the server
 ---      refreshes the handle (rewriting it if it was removed) and checks that
 ---      R still carries its record — a replaced record means the lock was
 ---      reclaimed while this process was suspended: it exits at once, nonzero,
 ---      touching no workspace file (§19.2).
+---
+--- Broadcasts (§19.11, §19.12, §19.16): `model_change { seq,
+--- session_generation }` to every authenticated client after each committed
+--- write of a state file (`model_changed`, called by the build service), and
+--- `retiring` to OBSERVER connections (hello `role = "observer"`, the editor)
+--- when the daemon is retired — observers then disconnect, and never hold off
+--- the retirement (`active_clients` excludes them).
 ---
 --- Every exit (stop request, lost lock, and — §19.11 — idle, root removed)
 --- cancels running work, closes the clients and the endpoint, removes the
@@ -84,6 +92,7 @@ function M.new(root, opts)
     self.idle_seconds = opts.idle_seconds or M.IDLE_SECONDS
     self.conns = {}
     self.n_clients = 0
+    self.seq = 0
     self.busy = false
     self.retiring = false
     self.stopped = false
@@ -116,27 +125,72 @@ function Server:_handle_record()
         busy = self.busy,
         idle_since = (self.n_clients == 0 and not self.busy) and self.idle_since or nil,
         lock_nonce = self.R and self.R.record and self.R.record.lock_nonce or nil,
+        -- Which data directory's key this daemon authenticates with (§19.6).
+        key_id = self.key and auth.key_id(self.key) or nil,
     }
 end
 
---- Rewrite the handle soon (client count changed): coalesced on a 0 ms
---- timer so a slow filesystem (a virus scanner holding the staged file)
---- never delays a handshake or a reply.
-function Server:_handle_changed()
+--- The handle rewrite (§19.6): how long one rewrite may retry a rename that
+--- a reader blocks while the loop waits (ms), the backoff of the later
+--- retries (ms; the last value repeats until it succeeds), and how long it
+--- may keep failing before the runtime log says so (ms).
+M.HANDLE_SYNC_MS = 250
+M.HANDLE_RETRY_MS = { 50, 100, 250, 500, 1000 }
+M.HANDLE_LOG_AFTER_MS = 5000
+
+--- Rewrite the handle in `delay_ms` (default 0): coalesced on one timer so a
+--- slow filesystem (a virus scanner holding the staged file) never delays a
+--- handshake or a reply; the rewrite publishes the record as it is then.
+--- @param delay_ms? integer
+function Server:_handle_changed(delay_ms)
     if self.stopped or self._handle_pending then return end
     self._handle_pending = true
     local t = uv.new_timer()
-    t:start(0, 0, function()
+    t:start(delay_ms or 0, 0, function()
         pcall(function() t:close() end)
         self._handle_pending = false
-        self:_write_handle()
+        self:_guard(self._write_handle)
     end)
 end
 
+--- Publish the handle record (§19.6). Skipped when this daemon last wrote
+--- exactly this record and the file is still there (the heartbeat refreshes
+--- its time): every rewrite is a rename a reader can block. A rename a
+--- reader keeps blocking (Windows) is retried for HANDLE_SYNC_MS, then again
+--- on a backoff (HANDLE_RETRY_MS) and on every heartbeat until it succeeds:
+--- clients never keep reading an outdated record because one rewrite lost
+--- the race. The runtime log says so once when it has failed for
+--- HANDLE_LOG_AFTER_MS (at once for an error a retry cannot cure).
+--- @return boolean|nil written (nil while it is failing)
 function Server:_write_handle()
-    if self.stopped or not self.address then return end
-    local ok, err = handle.write(self.root, self:_handle_record())
-    if not ok then self:log("could not write the handle: %s", tostring(err)) end
+    if self.stopped or not self.address then return nil end
+    local rec = self:_handle_record()
+    local data = handle.encode(rec)
+    if data == self._handle_data and not self._handle_dirty
+            and uv.fs_stat(require("loomworks.daemon.paths").handle_path(self.root)) then
+        return true
+    end
+    local ok, err, code = handle.write(self.root, rec, { budget_ms = M.HANDLE_SYNC_MS })
+    uv.update_time()
+    if ok then
+        if self._handle_logged then
+            self:log("wrote the handle after %d ms of failures", uv.now() - self._handle_failing_since)
+        end
+        self._handle_data, self._handle_dirty = data, false
+        self._handle_failing_since, self._handle_logged, self._handle_retries = nil, nil, 0
+        return true
+    end
+    self._handle_dirty = true
+    self._handle_failing_since = self._handle_failing_since or uv.now()
+    self._handle_retries = (self._handle_retries or 0) + 1
+    local transient = handle.transient(code)
+    if not self._handle_logged
+            and (not transient or uv.now() - self._handle_failing_since >= M.HANDLE_LOG_AFTER_MS) then
+        self._handle_logged = true
+        self:log("could not write the handle: %s (retrying)", tostring(err))
+    end
+    self:_handle_changed(M.HANDLE_RETRY_MS[math.min(self._handle_retries, #M.HANDLE_RETRY_MS)])
+    return nil
 end
 
 --- Start serving. Returns true, or nil + message + exit status (EXIT_HELD
@@ -219,7 +273,10 @@ function Server:_tick()
     if not rlock.still_ours(self.R) then
         return self:_lost_lock()
     end
-    if not handle.touch(self.root) then self:_write_handle() end
+    -- The heartbeat keeps the published handle fresh even while a rewrite is
+    -- still failing; a failing rewrite (or a removed handle) is retried here.
+    local touched = handle.touch(self.root)
+    if self._handle_dirty or not touched then self:_write_handle() end
     self:lifetime()
 end
 
@@ -229,7 +286,10 @@ end
 function Server:lifetime()
     local now = uv.now()
     for conn in pairs(self.conns) do
-        if conn.authed and now - conn.last_seen > 3 * self.keepalive_ms then
+        -- A connection that owns a running operation is its terminal: it is
+        -- never dropped for silence (its client pings anyway, §19.15).
+        if conn.authed and now - conn.last_seen > 3 * self.keepalive_ms
+                and not (self.service and self.service:owns_task(conn)) then
             self:_close(conn, "silent for three keepalive intervals")
         end
     end
@@ -265,6 +325,10 @@ end
 --- @param code? integer exit status (default 0)
 function Server:stop(reason, code)
     if self.stopped then return end
+    -- Running operations end first (§19.11, §19.15): their step processes
+    -- are killed and their build locks released while this process still
+    -- holds R; their clients are told before the connections close.
+    if self.service then pcall(self.service.on_stopping, self.service, reason) end
     self.stopped = true
     self:log("stopping: %s", tostring(reason))
     for conn in pairs(self.conns) do pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end) end
@@ -294,6 +358,46 @@ function Server:_send(conn, msg, cb)
     pcall(function() conn.sock:write(protocol.encode(msg), cb) end)
 end
 
+--- Authenticated clients other than observers: the ones that hold off a
+--- retirement (§19.11).
+--- @return integer
+function Server:active_clients()
+    local n = 0
+    for conn in pairs(self.conns) do
+        if conn.authed and not conn.closed and not conn.observer then n = n + 1 end
+    end
+    return n
+end
+
+--- Authenticated observer connections (§19.16).
+--- @return integer
+function Server:observer_count()
+    local n = 0
+    for conn in pairs(self.conns) do
+        if conn.authed and not conn.closed and conn.observer then n = n + 1 end
+    end
+    return n
+end
+
+--- Retiring and idle (no running build, no client but observers): exit
+--- (§19.11).
+function Server:_maybe_retire()
+    if self.retiring and not self.stopped and not self.busy and self:active_clients() == 0 then
+        self:stop("retired (idle after a version mismatch)", 0)
+    end
+end
+
+--- A committed write of a state file (§19.12): advance the sequence number
+--- and tell every authenticated client.
+function Server:model_changed()
+    if self.stopped then return end
+    self.seq = self.seq + 1
+    local msg = { kind = protocol.KIND.model_change, seq = self.seq, session_generation = self.generation }
+    for conn in pairs(self.conns) do
+        if conn.authed and not conn.closed then self:_send(conn, msg) end
+    end
+end
+
 function Server:_close(conn, why)
     if conn.closed then return end
     conn.closed = true
@@ -301,13 +405,13 @@ function Server:_close(conn, why)
     pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end)
     self.conns[conn] = nil
     if why then self:log("closed a connection: %s", why) end
+    -- Its operations belong to it: cancelled (§19.15).
+    if conn.authed and self.service then pcall(self.service.on_conn_closed, self.service, conn) end
     if conn.authed then
         self.n_clients = self.n_clients - 1
         if self.n_clients == 0 then self.idle_since = os.time() end
         self:_handle_changed()
-        if self.retiring and self.n_clients == 0 and not self.busy then
-            self:stop("retired (idle after a version mismatch)", 0)
-        end
+        self:_maybe_retire()
     end
 end
 
@@ -365,7 +469,9 @@ function Server:_handshake(conn, msg)
         if not ns then return self:_close(conn, "no random source") end
         conn.nc, conn.ns, conn.state = msg.nonce, ns, "challenged"
         conn.peer = { protocol = msg.protocol, lw_version = msg.lw_version, schemas = msg.schemas,
-            client = msg.client }
+            client = msg.client, role = msg.role }
+        -- An observer (§19.16) never holds off a retirement.
+        conn.observer = msg.role == "observer"
         self:_send(conn, {
             kind = K.challenge, protocol = protocol.VERSION, lw_version = self.identity,
             schemas = self.schemas, session_generation = self.generation,
@@ -382,7 +488,8 @@ function Server:_handshake(conn, msg)
         self.n_clients = self.n_clients + 1
         self.last_request = os.time()
         self:_send(conn, {
-            kind = K.welcome, seq = 0, clients = self.n_clients, busy = self.busy,
+            kind = K.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
+            retiring = self.retiring,
             header = { root = self.root, pid = self.pid, lw_version = self.identity,
                 session_generation = self.generation },
         })
@@ -398,6 +505,7 @@ function Server:status()
     local r = self:_handle_record()
     r.root = self.root
     r.retiring = self.retiring
+    r.observers = self:observer_count()
     return r
 end
 
@@ -430,9 +538,26 @@ function Server:_dispatch_request(conn, msg)
     elseif msg.kind == K.stop then
         return reply({}, function() self:stop("stop requested", 0) end)
     elseif msg.kind == K.retire then
+        local first = not self.retiring
         self.retiring = true
-        self:log("retiring: a client of another version asked; exits when idle")
+        if first then
+            self:log("retiring: a client of another version asked; exits when idle")
+            -- Observers disconnect on it and never hold the retirement off.
+            for c in pairs(self.conns) do
+                if c.authed and not c.closed and c.observer then self:_send(c, { kind = K.retiring }) end
+            end
+        end
         return reply({})
+    elseif msg.kind == K.build and self.service then
+        -- Routed operations (§19.15, §19.19 step 3).
+        return self.service:on_build(conn, msg)
+    elseif msg.kind == K.test and self.service then
+        -- The batch `lw test` (§19.15, §19.19 step 5).
+        return self.service:on_test(conn, msg)
+    elseif msg.kind == K.prepare_run and self.service then
+        -- The preparation of `lw run` (§19.15 "Run"); the program runs in
+        -- the client.
+        return self.service:on_run(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end

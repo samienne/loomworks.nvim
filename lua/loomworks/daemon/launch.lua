@@ -22,7 +22,8 @@
 ---
 --- "Own executable": the fused `lw` binary itself; a non-fused luvi run
 --- (`luvi <app> -- …`) re-runs luvi with its app; the nvim-hosted fallback
---- re-runs `nvim --headless -u NONE -l <cli.lua>`.
+--- re-runs `nvim --headless -u NONE -l <cli.lua>` with its checkout on the
+--- runtime path (where modules resolve).
 
 local uv = vim.uv or vim.loop
 local paths = require("loomworks.daemon.paths")
@@ -51,7 +52,13 @@ function M.self_argv()
     end
     local root = require("loomworks.daemon.version").lua_root()
     if not root then return nil, "cannot find the lw sources" end
-    return { vim.v.progpath, "--headless", "-u", "NONE", "-l", root .. "/loomworks/cli.lua" }
+    -- Modules resolve on the runtime path (plugin_loader), which `-u NONE`
+    -- leaves without these sources: put their checkout on it, so the daemon
+    -- builds with the modules the client has (spec §19.15).
+    local repo = root:gsub("/lua$", "")
+    return { vim.v.progpath, "--headless", "-u", "NONE",
+        "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", repo) .. ")",
+        "-l", root .. "/loomworks/cli.lua" }
 end
 
 --- The daemon's environment as a "K=V" list.
@@ -130,11 +137,14 @@ end
 
 --- Spawn the daemon (no wait). Returns { pid, exited = fun(): integer|nil }
 --- or nil + reason.
+--- `opts.argv` replaces the own-executable prefix: the editor launches the
+--- host binary it resolved (spec §19.16), never its own plugin source.
 --- @param root string
---- @param opts? { args?: string[] } extra `daemon run` arguments
+--- @param opts? { args?: string[], argv?: string[] } extra `daemon run` arguments; the executable prefix
 --- @return table|nil child, string|nil err
 function M.spawn(root, opts)
-    local argv, aerr = M.self_argv()
+    local argv, aerr
+    if opts and opts.argv then argv = vim.list_extend({}, opts.argv) else argv, aerr = M.self_argv() end
     if not argv then return nil, aerr end
     local exe = table.remove(argv, 1)
     for _, a in ipairs({ "daemon", "run", "--root", root }) do argv[#argv + 1] = a end
@@ -154,8 +164,9 @@ function M.spawn(root, opts)
         stdio = { nil, nil, nil },
         detached = true,
         hide = true,
-    }, function(code)
-        child.code = code
+    }, function(code, signal)
+        -- (A daemon a signal ended: 128 + signal, never "status 0".)
+        child.code = require("loomworks.build_run").exit_status(code, signal)
         if child.handle and not child.handle:is_closing() then pcall(function() child.handle:close() end) end
     end)
     restore()

@@ -103,6 +103,8 @@ M.COMMANDS = {
   tools = spec({ flags = { "--cached" } }),
   trust = spec({ flags = { "-y", "--yes", "--discard", "--break-locks" }, eq = BREAK_EQ }),
   nuke = spec({ flags = { "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
+  cleanup = spec({ flags = { "--dry-run", "--yes", "-y", "--all" }, valued = { "--pinned-older-than" },
+    eq = { "--pinned-older-than=" } }),
   migrate = spec({ flags = { "--check", "-y", "--yes", "--break-locks" }, eq = BREAK_EQ }),
   pull = spec({ flags = { "--dry-run", "-n", "--break-locks" }, eq = BREAK_EQ }),
   ["release-notes"] = spec({ flags = { "--all", "--json" }, valued = { "--since", "-n" },
@@ -141,9 +143,12 @@ M.COMMANDS = {
     default = NONE,
   },
   workspace = { subs = { rename = NONE }, aliases = { mv = "rename" }, default = NONE },
-  -- `lw daemon <sub>` (spec §19.11).
+  -- `lw daemon <sub>` (spec §19.11; list and --all §19.6.1).
   daemon = {
-    subs = { status = NONE, stop = spec({ flags = { "--force" } }), kill = NONE,
+    subs = { status = NONE,
+      list = spec({ flags = { "--json" }, valued = { "--under" }, eq = { "--under=" } }),
+      stop = spec({ flags = { "--force", "--all" }, valued = { "--under" }, eq = { "--under=" } }),
+      kill = spec({ flags = { "--all", "--strays" }, valued = { "--under" }, eq = { "--under=" } }),
       restart = spec({ flags = { "--force" } }), run = spec({ valued = { "--root" }, eq = { "--root=" } }) },
     default = NONE,
   },

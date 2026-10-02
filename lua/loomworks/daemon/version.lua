@@ -7,16 +7,25 @@
 --- dev executable — has no release identity, so it compares a **source
 --- fingerprint** instead: `<changelog version>+dev.<hash>` (e.g.
 --- `0.1.44+dev.3f2a9c01d4e5b6a7`), where the hash covers the path, size and
---- modification time of every Lua file under the source's `loomworks/` (or,
---- for a fused executable, the executable itself). Editing any source file
---- therefore makes a dev client and a dev daemon mismatch, exactly as a
---- self-update does for a release.
+--- modification time of every Lua file under the source's `loomworks/`
+--- whenever the sources are on disk — an on-disk root (`--dev`,
+--- `LOOMWORKS_LUA`, the editor's checkout) or a directory bundle
+--- (`luvi <dir> --`, whose modules load from that directory) — and only for a
+--- fused executable, whose sources cannot change under it, the executable
+--- itself. Editing any source file therefore makes a dev client and a dev
+--- daemon mismatch, exactly as a self-update does for a release (the daemon is
+--- restarted when idle, retired when busy, §19.9). The fingerprint stats every
+--- source file once per process (about 10 ms).
 
 local M = {}
 
 --- The wire protocol version (spec §19.8). 1 was draft PR #88 (unauthenticated);
---- 2 adds the mutual handshake and the frozen control subset.
-M.PROTOCOL = 2
+--- 2 adds the mutual handshake and the frozen control subset; 3 the routed
+--- `build` request and its task stream (§19.15); 4 the observer role and the
+--- `model_change` / `retiring` broadcasts (§19.11, §19.12, §19.16); 5 the
+--- routed `test` request (the batch `lw test`, §19.15); 6 the `prepare_run`
+--- request (the preparation of `lw run`, §19.15 "Run").
+M.PROTOCOL = 6
 
 local function uv() return vim.uv or vim.loop end
 
@@ -59,6 +68,20 @@ local function tree_fingerprint(dir)
     return vim.fn.sha256(table.concat(entries, "\n")):sub(1, 16)
 end
 
+--- The directory a `luvi <dir>` host runs its bundle from, when it holds the
+--- loomworks sources (nil for a fused executable, whose bundle base is the
+--- executable file, and outside luvi).
+--- @return string|nil
+function M.bundle_dir()
+    local ok, luvi = pcall(require, "luvi")
+    local base = ok and type(luvi) == "table" and type(luvi.bundle) == "table" and luvi.bundle.base or nil
+    if type(base) ~= "string" or base == "" then return nil end
+    base = base:gsub("\\", "/"):gsub("/+$", "")
+    local st = uv().fs_stat(base .. "/loomworks")
+    if st and st.type == "directory" then return base end
+    return nil
+end
+
 local function exe_fingerprint()
     local ok, exe = pcall(uv().exepath)
     if not ok or type(exe) ~= "string" then return "unknown" end
@@ -80,7 +103,7 @@ function M.identity()
     local okb, base = pcall(function() return require("loomworks.save_guard").version() end)
     base = (okb and type(base) == "string" and base) or "0.0.0"
     base = base:gsub("%+dev$", "")
-    local root = M.lua_root()
+    local root = M.lua_root() or M.bundle_dir()
     local fp = root and tree_fingerprint(root .. "/loomworks") or exe_fingerprint()
     _identity = base .. "+dev." .. fp
     return _identity
@@ -118,6 +141,21 @@ function M.matches(peer, opts)
     local s, ps = M.schemas(), peer.schemas
     if type(ps) ~= "table" or ps.user ~= s.user or ps.cache ~= s.cache then return false, "schemas" end
     if not (opts and opts.editor) and peer.lw_version ~= M.identity() then return false, "version" end
+    return true
+end
+
+--- May an editor OBSERVE a daemon with these announced versions (spec §19.9,
+--- §19.16)? An equal protocol and schemas no newer than ours; the host version
+--- may differ. Returns false + what is wrong ("protocol" | "schemas").
+--- @param peer table
+--- @return boolean ok, string|nil what
+function M.observer_compatible(peer)
+    if type(peer) ~= "table" or peer.protocol ~= M.PROTOCOL then return false, "protocol" end
+    local ps = peer.schemas
+    if type(ps) ~= "table" or type(ps.user) ~= "number" or type(ps.cache) ~= "number" then
+        return false, "schemas"
+    end
+    if M.peer_schemas_newer(peer) then return false, "schemas" end
     return true
 end
 

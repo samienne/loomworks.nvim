@@ -41,6 +41,54 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon (`runtime-mode daemon`): `lw run` now builds, deploys
+  and resolves the launch in the workspace daemon, with the same output and
+  exit code, after one dim line `lw: preparing the run through the workspace
+  daemon (pid N)`; the program itself still runs in your terminal, as the
+  `lw` process's child, so stopping or restarting the daemon never touches it
+  and no lock is held while it runs. Runs on a device stay in-process and say
+  so in one line. The daemon protocol is now version 6: an older daemon is
+  restarted when idle. (#130)
+- Experimental daemon (`runtime-mode daemon`): `lw test` (the batch form,
+  `lw test [<profile>] [--junit <file>] [-- <args>]`) now runs in the
+  workspace daemon like `lw build`, with the same output, JUnit files and exit
+  code, after one dim line `lw: testing through the workspace daemon (pid N)`;
+  Ctrl-C stops it there. `lw test --target` (local or on a device) still runs
+  in-process and says so in one line. The daemon protocol is now version 5: an
+  older daemon is restarted when idle. (#129)
+- Experimental, opt-in (`runtime = { mode = "daemon" }` in the plugin setup,
+  or `LOOMWORKS_RUNTIME=daemon`): the editor connects to the workspace daemon
+  and shows the builds it runs, such as `lw build` in a terminal, as fidget
+  progress, `building` units on the status page and in the statusline, and a
+  `(daemon)` row in the Tasks section with the build's output. The editor's
+  own builds still run in the editor. It starts the daemon from the `lw` it
+  finds (`LOOMWORKS_LW`, the pinned `lw`, `lw` on `PATH`) when a workspace
+  opens or on `:LoomworksDaemon connect`, never after `lw daemon stop`, and
+  picks up the daemon's build results at once. (#128)
+- `lw cleanup` lists what lw left behind outside the workspace after an
+  interrupted run (partial downloads and staging directories, temporary
+  files, a dead holder's device lock, a stale daemon socket, files earlier
+  versions kept outside the workspace), with sizes; `lw cleanup --yes`
+  removes them, `--all` also prunes pinned releases no repository has used
+  for 30 days (`--pinned-older-than 90d`). lw also removes such leftovers by
+  itself, silently, once a day at the start of a command. (#122)
+- `lw daemon list` (experimental daemon): every workspace daemon of yours on
+  this machine with its root, pid, uptime, state, clients and version, found
+  by scanning processes (nothing is written outside your workspaces); `--json`
+  for scripts, `--under <dir>` to narrow. `lw daemon stop --all` and
+  `lw daemon kill --all` stop each one through its workspace's runtime lock;
+  `kill --all --strays` also kills leftover daemons that are no longer their
+  workspace's runtime. `lw health` counts running daemons. (#120)
+- Experimental, opt-in (`runtime-mode daemon`): `lw build` runs in the
+  workspace daemon, in every form (`--target`, `--force`, `--reconfigure`,
+  `-v`, `-- <args>`), with the same output, exit code and build state as
+  without it, after one dim line `lw: building through the workspace daemon
+  (pid N)`. The build runs in the environment of the `lw build` that asked for
+  it (sent over the private, authenticated endpoint; never written anywhere),
+  Ctrl-C stops it in the daemon, and it takes the same build-directory locks
+  as an editor or `lw --no-daemon` build. `--no-daemon`, CI,
+  `--break-locks` and interactive profile creation build without the daemon,
+  as before. (#113)
 - Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
   default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
   workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
@@ -54,7 +102,8 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   runs through it yet). `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true`
   never start it; it exits after `daemon-idle-timeout` (default 1h) without
   clients, or when the workspace is removed. Kills and forced unlocks are now
-  recorded in a per-workspace runtime log under the lw data directory. (#107)
+  recorded in the workspace's runtime log, `.nvim/loomworks.daemon.log`
+  (`lw daemon status` names it). (#107, #121)
 - Operations that change several workspace files at once (publish, import,
   pull, cache-propagating renames, profile removal, reset, nuke,
   `lw trust --discard`, and the editor's delete / reset / nuke) take a
@@ -84,6 +133,31 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- `lw cleanup` (without `--all`) now lists the runtime logs earlier versions
+  kept in the data directory (`daemon/logs`) whatever their age: they are
+  always leftovers now that the log lives in the workspace. `--all` adds only
+  the pinned releases unused for 30 days, as its help now says. The automatic
+  daily pass still waits 30 days for those logs. (#126)
+- `lw daemon list` STATE uses the documented states: `live` (with `busy` or
+  `idle <time>`), `starting`, `hung`, `stray`, `unknown root`; a daemon that
+  was just launched and has not taken its workspace's lock yet is `starting`,
+  not a stray. Every column is filled (`-` when unknown), a stray's reason
+  follows its root, and a development build's version is shortened. (#126)
+- `lw daemon list` marks a daemon started with another loomworks data
+  directory (another `LOOMWORKS_DATA_DIR`, such as a test run's) as
+  `other data dir` (`--json`: `same_key`), and `lw daemon stop --all` /
+  `kill --all` skip it with a plain message instead of calling its endpoint
+  untrusted; it no longer makes the command exit 1. (#126)
+- In daemon mode, `lw build` waits up to about 5 seconds (instead of about one)
+  for a slow but healthy workspace daemon to answer before running the build
+  without it: under machine load the build no longer falls back in-process
+  exactly when the daemon helps most. Other commands keep the one-second
+  bound, and a daemon that stopped responding is still reported at once.
+  (#124)
+- `lw test <target>` writes its gtest results file, and `lw ... describe -e`
+  its editor buffer, in the workspace's `.nvim/tmp/` instead of the system
+  temporary directory, and removes them after use: an interrupted run no
+  longer leaves them outside the workspace. (#121)
 - `lw import`: an item the working copy already has keeps its intent (local or
   local+shared); only new items take theirs from `loomworks.json`. Exporting
   and importing on the same workspace no longer turns shared items local.
@@ -130,6 +204,99 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- A save that had to reclaim a crashed writer's lock on the working copy or
+  cache, and took longer than the lock wait to do it (a slow, busy machine),
+  no longer goes ahead without the lock it just freed. (#127)
+- `lw status` says what is trusted: a new `Trust` row shows whether your local
+  config is present (signed on this machine) and how many program settings
+  in `loomworks.json` are ignored, and a build affected by them prints one
+  line saying so (in-process and through the daemon). The status title is the
+  workspace's name, so a directory called `untrusted` read like a trust state.
+  `lw help trust` no longer says a working copy copied from elsewhere is
+  refused: one this machine signed stays trusted in any workspace here; only
+  one from another machine (or edited by hand) is refused. (#125)
+- Windows, workspace daemon: on a busy machine the daemon could still log
+  `could not write the handle: EPERM` and leave `lw status` and clients
+  reading an outdated client count or busy state until the next change. It
+  now keeps retrying the update until it lands, and logs only when it keeps
+  failing for several seconds. (#123)
+- `lw daemon stop` no longer calls a daemon that is still starting (slow on a
+  loaded machine) "not responding" after 3 s; it waits the same ~10 s as for
+  a running daemon. (#123)
+- Windows: lines written to `.nvim/loomworks.log` at the same moment by the
+  editor and `lw` commands are no longer lost (one overwrote the other).
+  (#123)
+- Windows, workspace daemon: `lw build` run from cmd.exe, PowerShell or a
+  Visual Studio developer prompt (anything started from a cmd.exe, such as a
+  `.cmd` shim) now builds through the daemon; it used to fall back to an
+  in-process build without a word, because the daemon refused the hidden
+  `=C:` / `=ExitCode` entries of such an environment. (#118)
+- Workspace daemon: a build the daemon does not run now always says why in
+  one line (`lw: the workspace daemon declined the build (<reason>); running
+  without it`, or `... could not take the build (<reason>) ...`); only
+  `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI` stay silent. (#118)
+- Windows, workspace daemon: Ctrl-C (or Git Bash's `kill -INT`) now cancels a
+  routed build even when `lw` was started with Ctrl-C disabled (`start /b`, a
+  new process group); the build used to run to completion. (#118)
+- Windows, workspace daemon: the daemon no longer fails to update its handle
+  (`could not write the handle: EPERM`) while a client is reading it. (#118)
+- `lw help daemon` no longer claims a paused reader (`lw build | less`) pauses
+  the build tool at once: up to about 4 MiB of output is buffered first.
+  (#118)
+- Windows: MSVC builds, configures and `lw run` no longer print
+  `'vswhere.exe' is not recognized as an internal or external command` after
+  `==> [build]` / `==> [configure]`. loomworks now puts the Visual Studio
+  Installer folder (where `vswhere.exe` lives) on the PATH of every
+  vcvarsall run, when it exists and is not already there. (#119)
+- Linux/macOS: a build, configure, clean or test step killed by a signal
+  (the out-of-memory killer, `kill -9` on the build tool) no longer counts as
+  a success. `lw build` used to record the step as built and print `BUILD OK`;
+  it now fails with exit status 128 + the signal (137 for SIGKILL) and says
+  `killed by signal 9 (SIGKILL)`, with or without the workspace daemon. `lw
+  run` and `lw test` report such a program with the same status. (#117)
+- A build step whose program cannot be started now says why (`lw: cannot
+  start <program>: <reason>`), the same with or without the workspace
+  daemon. (#117)
+- `lw build --target` accepts a target exactly as `lw target` lists it,
+  `<project>:<target>`, and builds it in that project only (the build tool
+  used to get the qualified name and fail with `ninja: error: unknown
+  target`). A bare name that one project lists builds in that project only;
+  one that several projects list is refused, naming the `<project>:<target>`
+  choices. Any other name (`install`, a custom target) still goes to the
+  build tool as before, and a failure names close matches as
+  `<project>:<target>`. The same applies through the workspace daemon. (#116)
+- Workspace daemon (experimental, `runtime-mode daemon`): a routed
+  `lw build` whose output is not being read (`lw build | less`, paused) no
+  longer makes the daemon hold the whole build output in memory; the build
+  tool waits until the output is read, as without the daemon, and Ctrl-C
+  still stops it. Other connected clients get at most 4 MB of a build's
+  output, and one that falls far behind is disconnected. (#115)
+- Workspace daemon: `lw build` from another terminal tab, pane or SSH session
+  no longer reloads the daemon's workspace, or builds without the daemon
+  while another build runs, just because variables naming the terminal or
+  session differ (`WT_SESSION`, `TMUX_PANE`, `SSH_TTY`, `VSCODE_*`, ...); the
+  build still gets them. Ctrl-C of a routed build no longer stalls the
+  daemon while the build tool is stopped, and a build tool that survives the
+  process-tree kill is killed directly. On Windows, the daemon's own lookups
+  for a build from an editor-hosted client never run a program from the
+  current directory. A development daemon run from a source directory
+  (`luvi <dir>`) is replaced after a source edit. (#115)
+- `lw daemon stop` (and `restart`) no longer reports a healthy but slow
+  workspace daemon as "not responding" on a loaded machine: the stop request
+  may use the whole stop wait (about 10 s) instead of giving up after 2 s, and
+  is sent again if it fails early. A hung daemon is still reported after the
+  same wait. `lw daemon status` waits up to 5 s for the daemon's answer. (#111)
+- `lw nuke` refused while a build runs (or another workspace operation holds
+  the workspace) now prints only the refusal, as one line
+  (`lw: cannot nuke: a build is running in ... (pid N) - wait for it, or stop
+  it (lw nuke --break-locks)`): it no longer lists the paths it "will delete"
+  first, nor wraps the message in `nuke failed:` / `loomworks:`. The locks are
+  checked before the list and the prompt; the editor's nuke checks them before
+  its confirmation dialog, and `lw trust --discard` before its notice. (#114)
+- The `lw status` / `lw daemon status` hint for a stale daemon handle said
+  `lw daemon stop` was needed; any workspace command in daemon mode recovers it
+  by itself, and the hint now says so. `lw help daemon` lists the minute form
+  of `daemon-idle-timeout` (90s, 2m, 30m, 1h). (#109)
 - On macOS and Linux, a workspace daemon started from one environment (a
   desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
   container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being

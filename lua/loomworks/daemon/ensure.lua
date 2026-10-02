@@ -23,8 +23,26 @@ local M = {}
 --- The latency budget of the ensure path (§19.10 keeps read-only commands
 --- fast): each step with a daemon (connect + handshake, `status`, `ping`)
 --- waits at most this long, and a daemon still starting is waited for at
---- most this long, once per command.
-M.STEP_MS = 1000
+--- most this long, once per command. `LW_TEST_DAEMON_STEP_MS` lengthens it
+--- for test suites that run real `lw` processes on a heavily loaded machine
+--- (as `LW_TEST_DAEMON_READY_MS` does the launch's readiness wait).
+M.STEP_MS = tonumber(os.getenv("LW_TEST_DAEMON_STEP_MS") or "") or 1000
+
+--- The longer bound of a command the daemon would run (§19.10: a routed
+--- `lw build`): under machine load a healthy daemon can miss the 1 s, and the
+--- build would then run in-process exactly when the daemon helps most. A hung
+--- daemon (stale heartbeat) is still reported at once — this only gives a
+--- live-but-slow one longer. Never shorter than STEP_MS (so the test hook
+--- lengthens it too).
+M.ROUTED_STEP_MS = 5000
+
+--- The step bound of an ensure (`routed`: the command would be routed).
+--- @param routed? boolean
+--- @return integer
+function M.step_ms(routed)
+    if routed then return math.max(M.ROUTED_STEP_MS, M.STEP_MS) end
+    return M.STEP_MS
+end
 
 --- How long a client waits for a stopped daemon to release R before it
 --- gives up on replacing it.
@@ -111,7 +129,10 @@ end
 ---   log      fun(line) — the runtime log
 ---   launch   (tests) replaces loomworks.daemon.launch.launch
 ---   getenv   (tests) replaces os.getenv for the selection
----   step_ms  (tests) replaces STEP_MS
+---   routed   the command would be routed to the daemon (a `lw build`):
+---            each step, and the one wait for a starting daemon, use
+---            ROUTED_STEP_MS instead of STEP_MS
+---   step_ms  (tests) replaces the step bound
 --- Returns what happened: "off" | "used" | "launched" | "restarted" |
 --- "bypass" | "newer" | "hung" | "starting" | "elsewhere" | "failed".
 --- @param root string
@@ -125,7 +146,7 @@ function M.ensure(root, opts)
     if sel.warning then note("lw: " .. sel.warning) end
     if not sel.daemon then return "off" end
     local launch = opts.launch or require("loomworks.daemon.launch").launch
-    local step = opts.step_ms or M.STEP_MS
+    local step = opts.step_ms or M.step_ms(opts.routed)
     local st = inspect.state(root)
     if st.kind == "starting" then
         -- At most one short wait per command: a daemon stuck starting must

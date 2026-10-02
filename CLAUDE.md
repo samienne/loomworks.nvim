@@ -158,7 +158,8 @@ execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 `lw nuke`, `lw trust --discard`, `remote/run.prune_runs` (`.device-runs`
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
-pruning by `lw bootstrap install` / `upgrade`)) **must** be reviewed for
+pruning by `lw bootstrap install` / `upgrade`), `loomworks/housekeeping.lua`
+(the startup housekeeping pass and `lw cleanup`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -190,6 +191,26 @@ directory safety before merging:
    `.nvim/cache` must be real directories (lstat, not links/junctions) whose
    realpath lies under the pin root's (separator-bounded). No recursion, no
    rm_rf; a failed unlink is skipped.
+9. **Per-user state** (spec §16.40): housekeeping and `lw cleanup`
+   (`loomworks/housekeeping.lua`) remove only direct children of the fixed
+   directories (`<data>`, `<data>/pinned[/<sha256>]`, `<data>/modules`, default
+   `<data>/device-locks`, `<data>/daemon/logs`, `<tmp>`, the exe's directory,
+   the `<run>` socket dirs, `<root>/.nvim/tmp`) whose whole name matches an
+   exact pattern (release version `<n>.<n>.<n>[tail]` / sha256 / module name /
+   arch / hex nonce), past the pattern's age, and only when `<data>` carries an
+   lw marker (`is_lw_data`: trust.key, stamp, pinned/, a lua-<ver> release). Parents are real directories (lstat) whose realpath
+   is the expected one (under `<data>` separator-bounded); a candidate that is
+   a link/junction is skipped, file/dir/socket type must match; removal via
+   `housekeeping._rm_tree` (links unlinked, never followed; chmod only on a
+   single-link file); POSIX temp entries only of this uid; `<exe>.old` only on
+   Windows. Never in use: device locks only
+   dead-holder + no program record via `lock_record.reclaim`; sockets only
+   refused-connection + 1 h old + not a running daemon's hash (process scan)
+   + inode/dev/mtime-checked move-aside, the moved socket never unlinked when
+   put-back finds the name taken; pinned releases
+   never the current `lw.pin`'s, the running exe/bundle, or used within the
+   threshold, and renamed to `.trash-<nonce>` before rm_rf. Never `.leftover`,
+   trust.key, config, releases, modules.
 
 ## Implementation Notes
 

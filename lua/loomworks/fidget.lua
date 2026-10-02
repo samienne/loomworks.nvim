@@ -201,6 +201,31 @@ function M.setup(opts)
         local task_key = "task:" .. data.task_id
         finish_handle(task_key)
     end)
+
+    -- Builds observed in the workspace daemon (spec §19.16): e.g. `lw build`
+    -- in a terminal. Keyed by the daemon's task id.
+    lw.on("daemon_task_started", function(data)
+        local task = data.task
+        create_handle("daemon:" .. task.id, (ACTION_TITLE[task.kind] or task.kind) .. " (daemon)",
+            task.profile_name or task.name)
+    end)
+
+    lw.on("daemon_task_progress", function(data)
+        local handle = handles["daemon:" .. data.task.id]
+        if handle and data.task.pct then
+            handle:report({ percentage = data.task.pct })
+        end
+    end)
+
+    lw.on("daemon_task_stopped", function(data)
+        local task = data.task
+        local key = "daemon:" .. task.id
+        local handle = handles[key]
+        if not handle then return end
+        handle:report({ message = clip(task:outcome()) })
+        handle:finish()
+        handles[key] = nil
+    end)
 end
 
 -- ---------------------------------------------------------------------------

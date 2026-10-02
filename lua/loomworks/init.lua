@@ -99,6 +99,17 @@ function M.setup(opts)
         M._runtime_mode_config = opts.runtime.mode
         M.runtime_mode() -- report an invalid value once, at setup
     end
+    -- In `daemon` runtime mode every loaded workspace observes the workspace
+    -- daemon (spec §19.16). Only the editor attaches (the CLI never calls
+    -- setup); in `in-process` mode `attach` does nothing.
+    if not M._observer_hooked then
+        M._observer_hooked = true
+        events.on("workspace_changed", function(ws)
+            if ws then
+                require("loomworks.daemon.observer").attach(ws, { configured = M._runtime_mode_config })
+            end
+        end)
+    end
 
     if opts and opts.log_level then
         local log = require("loomworks.log")
@@ -157,16 +168,43 @@ end
 M._runtime_mode_config = nil
 
 --- The effective runtime mode (spec §19.1): `LOOMWORKS_RUNTIME` > the setup
---- option `runtime.mode` > `in-process`. Informational during the transition:
---- the editor connects to the daemon only from step 4 of §19.19, so the
---- plugin runs in-process whatever this returns. An invalid value is reported
---- and ignored.
+--- option `runtime.mode` > `in-process`. In `daemon` mode the editor observes
+--- the workspace daemon (spec §19.16) while running its own operations
+--- in-process. An invalid value is reported and ignored.
 --- @return string mode
 function M.runtime_mode()
     local runtime = require("loomworks.daemon.runtime")
     local mode, _, warning = runtime.resolve(M._runtime_mode_config, { what = "runtime.mode" })
     if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     return mode
+end
+
+--- The tasks observed in the workspace daemon (spec §19.16), in start order.
+--- @return loomworks.RemoteTask[]
+function M.get_daemon_tasks()
+    local ws = core:get_workspace()
+    return ws and ws:get_daemon_tasks() or {}
+end
+
+--- The status page's Runtime line (spec/ui.md §1.1), or nil in `in-process`
+--- mode (no observer).
+--- @return string|nil
+function M.daemon_runtime_line()
+    local obs = require("loomworks.daemon.observer").of(core:get_workspace())
+    return obs and obs:runtime_line() or nil
+end
+
+--- `:LoomworksDaemon connect` (spec §19.16): connect to the workspace daemon,
+--- launching it when none is live. Returns false + why when it cannot.
+--- @return boolean ok, string|nil why
+function M.daemon_connect()
+    local ws = core:get_workspace()
+    if not ws then return false, "no workspace loaded" end
+    local observer = require("loomworks.daemon.observer")
+    local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config })
+    if not obs then return false, "the runtime mode is in-process (runtime.mode / LOOMWORKS_RUNTIME)" end
+    obs:start(true)
+    return true
 end
 
 --- Get the merged active configuration set.
@@ -284,6 +322,15 @@ end
 --- @param root string workspace root to nuke
 function M.nuke_cache(root)
     core:nuke_cache(root)
+end
+
+--- Would a nuke of `root` run now (no other process's build or workspace
+--- operation in the way)? Checked before the confirmation, so a refused nuke
+--- shows only its refusal. Returns true, or nil + the refusal message.
+--- @param root string
+--- @return boolean|nil ok, string|nil message
+function M.nuke_check(root)
+    return core:nuke_check(root, { skip_own = true })
 end
 
 --- Delete user.json and reload the workspace.
