@@ -71,6 +71,82 @@ local function lock_detail(lock)
     return table.concat(parts, " · ")
 end
 
+--- Open a remote task's kept output in a read-only scratch buffer that
+--- follows the stream while the task runs (spec/ui.md §1.9).
+--- @param task loomworks.RemoteTask
+local function show_remote_output(task)
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].bufhidden = "wipe"
+    pcall(vim.api.nvim_buf_set_name, buf, "loomworks://daemon-task/" .. task.id .. "/" .. task.name)
+    local pending = ""
+    local function append_lines(lines)
+        if #lines == 0 or not vim.api.nvim_buf_is_valid(buf) then return end
+        vim.bo[buf].modifiable = true
+        local n = vim.api.nvim_buf_line_count(buf)
+        local first_empty = n == 1 and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
+        vim.api.nvim_buf_set_lines(buf, first_empty and 0 or n, -1, false, lines)
+        vim.bo[buf].modifiable = false
+    end
+    -- Complete lines go in; a trailing partial line waits for the rest.
+    local function put(text)
+        text = (pending .. (text or "")):gsub("\r\n", "\n")
+        local lines = vim.split(text, "\n", { plain = true })
+        pending = table.remove(lines)
+        append_lines(lines)
+    end
+    local function flush()
+        if pending ~= "" then append_lines({ pending }) end
+        pending = ""
+    end
+    put(task:output())
+    if task.finished then
+        flush()
+    else
+        local unfollow
+        unfollow = task:follow(function(_, text)
+            vim.schedule(function()
+                if not vim.api.nvim_buf_is_valid(buf) then
+                    if unfollow then unfollow() end
+                    return
+                end
+                if text == nil then
+                    flush()
+                    append_lines({ "[" .. task:outcome() .. "]" })
+                    if unfollow then unfollow() end
+                else
+                    put(text)
+                end
+            end)
+        end)
+    end
+    vim.bo[buf].modifiable = false
+    vim.cmd("botright split")
+    vim.api.nvim_win_set_buf(0, buf)
+end
+
+--- Rows of a remote task (one per unit; one for the profile when it has none).
+--- @param task loomworks.RemoteTask
+--- @param now number
+--- @return string[]
+local function remote_rows(task, now)
+    local detail = {}
+    if task.pct then detail[#detail + 1] = task.pct .. "%" end
+    local s = format_elapsed(now - (task.start_time or now))
+    if s ~= "" then detail[#detail + 1] = s end
+    local tail = #detail > 0 and ("  " .. table.concat(detail, "  ")) or ""
+    local rows = {}
+    for _, u in ipairs(task.units) do
+        local unit = u.unit
+        local pkey = unit and unit._project and unit._project.key or u.project
+        local ckey = unit and unit:config_key() or u.configuration or "?"
+        rows[#rows + 1] = string.format("▸ %s : %s — %s (daemon)%s", pkey, ckey, task.kind, tail)
+    end
+    if #rows == 0 then
+        rows[1] = string.format("▸ %s — %s (daemon)%s", task.profile_name or task.name, task.kind, tail)
+    end
+    return rows
+end
+
 --- Confirm + execute the nuclear reset.
 --- @param lw table loomworks public API
 local function reset_all(lw)
@@ -118,18 +194,19 @@ end
 return function(tree, ctx)
     local lw = ctx.lw
     local tasks = lw.get_active_tasks and lw.get_active_tasks() or {}
+    local remote = lw.get_daemon_tasks and lw.get_daemon_tasks() or {}
     local locks = lw.get_build_dir_locks_info
         and lw.get_build_dir_locks_info() or {}
 
     -- Quiet section: render nothing when there's no state worth
     -- showing. Avoid adding noise to the steady-state status page.
-    if #tasks == 0 and #locks == 0 then return end
+    if #tasks == 0 and #remote == 0 and #locks == 0 then return end
 
     local now = (vim.uv or vim.loop).hrtime() / 1e9
 
     tree:leaf({
         { "Tasks  ", "Title" },
-        { string.format("[%d active]", #tasks), "Comment" },
+        { string.format("[%d active]", #tasks + #remote), "Comment" },
     })
     tree:item("⟲ Reset all task & lock state", {
         hl = "DiagnosticWarn",
@@ -181,8 +258,28 @@ return function(tree, ctx)
         })
     end
 
+    -- Tasks observed in the workspace daemon (core §19.16): shown, never
+    -- cancelled from here (they belong to their client, §19.15).
+    for _, task in ipairs(remote) do
+        for _, label in ipairs(remote_rows(task, now)) do
+            tree:item(label, {
+                hl = "DiagnosticInfo",
+                spinning = true,
+                direct = true,
+                on_enter = function()
+                    vim.ui.select({ "Show output" }, {
+                        prompt = "Daemon task " .. task.name .. ":",
+                        format_item = function(s) return s end,
+                    }, function(choice)
+                        if choice == "Show output" then show_remote_output(task) end
+                    end)
+                end,
+            })
+        end
+    end
+
     if #locks > 0 then
-        if #tasks > 0 then tree:blank() end
+        if #tasks > 0 or #remote > 0 then tree:blank() end
         tree:leaf("Build directory locks", "Title")
         for _, lock in ipairs(locks) do
             local detail = lock_detail(lock)

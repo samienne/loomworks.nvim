@@ -15,7 +15,12 @@ editor height). Window position and size can be configured via `setup()`
 options or overridden per `open()` call — the `win` table is passed
 directly to `Snacks.win`. The page contains these sections in order:
 
-1. **Header** — plugin version, workspace name, workspace root
+1. **Header** — plugin version, workspace name, workspace root, and in
+   `daemon` runtime mode (core §19.16) one `Runtime` line: the observer's
+   current state or note, e.g. `Runtime:   observing daemon pid 4242`,
+   `Runtime:   no lw host binary found (LOOMWORKS_LW, lw.pin, PATH) — running
+   in-process`, `Runtime:   the workspace daemon disconnected — waiting for
+   it`. Absent in `in-process` mode.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
    health\``, shown only when the suggestion framework has one or more
@@ -36,8 +41,8 @@ directly to `Snacks.win`. The page contains these sections in order:
 5. **Orphaned Configurations** — unreferenced cached configs (hidden when empty)
 6. **Configuration Sets** — declared sets with tool entries
 7. **Projects** — all projects with their configurations
-8. **Tasks** — active loomworks-managed tasks and held build-dir locks
-   (hidden when both empty). Placed at the bottom because it's the
+8. **Tasks** — active loomworks-managed tasks, tasks observed in the
+   workspace daemon, and held build-dir locks (hidden when all empty). Placed at the bottom because it's the
    runtime-state diagnostic surface — only interesting when something
    is wrong.
 
@@ -650,7 +655,22 @@ reader sees workspace state first.
      `task:stop()` via `Workspace:cancel_task`) and `Open overseer`
      (opens the overseer task list for output inspection). Esc
      dismisses without action.
-4. Sub-section `Build directory locks` (only when at least one lock
+4. One row per **remote task** observed in the workspace daemon (core
+   §19.16) — a build started elsewhere, e.g. `lw build` in a terminal:
+   ```
+   ▸ {project_key} : {config_key} — build (daemon)  {pct}%  {elapsed}
+   ```
+   one row per unit of the task's profile (resolved units by their
+   domain objects, unresolved ones by the names the daemon sent); a task
+   with no units shows one row `▸ {profile} — build (daemon)`.
+   `{pct}%` is the last progress tick (omitted before the first). The
+   spinner marker animates while the task runs. **Enter** opens a
+   `vim.ui.select` menu with `Show output`, which opens the task's kept
+   output (capped, core §19.16) in a read-only scratch buffer that keeps
+   following the stream while the task runs. The editor cannot cancel a
+   remote task (it belongs to its client, core §19.15). The reset action
+   above leaves remote tasks alone.
+5. Sub-section `Build directory locks` (only when at least one lock
    is held or has a non-empty queue):
    ```
    ▸ {build_dir}  exclusive · shared(N) · queued(N)
@@ -667,8 +687,11 @@ reader sees workspace state first.
 
 **Section invariants:**
 
-- Renders nothing when `get_active_tasks()` and
-  `get_build_dir_locks_info()` are both empty.
+- Renders nothing when `get_active_tasks()`, `get_daemon_tasks()` and
+  `get_build_dir_locks_info()` are all empty.
+- A remote task's unit also reports `building` everywhere a unit's state
+  is shown (Profiles, Projects, the statusline component), and the
+  statusline spinner runs while any remote task runs.
 - Per-row Enter opens a menu rather than firing directly. Both
   actions are recoverable, but a misclicked cancel costs a full
   rebuild on a large project — the menu serves as a one-keystroke

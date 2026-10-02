@@ -53,6 +53,14 @@ local function render_fn(tree)
     tree:blank()
     tree:leaf("Workspace: " .. ws.name, "Type")
     tree:leaf("Root:      " .. ws.root, "Comment")
+    -- daemon runtime mode (spec/ui.md §1.1, core §19.16): the observer's
+    -- state or its one current note.
+    local runtime_line = lw.daemon_runtime_line and lw.daemon_runtime_line() or nil
+    if runtime_line then
+        local obs = require("loomworks.daemon.observer").of(lw.get_workspace())
+        tree:leaf("Runtime:   " .. runtime_line,
+            (obs and obs.state == "connected") and "Comment" or "DiagnosticWarn")
+    end
     -- Banner when loomworks.json is missing on disk: the workspace still
     -- functions from user.json, and :w will publish it.
     local config_path = ws.root .. "/loomworks.json"
@@ -204,6 +212,10 @@ local view = View.new({
         "operation_started",
         "operation_finished",
         "profile_renamed",
+        "daemon_runtime_changed",
+        "daemon_task_started",
+        "daemon_task_progress",
+        "daemon_task_stopped",
     },
 })
 

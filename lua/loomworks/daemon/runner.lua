@@ -283,7 +283,13 @@ function M.run(svc, ctx)
         end
     end
 
-    task:start({ name = profile.key, kind = "build" })
+    -- The profile and its units as semantic keys: an observer resolves them
+    -- to its own domain objects (spec §19.15, §19.16).
+    local units = {}
+    for _, pp in ipairs(profile:projects()) do
+        units[#units + 1] = { project = pp:project_key(), configuration = pp:config_key() }
+    end
+    task:start({ name = profile.key, kind = "build", profile = profile.key, units = units })
     -- Locks first, exactly like the in-process with_build_dir_locks: every
     -- build directory, canonical order, fail-fast.
     local lock_break = require("loomworks.lock_break")

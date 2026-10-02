@@ -703,6 +703,8 @@ function M._load_workspace_soft(root, wait_tools, opts)
   -- A refused workspace operation lock (spec §19.3: another process runs a
   -- multi-file operation) ends the command too, before anything was changed.
   core._deps.on_lock_refused = handlers and handlers.refused or function(msg) die(msg) end
+  -- The daemon broadcasts each committed state-file write (spec §19.12).
+  core._deps.on_written = handlers and handlers.written or nil
   -- The daemon applies external file changes itself, before each operation
   -- (spec §19.15): its tracker never polls.
   core._deps.manual_file_tracking = handlers and true or nil

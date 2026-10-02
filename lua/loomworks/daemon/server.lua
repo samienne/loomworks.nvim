@@ -19,6 +19,13 @@
 ---      reclaimed while this process was suspended: it exits at once, nonzero,
 ---      touching no workspace file (§19.2).
 ---
+--- Broadcasts (§19.11, §19.12, §19.16): `model_change { seq,
+--- session_generation }` to every authenticated client after each committed
+--- write of a state file (`model_changed`, called by the build service), and
+--- `retiring` to OBSERVER connections (hello `role = "observer"`, the editor)
+--- when the daemon is retired — observers then disconnect, and never hold off
+--- the retirement (`active_clients` excludes them).
+---
 --- Every exit (stop request, lost lock, and — §19.11 — idle, root removed)
 --- cancels running work, closes the clients and the endpoint, removes the
 --- handle and (POSIX) the socket while still holding R, releases R, and ENDS
@@ -85,6 +92,7 @@ function M.new(root, opts)
     self.idle_seconds = opts.idle_seconds or M.IDLE_SECONDS
     self.conns = {}
     self.n_clients = 0
+    self.seq = 0
     self.busy = false
     self.retiring = false
     self.stopped = false
@@ -350,6 +358,46 @@ function Server:_send(conn, msg, cb)
     pcall(function() conn.sock:write(protocol.encode(msg), cb) end)
 end
 
+--- Authenticated clients other than observers: the ones that hold off a
+--- retirement (§19.11).
+--- @return integer
+function Server:active_clients()
+    local n = 0
+    for conn in pairs(self.conns) do
+        if conn.authed and not conn.closed and not conn.observer then n = n + 1 end
+    end
+    return n
+end
+
+--- Authenticated observer connections (§19.16).
+--- @return integer
+function Server:observer_count()
+    local n = 0
+    for conn in pairs(self.conns) do
+        if conn.authed and not conn.closed and conn.observer then n = n + 1 end
+    end
+    return n
+end
+
+--- Retiring and idle (no running build, no client but observers): exit
+--- (§19.11).
+function Server:_maybe_retire()
+    if self.retiring and not self.stopped and not self.busy and self:active_clients() == 0 then
+        self:stop("retired (idle after a version mismatch)", 0)
+    end
+end
+
+--- A committed write of a state file (§19.12): advance the sequence number
+--- and tell every authenticated client.
+function Server:model_changed()
+    if self.stopped then return end
+    self.seq = self.seq + 1
+    local msg = { kind = protocol.KIND.model_change, seq = self.seq, session_generation = self.generation }
+    for conn in pairs(self.conns) do
+        if conn.authed and not conn.closed then self:_send(conn, msg) end
+    end
+end
+
 function Server:_close(conn, why)
     if conn.closed then return end
     conn.closed = true
@@ -363,9 +411,7 @@ function Server:_close(conn, why)
         self.n_clients = self.n_clients - 1
         if self.n_clients == 0 then self.idle_since = os.time() end
         self:_handle_changed()
-        if self.retiring and self.n_clients == 0 and not self.busy then
-            self:stop("retired (idle after a version mismatch)", 0)
-        end
+        self:_maybe_retire()
     end
 end
 
@@ -423,7 +469,9 @@ function Server:_handshake(conn, msg)
         if not ns then return self:_close(conn, "no random source") end
         conn.nc, conn.ns, conn.state = msg.nonce, ns, "challenged"
         conn.peer = { protocol = msg.protocol, lw_version = msg.lw_version, schemas = msg.schemas,
-            client = msg.client }
+            client = msg.client, role = msg.role }
+        -- An observer (§19.16) never holds off a retirement.
+        conn.observer = msg.role == "observer"
         self:_send(conn, {
             kind = K.challenge, protocol = protocol.VERSION, lw_version = self.identity,
             schemas = self.schemas, session_generation = self.generation,
@@ -440,7 +488,8 @@ function Server:_handshake(conn, msg)
         self.n_clients = self.n_clients + 1
         self.last_request = os.time()
         self:_send(conn, {
-            kind = K.welcome, seq = 0, clients = self.n_clients, busy = self.busy,
+            kind = K.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
+            retiring = self.retiring,
             header = { root = self.root, pid = self.pid, lw_version = self.identity,
                 session_generation = self.generation },
         })
@@ -456,6 +505,7 @@ function Server:status()
     local r = self:_handle_record()
     r.root = self.root
     r.retiring = self.retiring
+    r.observers = self:observer_count()
     return r
 end
 
@@ -488,8 +538,15 @@ function Server:_dispatch_request(conn, msg)
     elseif msg.kind == K.stop then
         return reply({}, function() self:stop("stop requested", 0) end)
     elseif msg.kind == K.retire then
+        local first = not self.retiring
         self.retiring = true
-        self:log("retiring: a client of another version asked; exits when idle")
+        if first then
+            self:log("retiring: a client of another version asked; exits when idle")
+            -- Observers disconnect on it and never hold the retirement off.
+            for c in pairs(self.conns) do
+                if c.authed and not c.closed and c.observer then self:_send(c, { kind = K.retiring }) end
+            end
+        end
         return reply({})
     elseif msg.kind == K.build and self.service then
         -- Routed operations (§19.15, §19.19 step 3).

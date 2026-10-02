@@ -33,7 +33,7 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 
 *Status: master for the transition values — the host setting `runtime-mode`
 (`in-process` | `daemon`), `LOOMWORKS_RUNTIME`, the editor option
-`runtime.mode` (informational until §19.19 step 4) — and the selection of
+`runtime.mode` (the editor observes the daemon in `daemon` mode, §19.16) — and the selection of
 attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
 (`daemon/runtime.lua`); the end-state values future.*
 
@@ -689,7 +689,9 @@ pipe would hand the user's credentials to that host.
 *Status: master for framing, authentication and the frozen control subset
 (`daemon/protocol.lua`, `daemon/auth.lua`, `daemon/server.lua`,
 `daemon/client.lua`; protocol version 3: 2 plus the routed `build` request
-and its task stream, §19.15); broadcasts #88.*
+and its task stream, §19.15; protocol version 4: 3 plus the observer role,
+`model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16); the rest of
+the broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -700,13 +702,15 @@ handler error yields a typed error reply, never a crash.
 HMAC-SHA256(machine key §17.2, `"loomworks-daemon-v1"`), and *E* the endpoint
 address from the handle.
 
-1. client → `hello { protocol, lw_version, schemas, client = cli|editor, nonce = Nc }`
+1. client → `hello { protocol, lw_version, schemas, client = cli|editor, role?, nonce = Nc }`
+   (`role = "observer"`: a client that only watches, §19.16 — an addition a
+   daemon of an older protocol ignores)
 2. daemon → `challenge { protocol, lw_version, schemas, session_generation,
    server_nonce = Ns, server_proof = HMAC(K, "server\n" .. E .. "\n" .. Nc .. "\n" .. Ns) }`
 3. client verifies `server_proof`; on failure it closes the connection without
    sending anything else and reports the endpoint as untrusted. Otherwise →
    `auth { client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc) }`
-4. daemon verifies → `welcome { header, seq, clients, busy }` (§19.13).
+4. daemon verifies → `welcome { header, seq, clients, busy, retiring }` (§19.13).
 
 Nonces are 32 random bytes (hex); proofs are compared in constant time. Before
 `welcome` the daemon accepts only `hello` and `auth`, caps a frame at 64 KiB
@@ -739,8 +743,9 @@ paths, sizes and modification times of its Lua sources whenever they are on
 disk — a development source tree or a directory bundle — so editing a source
 is a mismatch; only a fused executable, whose sources cannot change, uses the
 executable itself). An editor
-client matches when protocol and schemas are equal (its own code ships with the
-plugin, §19.16).
+client **observing** a daemon (§19.16) needs less: an equal protocol and schemas
+no newer than its own — the daemon's host version may differ (the editor's
+code ships with the plugin, the daemon's with the resolved host binary).
 
 On a mismatch, after authenticating:
 
@@ -826,6 +831,13 @@ build.*
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a
   connection silent for three intervals is dropped as half-open.
+- **Observers and retirement.** A `retire`d daemon broadcasts `retiring` to
+  every connected observer (§19.16), and `welcome` carries `retiring` for one
+  that connects later; an observer then disconnects and does not reconnect to
+  that daemon. Observer connections never hold off retirement: a retiring
+  daemon exits once it has no running build and no authenticated client other
+  than observers. (They still count for the idle timeout and in `clients`.)
+  `status` reports `observers`, the number of observer connections.
 - **Idle exit.** With no connection, no running task and no request for the
   idle timeout — setting `daemon-idle-timeout`, default 1 hour — the daemon
   exits.
@@ -861,7 +873,19 @@ workspace to load. `lw daemon list` and `lw daemon stop --all` /
 
 ### 19.12 Wire identity and change broadcasts
 
-*Status: #88.*
+*Status: master for the coarse `model_change` broadcast (`daemon/server.lua`
+`model_changed`, sent after each committed write of a state file by the
+daemon — the working copy or the cache, `Workspace:_record_written`), whose
+client re-reads the files (§19.16); the opaque-id registry, scope snapshots
+and the re-pull protocol #88.*
+
+**Step 4 form.** `model_change { seq, session_generation }`: `seq` advances by
+one per broadcast within a session. The editor, which still loads the
+workspace from disk itself, answers it by applying the change to its files at
+once — its file tracker's pending-change delivery (§2, the same reload the
+poll would make a moment later) — rather than re-pulling a snapshot. A
+broadcast at or below the last `seq` of the same session generation is
+ignored; a new generation is always applied.
 
 The daemon keeps a session-local **opaque-id registry** keyed by object
 identity: an id is assigned once, survives renames (it follows the object, not
@@ -915,12 +939,16 @@ reference-based. Read-only queries run on the client's projection.
 [--target <name>]… [--force] [--reconfigure] [-v] [-- <args>]`) in
 `runtime-mode daemon` (`daemon/service.lua`, `daemon/runner.lua`,
 `daemon/tasks.lua`, `daemon/envscope.lua`; the client in `cli.lua`
-`_delegate_build`); broadcasts to observers without a consumer until step 4;
+`_delegate_build`); observed by the editor (§19.16);
 other operations future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
-CLI streams into the editor): `start`, `line` (one of loomworks's own lines —
+CLI streams into the editor): `start` (`meta = { name, kind, profile, units }`
+— `profile` the profile's key, `units` one `{ project, configuration }` per
+project of the profile, the project key and its configuration unit's key;
+semantic keys, which a client resolves to its own domain objects at the
+boundary, §19.14), `line` (one of loomworks's own lines —
 a status line on standard output, a note on standard error), `output` (a
 step's raw bytes, `stdout` or `stderr`), `progress` (coalesced: a tick only
 when the integer percent advances) and `done` (`exit_code`, and the refusal or
@@ -939,7 +967,7 @@ output bounded per task by bytes (a few megabytes each, then a single
 truncation notice); an observer whose connection falls further behind than a
 bound is disconnected (it connects again to re-attach) — unless it owns a
 running operation itself, which then only misses observed events. Model changes are never dropped; the durable
-outcome arrives as a `model_change` (§19.12, with step 4).
+outcome arrives as a `model_change` (§19.12).
 
 **Request.** `build { args, interactive, env, command }` — `args` carries the
 parsed command line (`profile`, `targets`, `extra`, `force`, `reconfigure`,
@@ -1084,25 +1112,90 @@ error before its output — `lw: building through the workspace daemon (pid N)`
 
 ### 19.16 The editor as a client
 
-*Status: future (§19.19 step 4).*
+*Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
+`daemon/host_binary.lua`, `daemon/remote_task.lua`); commands and the attached
+editor future.*
 
-The editor uses the **same daemon as the CLI**: it resolves a host binary with
-the broker precedence of the runtime
-resolution (`LOOMWORKS_LW`, the repository pin §16.21, `lw` on the search path,
-a previously provisioned runtime; never a fetch), launches `lw daemon run` from
-it when no daemon is live (§19.10), connects, authenticates and holds a
-keepalive (§19.11). In the first editor step it **observes** only — task
-streams and model changes from operations started elsewhere — while running
-its own operations in-process; operations then move to commands in the order
-of §19.19. With no host binary, the editor runs the daemon code inside its own
-process over the loopback transport, taking the runtime lock as an attached
-run (§19.2) for as long as its workspace is loaded. *(Future:)* such an
-attached editor also serves the endpoint — it is then the workspace's shared
-daemon, owned by the editor process, and CLI clients connect to it instead of
-being refused as busy; it ends when the editor closes the workspace. A version mismatch it
-cannot repair by restarting (its plugin code and the resolved binary differ in
-protocol or schema) is shown inline and handled as a version-bypass run
-(§19.9); the editor does not launch the daemon from its own plugin source.
+**End state.** The editor uses the **same daemon as the CLI**. It connects,
+authenticates and holds a keepalive (§19.11). Operations move from the editor
+to commands in the order of §19.19. With no host binary, the editor runs the
+daemon code inside its own process over the loopback transport, taking the
+runtime lock as an attached run (§19.2) for as long as its workspace is
+loaded. *(Future:)* such an attached editor also serves the endpoint. It is
+then the workspace's shared daemon, owned by the editor process, and CLI
+clients connect to it instead of being refused as busy. It ends when the
+editor closes the workspace.
+
+**Step 4: the observer.** In `daemon` mode (the setup option `runtime.mode` or
+`LOOMWORKS_RUNTIME`, with `LOOMWORKS_NO_DAEMON` and `CI` as in §19.1), each
+workspace the editor loads gets an **observer**. It watches the task streams
+and model changes of operations started elsewhere (a `lw build` in a
+terminal). It runs none of the editor's own operations, which stay on the
+in-process path. In `in-process` mode nothing below happens.
+
+- **Host binary.** The observer resolves a host binary in this order:
+  - `LOOMWORKS_LW` (an existing file);
+  - the repository pin (§16.21): the pinned version's host binary already
+    provisioned in the per-user pinned cache (§16.22) — the editor never
+    downloads one, and does not re-hash a file the provisioning host verified;
+  - `lw` on the search path (on Windows an `.exe`).
+
+  With none, the status page shows one inline note (no host binary: running
+  in-process). The editor never launches a daemon from its own plugin source,
+  and runs no loopback runtime until §19.19 step 5. It still watches for a
+  daemon another client starts and observes that one.
+- **Launch.** The observer launches `<binary> daemon run --root <root>`
+  (§19.10: detached, no inherited handles, the state directory as working
+  directory) only when no daemon is live on workspace load or on an explicit
+  `:LoomworksDaemon connect`. Readiness is not awaited in a blocking wait: the
+  observer watches the handle. An early exit other than "another daemon won"
+  is a note. A daemon that is starting, hung, of another host, or attached is
+  not launched over; the observer notes it and watches.
+- **Connect.** The observer handshakes as `client = "editor"`,
+  `role = "observer"`. It observes a daemon whose protocol equals its own and
+  whose schemas are not newer (§19.9; the host version may differ).
+  - **Incompatible daemon.** The observer notes it (protocol or schemas) and
+    closes. It neither restarts nor retires that daemon, and does not connect
+    to it again.
+  - **Keepalive.** While connected it sends `ping` about every 30 s.
+- **Never relaunch.** When the connection drops, the observer never launches
+  a daemon by itself — the daemon stopped (`lw daemon stop`), crashed, was
+  retired or dropped this observer. This keeps `lw daemon stop` meaningful.
+  It watches the handle (about every 2 s) and connects again when a live
+  daemon appears. It skips one it was told is `retiring` or found
+  incompatible, identified by pid and start time.
+- **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
+  disconnects at once, so a version change completes (§19.11).
+- **Model changes.** On `model_change` the editor applies its files' pending
+  changes at once (§19.12).
+- **Tasks.** Each observed task becomes a **remote task** in the editor.
+  - **Resolving.** Its `start` meta is resolved at the boundary. The profile
+    key is looked up among the workspace's profiles. Each unit is matched to
+    that profile's project-in-profile with the same project key and
+    configuration-unit key, and through it to its configuration unit. A key
+    that does not resolve (another working copy, a profile the editor has not
+    loaded yet) is kept and shown **by name only**; no domain object is
+    created or hydrated for it.
+  - **Running state.** A resolved configuration unit reports `building`
+    for the task's lifetime, without the editor running anything. It never blocks an
+    editor operation: the cross-process build-directory locks (§16.6) do.
+  - **Output.** The task's lines and output are kept, capped at about 1 MiB
+    per task, then one truncation notice.
+  - **End.** A task ends on `done`, or when the connection drops (it is then
+    shown as ended "the workspace daemon disconnected").
+  - **UI.** The editor shows remote tasks in progress (fidget), in the status
+    page's Tasks section marked `(daemon)` (spec/ui.md §1.9), and in the
+    status line as an in-process build of the same units.
+- **Teardown.** Unloading or swapping the workspace stops its observer: the
+  timers stop, the connection closes, remote tasks are cleared. The daemon
+  keeps running (§19.11).
+- **Quiet degradation.** Every problem is the observer's one current note,
+  shown on the status page's Runtime line, never a notification or a repeated
+  message.
+
+A version mismatch the editor cannot repair by restarting (its plugin code and
+the resolved binary differ in protocol or schemas) is shown inline. The editor
+keeps running in-process.
 
 ### 19.17 Parity
 
@@ -1138,7 +1231,7 @@ runtime is deferred until that module is actively developed.
    daemon starts and stays running, answering `ping`/`status` only; `lw daemon
    status|stop|restart|kill`; the runtime log; the Runtime row.
 3. **First operation** — `lw build` routed to the daemon (§19.15). *(Done.)*
-4. **Editor connects** — observer + keepalive (§19.16).
+4. **Editor connects** — observer + keepalive (§19.16). *(Done.)*
 5. **Remaining operations**, one at a time, each with a parity test (§19.17);
    then the loopback transport, so attached runs use the same code; then the
    CLI and the editor stop loading the workspace themselves.

@@ -595,6 +595,7 @@ end
 --- @field _save_stats { cache_merges: integer, user_refusals: integer }
 ---     stale saves handled (diagnostics/tests).
 --- @field _event_handlers { event: string, handler: function }[]
+--- @field _daemon_observer loomworks.daemon.Observer|nil the editor's observer of the workspace daemon (spec §19.16), daemon runtime mode only
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
 ---     pattern on View. Populated only via `Workspace:on`, walked in
 ---     `Workspace:teardown` to call `events.off` per entry. Allows
@@ -935,6 +936,9 @@ function Workspace:_record_written(kind, path, written)
     if written == nil and type(read_file) == "function" then written = read_file(path) end
     self._disk_baseline[kind] = { text = written }
     if self._tracker then self._tracker:mark_written(path, written) end
+    -- The workspace daemon tells its clients (spec §19.12, `model_change`).
+    local on_written = self._core._deps.on_written
+    if on_written then pcall(on_written, kind, path) end
 end
 
 --- The guarded file's current bytes, or `false` when this host cannot read
@@ -2964,6 +2968,14 @@ function Workspace:find_running_tasks_for_items(items)
         end
     end
     return matches
+end
+
+--- The tasks observed in the workspace daemon (spec §19.16), in start
+--- order — empty without an observer (in-process runtime mode).
+--- @return loomworks.RemoteTask[]
+function Workspace:get_daemon_tasks()
+    local obs = self._daemon_observer
+    return obs and obs:tasks() or {}
 end
 
 --- Snapshot every active task across the workspace, in a stable order.
@@ -7934,6 +7946,9 @@ end
 --- reload. Acceptable for a dev-only feature.
 --- @return loomworks.Future resolves once tasks are confirmed stopped
 function Workspace:teardown()
+    -- The daemon observer (spec §19.16) stops first: no broadcast may reach
+    -- a workspace being torn down.
+    if self._daemon_observer then pcall(self._daemon_observer.stop, self._daemon_observer) end
     self:_stop_tracking()
     -- A deletion still removing its trees keeps its locks until it ends: wait
     -- for it (bounded, `TEARDOWN_WAIT_MS`) before the locks below are

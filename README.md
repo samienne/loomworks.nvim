@@ -941,6 +941,18 @@ require("loomworks").setup({
 
 Clipping appends a `…` so it's visually obvious the line was cut.
 
+**Builds started from a terminal (experimental).** With
+`setup({ runtime = { mode = "daemon" } })` (or `LOOMWORKS_RUNTIME=daemon`)
+the editor connects to the workspace daemon (`lw daemon`, see the `lw`
+command table) and shows the builds it runs — e.g. `lw build` in a
+terminal — like its own: a fidget popup, the units `building` on the status
+page and in the statusline, and a `(daemon)` row in the status page's Tasks
+section whose Enter shows the build's output. Its own builds still run in the
+editor. It starts the daemon from the `lw` it finds (`LOOMWORKS_LW`, the
+repository's pinned `lw`, or `lw` on `PATH`) when you open the workspace or
+run `:LoomworksDaemon connect`, and never restarts one you stopped with
+`lw daemon stop`. The status page's `Runtime:` line says what it is doing.
+
 If a fidget popup gets stuck spinning after every overseer task has
 already completed (typically because a dap session terminated before
 initialising, or an adapter wasn't configured), `:LoomworksFidgetClear`
@@ -1175,6 +1187,7 @@ automatically from your system.
 | `:LoomworksTrust` | Review a working copy not signed by this machine: trust (re-sign), discard, or cancel |
 | `:LoomworksCompileCommand [file]` | Show the compile command loomworks' owned clangd database uses for a file (default: current buffer) |
 | `:LoomworksReload` | Tear down active workspace and reload plugin code (dev hatch — requires lazy.nvim) |
+| `:LoomworksDaemon [status\|connect]` | **Experimental** (`runtime = { mode = "daemon" }`): show the editor's connection to the workspace daemon, or connect (starting the daemon when none runs) |
 
 ## Standalone `lw` runner
 
