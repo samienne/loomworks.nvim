@@ -107,6 +107,9 @@ describe("discover helpers (§19.6.1)", function()
     end)
     it("the health provider counts daemons", function()
         local sug = require("loomworks.suggestions")
+        local seam = vim.env.LOOMWORKS_TEST_NO_DAEMON_SCAN
+        assert.same({}, sug.daemon_count_provider()) -- the suite's seam: off
+        vim.env.LOOMWORKS_TEST_NO_DAEMON_SCAN = nil
         local orig = discover.list
         discover.list = function()
             return { { state = "live", clients = 0, busy = false }, { state = "live", clients = 1 } }, 1
@@ -120,6 +123,7 @@ describe("discover helpers (§19.6.1)", function()
         discover.list = function() return {}, 1 end
         items = sug.daemon_count_provider()
         discover.list = orig
+        vim.env.LOOMWORKS_TEST_NO_DAEMON_SCAN = seam
         assert.same({}, items)
     end)
 end)
