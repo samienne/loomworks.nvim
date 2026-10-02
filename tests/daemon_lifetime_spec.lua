@@ -60,7 +60,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
     local function start(opts)
         opts = opts or {}
         opts.exit = function(code) exited = code end
-        opts.tick_ms = 100
+        opts.tick_ms = opts.tick_ms or 100
         opts.auth_timeout_ms = 30000 -- a real handshake on a loaded runner
         srv = server_mod.new(root, opts)
         assert(srv:start())
@@ -96,13 +96,17 @@ describe("lifetime rules (§19.11, in-process server)", function()
 
     -- The keepalive rule is checked by calling the tick's `lifetime()` on a
     -- connection whose last traffic is set back in time (deterministic on a
-    -- loaded runner); the timer drives the same function.
+    -- loaded runner); the timer drives the same function, so these servers
+    -- get a tick that never fires during the test: a tick due between
+    -- `age_conns` and the server reading the client's ping would drop the
+    -- connection as silent ("closed" — CI run 37004512884).
+    local NO_TICK = 3600000
     local function age_conns(ms)
         for conn in pairs(srv.conns) do conn.last_seen = uv.now() - ms end
     end
 
     it("drops a connection silent for three keepalive intervals", function()
-        start({ keepalive_ms = 1000 })
+        start({ keepalive_ms = 1000, tick_ms = NO_TICK })
         local conn = assert(client.session(srv.address))
         assert.equals(1, srv:client_count())
         age_conns(2500)
@@ -116,7 +120,7 @@ describe("lifetime rules (§19.11, in-process server)", function()
     end)
 
     it("a ping counts as traffic", function()
-        start({ keepalive_ms = 1000 })
+        start({ keepalive_ms = 1000, tick_ms = NO_TICK })
         local conn = assert(client.session(srv.address))
         age_conns(3500)
         assert(client.request(conn, { kind = "ping" }))

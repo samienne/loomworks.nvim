@@ -4,13 +4,16 @@ INIT_FILE := tests/minimal_init.lua
 .PHONY: test test-file test-standalone test-all install dist
 
 ## Run all tests (nvim/busted suite)
-## Plenary starts every spec file at once and waits TEST_TIMEOUT ms for ALL of
-## them together (its default, 50 s, is a whole-suite budget, not per file). A
-## file still running at the deadline prints nothing and fails the run, so the
-## budget must cover the slowest file on a loaded machine.
+## scripts/run_specs.lua runs every spec file as PlenaryBustedDirectory does
+## (one headless child nvim per file, same minimal_init, all started at once,
+## TEST_TIMEOUT ms for ALL of them together) but ends with a table naming each
+## file that exited non-zero, printed no summary, or was still running at the
+## deadline -- PlenaryBustedDirectory only exits 1. The budget must cover the
+## slowest file on a loaded machine. TEST_JOBS=N caps the concurrency.
 TEST_TIMEOUT := 600000
+TEST_JOBS := 0
 test:
-	nvim --headless -u $(INIT_FILE) -c "PlenaryBustedDirectory $(TESTS_DIR)/ {minimal_init = '$(INIT_FILE)', timeout = $(TEST_TIMEOUT)}"
+	nvim -l scripts/run_specs.lua --timeout $(TEST_TIMEOUT) --jobs $(TEST_JOBS) --init $(INIT_FILE) $(TESTS_DIR)
 
 ## Run a single test file: make test-file FILE=tests/config_spec.lua
 ## Run in this nvim, as each file of `make test` is: PlenaryBustedFile would

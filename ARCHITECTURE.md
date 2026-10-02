@@ -1235,9 +1235,15 @@ make test-file FILE=tests/core_spec.lua      # run a single test file
 Or directly:
 
 ```bash
-nvim --headless -u tests/minimal_init.lua \
-  -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
+nvim -l scripts/run_specs.lua --timeout 600000 tests
 ```
+
+`scripts/run_specs.lua` runs each spec file the way `PlenaryBustedDirectory`
+does (a headless child nvim per file, all at once, one whole-suite budget) and
+ends with a table of every file that exited non-zero (also after a clean
+summary -- with the child's Nvim log, which names the libuv handles when Nvim
+could not close its event loop at exit), printed no summary, or was still
+running at the deadline. `PlenaryBustedDirectory` itself only exits 1.
 
 `tests/minimal_init.lua` bootstraps plenary and sets up the Lua path.
 

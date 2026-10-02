@@ -180,6 +180,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- A save that had to reclaim a crashed writer's lock on the working copy or
+  cache, and took longer than the lock wait to do it (a slow, busy machine),
+  no longer goes ahead without the lock it just freed. (#127)
 - `lw status` says what is trusted: a new `Trust` row shows whether your local
   config is present (signed on this machine) and how many program settings
   in `loomworks.json` are ignored, and a build affected by them prints one
