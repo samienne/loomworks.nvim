@@ -618,6 +618,17 @@ re-cut onto master step by step; this section is expanded as each step lands.
   dead record by nonce — remove the handle naming that pid/start time and its
   socket, release) and, when a journal exists, `op_lock.acquire` to roll it
   forward.
+- `discover.lua` — every daemon of this user on this host (§19.6.1) by a
+  process scan, no registry: `proc.processes()` (Windows Toolhelp names,
+  Linux own-uid `/proc/<pid>/comm`, macOS `proc_listallpids` + `proc_name`,
+  `ps` fallback) → exe-name candidates (`lw`, `lw-*`, `luvi`, `nvim`) →
+  `proc.cmdline` + `proc.is_daemon_for` → `--root` → classified from that
+  root's R and handle (live / starting / hung / stray / unknown_root).
+  `command.lua` renders it (`lw daemon list [--json]`) and drives
+  `stop --all` / `kill --all` through the per-workspace `M.stop` with a host
+  whose `die` raises (one result per daemon); `kill --all --strays` re-reads
+  a stray's command line and start time before `proc.kill_tree`. The health
+  provider `suggestions.daemon_count_provider` prints the count.
 - `protocol.lua` — `<len>\n<json>` framing; the decoder checks the length
   prefix against the cap (64 KiB before authentication, 16 MiB after) before
   buffering a payload.

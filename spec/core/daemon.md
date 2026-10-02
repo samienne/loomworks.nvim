@@ -522,6 +522,93 @@ Runtime   unreadable daemon handle — the next workspace command recovers it (d
 `in-process` in `in-process` mode, when neither the runtime lock nor a handle
 exists.
 
+#### 19.6.1 Listing every daemon of this user
+
+*Status: master — `daemon/discover.lua` (the scan), `proc.processes`,
+`lw daemon list`, `lw daemon stop --all` / `kill --all [--strays]`, the
+`lw health` count line.*
+
+`lw daemon list` lists every workspace daemon of the calling user **on this
+host**, in any workspace, run from anywhere (no workspace needed). It is found
+by a **process scan** — there is no per-user registry: lw writes nothing
+outside the workspaces for it, so a crash or a power loss leaves no file to go
+stale. It never launches, connects to or signals a daemon, and writes nothing.
+
+**Scan.**
+
+1. Enumerate the processes of this host with their executable names —
+   Windows: one Toolhelp snapshot (`szExeFile`); Linux: `/proc/<pid>` entries
+   **owned by the caller's uid** (name from `comm`); macOS: `proc_listallpids`
+   + `proc_name` (fallback `ps -x -o pid=,comm=`).
+2. Keep the candidates whose executable base name (lowercased, without
+   `.exe`) is `lw`, starts with `lw-`, or is `luvi` or `nvim` — the hosts of
+   §19.5 step 2. This process is skipped.
+3. Read each candidate's command line (§19.5: Windows the process command
+   line, Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`) and its start
+   time; keep those that are `lw … daemon run` by the §19.5 identity rules. A
+   command line that cannot be read (another user's process, access denied)
+   is skipped.
+4. The daemon's workspace is its `--root <dir>` (or `--root=<dir>`) argument —
+   every launched daemon has one (§19.10). One run by hand without it is
+   listed with **root unknown**.
+
+The scan is bounded by the number of processes; the command lines read are
+only the candidates'. It takes tens of milliseconds for a few hundred
+processes; `--json` reports the time it took.
+
+**Classification.** For each daemon with a root, its runtime lock R (§19.2)
+and handle (§19.6) are read — files only:
+
+| State | Test |
+|--|--|
+| `live` | R names this process (pid and start time) and the handle names it too; clients, busy, idle time and version come from the handle |
+| `starting` | R names it, no handle yet |
+| `hung` | R names it and its heartbeat is stale (§19.5) |
+| `stray` | R names another holder or none, the handle names another process, or the root directory is gone — a daemon that is not its workspace's runtime (it lost its lock, is exiting, or was left over); never connected to |
+| `unknown root` | no `--root` on its command line |
+
+A handle or lock record that names a process the scan did not find (dead, or
+its pid reused by another program) produces no entry: the list shows
+processes, not files. A daemon on another host is not on this host's process
+list; its workspace's `Runtime` row shows it (§19.6).
+
+**Output.**
+
+```
+PID    UPTIME  STATE      CLIENTS  VERSION  ROOT
+4242   2h      idle 12m   0        0.1.43   /home/me/src/app
+4310   5m      busy       1        0.1.43   /home/me/src/lib
+4388   1m      stray      -        -        /tmp/old-checkout  (the runtime lock names pid 4401)
+3 daemons (1 idle, 1 stray) — stop them with: lw daemon stop --all
+```
+
+No daemon: `no workspace daemons are running`. `--under <dir>` keeps the
+daemons whose root lies under `<dir>` (separator-bounded, case-insensitive on
+Windows); a daemon with an unknown root is then left out. `--json` prints
+`{ schema = 1, scan_ms, daemons = [ { pid, start_time, root, state, reason,
+uptime_s, started_at, clients, busy, idle_since, lw_version, protocol,
+endpoint } ] }` (absent values are `null`), sorted by root.
+
+**Stopping all.** `lw daemon stop --all [--force]` and `lw daemon kill --all`
+(each accepting `--under <dir>`) apply `lw daemon stop [--force]` /
+`lw daemon kill` (§19.11, §19.5) to the workspace of every `live`, `starting`
+or `hung` daemon listed — through that workspace's runtime lock, with all its
+rules: never another host, never an editor holder, plain `stop` never kills,
+a kill only of the holder its lock record names, identity-verified. One line
+per daemon, prefixed with its root. A **stray** or **unknown root** daemon is
+not its workspace's runtime and cannot be asked to stop: it is skipped with a
+hint, unless `lw daemon kill --all --strays` was given, which kills it — only
+after its command line is read again and is still `lw … daemon run` for that
+root (or with no `--root`, for an unknown root) with the same start time,
+never this process or one of its ancestors; if it held its workspace's runtime
+lock, the lock is then reclaimed per §19.5. `--strays` is refused without
+`kill --all`. The exit status is 0 when no listed daemon is left running, 1
+otherwise.
+
+**Health.** `lw health` (area `lw`) shows one informational line when this
+user runs any daemon on this host: `2 workspace daemons running (1 idle) —
+lw daemon list`.
+
 ### 19.7 Endpoint and access control
 
 *Status: master (`daemon/endpoint.lua`; the DACL through LuaJIT FFI).*
@@ -706,7 +793,8 @@ succeeds with nothing to do. A daemon on another host is never stopped or
 killed from here (the command names the host); a stale one is reclaimed per
 §19.5. `lw daemon restart` is stop then launch (`--force` applies to the
 stop). None of these require the
-workspace to load.
+workspace to load. `lw daemon list` and `lw daemon stop --all` /
+`kill --all` act on every daemon of this user on this host (§19.6.1).
 
 ### 19.12 Wire identity and change broadcasts
 

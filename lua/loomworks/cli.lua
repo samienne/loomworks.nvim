@@ -10244,7 +10244,8 @@ Nuke holds the workspace operation lock and the build lock of every build
 directory it removes, so it refuses while a build runs ("cannot nuke: a
 build is running in ...") instead of deleting under it. `--break-locks[=now]`
 stops a hung (or, on this host, running) holder first (see `lw help unlock`).]],
-  daemon = [[lw daemon [status] | stop [--force] | kill | restart [--force] | run [--root <dir>]
+  daemon = [[lw daemon [status] | list [--json] | stop [--force] | kill | restart [--force] | run [--root <dir>]
+       lw daemon stop --all [--force] | kill --all [--strays]   [--under <dir>]
 
 EXPERIMENTAL, opt-in. The workspace daemon is one long-lived `lw` process per
 workspace that will, step by step, run the workspace's operations for every
@@ -10255,6 +10256,14 @@ exactly as before.
   status    (also bare `lw daemon`) the runtime mode and the workspace's
             daemon: pid, host, version, endpoint, heartbeat, and what a live
             daemon on this host answers. Never starts a daemon.
+  list      every workspace daemon of yours on this machine, in any
+            workspace (works anywhere): pid, uptime, state (idle, busy,
+            active, starting, not responding, stray), clients, version and
+            root. Found by scanning processes for `lw ... daemon run`; never
+            starts, contacts or stops one, and writes nothing. A "stray" is
+            not its workspace's runtime (it lost its lock, its workspace is
+            gone, or it has no --root). --json for scripts; --under <dir>
+            keeps the workspaces under <dir>.
   stop      ask the daemon to exit and wait for it (about 10 s). Never kills:
             a daemon that does not stop is reported as not responding. With
             no daemon running there is nothing to do; the files of one that
@@ -10266,6 +10275,13 @@ exactly as before.
             background
   run       serve this workspace in the foreground (what a started daemon
             runs; --root names the workspace)
+
+  --all     with stop / kill: do it for every daemon `lw daemon list` shows
+            (--under <dir>: only those workspaces), one line each, through
+            each workspace's runtime lock with the rules above. Strays are
+            skipped unless `lw daemon kill --all --strays`, which kills them
+            after checking each is still that daemon. Exit 1 when one is
+            left running.
 
 A daemon on another host (a shared drive) is never stopped or killed from
 here: run the command there. Kills are printed on stderr.
@@ -11679,7 +11695,7 @@ Usage: lw [command] [args]
   clean [profile]   build-system clean (remove artifacts, keep configuration)
   reset [profile]   hard reset: rm the build dirs, back to unconfigured (--all)
   unlock <profile>  clear a stuck build-dir lock (--all, --force, --device <serial>)
-  daemon <sub>      the workspace daemon: status | stop | kill | restart | run
+  daemon <sub>      the workspace daemon: status | list | stop | kill | restart | run
                     (experimental, opt-in: runtime-mode)
   trust             review + re-sign the working copy (see `lw help trust`)
   nuke              delete all build state (.nvim/build + caches)

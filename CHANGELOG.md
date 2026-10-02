@@ -41,6 +41,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw daemon list` (experimental daemon): every workspace daemon of yours on
+  this machine with its root, pid, uptime, state, clients and version, found
+  by scanning processes (nothing is written outside your workspaces); `--json`
+  for scripts, `--under <dir>` to narrow. `lw daemon stop --all` and
+  `lw daemon kill --all` stop each one through its workspace's runtime lock;
+  `kill --all --strays` also kills leftover daemons that are no longer their
+  workspace's runtime. `lw health` counts running daemons. (#120)
 - Experimental, opt-in (`runtime-mode daemon`): `lw build` runs in the
   workspace daemon, in every form (`--target`, `--force`, `--reconfigure`,
   `-v`, `-- <args>`), with the same output, exit code and build state as
