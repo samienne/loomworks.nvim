@@ -228,6 +228,15 @@ Success or failure is reported via process exit status; task output streams
 to standard output and standard error. No editor UI is required or
 produced.
 
+A step or launched program that a **signal** ended (on POSIX: the
+out-of-memory killer, `kill -9` on the build tool) has **failed**, whatever
+exit code the platform reports for it: its status is the conventional
+128 + the signal number (137 for SIGKILL), its failure line names the signal
+(`build failed (killed by signal 9 (SIGKILL)): <step>`), and it is never
+recorded as configured or built. A step the runner itself stopped (a
+cancelled daemon build, §19.15) is still reported as stopped. Platforms
+without such signals report the exit code unchanged.
+
 Text the runner prints on its own behalf — status, health, profile,
 configuration and tool listings, diagnostics — routinely includes **data**
 read from the workspace files, the cache, the health cache or tool probes

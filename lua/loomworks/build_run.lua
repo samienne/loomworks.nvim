@@ -8,7 +8,8 @@
 ---               step_lines (announce, why, log the command line)
 ---               spawn_spec (hardened argv + env) → run
 ---               after_step (record result, populate artifacts)
----               failure_message on a nonzero exit
+---               failure_message on a nonzero exit (exit_status: a step a
+---               signal ended is a failure, status 128 + signal)
 ---
 --- A runner differs only in HOW a step is spawned (blocking vs streamed) and
 --- how a refusal is reported (die vs a streamed error). Everything here returns
@@ -374,23 +375,74 @@ function M.after_step(ws, step, code)
     end
 end
 
+--- Names of the signals whose numbers are the same on Linux and macOS.
+M.SIGNAL_NAMES = {
+    [1] = "SIGHUP", [2] = "SIGINT", [3] = "SIGQUIT", [4] = "SIGILL", [5] = "SIGTRAP",
+    [6] = "SIGABRT", [8] = "SIGFPE", [9] = "SIGKILL", [11] = "SIGSEGV", [13] = "SIGPIPE",
+    [14] = "SIGALRM", [15] = "SIGTERM",
+}
+
+--- A step's exit status from libuv's exit callback `(code, signal)` (§16.7).
+--- On POSIX a process that a signal ended (the OOM killer, `kill -9` on the
+--- build tool) is reported as code 0 + the signal: that is a FAILURE, with the
+--- conventional status 128 + signal — never a success. Returns the status and,
+--- when a signal ended the process, that signal. A status already mapped
+--- (128 + signal: the standalone shim's vim.system, Neovim's jobs) is kept.
+--- Windows has no such signals: libuv reports the exit code with signal 0,
+--- except for its own emulated kills (TerminateProcess: exit code 1 + the
+--- signal sent), which keep their exit code, as before.
+--- @param code integer|nil
+--- @param signal integer|nil
+--- @return integer status, integer|nil signal
+function M.exit_status(code, signal)
+    code = tonumber(code) or 0
+    signal = tonumber(signal) or 0
+    if signal ~= 0 and (code == 0 or code == 128 + signal) then return 128 + signal, signal end
+    return code
+end
+
+--- How a step ended, for its failure line: `exit <code>`, or `killed by
+--- signal <n> (<NAME>)` when a signal ended it (`signal` from exit_status).
+--- @param code integer
+--- @param signal? integer
+--- @return string
+function M.exit_text(code, signal)
+    if signal and signal ~= 0 then
+        local name = M.SIGNAL_NAMES[signal]
+        return "killed by signal " .. signal .. (name and (" (" .. name .. ")") or "")
+    end
+    return "exit " .. tostring(code)
+end
+
+--- The line reporting a step whose resolved program could not be started
+--- (the spawn itself failed) — the same on every host; the step then fails
+--- with status 127.
+--- @param exe string
+--- @param err any
+--- @return string
+function M.spawn_failure_line(exe, err)
+    return "lw: cannot start " .. tostring(exe) .. ": " .. tostring(err)
+end
+
 --- The failure line for a step that exited nonzero. A build that fails after
 --- the post-configure scan predicted it (an error-severity cache-compat
 --- finding, e.g. /Zi under sccache) closes with one line pointing back at that
 --- finding — advisory: the scan never gates the build (§5.1). `extra_hint`
---- (e.g. an unknown `--target`) leads the hint lines.
+--- (e.g. an unknown `--target`) leads the hint lines. `signal` (from
+--- exit_status): the signal that ended the step, named instead of the code.
 --- @param step table
 --- @param code integer
 --- @param extra_hint? string
+--- @param signal? integer
 --- @return string
-function M.failure_message(step, code, extra_hint)
+function M.failure_message(step, code, extra_hint, signal)
     local hint
     if step.kind == "build" and step.unit and step.unit.module_info then
         hint = require("loomworks.compiler_cache").compat_failure_hint(
             step.unit.module_info.cache_compat)
     end
     if extra_hint then hint = hint and (extra_hint .. "\nlw: " .. hint) or extra_hint end
-    return string.format("%s failed (exit %d): %s", step.kind, code, step.name or "?")
+    return string.format("%s failed (%s): %s", step.kind, M.exit_text(code, signal), step.name or "?")
         .. (hint and ("\nlw: " .. hint) or "")
 end
 

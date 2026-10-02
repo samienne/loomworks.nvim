@@ -926,14 +926,16 @@ M._resolve_profile = resolve_profile
 --- @param root string
 --- @param to_stderr? boolean route the child's stdout to OUR stderr (keeps our
 ---   stdout clean for a machine consumer — used by `lw run --print`'s build).
---- @return integer code
+--- @return integer code, integer|nil signal the signal that ended the step
+---   (code is then 128 + signal: a failure, never a success — §16.7)
 local function run_spec(step, root, to_stderr)
   -- Resolve the program to an absolute path (never the cwd / a relative PATH
   -- entry) and, on Windows, add NoDefaultCurrentDirectoryInExePath=1 to the
   -- child env. An unresolvable program is reported, never spawned by name.
   -- loomworks.build_run.spawn_spec (the shared headless build path); an
   -- empty env is dropped there (the child inherits ours, never a wiped PATH).
-  local spec, herr = require("loomworks.build_run").spawn_spec(step, root)
+  local build_run = require("loomworks.build_run")
+  local spec, herr = build_run.spawn_spec(step, root)
   if not spec then
     errw("lw: " .. tostring(herr) .. "\n")
     return 127
@@ -954,13 +956,21 @@ local function run_spec(step, root, to_stderr)
       stdio = to_stderr and "inherit_err" or "inherit",
       hide = false,
     }):wait()
-    return res.code
+    -- (Inherited output is never captured: only a failed spawn reports here.)
+    if res.spawn_error then errw(build_run.spawn_failure_line(step.cmd[1], res.spawn_error) .. "\n") end
+    return build_run.exit_status(res.code, res.signal)
   end
-  local res = vim.system(step.cmd, {
+  local okc, obj = pcall(vim.system, step.cmd, {
     cwd = step.cwd or root,
     env = env,
     text = true,
-  }):wait()
+  })
+  if not okc then
+    -- Neovim's vim.system raises when the program cannot be started.
+    errw(build_run.spawn_failure_line(step.cmd[1], obj) .. "\n")
+    return 127
+  end
+  local res = obj:wait()
   if to_stderr then
     io.stderr:write(res.stdout or "")
   else
@@ -968,7 +978,8 @@ local function run_spec(step, root, to_stderr)
   end
   local err = res.stderr or ""
   if err ~= "" then io.stderr:write(err) end
-  return res.code
+  -- Neovim's vim.system reports a signal-ended process as code 0 + signal.
+  return build_run.exit_status(res.code, res.signal)
 end
 M._run_spec = run_spec
 
@@ -1156,12 +1167,13 @@ local function run_build_steps(profile, ws, opts)
     if not ok_g then die(g_err, 1) end
     for _, line in ipairs(build_run.step_lines(ws, step, { verbose = opts.verbose })) do log(line) end
     -- Through the module table so tests can stub the spawn.
-    local code = M._run_spec(step, ws.root, quiet)
+    -- (A step a signal ended comes back as 128 + signal, with the signal.)
+    local code, sig = M._run_spec(step, ws.root, quiet)
     build_run.after_step(ws, step, code)
     if code ~= 0 then
       -- A `--target` the unit's parsed targets do not list (likely a typo).
       local th = step.kind == "build" and unknown_target_hint(ws, step, opts.build_targets) or nil
-      die(build_run.failure_message(step, code, th), code)
+      die(build_run.failure_message(step, code, th, sig), code)
     end
   end
   return #steps
@@ -1321,9 +1333,10 @@ function M.cmd_clean(ws, profile_name)
           die("clean failed: " .. tostring(err) .. ": " .. (step.name or "?"))
         end
       else
-        local code = run_spec(step, ws.root)
+        local code, sig = run_spec(step, ws.root)
         if code ~= 0 then
-          die(string.format("clean failed (exit %d): %s", code, step.name or "?"), code)
+          die(string.format("clean failed (%s): %s",
+            require("loomworks.build_run").exit_text(code, sig), step.name or "?"), code)
         end
       end
     end
@@ -2866,7 +2879,8 @@ function M._run_launch_target_impl(lt, ws, opts, deps)
   local full = build_run_argv(prefix_tokens, spec)
   out(string.format("running %s [cwd: %s]: %s", spec.name, spec.cwd or ws.root,
     table.concat(full, " ")))
-  return run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root)
+  -- (Only the status: a program a signal ended exits 128 + signal.)
+  return (run({ cmd = full, cwd = spec.cwd, env = spec.env }, ws.root))
 end
 
 --- The batch runner is a host program that would execute the profile's test
