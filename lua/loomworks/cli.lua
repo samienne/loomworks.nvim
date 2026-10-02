@@ -1110,6 +1110,9 @@ local function run_build_steps(profile, ws, opts)
   local quiet = opts.quiet or false
   local log = quiet and note or out
   log("building profile: " .. profile.key)
+  -- Ignored loomworks.json program settings (spec §17.10): one line, stderr.
+  local tn = build_run.trust_notice(ws, profile)
+  if tn then note(tn) end
   for _, step in ipairs(steps) do
     -- Conflict gate + full-reconfigure reset. `--force` and `--no-input`
     -- alike just refuse with exit 1; force is the only bypass, never a prompt.
@@ -7494,6 +7497,25 @@ end
 --- it never changes the rendering.
 --- `opts.submodule` (the submodule dir the root search crossed, spec §1.1)
 --- adds a one-line note that the workspace came from the superproject.
+--- The `Trust` row of `lw status` (spec §17.10): whether the working copy is
+--- present (a refused one never reaches the page) and how many program
+--- settings in loomworks.json are ignored. A workspace's NAME can read
+--- "untrusted" (it is its directory's); this row is the trust state.
+--- @param ws table workspace
+--- @param root string
+--- @return string
+function M._trust_row(ws, root)
+  local present = uv.fs_stat(require("loomworks.user").filepath(root)) ~= nil
+  local row = present and "local config signed on this machine (its program settings are used)"
+    or "no local config (only a local config may name programs)"
+  local ok, ignored = pcall(function() return ws:ignored_program_settings() end)
+  local n = ok and type(ignored) == "table" and #ignored or 0
+  if n > 0 then
+    row = row .. string.format(" · %d program setting%s in loomworks.json ignored", n, n == 1 and "" or "s")
+  end
+  return row .. " — lw help trust"
+end
+
 --- The `Runtime` row of `lw status` (spec §19.6), computed from the runtime
 --- lock and handle files only (nil only if that fails).
 --- @param root string
@@ -7925,6 +7947,11 @@ function M.cmd_status(root, opts)
     local row = M._runtime_row(root)
     if row then out(pal.title("Runtime") .. string.rep(" ", 10) .. pal.dim(row)) end
   end
+
+  -- Trust row (spec §17.10): what loomworks may run on whose word. A refused
+  -- working copy never gets here (the load exits with the refusal), so a
+  -- present one is signed on this machine.
+  out(pal.title("Trust") .. string.rep(" ", 12) .. pal.dim(M._trust_row(ws, root)))
 
   -- Diagnostics section — right after the active-profile block, before Targets.
   -- Renders nothing when there are none.
@@ -10228,13 +10255,26 @@ it may run by where a setting comes from:
   .nvim/loomworks.user.json (yours)    honored — when it is signed by this
       machine. Every lw/editor write signs it with a per-machine key
       (<data dir>/trust.key, never in a repository). A file written by hand,
-      by an earlier lw, or copied from elsewhere is REFUSED until you review it.
+      by an earlier lw, or copied from another machine is REFUSED until you
+      review it. The signature does not bind the directory: a working copy
+      this machine signed stays trusted when moved or copied to another
+      workspace here (or seeded into a git worktree) — its profiles, tools
+      and launch commands are then used as they are.
   .nvim/loomworks.cache.json            build state; used only when signed here.
       An unsigned one (earlier lw) is ignored unread and replaced by the next
       command that writes the cache (read-only commands leave it); one
       signed elsewhere refuses the load until `lw nuke`.
   Tool paths                            always from detection on this machine,
-      never from the cache.
+      never from the cache. A profile only selects a detected toolchain by
+      its key; what that runs (compiler, developer-environment script such as
+      vcvarsall) is what detection found here.
+
+`lw status` shows the state in its Trust row: whether your local config is
+present (a refused one stops every command with the instructions below
+instead) and how many loomworks.json program settings are ignored. A build
+whose profile is affected prints one line saying so. (The status title is the
+workspace's name — a directory named "untrusted" shows as
+"loomworks — untrusted"; that is not a trust state.)
 
 Opening a workspace (`lw status`, the editor) never runs anything the shared or
 an unsigned file names. `lw build` / `lw test` / `lw run` still run the

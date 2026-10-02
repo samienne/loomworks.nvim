@@ -311,6 +311,9 @@ function M.run(svc, ctx)
     if not steps then finish(1, plan_err); return run end
     if #steps == 0 then finish(1, build_run.nothing_to_build_message(profile)); return run end
     task:line("out", "building profile: " .. profile.key)
+    -- The same trust notice as the in-process build (spec §17.10, §19.15).
+    local tn = build_run.trust_notice(ws, profile)
+    if tn then task:line("note", tn) end
     next_step()
     return run
 end

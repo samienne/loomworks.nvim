@@ -2433,6 +2433,14 @@ end
 --- module (e.g. android) doesn't require touching this collector
 --- — the per-module shape stays in the per-class predicate.
 ---
+--- Program-bearing fields ignored in loomworks.json that the working copy does
+--- not supply in their place (spec §17.6): what the status page's Trust row
+--- counts and a build's trust notice names (§17.10).
+--- @return table[] ignored entries `{ project, kind, path, label, detail, ... }`
+function Workspace:ignored_program_settings()
+    return require("loomworks.program_fields").active(self._shared_ignored, self._merged_config)
+end
+
 --- Sorted by `(severity, source)` so the order is stable across
 --- calls and severities cluster.
 --- @return loomworks.Diagnostic[]

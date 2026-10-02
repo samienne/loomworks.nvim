@@ -175,6 +175,31 @@ function M.profile_build_dirs(profile)
     return dirs
 end
 
+--- The one notice a build prints when loomworks.json program settings of the
+--- profile's projects are ignored (spec §17.6, §17.10), or nil when none are.
+--- Both hosts print it (in-process and through the daemon, §19.15), so a
+--- build never silently runs without an environment or command the shared
+--- file names. Counts workspace-level entries and those of the profile's
+--- projects.
+--- @param ws table workspace
+--- @param profile table
+--- @return string|nil line
+function M.trust_notice(ws, profile)
+    if not (ws and ws.ignored_program_settings) then return nil end
+    local keys = {}
+    for _, pp in ipairs(profile and profile:projects() or {}) do
+        if pp._project then keys[pp._project.key] = true end
+    end
+    local n = 0
+    for _, e in ipairs(ws:ignored_program_settings()) do
+        if e.project == nil or keys[e.project] then n = n + 1 end
+    end
+    if n == 0 then return nil end
+    return string.format("lw: %d program setting%s in loomworks.json ignored — only your local config "
+        .. "may name programs or environment (`lw status` lists %s; lw help trust)",
+        n, n == 1 and "" or "s", n == 1 and "it" or "them")
+end
+
 --- Whether `cmd` runs a batch file through cmd.exe: the program the build
 --- really runs is inside the batch, so arguments appended to this argv never
 --- reach it. Recognizes a literal batch path (`cmd /C <x.bat>`) and a program

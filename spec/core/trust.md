@@ -64,7 +64,12 @@ deterministic sorted encoding of §2 — avoids any canonicalization ambiguity, 
 the fixed first-line position cannot be confused with a nested member of the
 same name. The workspace root is deliberately **not** bound: moving or renaming
 the workspace directory, or seeding a git worktree from the main checkout on the
-same machine (§16.25), keeps the files valid. Both hosts produce identical
+same machine (§16.25), keeps the files valid. Copying a working copy from
+one workspace to another on the same machine is the same case: the copy is
+**valid** there, and everything it names (profiles, toolchain selections,
+launch configurations, environment) is used as from any signed working copy —
+it was written by this machine's user, which is what the signature attests;
+it does not attest which workspace it was written for. Both hosts produce identical
 signatures for identical content. Readers remove the member before decoding, so
 it never appears in loaded data; older loomworks versions read a signed file as
 ordinary JSON.
@@ -304,6 +309,16 @@ comes only from the staging manifest.
   build lock of every build directory it removes (§19.3): it refuses while a
   build runs instead of deleting under it.
   `lw help trust` explains this section.
+  `lw status` (which a refused workspace never reaches) shows a `Trust` row:
+  whether a working copy is present — then signed on this machine — or absent,
+  and the number of program-bearing fields ignored in `loomworks.json` that
+  the working copy does not supply (§17.6). It is the page's only statement of
+  trust; the title is the workspace's name, which may be any word. A build
+  whose profile's projects (or the workspace) have such ignored fields prints
+  one notice line on standard error after naming the profile — the count, that
+  only the local config may name programs or environment, and pointers to
+  `lw status` and `lw help trust` — on the in-process and the daemon path
+  alike (§19.15).
 - **Editor.** The status page shows the refusal with the same actions (trust,
   discard, reset); a trust command shows the summary in a confirmation prompt.
 

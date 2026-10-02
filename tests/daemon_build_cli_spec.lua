@@ -395,6 +395,69 @@ ffi.C.GenerateConsoleCtrlEvent(0, 0)
         assert.truthy(routed.stderr:find("lw trust", 1, true), routed.stderr)
         assert.is_nil(routed.stderr:find("building through the workspace daemon", 1, true))
     end)
+
+    it("a working copy signed with another machine's key is refused on both paths", function()
+        local root = H.shell_workspace()
+        roots[#roots + 1] = root
+        local other = H.tmp() .. "/other.key"
+        trust._set_key_path(other)
+        local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
+        local signed = trust.sign("user", trust.encode(user))
+        trust._set_key_path(nil)
+        local f = io.open(root .. "/.nvim/loomworks.user.json", "wb"); f:write(signed); f:close()
+        local routed = lw(root, { "--no-input", "build", "dev" })
+        local inproc = lw(root, { "--no-input", "--no-daemon", "build", "dev" })
+        assert.equals(1, routed.code, routed.stderr)
+        assert.equals(inproc.code, routed.code)
+        assert.equals(norm(inproc.stderr, root), norm(routed.stderr, root))
+        assert.truthy(routed.stderr:find("signature does not match this machine", 1, true), routed.stderr)
+        assert.is_nil(routed.stdout:find("step configure", 1, true))
+    end)
+
+    -- §17.3: the workspace root is not bound, so a working copy this machine
+    -- signed builds in any workspace it is copied to — on both paths alike.
+    it("a working copy signed here and copied to another workspace builds the same on both paths", function()
+        local a = workspace()
+        local b, c = H.shell_workspace(), H.shell_workspace()
+        roots[#roots + 1] = b; roots[#roots + 1] = c
+        local text = read(a .. "/.nvim/loomworks.user.json")
+        for _, r in ipairs({ b, c }) do
+            local f = io.open(r .. "/.nvim/loomworks.user.json", "wb"); f:write(text); f:close()
+        end
+        local rb = lw(b, { "--no-input", "--no-daemon", "build", "dev" })
+        local rc = lw(c, { "--no-input", "build", "dev" })
+        assert.equals(0, rb.code, rb.stderr)
+        assert.equals(0, rc.code, rc.stderr)
+        assert.truthy(rc.stderr:find(NOTICE, 1, true), rc.stderr)
+        assert.equals(norm(rb.stdout, b), norm(rc.stdout, c))
+        assert.equals(norm(rb.stderr, b), drop_notice(norm(rc.stderr, c)))
+    end)
+
+    -- §17.6 / §17.10: loomworks.json's environment is ignored on both paths,
+    -- and both print the same one-line notice.
+    it("loomworks.json program settings are ignored on both paths, with the same notice", function()
+        local function shared_env_ws()
+            local root = H.shell_workspace()
+            roots[#roots + 1] = root
+            local cfg = vim.json.decode(read(root .. "/loomworks.json"))
+            cfg.projects.app.shell.env = { LW_TEST_FOO = "from-shared" }
+            cfg.projects.app.shell.configurations = { Debug = { env = { LW_TEST_ONLY = "from-shared" } } }
+            local f = io.open(root .. "/loomworks.json", "w"); f:write(vim.json.encode(cfg)); f:close()
+            local r = H.lw({ "--no-input", "--no-daemon", "profile", "create", "dev" }, { env = env, cwd = root })
+            assert.equals(0, r.code, r.stderr)
+            return root
+        end
+        local a, b = shared_env_ws(), shared_env_ws()
+        local ra = lw(a, { "--no-input", "--no-daemon", "build", "dev" })
+        local rb = lw(b, { "--no-input", "build", "dev" })
+        assert.equals(0, ra.code, ra.stderr)
+        assert.equals(0, rb.code, rb.stderr)
+        assert.truthy(rb.stderr:find(NOTICE, 1, true), rb.stderr)
+        assert.truthy(ra.stdout:find("FOO=nil ONLY=nil", 1, true), ra.stdout)
+        assert.equals(norm(ra.stdout, a), norm(rb.stdout, b))
+        assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)))
+        assert.truthy(ra.stderr:find("lw: 2 program settings in loomworks.json ignored", 1, true), ra.stderr)
+    end)
 end)
 
 describe("daemon processes", function()
