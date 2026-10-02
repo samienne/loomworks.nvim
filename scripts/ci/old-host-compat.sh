@@ -77,6 +77,9 @@ printf '{ "projects": { "App": { "typescript": {} } } }\n' > "$T/proj/loomworks.
 
 # Sandbox every per-user dir; point the release source at an empty local dir.
 export LOOMWORKS_DATA_DIR="$(native "$T/data")"
+# No startup housekeeping (spec 16.40) against the runner's real temp dirs;
+# `lw cleanup` below is checked explicitly.
+export LOOMWORKS_NO_HOUSEKEEPING=1
 export LOCALAPPDATA="$(native "$T/home")" APPDATA="$(native "$T/home")"
 export XDG_DATA_HOME="$(native "$T/home")" XDG_CONFIG_HOME="$(native "$T/home")"
 export LOOMWORKS_RELEASE_URL="$(native "$T/empty-mirror")"

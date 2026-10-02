@@ -146,6 +146,15 @@ local function valid_version(v)
 end
 M._valid_version = valid_version
 
+--- A release version as lw names its downloads and stages: `<n>.<n>.<n>`
+--- plus an optional pre-release / build tail (`0.1.40`, `0.1.40-beta.1`),
+--- and a safe version. Narrower than `valid_version`, so a user's
+--- `.stage-old` in a data directory pointed at $HOME never matches.
+local function release_version(v)
+    return valid_version(v) and v:match("^%d+%.%d+%.%d+[%w%.%+%-]*$") ~= nil
+end
+M._release_version = release_version
+
 local function valid_module(n)
     return type(n) == "string" and n:match("^%w[%w._-]*$") ~= nil
 end
@@ -184,7 +193,7 @@ local function pinned_binary_version(name, assets)
         local tail = "-" .. a
         if #name > 3 + #tail and name:sub(-#tail) == tail then
             local v = name:sub(4, #name - #tail)
-            if valid_version(v) then return v end
+            if release_version(v) then return v end
         end
     end
     return nil
@@ -232,6 +241,26 @@ local function tree_size(path, st)
     local total = 0
     for _, n in ipairs(names(path)) do total = total + tree_size(path .. "/" .. n) end
     return total
+end
+
+--- Is `data` lw's own data directory (spec §16.40)? Any one marker: the
+--- machine key, the housekeeping stamp, `pinned/`, or an installed release
+--- `lua-<ver>/loomworks/cli.lua` (real entries, lstat). Without one (e.g.
+--- LOOMWORKS_DATA_DIR pointed at a home directory) nothing in it is
+--- scanned, and no stamp is written there.
+--- @param data string
+--- @return boolean
+function M.is_lw_data(data)
+    local function is(p, t) local st = uv().fs_lstat(p); return st ~= nil and st.type == t end
+    if is(data .. "/trust.key", "file") or is(data .. "/" .. M.STAMP, "file")
+            or is(data .. "/pinned", "directory") then
+        return true
+    end
+    for _, n in ipairs(names(data)) do
+        local v = n:match("^lua%-(.+)$")
+        if v and release_version(v) and is(data .. "/" .. n .. "/loomworks/cli.lua", "file") then return true end
+    end
+    return false
 end
 
 --- The default per-user data directory (boot.paths rules, via trust).
@@ -333,9 +362,9 @@ local function scan_data(items, ctx, data)
     local T = M.AGE.transient
     for _, n in ipairs(names(data)) do
         local v = n:match("^%.dl%-(.+)%.zip$")
-        if v and valid_version(v) then consider(items, ctx, data, n, "file", "download", T) end
+        if v and release_version(v) then consider(items, ctx, data, n, "file", "download", T) end
         v = n:match("^%.stage%-(.+)$")
-        if v and valid_version(v) then consider(items, ctx, data, n, "directory", "staging", T) end
+        if v and release_version(v) then consider(items, ctx, data, n, "directory", "staging", T) end
         if n == "release-notes-seen.tmp" or n:match("^release%-notes%-seen%.tmp%d+$") then
             consider(items, ctx, data, n, "file", "temp file", T)
         end
@@ -348,7 +377,7 @@ local function remove_pinned_dir(item)
     local trash = item._pinned_root .. "/.trash-" .. M.nonce()
     local ok, err = uv().fs_rename(item.path, trash)
     if not ok then return false, "not renamed aside (in use?): " .. tostring(err) end
-    local rok, rerr = require("loomworks.io").rm_rf(trash)
+    local rok, rerr = M._rm_tree(trash)
     pcall(uv().fs_rmdir, item._sha_dir)
     if not rok then return false, "renamed aside to " .. trash .. ", not fully removed: " .. tostring(rerr) end
     return true
@@ -369,9 +398,9 @@ local function scan_pinned(items, ctx, pinned, rpinned)
     local assets = host_assets()
     for _, n in ipairs(names(pinned)) do
         local sha, v = n:match("^%.dl%-(%x+)%-(.+)%.zip$")
-        if sha and is_sha(sha) and valid_version(v) then consider(items, ctx, pinned, n, "file", "download", T) end
+        if sha and is_sha(sha) and release_version(v) then consider(items, ctx, pinned, n, "file", "download", T) end
         sha, v = n:match("^%.stage%-(%x+)%-(.+)$")
-        if sha and is_sha(sha) and valid_version(v) then consider(items, ctx, pinned, n, "directory", "staging", T) end
+        if sha and is_sha(sha) and release_version(v) then consider(items, ctx, pinned, n, "directory", "staging", T) end
         local base = n:match("^(.+)%.dl$")
         if base and pinned_binary_version(base, assets) then consider(items, ctx, pinned, n, "file", "download", T) end
         local nonce = n:match("^%.trash%-(%x+)$")
@@ -395,7 +424,7 @@ local function scan_pinned(items, ctx, pinned, rpinned)
                 if fixed(sdir, rpinned .. "/" .. n) then
                     for _, ln in ipairs(names(sdir)) do
                         local lv = ln:match("^lua%-(.+)$")
-                        local st = lv and valid_version(lv) and uv().fs_lstat(sdir .. "/" .. ln)
+                        local st = lv and release_version(lv) and uv().fs_lstat(sdir .. "/" .. ln)
                         if st and st.type == "directory" then
                             local k = realkey(sdir .. "/" .. ln)
                             if lv == ctx.pin_version or not k or is_running(k, ctx)
@@ -474,7 +503,15 @@ end
 --- `lw-test-*.xml` / `lw-describe-*.txt` (and on Windows the vcvars probe) in
 --- a temp directory.
 local function scan_tmp(items, ctx, dir, vcvars)
+    -- A shared temp directory (POSIX /tmp) holds other users' files: only
+    -- this user's are candidates.
+    local function mine(n)
+        if ctx.is_windows then return true end
+        local st = uv().fs_lstat(dir .. "/" .. n)
+        return st ~= nil and st.uid == ctx.uid
+    end
     for _, n in ipairs(names(dir, M.TMP_SCAN_CAP)) do
+        if not mine(n) then goto continue end
         local h = n:match("^lw%-test%-(%x+)%.xml$")
         if h and is_hex(h, 16, 64) then consider(items, ctx, dir, n, "file", "test results", M.AGE.results) end
         h = n:match("^lw%-describe%-(%x+)%.txt$")
@@ -485,6 +522,7 @@ local function scan_tmp(items, ctx, dir, vcvars)
                 consider(items, ctx, dir, n, "file", "vcvars probe", M.AGE.vcvars)
             end
         end
+        ::continue::
     end
 end
 
@@ -508,6 +546,7 @@ local function remove_socket(item)
     local aside = item.path .. ".reclaim." .. M.nonce()
     local ok, err = uv().fs_rename(item.path, aside)
     if not ok then return false, tostring(err) end
+    if M._after_aside then M._after_aside(item, aside) end -- test seam
     local st = uv().fs_lstat(aside)
     -- Same file as tested: inode and device (an inode number can be reused
     -- at once), and its modification time unchanged (a fresh bind has a new
@@ -520,10 +559,30 @@ local function remove_socket(item)
         if uok then return true end
         return false, tostring(uerr)
     end
-    -- A daemon bound the name meanwhile: put its socket back.
-    if not uv().fs_lstat(item.path) then uv().fs_rename(aside, item.path) end
-    pcall(uv().fs_unlink, aside)
-    return false, "a daemon bound it meanwhile; left in place"
+    -- A daemon bound the name meanwhile: put its socket back. If the name is
+    -- taken again already, the moved socket is left where it is (it may be a
+    -- live daemon's endpoint), never unlinked; a later pass tests it like
+    -- any other.
+    if not uv().fs_lstat(item.path) and uv().fs_rename(aside, item.path) then
+        return false, "a daemon bound it meanwhile; put back"
+    end
+    return false, "a daemon bound it meanwhile; left at " .. aside
+end
+
+--- The root hashes of every workspace daemon running on this host, by a
+--- process scan (loomworks.daemon.discover, spec §19.6.1), or nil when the
+--- scan fails or finds a daemon whose root is unknown (then no socket is
+--- probed at all). A running daemon's socket is never connected to.
+local function live_daemon_hashes()
+    local ok, found = pcall(function() return (require("loomworks.daemon.discover").scan()) end)
+    if not ok or type(found) ~= "table" then return nil end
+    local dpaths = require("loomworks.daemon.paths")
+    local set = {}
+    for _, d in ipairs(found) do
+        if not d.root then return nil end
+        set[dpaths.root_hash(d.root)] = true
+    end
+    return set
 end
 
 local function scan_run_dir(items, ctx, dir)
@@ -533,20 +592,22 @@ local function scan_run_dir(items, ctx, dir)
     if type(st.uid) ~= "number" or st.uid ~= me then return end
     if not st.mode or (st.mode % 512) ~= tonumber("700", 8) then return end
     for _, n in ipairs(names(dir)) do
-        local h = n:match("^(%x+)%.sock$")
-        local aside = n:match("^%x+%.sock%.reclaim%.(%x+)$")
-        if (h and #h == 16) or aside then
+        local h = n:match("^(%x+)%.sock$") or n:match("^(%x+)%.sock%.reclaim%.%x+$")
+        local aside = n:match("%.reclaim%.%x+$") ~= nil
+        if h and #h == 16 then
             local p = dir .. "/" .. n
             local sst = uv().fs_lstat(p)
             if sst and sst.type == "socket" and sst.uid == me and ctx.now - mtime(sst) >= M.AGE.socket then
-                if aside then
-                    consider(items, ctx, dir, n, "socket", "socket", M.AGE.socket)
+                if ctx.live_hashes == nil then ctx.live_hashes = live_daemon_hashes() or false end
+                if not ctx.live_hashes or ctx.live_hashes[h] then
+                    -- a running daemon's (or unknown): never probed, never removed
                 elseif ctx.socket_ms > 0 then
                     local t0 = uv().hrtime()
                     local refused = refuses(p, math.min(500, ctx.socket_ms))
                     ctx.socket_ms = ctx.socket_ms - math.floor((uv().hrtime() - t0) / 1e6)
                     if refused then
-                        consider(items, ctx, dir, n, "socket", "socket", M.AGE.socket, { remove = remove_socket })
+                        consider(items, ctx, dir, n, "socket", "socket", M.AGE.socket,
+                            { remove = (not aside) and remove_socket or nil })
                     end
                 end
             end
@@ -573,7 +634,9 @@ local function scan_exe(items, ctx, exe)
     exe = norm(exe)
     local dir, base = exe:match("^(.*)/([^/]+)$")
     if not dir or not fixed(dir) then return end
-    consider(items, ctx, dir, base .. ".old", "file", "self-update", 0)
+    -- Only Windows renames the running binary aside (§16.32); elsewhere a
+    -- `<exe>.old` is the user's own (a rollback copy) and stays.
+    if ctx.is_windows then consider(items, ctx, dir, base .. ".old", "file", "self-update", 0) end
     consider(items, ctx, dir, base .. ".new", "file", "self-update", M.AGE.transient)
 end
 
@@ -606,7 +669,12 @@ function M.collect(opts)
         kept_pinned = 0,
         running = {},
         socket_ms = M.SOCKET_BUDGET_MS,
+        is_windows = opts.is_windows,
+        uid = opts.uid,
+        live_hashes = opts.live_daemon_hashes,
     }
+    if ctx.is_windows == nil then ctx.is_windows = IS_WIN end
+    if ctx.uid == nil then ctx.uid = (uv().getuid and uv().getuid()) or -1 end
     local items = {}
     local function guarded(fn, ...)
         local ok, err = pcall(fn, ...)
@@ -628,7 +696,7 @@ function M.collect(opts)
 
     local data = norm(opts.data or default_data())
     local dst = uv().fs_stat(data)
-    local rdata = dst and dst.type == "directory" and realkey(data) or nil
+    local rdata = dst and dst.type == "directory" and M.is_lw_data(data) and realkey(data) or nil
     if rdata then
         guarded(scan_data, items, ctx, data)
         local pinned = data .. "/pinned"
@@ -651,7 +719,7 @@ function M.collect(opts)
         end
     end
     for _, t in ipairs(opts.tmp_dirs or default_tmp_dirs()) do
-        if fixed(t) then guarded(scan_tmp, items, ctx, norm(t), IS_WIN) end
+        if fixed(t) then guarded(scan_tmp, items, ctx, norm(t), ctx.is_windows) end
     end
     if opts.sockets ~= false and not IS_WIN then
         for _, d in ipairs(opts.run_dirs or default_run_dirs()) do guarded(scan_run_dir, items, ctx, d) end
@@ -671,6 +739,38 @@ function M.collect(opts)
         pinned_age = ctx.pinned_age, errors = ctx.errors, last_error = ctx.last_error }
 end
 
+--- Remove a tree: links unlinked as links (never followed), directories
+--- emptied then removed. A read-only file is made writable before a retry
+--- only when it has a single link: the attribute belongs to the file, so
+--- clearing it through a hard link would change the other name's file too.
+--- @param path string
+--- @return boolean ok, string|nil err
+function M._rm_tree(path)
+    local st = uv().fs_lstat(path)
+    if not st then return true end
+    if st.type == "directory" then
+        local errs = {}
+        for _, n in ipairs(names(path)) do
+            local ok, e = M._rm_tree(path .. "/" .. n)
+            if not ok then errs[#errs + 1] = e end
+        end
+        local ok, e = uv().fs_rmdir(path)
+        if not ok then errs[#errs + 1] = "rmdir " .. path .. ": " .. tostring(e) end
+        if #errs > 0 then return false, table.concat(errs, "; ") end
+        return true
+    end
+    local ok, e = uv().fs_unlink(path)
+    if ok then return true end
+    if st.type == "link" and uv().fs_rmdir(path) then return true end -- a directory link / junction
+    if st.type == "file" and (st.nlink or 1) <= 1
+            and (tostring(e):match("^EPERM") or tostring(e):match("^EACCES")) then
+        pcall(uv().fs_chmod, path, tonumber("644", 8))
+        ok, e = uv().fs_unlink(path)
+        if ok then return true end
+    end
+    return false, "unlink " .. path .. ": " .. tostring(e)
+end
+
 --- Remove one collected item, re-checking it first (still the same type, not
 --- a link, still old enough). A path gone by the end counts as removed (a
 --- concurrent remover).
@@ -687,9 +787,7 @@ function M.remove(item, now)
     if item.remove then
         ok, err = item.remove(item)
     else
-        -- A tree's links are unlinked, never followed; a read-only file is
-        -- made writable first (Windows).
-        ok, err = require("loomworks.io").rm_rf(item.path)
+        ok, err = M._rm_tree(item.path)
     end
     if not uv().fs_lstat(item.path) then return true end
     if ok then return true end
@@ -699,6 +797,40 @@ end
 -- ---------------------------------------------------------------------------
 -- The startup pass
 -- ---------------------------------------------------------------------------
+
+--- Record the last use of the pinned release this process runs (spec
+--- §16.40), bundle-side, so one run by a host that does not record it (an
+--- older host) is not pruned as unused: the running bundle root and the
+--- running executable get the current time as their modification time, only
+--- when they resolve to `<data>/pinned/<sha256>/lua-<ver>` /
+--- `<data>/pinned/lw-<ver>-<asset>` (separator-bounded). Never raises.
+--- @param opts? { data?: string, bundle?: string|false, exe?: string|false, now?: integer }
+function M.touch_running(opts)
+    opts = opts or {}
+    pcall(function()
+        local data = norm(opts.data or default_data())
+        local rpinned = realkey(data .. "/pinned")
+        if not rpinned then return end
+        local now = opts.now or os.time()
+        local function rel_of(p)
+            local k = p and realkey(p)
+            if k and k:sub(1, #rpinned + 1) == rpinned .. "/" then return k:sub(#rpinned + 2) end
+            return nil
+        end
+        local bundle = opts.bundle
+        if bundle == nil then bundle = running_bundle() end
+        local exe = opts.exe
+        if exe == nil then local ok, p = pcall(uv().exepath); exe = ok and p or nil end
+        local rb = bundle and rel_of(bundle)
+        local sha, v = nil, nil
+        if rb then sha, v = rb:match("^(%x+)/lua%-([^/]+)$") end
+        if sha and is_sha(sha) and release_version(v) then pcall(uv().fs_utime, bundle, now, now) end
+        local re = exe and rel_of(exe)
+        if re and not re:find("/", 1, true) and pinned_binary_version(re, host_assets()) then
+            pcall(uv().fs_utime, exe, now, now)
+        end
+    end)
+end
 
 --- Claim the day's pass: false when one ran within `M.INTERVAL`. Sets the
 --- stamp's modification time (creating it exclusively when missing).
@@ -740,11 +872,14 @@ end
 --- @return integer|nil removed, integer|nil failed (nil when the pass did not run)
 function M.startup(root, opts)
     opts = opts or {}
+    -- The test suites set this so a spawned lw never touches the machine's
+    -- temp and socket directories (spec §16.40).
+    if not opts.force and os.getenv("LOOMWORKS_NO_HOUSEKEEPING") == "1" then return nil end
     local removed, failed, bytes, err_text
     local ok, err = pcall(function()
         local data = norm(opts.data or default_data())
         local dst = uv().fs_stat(data)
-        if not dst or dst.type ~= "directory" then return end
+        if not dst or dst.type ~= "directory" or not M.is_lw_data(data) then return end
         local now = opts.now or os.time()
         if not claim(data, now) then return end
         local o = {}

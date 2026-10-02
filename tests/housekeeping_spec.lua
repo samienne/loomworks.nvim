@@ -46,6 +46,7 @@ local function sandbox()
         outside = mkdir(real .. "/outside"),
     }
     write(sb.outside .. "/precious.txt", "precious")
+    write(sb.data .. "/trust.key") -- lw's data directory (marker, §16.40)
     return sb
 end
 
@@ -53,7 +54,7 @@ local function opts(sb, extra)
     local o = {
         data = sb.data, tmp_dirs = { sb.tmp }, run_dirs = {}, sockets = false,
         exe = sb.bin .. "/lw.exe", bundle = false, pin_version = false, now = NOW,
-        device_lock_dir_default = true,
+        device_lock_dir_default = true, is_windows = true, force = true,
     }
     for k, v in pairs(extra or {}) do o[k] = v end
     return o
@@ -420,6 +421,129 @@ describe("lw cleanup (spec §16.40)", function()
         assert.equals(45, hk.parse_duration("45"))
         assert.is_nil(hk.parse_duration("0d"))
         assert.is_nil(hk.parse_duration("1.5d"))
+    end)
+end)
+
+describe("housekeeping review fixes (spec §16.40)", function()
+    local sb
+    before_each(function() sb = sandbox() end)
+    after_each(function() require("loomworks.io").rm_rf(sb.base) end)
+
+    it("<exe>.old is a self-update leftover only on Windows; <exe>.new on every OS", function()
+        local old = write(sb.bin .. "/lw.exe.old"); age(old)
+        local new = write(sb.bin .. "/lw.exe.new"); age(new)
+        local posix = paths_of(hk.collect(opts(sb, { is_windows = false })))
+        assert.is_nil(posix[old], "a user's own lw.old copy on POSIX must stay")
+        assert.is_truthy(posix[new])
+        local win = paths_of(hk.collect(opts(sb, { is_windows = true })))
+        assert.is_truthy(win[old]); assert.is_truthy(win[new])
+    end)
+
+    it("only real release versions in <data> and pinned; nothing at all without an lw marker", function()
+        local words = {
+            mkdir(sb.data .. "/.stage-old"), write(sb.data .. "/.dl-foo.zip"),
+            write(sb.data .. "/.dl-1.2.zip"), mkdir(sb.data .. "/.stage-v0.1.40"),
+            write(sb.data .. "/pinned/.dl-" .. SHA .. "-latest.zip"),
+            mkdir(sb.data .. "/pinned/.stage-" .. SHA .. "-backup"),
+            write(sb.data .. "/pinned/lw-next-lw-linux-x86_64.dl"),
+        }
+        for _, p in ipairs(words) do age(p) end
+        local real = write(sb.data .. "/.dl-0.1.40-beta.1.zip"); age(real)
+        local got = paths_of(hk.collect(opts(sb)))
+        for _, p in ipairs(words) do assert.is_nil(got[p], p) end
+        assert.is_truthy(got[real])
+        -- A data directory with no sign of lw (e.g. LOOMWORKS_DATA_DIR=$HOME):
+        -- nothing in it is scanned, and the startup pass writes no stamp.
+        local home = mkdir(sb.base .. "/home")
+        local dl = write(home .. "/.dl-0.1.40.zip"); age(dl)
+        local mods = write(home .. "/modules/.dl-ohos.zip"); age(mods)
+        local o = opts(sb, { data = home, force = true })
+        local hgot = paths_of(hk.collect(o))
+        assert.is_nil(hgot[dl]); assert.is_nil(hgot[mods])
+        hk.startup(nil, o)
+        assert.is_true(exists(dl)); assert.is_false(exists(home .. "/.housekeeping"))
+        -- Any one marker makes it lw's: the trust key, a release, the stamp, pinned/.
+        for _, m in ipairs({ "trust.key", "lua-0.1.40/loomworks/cli.lua", ".housekeeping" }) do
+            local h2 = mkdir(sb.base .. "/h-" .. m:gsub("[/.]", "_"))
+            write(h2 .. "/" .. m)
+            local d2 = write(h2 .. "/.dl-0.1.40.zip"); age(d2)
+            assert.is_truthy(paths_of(hk.collect(opts(sb, { data = h2 })))[d2], m)
+        end
+    end)
+
+    it("the startup pass is off under LOOMWORKS_NO_HOUSEKEEPING (set for the whole suite)", function()
+        assert.equals("1", vim.env.LOOMWORKS_NO_HOUSEKEEPING)
+        local dl = write(sb.data .. "/.dl-0.1.40.zip"); age(dl)
+        assert.is_nil((hk.startup(nil, opts(sb, { force = false }))))
+        assert.is_true(exists(dl))
+        assert.is_true((hk.startup(nil, opts(sb, { force = true }))) == 1)
+    end)
+
+    it("a spawned lw never runs the startup pass in the suite (no real temp / socket dirs touched)", function()
+        local H = require("tests.daemon_helpers")
+        local env = H.env()
+        write(env.data .. "/trust.key")
+        local dl = write(env.data .. "/.dl-0.1.40.zip"); age(dl)
+        local root = H.workspace()
+        local r = H.lw({ "status" }, { env = env, cwd = root })
+        assert.equals(0, r.code, r.stderr)
+        assert.is_true(exists(dl))
+        assert.is_false(exists(env.data .. "/.housekeeping"))
+        -- With the switch off and the temp dirs sandboxed, the same run cleans.
+        local t = mkdir(sb.base .. "/ttmp")
+        local env2 = H.env({ LOOMWORKS_NO_HOUSEKEEPING = false, TMP = t, TEMP = t, TMPDIR = t,
+            XDG_RUNTIME_DIR = t })
+        write(env2.data .. "/trust.key")
+        local dl2 = write(env2.data .. "/.dl-0.1.40.zip"); age(dl2)
+        local r2 = H.lw({ "status" }, { env = env2, cwd = root })
+        assert.equals(0, r2.code, r2.stderr)
+        assert.is_false(exists(dl2))
+        H.cleanup()
+    end)
+
+    it("temp entries of another user are never candidates (POSIX)", function()
+        local x = write(sb.tmp .. "/lw-test-" .. HEX24 .. ".xml"); age(x)
+        local mine = paths_of(hk.collect(opts(sb)))
+        assert.is_truthy(mine[x])
+        if not IS_WIN then
+            local other = paths_of(hk.collect(opts(sb, { uid = -12345 })))
+            assert.is_nil(other[x])
+        end
+    end)
+
+    it("a hard-linked read-only leftover is unlinked by name only, never made writable", function()
+        local precious = sb.outside .. "/ro.txt"
+        write(precious, "ro")
+        assert(uv.fs_chmod(precious, tonumber("444", 8)))
+        local hard = sb.data .. "/.dl-0.1.45.zip"
+        if not uv.fs_link(precious, hard) then return end
+        age(hard)
+        local stage = mkdir(sb.data .. "/.stage-0.1.45")
+        local inner = stage .. "/ro2.txt"
+        assert(uv.fs_link(precious, inner))
+        age(stage)
+        for _, it in ipairs(hk.collect(opts(sb))) do hk.remove(it, NOW) end
+        local st = uv.fs_stat(precious)
+        assert.equals(0, math.floor((st.mode % 512) / 128) % 2, "the target became writable")
+        assert.equals("ro", read(precious))
+        if not IS_WIN then
+            assert.is_false(exists(hard)); assert.is_false(exists(stage))
+        end
+        pcall(uv.fs_chmod, precious, tonumber("644", 8))
+        pcall(uv.fs_chmod, inner, tonumber("644", 8))
+        pcall(uv.fs_chmod, hard, tonumber("644", 8))
+    end)
+
+    it("a pinned bundle running from <data>/pinned records its own last use (bundle-side)", function()
+        local b = write(sb.data .. "/pinned/" .. SHA .. "/lua-0.1.30/loomworks/cli.lua"):match("^(.*)/loomworks/cli%.lua$")
+        local bin = write(sb.data .. "/pinned/lw-0.1.30-lw-linux-x86_64")
+        local other = write(sb.base .. "/elsewhere/lua-0.1.30/loomworks/cli.lua"):match("^(.*)/loomworks/cli%.lua$")
+        for _, p in ipairs({ b, bin, other }) do age(p) end
+        hk.touch_running({ data = sb.data, bundle = b, exe = bin, now = NOW })
+        hk.touch_running({ data = sb.data, bundle = other, exe = sb.bin .. "/lw.exe", now = NOW })
+        assert.equals(NOW, uv.fs_stat(b).mtime.sec)
+        assert.equals(NOW, uv.fs_stat(bin).mtime.sec)
+        assert.equals(OLD, uv.fs_stat(other).mtime.sec)
     end)
 end)
 

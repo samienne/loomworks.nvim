@@ -1677,25 +1677,34 @@ workspace operation's temporary files (the gtest results of `lw test
 `housekeeping.tmp_path` (system temp only when that cannot be created).
 
 `housekeeping.lua` also owns leftover removal outside the workspace.
-`collect(opts)` scans only fixed directories one level deep (`<data>`,
-`pinned`, `pinned/<sha256>` for `--all`, `modules`, default `device-locks`,
-the legacy `daemon/logs`, the temp dirs, the `lw` host's directory for
-`.old`/`.new`, the POSIX socket dirs, `<root>/.nvim/tmp`); each must be a real
-directory whose realpath is the expected one (`fixed`), and an entry is a
-candidate only on an exact name match, the right lstat type and its age
-(`M.AGE`). Items carry a `remove` override where removal is not a plain
-`io.rm_rf`: device locks (dead holder, no program record; `lock_record.reclaim`
-by nonce), sockets (connect refused -> rename aside, inode check, put back),
-pinned bundle dirs (rename to `.trash-<nonce>`, then rm_rf, then rmdir the
+`collect(opts)` scans only fixed directories one level deep (`<data>` only when
+`is_lw_data` finds an lw marker; `pinned`, `pinned/<sha256>` for `--all`,
+`modules`, default `device-locks`, the legacy `daemon/logs`, the temp dirs
+(POSIX: this uid's entries only), the `lw` host's directory for `.new` and, on
+Windows, `.old`, the POSIX socket dirs, `<root>/.nvim/tmp`); each must be a
+real directory whose realpath is the expected one (`fixed`), and an entry is a
+candidate only on an exact name match (`release_version` for versions), the
+right lstat type and its age (`M.AGE`). Removal is `_rm_tree` (links unlinked,
+never followed; a read-only file is chmod'ed only when `nlink <= 1`), or an
+item's `remove` override: device locks (dead holder, no program record;
+`lock_record.reclaim` by nonce), sockets (sockets of running daemons, from
+`daemon.discover.scan`, are never probed; connect refused -> rename aside,
+inode/dev/mtime check, put back, or left aside when the name is taken again),
+pinned bundle dirs (rename to `.trash-<nonce>`, then `_rm_tree`, then rmdir the
 `<sha256>` dir). `remove(item)` re-checks type and age first and treats a path
-already gone as removed (concurrent passes). `startup(root)` is called by
-`cli.main()` for every command that resolves a root (after `daemon` and
-`cleanup` dispatch), inside a pcall: it claims `<data>/.housekeeping` (mtime;
-created O_EXCL) at most once per `INTERVAL`, removes the default set, and logs
-one line to the runtime log. `cmd(root, args, host)` is `lw cleanup`. It is
-bundle-side so every host runs it (only `boot.pin` is used, through pcall);
-the one host-side piece is `main.lua` setting the pinned bundle's and binary's
-mtime on each pinned run.
+already gone as removed (concurrent passes). `cli.main()` calls, inside one
+pcall, after `daemon` and `cleanup` dispatch: `touch_running()` (the running
+bundle / exe get their mtime set when they resolve into `<data>/pinned`, the
+bundle-side last-use record) and `startup(root)` (skipped under
+`LOOMWORKS_NO_HOUSEKEEPING=1`, which `tests/minimal_init.lua`, the daemon test
+helpers and the CI scripts set; claims `<data>/.housekeeping` by mtime, created
+O_EXCL, at most once per `INTERVAL`; removes the default set; logs one line to
+the runtime log). `cmd(root, args, host)` is `lw cleanup`. It is bundle-side so
+every host runs it (only `boot.pin` is used, through pcall); `main.lua` also
+sets the pinned bundle's and binary's mtime on each pinned redirect.
+`daemon/rlog.lua` appends only to a log that is lw's (empty or starting with a
+runtime-log line), through an fd whose fstat matches the lstat, and never
+rotates over a foreign `.log.1`.
 
 Release bundles are versioned directories; activation writes a *new*
 `lua-<ver>/` and never overwrites a running one (spec §16.13). "Highest

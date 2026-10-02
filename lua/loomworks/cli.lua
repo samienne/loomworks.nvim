@@ -12001,8 +12001,13 @@ local function main()
     finish(M.cmd_cleanup(root, a))
   end
   -- Housekeeping (spec §16.40): once a day, remove leftovers of interrupted
-  -- lw runs outside the workspace. Silent; never fails the command.
-  pcall(function() require("loomworks.housekeeping").startup(root) end)
+  -- lw runs outside the workspace, and record the last use of a pinned
+  -- release this process runs from. Silent; never fails the command.
+  pcall(function()
+    local hk = require("loomworks.housekeeping")
+    hk.touch_running()
+    hk.startup(root)
+  end)
 
   -- Bare `lw` and `lw status` → status (also fine outside a workspace).
   if not command or command == "status" then

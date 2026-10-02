@@ -3793,6 +3793,8 @@ leftover is removed once it is older than the age given, by modification time
 
 `<exe>.new` and `<exe>.old` are looked for only beside a running `lw` host:
 not in the editor, and not beside a bare runtime running a source tree.
+`<exe>.old` only on Windows: elsewhere the binary is replaced in one rename,
+and an `<exe>.old` is the user's own (a rollback copy, say) and stays.
 
 **Legacy locations.** Earlier versions kept the following outside the
 workspace. This version keeps them inside it (below), and removes what earlier
@@ -3815,12 +3817,24 @@ that workspace, after 24 hours (results) or 7 days (editor buffers). If
 `.nvim/tmp/` cannot be created, the file is made in `<tmp>` under the same
 name, where a leftover is a legacy-location leftover.
 
+The runtime log is written only while it is lw's own: a regular file that is
+empty or starts with a runtime-log line, appended to through a descriptor
+checked to be the file `lstat` saw. A file at its name that is not (one a
+repository ships in `.nvim/`, say) is never written, rotated or removed, and
+an existing `.log.1` that is not lw's stops rotation (nothing more is
+written). The lines lost that way are only diagnostics; rewriting a file the
+repository owns would not be.
+
 **Last use of a pinned release.** A host that redirects to a pinned release
 (§16.23) sets the modification time of the pinned bundle directory and of the
-pinned host binary to the current time. Hosts older than this rule do not, so
-for them the time of provisioning stands in for the last use. A pruned release
-that such a host still needs is provisioned again (downloaded and verified,
-§16.22) on its next use.
+pinned host binary to the current time. The bundle does the same for itself at
+the start of every command-line run: when the running bundle root, or the
+running executable, resolves to `<data>/pinned/<sha256>/lua-<ver>` or
+`<data>/pinned/lw-<ver>-<asset>`, it gets the current time. So a pinned
+release run through a host older than this rule is still recorded once the
+release itself has it. Otherwise the time of provisioning stands in for the
+last use, and a pruned release that is still needed is provisioned again
+(downloaded and verified, §16.22) on its next use.
 
 #### Housekeeping
 
@@ -3831,7 +3845,13 @@ A command-line invocation removes leftovers at the start of its run:
   file `<data>/.housekeeping` records the last pass. A run claims the pass by
   setting the stamp's modification time before it starts. Two processes that
   claim at once both run the pass, which is safe: every removal tolerates a
-  concurrent remover. The editor host never runs it.
+  concurrent remover. The editor host never runs it, and neither does a run
+  with `LOOMWORKS_NO_HOUSEKEEPING=1` (the test suites set it).
+- **Only lw's data directory.** `<data>` (and everything below it) is read
+  only when it shows it is lw's: it holds the machine key, the stamp,
+  `pinned/`, or an installed release `lua-<ver>/loomworks/cli.lua`. A data
+  directory without one (`LOOMWORKS_DATA_DIR` pointed at a home directory,
+  say) is never scanned, and no stamp is written into it.
 - **What.** Exactly the leftovers in the tables above whose age has passed,
   and the leftovers in the current workspace's `.nvim/tmp/`. Never the pinned
   releases (only `lw cleanup --all` prunes them), and never a legacy runtime
@@ -3896,7 +3916,9 @@ unlinked (on Windows a running one cannot be, and is skipped).
 Every removal by housekeeping and `lw cleanup` follows these rules:
 
 1. **Exact names.** An entry is a candidate only when its whole name matches
-   its pattern above. Versions are safe release versions (§16.22),
+   its pattern above. Versions are release versions: three dot-separated
+   numbers and an optional pre-release or build tail (`0.1.40`,
+   `0.1.40-beta.1`), and safe versions (§16.22);
    `<sha256>` is 64 lowercase hex digits, `<name>` is a valid module name
    (§16.20), `<arch>` is a known `vcvarsall` architecture, nonces and hashes
    are hex digits of the stated length, and `<pid>` is digits. A near miss is
@@ -3914,7 +3936,10 @@ Every removal by housekeeping and `lw cleanup` follows these rules:
    candidate must be a regular file, a directory candidate a directory, a
    socket candidate a socket. Inside a leftover directory being removed, links
    are removed as links, never followed. Removing a hard link removes only
-   that name.
+   that name; a read-only file is made writable for its removal only when it
+   has no other link (the attribute belongs to the file, not the name). In a
+   shared temporary directory (POSIX) only the user's own files are
+   candidates.
 4. **Age before removal.** A leftover is removed only past its age. Nothing
    younger is touched.
 5. **Never in use.** A device lock is removed only when its holder is
@@ -3923,8 +3948,12 @@ Every removal by housekeeping and `lw cleanup` follows these rules:
    reclaim of §19.5. A socket is removed only when it lies in a per-user
    directory of §19.7 (a real directory owned by the user, mode `0700`), is a
    socket owned by the user, is older than an hour and **refuses a
-   connection**. It is first moved aside; if what was moved is not the file
-   tested (a daemon bound the name meanwhile), it is put back. Pinned releases
-   follow the rules above.
+   connection**. A socket named for a workspace whose daemon is running (by a
+   process scan, §19.6.1) is never connected to, nor is any when the scan
+   fails or finds a daemon whose workspace it cannot tell. A socket is first
+   moved aside; if what was moved is not the file tested (same device, inode
+   and modification time; a daemon bound the name meanwhile), it is put back,
+   and if the name is taken again already it is left where it was moved,
+   never unlinked. Pinned releases follow the rules above.
 6. **Never anything else.** The kept items, `.leftover` files, the
    `<data>/daemon/` directory, and anything not listed here are never removed.

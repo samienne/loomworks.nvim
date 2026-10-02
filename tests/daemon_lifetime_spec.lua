@@ -197,6 +197,37 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.equals("directory", uv.fs_lstat(base .. "/ws3/.nvim/loomworks.daemon.log").type)
         vim.fn.delete(base, "rf")
     end)
+
+    it("runtime log: a file that is not lw's (e.g. shipped by the repository) is never written, rotated or removed", function()
+        local base = vim.fn.tempname():gsub("\\", "/")
+        local function put(p, body)
+            vim.fn.mkdir(vim.fn.fnamemodify(p, ":h"), "p")
+            local f = assert(io.open(p, "wb")); f:write(body); f:close()
+        end
+        local function get(p) local f = io.open(p, "rb"); if not f then return nil end; local b = f:read("*a"); f:close(); return b end
+        local saved_max = rlog.MAX_BYTES
+        rlog.MAX_BYTES = 10
+        -- A foreign log, over the cap: left exactly as it is, no .1 made.
+        local log = base .. "/ws/.nvim/loomworks.daemon.log"
+        put(log, "# committed by someone\nnot a runtime log line\n")
+        rlog.write(base .. "/ws", "line")
+        assert.equals("# committed by someone\nnot a runtime log line\n", get(log))
+        assert.is_nil(uv.fs_lstat(log .. ".1"))
+        -- An lw log over the cap with a foreign .1: the .1 is kept, nothing rotated.
+        local log2 = base .. "/ws2/.nvim/loomworks.daemon.log"
+        put(log2, "2026-10-02T10:00:00Z pid 1 started the workspace daemon\n")
+        put(log2 .. ".1", "precious\n")
+        rlog.write(base .. "/ws2", "line")
+        assert.equals("precious\n", get(log2 .. ".1"))
+        -- An lw log over the cap with no .1 rotates as before.
+        local log3 = base .. "/ws3/.nvim/loomworks.daemon.log"
+        put(log3, "2026-10-02T10:00:00Z pid 1 started the workspace daemon\n")
+        rlog.write(base .. "/ws3", "next")
+        assert.truthy(get(log3 .. ".1"))
+        assert.truthy((get(log3) or ""):find("next", 1, true))
+        rlog.MAX_BYTES = saved_max
+        vim.fn.delete(base, "rf")
+    end)
 end)
 
 describe("ensure (§19.9 through a workspace command)", function()
