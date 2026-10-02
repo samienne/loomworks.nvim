@@ -46,17 +46,28 @@ end
 --- @return table|nil
 function M.read(root)
     local path = paths.handle_path(root)
-    local st = uv().fs_stat(path)
-    if not st then return nil end
-    local info, decoded = {}, nil
-    if st.type == "file" then
-        local fd = uv().fs_open(path, "r", 256)
-        if fd then
-            local data = uv().fs_read(fd, math.min(st.size or 0, 65536) + 1, 0)
-            uv().fs_close(fd)
-            local ok, d = pcall(vim.json.decode, data or "")
+    -- Windows: one open, as short as it can be (while a reader holds the
+    -- file open, the daemon's rename over it fails — `write` retries).
+    -- POSIX: never opened unless it is a regular file (a FIFO planted in a
+    -- shared `.nvim/` would block the open).
+    local info, decoded, st = {}, nil, nil
+    if package.config:sub(1, 1) ~= "\\" then
+        st = uv().fs_stat(path)
+        if not st then return nil end
+    end
+    local fd = (not st or st.type == "file") and uv().fs_open(path, "r", 256) or nil
+    if fd then
+        st = uv().fs_fstat(fd)
+        local data = st and st.type == "file" and uv().fs_read(fd, math.min(st.size or 0, 65536) + 1, 0)
+        uv().fs_close(fd)
+        if data then
+            local ok, d = pcall(vim.json.decode, data)
             if ok and type(d) == "table" then decoded = d end
         end
+    end
+    if not st then
+        st = uv().fs_stat(path)
+        if not st then return nil end
     end
     if decoded and M.valid(decoded) then
         info = decoded
@@ -80,9 +91,20 @@ function M._suffix()
     return string.format("%x%x", uv().hrtime() % 0x7fffffff, math.random(0, 0x7fffffff))
 end
 
+--- The rename retry of `write` (Windows): attempts, and the sleep before
+--- each retry (ms; the last value repeats). Bounded — about 0.2 s at most —
+--- because the daemon's loop waits meanwhile.
+M.RENAME_ATTEMPTS = 8
+M.RENAME_DELAYS_MS = { 2, 5, 10, 20, 40 }
+
 --- Write the handle atomically: staged to `<handle>.tmp-<random>` created
 --- exclusively (never through a file or link planted in a shared `.nvim/`),
---- then renamed over the handle.
+--- then renamed over the handle. On Windows the rename fails (EPERM/EACCES)
+--- while another process has the handle open — a client reading it, an
+--- indexer or a scanner — so it is retried briefly (`RENAME_ATTEMPTS`). A
+--- rename that still fails removes the staged file (that exact name, a
+--- regular file this call created) and leaves the previous handle as it was:
+--- never a partial one.
 --- @param root string
 --- @param rec table
 --- @return boolean|nil ok, string|nil err
@@ -104,9 +126,17 @@ function M.write(root, rec)
         if code ~= "EEXIST" then break end
     end
     if not tmp then return nil, err end
-    local ok_r, rerr = uv().fs_rename(tmp, path)
-    if not ok_r then pcall(uv().fs_unlink, tmp); return nil, rerr end
-    return true
+    local rerr
+    for i = 1, M.RENAME_ATTEMPTS do
+        local ok_r, e, code = uv().fs_rename(tmp, path)
+        if ok_r then return true end
+        rerr = e
+        if (code ~= "EPERM" and code ~= "EACCES") or i == M.RENAME_ATTEMPTS then break end
+        uv().sleep(M.RENAME_DELAYS_MS[math.min(i, #M.RENAME_DELAYS_MS)])
+    end
+    local lst = uv().fs_lstat(tmp)
+    if lst and lst.type == "file" then pcall(uv().fs_unlink, tmp) end
+    return nil, rerr
 end
 
 --- Refresh the handle's modification time (the heartbeat). Returns false

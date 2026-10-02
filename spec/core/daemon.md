@@ -496,6 +496,11 @@ the pid (§16.6). The handle is **discovery only**: the runtime lock (§19.2)
 decides who the runtime is, and the handshake (§19.8) decides whether a client
 may use it. A malformed handle is reported as unreadable, never as a live
 daemon. A daemon that finds its handle removed while it runs rewrites it.
+A rewrite stages the new file and renames it over the handle; on Windows that
+rename fails while another process has the handle open (a client reading it,
+an indexer, a scanner), so it is retried for a bounded fraction of a second.
+A rewrite that still fails leaves the previous handle in place, never a
+partial one, and removes its staged file.
 
 **Runtime row.** `lw status` shows one `Runtime` line computed **only** from the
 handle and the runtime lock — it never launches or connects:
@@ -773,8 +778,11 @@ failure the client prints as `lw: <error>`). The client that started the task
 its terminal. It is **flow-controlled**: when a few megabytes wait unread on
 the owner's connection (a client that stopped reading, e.g. `lw build | less`
 paused), the daemon stops reading the running step's output until the owner
-caught up, so the build tool blocks on its full pipe exactly as it blocks on a
-paused terminal in-process, and the daemon's memory stays bounded;
+caught up, so the build tool then blocks on its full pipe as it blocks on a
+paused terminal in-process, and the daemon's memory stays bounded. Up to that
+bound (about 4 MiB) the output is buffered, so a reader paused briefly does
+not pause the tool — a build whose whole output fits finishes while the reader
+waits, and the reader still gets all of it, in order;
 cancellation still applies while paused. Other clients **observe** it with
 output bounded per task by bytes (a few megabytes each, then a single
 truncation notice); an observer whose connection falls further behind than a
@@ -845,7 +853,12 @@ applies it to the operation and to nothing else:
   identifiers (`WT_SESSION`, `TERM_SESSION_ID`, `TMUX`, `TMUX_PANE`, `STY`,
   `WINDOWID`, `SSH_CONNECTION`, `SSH_TTY`, `SSH_AUTH_SOCK`, `GPG_TTY`,
   `XDG_SESSION_ID`, editor terminals' IPC handles `VSCODE_*`, …; names compared
-  case-insensitively on Windows); these still reach the step unchanged. It is a
+  case-insensitively on Windows), and the hidden `=`-prefixed entries of a
+  Windows environment block (cmd.exe's per-drive directories `=C:` and
+  `=ExitCode`, which every process started from a cmd.exe — a `.cmd` shim, a
+  PowerShell or developer prompt opened from one — inherits); these still
+  reach the step unchanged, and the `=` entries are never applied to the
+  daemon's own process environment. It is a
   list of what to ignore, not of what to compare: what a load reads is
   open-ended (`${VAR}` references, module and SDK probes, compiler and
   `vcvarsall` variables), and a variable missed by a list of what to compare
@@ -874,7 +887,8 @@ arguments as the in-process host does (§16.9; the same matcher, the same
 messages, the client's interactivity).
 
 **Cancellation.** An operation belongs to its client. When that client
-disconnects (Ctrl-C ends `lw`), the daemon stops (`lw daemon stop`, idle,
+disconnects (Ctrl-C ends `lw`: the interrupt handler drops the connection,
+which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
 retire, root removed, lost lock), or the workspace or the operation's subject
 is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
@@ -882,7 +896,13 @@ that step, releases its locks and ends the task nonzero (`build stopped:
 <reason>`). A client that loses the connection after its operation was
 accepted reports a failure; it never re-runs the operation another way. A
 connection that owns a running operation is never dropped for silence
-(§19.11); the CLI also pings while it waits.
+(§19.11); the CLI also pings while it waits. The step's processes are the
+daemon's, not in the client's console, so the interrupt must reach the
+client itself: on Windows a routed client re-enables the console's Ctrl-C for
+its process (a process started with it disabled — `start /b`, a new process
+group, as Git Bash starts the native program it then signals with `kill
+-INT` — would otherwise never see it, while in-process the build's own
+processes in that console still stop).
 
 **Routing.** A client routes an operation to the daemon only when the daemon
 carries every argument form the client was given; any other form runs on the
@@ -894,13 +914,22 @@ copy and cache verify; **not routed** — the in-process path exactly as
 before — with `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI` (§19.1),
 `--break-locks` (its ask-and-kill recovery stays with the client process), a
 version bypass, a daemon that is hung, starting, foreign or could not be
-started, and an argument `cmd_build` refuses (it reports it). A daemon that
-cannot be reached, or fails before accepting, is reported in one line and the
-build runs in-process: `lw: the workspace daemon could not take the build
-(<reason>); running without it`. While the daemon is opt-in, an accepted
-build prints one dim line on standard error before its output — `lw:
-building through the workspace daemon (pid N)` — which is removed when the
-default flips; a refusal or a declined request prints none.
+started, and an argument `cmd_build` refuses (it reports it). In
+`runtime-mode daemon`, a build the daemon does not run is never silent:
+except for the explicit opt-outs (`--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`)
+and the cases the in-process path itself reports (an argument `cmd_build`
+refuses, a workspace the machine refuses), exactly one line on standard error
+says why, and the build runs in-process. The version handshake's and the
+launch's lines (§19.9, §19.10) are that line for a version bypass, a newer
+daemon, and a daemon that is hung, still starting or could not be started; a
+declined request prints `lw: the workspace daemon declined the build
+(<reason>); running without it`; every other case — a runtime held by another
+lw command or another host, `--break-locks`, a daemon that cannot be reached
+or fails before accepting, a failed endpoint check — prints `lw: the
+workspace daemon could not take the build (<reason>); running without it`.
+While the daemon is opt-in, an accepted build prints one dim line on standard
+error before its output — `lw: building through the workspace daemon (pid N)`
+— which is removed when the default flips; a refusal prints neither.
 
 ### 19.16 The editor as a client
 

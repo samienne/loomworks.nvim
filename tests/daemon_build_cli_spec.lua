@@ -154,7 +154,45 @@ describe("lw build through the workspace daemon (real processes)", function()
             assert.equals(0, x.code, x.stderr)
             assert.is_nil(x.stderr:find("building through the workspace daemon", 1, true), vim.inspect(case))
             assert.truthy(x.stdout:find("BUILD OK: dev", 1, true))
+            -- Explicit opt-outs are silent; --break-locks (daemon mode, not
+            -- routed) says so in exactly one line.
+            local _, fallbacks = x.stderr:gsub("running without it", "")
+            assert.equals(case[1][1] == "--break-locks" and 1 or 0, fallbacks, x.stderr)
         end
+    end)
+
+    it("a build from cmd.exe routes: its `=C:` / `=ExitCode` entries reach the daemon (Windows)", function()
+        if not H.is_win then return pending("Windows only") end
+        local root = workspace()
+        -- The environment block cmd.exe gives its children.
+        local r = lw(root, { "--no-input", "build", "dev" }, { ["=C:"] = [[C:\Windows]], ["=D:"] = [[D:\]],
+            ["=ExitCode"] = "00000000", PROMPT = "$P$G", LW_TEST_FOO = "cmd-env" })
+        H.track_root(root)
+        assert.equals(0, r.code, r.stderr)
+        assert.truthy(r.stderr:find(NOTICE, 1, true), r.stderr)
+        assert.truthy(r.stdout:find("FOO=cmd-env", 1, true), r.stdout)
+        assert.is_nil(r.stderr:find("running without it", 1, true), r.stderr)
+        -- And through a real cmd.exe (a batch file, as a `.cmd` shim runs lw).
+        local bat = H.tmp() .. "/run.cmd"
+        local f = io.open(bat, "wb")
+        f:write(string.format('@"%s" --headless -u NONE --cmd "lua vim.opt.rtp:prepend([[%s]])" -l "%s" --no-input build dev\r\n',
+            (vim.v.progpath:gsub("/", "\\")), H.REPO, H.CLI))
+        f:close()
+        local e = vim.deepcopy(env.vars)
+        e.LW_TEST_FOO = "real-cmd"
+        local out, err = uv.new_pipe(false), uv.new_pipe(false)
+        local obuf, ebuf, code, eof = {}, {}, nil, 0
+        local h = uv.spawn("cmd.exe", { args = { "/d", "/c", (bat:gsub("/", "\\")) }, cwd = root,
+            env = H.env_list(e), stdio = { nil, out, err } }, function(c) code = c end)
+        assert.is_not_nil(h)
+        out:read_start(function(_, d) if d then obuf[#obuf + 1] = d else eof = eof + 1 end end)
+        err:read_start(function(_, d) if d then ebuf[#ebuf + 1] = d else eof = eof + 1 end end)
+        assert.is_true(vim.wait(120000, function() return code ~= nil and eof >= 2 end, 10))
+        pcall(function() out:close(); err:close(); h:close() end)
+        local so, se = table.concat(obuf), table.concat(ebuf)
+        assert.equals(0, code, se)
+        assert.truthy(se:find(NOTICE, 1, true), se)
+        assert.truthy(so:find("FOO=real-cmd", 1, true), so)
     end)
 
     it("the build runs in the client's environment, not the daemon's", function()
@@ -217,6 +255,67 @@ describe("lw build through the workspace daemon (real processes)", function()
         assert.is_true(vim.wait(15000, function() return proc.alive(spid, sst) ~= true end, 20))
         local bd = root .. "/.nvim/build/app/Debug"
         assert.is_true(vim.wait(10000, function() return build_lock.read(bd) == nil end, 20))
+        local r = lw(root, { "--no-input", "build", "dev" })
+        assert.equals(0, r.code, r.stderr)
+        assert.truthy(r.stdout:find("BUILD OK: dev", 1, true))
+    end)
+
+    it("Ctrl-C reaches a client started with Ctrl-C disabled and cancels the routed build (Windows)", function()
+        if not H.is_win then return pending("Windows only (POSIX: the SIGINT test above)") end
+        local root = workspace()
+        local dir = H.tmp()
+        local pidfile = dir .. "/pid"
+        -- In a NEW console (`start`; never the test runner's, which a console
+        -- Ctrl-C would end): a sender that waits for the build's step, then
+        -- Ctrl-Cs that console; and the client, started as `start /b` starts
+        -- it — with Ctrl-C disabled (as Git Bash's `kill -INT` and `start /b`
+        -- leave a native program). The step itself is the daemon's: not in
+        -- that console. The sender refuses to send in a console this test
+        -- process is attached to.
+        local sender = dir .. "/sender.lua"
+        local f = io.open(sender, "w")
+        f:write([[
+local ffi = require("ffi")
+ffi.cdef("int SetConsoleCtrlHandler(void *h, int add); int GenerateConsoleCtrlEvent(unsigned long e, unsigned long g);"
+    .. "unsigned long GetConsoleProcessList(unsigned long *list, unsigned long n);")
+ffi.C.SetConsoleCtrlHandler(nil, 1)
+vim.wait(60000, function() return vim.uv.fs_stat(arg[1]) ~= nil end, 50)
+vim.uv.sleep(500)
+local list = ffi.new("unsigned long[256]")
+local n = ffi.C.GetConsoleProcessList(list, 256)
+if n == 0 or n > 256 then os.exit(2) end
+for i = 0, n - 1 do if list[i] == tonumber(arg[2]) then os.exit(3) end end
+ffi.C.GenerateConsoleCtrlEvent(0, 0)
+]])
+        f:close()
+        local function win(p) return (p:gsub("/", "\\")) end
+        local nv = win(vim.v.progpath)
+        local inner = string.format('start /b "" "%s" --headless -u NONE -l "%s" "%s.configure" %d'
+            .. ' & start /b /wait "" "%s" --headless -u NONE --cmd "lua vim.opt.rtp:prepend([[%s]])" -l "%s"'
+            .. ' --no-input build dev',
+            nv, win(sender), win(pidfile), uv.os_getpid(), nv, H.REPO, H.CLI)
+        local cmdline = 'cmd.exe /d /c start "" /min /wait cmd.exe /d /c "' .. inner .. '"'
+        local e = vim.deepcopy(env.vars)
+        e.LW_TEST_SLEEP, e.LW_TEST_PIDFILE = "60000", pidfile
+        local t0 = uv.now()
+        local code
+        local h, cpid = uv.spawn("cmd.exe", { args = { cmdline:sub(#"cmd.exe " + 1) }, verbatim = true, cwd = root,
+            env = H.env_list(e) }, function(c) code = c end)
+        assert.is_not_nil(h)
+        H.track(cpid) -- the whole tree (the client included) is killed at cleanup
+        local started = vim.wait(60000, function() return read(pidfile .. ".configure") ~= nil end, 20)
+        H.track_root(root)
+        assert.is_true(started)
+        local spid = tonumber(read(pidfile .. ".configure"))
+        local sst = proc.start_time(spid)
+        H.track(spid, sst)
+        -- The step is ended by the cancellation, long before its 60 s.
+        assert.is_true(vim.wait(30000, function() return proc.alive(spid, sst) ~= true end, 20))
+        assert.is_true(uv.now() - t0 < 45000)
+        local bd = root .. "/.nvim/build/app/Debug"
+        assert.is_true(vim.wait(10000, function() return build_lock.read(bd) == nil end, 20))
+        vim.wait(30000, function() return code ~= nil end, 20)
+        pcall(function() h:close() end)
         local r = lw(root, { "--no-input", "build", "dev" })
         assert.equals(0, r.code, r.stderr)
         assert.truthy(r.stdout:find("BUILD OK: dev", 1, true))
