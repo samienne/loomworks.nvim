@@ -606,15 +606,77 @@ local function base_of(p)
     return (b:lower():gsub("%.exe$", ""))
 end
 
---- Does this command line run an `lw` host: the `lw` binary (also a pinned
---- `lw-<version>-<asset>` copy), a development `luvi` run, or the
---- nvim-hosted fallback (`nvim … -l …/loomworks/cli.lua`)?
+--- Release host asset names without `.exe` (`lw-linux-x86_64`, …).
+local function host_assets()
+    local ok, pin = pcall(require, "boot.pin")
+    local out = {}
+    for _, a in pairs(ok and pin.HOST_ASSETS or {}) do out[#out + 1] = (a:lower():gsub("%.exe$", "")) end
+    return out
+end
+
+--- Is `exe` (a base name, lowercased, without `.exe`) a named lw binary:
+--- `lw`, a release asset run under its download name (`lw-linux-x86_64`), or
+--- a pinned launcher-cache copy `lw-<version>-<asset>` (spec §16.24)? Any
+--- other `lw-*` (`lw-foo`) is not.
+--- @param exe string
+--- @return boolean
+function M._is_lw_binary(exe)
+    if exe == "lw" then return true end
+    if exe:sub(1, 3) ~= "lw-" then return false end
+    -- (The naming of boot.launcher.cached_binary_version, parsed here: an
+    -- older host's boot modules may lack it.)
+    local okp, pin = pcall(require, "boot.pin")
+    for _, a in ipairs(host_assets()) do
+        if exe == a then return true end
+        local suffix = "-" .. a
+        if okp and #exe > 3 + #suffix and exe:sub(-#suffix) == suffix
+            and pin.valid_version(exe:sub(4, #exe - #suffix)) then
+            return true
+        end
+    end
+    return false
+end
+
+--- Is `p` (a luvi app path from a command line) the loomworks source app: a
+--- directory named `lua` (a checkout's `lua/`, run by dev hosts and the test
+--- suites) or `lua-<version>` (a provisioned bundle, `<data>/pinned/…/
+--- lua-<ver>/`)? An absolute one must also hold `loomworks/cli.lua`; a
+--- relative one is relative to that process's cwd, which is not known here.
+--- @param p string
+--- @return boolean
+function M._is_lw_app(p)
+    local n = tostring(p):gsub("\\", "/"):gsub("/+$", "")
+    local last = n:match("[^/]*$") or ""
+    local okv, pin = pcall(require, "boot.pin")
+    local ver = last:match("^lua%-(.+)$")
+    if not (last == "lua" or (ver and okv and pin.valid_version(ver))) then return false end
+    if n:match("^/") or n:match("^%a:/") then
+        local st = uv().fs_stat(n .. "/loomworks/cli.lua")
+        return st ~= nil and st.type == "file"
+    end
+    return true
+end
+
+--- Does this command line run an `lw` host: the `lw` binary (also a release
+--- asset under its download name, or a pinned `lw-<version>-<asset>` copy),
+--- `luvi` running the loomworks app (M._is_lw_app: a plain `luvi` running
+--- anything else is not one), or the nvim-hosted fallback
+--- (`nvim … -l …/loomworks/cli.lua`)?
 --- @param args string[]
 --- @return boolean
 function M.is_lw(args)
     if type(args) ~= "table" or not args[1] then return false end
     local exe = base_of(args[1])
-    if exe == "lw" or exe:match("^lw%-") or exe == "luvi" then return true end
+    if M._is_lw_binary(exe) then return true end
+    if exe == "luvi" then
+        -- `luvi [options] <app>… [-- <app args>]`: one of the app paths.
+        for i = 2, #args do
+            local a = tostring(args[i])
+            if a == "--" then break end
+            if a:sub(1, 1) ~= "-" and M._is_lw_app(a) then return true end
+        end
+        return false
+    end
     if exe == "nvim" then
         for i = 2, #args do
             local a = tostring(args[i]):gsub("\\", "/")

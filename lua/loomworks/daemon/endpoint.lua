@@ -21,8 +21,10 @@
 ---     the 2026-09 spike (DAEMON.md §6).
 ---
 --- Deletion safety: the only file this module removes is a stale socket at
---- exactly `<verified dir>/<root hash>.sock` whose `lstat` type is `socket`,
---- and only for a caller that holds the runtime lock (§19.7).
+--- exactly `<verified dir>/<root hash>.sock` whose `lstat` type is `socket`
+--- owned by this uid, and only for a caller that holds the runtime lock
+--- (§19.7). The directory is a candidate of this environment or a real,
+--- owned, 0700 directory (M._posix_owned).
 
 local paths = require("loomworks.daemon.paths")
 
@@ -236,12 +238,55 @@ function M.read_dacl(pipe)
     return s
 end
 
---- Is `addr` an endpoint a daemon of this workspace would bind — exactly
---- `address(root)` on Windows, one of the per-user socket candidates on
---- POSIX? A client connects to nothing else (spec §19.7): the handle lives
---- in a `.nvim/` other local users may be able to write, and a forged one
---- naming `\\host\pipe\x` would make a client open a remote pipe (an SMB
---- connection that leaks the user's NTLM hash) or another user's socket.
+-- Indirections the POSIX ownership checks go through (tests stub them).
+M._lstat = function(p) return uv().fs_lstat(p) end
+M._uid = uid
+
+--- Is `addr` this workspace's socket in a private directory of this user,
+--- wherever that directory is (POSIX, spec §19.7)? The daemon binds the first
+--- candidate of the environment that LAUNCHED it (`$XDG_RUNTIME_DIR`,
+--- `$TMPDIR`), which a later client — from ssh, cron, `sudo -u`, a container
+--- exec — may not share, so the client cannot recompute the path. Accepted
+--- exactly when: an absolute local path without `.`/`..`/empty segments
+--- (never `//host/...`); the file name is `<root hash>.sock` of THIS root; the
+--- directory is a real directory (lstat, not a link) owned by this uid with
+--- mode 0700 — what ensure_dir demands; and the file is a socket owned by
+--- this uid. Independent of the current environment. Returns true, or
+--- false + reason ("missing" when only the socket file is absent).
+--- @param root string
+--- @param addr any
+--- @return boolean ok, string|nil why
+function M._posix_owned(root, addr)
+    if type(addr) ~= "string" or addr:sub(1, 1) ~= "/" or addr:sub(1, 2) == "//" or addr:find("\\", 1, true) then
+        return false, "not a local absolute path"
+    end
+    for seg in (addr:sub(2) .. "/"):gmatch("([^/]*)/") do
+        if seg == "" or seg == "." or seg == ".." then return false, "not a canonical path" end
+    end
+    local dir, base = addr:match("^(/.+)/([^/]+)$")
+    if not dir or base ~= paths.root_hash(root) .. ".sock" then
+        return false, "not this workspace's socket name"
+    end
+    local me = M._uid()
+    local dst = M._lstat(dir)
+    if not dst or dst.type ~= "directory" then return false, dir .. " is not a real directory" end
+    if type(dst.uid) ~= "number" or dst.uid ~= me then return false, dir .. " is not owned by this user" end
+    if not dst.mode or (dst.mode % 512) ~= tonumber("700", 8) then return false, dir .. " is not mode 0700" end
+    local sst = M._lstat(addr)
+    if not sst then return false, "missing" end
+    if sst.type ~= "socket" then return false, addr .. " is not a socket" end
+    if type(sst.uid) ~= "number" or sst.uid ~= me then return false, addr .. " is not owned by this user" end
+    return true
+end
+
+--- Is `addr` an endpoint a daemon of this workspace binds — exactly
+--- `address(root)` on Windows; on POSIX one of this environment's per-user
+--- socket candidates, or this root's socket in a private directory of this
+--- user (M._posix_owned: a daemon launched from another environment)? A
+--- client connects to nothing else (spec §19.7): the handle lives in a
+--- `.nvim/` other local users may be able to write, and a forged one naming
+--- `\host\pipe\x` would make a client open a remote pipe (an SMB connection
+--- that leaks the user's NTLM hash) or another user's socket.
 --- Returns true, or false + the refusal.
 --- @param root string
 --- @param addr any
@@ -253,6 +298,12 @@ function M.check(root, addr)
         else
             for _, c in ipairs(posix_candidates(root)) do
                 if c.path == addr then return true end
+            end
+            local ok, why = M._posix_owned(root, addr)
+            if ok then return true end
+            if why == "missing" then
+                return false, "the daemon's socket " .. addr .. " is gone (the daemon may have exited; "
+                    .. "`lw daemon stop --force` recovers the runtime lock's holder)"
             end
         end
     end
@@ -321,7 +372,9 @@ function M.listen(root, on_connection)
 end
 
 --- Remove the socket file a daemon bound (POSIX; a named pipe has none):
---- exactly `addr` when it is a socket inside one of the per-user directories.
+--- exactly `addr` when it is a socket owned by this user inside one of the
+--- per-user directories — a candidate, or (without `cands`) any private
+--- directory M._posix_owned accepts.
 --- The caller holds the runtime lock.
 --- `cands` are the candidates computed earlier (the daemon computes them at
 --- start: hashing is not allowed inside libuv callbacks in the editor host).
@@ -337,9 +390,16 @@ function M.cleanup(root, addr, cands, ino)
     for _, c in ipairs(cands or posix_candidates(root)) do
         if c.path == addr then ok = true end
     end
-    if not ok then return end
-    local st = uv().fs_lstat(addr)
-    if st and st.type == "socket" and (ino == nil or st.ino == ino) then pcall(uv().fs_unlink, addr) end
+    -- A daemon launched from another environment bound a path outside this
+    -- process's candidates: removed only when M._posix_owned accepts it (this
+    -- root's socket name, this uid's socket, a real 0700 directory of this
+    -- uid). A daemon's own cleanup passes `cands`, which hold its address.
+    if not ok and (cands or not M._posix_owned(root, addr)) then return end
+    local st = M._lstat(addr)
+    if st and st.type == "socket" and (ino == nil or st.ino == ino)
+        and (type(st.uid) ~= "number" or st.uid == M._uid()) then
+        pcall(uv().fs_unlink, addr)
+    end
 end
 
 return M

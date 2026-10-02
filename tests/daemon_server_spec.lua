@@ -299,6 +299,149 @@ describe("endpoint address", function()
     end)
 end)
 
+describe("endpoint pinning independent of the client's environment (§19.7)", function()
+    local root = "/home/u/ws"
+    local name = dpaths.root_hash(root) .. ".sock"
+    local dir = "/var/folders/ab/xyz/T/loomworks-1000"
+    local real_lstat, real_uid = endpoint._lstat, endpoint._uid
+    local fs
+    before_each(function()
+        fs = {
+            [dir] = { type = "directory", uid = 1000, mode = tonumber("40700", 8) },
+            [dir .. "/" .. name] = { type = "socket", uid = 1000, mode = tonumber("140600", 8), ino = 7 },
+        }
+        endpoint._lstat = function(p) return fs[p] end
+        endpoint._uid = function() return 1000 end
+    end)
+    after_each(function() endpoint._lstat, endpoint._uid = real_lstat, real_uid end)
+
+    it("accepts this root's socket in a private directory of this user, wherever it is", function()
+        assert.is_true(endpoint._posix_owned(root, dir .. "/" .. name))
+        -- POSIX clients accept it although it is none of their own candidates;
+        -- Windows accepts nothing but its own pipe name.
+        assert.equals(not H.is_win, (endpoint.check(root, dir .. "/" .. name)))
+    end)
+
+    it("refuses a non-private directory, another user's, a link, a wrong name, a non-socket", function()
+        local cases = {
+            { "dir mode 0755", function() fs[dir].mode = tonumber("40755", 8) end },
+            { "dir of another uid", function() fs[dir].uid = 0 end },
+            { "dir is a symlink", function() fs[dir] = { type = "link", uid = 1000, mode = tonumber("120777", 8) } end },
+            { "socket of another uid", function() fs[dir .. "/" .. name].uid = 1001 end },
+            { "not a socket", function() fs[dir .. "/" .. name].type = "file" end },
+        }
+        for _, c in ipairs(cases) do
+            local saved = vim.deepcopy(fs)
+            c[2]()
+            local ok, why = endpoint._posix_owned(root, dir .. "/" .. name)
+            assert.is_false(ok, c[1])
+            assert.are_not.equal("missing", why, c[1])
+            local okc, msg = endpoint.check(root, dir .. "/" .. name)
+            assert.is_false(okc, c[1])
+            assert.truthy(msg:find("untrusted handle", 1, true), msg)
+            fs = saved
+        end
+        for _, addr in ipairs({
+            dir .. "/" .. dpaths.root_hash(root .. "2") .. ".sock", -- another workspace's name
+            dir .. "/x.sock",
+            "//host/share/" .. name, -- never a remote path
+            [[\host\pipe\]] .. name,
+            "/var/folders/../folders/ab/xyz/T/loomworks-1000/" .. name,
+            "relative/" .. name,
+            name,
+        }) do
+            assert.is_false((endpoint._posix_owned(root, addr)), addr)
+            assert.is_false((endpoint.check(root, addr)), addr)
+        end
+        -- A socket that is gone is reported as gone, not as planted.
+        fs[dir .. "/" .. name] = nil
+        local ok, why = endpoint._posix_owned(root, dir .. "/" .. name)
+        assert.is_false(ok)
+        assert.equals("missing", why)
+        if not H.is_win then
+            local _, msg = endpoint.check(root, dir .. "/" .. name)
+            assert.truthy(msg:find("is gone", 1, true), msg)
+        end
+    end)
+
+    if not H.is_win then
+        it("a real daemon socket under another TMPDIR: accepted, removed by cleanup; refused when not private", function()
+            endpoint._lstat, endpoint._uid = real_lstat, real_uid
+            local ws = H.tmp()
+            local base = "/tmp/lwt-" .. dpaths.short_hash(ws):sub(1, 8)
+            local d = base .. "/rt"
+            vim.fn.mkdir(d, "p")
+            uv.fs_chmod(d, tonumber("700", 8))
+            local addr = d .. "/" .. dpaths.root_hash(ws) .. ".sock"
+            local pipe = uv.new_pipe(false)
+            assert(pipe:bind(addr))
+            local ok, err = pcall(function()
+                for _, c in ipairs(endpoint._posix_candidates(ws)) do assert.are_not.equal(addr, c.path) end
+                assert.is_true(endpoint.check(ws, addr))
+                uv.fs_chmod(d, tonumber("755", 8))
+                assert.is_false((endpoint.check(ws, addr)))
+                endpoint.cleanup(ws, addr) -- never removes from a non-private dir
+                assert.equals("socket", uv.fs_lstat(addr).type)
+                uv.fs_chmod(d, tonumber("700", 8))
+                assert(uv.fs_symlink(d, base .. "/link"))
+                local via = base .. "/link/" .. dpaths.root_hash(ws) .. ".sock"
+                assert.is_false((endpoint.check(ws, via)))
+                endpoint.cleanup(ws, via)
+                assert.equals("socket", uv.fs_lstat(addr).type)
+                endpoint.cleanup(ws, addr, nil, uv.fs_lstat(addr).ino + 1) -- another inode: kept
+                assert.equals("socket", uv.fs_lstat(addr).type)
+                endpoint.cleanup(ws, addr)
+                assert.is_nil(uv.fs_lstat(addr))
+            end)
+            pcall(function() pipe:close() end)
+            vim.fn.delete(base, "rf")
+            assert(ok, err)
+        end)
+    end
+end)
+
+describe("proc.is_lw (§19.5): which command lines are lw hosts", function()
+    it("accepts lw, release and pinned binaries, luvi running the loomworks app, nvim cli.lua", function()
+        for _, args in ipairs({
+            { "lw", "build" },
+            { "C:/x/lw.exe", "build" },
+            { "/home/u/Downloads/lw-linux-x86_64", "build" },
+            { [[C:\dl\lw-windows-x86_64.exe]], "build" },
+            { "/r/.nvim/cache/lw-0.1.42-lw-linux-x86_64", "daemon", "run" },
+            { [[C:\r\.nvim\cache\lw-0.1.42-lw-windows-x86_64.exe]], "build" },
+            { "/r/.nvim/cache/lw-0.0.0-test-lw-macos-arm64", "build" },
+            { "luvi", H.REPO .. "/lua", "--", "build" },
+            { "/opt/luvi", "lua", "--", "daemon", "run" },
+            { "luvi.exe", "../../../lua", "--", "help" },
+            { "luvi", "/nonexistent/pinned/abc/lua-0.1.42" },
+            { "/usr/bin/nvim", "--headless", "-l", "/r/lua/loomworks/cli.lua" },
+        }) do
+            -- An absolute lua-<ver> must hold the app; a relative one cannot be checked.
+            local expect = not (args[2] or ""):find("^/nonexistent")
+            assert.equals(expect, proc.is_lw(args), vim.inspect(args))
+        end
+    end)
+
+    it("refuses a plain luvi, other lw-* names, other programs", function()
+        for _, args in ipairs({
+            { "luvi" },
+            { "luvi", "tests/standalone" },
+            { "/usr/bin/luvi", "/home/x/app", "--", "build" },
+            { "luvi", "/nonexistent/lua", "--", "build" }, -- absolute, no loomworks/cli.lua
+            { "luvi", "app", "--", "lua" }, -- an app ARG named lua is not the app
+            { "luvi", "lua-../x" },
+            { "lw-foo", "build" },
+            { "lw-local" },
+            { "/r/.nvim/cache/lw-0.1.42-lw-plan9-mips", "build" },
+            { "/r/.nvim/cache/lw-..-lw-linux-x86_64" },
+            { "/usr/bin/nvim", "--headless" },
+            { "/bin/sh", "-c", "lw build" },
+        }) do
+            assert.is_false(proc.is_lw(args), vim.inspect(args))
+        end
+    end)
+end)
+
 describe("lw daemon run | stop | kill | restart (real processes)", function()
     local root, env
     before_each(function()

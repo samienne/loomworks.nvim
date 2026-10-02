@@ -130,6 +130,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- On macOS and Linux, a workspace daemon started from one environment (a
+  desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
+  container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being
+  refused as an "untrusted handle". The socket is accepted wherever it is when
+  it is the workspace's own socket, owned by you, in a private (0700) directory
+  owned by you. (#PR)
+- On Windows, saving a file no longer fails when a leftover temporary file is
+  briefly held open by an antivirus scanner or indexer: the save retries for a
+  moment. (#PR)
+- `--break-locks` and `lw daemon stop --force` recognise an lw holder more
+  strictly: a `luvi` process counts only when it runs the loomworks app, and an
+  `lw-*` binary only when it is a release download (`lw-linux-x86_64`, ...) or a
+  pinned copy (`lw-<version>-<asset>`). (#PR)
 - Read-only commands (`lw status`, `lw profile list`, `lw export`,
   `lw import --dry-run`, `lw health`, ...) and the editor no longer rewrite a
   build cache written by an earlier loomworks (unsigned) when they load the
