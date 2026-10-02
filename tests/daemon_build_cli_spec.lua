@@ -114,6 +114,7 @@ describe("lw build through the workspace daemon (real processes)", function()
             { { "build", "9" } },
             { { "build", "1" } },
             { { "build", "dev" }, { LW_TEST_FAIL = "build" } },
+            { { "build", "dev" }, { LW_TEST_KILL = "build:sigkill" } },
             { { "build", "dev" }, { LW_TEST_FOO = "bar" } },
         }
         for _, c in ipairs(cases) do
@@ -166,6 +167,31 @@ describe("lw build through the workspace daemon (real processes)", function()
         assert.equals(0, r.code, r.stderr)
         assert.truthy(r.stderr:find(NOTICE, 1, true), r.stderr)
         assert.truthy(r.stdout:find("FOO=client-env ONLY=nil", 1, true), r.stdout)
+    end)
+
+    it("a step that a signal kills fails the build on both paths, never recorded as built (§16.7)", function()
+        -- POSIX: the conventional 128 + signal and the signal named. Windows
+        -- has no such signals: libuv emulates the kill with TerminateProcess
+        -- (exit code 1), which fails exactly as before.
+        local sigs = H.is_win and { { "sigkill", 1, "(exit 1)" } }
+            or { { "sigkill", 137, "(killed by signal 9 (SIGKILL))" }, { "sigterm", 143, "(killed by signal 15 (SIGTERM))" } }
+        for _, s in ipairs(sigs) do
+            for _, routed in ipairs({ false, true }) do
+                local root = workspace()
+                local args = { "--no-input", "build", "dev" }
+                if not routed then table.insert(args, 2, "--no-daemon") end
+                local r = lw(root, args, { LW_TEST_KILL = "build:" .. s[1] })
+                local what = s[1] .. (routed and " (daemon)" or " (in-process)")
+                if routed then H.track_root(root) end
+                assert.equals(s[2], r.code, what .. "\n" .. r.stderr)
+                assert.truthy(r.stderr:find("lw: build failed " .. s[3] .. ": app: build Debug", 1, true),
+                    what .. "\n" .. r.stderr)
+                assert.equals(routed, r.stderr:find(NOTICE, 1, true) ~= nil, what .. "\n" .. r.stderr)
+                assert.is_nil(r.stdout:find("BUILD OK", 1, true), what)
+                local cache = cache_of(root, env.data .. "/trust.key")
+                assert.is_nil(vim.inspect(cache):find('"built"', 1, true), what .. "\n" .. vim.inspect(cache))
+            end
+        end
     end)
 
     it("an interrupted client cancels the build: step killed, lock released, next build OK", function()

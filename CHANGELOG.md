@@ -140,6 +140,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- Linux/macOS: a build, configure, clean or test step killed by a signal
+  (the out-of-memory killer, `kill -9` on the build tool) no longer counts as
+  a success. `lw build` used to record the step as built and print `BUILD OK`;
+  it now fails with exit status 128 + the signal (137 for SIGKILL) and says
+  `killed by signal 9 (SIGKILL)`, with or without the workspace daemon. `lw
+  run` and `lw test` report such a program with the same status. (#117)
+- A build step whose program cannot be started now says why (`lw: cannot
+  start <program>: <reason>`), the same with or without the workspace
+  daemon. (#117)
 - Workspace daemon (experimental, `runtime-mode daemon`): a routed
   `lw build` whose output is not being read (`lw build | less`, paused) no
   longer makes the daemon hold the whole build output in memory; the build

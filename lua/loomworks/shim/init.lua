@@ -292,7 +292,7 @@ function vim.system(cmd, opts, on_exit)
   -- 127 like a failed spawn below.
   local resolved, rerr = which(cmd[1], opts.env, opts.cwd)
   if not resolved then
-    local res = { code = 127, stdout = "", stderr = tostring(rerr) }
+    local res = { code = 127, signal = 0, stdout = "", stderr = tostring(rerr), spawn_error = tostring(rerr) }
     if on_exit then on_exit(res) end
     return { wait = function() return res end }
   end
@@ -334,7 +334,7 @@ function vim.system(cmd, opts, on_exit)
   local out, err = {}, {}
   local result, handle
   local timed_out = false
-  local exit_code, eofs, grace = nil, 0, nil
+  local exit_code, exit_signal, eofs, grace = nil, 0, 0, nil
   local function finalize()
     if result then return end
     if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
@@ -345,19 +345,28 @@ function vim.system(cmd, opts, on_exit)
     if stderr_cb then pcall(stderr_cb, nil, nil) end
     result = {
       code = timed_out and 124 or exit_code,
+      signal = exit_signal,
       stdout = stdout_cb and "" or table.concat(out),
       stderr = stderr_cb and "" or table.concat(err),
     }
     if on_exit then on_exit(result) end
   end
-  handle = uv.spawn(exe, {
+  local spawned
+  handle, spawned = uv.spawn(exe, {
     args = args,
     stdio = stdio,
     cwd = opts.cwd,
     env = build_spawn_env(opts.env, opts.clear_env),
     hide = hide,
-  }, function(code)
+  }, function(code, signal)
     handle:close()
+    -- As nvim's SystemCompleted, `signal` is the signal that ended the child
+    -- (0 if none). Unlike nvim, `code` is then 128 + signal (as the shim's
+    -- jobs and nvim's jobs report it): a signal-ended process — POSIX libuv
+    -- reports code 0 — is never read as success (spec §16.7). Windows reports
+    -- an exit code (signal 0, or its emulated kill's with exit code 1): kept.
+    if (code == 0 or code == nil) and signal and signal ~= 0 then code = 128 + signal end
+    exit_signal = signal or 0
     if streaming then
       exit_code = code
       if eofs >= 2 then return finalize() end
@@ -370,6 +379,7 @@ function vim.system(cmd, opts, on_exit)
     end
     result = {
       code = timed_out and 124 or code,
+      signal = exit_signal,
       stdout = inherit and "" or table.concat(out),
       stderr = inherit and "" or table.concat(err),
     }
@@ -377,7 +387,9 @@ function vim.system(cmd, opts, on_exit)
   end)
   if not handle then
     if not inherit then so:close(); se:close() end
-    result = { code = 127, stdout = "", stderr = "spawn failed: " .. tostring(exe) }
+    -- `spawn_error` (a shim extension): why the program could not be started.
+    result = { code = 127, signal = 0, stdout = "", spawn_error = tostring(spawned),
+      stderr = "spawn failed: " .. tostring(exe) .. ": " .. tostring(spawned) }
     if on_exit then on_exit(result) end
   elseif not inherit then
     local function reader(cb, buf)

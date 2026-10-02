@@ -42,8 +42,10 @@ M.EOF_GRACE_MS = 500
 
 --- Spawn a step (test seam): the program in `spec.cmd` (argv[1] already
 --- resolved, loomworks.exe.harden_spec), with exactly `spec.env`, its output
---- streamed to `sink.output(stream, text)` in order and `sink.done(code)`
---- called once the process exited and its output was read. The returned
+--- streamed to `sink.output(stream, text)` in order and `sink.done(code,
+--- signal)` called once the process exited and its output was read — `code`
+--- as build_run.exit_status maps it (a signal that ended the process: 128 +
+--- signal, and `signal` names it; else nil). The returned
 --- object controls it:
 ---   * `pause()` / `resume()` stop and restart reading its stdout and stderr
 ---     (owner flow control, loomworks.daemon.tasks): a paused step's tool
@@ -65,7 +67,7 @@ function M.spawn(spec, sink)
     local args = {}
     for i = 2, #spec.cmd do args[i - 1] = spec.cmd[i] end
     local obj = { paused = false }
-    local exit_code, finished, abandoned, grace = nil, false, false, nil
+    local exit_code, exit_signal, finished, abandoned, grace = nil, nil, false, false, nil
     local open = { stdout = true, stderr = true }
     local pipes = { stdout = so, stderr = se }
     local readers = {}
@@ -80,7 +82,7 @@ function M.spawn(spec, sink)
         finished = true
         if grace then pcall(function() grace:stop(); grace:close() end); grace = nil end
         close_pipe("stdout"); close_pipe("stderr")
-        sink.done(exit_code or 0)
+        sink.done(exit_code or 0, exit_signal)
     end
     local function maybe_finish()
         if finished or exit_code == nil then return end
@@ -105,15 +107,18 @@ function M.spawn(spec, sink)
     local handle, pid
     handle, pid = uv.spawn(exe, {
         args = args, stdio = { nil, so, se }, cwd = spec.cwd, env = env, hide = WIN,
-    }, function(code)
+    }, function(code, signal)
         pcall(function() handle:close() end)
-        exit_code = code
+        -- A process a signal ended (POSIX: code 0 + the signal) fails with
+        -- 128 + signal (§16.7).
+        exit_code, exit_signal = build_run.exit_status(code, signal)
         maybe_finish()
     end)
     if not handle then
         pcall(function() so:close() end)
         pcall(function() se:close() end)
-        sink.output("stderr", "spawn failed: " .. tostring(spec.cmd[1]) .. ": " .. tostring(pid) .. "\n")
+        -- As the in-process run_spec reports it.
+        sink.output("stderr", build_run.spawn_failure_line(spec.cmd[1], pid) .. "\n")
         sink.done(127)
         return nil
     end
@@ -217,10 +222,14 @@ function M.run(svc, ctx)
     local steps, i = nil, 0
     local next_step
 
-    local function step_done(step, code)
+    local function step_done(step, code, signal)
         run.child = nil
         task:set_flow(nil)
+        -- A cancelled step ends the run as cancelled, whatever its exit (the
+        -- kill itself may be reported as a signal).
         if run.cancelled then return finish(run.cancel_code, stopped()) end
+        -- (Idempotent: a step a signal ended fails with 128 + signal.)
+        code, signal = build_run.exit_status(code, signal)
         build_run.after_step(ws, step, code)
         -- A refused save (§2.7) ends the build as the in-process host's `die`
         -- does, before anything else runs.
@@ -228,7 +237,7 @@ function M.run(svc, ctx)
         if code ~= 0 then
             local th = step.kind == "build" and svc.host.unknown_target_hint
                 and svc.host.unknown_target_hint(ws, step, args.targets) or nil
-            return finish(code, build_run.failure_message(step, code, th))
+            return finish(code, build_run.failure_message(step, code, th, signal))
         end
         task:progress(i / #steps)
         next_step()
@@ -261,8 +270,8 @@ function M.run(svc, ctx)
         local child = {}
         child.obj = M.spawn({ cmd = spec.cmd, cwd = spec.cwd, env = env }, {
             output = function(stream, text) task:output(stream, text) end,
-            done = function(code)
-                svc:with_model(ctx, function() step_done(step, code) end)
+            done = function(code, signal)
+                svc:with_model(ctx, function() step_done(step, code, signal) end)
             end,
         })
         child.pid = child.obj and child.obj.pid or nil

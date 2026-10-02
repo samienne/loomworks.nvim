@@ -136,7 +136,9 @@ end
 --- The step script of `shell_workspace` (run by nvim -l): prints
 --- `step <kind> FOO=<LW_TEST_FOO> ONLY=<LW_TEST_ONLY>` on stdout and a line
 --- on stderr; writes its pid to $LW_TEST_PIDFILE; sleeps $LW_TEST_SLEEP ms;
---- exits 3 when $LW_TEST_FAIL names its kind.
+--- exits 3 when $LW_TEST_FAIL names its kind; kills itself with a signal
+--- when $LW_TEST_KILL is `<kind>:<signal>` (e.g. `build:sigkill` — on
+--- Windows libuv emulates it with TerminateProcess, exit code 1).
 M.STEP = [[
 local kind = arg[1]
 local pf = os.getenv("LW_TEST_PIDFILE")
@@ -147,6 +149,12 @@ io.stderr:write("stderr of " .. kind .. string.char(10))
 local ms = tonumber(os.getenv("LW_TEST_SLEEP") or "")
 if ms then vim.uv.sleep(ms) end
 if os.getenv("LW_TEST_FAIL") == kind then os.exit(3) end
+local ks = os.getenv("LW_TEST_KILL")
+if ks and ks:sub(1, #kind + 1) == kind .. ":" then
+    io.stdout:flush(); io.stderr:flush()
+    vim.uv.kill(vim.uv.os_getpid(), ks:sub(#kind + 2))
+    vim.uv.sleep(10000)
+end
 ]]
 
 --- A workspace with one `shell` project `app` (configure + build both run

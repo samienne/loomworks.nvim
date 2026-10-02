@@ -3316,6 +3316,62 @@ do
   ok(ms >= 250 and ms < 10000, string.format("…promptly (%.0f ms)", ms))
 end
 
+print("a step that a signal ended is a failure, 128 + signal (§16.7)")
+do
+  -- POSIX libuv reports a signal-ended child as exit code 0 + the signal; a
+  -- SIGKILLed (OOM-killed) build tool used to be read as success.
+  require("loomworks.shim")
+  local is_win = package.config:sub(1, 1) == "\\"
+  local build_run = require("loomworks.build_run")
+  eq((build_run.exit_status(0, 9)), 137, "exit_status: code 0 + SIGKILL -> 137")
+  eq((build_run.exit_status(1, 15)), 1, "exit_status: Windows' emulated kill keeps its exit code")
+  -- A plain nonzero exit, on every platform, through all three spawns.
+  _G.LOOMWORKS_CLI_NO_AUTORUN = true
+  local cli = require("loomworks.cli")
+  local runner = require("loomworks.daemon.runner")
+  local function runner_done(cmd)
+    local got
+    runner.spawn({ cmd = cmd, cwd = root, env = uv.os_environ() }, {
+      output = function() end, done = function(c, s) got = { c, s } end })
+    local deadline = uv.now() + 20000
+    while not got and uv.now() < deadline do uv.run("once") end
+    return got or {}
+  end
+  local exit3 = is_win and { (os.getenv("COMSPEC") or "C:/Windows/System32/cmd.exe"), "/c", "exit 3" }
+    or { "/bin/sh", "-c", "exit 3" }
+  local r3 = vim.system(exit3, { text = true }):wait()
+  eq(r3.code, 3, "shim vim.system: exit 3")
+  eq(r3.signal, 0, "shim vim.system: no signal")
+  local g3 = runner_done(exit3)
+  ok(g3[1] == 3 and g3[2] == nil, "daemon runner.spawn: exit 3, no signal")
+  local c3, s3 = cli._run_spec({ cmd = exit3 }, root)
+  ok(c3 == 3 and s3 == nil, "in-process run_spec: exit 3, no signal")
+  if is_win then
+    print("  (signals skipped on Windows: none in the POSIX sense; covered by the nvim suite)")
+  else
+    local kill9 = { "/bin/sh", "-c", "kill -9 $$" }
+    local res = vim.system(kill9, { text = true }):wait()
+    eq(res.code, 137, "shim vim.system: a SIGKILLed child reports 137")
+    eq(res.signal, 9, "shim vim.system: ...and the signal")
+    res = vim.system({ "/bin/sh", "-c", "kill -TERM $$" }, { stdio = "inherit" }):wait()
+    eq(res.code, 143, "shim vim.system (inherited stdio): a SIGTERMed child reports 143")
+    res = vim.system({ "/bin/sh", "-c", "exit 0" }, { text = true }):wait()
+    eq(res.code, 0, "shim vim.system: a clean exit is still 0")
+
+    -- The daemon's step spawn.
+    local got = runner_done(kill9)
+    eq(got[1], 137, "daemon runner.spawn: a SIGKILLed step is done with 137")
+    eq(got[2], 9, "daemon runner.spawn: ...and the signal")
+
+    -- The in-process step spawn (lw build / clean / test / run).
+    local code, sig = cli._run_spec({ cmd = kill9 }, root)
+    eq(code, 137, "in-process run_spec: a SIGKILLed step returns 137")
+    eq(sig, 9, "in-process run_spec: ...and the signal")
+    eq(build_run.failure_message({ kind = "build", name = "app" }, code, nil, sig),
+      "build failed (killed by signal 9 (SIGKILL)): app", "the failure line names the signal")
+  end
+end
+
 print("SECURITY — host Lua search paths never reach the current directory")
 do
   local luapath = require("boot.luapath")

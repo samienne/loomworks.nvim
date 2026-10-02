@@ -161,8 +161,9 @@ function M.spawn(root, opts)
         stdio = { nil, nil, nil },
         detached = true,
         hide = true,
-    }, function(code)
-        child.code = code
+    }, function(code, signal)
+        -- (A daemon a signal ended: 128 + signal, never "status 0".)
+        child.code = require("loomworks.build_run").exit_status(code, signal)
         if child.handle and not child.handle:is_closing() then pcall(function() child.handle:close() end) end
     end)
     restore()
