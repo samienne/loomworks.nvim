@@ -175,7 +175,15 @@ lw: cannot nuke: a build is running in build/debug (pid 4242) — wait for it, o
 ```
 
 The CLI exits 1 (the build-directory lock's existing exit codes are
-unchanged); the editor shows an error notification. `lw unlock --workspace`
+unchanged); the editor shows an error notification. The refusal is one line
+with one prefix. Nuke and `lw trust --discard` take (or check) their locks
+**before** they list what they would delete or ask for confirmation, so a
+refused one prints only its refusal: with `-y` / `--yes` the locks are held
+from then until the deletion ends; a confirmation (the CLI prompt, the
+editor's dialog) only checks them — taken and released, never breaking a
+holder — and the locks are taken again once confirmed (`--break-locks` acts
+then). The editor's check passes over its own builds, which its nuke stops
+before taking the locks. `lw unlock --workspace`
 (and `lw unlock --all`, §16.6) also clears an O lock whose holder is gone, and
 `--force` one whose holder runs; dead and hung holders of every class are
 handled by §19.5 (`--break-locks`, accepted by every command above).

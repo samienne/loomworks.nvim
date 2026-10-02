@@ -181,6 +181,131 @@ describe("nuke takes the build locks (§19.3)", function()
     end)
 end)
 
+describe("a refused nuke prints only the refusal (field report)", function()
+    local real_read
+    before_each(function() real_read = io.read end)
+    after_each(function()
+        io.read = real_read
+        cli._test_interactive = nil
+        L.cleanup()
+        lock_break.requested = nil
+        lock_break.command = nil
+        op_lock.release_all()
+    end)
+
+    --- The refusal is one line with one prefix: `lw: cannot nuke: …`.
+    local function assert_one_refusal(stderr, what)
+        assert.is_truthy(stderr:find("^lw: cannot nuke: " .. what), stderr)
+        assert.is_nil(stderr:find("nuke failed", 1, true), stderr)
+        assert.is_nil(stderr:find("loomworks:", 1, true), stderr)
+        assert.is_nil(vim.trim(stderr):find("\n", 1, true), stderr)
+    end
+
+    it("-y while a build runs: no deletion list, one clean refusal line", function()
+        local root, dir = L.make_ws()
+        local h = L.hold(bl.lock_path(dir), "build")
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        assert.equals(1, r.exit_code)
+        assert.is_nil(r.stdout:find("delete", 1, true), "printed a deletion list: " .. r.stdout)
+        assert_one_refusal(r.stderr, "a build is running in %.nvim/build/App/Debug %(pid " .. h.pid .. "%)")
+        assert.is_not_nil(uv.fs_stat(dir))
+        assert.is_nil(op_lock.read(root))
+    end)
+
+    it("under a held operation lock: no deletion list, one clean refusal line", function()
+        local root, dir = L.make_ws()
+        L.hold(op_lock.path(root), "publish")
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke", "-y" }) end)
+        assert.equals(1, r.exit_code)
+        assert.is_nil(r.stdout:find("delete", 1, true), "printed a deletion list: " .. r.stdout)
+        assert_one_refusal(r.stderr, "workspace busy")
+        assert.is_not_nil(uv.fs_stat(dir))
+    end)
+
+    it("interactive: refuses before the list and before the prompt", function()
+        local root, dir = L.make_ws()
+        L.hold(bl.lock_path(dir), "build")
+        cli._test_interactive = true
+        local asked = 0
+        io.read = function() asked = asked + 1; return "y" end
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke" }) end)
+        assert.equals(1, r.exit_code)
+        assert.equals(0, asked, "prompted before refusing")
+        assert.is_nil(r.stdout:find("delete", 1, true), "printed a deletion list: " .. r.stdout)
+        assert_one_refusal(r.stderr, "a build is running")
+        assert.is_not_nil(uv.fs_stat(dir))
+    end)
+
+    it("interactive: declining after the list deletes nothing and leaves no lock", function()
+        local root, dir = L.make_ws()
+        cli._test_interactive = true
+        io.read = function() return "n" end
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke" }) end)
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stdout:find("Will delete", 1, true), r.stdout)
+        assert.is_truthy(r.stderr:find("aborted", 1, true), r.stderr)
+        assert.is_not_nil(uv.fs_stat(dir))
+        assert.is_not_nil(uv.fs_stat(root .. "/.nvim/loomworks.cache.json"))
+        assert.is_nil(op_lock.read(root), "the operation lock was left behind")
+        assert.is_nil(bl.read(dir), "a build lock was left behind")
+    end)
+
+    it("interactive: confirming lists, then deletes", function()
+        local root, dir = L.make_ws()
+        cli._test_interactive = true
+        io.read = function() return "y" end
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke" }) end)
+        assert.is_nil(r.exit_code, r.stderr)
+        assert.is_truthy(r.stdout:find("Will delete", 1, true), r.stdout)
+        assert.is_truthy(r.stdout:find("NUKED", 1, true), r.stdout)
+        assert.is_nil(uv.fs_stat(dir))
+        assert.is_nil(op_lock.read(root))
+    end)
+
+    it("non-interactive without -y: refuses without deleting and leaves no lock", function()
+        local root, dir = L.make_ws()
+        cli._test_interactive = false
+        local r = L.capture(function() cli.cmd_nuke(root, { "nuke" }) end)
+        assert.equals(1, r.exit_code)
+        assert.is_truthy(r.stderr:find("Re-run with -y", 1, true), r.stderr)
+        assert.is_not_nil(uv.fs_stat(dir))
+        assert.is_nil(op_lock.read(root))
+        assert.is_nil(bl.read(dir))
+    end)
+
+    it("lw trust --discard refused by the operation lock prints no deletion notice", function()
+        local root = L.make_ws()
+        L.hold(op_lock.path(root), "publish")
+        local r = L.capture(function() cli.cmd_trust(root, { "trust", "--discard", "--yes" }) end)
+        assert.equals(1, r.exit_code)
+        assert.is_nil(r.stdout:find("Will delete", 1, true), r.stdout)
+        assert.is_truthy(r.stderr:find("^lw: workspace busy"), r.stderr)
+    end)
+
+    it("the editor checks the locks before its confirmation dialog", function()
+        local root, dir = L.make_ws()
+        local _ = cli._load_workspace(root, false)
+        local h = L.hold(bl.lock_path(dir), "build")
+        local ok, msg = require("loomworks").nuke_check(root)
+        assert.is_nil(ok)
+        assert.is_truthy(tostring(msg):find("^cannot nuke: a build is running in %.nvim/build/App/Debug %(pid "
+            .. h.pid .. "%)"), tostring(msg))
+        assert.is_nil(op_lock.read(root), "the check left the operation lock behind")
+        L.cleanup()
+        assert.is_true(require("loomworks").nuke_check(root))
+        assert.is_nil(op_lock.read(root))
+        assert.is_nil(bl.read(dir))
+    end)
+
+    it("the editor's check ignores a build of its own (the nuke stops it first)", function()
+        local root, dir = L.make_ws()
+        local ws = cli._load_workspace(root, false)
+        assert.is_true(ws:_acquire_file_lock(ws._core._deps.normalize(dir), "build"))
+        assert.is_true(require("loomworks").nuke_check(root))
+        assert.is_not_nil(bl.read(dir), "the check released the editor's own build lock")
+    end)
+end)
+
 describe("the editor's deletion takes O and B (§19.3)", function()
     after_each(function() L.cleanup(); op_lock.release_all() end)
 

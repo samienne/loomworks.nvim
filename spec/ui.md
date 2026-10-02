@@ -706,6 +706,11 @@ Shown when `<C-n>` is pressed. Floating window centered in editor.
 **Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
 resolves from cwd via `workspace.resolve_root()`.
 
+**Refused before it is shown**: the nuke's safety checks and locks are
+checked first (`nuke_check(root)`, spec §19.3 — another process's build or
+workspace operation); a refusal shows only an error notification
+(`loomworks: cannot nuke: …`) and no dialog.
+
 **Keys**: `y` = confirm and execute, `q`/`<Esc>`/`n` = cancel
 
 **Safety checks** (in `nuke_cache(root)`):

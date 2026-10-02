@@ -145,6 +145,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   may use the whole stop wait (about 10 s) instead of giving up after 2 s, and
   is sent again if it fails early. A hung daemon is still reported after the
   same wait. `lw daemon status` waits up to 5 s for the daemon's answer. (#111)
+- `lw nuke` refused while a build runs (or another workspace operation holds
+  the workspace) now prints only the refusal, as one line
+  (`lw: cannot nuke: a build is running in ... (pid N) - wait for it, or stop
+  it (lw nuke --break-locks)`): it no longer lists the paths it "will delete"
+  first, nor wraps the message in `nuke failed:` / `loomworks:`. The locks are
+  checked before the list and the prompt; the editor's nuke checks them before
+  its confirmation dialog, and `lw trust --discard` before its notice. (#114)
 - The `lw status` / `lw daemon status` hint for a stale daemon handle said
   `lw daemon stop` was needed; any workspace command in daemon mode recovers it
   by itself, and the hint now says so. `lw help daemon` lists the minute form

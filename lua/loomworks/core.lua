@@ -592,11 +592,53 @@ end
 --- @param root string
 --- @return string|nil norm_root
 function Core:_nuke_files(root)
+    local st, msg = self:_nuke_begin(root)
+    if not st then
+        self._deps.notify("loomworks: " .. msg, vim.log.levels.ERROR)
+        return nil
+    end
+    return self:_nuke_run(st)
+end
+
+--- Would a nuke of `root` run now? Takes and at once releases what a nuke
+--- takes (the safety checks, the operation lock, the build locks), so a host
+--- can refuse BEFORE it lists what it would delete or asks to confirm (a
+--- refused nuke shows only its refusal). The editor passes
+--- `{ skip_own = true }`: its own builds are stopped by `nuke_cache` before
+--- the real acquisition. Returns true, or nil + the refusal message (no
+--- `loomworks:` prefix).
+--- @param root string
+--- @param opts? { skip_own?: boolean }
+--- @return boolean|nil ok, string|nil message
+function Core:nuke_check(root, opts)
+    local st, msg = self:_nuke_begin(root, opts)
+    if not st then return nil, msg end
+    self:_nuke_release(st)
+    return true
+end
+
+--- Release what `_nuke_begin` took, deleting nothing (a declined or
+--- refused nuke). Idempotent.
+--- @param st table
+function Core:_nuke_release(st)
+    if not st or st.released then return end
+    st.released = true
+    for _, h in ipairs(st.held) do st.locks.build.release(h) end
+    st.locks.op.release(st.tok)
+end
+
+--- The first half of a nuke: the safety checks, then the locks in lock
+--- order (spec §19.3). Nothing is removed. Returns the state `_nuke_run`
+--- deletes under (the caller must run or release it), or nil + the refusal
+--- message (no `loomworks:` prefix; nothing held).
+--- @param root string
+--- @param opts? { skip_own?: boolean }
+--- @return table|nil state, string|nil message
+function Core:_nuke_begin(root, opts)
     -- Safety: root must be absolute (Unix /... or Windows C:/...)
     local norm_root = self._deps.normalize(root)
     if not norm_root:match("^/") and not norm_root:match("^%a:/") then
-        self._deps.notify("loomworks: nuke_cache requires an absolute path, got: " .. root, vim.log.levels.ERROR)
-        return nil
+        return nil, "nuke_cache requires an absolute path, got: " .. root
     end
 
     -- Safety: loomworks.json or the working copy must exist at root (confirms
@@ -604,22 +646,18 @@ function Core:_nuke_files(root)
     local config_path = norm_root .. "/loomworks.json"
     if not self._deps.io.read_file(config_path)
             and not self._deps.io.read_file(self._deps.user.filepath(norm_root)) then
-        self._deps.notify("loomworks: no loomworks.json or .nvim/loomworks.user.json found at "
-            .. norm_root .. ", aborting nuke", vim.log.levels.ERROR)
-        return nil
+        return nil, "no loomworks.json or .nvim/loomworks.user.json found at " .. norm_root .. ", aborting nuke"
     end
 
     local build_dir = norm_root .. "/.nvim/build"
     local cache_path = self._deps.cache.filepath(norm_root)
-    local cache_bak = cache_path .. ".bak"
     local health_path = norm_root .. "/.nvim/loomworks.health.json"
 
     -- Safety: verify all paths are under root/.nvim/
-    local paths_to_delete = { build_dir, cache_path, cache_bak, health_path, health_path .. ".bak" }
+    local paths_to_delete = { build_dir, cache_path, cache_path .. ".bak", health_path, health_path .. ".bak" }
     for _, p in ipairs(paths_to_delete) do
         if not self:_safe_nvim_path(p, norm_root) then
-            self._deps.notify("loomworks: refusing to delete path outside .nvim/: " .. p, vim.log.levels.ERROR)
-            return nil
+            return nil, "refusing to delete path outside .nvim/: " .. p
         end
     end
 
@@ -627,19 +665,26 @@ function Core:_nuke_files(root)
     -- lock of every build directory it removes — so a nuke refuses while a
     -- build runs instead of deleting under it. Nothing is removed on refusal.
     local locks = require("loomworks.op_lock").locks(self._deps, norm_root)
-    local op_lock = locks.op
-    local tok, lmsg = op_lock.acquire(norm_root, "nuke")
-    if not tok then
-        self._deps.notify("loomworks: cannot nuke: " .. lmsg, vim.log.levels.ERROR)
-        return nil
-    end
+    local tok, lmsg = locks.op.acquire(norm_root, "nuke")
+    if not tok then return nil, "cannot nuke: " .. tostring(lmsg) end
     if tok.recovered then self._deps.notify("loomworks: " .. tok.recovered, vim.log.levels.WARN) end
-    local held, berr = self:_nuke_build_locks(norm_root, build_dir, locks.build)
+    local held, berr = self:_nuke_build_locks(norm_root, build_dir, locks.build, opts)
     if not held then
-        op_lock.release(tok)
-        self._deps.notify("loomworks: " .. berr, vim.log.levels.ERROR)
-        return nil
+        locks.op.release(tok)
+        return nil, berr
     end
+    return { root = norm_root, build_dir = build_dir, cache_path = cache_path, health_path = health_path,
+        locks = locks, tok = tok, held = held }
+end
+
+--- The second half of a nuke, under the locks `_nuke_begin` took (released
+--- here). Returns the normalized root when it ran, nil when refused.
+--- @param st table
+--- @return string|nil norm_root
+function Core:_nuke_run(st)
+    local norm_root, build_dir, locks, held = st.root, st.build_dir, st.locks, st.held
+    local cache_path, health_path = st.cache_path, st.health_path
+    local cache_bak = cache_path .. ".bak"
 
     -- 1. The caches first (§15 invariant 1, deletion safety 4): once they are
     --    gone nothing claims a configured or built tree, whatever happens to
@@ -663,8 +708,7 @@ function Core:_nuke_files(root)
     if aside then
         targets[#targets + 1] = aside
     elseif rerr then
-        for _, h in ipairs(held) do locks.build.release(h) end
-        op_lock.release(tok)
+        self:_nuke_release(st)
         self._deps.notify("loomworks: cannot nuke: could not move .nvim/build aside (" .. rerr
             .. ") — close programs using files in it (the editor's build, a file explorer, a "
             .. "running program), then nuke again. The build caches were removed; the tree was "
@@ -677,6 +721,7 @@ function Core:_nuke_files(root)
     -- The lockfiles moved with the tree: nothing of theirs is left to release
     -- in `.nvim/build`; drop the handles.
     for _, h in ipairs(held) do locks.build.release(h) end
+    st.held = {}
 
     -- 3. Remove, keeping this process's event loop running so the operation
     --    lock heartbeats: a large tree must not look like a hung holder.
@@ -686,7 +731,7 @@ function Core:_nuke_files(root)
             self._deps.notify("loomworks: failed to delete build dir: " .. tostring(err), vim.log.levels.ERROR)
         end
     end
-    op_lock.release(tok)
+    self:_nuke_release(st)
     return norm_root
 end
 
@@ -806,20 +851,27 @@ function Core:_nuke_lock_dirs(build_dir)
 end
 
 --- Take the build lock of every directory `nuke` removes (canonical order,
---- skipping locks this process holds). Returns the handles, or nil + the
---- refusal message (nothing held).
+--- refusing a lock this process holds unless `opts.skip_own`). Returns the
+--- handles, or nil + the refusal message (nothing held).
 --- @param root string normalized workspace root
 --- @param build_dir string normalized `<root>/.nvim/build`
+--- @param build_lock? table
+--- @param opts? { skip_own?: boolean }
 --- @return table[]|nil handles, string|nil message
-function Core:_nuke_build_locks(root, build_dir, build_lock)
+function Core:_nuke_build_locks(root, build_dir, build_lock, opts)
     build_lock = build_lock or require("loomworks.op_lock").locks(self._deps, root).build
     local lock_break = require("loomworks.lock_break")
     local _ = root
     local dirs = self:_nuke_lock_dirs(build_dir)
     table.sort(dirs, function(a, b) return a.key < b.key end)
     local held = {}
+    -- The editor's check (`opts.skip_own`) passes over this process's own
+    -- builds: `nuke_cache` stops them before it takes the locks for real.
+    local skip_own = opts and opts.skip_own
     for _, e in ipairs(dirs) do
-        if build_lock.held_by_me(e.path) then
+        local mine = build_lock.held_by_me(e.path)
+        if mine and skip_own then goto continue end
+        if mine then
             -- A task of this very process still uses it (nuke_cache retires
             -- the workspace first, so this is some other holder here): never
             -- delete under it.
@@ -838,6 +890,7 @@ function Core:_nuke_build_locks(root, build_dir, build_lock)
             end
             held[#held + 1] = h
         end
+        ::continue::
     end
     return held
 end
