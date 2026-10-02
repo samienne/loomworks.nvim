@@ -265,34 +265,41 @@ describe("lw build through the workspace daemon (real processes)", function()
         local root = workspace()
         local dir = H.tmp()
         local pidfile = dir .. "/pid"
-        -- In one (hidden) console: a sender that waits for the build's step,
-        -- then Ctrl-Cs the console; and the client, started as `start /b`
-        -- starts it — with Ctrl-C disabled (as Git Bash's `kill -INT` and
-        -- `start /b` leave a native program). The step itself is the
-        -- daemon's: not in this console.
+        -- In a NEW console (`start`; never the test runner's, which a console
+        -- Ctrl-C would end): a sender that waits for the build's step, then
+        -- Ctrl-Cs that console; and the client, started as `start /b` starts
+        -- it — with Ctrl-C disabled (as Git Bash's `kill -INT` and `start /b`
+        -- leave a native program). The step itself is the daemon's: not in
+        -- that console. The sender refuses to send in a console this test
+        -- process is attached to.
         local sender = dir .. "/sender.lua"
         local f = io.open(sender, "w")
         f:write([[
 local ffi = require("ffi")
-ffi.cdef("int SetConsoleCtrlHandler(void *h, int add); int GenerateConsoleCtrlEvent(unsigned long e, unsigned long g);")
+ffi.cdef("int SetConsoleCtrlHandler(void *h, int add); int GenerateConsoleCtrlEvent(unsigned long e, unsigned long g);"
+    .. "unsigned long GetConsoleProcessList(unsigned long *list, unsigned long n);")
 ffi.C.SetConsoleCtrlHandler(nil, 1)
 vim.wait(60000, function() return vim.uv.fs_stat(arg[1]) ~= nil end, 50)
 vim.uv.sleep(500)
+local list = ffi.new("unsigned long[256]")
+local n = ffi.C.GetConsoleProcessList(list, 256)
+if n == 0 or n > 256 then os.exit(2) end
+for i = 0, n - 1 do if list[i] == tonumber(arg[2]) then os.exit(3) end end
 ffi.C.GenerateConsoleCtrlEvent(0, 0)
 ]])
         f:close()
-        local nv = (vim.v.progpath:gsub("/", "\\"))
-        local bat = dir .. "/run.cmd"
-        f = io.open(bat, "wb")
-        f:write(string.format('@start /b "" "%s" --headless -u NONE -l "%s" "%s.configure"\r\n', nv, sender, pidfile))
-        f:write(string.format('@start /b /wait "" "%s" --headless -u NONE --cmd "lua vim.opt.rtp:prepend([[%s]])" -l "%s" --no-input build dev\r\n',
-            nv, H.REPO, H.CLI))
-        f:close()
+        local function win(p) return (p:gsub("/", "\\")) end
+        local nv = win(vim.v.progpath)
+        local inner = string.format('start /b "" "%s" --headless -u NONE -l "%s" "%s.configure" %d'
+            .. ' & start /b /wait "" "%s" --headless -u NONE --cmd "lua vim.opt.rtp:prepend([[%s]])" -l "%s"'
+            .. ' --no-input build dev',
+            nv, win(sender), win(pidfile), uv.os_getpid(), nv, H.REPO, H.CLI)
+        local cmdline = 'cmd.exe /d /c start "" /min /wait cmd.exe /d /c "' .. inner .. '"'
         local e = vim.deepcopy(env.vars)
         e.LW_TEST_SLEEP, e.LW_TEST_PIDFILE = "60000", pidfile
         local t0 = uv.now()
         local code
-        local h, cpid = uv.spawn("cmd.exe", { args = { "/d", "/c", (bat:gsub("/", "\\")) }, cwd = root,
+        local h, cpid = uv.spawn("cmd.exe", { args = { cmdline:sub(#"cmd.exe " + 1) }, verbatim = true, cwd = root,
             env = H.env_list(e) }, function(c) code = c end)
         assert.is_not_nil(h)
         H.track(cpid) -- the whole tree (the client included) is killed at cleanup
