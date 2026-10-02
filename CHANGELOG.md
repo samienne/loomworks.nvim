@@ -133,7 +133,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - The `lw status` / `lw daemon status` hint for a stale daemon handle said
   `lw daemon stop` was needed; any workspace command in daemon mode recovers it
   by itself, and the hint now says so. `lw help daemon` lists the minute form
-  of `daemon-idle-timeout` (90s, 2m, 30m, 1h). (#PR)
+  of `daemon-idle-timeout` (90s, 2m, 30m, 1h). (#109)
 - On macOS and Linux, a workspace daemon started from one environment (a
   desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
   container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being
