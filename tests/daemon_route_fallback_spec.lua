@@ -134,7 +134,7 @@ describe("lw build routed through an in-process daemon (§19.15)", function()
         if not WIN then return pending("Windows only") end
         for k, v in pairs(CMD_ENTRIES) do uv.os_setenv(k, v) end
         uv.os_setenv("PROMPT", "$P$G")
-        local code = cli._delegate_build(root, { "build", "dev" }, "used", { keepalive_ms = 1000 })
+        local code = cli._delegate_build(root, { "build", "dev" }, "used", { keepalive_ms = 1000, connect_ms = 60000 })
         assert.equals(0, code, table.concat(err_lines, "\n"))
         assert.equals(1, #lines_matching("building through the workspace daemon (pid " .. srv.pid .. ")"),
             table.concat(err_lines, "\n"))
@@ -143,7 +143,7 @@ describe("lw build routed through an in-process daemon (§19.15)", function()
 
     it("a declined request prints one line with the daemon's reason and runs in-process", function()
         srv.retiring = true
-        local code = cli._delegate_build(root, { "build", "dev" }, "used", { keepalive_ms = 1000 })
+        local code = cli._delegate_build(root, { "build", "dev" }, "used", { keepalive_ms = 1000, connect_ms = 60000 })
         assert.is_nil(code)
         assert.same({ "lw: the workspace daemon declined the build (the daemon is retiring); running without it" },
             err_lines)

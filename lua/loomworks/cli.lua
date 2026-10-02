@@ -7647,7 +7647,7 @@ end
 --- @param root string
 --- @param args string[]
 --- @param ensured string|nil
---- @param opts? { session?: function, keepalive_ms?: integer }
+--- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer }
 --- @return integer|nil exit code
 function M._delegate_build(root, args, ensured, opts)
   opts = opts or {}
@@ -7693,7 +7693,7 @@ function M._delegate_build(root, args, ensured, opts)
     end
   end
   local session = opts.session or client.session
-  local conn, cerr = session(st.handle.endpoint, { timeout_ms = 5000, on_message = on_message })
+  local conn, cerr = session(st.handle.endpoint, { timeout_ms = opts.connect_ms or 5000, on_message = on_message })
   if not conn then
     note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
     return nil
