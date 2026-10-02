@@ -134,7 +134,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   workspace daemon as "not responding" on a loaded machine: the stop request
   may use the whole stop wait (about 10 s) instead of giving up after 2 s, and
   is sent again if it fails early. A hung daemon is still reported after the
-  same wait. `lw daemon status` waits up to 5 s for the daemon's answer. (#PR)
+  same wait. `lw daemon status` waits up to 5 s for the daemon's answer. (#111)
 - The `lw status` / `lw daemon status` hint for a stale daemon handle said
   `lw daemon stop` was needed; any workspace command in daemon mode recovers it
   by itself, and the hint now says so. `lw help daemon` lists the minute form
