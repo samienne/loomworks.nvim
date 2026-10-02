@@ -499,10 +499,10 @@ Runtime   daemon on OTHERHOST (pid 4242)
 Runtime   attached: lw build (pid 4242)
 Runtime   no daemon (starts on the next command)
 Runtime   in-process
-Runtime   stale daemon handle (pid 4242, 3h ago) — lw daemon stop clears it
+Runtime   stale daemon handle (pid 4242, 3h ago) — the next workspace command recovers it (daemon mode), or lw daemon stop
 Runtime   daemon pid 4242 is not responding (no heartbeat for 2m) — lw daemon stop --force
 Runtime   daemon pid 4242 (starting)
-Runtime   unreadable daemon handle — lw daemon stop clears it
+Runtime   unreadable daemon handle — the next workspace command recovers it (daemon mode), or lw daemon stop
 ```
 
 `no daemon (starts on the next command)` is shown in `daemon` mode,

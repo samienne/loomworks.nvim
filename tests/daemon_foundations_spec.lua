@@ -178,6 +178,8 @@ describe("Runtime row and lw daemon status (§19.6, §19.11)", function()
         local st = inspect.state(root)
         assert.equals("stale", st.kind)
         assert.truthy(inspect.row(st, "daemon"):find("stale daemon handle (pid " .. h.pid, 1, true))
+        -- The hint names the self-recovery, not only `lw daemon stop`.
+        assert.truthy(inspect.row(st, "daemon"):find("the next workspace command recovers it", 1, true))
     end)
 
     it("names a daemon on another host and an attached run", function()
