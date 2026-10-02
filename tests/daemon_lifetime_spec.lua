@@ -450,6 +450,9 @@ end)
 describe("daemon processes", function()
     it("none was left running by any test of this file", function()
         H.cleanup()
-        assert.equals(0, H.leftovers, "a test left a daemon process running")
+        -- Never a process left behind, even by a failed test (cleanup kills).
+        assert.equals(0, H.survivors, "a daemon process survived the cleanup")
+        assert.equals(0, H.leftovers, "a test left a daemon process running (killed by the cleanup; "
+            .. "if a test above failed, this follows from it)")
     end)
 end)

@@ -125,15 +125,26 @@ end
 --- final test, so a failing test's leftovers do not mask its own failure).
 M.leftovers = 0
 
---- Kill every tracked process still alive (identity-checked); returns the
---- number killed (also added to `M.leftovers`).
+--- Processes still alive after `cleanup` tried to kill them: a real leak
+--- (asserted zero by each spec's final test).
+M.survivors = 0
+
+--- Kill every tracked process still alive (identity-checked, the whole tree;
+--- retried once), whatever the test's outcome — after_each runs it, so a
+--- failed assertion never leaves a daemon running. Returns the number found
+--- alive (also added to `M.leftovers`: a test that passed should have stopped
+--- its daemon itself; one that failed has already been reported).
 function M.cleanup()
     local n = 0
     for _, t in ipairs(tracked) do
         pcall(proc._resume, t.pid)
         if type(t.start) == "string" and proc.alive(t.pid, t.start) then
-            proc.kill_tree(t.pid, t.start)
             n = n + 1
+            for _ = 1, 2 do
+                pcall(proc.kill_tree, t.pid, t.start)
+                if vim.wait(5000, function() return proc.alive(t.pid, t.start) ~= true end, 20) then break end
+            end
+            if proc.alive(t.pid, t.start) == true then M.survivors = M.survivors + 1 end
         end
     end
     tracked = {}
