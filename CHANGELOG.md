@@ -50,7 +50,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Ctrl-C stops it in the daemon, and it takes the same build-directory locks
   as an editor or `lw --no-daemon` build. `--no-daemon`, CI,
   `--break-locks` and interactive profile creation build without the daemon,
-  as before. (#PR)
+  as before. (#113)
 - Experimental, opt-in: the setting `runtime-mode` (`in-process`, the
   default, or `daemon`; `LOOMWORKS_RUNTIME` overrides it) prepares the
   workspace daemon. `lw daemon status` and a new `Runtime` row in `lw status`
