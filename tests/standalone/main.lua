@@ -3800,7 +3800,9 @@ do
       uv.fs_unlink(stale)
       local s4 = uv.new_pipe(false)
       assert(s4:bind(stale)); s4:listen(4, function() end)
-      uv.fs_utime(stale, now - 7200, now - 7200)
+      -- Old enough to pass the re-check, but not the file tested (its inode
+      -- may well be reused; its modification time differs).
+      uv.fs_utime(stale, now - 7300, now - 7300)
       local rok = hk.remove(item, now)
       ok(not rok and uv.fs_lstat(stale) ~= nil and uv.fs_lstat(stale).type == "socket",
         "a socket rebound meanwhile is put back")

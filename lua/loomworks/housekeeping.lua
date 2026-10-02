@@ -509,7 +509,13 @@ local function remove_socket(item)
     local ok, err = uv().fs_rename(item.path, aside)
     if not ok then return false, tostring(err) end
     local st = uv().fs_lstat(aside)
-    if st and st.type == "socket" and st.ino == item._st.ino and st.dev == item._st.dev then
+    -- Same file as tested: inode and device (an inode number can be reused
+    -- at once), and its modification time unchanged (a fresh bind has a new
+    -- one).
+    local o = item._st
+    local same = st and st.type == "socket" and st.ino == o.ino and st.dev == o.dev
+        and st.mtime and o.mtime and st.mtime.sec == o.mtime.sec and st.mtime.nsec == o.mtime.nsec
+    if same then
         local uok, uerr = uv().fs_unlink(aside)
         if uok then return true end
         return false, tostring(uerr)
