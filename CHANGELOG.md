@@ -145,7 +145,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   longer makes the daemon hold the whole build output in memory; the build
   tool waits until the output is read, as without the daemon, and Ctrl-C
   still stops it. Other connected clients get at most 4 MB of a build's
-  output, and one that falls far behind is disconnected. (#PR)
+  output, and one that falls far behind is disconnected. (#115)
 - Workspace daemon: `lw build` from another terminal tab, pane or SSH session
   no longer reloads the daemon's workspace, or builds without the daemon
   while another build runs, just because variables naming the terminal or
@@ -155,7 +155,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   process-tree kill is killed directly. On Windows, the daemon's own lookups
   for a build from an editor-hosted client never run a program from the
   current directory. A development daemon run from a source directory
-  (`luvi <dir>`) is replaced after a source edit. (#PR)
+  (`luvi <dir>`) is replaced after a source edit. (#115)
 - `lw daemon stop` (and `restart`) no longer reports a healthy but slow
   workspace daemon as "not responding" on a loaded machine: the stop request
   may use the whole stop wait (about 10 s) instead of giving up after 2 s, and
