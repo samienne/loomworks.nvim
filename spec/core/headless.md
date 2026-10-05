@@ -860,7 +860,8 @@ built green, configured (and mixed counts) blue, unconfigured and unknown dim,
 running yellow, failed and cleaning red; elsewhere it is plain. The state is
 the last persisted one (the build cache, §2), read fresh by each invocation; while the
 workspace daemon runs a task (§19.6 "Running tasks"), the profiles and units
-that task resolves to show it running (`building`, `configuring`, `cleaning`),
+that task resolves to show it running (`building`, `configuring`, `cleaning`,
+and `deleting` for a reset, §16.30),
 exactly as the interactive host shows a task it observes in the daemon
 (§19.16). An operation another process runs **in-process** (no daemon) is not
 visible to the overview; its result shows once it persists.
@@ -1803,6 +1804,16 @@ a directory that is still present once the removal settles is reported as a
 failure rather than reported as removed. On success the removed directories are
 reported and the exit status is **0**; on any failure the reason is reported and
 the exit status is non-zero.
+
+**Through the workspace daemon.** *(Planned, §19.19 step 5d.)* In
+`runtime-mode daemon` the CLI's reset runs in the workspace daemon (§19.15
+"Reset"): the same plan, listing, confirmation, locks, deletion, verification,
+lines and exit codes as above. The daemon never prompts: it returns the
+listing, the client asks, and the confirmed request carries a token of the
+listed plan, so a reset whose directories changed between the listing and the
+answer refuses instead of removing directories the user was not shown. The
+editor and `lw status` show the running reset like any task the daemon runs
+(§19.16, §16.18).
 
 **Concurrent editor.** Reset is designed to run while an editor host is live on
 the same workspace, and coexistence rests on the same three-file/cache

@@ -946,6 +946,20 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `deleting` with `deleting_reason()` `cleaning` (a local clean's display),
   `shown_action()` nil; fidget's `ACTION_TITLE.clean` gives `Cleaning (lw)`.
 
+**Step 5d: `lw reset` (spec §19.15 "Reset") — planned, not implemented.** The
+expected shape follows 5c: the reset planning of `cli.cmd_reset` (lock set,
+removal set, nothing-to-reset, listing lines) moves into a module both hosts
+use, with a plan token over scope + lock set + removal set; `cli.cmd_reset`
+keeps the prompt and, routed, sends `reset` twice (listing → `confirm`,
+then `yes` + `plan`); `daemon/service.lua` `on_reset` plans before any lock
+and answers `refused` / `confirm` / `accepted`; `daemon/runner.lua`
+`ctx.op == "reset"` takes the op lock then the build locks (record operation
+`reset`) and runs `Profile:reset` / `Workspace:reset_all` with the stop
+predicate threaded through `execute_deletion` (and the orphan deletions), then
+the non-blocking gone-from-disk check; the observer maps `kind = reset` to
+`deleting` and resolves a scope-`all` task's units without a profile;
+protocol 9.
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller
