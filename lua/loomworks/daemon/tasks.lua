@@ -110,8 +110,8 @@ end
 function Stream:busy() return self.count > 0 end
 
 --- The running (started, not finished) tasks as the `status` reply's `tasks`
---- (spec §19.11): `{ task_id, name, kind, profile, units, origin, started_at,
---- percent? }` each, in start order.
+--- (spec §19.11): `{ task_id, name, kind, profile, scope?, units, origin,
+--- started_at, percent? }` each, in start order.
 --- @return table[]
 function Stream:snapshot()
     local out = {}
@@ -119,7 +119,7 @@ function Stream:snapshot()
         if t.meta and not t.finished then
             local m = t.meta
             out[#out + 1] = { task_id = id, name = m.name, kind = m.kind, profile = m.profile,
-                units = m.units, origin = m.origin, started_at = t.started_at,
+                scope = m.scope, units = m.units, origin = m.origin, started_at = t.started_at,
                 percent = (t.last_pct or -1) >= 0 and t.last_pct or nil }
         end
     end

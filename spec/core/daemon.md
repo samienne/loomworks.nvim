@@ -198,9 +198,9 @@ before taking the locks. `lw unlock --workspace`
 `--force` one whose holder runs; dead and hung holders of every class are
 handled by §19.5 (`--break-locks`, accepted by every command above).
 
-O is re-entrant within one process: an operation that holds it (the CLI's
-`lw reset`, which takes O and then every build lock before the workspace's
-deletion runs) may call another operation that takes it; the lockfile goes
+O is re-entrant within one process: an operation that holds it (`lw reset`,
+in the CLI or in the workspace daemon, which takes O and then every build lock
+before the workspace's deletion runs) may call another operation that takes it; the lockfile goes
 with the outermost holder. Likewise a deletion skips the build locks its own
 process already holds.
 
@@ -561,6 +561,9 @@ Runtime   daemon pid 4242, 2 clients
   test   Release:msvc-17   (editor)  8s
 ```
 
+A `reset --all` task (`meta.scope = "all"`, no
+profile, §19.15 Reset) shows `--all` in the profile column.
+
 It asks only a daemon the handle shows live, on this host, busy (a running
 task makes it busy, §19.11) and with this lw's `key_id` — so an idle daemon
 is never contacted — by connecting, authenticating and sending `status`
@@ -571,7 +574,8 @@ older daemon) shows `  running tasks: not reported by daemon lw <version>`; a
 failed or timed-out query shows one line, `  running tasks: unavailable
 (<reason>)`. The same reply's `tasks` also mark the profiles and units they
 resolve to as running in the profile list's build state (§16.18), as the
-editor shows an observed task (§19.16); nothing else of `lw status`'s output,
+editor shows an observed task (§19.16; a task without a profile, a `reset
+--all`, marks every profile that has one of its units); nothing else of `lw status`'s output,
 and never its exit status, depends on the query. `lw status` has no machine-readable (`--json`) form, so there is none
 to extend.
 
@@ -734,7 +738,8 @@ version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
 plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
 §19.15, §19.16; protocol version 8: 7 plus the routed `clean` request,
-§19.15); the rest of the
+§19.15; protocol version 9: 8 plus the routed `reset`
+request and its `confirm` outcome, §19.15); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -996,7 +1001,8 @@ in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
 the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
 the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
 with a stop predicate); observed by the editor (§19.16);
-other operations future.*
+`lw reset [<profile> | --all] [-y]` (§16.30; see
+Reset, step 5d); other operations future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1184,11 +1190,85 @@ cache stays `unknown` (never reset after a partial removal, §4.7). The clean
 writes the cache exactly when the in-process clean does, and any write-back's
 `model_change` precedes `done` (§19.16, End).
 
+**Reset.** *(Step 5d.)* `reset { args, interactive, env, command }`
+— `lw reset [<profile> | --all] [-y]` (§16.30: the profile's build
+directories, or with `--all` every build directory the workspace knows,
+orphaned ones included, removed from disk and their units returned to
+`unconfigured`; the profile is kept) — has the outcomes of `build`, plus
+`confirm`; `args` carries `profile`, `all`, `yes` (`-y` / `--yes`) and
+`plan`. The daemon plans the reset as in-process (§16.30: the directories to
+lock, the directories on disk to remove, whether cached state is cleared
+without a directory), after resolution and before any lock or side effect,
+and then answers:
+
+- with nothing to reset: `refused`, with the in-process `nothing to reset for
+  <scope> — no build directories to remove.` line and its exit code 0, and
+  `stream = "out"`: printed on standard output as in-process;
+- without `yes`: `confirm` (`lines`, `plan`, `profile_key` — absent for
+  `--all`; the client names the scope from it in its question and refusals)
+  — no lock taken, nothing changed. `lines` are the in-process listing (`Will remove N build
+  directories and reset <scope> to unconfigured:` and one line per directory,
+  or the line for cached state without a directory); `plan` is an opaque token
+  of the planned scope, lock set and removal set. The client prints the lines
+  on standard output and asks the user as in-process (Confirmation): a
+  non-interactive client prints the in-process refusal naming `-y` and exits
+  1; a declined prompt prints `aborted — nothing was removed` and exits 1; a
+  confirmed one sends `reset` again with `yes` and that `plan`;
+- with `yes` and a `plan`: the daemon plans again; a plan whose token differs
+  is `refused` (`the build directories to reset changed since they were
+  listed — run lw reset again`, exit 1) before any side effect — compared
+  before the nothing-to-reset check, so a listed plan whose directories
+  vanished is refused as changed, as in-process — so a reset
+  never removes a directory the user was not shown. An equal plan is
+  `accepted`, and its task prints no listing (the client printed it);
+- with `yes` and no `plan` (`-y` on the command line): `accepted`; the task
+  prints the listing first, as the in-process reset does before its deletion.
+
+Its task's `meta.kind` is `reset`; `meta.profile` is the profile's key, or
+absent with `meta.scope = "all"` for `--all`; `meta.units` are the planned
+units (for `--all` every configuration unit with a build directory; an
+orphaned directory has no unit and is not listed). An accepted reset does,
+and prints, exactly what the in-process reset does: the workspace operation
+lock taken first (§19.3, operation `reset`), then the build-directory locks
+of §16.6 for every directory of the lock set, **exclusive**, in canonical
+order with the §19.5 record (holder kind `daemon`, operation `reset`; a dead
+holder's lock reclaimed and its state recovered as for a build; a held one
+ends the task with the in-process refusal naming the holder, nothing
+removed). With every lock held and before anything is removed, the reset
+plans again and compares the token with the plan it listed: a directory that
+appeared or vanished in between (another process's build that finished and
+released before the locks were taken) ends the task with the same `the build
+directories to reset changed since they were listed — run lw reset again`,
+exit 1, the locks released and nothing removed. The removal is the SAME build-directory deletion as in-process
+(§4.6, §4.7; one path for both hosts): each path validated first; units
+sharing a directory are one deletion batch; the cache says `unknown` on disk
+before a tree is removed and the units are reset only after its removal
+succeeded; a directory still used by a configuration outside the reset is
+kept, its state cleared for the reset units only; `--all` then removes the
+orphaned directories by the same path. The reset then checks that every
+removed directory is gone from disk, waiting out a delete-pending directory
+for the in-process bound without blocking: a directory still present ends the
+task with the in-process `reset failed — N build directories could not be
+removed:` lines, a deletion that does not complete with `reset timed out — …`,
+both exit 1; success prints `RESET OK: <scope>`. The removal does not block
+the daemon's endpoint (pings, status and other clients are served while it
+runs). Cancelling during the removal stops it between entries (`reset
+stopped: <reason>`); what was removed stays removed and the cache stays
+`unknown` (never reset after a partial removal, §4.7); the locks are held
+until the removal has stopped and are then released, the operation lock last.
+A removal still running after its task ended (timed out) keeps the daemon
+busy — it neither idles out nor retires — until it settles, and a daemon that
+stops meanwhile asks it to stop between entries.
+The reset writes the cache exactly when the in-process reset does, and its
+write-back's `model_change` precedes `done` (§19.16, End).
+
 **Confirmation.** A daemon never prompts. An operation whose in-process form
 asks the user before acting (a confirmation, a picker) either is `declined`
 for that form (profile onboarding, above) or is asked by the client before it
-sends the request, the request then carrying the answer; no routed operation
-of this step asks one.
+sends the request, the request then carrying the answer. `reset` is the only
+routed operation that asks one: the daemon returns what the question shows
+(`confirm`, Reset) and the answer travels with a token of what was shown, so
+the daemon acts only on the plan the user confirmed.
 
 **Environment.** A routed build behaves as if the client process had run it.
 The client sends its **whole environment** with the request; the daemon
@@ -1256,7 +1336,8 @@ is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
 that step, releases its locks and ends the task nonzero (`build stopped:
 <reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
-for a run's preparation; `clean stopped: <reason>` for a clean). A client that loses the connection after its operation was
+for a run's preparation; `clean stopped: <reason>` for a clean; `reset
+stopped: <reason>` for a reset). A client that loses the connection after its operation was
 accepted reports a failure; it never re-runs the operation another way (for a
 run: it starts no program). Cancellation ends with the task: a run's program,
 started after it, is never the daemon's to stop (Run). A
@@ -1346,13 +1427,25 @@ It has no form the daemon does not carry. Configuring has no command of its
 own: it is a step of the routed build (`lw build --reconfigure` forces it,
 §16.4), and runs in the daemon with it.
 
+*(Step 5d.)* `lw reset` is routed by the same rules, an argument
+`cmd_reset` refuses (an unknown flag, `--all` with a profile) taking the
+place of one `cmd_build` refuses, and its lines name the reset: `lw: the
+workspace daemon declined the reset (<reason>); running without it`, `lw:
+the workspace daemon could not take the reset (<reason>); running without it`
+and `lw: resetting through the workspace daemon (pid N)` — printed when the
+reset is accepted, so after the confirmation. Each of the two requests of a
+confirmed reset is routed or not on its own: when the second one cannot be
+routed (the daemon stopped or was retired while the user answered), the
+client says so on the could-not line and runs the reset in-process with the
+user's answer, never asking again; the in-process reset plans again and
+refuses with the changed-plan line above when its plan differs from the one
+shown. It has no form the daemon does not carry.
+
 **Not routed.** These commands touch build directories but stay on the
 in-process path in this step; they are not routed commands, so they print no
 daemon line, and their cross-process locks (§16.6, §19.3) serialize them with
 the daemon's operations as with any other process:
 
-- `lw reset` (§16.30) — destructive, with a confirmation (`-y`); when it is
-  routed, its confirmation follows Confirmation above;
 - `lw nuke` — removes the workspace's build state (`.nvim/build/`, the build
   and health caches), taking every build-directory lock first (§19.3);
 - `lw device clean` (§16.34) — its device locks and the device's staging stay
@@ -1444,7 +1537,13 @@ in-process path. In `in-process` mode nothing below happens.
     having an active operation (spec/ui.md §1.5). A remote `clean` shows its
     units `cleaning`, the display of the transient clean state (§3.1, transition rule 5),
     without changing their cached state; a remote `test` or `run` shows
-    `building`. The state is runtime-only:
+    `building`. *(Step 5d.)* A remote `reset` shows its units
+    `deleting`, the display of the transient deletion state (§3.1, transition
+    rule 5) of the in-process reset, whose deletion is not a clean. A
+    `reset --all` has no profile (`meta.scope = "all"`, §19.15 Reset): its
+    units are resolved by project key and configuration-unit key among the
+    workspace's configuration units, and every profile with a resolved unit
+    counts as having an active operation. The state is runtime-only:
     the editor never writes the cache or the working copy for a remote task
     and runs nothing. It never blocks an editor operation: the cross-process
     build-directory locks (§16.6) do.
@@ -1462,7 +1561,9 @@ in-process path. In `in-process` mode nothing below happens.
     outcome when the running state clears.
   - **UI.** A remote task is shown exactly as a local task of the same kind
     and profile: in progress (fidget, the same entry and end message — for
-    a `clean`, `cleaned` / `clean failed`, as a local clean's), in the
+    a `clean`, `cleaned` / `clean failed`, as a local clean's; for a
+    `reset`, which has no local editor task, `Resetting` and `reset` /
+    `reset failed`, with the profile's name or `--all`), in the
     status page's Profiles and Tasks sections (spec/ui.md §1.5, §1.9), and
     in the status line. It is neither cancelled nor restarted from the editor
     (§19.15). Its only difference is an **origin marker** naming who started
@@ -1510,7 +1611,22 @@ failing step, an unknown or missing profile, both ways — the same output, exit
 code, build-directory contents and persisted cache; plus cancellation during a
 step and during a wipe; `tests/daemon_clean_service_spec.lua`: the daemon
 answers `ping` while a wipe runs, a cancelled wipe stops between entries and
-holds its locks until it has); the projection half #88.*
+holds its locks until it has); `lw reset`
+(`tests/daemon_reset_cli_spec.lua`: a profile reset, `--all` with an
+orphaned directory, a directory shared with another profile kept, nothing to
+reset, `-y`, a confirmed and a declined prompt, a non-interactive refusal
+without `-y`, an unknown or missing profile, both ways — the same output,
+exit code, build-directory contents and persisted cache; plus a plan changed
+between listing and confirmation, a second request that cannot be routed
+(the daemon stopped while the user answered) and cancellation during the
+removal; `tests/daemon_reset_service_spec.lua`: the daemon answers `ping`
+while a reset removes, `confirm` takes no lock and changes nothing, a changed
+plan is refused, a held build-directory lock refuses the reset naming the
+holder, a cancelled reset stops between entries, leaves the cache `unknown`
+and holds its locks until it has, `--all` is one task without a profile and
+an observer shows every profile with one of its units `deleting`; a directory
+that cannot be removed is `tests/cli_reset_spec.lua`'s, the deletion and its
+check being the one path both hosts run); the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -1549,7 +1665,12 @@ runtime is deferred until that module is actively developed.
    - **5c — `lw clean`** (§19.15, Clean; protocol 8): executed in the daemon
      under exclusive build-directory locks, with the in-process deletion
      safety for a core-performed wipe. Configuring is already routed as a
-     step of `lw build`. `lw reset`, `lw nuke` and `lw device clean` stay
+     step of `lw build`. `lw nuke` and `lw device clean` stay
      in-process (§19.15, Not routed). *(Done.)*
+   - **5d — `lw reset`** (§19.15, Reset; protocol 9): executed in the daemon
+     under the workspace operation lock and exclusive build-directory locks,
+     through the same deletion as in-process; its confirmation asked by the
+     client from the daemon's listing, the answer carrying a token of the
+     listed plan.
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

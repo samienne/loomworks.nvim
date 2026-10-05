@@ -32,6 +32,7 @@ local ACTION_TITLE = {
     ["configure+build"] = "Building",
     delete = "Deleting",
     clean = "Cleaning",
+    reset = "Resetting",
     test = "Testing",
     run = "Preparing",
 }

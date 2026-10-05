@@ -84,6 +84,8 @@ end
 --- @param opts { env: table, cwd?: string, timeout?: integer }
 function M.lw(args, opts)
     local out, err = uv.new_pipe(false), uv.new_pipe(false)
+    -- `opts.stdin`: text the process reads on its standard input (then EOF).
+    local inp = opts.stdin and uv.new_pipe(false) or nil
     local obuf, ebuf, code = {}, {}, nil
     -- Modules resolve on the runtime path (plugin_loader): `-u NONE` needs
     -- the checkout on it to build anything.
@@ -93,9 +95,10 @@ function M.lw(args, opts)
     local t0 = uv.hrtime()
     local h, pid = uv.spawn(vim.v.progpath, {
         args = argv, cwd = opts.cwd, env = env_list(opts.env.vars),
-        stdio = { nil, out, err },
+        stdio = { inp, out, err },
     }, function(c) code = c end)
     assert(h, "spawn failed: " .. tostring(pid))
+    if inp then inp:write(opts.stdin, function() pcall(function() inp:close() end) end) end
     local eof = 0
     out:read_start(function(_, d) if d then obuf[#obuf + 1] = d else eof = eof + 1 end end)
     err:read_start(function(_, d) if d then ebuf[#ebuf + 1] = d else eof = eof + 1 end end)
@@ -111,18 +114,21 @@ function M.lw(args, opts)
 end
 
 --- Start `lw <args>` without waiting (a build to interrupt). Returns
---- { pid, start, stdout(), stderr(), code (nil while running), kill(signal) }.
+--- { pid, start, stdout(), stderr(), code (nil while running), kill(signal) };
+--- with `opts.stdin`, also `write(text)` / `close_stdin()` (its standard
+--- input is a pipe: e.g. a prompt's answer).
 --- @param args string[]
---- @param opts { env: table, cwd?: string }
+--- @param opts { env: table, cwd?: string, stdin?: boolean }
 function M.lw_start(args, opts)
     local out, err = uv.new_pipe(false), uv.new_pipe(false)
+    local inp = opts.stdin and uv.new_pipe(false) or nil
     local obuf, ebuf = {}, {}
     local argv = { "--headless", "-u", "NONE", "--cmd", "lua vim.opt.rtp:prepend(" .. string.format("%q", M.REPO) .. ")",
         "-l", M.CLI }
     for _, a in ipairs(args) do argv[#argv + 1] = a end
     local r = {}
     local h, pid = uv.spawn(vim.v.progpath, {
-        args = argv, cwd = opts.cwd, env = env_list(opts.env.vars), stdio = { nil, out, err },
+        args = argv, cwd = opts.cwd, env = env_list(opts.env.vars), stdio = { inp, out, err },
     }, function(c) r.code = c end)
     assert(h, "spawn failed: " .. tostring(pid))
     out:read_start(function(_, d) if d then obuf[#obuf + 1] = d end end)
@@ -131,6 +137,8 @@ function M.lw_start(args, opts)
     function r.stdout() return table.concat(obuf) end
     function r.stderr() return table.concat(ebuf) end
     function r.kill(sig) pcall(uv.process_kill, h, sig or "sigkill") end
+    function r.write(text) if inp then inp:write(text) end end
+    function r.close_stdin() if inp then pcall(function() inp:close() end) end end
     function r.wait(ms)
         local ok = vim.wait(ms or 60000, function() return r.code ~= nil end, 10)
         if ok then pcall(function() out:close(); err:close(); h:close() end) end

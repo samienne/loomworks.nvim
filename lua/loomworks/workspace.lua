@@ -3772,24 +3772,52 @@ end
 --- @param build_dir_key string
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
-function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done)
+--- Crash-safe like `_run_deletion` (Deletion Safety rule 4, spec §4.7): the
+--- entry says `unknown` on disk before the tree is removed, and it leaves the
+--- cache only after the removal succeeded; a failed or stopped removal keeps
+--- it (`unknown`) and resolves `false`. `opts.stop` (the daemon's
+--- cancellation, §19.15 "Reset") is asked before the removal starts and
+--- during it.
+--- @param opts? { stop?: fun(): boolean }
+function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
     local future_mod = require("loomworks.future")
+    local stop = opts and opts.stop or nil
     local bd = self:find_build_dir(build_dir_key)
-    if bd then
+    local function drop()
         for i, b in ipairs(self._build_dirs) do
             if b == bd then table.remove(self._build_dirs, i); break end
         end
-
+    end
+    if bd then
         if bd.path then
             local abs_dir = self._core._deps.normalize(bd.path)
             local safe_prefix = self._core._deps.normalize(self.root)
             if self:_validate_build_dir(abs_dir, safe_prefix) then
+                if stop and stop() then
+                    if on_done then on_done() end
+                    return future_mod.resolved(false)
+                end
+                -- The `unknown` mark reaches the disk before the tree is
+                -- removed (§5.7): never staged in an open transaction (§19.4).
+                assert(not require("loomworks.txn").active(),
+                    "loomworks: a deletion's cache write ran inside a transaction")
+                if bd:has_state() then bd.state = "unknown" end
+                self:_save_cache()
                 local ws = self
-                local f = self:_delete_build_dirs_async({ abs_dir }):next(function()
-                    ws:_save_cache()
-                    ws._core._deps.events.emit("active_set_changed", ws._active_set)
-                    return true
-                end)
+                local f = self:_delete_build_dirs_async({ abs_dir }, nil, { stop = stop })
+                    :next(function(results)
+                        local r = results and results[1]
+                        local ok = r ~= nil and r.ok == true
+                        if ok then
+                            drop()
+                        elseif r and not r.stopped then
+                            ws._core._deps.notify("loomworks: failed to delete " .. abs_dir
+                                .. ": " .. tostring(r.err or "unknown"), vim.log.levels.ERROR)
+                        end
+                        ws:_save_cache()
+                        ws._core._deps.events.emit("active_set_changed", ws._active_set)
+                        return ok
+                    end)
                 if on_done then
                     f:next(function() on_done() end)
                      :catch(function() on_done() end)
@@ -3797,6 +3825,9 @@ function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done)
                 return f
             end
         end
+        -- No path, or one outside the workspace root: nothing is removed from
+        -- disk; the entry leaves the cache.
+        drop()
     end
 
     self:_save_cache()
@@ -3966,25 +3997,28 @@ end
 --- configure-state reset, `_pre_configure_reset`) passes `opts.allow_root`.
 --- @param build_dir string path (normalized or raw) to the build dir
 --- @param safe_prefix string path (normalized or raw) to the workspace root
---- @param opts? { allow_root?: boolean }
+--- `opts.quiet`: a planning check (reset_plan.plan, spec §16.30) — no
+--- notification on refusal; the verdict is the same.
+--- @param opts? { allow_root?: boolean, quiet?: boolean }
 --- @return boolean safe
 function Workspace:_validate_build_dir(build_dir, safe_prefix, opts)
-    if not build_dir or build_dir == "" then
-        self._core._deps.notify("loomworks: refusing to delete empty build dir path", vim.log.levels.ERROR)
+    local quiet = opts and opts.quiet
+    local function refuse(msg)
+        if not quiet then self._core._deps.notify(msg, vim.log.levels.ERROR) end
         return false
+    end
+    if not build_dir or build_dir == "" then
+        return refuse("loomworks: refusing to delete empty build dir path")
     end
     local abs = self:_canonicalize_boundary_path(build_dir)
     local root = self:_canonicalize_boundary_path(safe_prefix)
     if abs == root and not (opts and opts.allow_root) then
-        self._core._deps.notify("loomworks: refusing to delete the workspace root as a build dir: " .. abs,
-            vim.log.levels.ERROR)
-        return false
+        return refuse("loomworks: refusing to delete the workspace root as a build dir: " .. abs)
     end
     local is_under = abs == root
         or abs:sub(1, #root + 1) == root .. "/"
     if not is_under then
-        self._core._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. abs, vim.log.levels.ERROR)
-        return false
+        return refuse("loomworks: refusing to delete build dir outside workspace: " .. abs)
     end
     return true
 end
@@ -4398,11 +4432,19 @@ end
 --- config unit that has a build directory across all profiles, plus every
 --- orphaned build directory (cached state no ConfigUnit references). Removes the
 --- directories from disk and clears build state to `unconfigured`; no profile is
---- removed. Returns a Future that resolves after both phases complete.
+--- removed. Returns a Future that resolves after both phases complete
+--- (`true` when every removal succeeded). `opts.stop` (the daemon's
+--- cancellation, §19.15 "Reset") is asked before each entry: during the
+--- batched removal of phase 1, and before (and during) each orphan's removal
+--- in phase 2, which runs sequentially. A stopped reset resolves `false`; what
+--- it did not finish stays `unknown` in the cache (never reset after a
+--- partial removal).
 --- @param on_done? function called when the whole reset is complete
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Workspace:_reset_all_unlocked(on_done)
+function Workspace:_reset_all_unlocked(on_done, opts)
     local future_mod = require("loomworks.future")
+    local stop = opts and opts.stop or nil
 
     -- Phase 1: every referenced unit with a build dir → one batched reset plan.
     -- No Operation is created (see Profile:reset): headless reset runs no tasks,
@@ -4426,17 +4468,21 @@ function Workspace:_reset_all_unlocked(on_done)
     end
 
     local ws = self
+    local all_ok = true
     local function delete_orphans(i)
-        if i > #orphan_keys then
+        if i > #orphan_keys or (stop and stop()) then
+            if i <= #orphan_keys then all_ok = false end
             if on_done then on_done() end
-            return future_mod.resolved(true)
+            return future_mod.resolved(all_ok)
         end
-        return ws:delete_orphaned_build_dir(orphan_keys[i]):next(function()
+        return ws:delete_orphaned_build_dir(orphan_keys[i], nil, { stop = stop }):next(function(ok)
+            if ok ~= true then all_ok = false end
             return delete_orphans(i + 1)
         end)
     end
 
-    return self:execute_deletion({ items = items }, nil):next(function()
+    return self:execute_deletion({ items = items }, stop and { stop = stop } or nil):next(function(ok)
+        if ok ~= true then all_ok = false end
         return delete_orphans(1)
     end)
 end
@@ -4654,10 +4700,11 @@ end
 --- workspace operation lock across both phases (spec §16.30, §19.3); each
 --- phase takes its directories' build locks itself.
 --- @param on_done? function
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Workspace:reset_all(on_done)
+function Workspace:reset_all(on_done, opts)
     return self:_locked_deletion("reset", {}, function()
-        return self:_reset_all_unlocked(on_done)
+        return self:_reset_all_unlocked(on_done, opts)
     end, on_done)
 end
 
@@ -4665,8 +4712,9 @@ end
 --- holding the workspace operation lock and its build-directory lock.
 --- @param build_dir_key string
 --- @param on_done? function
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
+function Workspace:delete_orphaned_build_dir(build_dir_key, on_done, opts)
     local norm = self._core._deps.normalize
     local bd = self:find_build_dir(build_dir_key)
     local dirs = {}
@@ -4674,7 +4722,7 @@ function Workspace:delete_orphaned_build_dir(build_dir_key, on_done)
         dirs[1] = bd.path
     end
     return self:_locked_deletion("delete", dirs, function()
-        return self:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done)
+        return self:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done, opts)
     end, on_done)
 end
 

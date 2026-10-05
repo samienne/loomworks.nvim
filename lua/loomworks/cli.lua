@@ -1323,7 +1323,16 @@ end
 --- profiles, including orphaned dirs. Destructive, so it confirms first: `-y` /
 --- `--yes` skips the prompt; a non-interactive host without `-y` refuses rather
 --- than deleting unprompted.
-function M.cmd_reset(ws, args)
+--- `opts.plan`: the token of a plan the user already confirmed from the
+--- workspace daemon's listing (§19.15 "Reset": the second request could not
+--- be routed) — nothing is listed or asked again, and a plan whose token
+--- differs is refused (`reset_plan.CHANGED`) before anything is removed.
+--- @param ws loomworks.Workspace
+--- @param args string[]
+--- @param opts? { plan?: string }
+--- @return integer
+function M.cmd_reset(ws, args, opts)
+  opts = opts or {}
   local all, yes, profile_name = false, false, nil
   for i = 2, #args do
     local a = args[i]
@@ -1340,129 +1349,74 @@ function M.cmd_reset(ws, args)
     die("`lw reset --all` resets every profile — drop the profile argument")
   end
 
-  -- Three sets:
-  --  * lock_dirs   — EVERY computed build dir (a loaded profile carries a
-  --                  computed path even when never built, and another process
-  --                  could be configuring it): all must be held exclusive.
-  --  * removal_dirs — dirs that actually EXIST on disk AND are targeted for
-  --                  physical removal (disposition ≠ "keep"): reported, and
-  --                  verified gone after the deletion.
-  --  * state_to_clear — true if any targeted unit carries build state even with
-  --                  no dir on disk (e.g. a build dir deleted out of band): the
-  --                  reset still clears that stale state.
-  local lock_dirs, lock_seen = {}, {}
-  local removal_dirs, removal_seen = {}, {}
-  local state_to_clear = false
-  local function add_lock(bd)
-    if bd and not lock_seen[bd] then lock_seen[bd] = true; lock_dirs[#lock_dirs + 1] = bd end
-  end
-  local function add_removal(bd)
-    if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
-      removal_seen[bd] = true; removal_dirs[#removal_dirs + 1] = bd
-    end
-  end
-  local scope_label, run
-
+  -- The plan (spec §16.30) is loomworks.reset_plan's, shared with the
+  -- workspace daemon (§19.15 "Reset"): the lock set (every computed build
+  -- dir), the removal set (dirs on disk to remove), the listing, the token.
+  local reset_plan = require("loomworks.reset_plan")
+  local plan
   if all then
-    scope_label = "the whole workspace"
-    for _, unit in pairs(ws._config_units or {}) do
-      local bd = unit:build_dir()
-      add_lock(bd)
-      add_removal(bd) -- reset_all batches every unit; none are "keep"
-      if unit.state_value ~= nil then state_to_clear = true end
-    end
-    for _, o in ipairs(ws:get_orphaned_configs()) do
-      add_lock(o.build_dir_obj and o.build_dir_obj.path or nil)
-      add_removal(o.build_dir_obj and o.build_dir_obj.path or nil)
-      state_to_clear = true -- get_orphaned_configs only returns dirs WITH state
-    end
-    run = function(on_done) ws:reset_all(on_done) end
+    plan = reset_plan.plan(ws, { all = true })
   else
     local profile
     profile, ws = resolve_build_target(ws, profile_name, "lw reset <profile>")
-    scope_label = "profile '" .. profile.key .. "'"
-    -- plan_reset marks a unit shared with another profile as "keep" (its dir is
-    -- retained); only non-keep items are physically removed.
-    for _, item in ipairs(profile:plan_reset().items) do
-      add_lock(item.build_dir)
-      if item.disposition ~= "keep" then
-        add_removal(item.build_dir)
-        if item.unit and item.unit.state_value ~= nil then state_to_clear = true end
-      end
-    end
-    run = function(on_done) profile:reset(on_done) end
+    plan = reset_plan.plan(ws, { profile = profile })
   end
 
-  if #removal_dirs == 0 and not state_to_clear then
-    out("nothing to reset for " .. scope_label .. " — no build directories to remove.")
+  -- Confirmed against the daemon's listing: never remove a directory the
+  -- user was not shown (§19.15 "Reset").
+  if opts.plan and opts.plan ~= plan.token then die(reset_plan.CHANGED) end
+
+  if reset_plan.is_empty(plan) then
+    out(reset_plan.nothing_message(plan))
     return 0
   end
 
-  if #removal_dirs > 0 then
-    out(string.format("Will remove %d build director%s and reset %s to unconfigured:",
-      #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label))
-    for _, d in ipairs(removal_dirs) do out("  " .. d) end
-  else
-    out("Will reset " .. scope_label .. " to unconfigured "
-      .. "(no build directories on disk; clearing cached state).")
+  if not opts.plan then
+    for _, line in ipairs(reset_plan.listing(plan)) do out(line) end
   end
 
   -- Destructive → confirm. `-y` skips; a non-interactive host without it refuses
   -- rather than deleting unprompted (spec §16.30).
-  if not yes then
-    if not interactive() then
-      die("refusing to remove build directories without confirmation.\n"
-        .. "  Re-run with -y to reset " .. scope_label .. ".")
-    end
-    local answer = prompt_line("Reset " .. scope_label .. "? [y/N]")
+  if not yes and not opts.plan then
+    if not interactive() then die(reset_plan.unconfirmed_message(plan)) end
+    local answer = prompt_line(reset_plan.prompt(plan))
     answer = (answer or ""):lower()
     if answer ~= "y" and answer ~= "yes" then
-      die("aborted — nothing was removed")
+      die(reset_plan.ABORTED)
     end
   end
 
   -- Exclusive like clean/delete: hold every target dir's lock across the async
-  -- deletion, driving it to completion headlessly (spec §16.6, §16.30). The
-  -- deletion's on_done fires when the rm subprocess exits, but the process
-  -- exiting does not guarantee the directory is gone: on Windows a failed rm
-  -- leaves it, and a successful rm can leave it delete-pending for a moment.
-  -- So after logical completion we VERIFY genuine on-disk absence (polling out
-  -- delete-pending) and fail loudly if a directory truly could not be removed —
-  -- reset must not report success while a build tree survives.
-  local done, still_present = false, nil
+  -- deletion (spec §16.6, §16.30). reset_plan.execute runs the deletion and
+  -- then VERIFIES genuine on-disk absence (polling out delete-pending without
+  -- blocking) — reset must not report success while a build tree survives.
+  -- This host waits on it; the daemon keeps serving instead.
+  local verify_ms = M._reset_verify_ms or reset_plan.VERIFY_MS
+  local settled, res = false, nil
   -- Lock order (spec §19.3): the workspace operation lock first, then every
   -- build directory's lock; the workspace's own deletion re-enters both.
   local op_tok = ws:_op_lock("reset")
   on_exit(function() require("loomworks.op_lock").release(op_tok) end)
-  with_build_dir_locks(lock_dirs, "reset", function()
-    run(function() done = true end)
-    if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then return end
-    if #removal_dirs > 0 then
-      local pending = {}
-      for _, d in ipairs(removal_dirs) do pending[d] = true end
-      vim.wait(M._reset_verify_ms or RESET_VERIFY_MS, function()
-        local any = false
-        for d in pairs(pending) do
-          if uv.fs_stat(d) == nil then pending[d] = nil else any = true end
-        end
-        return not any
-      end, 20)
-      local left = {}
-      for d in pairs(pending) do left[#left + 1] = d end
-      if #left > 0 then table.sort(left); still_present = left end
+  with_build_dir_locks(plan.lock_dirs, "reset", function()
+    -- Under the locks, before anything is removed: the plan must still be the
+    -- one listed (a dir another process created meanwhile is refused, never
+    -- removed unseen; spec §16.30).
+    local vok, vmsg = reset_plan.verify(ws, plan)
+    if not vok then
+      settled, res = true, { code = 1, msg = vmsg }
+      return
     end
+    reset_plan.execute(ws, plan, { verify_ms = verify_ms }, function(code, msg)
+      settled, res = true, { code = code, msg = msg }
+    end)
+    -- Backstop only: execute's own timers settle it (timeout / verify bound).
+    vim.wait(reset_plan.TIMEOUT_MS + verify_ms + 5000, function() return settled end, 20)
   end, ws)
   require("loomworks.op_lock").release(op_tok)
-  if not done then
-    die("reset timed out — a build-directory deletion did not complete")
-  end
-  if still_present then
-    die(string.format("reset failed — %d build director%s could not be removed:\n  %s",
-      #still_present, (#still_present == 1) and "y" or "ies",
-      table.concat(still_present, "\n  ")))
-  end
+  if not settled then die(reset_plan.TIMED_OUT) end
+  if res.code ~= 0 then die(res.msg, res.code) end
 
-  out("RESET OK: " .. scope_label)
+  out(reset_plan.ok_line(plan))
   return 0
 end
 
@@ -7524,8 +7478,9 @@ M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 --- Workspace commands routed to the workspace daemon (spec §19.15): their
 --- ensure step waits longer for a slow daemon (§19.10) before they run
 --- in-process. `test`: its batch form (§19.19 step 5); `run`: its preparation
---- (§19.15 "Run"; the program runs here); `clean` (§19.15 "Clean", step 5c).
-M.ROUTED_COMMANDS = { build = true, test = true, run = true, clean = true }
+--- (§19.15 "Run"; the program runs here); `clean` (§19.15 "Clean", step 5c);
+--- `reset` (§19.15 "Reset", step 5d).
+M.ROUTED_COMMANDS = { build = true, test = true, run = true, clean = true, reset = true }
 
 --- Would argv `args` be routed to the daemon, for the ensure step's bound
 --- (§19.10)? A routed command, except `lw test --target` and a `lw run` with a
@@ -7595,10 +7550,11 @@ end
 --- run …` for `lw run`). Dim on a color-capable stderr.
 --- @param pid integer|nil the daemon's pid
 --- @param color? boolean override the stderr color probe (tests)
---- @param op? "build"|"test"|"run" (default "build")
+--- @param op? "build"|"test"|"run"|"clean"|"reset" (default "build")
 --- @return string
 function M._delegation_line(pid, color, op)
-  local what = ({ test = "testing", run = "preparing the run", clean = "cleaning" })[op] or "building"
+  local what = ({ test = "testing", run = "preparing the run", clean = "cleaning", reset = "resetting" })[op]
+    or "building"
   local line = "lw: " .. what .. " through the workspace daemon"
   if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
   if color == nil then color = M._stderr_supports_color() end
@@ -7641,6 +7597,56 @@ end
 --- @return table
 function M._clean_request(args)
   return { profile = args[2] }
+end
+
+--- The request a `lw reset` argv routes as (spec §19.15 "Reset"): the same
+--- parse as `cmd_reset` — `{ profile?, all, yes }` — or nil when `cmd_reset`
+--- would refuse the arguments (an unknown flag, a second operand, `--all`
+--- with a profile; it then reports them).
+--- @param args string[] argv, args[1] == "reset"
+--- @return table|nil
+function M._reset_request(args)
+  local req = { all = false, yes = false }
+  for i = 2, #args do
+    local a = args[i]
+    if a == "--all" then req.all = true
+    elseif a == "-y" or a == "--yes" then req.yes = true
+    elseif a:sub(1, 1) == "-" then return nil
+    elseif not req.profile then req.profile = a
+    else return nil end
+  end
+  if req.all and req.profile then return nil end
+  return req
+end
+
+--- A routed `lw reset` the workspace daemon asked to confirm (spec §19.15
+--- "Reset", Confirmation): print its listing, ask as in-process, then send
+--- the reset again with `yes` and the listed plan's token. When that second
+--- request is not routed (the daemon stopped or was retired meanwhile), the
+--- reset runs in-process with the user's answer, never asking again, and
+--- refuses when its plan differs from the one shown.
+--- @param root string
+--- @param args string[]
+--- @param req table the first request (`_reset_request`)
+--- @param reply table the `confirm` reply { lines, plan, profile_key? }
+--- @param ensured string|nil
+--- @param opts table `_delegate`'s
+--- @return integer exit code
+function M._reset_confirm(root, args, req, reply, ensured, opts)
+  local reset_plan = require("loomworks.reset_plan")
+  local shown = { label = reset_plan.label_for((not req.all and type(reply.profile_key) == "string")
+    and reply.profile_key or nil) }
+  for _, line in ipairs(type(reply.lines) == "table" and reply.lines or {}) do out(tostring(line)) end
+  if not interactive() then die(reset_plan.unconfirmed_message(shown)) end
+  local answer = prompt_line(reset_plan.prompt(shown))
+  answer = (answer or ""):lower()
+  if answer ~= "y" and answer ~= "yes" then die(reset_plan.ABORTED) end
+  local token = tostring(reply.plan or "")
+  local second = vim.deepcopy(req)
+  second.yes, second.plan = true, token
+  local routed = M._delegate("reset", root, args, ensured, vim.tbl_extend("force", opts or {}, { req = second }))
+  if routed then return routed end
+  return M.cmd_reset(load_workspace(root), args, { plan = token })
 end
 
 --- The request a `lw test` argv routes as (spec §19.15): the same parse as
@@ -7839,11 +7845,14 @@ end
 --- build in this process's environment (sent with the request).
 --- `lw test --target` (the named-executable form) and a `lw run` with a
 --- device option stay in-process with one line (§19.15).
---- @param op "build"|"test"|"run"|"clean"
+--- `lw reset` (§19.15 "Reset") is asked in two requests: a `confirm` reply
+--- is answered here (`_reset_confirm`), which sends the second one
+--- (`opts.req`: the request to send instead of the one argv parses as).
+--- @param op "build"|"test"|"run"|"clean"|"reset"
 --- @param root string
 --- @param args string[]
 --- @param ensured string|nil
---- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer }
+--- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer, req?: table }
 --- @return integer|nil exit code
 function M._delegate(op, root, args, ensured, opts)
   opts = opts or {}
@@ -7861,9 +7870,11 @@ function M._delegate(op, root, args, ensured, opts)
   -- An argument cmd_build / cmd_test refuses, and a workspace the machine
   -- refuses: the in-process path reports them (that is the line).
   local req, run_args
-  if op == "test" then req = M._test_request(args)
+  if opts.req then req = opts.req
+  elseif op == "test" then req = M._test_request(args)
   elseif op == "run" then req, run_args = M._run_request(args)
   elseif op == "clean" then req = M._clean_request(args)
+  elseif op == "reset" then req = M._reset_request(args)
   else req = M._build_request(args) end
   -- `--target` / a device option always says why in its own words, whatever
   -- the runtime is.
@@ -7961,7 +7972,18 @@ function M._delegate(op, root, args, ensured, opts)
   end
   if reply.outcome == "refused" then
     conn:close()
+    -- (A reset with nothing to reset: the in-process stdout line, exit 0.)
+    if reply.stream == "out" then
+      if ctrl_c_enabled then M._restore_console_ctrl_c() end
+      out(tostring(reply.message))
+      return tonumber(reply.exit_code) or 0
+    end
     die(tostring(reply.message), tonumber(reply.exit_code) or 1)
+  end
+  if reply.outcome == "confirm" and op == "reset" and not opts.req then
+    conn:close()
+    if ctrl_c_enabled then M._restore_console_ctrl_c() end
+    return M._reset_confirm(root, args, req, reply, ensured, opts)
   end
   if not accepted then
     conn:close()
@@ -12426,10 +12448,12 @@ local function main()
     finish(M.cmd_target(root, a))
   end
 
-  -- `lw build`, the batch `lw test`, the preparation of `lw run` and `lw
-  -- clean` routed to the workspace daemon (spec §19.15, §19.19 steps 3, 5, 5c):
-  -- nil = not routed (every other case runs in-process exactly as before).
-  if command == "build" or command == "test" or command == "run" or command == "clean" then
+  -- `lw build`, the batch `lw test`, the preparation of `lw run`, `lw clean`
+  -- and `lw reset` routed to the workspace daemon (spec §19.15, §19.19 steps
+  -- 3, 5, 5c, 5d): nil = not routed (every other case runs in-process exactly
+  -- as before).
+  if command == "build" or command == "test" or command == "run" or command == "clean"
+      or command == "reset" then
     local routed = M._delegate(command, root, a, ensured)
     if routed then finish(routed) end
   end
