@@ -1216,7 +1216,9 @@ and then answers:
   confirmed one sends `reset` again with `yes` and that `plan`;
 - with `yes` and a `plan`: the daemon plans again; a plan whose token differs
   is `refused` (`the build directories to reset changed since they were
-  listed — run lw reset again`, exit 1) before any side effect, so a reset
+  listed — run lw reset again`, exit 1) before any side effect — compared
+  before the nothing-to-reset check, so a listed plan whose directories
+  vanished is refused as changed, as in-process — so a reset
   never removes a directory the user was not shown. An equal plan is
   `accepted`, and its task prints no listing (the client printed it);
 - with `yes` and no `plan` (`-y` on the command line): `accepted`; the task
@@ -1232,7 +1234,12 @@ of §16.6 for every directory of the lock set, **exclusive**, in canonical
 order with the §19.5 record (holder kind `daemon`, operation `reset`; a dead
 holder's lock reclaimed and its state recovered as for a build; a held one
 ends the task with the in-process refusal naming the holder, nothing
-removed). The removal is the SAME build-directory deletion as in-process
+removed). With every lock held and before anything is removed, the reset
+plans again and compares the token with the plan it listed: a directory that
+appeared or vanished in between (another process's build that finished and
+released before the locks were taken) ends the task with the same `the build
+directories to reset changed since they were listed — run lw reset again`,
+exit 1, the locks released and nothing removed. The removal is the SAME build-directory deletion as in-process
 (§4.6, §4.7; one path for both hosts): each path validated first; units
 sharing a directory are one deletion batch; the cache says `unknown` on disk
 before a tree is removed and the units are reset only after its removal
@@ -1249,6 +1256,9 @@ runs). Cancelling during the removal stops it between entries (`reset
 stopped: <reason>`); what was removed stays removed and the cache stays
 `unknown` (never reset after a partial removal, §4.7); the locks are held
 until the removal has stopped and are then released, the operation lock last.
+A removal still running after its task ended (timed out) keeps the daemon
+busy — it neither idles out nor retires — until it settles, and a daemon that
+stops meanwhile asks it to stop between entries.
 The reset writes the cache exactly when the in-process reset does, and its
 write-back's `model_change` precedes `done` (§19.16, End).
 

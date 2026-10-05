@@ -40,7 +40,11 @@ M.VERIFY_MS = 30000
 ---   `removal_dirs`.
 --- @field removal_dirs string[] the dirs that EXIST on disk and are targeted
 ---   for physical removal (disposition ~= "keep"): listed, and verified gone
----   after the deletion.
+---   after the deletion. Only dirs the deletion may remove
+---   (`Workspace:_validate_build_dir`: under the workspace root, not the root).
+--- @field outside_dirs string[] targeted dirs that exist on disk but the
+---   deletion refuses (outside the workspace root, or the root itself): never
+---   removed, listed as such; only their cached state is cleared.
 --- @field state_to_clear boolean a targeted unit (or orphan) carries build
 ---   state even with no dir on disk (e.g. deleted out of band): the reset
 ---   still clears it.
@@ -57,14 +61,24 @@ M.VERIFY_MS = 30000
 function M.plan(ws, scope)
     local lock_dirs, lock_seen = {}, {}
     local removal_dirs, removal_seen = {}, {}
+    local outside_dirs = {}
     local state_to_clear = false
+    local norm = ws._core and ws._core._deps and ws._core._deps.normalize or function(p) return p end
     local units, orphans = {}, {}
     local function add_lock(bd)
         if bd and not lock_seen[bd] then lock_seen[bd] = true; lock_dirs[#lock_dirs + 1] = bd end
     end
+    -- A dir the deletion would refuse (Deletion Safety: the cache is never
+    -- trusted) is never listed as removed: it is listed as left in place.
     local function add_removal(bd)
         if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
-            removal_seen[bd] = true; removal_dirs[#removal_dirs + 1] = bd
+            removal_seen[bd] = true
+            if ws:_validate_build_dir(norm(bd), norm(ws.root), { quiet = true }) then
+                removal_dirs[#removal_dirs + 1] = bd
+            else
+                outside_dirs[#outside_dirs + 1] = bd
+                state_to_clear = true
+            end
         end
     end
 
@@ -118,11 +132,28 @@ function M.plan(ws, scope)
     end
     plan.lock_dirs = lock_dirs
     plan.removal_dirs = removal_dirs
+    plan.outside_dirs = outside_dirs
     plan.state_to_clear = state_to_clear
     plan.units = units
     plan.orphans = orphans
-    plan.token = M.token(plan.scope_key, lock_dirs, removal_dirs)
+    plan.token = M.token(plan.scope_key, lock_dirs, removal_dirs, outside_dirs)
     return plan
+end
+
+--- Is `plan` still what a fresh plan of its scope says (spec §16.30, §19.15
+--- "Reset")? Called by both hosts right AFTER the operation lock and every
+--- build-directory lock of `plan.lock_dirs` are held, before anything is
+--- removed: a directory that appeared (or vanished) between the listing and
+--- the locks -- another process's build that finished and released -- makes
+--- the token differ, and the reset is refused (`M.CHANGED`, exit 1), so it
+--- never removes a directory the user was not shown.
+--- @param ws loomworks.Workspace
+--- @param plan loomworks.ResetPlan
+--- @return boolean ok, string|nil message
+function M.verify(ws, plan)
+    local scope = plan.scope == "all" and { all = true } or { profile = plan.profile }
+    if M.plan(ws, scope).token ~= plan.token then return false, M.CHANGED end
+    return true
 end
 
 local function sorted_copy(list)
@@ -139,13 +170,18 @@ end
 --- @param scope_key string "all" or "profile:<key>"
 --- @param lock_dirs string[]
 --- @param removal_dirs string[]
+--- @param outside_dirs? string[] (a section only when non-empty)
 --- @return string token
-function M.token(scope_key, lock_dirs, removal_dirs)
+function M.token(scope_key, lock_dirs, removal_dirs, outside_dirs)
     local parts = { "reset-plan/1", "scope", tostring(scope_key) }
     parts[#parts + 1] = "lock"
     for _, d in ipairs(sorted_copy(lock_dirs)) do parts[#parts + 1] = d end
     parts[#parts + 1] = "remove"
     for _, d in ipairs(sorted_copy(removal_dirs)) do parts[#parts + 1] = d end
+    if outside_dirs and #outside_dirs > 0 then
+        parts[#parts + 1] = "outside"
+        for _, d in ipairs(sorted_copy(outside_dirs)) do parts[#parts + 1] = d end
+    end
     -- NUL-separated: no path contains NUL, so the encoding is unambiguous.
     return vim.fn.sha256(table.concat(parts, "\0"))
 end
@@ -184,9 +220,19 @@ function M.listing(plan)
         lines[1] = string.format("Will remove %d build director%s and reset %s to unconfigured:",
             n, (n == 1) and "y" or "ies", plan.label)
         for _, d in ipairs(plan.removal_dirs) do lines[#lines + 1] = "  " .. d end
+    elseif #(plan.outside_dirs or {}) > 0 then
+        lines[1] = "Will reset " .. plan.label .. " to unconfigured "
+            .. "(clearing cached state; no build directory is removed)."
     else
         lines[1] = "Will reset " .. plan.label .. " to unconfigured "
             .. "(no build directories on disk; clearing cached state)."
+    end
+    local outside = plan.outside_dirs or {}
+    if #outside > 0 then
+        lines[#lines + 1] = string.format(
+            "Not removed — %d build director%s outside the workspace (only the cached state is cleared):",
+            #outside, (#outside == 1) and "y" or "ies")
+        for _, d in ipairs(outside) do lines[#lines + 1] = "  " .. d end
     end
     return lines
 end

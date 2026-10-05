@@ -235,6 +235,61 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
         c.conn:close()
     end)
 
+    it("a directory that appears between the plan and the locks is refused under the locks, never removed",
+        function()
+        start()
+        built(true) -- lib's directory is not on disk: the plan lists app only
+        -- Another process's build creates lib's directory, finishes and
+        -- releases, just before the reset holds its locks.
+        local real_acquire = build_lock.acquire
+        local appeared = false
+        build_lock.acquire = function(bd, ...)
+            if not appeared then
+                appeared = true
+                vim.fn.mkdir(dir("lib"), "p")
+                write(dir("lib") .. "/keep", "k")
+            end
+            return real_acquire(bd, ...)
+        end
+        local ok, err = pcall(function()
+            local r = request(srv, "reset", { profile = "dev", yes = true })
+            assert.is_true(r.wait_done(), vim.inspect(r.reply))
+            assert.is_true(appeared)
+            assert.equals(1, r.done().exit_code, r.lines())
+            assert.equals(reset_plan.CHANGED, r.done().error)
+            assert.is_nil(r.lines():find("RESET OK", 1, true), r.lines())
+            r.conn:close()
+        end)
+        build_lock.acquire = real_acquire
+        assert(ok, err)
+        assert.equals("k", read(dir("lib") .. "/keep"))
+        assert.is_true(exists(dir("app") .. "/obj/a.o"))
+        assert.equals("built", cached_state(root, "app"))
+        assert.is_true(vim.wait(15000, function() return build_lock.read(dir("app")) == nil end, 20))
+        assert.is_nil(build_lock.read(dir("lib")))
+    end)
+
+    it("a confirmed plan whose directories vanished is CHANGED (exit 1), as in-process, not nothing to reset",
+        function()
+        start()
+        built()
+        local r = request(srv, "reset", { profile = "dev" })
+        assert.is_true(r.wait_reply())
+        assert.equals("confirm", r.reply.outcome)
+        r.conn:close()
+        -- Meanwhile both directories go and the cache forgets them.
+        local c0 = request(srv, "reset", { profile = "dev", yes = true })
+        assert.is_true(c0.wait_done())
+        assert.equals(0, c0.done().exit_code, c0.lines())
+        c0.conn:close()
+        local c = request(srv, "reset", { profile = "dev", yes = true, plan = r.reply.plan })
+        assert.is_true(c.wait_reply())
+        assert.equals("refused", c.reply.outcome, vim.inspect(c.reply))
+        assert.equals(reset_plan.CHANGED, c.reply.message)
+        assert.equals(1, c.reply.exit_code)
+        c.conn:close()
+    end)
+
     it("nothing to reset: refused with the in-process line, exit 0, on standard output", function()
         start()
         local r = request(srv, "reset", { profile = "dev", yes = true })
@@ -351,6 +406,40 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
             assert.equals("unknown", cached_state(root, proj), proj)
         end
         obs:close()
+    end)
+
+    it("a timed-out reset keeps the daemon busy until its deletion settles; a daemon stop asks it to stop",
+        function()
+        start()
+        built()
+        local pending = {}
+        lio.rm_rf_async = function(d, cb, o)
+            pending[#pending + 1] = { dir = d, stop = o and o.stop, done = cb }
+            return require("loomworks.future").create(function() end)
+        end
+        local real_timeout = reset_plan.TIMEOUT_MS
+        reset_plan.TIMEOUT_MS = 300
+        local ok, err = pcall(function()
+            local r = request(srv, "reset", { profile = "dev", yes = true })
+            assert.is_true(r.wait_done(), r.lines())
+            assert.equals(1, r.done().exit_code)
+            assert.equals(reset_plan.TIMED_OUT, r.done().error)
+            assert.is_true(#pending > 0)
+            local first = pending[1]
+            assert.is_false(first.stop())
+            -- The task ended, the deletion did not: never idle, locks held.
+            vim.wait(300, function() return false end, 20)
+            assert.is_true(srv.busy, "busy while the deletion is unsettled")
+            assert.truthy(build_lock.read(dir("app")))
+            -- The daemon stops: the deletion is asked to stop between entries.
+            srv.service:on_stopping("test")
+            assert.is_true(first.stop())
+            for _, p in ipairs(pending) do p.done(false, "stopped", true) end
+            assert.is_true(vim.wait(5000, function() return not srv.busy end, 10))
+            r.conn:close()
+        end)
+        reset_plan.TIMEOUT_MS = real_timeout
+        assert(ok, err)
     end)
 
     it("--all: one task without a profile; an orphaned directory removed; an observer shows every profile deleting",

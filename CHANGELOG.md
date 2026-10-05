@@ -62,6 +62,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   editor and `lw status` show a running reset as `deleting` (`--all` on every
   profile it touches). The daemon protocol is now version 9: an older daemon
   is restarted when idle. (#143)
+- `lw reset` (in-process and through the daemon) checks its plan again once it
+  holds the build-directory locks: a build directory that another `lw build`
+  created between the listing and the locks makes it refuse (`run lw reset
+  again`) instead of removing a directory you were not shown. A build
+  directory outside the workspace is no longer listed as one to remove (it
+  never was removed, and the reset then failed): the listing names it as not
+  removed and only its cached state is cleared. (#143)
 - Experimental daemon (`runtime-mode daemon`): `lw clean [<profile>]` now runs
   in the workspace daemon like `lw build`, with the same output and exit code,
   after one dim line `lw: cleaning through the workspace daemon (pid N)`, under

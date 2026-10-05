@@ -223,6 +223,9 @@ end
 --- @field release_all fun()|nil releases the build-directory locks and the operation lock (also on daemon stop)
 --- @field child table|nil the running step { obj, pid, start }
 --- @field wiping boolean|nil a clean's wipe is running (cancel stops it between entries)
+--- @field deleting boolean|nil a reset's deletion started (the service keeps the daemon busy until it settled)
+--- @field deletion_settled boolean|nil a reset's deletion ended
+--- @field released boolean|nil a reset released its locks and was reported done
 --- @field ctx table|nil the service request that started it
 --- @field cancel fun(reason?: string, code?: integer)
 
@@ -618,7 +621,9 @@ function M.reset(svc, ctx)
     local task, ws, plan = ctx.task, ctx.ws, ctx.plan
     local run = { task = task, op = "reset", cancelled = false, held = {} }
     ctx.run = run
-    local deleting, settled = false, false
+    -- run.deleting: the deletion started; run.deletion_settled: it ended. The
+    -- service keeps the daemon busy in between, also after a timeout ended
+    -- the task, and its stop sets `cancelled` for it (on_stopping).
 
     local function release_all()
         for _, h in ipairs(run.held) do build_lock.release(h) end
@@ -632,7 +637,7 @@ function M.reset(svc, ctx)
     run.release_all = release_all
     -- The locks go once the task ended AND no deletion is still running.
     local function maybe_release()
-        if run.released or not run.finished or (deleting and not settled) then return end
+        if run.released or not run.finished or (run.deleting and not run.deletion_settled) then return end
         run.released = true
         release_all()
         if svc.on_run_done then svc:on_run_done(run) end
@@ -656,7 +661,7 @@ function M.reset(svc, ctx)
         -- A running deletion stops between entries (its stop predicate sees
         -- `cancelled`); its end finishes the run, the locks held until
         -- nothing more is removed.
-        if deleting then return end
+        if run.deleting then return end
         svc:with_model(ctx, function() finish(run.cancel_code, stopped()) end)
     end
 
@@ -684,13 +689,17 @@ function M.reset(svc, ctx)
     run.op_tok = tok
     local lok, lmsg = take_locks(run, ws, task, plan.lock_dirs, "reset", ctx.command or "lw reset")
     if not lok then finish(1, lmsg); return run end
+    -- Under the locks, before anything is removed: the plan must still be the
+    -- one listed (§16.30; the same check as the in-process host).
+    local vok, vmsg = reset_plan.verify(ws, plan)
+    if not vok then finish(1, vmsg); return run end
 
-    deleting = true
+    run.deleting = true
     reset_plan.execute(ws, plan, {
         stop = function() return run.cancelled end,
         settled = function()
             svc:with_model(ctx, function()
-                settled = true
+                run.deletion_settled = true
                 maybe_release()
             end)
         end,

@@ -1797,7 +1797,15 @@ non-interactive host (§16.3) the confirmation flag is **mandatory** — without
 reset refuses with a message naming the flag, rather than deleting unprompted.
 This is the destructive-management posture of §16.9: it authors nothing in the
 working copy, but it does discard cache and on-disk state, so it never proceeds
-silently. Reset reports success only after confirming the targeted directories
+silently. Once it holds its locks and before removing anything, reset plans
+again and compares with what it listed: a directory that appeared or vanished
+in between (another process's build that finished and released before the
+locks were taken) makes it refuse — `the build directories to reset changed
+since they were listed — run lw reset again`, exit 1, nothing removed — so it
+never removes a directory the user was not shown. A targeted directory the
+deletion would refuse (outside the workspace root, §4.6 validation) is never
+listed as removed: the listing names it as not removed, and only its cached
+state is cleared. Reset reports success only after confirming the targeted directories
 are **actually gone from disk** — the removal completing is not by itself
 proof (a directory can briefly persist after deletion, or a removal can fail), so
 a directory that is still present once the removal settles is reported as a

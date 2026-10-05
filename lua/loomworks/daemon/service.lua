@@ -84,18 +84,33 @@ Service.__index = Service
 function M.attach(server, host)
     local self = setmetatable({ server = server, host = host, runs = {}, queue = {} }, Service)
     self.tasks = tasks_mod.new(server)
-    self.tasks.on_change = function(s)
-        local busy = s:busy()
-        if server.busy ~= busy then
-            server.busy = busy
-            if not busy then server.idle_since = os.time() end
-            server:_handle_changed()
-        end
-        if not busy then server:_maybe_retire() end
-    end
+    self.tasks.on_change = function() self:_update_busy() end
     envscope.install()
     server.service = self
     return self
+end
+
+--- Is a reset's deletion still running after its task ended (a timeout,
+--- spec §19.15 "Reset")? Its locks are still held and its subprocesses run.
+--- @return boolean
+function Service:_deletion_unsettled()
+    for run in pairs(self.runs) do
+        if run.deleting and not run.deletion_settled then return true end
+    end
+    return false
+end
+
+--- The server is busy while a task runs or a reset's deletion is unsettled:
+--- never idle (no idle stop, no retirement) mid-deletion.
+function Service:_update_busy()
+    local server = self.server
+    local busy = self.tasks:busy() or self:_deletion_unsettled()
+    if server.busy ~= busy then
+        server.busy = busy
+        if not busy then server.idle_since = os.time() end
+        server:_handle_changed()
+    end
+    if not busy then server:_maybe_retire() end
 end
 
 --- Run `fn` as a model segment of request `ctx` (see the header). Queued
@@ -418,6 +433,12 @@ function Service:_accept_reset(ctx, ws)
     end
     local plan = reset_plan.plan(ws, scope)
     local profile_key = plan.profile and plan.profile.key or nil
+    -- Never remove a directory the user was not shown: a confirmed plan is
+    -- compared first (as in-process, cli.cmd_reset), so a listed plan whose
+    -- directories vanished is CHANGED (exit 1), not "nothing to reset".
+    if a.plan ~= nil and a.plan ~= plan.token then
+        return ctx.reply({ outcome = "refused", message = reset_plan.CHANGED, exit_code = 1, notes = ctx.notes })
+    end
     if reset_plan.is_empty(plan) then
         return ctx.reply({ outcome = "refused", message = reset_plan.nothing_message(plan), exit_code = 0,
             stream = "out", notes = ctx.notes })
@@ -427,10 +448,6 @@ function Service:_accept_reset(ctx, ws)
     if not a.yes then
         return ctx.reply({ outcome = "confirm", lines = reset_plan.listing(plan), plan = plan.token,
             profile_key = profile_key, notes = ctx.notes })
-    end
-    -- Never remove a directory the user was not shown.
-    if a.plan ~= nil and a.plan ~= plan.token then
-        return ctx.reply({ outcome = "refused", message = reset_plan.CHANGED, exit_code = 1, notes = ctx.notes })
     end
     local task = self.tasks:create(ctx.conn)
     ctx.task, ctx.ws = task, ws
@@ -454,6 +471,8 @@ function Service:on_run_done(run)
         self.server:log("%s task %d ended%s", run.op or "build", run.task.id,
             run.cancelled and (": " .. tostring(run.cancel_reason)) or "")
     end
+    -- A reset whose deletion outlived its task kept the server busy.
+    if run.deleting then self:_update_busy() end
 end
 
 --- Does `conn` own a running build? (The keepalive rule never drops it.)
@@ -486,6 +505,11 @@ function Service:on_stopping(reason)
     for run in pairs(self.runs) do
         if not run.finished then
             run.cancel("the workspace daemon stopped (" .. tostring(reason) .. ")", 1)
+        elseif run.deleting and not run.deletion_settled then
+            -- A reset whose task ended (timed out) while its deletion still
+            -- runs: stop it between entries (the cache stays `unknown`).
+            run.cancelled = true
+            run.cancel_reason = run.cancel_reason or ("the workspace daemon stopped (" .. tostring(reason) .. ")")
         end
     end
     -- A run without a child finishes in a model segment: drain now (the

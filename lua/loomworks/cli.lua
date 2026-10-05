@@ -1398,6 +1398,14 @@ function M.cmd_reset(ws, args, opts)
   local op_tok = ws:_op_lock("reset")
   on_exit(function() require("loomworks.op_lock").release(op_tok) end)
   with_build_dir_locks(plan.lock_dirs, "reset", function()
+    -- Under the locks, before anything is removed: the plan must still be the
+    -- one listed (a dir another process created meanwhile is refused, never
+    -- removed unseen; spec §16.30).
+    local vok, vmsg = reset_plan.verify(ws, plan)
+    if not vok then
+      settled, res = true, { code = 1, msg = vmsg }
+      return
+    end
     reset_plan.execute(ws, plan, { verify_ms = verify_ms }, function(code, msg)
       settled, res = true, { code = code, msg = msg }
     end)

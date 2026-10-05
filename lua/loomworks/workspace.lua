@@ -3997,25 +3997,28 @@ end
 --- configure-state reset, `_pre_configure_reset`) passes `opts.allow_root`.
 --- @param build_dir string path (normalized or raw) to the build dir
 --- @param safe_prefix string path (normalized or raw) to the workspace root
---- @param opts? { allow_root?: boolean }
+--- `opts.quiet`: a planning check (reset_plan.plan, spec §16.30) — no
+--- notification on refusal; the verdict is the same.
+--- @param opts? { allow_root?: boolean, quiet?: boolean }
 --- @return boolean safe
 function Workspace:_validate_build_dir(build_dir, safe_prefix, opts)
-    if not build_dir or build_dir == "" then
-        self._core._deps.notify("loomworks: refusing to delete empty build dir path", vim.log.levels.ERROR)
+    local quiet = opts and opts.quiet
+    local function refuse(msg)
+        if not quiet then self._core._deps.notify(msg, vim.log.levels.ERROR) end
         return false
+    end
+    if not build_dir or build_dir == "" then
+        return refuse("loomworks: refusing to delete empty build dir path")
     end
     local abs = self:_canonicalize_boundary_path(build_dir)
     local root = self:_canonicalize_boundary_path(safe_prefix)
     if abs == root and not (opts and opts.allow_root) then
-        self._core._deps.notify("loomworks: refusing to delete the workspace root as a build dir: " .. abs,
-            vim.log.levels.ERROR)
-        return false
+        return refuse("loomworks: refusing to delete the workspace root as a build dir: " .. abs)
     end
     local is_under = abs == root
         or abs:sub(1, #root + 1) == root .. "/"
     if not is_under then
-        self._core._deps.notify("loomworks: refusing to delete build dir outside workspace: " .. abs, vim.log.levels.ERROR)
-        return false
+        return refuse("loomworks: refusing to delete build dir outside workspace: " .. abs)
     end
     return true
 end

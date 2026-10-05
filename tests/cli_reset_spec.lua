@@ -303,6 +303,102 @@ describe("lw reset (on-disk)", function()
       string.format("reset leaked a timer (%d -> %d)", before.timer or 0, after.timer or 0))
   end)
 
+  it("a build dir that appeared between the listing and the locks is not removed: CHANGED (§16.30)", function()
+    -- The unit carries state but its dir was deleted out of band: the listing
+    -- says "no build directories on disk". Before the reset holds the locks,
+    -- another process (`lw build` in a second terminal) recreates the dir,
+    -- finishes and releases. The reset must re-plan under its locks and refuse
+    -- rather than remove a directory the user was not shown.
+    local root = make_ws()
+    local ws, profile = load(root)
+    local dir = root .. "/.nvim/build/App/Debug"
+    local unit = fake_build_dir(ws, profile, dir)
+    vim.fn.delete(dir, "rf")
+    assert.is_nil(uv.fs_stat(dir), "precondition: the dir is gone")
+
+    local build_lock = require("loomworks.build_lock")
+    local real_acquire = build_lock.acquire
+    local appeared = false
+    build_lock.acquire = function(bd, ...)
+      if not appeared then
+        appeared = true
+        vim.fn.mkdir(dir, "p")
+        local mf = assert(io.open(dir .. "/marker.txt", "w")); mf:write("x"); mf:close()
+      end
+      return real_acquire(bd, ...)
+    end
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key, "-y" })
+    end)
+    build_lock.acquire = real_acquire
+
+    assert.is_true(appeared, "the lock was taken")
+    assert.equals(1, r.exit_code, r.stdout .. r.stderr)
+    assert.is_truthy(r.stderr:find("changed since they were listed", 1, true), r.stderr)
+    assert.is_falsy(r.stdout:find("RESET OK", 1, true))
+    assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "the unlisted dir must survive")
+    assert.equals("built", unit.state_value)
+  end)
+
+  it("a build dir outside the workspace root is never listed for removal; only its state is cleared", function()
+    local root = make_ws()
+    local ws, profile = load(root)
+    local outside = vim.fn.tempname():gsub("\\", "/") .. "-outside-build"
+    local unit = fake_build_dir(ws, profile, outside)
+
+    local plan = require("loomworks.reset_plan").plan(ws, { profile = profile })
+    assert.same({}, plan.removal_dirs)
+    assert.is_true(plan.state_to_clear)
+
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key, "-y" })
+    end)
+    assert.is_nil(r.exit_code, r.stderr)
+    assert.is_falsy(r.stdout:find("Will remove", 1, true), r.stdout)
+    assert.is_truthy(r.stdout:find("outside the workspace", 1, true), r.stdout)
+    assert.is_truthy(r.stdout:find("RESET OK", 1, true), r.stdout)
+    assert.is_not_nil(uv.fs_stat(outside .. "/marker.txt"), "a dir outside the root is never removed")
+    assert.equals("unconfigured", unit:state())
+    vim.fn.delete(outside, "rf")
+  end)
+
+  it("--all: an orphan outside the workspace root is not listed for removal; its state is cleared, reported", function()
+    local root = make_ws()
+    local ws = load(root)
+    local BuildDir = require("loomworks.build_dir")
+    local outside = vim.fn.tempname():gsub("\\", "/") .. "-outside-orphan"
+    vim.fn.mkdir(outside, "p")
+    local of = assert(io.open(outside .. "/marker.txt", "w")); of:write("x"); of:close()
+    table.insert(ws._build_dirs, BuildDir.new("build/out", outside, {
+      state = "built", project_key = "Gone", config_key = "Gone",
+      variant = "Gone", type = "typescript", build_dir = outside,
+    }))
+    local inside = root .. "/.nvim/build/orphan"
+    vim.fn.mkdir(inside, "p")
+    table.insert(ws._build_dirs, BuildDir.new("build/orphan", inside, {
+      state = "built", project_key = "Gone2", config_key = "Gone2",
+      variant = "Gone2", type = "typescript", build_dir = inside,
+    }))
+
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", "--all", "-y" })
+    end)
+    assert.is_nil(r.exit_code, r.stderr)
+    -- Listed under "Not removed", after the one dir that is removed.
+    assert.is_truthy(r.stdout:find("Will remove 1 build directory", 1, true), r.stdout)
+    local not_removed = r.stdout:find("Not removed", 1, true)
+    assert.is_truthy(not_removed, r.stdout)
+    assert.is_truthy(r.stdout:find("outside the workspace", 1, true), r.stdout)
+    assert.is_truthy((r.stdout:find(outside, 1, true) or 0) > not_removed, r.stdout)
+    assert.is_not_nil(uv.fs_stat(outside .. "/marker.txt"), "never removed")
+    assert.is_nil(uv.fs_stat(inside), "the inside orphan is removed")
+    -- Nothing is removed from disk for it; only its cached state goes (as
+    -- for a unit whose dir lies outside the root), and the listing said so.
+    assert.is_nil(ws:find_build_dir("build/out"))
+    assert.is_nil(ws:find_build_dir("build/orphan"))
+    vim.fn.delete(outside, "rf")
+  end)
+
   it("rejects a profile argument alongside --all", function()
     local root = make_ws()
     local ws, profile = load(root)
