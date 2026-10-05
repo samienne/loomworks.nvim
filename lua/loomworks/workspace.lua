@@ -8226,7 +8226,13 @@ function Workspace:_apply_file_changes(deliver)
     if self._file_batch then return deliver() end
     local batch = { save_user = false }
     self._file_batch = batch
-    local ok, err = pcall(deliver)
+    -- The traceback is taken at the error point, so the rethrow keeps it.
+    local ok, err = xpcall(deliver, function(e)
+        if type(e) == "string" and not e:find("stack traceback:", 1, true) then
+            return debug.traceback(e, 2)
+        end
+        return e
+    end)
     self._file_batch = nil
     if not ok then error(err, 0) end
     -- (A refused file that reloaded the workspace, §17.4, tore this one

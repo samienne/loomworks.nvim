@@ -217,6 +217,14 @@ function Core:setup(opts)
         return
     end
 
+    -- The live workspace is being replaced: until this load completes (it
+    -- reads the files itself) the old one applies no file change — applying
+    -- one would save the working copy under the bytes this load read, leaving
+    -- the new workspace a stale baseline (spec §2.7). Resumed if the load fails
+    -- and the old workspace stays.
+    if self._workspace and self._workspace._tracker then
+        self._workspace._tracker:pause()
+    end
     self._deps.read_files_async(
         { paths.config, paths.user, paths.cache },
         function(results)
@@ -282,6 +290,10 @@ function Core:_on_files_read(root, paths, results)
         if setup_error and (setup_error.trust or setup_error.newer) and self._workspace then
             self._workspace:teardown()
             self._workspace = nil
+        end
+        -- A workspace kept after a failed reload tracks its files again.
+        if self._workspace and self._workspace._tracker then
+            self._workspace._tracker:resume()
         end
         self._setup_error = setup_error
         self._state = "uninitialized"

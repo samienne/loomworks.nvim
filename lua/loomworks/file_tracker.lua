@@ -11,6 +11,7 @@
 --- @field _read_file fun(path: string): string|nil, string|nil
 --- @field _schedule fun(fn: function)
 --- @field _batch? fun(deliver: fun())
+--- @field _paused boolean while true, `sync` (and so every poll) delivers nothing
 local FileTracker = {}
 FileTracker.__index = FileTracker
 
@@ -44,6 +45,7 @@ function FileTracker.new(opts)
     self._manual = opts.manual or false
     self._batch = opts.batch
     self._order = {}
+    self._paused = false
     return self
 end
 
@@ -129,30 +131,68 @@ end
 --- inside the `batch` option's wrapper when one is set. A path a callback
 --- stopped watching (a refused file reloads the workspace, spec §17.4, which
 --- stops this tracker), or one an earlier callback already wrote or reconciled
---- (`mark_written`), is skipped.
+--- (`mark_written`), is skipped. When a callback throws, the change it was
+--- applying and every later one go back to undelivered (their last known
+--- content is restored), so the next sync delivers them again; the error is
+--- then rethrown with its traceback.
 function FileTracker:sync()
+    if self._paused then return end
     local changed = {}
     for _, path in ipairs(vim.list_extend({}, self._order)) do
         if self._watches[path] ~= nil then
             local new_content = self._read_file(path)
             if new_content ~= self._content[path] then
+                changed[#changed + 1] = { path = path, content = new_content, prev = self._content[path] }
                 self._content[path] = new_content
-                changed[#changed + 1] = { path = path, content = new_content }
             end
         end
     end
     if #changed == 0 then return end
-    local function deliver()
-        for _, c in ipairs(changed) do
-            -- Skipped once an earlier callback wrote or reconciled the file
-            -- itself (`mark_written` moved its content on): delivering the
-            -- bytes read above would replay an outdated version.
+    local current = 1
+    -- Runs at the error point: un-read the change being applied and the ones
+    -- after it. One a callback already reconciled (`mark_written`) or stopped
+    -- watching keeps its new state.
+    local function on_error(err)
+        for i = current, #changed do
+            local c = changed[i]
             if self._watches[c.path] ~= nil and self._content[c.path] == c.content then
-                self._callback(c.path, c.content)
+                self._content[c.path] = c.prev
             end
         end
+        if type(err) == "string" and not err:find("stack traceback:", 1, true) then
+            return debug.traceback(err, 2)
+        end
+        return err
+    end
+    local function deliver()
+        local ok, err = xpcall(function()
+            for i, c in ipairs(changed) do
+                current = i
+                -- Skipped once an earlier callback wrote or reconciled the file
+                -- itself (`mark_written` moved its content on): delivering the
+                -- bytes read above would replay an outdated version.
+                if self._watches[c.path] ~= nil and self._content[c.path] == c.content then
+                    self._callback(c.path, c.content)
+                end
+            end
+        end, on_error)
+        if not ok then error(err, 0) end
     end
     if self._batch then self._batch(deliver) else deliver() end
+end
+
+--- Hold every delivery: a paused tracker reads and delivers nothing, so the
+--- changes stay pending (`content()` keeps the last delivered bytes) until
+--- `resume`. The core pauses a workspace that a reload is replacing: the new
+--- load reads the files itself, and the old one must not apply (and save) a
+--- change under it meanwhile.
+function FileTracker:pause()
+    self._paused = true
+end
+
+--- Deliver again; a change that arrived while paused goes with the next sync.
+function FileTracker:resume()
+    self._paused = false
 end
 
 --- Stop all watches.

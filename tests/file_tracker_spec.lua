@@ -117,6 +117,69 @@ describe("FileTracker", function()
             assert.same({ "/a" }, seen)
             assert.equals("b3", tracker:content("/b"))
         end)
+
+        it("a callback that throws leaves the undelivered changes for the next sync", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1" }
+            local seen, fail = {}, true
+            local tracker = FileTracker.new({
+                callback = function(path, content)
+                    if path == "/a" and fail then error("remerge failed") end
+                    seen[#seen + 1] = { path, content }
+                end,
+                batch = function(deliver) deliver() end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b")
+            disk["/a"], disk["/b"] = "a2", "b2"
+            local ok, err = pcall(tracker.sync, tracker)
+            assert.is_false(ok)
+            assert.truthy(tostring(err):find("remerge failed", 1, true))
+            assert.same({}, seen)
+            -- Neither change was applied: the next sync delivers both.
+            fail = false
+            tracker:sync()
+            assert.same({ { "/a", "a2" }, { "/b", "b2" } }, seen)
+        end)
+
+        it("a paused tracker delivers nothing until resumed", function()
+            local disk = { ["/a"] = "a1" }
+            local seen = {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a")
+            tracker:pause()
+            disk["/a"] = "a2"
+            tracker:sync()
+            assert.same({}, seen)
+            assert.equals("a1", tracker:content("/a"))
+            tracker:resume()
+            tracker:sync()
+            assert.same({ { "/a", "a2" } }, seen)
+        end)
+
+        it("a throw after some deliveries re-delivers only the rest", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1", ["/c"] = "c1" }
+            local seen, fail = {}, true
+            local tracker = FileTracker.new({
+                callback = function(path, content)
+                    if path == "/b" and fail then error("boom") end
+                    seen[#seen + 1] = { path, content }
+                end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b"); tracker:watch("/c")
+            disk["/a"], disk["/b"], disk["/c"] = "a2", "b2", "c2"
+            assert.is_false(pcall(tracker.sync, tracker))
+            assert.same({ { "/a", "a2" } }, seen)
+            fail = false
+            tracker:sync()
+            assert.same({ { "/a", "a2" }, { "/b", "b2" }, { "/c", "c2" } }, seen)
+        end)
     end)
 
     describe("stop", function()
