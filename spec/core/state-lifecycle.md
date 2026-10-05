@@ -36,7 +36,8 @@
    │ configure_failed │
    └──────────────────┘
 
-   Any state ──── delete/clean ────► deleting ────► unconfigured (clean, success)
+   Any state ──── delete/clean ────► deleting ────► unconfigured (wipe clean, success;
+                                                      module clean: §4.7)
                                                     or removed (delete, success)
                                                     or unknown (failure)
 
@@ -336,6 +337,12 @@ shares a build directory with other configurations:
 remaining cache entries reference it after the current deletion batch.
 
 ### 4.7 Cleaning
+
+A module clean (the build system's own artifact clean, §16.1) that succeeds
+moves its `built` / `failed_build` units to `configured` (other states are
+unchanged); a core-performed wipe (§8.1) resets them to `unconfigured`. The
+state is recorded only after the clean succeeded — a failed module clean
+records nothing. The steps below are the wipe's.
 
 **Profile clean** (`C` key):
 1. For each project in the profile:

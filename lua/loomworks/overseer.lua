@@ -614,11 +614,13 @@ local function collect_profile_clean_tasks(profile)
         local clean = mod.clean_tasks(project_ctx, active_config)
         if clean then
             for _, task_def in ipairs(clean) do
-                -- A wipe is a build-directory deletion of this unit's dir: the
-                -- runner needs the unit for crash safety and shared-dir
-                -- protection (spec §4.6).
-                if task_def.loomworks and task_def.loomworks.wipe_build_dir
-                        and task_def.loomworks.unit == nil then
+                -- The unit the task cleans. A wipe is a build-directory
+                -- deletion of this unit's dir: the runner needs the unit for
+                -- crash safety and shared-dir protection (spec §4.6). A module
+                -- clean's headless runner needs it to record the clean (the
+                -- unit back to `configured`, spec §3, §16.1).
+                task_def.loomworks = task_def.loomworks or {}
+                if task_def.loomworks.unit == nil then
                     task_def.loomworks.unit = pp._config_unit
                 end
                 tasks[#tasks + 1] = task_def
@@ -629,6 +631,19 @@ local function collect_profile_clean_tasks(profile)
     end
 
     return #tasks > 0 and tasks or nil
+end
+
+--- A module clean task (the build system's artifact clean, not a wipe)
+--- succeeded: record it — the unit's built state drops to `configured`
+--- (spec §4.7; `mark_cached_configs_cleaned` leaves every other state). The
+--- editor records only after success, as the headless runners do
+--- (build_run.after_clean_step): a failed clean keeps the unit `built`.
+--- @param ws loomworks.Workspace|nil
+--- @param unit loomworks.ConfigUnit|nil
+local function record_module_clean(ws, unit)
+    if ws and unit and ws.mark_cached_configs_cleaned then
+        ws:mark_cached_configs_cleaned({ { unit = unit } })
+    end
 end
 
 --- Core-performed clean for a clean task that declares
@@ -1220,7 +1235,7 @@ end
 --- e.g. never configured). Intended for the headless runner. Each step
 --- carries a ready-to-spawn `{cmd, cwd, env}`.
 --- @param profile loomworks.Profile
---- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env } — or
+--- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env, unit } — or
 ---   { kind, name, build_dir, wipe_build_dir = true, unit } for a core-performed
 ---   wipe (run it with `Workspace:clean_wipe_build_dir(units, build_dir)`,
 ---   passing every wipe step's unit for the same build_dir as one batch)
@@ -1253,6 +1268,7 @@ function M.plan_profile_clean(profile)
                     cmd = spec.cmd,
                     cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
                     env = spec.env,
+                    unit = td.loomworks and td.loomworks.unit or nil,
                 }
             end
         end
@@ -1584,7 +1600,10 @@ function M.run_configuration_clean(unit, on_complete)
                 if task and not task:is_complete() then task:stop() end
             end)
             task:subscribe("on_complete", function(_, status)
-                if status == "SUCCESS" then resolve(true)
+                if status == "SUCCESS" then
+                    record_module_clean(unit._workspace,
+                        task_def.loomworks and task_def.loomworks.unit or unit)
+                    resolve(true)
                 else reject("clean task failed") end
             end)
             task:start()
@@ -1685,7 +1704,9 @@ function M.run_profile_clean(profile, on_complete)
                 if task and not task:is_complete() then task:stop() end
             end)
             task:subscribe("on_complete", function(_, status)
-                if status == "SUCCESS" then resolve(true)
+                if status == "SUCCESS" then
+                    record_module_clean(ws, task_def.loomworks and task_def.loomworks.unit)
+                    resolve(true)
                 else reject("clean task failed") end
             end)
             task:start()

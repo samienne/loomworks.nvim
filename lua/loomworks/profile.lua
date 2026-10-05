@@ -1744,8 +1744,8 @@ function Profile:clean(on_done)
         unit:mark_deleting(true, "cleaning")
     end
     self._workspace:create_operation(self, "clean", units, target_states)
-
-    self._workspace:mark_cached_configs_cleaned(items)
+    -- The built state is recorded per module clean task once it succeeds
+    -- (overseer.record_module_clean); a wipe resets the unit itself.
 
     local running = self._workspace:find_running_tasks_for_items(items)
     local task_ids = {}
