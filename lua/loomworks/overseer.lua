@@ -614,11 +614,13 @@ local function collect_profile_clean_tasks(profile)
         local clean = mod.clean_tasks(project_ctx, active_config)
         if clean then
             for _, task_def in ipairs(clean) do
-                -- A wipe is a build-directory deletion of this unit's dir: the
-                -- runner needs the unit for crash safety and shared-dir
-                -- protection (spec §4.6).
-                if task_def.loomworks and task_def.loomworks.wipe_build_dir
-                        and task_def.loomworks.unit == nil then
+                -- The unit the task cleans. A wipe is a build-directory
+                -- deletion of this unit's dir: the runner needs the unit for
+                -- crash safety and shared-dir protection (spec §4.6). A module
+                -- clean's headless runner needs it to record the clean (the
+                -- unit back to `configured`, spec §3, §16.1).
+                task_def.loomworks = task_def.loomworks or {}
+                if task_def.loomworks.unit == nil then
                     task_def.loomworks.unit = pp._config_unit
                 end
                 tasks[#tasks + 1] = task_def
@@ -1220,7 +1222,7 @@ end
 --- e.g. never configured). Intended for the headless runner. Each step
 --- carries a ready-to-spawn `{cmd, cwd, env}`.
 --- @param profile loomworks.Profile
---- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env } — or
+--- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env, unit } — or
 ---   { kind, name, build_dir, wipe_build_dir = true, unit } for a core-performed
 ---   wipe (run it with `Workspace:clean_wipe_build_dir(units, build_dir)`,
 ---   passing every wipe step's unit for the same build_dir as one batch)
@@ -1253,6 +1255,7 @@ function M.plan_profile_clean(profile)
                     cmd = spec.cmd,
                     cwd = (type(spec.cwd) == "string" and spec.cwd ~= "") and spec.cwd or nil,
                     env = spec.env,
+                    unit = td.loomworks and td.loomworks.unit or nil,
                 }
             end
         end

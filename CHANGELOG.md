@@ -243,6 +243,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- `lw clean` of a project whose build system cleans its own artifacts (cmake,
+  meson, a shell project with a clean command) now leaves the profile
+  `configured`: `lw status` no longer shows it `(built)` right after a
+  successful clean, in-process and through the workspace daemon. The editor's
+  clean now also persists the `configured` state. (#PR)
 - Deleting or cleaning a configuration no longer removes a build directory
   that another configuration still uses under a different spelling of the
   same folder (a junction or symlink, a Windows 8.3 short name such as

@@ -1304,7 +1304,8 @@ function M.cmd_clean(ws, profile_name)
         if res.code ~= 0 then die(res.msg, res.code) end
         if res.note then out(res.note) end
       else
-        local code, sig = run_spec(step, ws.root)
+        local code, sig = M._run_spec(step, ws.root)
+        build_run.after_clean_step(ws, step, code)
         if code ~= 0 then die(build_run.failure_message(step, code, nil, sig), code) end
       end
     end

@@ -3855,14 +3855,24 @@ function Workspace:reset_cached_configs(items)
 end
 
 --- Mark cached configs as cleaned (reset build state but keep build_dir
---- and configuration metadata). Used after module clean tasks complete.
---- @param items table[] { project_key, config_key }
+--- and configuration metadata). Used for module clean tasks (the editor's
+--- clean, and the headless clean after a step succeeded,
+--- build_run.after_clean_step). The unit's BuildDir is updated too: the
+--- cache serializes a unit that has one from the BuildDir
+--- (`_serialize_cache`), so updating only the unit would leave the persisted
+--- entry claiming `built` (spec §3, §16.18).
+--- @param items table[] { unit }
 function Workspace:mark_cached_configs_cleaned(items)
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
         -- Update first-class fields
         item.unit.state_value = "configured"
         item.unit.last_built = nil
+        local bd = item.unit._build_dir
+        if bd and bd:has_state() then
+            bd.state = "configured"
+            bd.last_built = nil
+        end
         ::continue::
     end
     self:_save_cache()

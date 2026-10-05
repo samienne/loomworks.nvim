@@ -34,16 +34,18 @@ local function write(path, text)
 end
 local function exists(path) return uv.fs_lstat(path) ~= nil end
 
---- lib Debug's persisted cache state (nil when it has no entry or no state).
-local function lib_cached_state(root)
+--- A project's Debug persisted cache state (nil when it has no entry or no
+--- state).
+local function cached_state(root, project)
     local t = read(root .. "/.nvim/loomworks.cache.json")
     if not t then return nil end
     local data = vim.json.decode(t)
     for _, c in pairs(data.build_dirs or {}) do
-        if c.project_key == "lib" and c.config_key == "Debug" then return c.state end
+        if c.project_key == project and c.config_key == "Debug" then return c.state end
     end
     return nil
 end
+local function lib_cached_state(root) return cached_state(root, "lib") end
 
 --- A workspace with `app` (configure/build/clean run the STEP script) and
 --- `lib` (configure/build, no clean_cmd: a wipe), a set and a profile `dev`.
@@ -172,6 +174,10 @@ describe("lw clean in the daemon's build service (§19.15 Clean)", function()
         -- The wipe removed lib's build directory; app's (module clean) is kept.
         assert.is_false(exists(libdir))
         assert.is_true(exists(root .. "/out/app/Debug"))
+        -- The module clean left app configured, persisted (spec §3, §16.18:
+        -- `lw status` no longer shows it built); the wipe reset lib.
+        assert.equals("configured", cached_state(root, "app"))
+        assert.is_nil(lib_cached_state(root))
         assert.is_nil(build_lock.read(libdir))
         r.conn:close()
     end)

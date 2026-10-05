@@ -409,13 +409,15 @@ function M.run(svc, ctx)
     -- ---- a clean (op == "clean"), after the locks ---------------------------
     -- Exactly what the in-process `lw clean` does (cli.cmd_clean, over
     -- loomworks.build_run): one line and step per project, the first failure
-    -- ends it. Nothing is recorded for a step (as in-process).
+    -- ends it. A successful module clean step records its unit `configured`
+    -- (build_run.after_clean_step, as in-process).
     local csteps, ci = ctx.clean_steps or {}, 0
     local wipe_groups = build_run.wipe_groups(ws, csteps)
     local next_clean
     local function clean_step_done(step, code, signal)
         if ended_by_cancel() then return end
         code, signal = build_run.exit_status(code, signal)
+        build_run.after_clean_step(ws, step, code)
         if code ~= 0 then return finish(code, build_run.failure_message(step, code, nil, signal)) end
         task:progress(ci / #csteps)
         next_clean()

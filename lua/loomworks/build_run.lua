@@ -738,6 +738,18 @@ function M.clean_step_line(step)
     return string.format("==> [clean] %s", step.name or "?")
 end
 
+--- After a module clean step (not a wipe) exits — both hosts: a successful
+--- clean leaves the unit `configured` (the build system's artifact clean keeps
+--- the configuration, spec §3, §16.1), persisted so `lw status` (§16.18) no
+--- longer shows it built. A failing step records nothing.
+--- @param ws loomworks.Workspace
+--- @param step table a plan_clean step
+--- @param code integer
+function M.after_clean_step(ws, step, code)
+    if code ~= 0 or step.wipe_build_dir or not step.unit then return end
+    ws:mark_cached_configs_cleaned({ { unit = step.unit } })
+end
+
 --- How long a wipe waits, after the removal, for the directory to be gone on
 --- disk (Windows delete-pending: an antivirus/indexer handle keeps the entry
 --- in the namespace until it closes) before the removal counts as failed.
