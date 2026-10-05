@@ -832,6 +832,12 @@ When no launcher is resolved, `--cache-stats` reports that there is nothing to
 query rather than erroring; with **no active profile** (or an active profile
 without a C/C++ project) it prints a one-line reason instead of nothing.
 
+The overview shows the workspace runtime's `Runtime` line and, when the
+workspace daemon is running tasks, one line per task (operation, profile,
+origin, elapsed, percent) — §19.6. Asking the daemon is bounded, never
+launches it, and never fails or changes the overview: a failed query is one
+line.
+
 The overview also renders the **suggestions** count line (`spec/ui.md` §1.1) when
 the suggestion framework has findings — a one-line advisory pointing at
 `lw health` (§16.31). Suggestions are advisory: they never change the overview's
