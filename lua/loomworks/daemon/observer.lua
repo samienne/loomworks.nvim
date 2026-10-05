@@ -79,6 +79,7 @@ local function daemon_id(pid, start) return tostring(pid) .. ":" .. tostring(sta
 --- opts (tests inject):
 ---   configured  the setup option `runtime.mode`
 ---   getenv      replaces os.getenv for the selection and LOOMWORKS_LW
+---   settings_file / read_setting  lw's settings file (loomworks.daemon.runtime.read_setting)
 ---   resolve     fun(root) → binary|nil, source (loomworks.daemon.host_binary.resolve)
 ---   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
 ---   inspect     fun(root) → state (loomworks.daemon.inspect.state)
@@ -92,7 +93,11 @@ function M.attach(ws, opts)
     opts = opts or {}
     if not ws or ws._torn_down then return nil end
     local runtime = require("loomworks.daemon.runtime")
-    local sel = runtime.select(opts.configured, { getenv = opts.getenv })
+    -- Selected afresh on every load (lw's setting may have changed); kept on
+    -- the workspace for the Runtime line, in-process mode included.
+    local sel = runtime.editor_select({ configured = opts.configured, getenv = opts.getenv,
+        settings_file = opts.settings_file, read_setting = opts.read_setting })
+    ws._runtime_selection = sel
     if not sel.daemon then return nil end
     if ws._daemon_observer then return ws._daemon_observer end
     local self = setmetatable({
@@ -162,6 +167,30 @@ function M.state_note(st)
     end
     if st.kind == "attached" then return "the workspace runtime is held by an lw command (pid " .. tostring(pid) .. ")" end
     return "no workspace daemon — waiting for one"
+end
+
+--- The note for a daemon this plugin cannot observe (spec §19.16 "version
+--- mismatch"): both sides' protocol (or file formats) and versions, the
+--- binary's path when this observer launched it, and the remedy.
+--- @param ch table the daemon's challenge { protocol, lw_version, schemas }
+--- @param what "protocol"|"schemas" what differs (version.observer_compatible)
+--- @param binary string|nil the host binary the daemon was launched from
+--- @return string
+function M.mismatch_note(ch, what, binary)
+    local version = require("loomworks.daemon.version")
+    local theirs, ours
+    if what == "protocol" then
+        theirs = "protocol " .. tostring(ch.protocol)
+        ours = "protocol " .. version.PROTOCOL
+    else
+        local ps, s = type(ch.schemas) == "table" and ch.schemas or {}, version.schemas()
+        theirs = string.format("file formats user %s, cache %s", tostring(ps.user), tostring(ps.cache))
+        ours = string.format("file formats user %d, cache %d", s.user, s.cache)
+    end
+    local lw = "lw v" .. tostring(ch.lw_version) .. (binary and (" at " .. binary) or "")
+    return string.format("the workspace daemon runs %s (%s), which does not match this plugin (v%s, %s): "
+        .. "update the plugin, or pin or install a matching lw — not observing it; running in-process",
+        lw, theirs, version.identity(), ours)
 end
 
 function Observer:_launch()
@@ -261,11 +290,7 @@ function Observer:_on_connected(target, conn, err)
         self.skip[daemon_id(target.pid, target.start_time)] = true
         conn.on_close = nil
         conn:close()
-        local why = what == "protocol"
-            and ("protocol " .. tostring(ch.protocol) .. ", this plugin " .. version.PROTOCOL)
-            or "newer file formats"
-        return self:_set("waiting", "the workspace daemon runs lw v" .. tostring(ch.lw_version) .. " (" .. why
-            .. ") — not observing it; running in-process")
+        return self:_set("waiting", M.mismatch_note(ch, what, self._binary))
     end
     if conn.welcome and conn.welcome.retiring then
         self.skip[daemon_id(target.pid, target.start_time)] = true
@@ -413,12 +438,36 @@ function Observer:tasks()
     return out
 end
 
---- The status page's Runtime line text.
+--- The observer's part of the Runtime line: its state or current note.
 --- @return string
 function Observer:runtime_line()
     local t = self.note or self.state
     if self.warning then t = t .. " (" .. self.warning .. ")" end
     return t
+end
+
+--- The status page's Runtime line (spec/ui.md §1.1, core §19.1, §19.16): the
+--- mode, the source that selected it and, in `daemon` mode, the observer's
+--- state or note. nil when no mode was selected yet, or when the default
+--- picked `in-process` with nothing to report. `warn` is true while a
+--- `daemon`-mode observer is not connected (a version mismatch, no host
+--- binary, waiting) and for an ignored value or unreadable settings file.
+--- @param ws loomworks.Workspace|nil
+--- @return string|nil text, boolean warn
+function M.runtime_line(ws)
+    local sel = ws and ws._runtime_selection
+    if not sel then return nil, false end
+    local head = sel.mode .. " (" .. sel.source .. ")"
+    local obs = M.of(ws)
+    if obs then return head .. " — " .. obs:runtime_line(), obs.state ~= "connected" end
+    local parts = {}
+    if sel.reason then parts[#parts + 1] = sel.reason end
+    if sel.warning then parts[#parts + 1] = sel.warning end
+    if #parts == 0 then
+        if sel.source == "default" and sel.mode ~= "daemon" then return nil, false end
+        return head, false
+    end
+    return head .. " — " .. table.concat(parts, "; "), sel.warning ~= nil
 end
 
 --- Stop observing (workspace teardown): timers stop, the connection closes,

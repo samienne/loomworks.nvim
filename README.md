@@ -942,8 +942,10 @@ require("loomworks").setup({
 Clipping appends a `…` so it's visually obvious the line was cut.
 
 **Builds started from a terminal (experimental).** With
-`setup({ runtime = { mode = "daemon" } })` (or `LOOMWORKS_RUNTIME=daemon`)
-the editor connects to the workspace daemon (`lw daemon`, see the `lw`
+`lw settings set runtime-mode daemon`, `setup({ runtime = { mode = "daemon" } })`
+or `LOOMWORKS_RUNTIME=daemon` (the environment wins over the setup option, which
+wins over `lw`'s setting; `LOOMWORKS_NO_DAEMON=1` and `CI=true` keep the editor
+in-process) the editor connects to the workspace daemon (`lw daemon`, see the `lw`
 command table) and shows the builds it runs — e.g. `lw build` in a
 terminal — like its own: a fidget popup, the units `building` on the status
 page and in the statusline, and a `(daemon)` row in the status page's Tasks
@@ -951,7 +953,10 @@ section whose Enter shows the build's output. Its own builds still run in the
 editor. It starts the daemon from the `lw` it finds (`LOOMWORKS_LW`, the
 repository's pinned `lw`, or `lw` on `PATH`) when you open the workspace or
 run `:LoomworksDaemon connect`, and never restarts one you stopped with
-`lw daemon stop`. The status page's `Runtime:` line says what it is doing.
+`lw daemon stop`. The status page's `Runtime:` line (the header's last line)
+names the mode and what chose it (`env`, `setup`, `lw setting`, `default`) and
+says what it is doing; a daemon of another version it cannot follow is named
+there in the warning colour, with the fix.
 
 If a fidget popup gets stuck spinning after every overseer task has
 already completed (typically because a dap session terminated before

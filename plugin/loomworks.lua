@@ -94,7 +94,7 @@ vim.api.nvim_create_user_command("LoomworksDaemon", function(cmd)
     local ok, why = lw.daemon_connect()
     if not ok then vim.notify("loomworks: " .. tostring(why), vim.log.levels.WARN) end
   elseif sub == "status" then
-    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "in-process"), vim.log.levels.INFO)
+    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "in-process (default)"), vim.log.levels.INFO)
   else
     vim.notify("loomworks: unknown :LoomworksDaemon subcommand '" .. sub .. "' (connect, status)",
       vim.log.levels.WARN)

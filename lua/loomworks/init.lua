@@ -97,7 +97,11 @@ function M.setup(opts)
     end
     if opts and type(opts.runtime) == "table" then
         M._runtime_mode_config = opts.runtime.mode
-        M.runtime_mode() -- report an invalid value once, at setup
+        -- Report an invalid setup value once, at setup (lw's setting is read,
+        -- and its problems shown on the Runtime line, on each workspace load).
+        local _, _, warning = require("loomworks.daemon.runtime").resolve(M._runtime_mode_config,
+            { what = "runtime.mode" })
+        if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     end
     -- In `daemon` runtime mode every loaded workspace observes the workspace
     -- daemon (spec §19.16). Only the editor attaches (the CLI never calls
@@ -167,16 +171,16 @@ end
 --- @type string|nil
 M._runtime_mode_config = nil
 
---- The effective runtime mode (spec §19.1): `LOOMWORKS_RUNTIME` > the setup
---- option `runtime.mode` > `in-process`. In `daemon` mode the editor observes
---- the workspace daemon (spec §19.16) while running its own operations
---- in-process. An invalid value is reported and ignored.
---- @return string mode
+--- The effective runtime mode (spec §19.1): the environment
+--- (`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI`) > the setup
+--- option `runtime.mode` > lw's `runtime-mode` setting > `in-process`, and the
+--- source that decided. In `daemon` mode the editor observes the workspace
+--- daemon (spec §19.16) while running its own operations in-process. Invalid
+--- values are ignored (the Runtime line reports them).
+--- @return string mode, loomworks.daemon.RuntimeSource source
 function M.runtime_mode()
-    local runtime = require("loomworks.daemon.runtime")
-    local mode, _, warning = runtime.resolve(M._runtime_mode_config, { what = "runtime.mode" })
-    if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
-    return mode
+    local sel = require("loomworks.daemon.runtime").editor_select({ configured = M._runtime_mode_config })
+    return sel.mode, sel.source
 end
 
 --- The tasks observed in the workspace daemon (spec §19.16), in start order.
@@ -186,12 +190,13 @@ function M.get_daemon_tasks()
     return ws and ws:get_daemon_tasks() or {}
 end
 
---- The status page's Runtime line (spec/ui.md §1.1), or nil in `in-process`
---- mode (no observer).
---- @return string|nil
+--- The status page's Runtime line (spec/ui.md §1.1): the runtime mode, the
+--- source that selected it and the observer's state or note; nil when the
+--- default picked `in-process` with nothing to report. `warn` selects the
+--- warning highlight.
+--- @return string|nil text, boolean warn
 function M.daemon_runtime_line()
-    local obs = require("loomworks.daemon.observer").of(core:get_workspace())
-    return obs and obs:runtime_line() or nil
+    return require("loomworks.daemon.observer").runtime_line(core:get_workspace())
 end
 
 --- `:LoomworksDaemon connect` (spec §19.16): connect to the workspace daemon,
@@ -202,7 +207,7 @@ function M.daemon_connect()
     if not ws then return false, "no workspace loaded" end
     local observer = require("loomworks.daemon.observer")
     local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config })
-    if not obs then return false, "the runtime mode is in-process (runtime.mode / LOOMWORKS_RUNTIME)" end
+    if not obs then return false, "the runtime mode is in-process (LOOMWORKS_RUNTIME, runtime.mode, lw settings runtime-mode)" end
     obs:start(true)
     return true
 end

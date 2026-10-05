@@ -596,6 +596,7 @@ end
 ---     stale saves handled (diagnostics/tests).
 --- @field _event_handlers { event: string, handler: function }[]
 --- @field _daemon_observer loomworks.daemon.Observer|nil the editor's observer of the workspace daemon (spec §19.16), daemon runtime mode only
+--- @field _runtime_selection loomworks.daemon.EditorSelection|nil the editor's runtime mode and its source, chosen on load (spec §19.1); the status page's Runtime line
 ---     event-bus subscriptions recorded for teardown. Mirrors the same
 ---     pattern on View. Populated only via `Workspace:on`, walked in
 ---     `Workspace:teardown` to call `events.off` per entry. Allows

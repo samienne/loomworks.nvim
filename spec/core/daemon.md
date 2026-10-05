@@ -35,8 +35,9 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 (`in-process` | `daemon`), `LOOMWORKS_RUNTIME`, the editor option
 `runtime.mode` (the editor observes the daemon in `daemon` mode, §19.16) — and the selection of
 attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
-(`daemon/runtime.lua`); the editor reading lw's `runtime-mode` setting
-future; the end-state values future.*
+(`daemon/runtime.lua`), and the editor's selection with lw's `runtime-mode`
+setting and the source on its Runtime line (`runtime.editor_select`,
+`observer.runtime_line`); the end-state values future.*
 
 A command runs its operation in one of two ways:
 
