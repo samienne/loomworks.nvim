@@ -109,6 +109,22 @@ describe("Core", function()
             assert.is_not_nil(vim.tbl_contains(names, "active_set_changed"))
         end)
 
+        it("a reload that throws after pausing leaves the old workspace's tracker resumed", function()
+            local core, deps = make_core()
+            core:setup({ root = "/root" })
+            local ws = core:get_workspace()
+            assert.is_not_nil(ws._tracker)
+            local orig = deps.workspace.assemble
+            deps.workspace.assemble = function() error("assemble exploded") end
+            local ok, err = pcall(core.setup, core, { root = "/root" })
+            deps.workspace.assemble = orig
+            assert.is_false(ok)
+            assert.truthy(tostring(err):find("assemble exploded", 1, true), tostring(err))
+            assert.equals(ws, core:get_workspace())
+            assert.is_false(ws._tracker.paused)
+            core:shutdown()
+        end)
+
     end)
 
     describe("remerge", function()

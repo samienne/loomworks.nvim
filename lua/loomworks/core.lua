@@ -276,6 +276,30 @@ end
 --- @param paths table
 --- @param results table<string, string|nil>
 function Core:_on_files_read(root, paths, results)
+    -- `setup` paused the live workspace's tracker. On a normal return it is
+    -- either replaced (torn down) or resumed by `fail`; an error raised in
+    -- between would leave the kept workspace paused for good — resume it, then
+    -- rethrow.
+    local old = self._workspace
+    local ok, err = xpcall(self._load_files, function(e)
+        if type(e) == "string" and not e:find("stack traceback:", 1, true) then
+            return debug.traceback(e, 2)
+        end
+        return e
+    end, self, root, paths, results)
+    if not ok then
+        if old and self._workspace == old and old._tracker then
+            old._tracker:resume()
+        end
+        error(err, 0)
+    end
+end
+
+--- Body of `_on_files_read`: assemble, validate and swap in the workspace.
+--- @param root string
+--- @param paths table
+--- @param results table<string, string|nil>
+function Core:_load_files(root, paths, results)
     local ws_mod = self._deps.workspace
 
     local function fail(msg, setup_error)

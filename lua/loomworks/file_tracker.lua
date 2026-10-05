@@ -190,9 +190,19 @@ function FileTracker:pause()
     self._paused = true
 end
 
---- Deliver again; a change that arrived while paused goes with the next sync.
+--- Deliver again. A polling tracker schedules a sync: the poll that saw a
+--- change while paused delivered nothing, and `fs_poll` fires again only on
+--- another stat change, so without it the change could stay pending
+--- indefinitely. A manual tracker delivers on its next `sync()` call.
 function FileTracker:resume()
+    if not self._paused then return end
     self._paused = false
+    if self._manual then return end
+    self._schedule(function()
+        -- Paused again, or stopped, before this ran: nothing to deliver now.
+        if self._paused or next(self._watches) == nil then return end
+        self:sync()
+    end)
 end
 
 --- Stop all watches.

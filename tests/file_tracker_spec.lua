@@ -161,6 +161,28 @@ describe("FileTracker", function()
             assert.same({ { "/a", "a2" } }, seen)
         end)
 
+        it("a change seen while paused is delivered after resume, with no further change", function()
+            local disk = { ["/a"] = "a1" }
+            local seen, queued = {}, {}
+            local tracker = FileTracker.new({
+                callback = function(path, content) seen[#seen + 1] = { path, content } end,
+                read_file = function(path) return disk[path] end,
+                schedule = function(fn) queued[#queued + 1] = fn end,
+            })
+            tracker:watch("/a")
+            tracker:pause()
+            disk["/a"] = "a2"
+            -- The poll that saw the change fires while paused: nothing delivered.
+            tracker:sync()
+            assert.same({}, seen)
+            tracker:resume()
+            -- No further stat change (so no further poll): resume itself
+            -- schedules the deferred sync.
+            for _, fn in ipairs(queued) do fn() end
+            tracker:stop()
+            assert.same({ { "/a", "a2" } }, seen)
+        end)
+
         it("a throw after some deliveries re-delivers only the rest", function()
             local disk = { ["/a"] = "a1", ["/b"] = "b1", ["/c"] = "c1" }
             local seen, fail = {}, true
