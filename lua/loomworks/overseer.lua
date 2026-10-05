@@ -547,7 +547,16 @@ local function collect_configuration_clean_tasks(unit)
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
-    return mod.clean_tasks(project_ctx, variant)
+    local clean = mod.clean_tasks(project_ctx, variant)
+    -- A wipe deletes this unit's build dir: the runner needs the unit for
+    -- crash safety and shared-dir protection (spec §4.6, §4.7).
+    for _, task_def in ipairs(clean or {}) do
+        if task_def.loomworks and task_def.loomworks.wipe_build_dir
+                and task_def.loomworks.unit == nil then
+            task_def.loomworks.unit = unit
+        end
+    end
+    return clean
 end
 
 --- Collect clean task definitions for all projects in a profile.
@@ -628,17 +637,39 @@ end
 --- (CLAUDE.md): nil/empty build_dir => nothing to wipe; the path (possibly
 --- cache-sourced) must pass `_validate_build_dir` (canonical, trailing-"/"
 --- boundary, never the workspace root); removal is in-process
---- (`io.rm_rf_async`: libuv calls, links not followed) — no shell. The caller
---- has already marked the cache (crash safety) as for any clean.
+--- (`io.rm_rf_async`: libuv calls, links not followed) — no shell.
+--- With the task's config unit (`loomworks.unit`, set by the clean task
+--- collectors) the wipe is a build-directory DELETION (spec §4.6, §4.7) via
+--- `Workspace:clean_wipe_build_dir`: cache `unknown` on disk before the tree
+--- is removed, the unit reset to unconfigured only after the removal
+--- succeeded, a directory still referenced by a config outside the clean
+--- kept. `units` (default: the task's own unit) are all the clean's units
+--- sharing this build directory, deleted as one batch. The Future rejects
+--- when the deletion reports it did not happen (lock refused or removal
+--- failed).
 --- @param ws loomworks.Workspace|nil
 --- @param task_def table
+--- @param units? loomworks.ConfigUnit[]
 --- @return loomworks.Future
-local function wipe_build_dir(ws, task_def)
+local function wipe_build_dir(ws, task_def, units)
     local future_mod = require("loomworks.future")
     local bd = task_def.loomworks and task_def.loomworks.build_dir
     if type(bd) ~= "string" or bd == "" then return future_mod.resolved(true) end
     if not ws or not ws:_validate_build_dir(bd, ws.root) then
         return future_mod.rejected("clean refused: unsafe build directory " .. tostring(bd))
+    end
+    local unit = task_def.loomworks.unit
+    units = units or (unit and { unit } or nil)
+    if units and #units > 0 and ws.clean_wipe_build_dir then
+        local f = ws:clean_wipe_build_dir(units, bd)
+        return f:next(function(ok)
+            -- The deletion's own outcome: `false` = a lock was refused or the
+            -- removal failed (both reported) — the clean did not happen.
+            if ok ~= true then
+                error("could not remove " .. bd, 0)
+            end
+            return true
+        end)
     end
     local io_dep = (ws._core and ws._core._deps and ws._core._deps.io) or require("loomworks.io")
     return io_dep.rm_rf_async(bd)
@@ -1191,7 +1222,8 @@ end
 --- @param profile loomworks.Profile
 --- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env } — or
 ---   { kind, name, build_dir, wipe_build_dir = true, unit } for a core-performed
----   wipe (run it with `Workspace:clean_wipe_build_dir(unit, build_dir)`)
+---   wipe (run it with `Workspace:clean_wipe_build_dir(units, build_dir)`,
+---   passing every wipe step's unit for the same build_dir as one batch)
 function M.plan_profile_clean(profile)
     local tasks = collect_profile_clean_tasks(profile)
     if not tasks then return nil end
@@ -1594,11 +1626,39 @@ function M.run_profile_clean(profile, on_complete)
         return future_mod.resolved(true)
     end
 
+    -- Core-performed wipes of the same build directory are ONE deletion batch
+    -- (spec §4.6): wiped once when no config outside this clean uses it.
+    local ws = profile._workspace or require("loomworks").get_workspace()
+    local wipe_group = {}
+    do
+        local groups = {}
+        local norm = ws and ws._core and ws._core._deps and ws._core._deps.normalize
+        for _, td in ipairs(tasks) do
+            local lw = td.loomworks
+            if norm and lw and lw.wipe_build_dir and lw.unit
+                    and type(lw.build_dir) == "string" and lw.build_dir ~= "" then
+                local key = norm(lw.build_dir)
+                local g = groups[key]
+                if not g then g = { units = {} }; groups[key] = g end
+                g.units[#g.units + 1] = lw.unit
+                wipe_group[td] = g
+            end
+        end
+    end
+
     local task_futures = {}
     for _, task_def in ipairs(tasks) do
         local tf = future_mod.create(function(resolve, reject, token)
             if task_def.loomworks and task_def.loomworks.wipe_build_dir then
-                wipe_build_dir(profile._workspace or require("loomworks").get_workspace(), task_def)
+                local g = wipe_group[task_def]
+                local wf
+                if g then
+                    g.future = g.future or wipe_build_dir(ws, task_def, g.units)
+                    wf = g.future
+                else
+                    wf = wipe_build_dir(ws, task_def)
+                end
+                wf
                     :next(function() resolve(true) end)
                     :catch(function(e)
                         local msg = "loomworks: " .. (task_def.name or "clean") .. ": " .. tostring(e)

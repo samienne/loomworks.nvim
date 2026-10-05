@@ -1,31 +1,27 @@
--- `lw clean` on a module that cleans by wiping the build directory (the shell
--- module without `clean_cmd`: `wipe_build_dir`, spec §8.1). The wipe is a
--- build-directory deletion, so it carries the full deletion safety (spec §4.6,
--- §4.7): the cache says `unknown` before the tree is removed and the unit is
--- reset to unconfigured only after the removal succeeded (never "built" over a
--- missing directory), and a directory still referenced by another config is
--- kept.
+-- The editor's clean (`Profile:clean` / `ConfigUnit:clean`) of a module that
+-- cleans by wiping the build directory (the shell module without `clean_cmd`:
+-- `wipe_build_dir`, spec §8.1). The wipe is a build-directory deletion, so it
+-- carries the full deletion safety (spec §4.6, §4.7), exactly like `lw clean`
+-- (tests/cli_clean_wipe_spec.lua): the cache says `unknown` on disk before the
+-- tree is removed, the unit is reset to unconfigured only after the removal
+-- succeeded, a failed removal leaves it `unknown`, and a directory still
+-- referenced by another config is kept.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
 local uv = vim.uv or vim.loop
 
-local function capture(fn)
-  local out_buf, err_buf = {}, {}
-  local rw, rs, rex = io.write, io.stderr, os.exit
-  io.write = function(s) out_buf[#out_buf + 1] = s end
-  io.stderr = { write = function(_, s) err_buf[#err_buf + 1] = s end }
-  local exit_code
-  os.exit = function(code) exit_code = code or 0; error({ __exit = true }, 0) end
+local function quiet(fn)
+  local rw, rs = io.write, io.stderr
+  io.write = function() end
+  io.stderr = { write = function() end }
   local ok, err = pcall(fn)
-  io.write, io.stderr, os.exit = rw, rs, rex
-  if not ok and not (type(err) == "table" and err.__exit) then error(err, 0) end
-  return { exit_code = exit_code, stdout = table.concat(out_buf), stderr = table.concat(err_buf) }
+  io.write, io.stderr = rw, rs
+  if not ok then error(err, 0) end
 end
 
 --- A shell App with Debug + Release (no clean_cmd => wipe) whose build_dir
---- template is `build_dir`; sets Dev (App=Debug) and Rel (App=Release), with
---- a profile for each.
+--- template is `build_dir`; profiles Dev (App=Debug) and Rel (App=Release).
 local function make_ws(build_dir)
   local root = vim.fn.tempname():gsub("\\", "/")
   vim.fn.mkdir(root .. "/App", "p")
@@ -37,10 +33,12 @@ local function make_ws(build_dir)
   } } } }
   local f = assert(io.open(root .. "/loomworks.json", "w"))
   f:write(vim.json.encode(lw)); f:close()
-  capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Dev", "App=Debug" }) end)
-  capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Rel", "App=Release" }) end)
-  capture(function() cli.cmd_profile_create(root, { "profile", "create", "Rel" }) end)
-  capture(function() cli.cmd_profile_create(root, { "profile", "create", "Dev", "--activate" }) end)
+  quiet(function()
+    cli.cmd_cset("create", root, { "configuration-set", "create", "Dev", "App=Debug" })
+    cli.cmd_cset("create", root, { "configuration-set", "create", "Rel", "App=Release" })
+    cli.cmd_profile_create(root, { "profile", "create", "Rel" })
+    cli.cmd_profile_create(root, { "profile", "create", "Dev", "--activate" })
+  end)
   return root
 end
 
@@ -61,10 +59,12 @@ local function make_shared_ws()
   end
   local f = assert(io.open(root .. "/loomworks.json", "w"))
   f:write(vim.json.encode({ projects = projects })); f:close()
-  capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Both", "A=Debug", "B=Debug" }) end)
-  capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Other", "A=Release" }) end)
-  capture(function() cli.cmd_profile_create(root, { "profile", "create", "Other" }) end)
-  capture(function() cli.cmd_profile_create(root, { "profile", "create", "Both", "--activate" }) end)
+  quiet(function()
+    cli.cmd_cset("create", root, { "configuration-set", "create", "Both", "A=Debug", "B=Debug" })
+    cli.cmd_cset("create", root, { "configuration-set", "create", "Other", "A=Release" })
+    cli.cmd_profile_create(root, { "profile", "create", "Other" })
+    cli.cmd_profile_create(root, { "profile", "create", "Both", "--activate" })
+  end)
   return root
 end
 
@@ -88,7 +88,6 @@ local function unit_of(profile)
   return assert(pp._config_unit, "profile project has no config unit")
 end
 
---- Fake a built build directory on disk + on the unit.
 local function fake_built(ws, unit, dir)
   vim.fn.mkdir(dir, "p")
   local mf = assert(io.open(dir .. "/marker.txt", "w")); mf:write("x"); mf:close()
@@ -107,13 +106,41 @@ local function cached_state(root, unit)
   return nil
 end
 
-describe("lw clean (wipe_build_dir)", function()
+--- Wait for a Future; returns ok (resolved) and settled.
+local function wait(f)
+  local done, ok = false, nil
+  f:next(function() done, ok = true, true end):catch(function() done, ok = true, false end)
+  vim.wait(5000, function() return done end, 10)
+  return ok, done
+end
+
+--- Make the clean's per-project wipes overlap, as they do in the editor when
+--- a running task has to be stopped first or the rm-rf subprocess is slow:
+--- stopping tasks and the removal both complete asynchronously.
+local function overlap_deletions(ws, io_mod)
+  ws.stop_tasks_then = function()
+    return require("loomworks.future").create(function(resolve)
+      vim.defer_fn(function() resolve(true) end, 20)
+    end)
+  end
+  io_mod.rm_rf_async = function(dir, cb)
+    vim.defer_fn(function()
+      vim.fn.delete(dir, "rf")
+      if cb then cb(true, nil) end
+    end, 30)
+    return require("loomworks.future").resolved(true)
+  end
+end
+
+describe("editor clean (wipe_build_dir)", function()
   local io_mod = require("loomworks.io")
-  local real_rm_rf_async, real_rm_rf
+  local real_rm_rf_async, real_rm_rf, real_overseer
 
   before_each(function()
     real_rm_rf_async, real_rm_rf = io_mod.rm_rf_async, io_mod.rm_rf
-    -- Synchronous, no-subprocess removal (see cli_reset_spec for why).
+    real_overseer = package.loaded["overseer"]
+    -- The wipe spawns no overseer task; the clean runner only needs the module.
+    package.loaded["overseer"] = real_overseer or {}
     io_mod.rm_rf_async = function(dir, cb)
       vim.fn.delete(dir, "rf")
       if cb then vim.schedule(function() cb(true, nil) end) end
@@ -124,9 +151,10 @@ describe("lw clean (wipe_build_dir)", function()
 
   after_each(function()
     io_mod.rm_rf_async, io_mod.rm_rf = real_rm_rf_async, real_rm_rf
+    package.loaded["overseer"] = real_overseer
   end)
 
-  it("resets the unit to unconfigured after the wipe (never 'built' over a removed dir)", function()
+  it("Profile:clean resets the unit to unconfigured after the wipe", function()
     local root = make_ws("${workspace_root}/out/${configuration}")
     local ws, by = load(root)
     local unit = unit_of(by.Dev)
@@ -134,13 +162,15 @@ describe("lw clean (wipe_build_dir)", function()
     fake_built(ws, unit, dir)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
-    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local ok, done = wait(by.Dev:clean())
+    assert.is_true(done, "clean settles")
+    assert.is_true(ok, "clean succeeds")
     assert.is_nil(uv.fs_stat(dir), "the build dir is wiped")
     assert.is_nil(unit.state_value, "unit no longer claims a build state")
+    assert.is_false(unit:is_deleting())
     local c = cached_state(root, unit)
     assert.is_true(c == nil or (c.state == nil and c.last_built == nil),
-      "persisted cache no longer claims built: " .. vim.inspect(c))
+      "persisted cache no longer claims a state: " .. vim.inspect(c))
   end)
 
   it("marks the cache unknown on disk before the tree is removed", function()
@@ -159,15 +189,11 @@ describe("lw clean (wipe_build_dir)", function()
       if cb then vim.schedule(function() cb(true, nil) end) end
       return require("loomworks.future").resolved(true)
     end
-    io_mod.rm_rf = function(d)
-      local c = cached_state(root, unit)
-      seen = c and c.state
-      vim.fn.delete(d, "rf"); return true
-    end
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
-    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local ok = wait(unit:clean())
+    assert.is_true(ok)
     assert.equals("unknown", seen)
+    assert.is_nil(unit.state_value, "reset only after the removal succeeded")
   end)
 
   it("keeps a build dir still referenced by another configuration", function()
@@ -179,11 +205,12 @@ describe("lw clean (wipe_build_dir)", function()
     fake_built(ws, rel, dir)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
-    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local ok = wait(by.Dev:clean())
+    assert.is_true(ok)
     assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "shared build dir must survive")
     assert.equals("built", rel.state_value, "the other config's state is untouched")
   end)
+
   it("fails and leaves the cache unknown when the removal fails", function()
     local root = make_ws("${workspace_root}/out/${configuration}")
     local ws, by = load(root)
@@ -195,14 +222,13 @@ describe("lw clean (wipe_build_dir)", function()
       if cb then vim.schedule(function() cb(false, "boom") end) end
       return require("loomworks.future").resolved(false)
     end
-    cli._reset_verify_ms = 100
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
-    cli._reset_verify_ms = nil
-    assert.is_not_nil(r.exit_code, "clean must fail")
-    assert.matches("could not remove", r.stderr .. r.stdout)
+    local ok, done = wait(by.Dev:clean())
+    assert.is_true(done, "clean settles")
+    assert.is_false(ok, "clean must fail")
     assert.equals("unknown", unit.state_value)
     assert.equals("unknown", cached_state(root, unit).state)
+    assert.is_false(unit:is_deleting(), "unit is unmarked after the failure")
   end)
   it("wipes a build dir shared only by units of the same profile clean", function()
     local root = make_shared_ws()
@@ -211,13 +237,22 @@ describe("lw clean (wipe_build_dir)", function()
     assert.equals(2, #units)
     local dir = root .. "/build"
     for _, u in ipairs(units) do fake_built(ws, u, dir) end
+    overlap_deletions(ws, io_mod)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Both.key) end)
-    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local skipped = {}
+    local real_notify = ws._core._deps.notify
+    ws._core._deps.notify = function(msg, ...)
+      if tostring(msg):find("skipped deleting", 1, true) then skipped[#skipped + 1] = msg end
+      return real_notify(msg, ...)
+    end
+
+    local ok, done = wait(by.Both:clean())
+    assert.is_true(done, "clean settles")
+    assert.is_true(ok, "clean succeeds")
     assert.is_nil(uv.fs_stat(dir), "the dir shared only within the clean is wiped")
-    assert.is_nil((r.stdout .. r.stderr):find("kept", 1, true),
-      "not reported as kept: no config outside the clean uses it: " .. r.stdout)
+    ws._core._deps.notify = real_notify
+    assert.same({}, skipped, "no unit of the clean is treated as an outside reference")
     for _, u in ipairs(units) do
       assert.is_nil(u.state_value, "unit reset after the wipe")
     end
@@ -230,11 +265,12 @@ describe("lw clean (wipe_build_dir)", function()
     local other = units_of(by.Other)[1]
     local dir = root .. "/build"
     for _, u in ipairs(units) do fake_built(ws, u, dir) end
+    overlap_deletions(ws, io_mod)
     fake_built(ws, other, dir)
     ws:_save_cache()
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Both.key) end)
-    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    local ok = wait(by.Both:clean())
+    assert.is_true(ok)
     assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "dir referenced outside the clean survives")
     assert.equals("built", other.state_value, "the outside config's state is untouched")
   end)
@@ -249,16 +285,13 @@ describe("lw clean (wipe_build_dir)", function()
     unit.state_value = "configured"
     ws:_sync_build_dir_refs()
     ws:_save_cache()
-    -- The removal fails but the directory vanishes anyway (e.g. removed
-    -- concurrently): the deletion's own outcome must decide, not a re-stat.
-    io_mod.rm_rf_async = function(d, cb)
-      vim.fn.delete(d, "rf")
+    io_mod.rm_rf_async = function(_, cb)
       if cb then vim.schedule(function() cb(false, "boom") end) end
       return require("loomworks.future").resolved(false)
     end
 
-    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
-    assert.is_not_nil(r.exit_code, "a failed removal must not be reported as success")
-    assert.matches("could not remove", r.stderr .. r.stdout)
+    local ok, done = wait(by.Dev:clean())
+    assert.is_true(done, "clean settles")
+    assert.is_false(ok, "a failed removal must not be reported as success")
   end)
 end)

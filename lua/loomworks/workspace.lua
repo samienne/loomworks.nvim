@@ -4043,24 +4043,37 @@ function Workspace:_remaining_build_dir_refs(normalized, deleting_units)
     return remaining
 end
 
---- Core-performed clean wipe (`wipe_build_dir`, spec §8.1) of `unit`'s build
---- directory, done as a build-directory DELETION (spec §4.6, §4.7) rather than
---- a bare rm: validated against the workspace root, the cache marked `unknown`
---- on disk before the tree is removed, the unit reset to unconfigured only
---- after the removal succeeded, and a directory still referenced by another
---- config unit kept (its cache entry is still reset). Holds the operation and
---- build-directory locks like any deletion. Returns a Future and whether the
---- directory is kept because it is shared.
---- @param unit loomworks.ConfigUnit|nil
+--- Core-performed clean wipe (`wipe_build_dir`, spec §8.1) of `build_dir`,
+--- done as a build-directory DELETION (spec §4.6, §4.7) rather than a bare rm:
+--- validated against the workspace root, the cache marked `unknown` on disk
+--- before the tree is removed, the units reset to unconfigured only after the
+--- removal succeeded, and a directory still referenced by a config unit
+--- outside `units` kept (their cache entries are still reset). `units` are ALL
+--- the clean's units whose build directory is `build_dir`: they are deleted as
+--- one batch, so a directory shared only among them is wiped once (one unit
+--- per batch would see the others as outside references and keep it). Holds
+--- the operation and build-directory locks like any deletion. Returns a Future
+--- resolving `true` when the wipe happened (or the directory was kept because
+--- it is shared) and `false` when it did not (a lock was refused or the
+--- removal failed — both reported), plus whether the directory is kept
+--- because it is shared.
+--- @param units loomworks.ConfigUnit[] the clean's units using `build_dir` (may be empty)
 --- @param build_dir string
 --- @return loomworks.Future, boolean shared
-function Workspace:clean_wipe_build_dir(unit, build_dir)
+function Workspace:clean_wipe_build_dir(units, build_dir)
     local norm = self._core._deps.normalize
-    local shared = self:_remaining_build_dir_refs(norm(build_dir),
-        unit and { [unit] = true } or {}) > 0
-    local f = self:execute_deletion({ items = {
-        { unit = unit, build_dir = build_dir, disposition = "reset" },
-    } })
+    local batch, items = {}, {}
+    for _, unit in ipairs(units or {}) do
+        if not batch[unit] then
+            batch[unit] = true
+            items[#items + 1] = { unit = unit, build_dir = build_dir, disposition = "reset" }
+        end
+    end
+    if #items == 0 then
+        items[1] = { build_dir = build_dir, disposition = "reset" }
+    end
+    local shared = self:_remaining_build_dir_refs(norm(build_dir), batch) > 0
+    local f = self:execute_deletion({ items = items }, { reason = "cleaning" })
     return f, shared
 end
 
@@ -4072,7 +4085,11 @@ end
 --- @param work_fn function called after build dirs are successfully deleted (cache mutations)
 --- @param on_done? function called when complete
 --- @param reason? "deleting"|"cleaning" reason for the deletion flag (default "deleting")
---- Common async deletion workflow. Returns a Future.
+--- Common async deletion workflow. Returns a Future that resolves `true`
+--- when every build directory removal succeeded (cache mutations applied) and
+--- `false` when a removal failed (reported; units left `unknown`, cache not
+--- reset) — the outcome is explicit, never to be inferred from unit state
+--- (a unit with no cached build directory is not marked `unknown`).
 --- @param items table[]
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
@@ -4155,7 +4172,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             ws:_resolve_active_profile()
             ws._core._deps.events.emit("active_set_changed", ws._active_set)
             ws._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
-            return true  -- don't reject — deletion "completed" with errors reported
+            return false  -- don't reject: the errors are reported; `false` = not deleted
         end
 
         work_fn(items)
@@ -4185,7 +4202,7 @@ end
 --- @param on_done? function called when deletion is complete
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning" }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
@@ -4253,7 +4270,7 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done)
+    end, on_done, opts.reason)
 
     return f
 end
@@ -4503,7 +4520,7 @@ end
 --- build-directory locks of the directories it removes (spec §19.3); see
 --- `_execute_deletion_unlocked`.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning" }
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:execute_deletion(plan, opts, on_done)

@@ -1286,6 +1286,19 @@ function M.cmd_clean(ws, profile_name)
   if op_tok then
     on_exit(function() require("loomworks.op_lock").release(op_tok) end)
   end
+  -- Wipe steps of the same build directory are ONE deletion batch (spec
+  -- §4.6): every unit of this clean using the dir is subtracted, so a dir
+  -- shared only among them is wiped once; the later steps find it done.
+  local norm = vim.fs.normalize
+  if ws._core and ws._core._deps and ws._core._deps.normalize then norm = ws._core._deps.normalize end
+  local wipe_units, wiped = {}, {}
+  for _, step in ipairs(steps) do
+    if step.wipe_build_dir and step.unit then
+      local key = norm(step.build_dir)
+      wipe_units[key] = wipe_units[key] or {}
+      table.insert(wipe_units[key], step.unit)
+    end
+  end
   with_build_locks(profile, "clean", function()
     out("cleaning profile: " .. profile.key)
     for _, step in ipairs(steps) do
@@ -1299,22 +1312,33 @@ function M.cmd_clean(ws, profile_name)
         if not ws:_validate_build_dir(step.build_dir, ws.root) then
           die("clean refused: unsafe build directory " .. tostring(step.build_dir))
         end
-        local done = false
-        local f, shared = ws:clean_wipe_build_dir(step.unit, step.build_dir)
-        f:next(function() done = true end):catch(function() done = true end)
-        if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then
-          die("clean timed out — the build-directory deletion did not complete: "
-            .. (step.name or "?"))
-        end
-        if shared then
-          out("kept " .. step.build_dir .. " — still used by another configuration")
-        else
-          vim.wait(M._reset_verify_ms or RESET_VERIFY_MS,
-            function() return uv.fs_stat(step.build_dir) == nil end, 20)
-          if uv.fs_stat(step.build_dir) ~= nil
-              or (step.unit and step.unit.state_value == "unknown") then
+        local key = norm(step.build_dir)
+        if not wiped[key] then
+          wiped[key] = true
+          local done, ok = false, false
+          local f, shared = ws:clean_wipe_build_dir(
+            wipe_units[key] or (step.unit and { step.unit } or {}), step.build_dir)
+          f:next(function(v) done, ok = true, v == true end)
+           :catch(function() done = true end)
+          if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then
+            die("clean timed out — the build-directory deletion did not complete: "
+              .. (step.name or "?"))
+          end
+          -- The deletion's own outcome decides (`false` = lock refused or
+          -- removal failed, both reported), not the unit's state.
+          if not ok then
             die("clean failed: could not remove " .. step.build_dir .. ": "
               .. (step.name or "?"))
+          end
+          if shared then
+            out("kept " .. step.build_dir .. " — still used by another configuration")
+          else
+            vim.wait(M._reset_verify_ms or RESET_VERIFY_MS,
+              function() return uv.fs_stat(step.build_dir) == nil end, 20)
+            if uv.fs_stat(step.build_dir) ~= nil then
+              die("clean failed: could not remove " .. step.build_dir .. ": "
+                .. (step.name or "?"))
+            end
           end
         end
       else
