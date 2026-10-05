@@ -819,8 +819,11 @@ function Core:_nuke_lock_dirs(build_dir)
     local function add(dir)
         local raw = tostring(dir):gsub("\\", "/")
         local k = normalize(raw)
-        if (k:sub(1, #build_dir + 1) == build_dir .. "/") and not seen[k] then
-            seen[k] = true
+        -- One folder spelled two ways (a scanned lockfile vs a unit's
+        -- build_dir) is one lock (spec §4.6): de-duplicate by identity.
+        local id = normalize(require("loomworks.dir_identity").resolve(raw, self._deps.realpath))
+        if (k:sub(1, #build_dir + 1) == build_dir .. "/") and not seen[id] then
+            seen[id] = true
             found[#found + 1] = { key = k, path = raw, shown = ".nvim/build" .. raw:sub(#build_dir + 1) }
         end
     end

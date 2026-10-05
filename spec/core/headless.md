@@ -206,7 +206,9 @@ rules of §2.3 and §5.3. This contract does not itself serialize cross-process
 concurrent access to a shared build directory; a host MAY add advisory
 exclusion. loomworks does: configure/build/clean/reset (§16.30) hold a
 **per-build-directory advisory lockfile** — an `O_EXCL` create (atomic across
-processes) with an
+processes) of `<dir>.loomworks-lock` beside the directory's §4.6 identity (its
+resolved real path, so every spelling of one folder finds the same lockfile,
+before and after configure creates the directory) with an
 mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is
@@ -228,8 +230,15 @@ reclaim, and refuses a live or hung holder's lock naming it (exit 1);
 `lw unlock --force …` removes the record whatever the holder's state, without
 stopping it, after warning that it may still be running and writing. A build
 directory argument is a path (it contains a separator), relative to the
-workspace root or absolute, and must lie under the root; only the lockfile
-`<dir>.loomworks-lock` itself, a regular file, is removed. The CLI also releases
+workspace root or absolute, and must lie under the root both as spelled and
+by its §4.6 identity (its resolved real path under the root's, so a junction
+or symlink to a folder outside the workspace is refused, naming the resolved
+lockfile for removal by hand); only the lockfile `<dir>.loomworks-lock`
+beside that identity, a regular file, is removed. Compatibility: a version
+before this identity rule derives the lockfile from the spelled path, so with
+an aliased spelling (a symlinked or junctioned workspace root, macOS `/tmp` →
+`/private/tmp`) an older pinned `lw` and a current one take different
+lockfiles and do not exclude each other. The CLI also releases
 its build locks on interrupt as well as on normal exit, so an interrupted
 (Ctrl-C'd) build does not leave a lock for the stale-reclaim window. An
 **interrupt** is any of: SIGINT (Ctrl-C), SIGTERM, SIGHUP (a terminal hangup)

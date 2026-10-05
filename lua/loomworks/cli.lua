@@ -1175,7 +1175,7 @@ end
 M._with_build_dir_locks = with_build_dir_locks -- exported for tests
 
 --- Build directories in the canonical lock order of spec §19.3: by
---- normalized path (§2.3 normalization), duplicates dropped.
+--- normalized identity (§4.6, §2.3), duplicates dropped.
 --- @param dirs string[]
 --- @return string[]
 function M._lock_order(dirs)
@@ -1811,8 +1811,11 @@ end
 
 --- The build-directory part of `lw unlock` (see M.cmd_unlock). `name` is a
 --- profile, or a build directory (relative to the workspace root, or
---- absolute) that must lie under the root (separator-bounded): only
---- `<dir>.loomworks-lock` — exactly that regular file — is ever removed.
+--- absolute) that must lie under the root (separator-bounded), both as
+--- spelled and by identity (loomworks.dir_identity: its real path must lie
+--- under the root's real path, so a junction / symlink to a folder outside
+--- the workspace is refused): only `<dir>.loomworks-lock` beside that
+--- identity — exactly that regular file — is ever removed.
 --- @param ws loomworks.Workspace
 --- @param all boolean
 --- @param name string|nil
@@ -1853,6 +1856,17 @@ function M._unlock_build_dirs(ws, all, name, force)
       local nr, np = norm_cmp(ws.root), norm_cmp(p)
       if np:sub(1, #nr + 1) ~= nr .. "/" then
         die("no profile matching '" .. name .. "', and it is not a directory under the workspace root")
+      end
+      -- The lockfile sits beside the directory's IDENTITY (build_lock.lock_path),
+      -- so the spelled check above is not enough: a junction / symlink under
+      -- the root can point outside it. Require the identity under the
+      -- root's identity too (separator-bounded), else refuse.
+      local identity = require("loomworks.dir_identity")
+      local rr, ri = norm_cmp(identity.resolve(ws.root)), norm_cmp(identity.resolve(p))
+      if ri:sub(1, #rr + 1) ~= rr .. "/" then
+        die("'" .. name .. "' resolves to " .. identity.resolve(p) .. ", outside the workspace root; "
+          .. "lw unlock does not remove its lockfile " .. build_lock.lock_path(p)
+          .. " — remove it by hand if its holder is gone")
       end
       targets[1] = p
     end

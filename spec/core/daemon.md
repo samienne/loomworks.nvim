@@ -145,8 +145,8 @@ locks still guard against older versions and version-bypass runs (§19.9).
 | F | File save | `<file>.lock` (§2.7) | the re-read + write, milliseconds | bounded retry (about 2 s) |
 
 **Order.** A process acquires locks only in the order R → O → B → D → F, and
-within a class in a canonical order: build directories by normalized path
-(§2.3 normalization), devices by serial, files in the order
+within a class in a canonical order: build directories by normalized identity
+(§4.6 resolved real path, §2.3 normalization), devices by serial, files in the order
 `loomworks.json`, `loomworks.user.json`, `loomworks.cache.json`. It never
 acquires a lock of an earlier class, or an earlier member of the same class,
 while holding a later one. Release order is free. Waiting (R briefly, D by
