@@ -3792,13 +3792,18 @@ function Workspace:mark_cached_configs_cleaned(items)
     self._core._deps.events.emit("active_set_changed", self._active_set)
 end
 
---- Set cache state to "unknown" for items that have build directories.
+--- Set cache state to "unknown" for items that have build directories. The
+--- unit's BuildDir is marked too: the cache serializes a unit that has one
+--- from the BuildDir (`_serialize_cache`), so marking only the unit would
+--- leave the persisted entry claiming its old state (spec §4.7, §5.7).
 --- @param items loomworks.DeletionItem[]
 function Workspace:_mark_cache_unknown(items)
     for _, item in ipairs(items) do
         if not item.unit then goto continue end
         if item.unit.build_dir_value then
             item.unit.state_value = "unknown"
+            local bd = item.unit._build_dir
+            if bd and bd:has_state() then bd.state = "unknown" end
         end
         ::continue::
     end
@@ -3986,10 +3991,14 @@ end
 --- @param callback fun(results: {dir: string, ok: boolean, err: string|nil}[])
 --- Delete build directories asynchronously. Returns a Future resolving
 --- with an array of { dir, ok, err } results.
+--- `opts.stop` (optional predicate) is handed to the removal and asked before
+--- each entry: once it returns true no further entry is started (what was
+--- removed stays removed) and that directory's result carries `stopped`.
 --- @param dirs string[]
 --- @param callback? function legacy callback (deprecated)
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Workspace:_delete_build_dirs_async(dirs, callback)
+function Workspace:_delete_build_dirs_async(dirs, callback, opts)
     local future_mod = require("loomworks.future")
     if #dirs == 0 then
         if callback then callback({}) end
@@ -3997,16 +4006,17 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
     end
 
     local build_root = self._core._deps.normalize(self.root .. "/.nvim/build")
+    local stop = opts and opts.stop
     local dir_futures = {}
     for _, dir in ipairs(dirs) do
         local captured_dir = dir
         local df = future_mod.create(function(resolve, _, token)
-            self._core._deps.io.rm_rf_async(captured_dir, function(ok, err)
+            self._core._deps.io.rm_rf_async(captured_dir, function(ok, err, stopped)
                 if ok then
                     self:_cleanup_empty_ancestors(captured_dir, build_root)
                 end
-                resolve({ dir = captured_dir, ok = ok, err = err })
-            end)
+                resolve({ dir = captured_dir, ok = ok, err = err, stopped = stopped or nil })
+            end, stop and { stop = stop } or nil)
             token:on_cancel(function()
                 -- Can't cancel rm -rf mid-flight, but resolve to let chain continue
                 resolve({ dir = captured_dir, ok = false, err = "cancelled" })
@@ -4057,10 +4067,15 @@ end
 --- it is shared) and `false` when it did not (a lock was refused or the
 --- removal failed — both reported), plus whether the directory is kept
 --- because it is shared.
+--- `opts.stop` (optional predicate, the workspace daemon's cancellation, spec
+--- §19.15 "Clean") is asked before each entry of the removal: a stopped wipe
+--- resolves `false` with the cache left `unknown` (never reset after a partial
+--- removal).
 --- @param units loomworks.ConfigUnit[] the clean's units using `build_dir` (may be empty)
 --- @param build_dir string
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future, boolean shared
-function Workspace:clean_wipe_build_dir(units, build_dir)
+function Workspace:clean_wipe_build_dir(units, build_dir, opts)
     local norm = self._core._deps.normalize
     local batch, items = {}, {}
     for _, unit in ipairs(units or {}) do
@@ -4073,7 +4088,8 @@ function Workspace:clean_wipe_build_dir(units, build_dir)
         items[1] = { build_dir = build_dir, disposition = "reset" }
     end
     local shared = self:_remaining_build_dir_refs(norm(build_dir), batch) > 0
-    local f = self:execute_deletion({ items = items }, { reason = "cleaning" })
+    local f = self:execute_deletion({ items = items },
+        { reason = "cleaning", stop = opts and opts.stop or nil })
     return f, shared
 end
 
@@ -4094,8 +4110,11 @@ end
 --- @param work_fn function cache mutations after successful deletion
 --- @param on_done? function legacy callback (deprecated)
 --- @param reason? "deleting"|"cleaning"
+--- @param opts? { stop?: fun(): boolean } `stop`: asked before each entry of
+---   the removal; a stopped removal is a failed one (resolves `false`, units
+---   left `unknown`) without an error report of its own
 --- @return loomworks.Future
-function Workspace:_run_deletion(items, work_fn, on_done, reason)
+function Workspace:_run_deletion(items, work_fn, on_done, reason, opts)
     local future_mod = require("loomworks.future")
     if #items == 0 then
         if on_done then on_done() end
@@ -4155,7 +4174,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             end
         end
 
-        return ws:_delete_build_dirs_async(dirs)
+        return ws:_delete_build_dirs_async(dirs, nil, { stop = opts and opts.stop or nil })
     end):next(function(results)
         local errors = {}
         for _, r in ipairs(results) do
@@ -4164,7 +4183,11 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
 
         if #errors > 0 then
             for _, e in ipairs(errors) do
-                ws._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
+                -- A stopped removal is the caller's cancellation, reported by
+                -- the caller; only a genuine failure is an error here.
+                if not e.stopped then
+                    ws._core._deps.notify("loomworks: failed to delete " .. e.dir .. ": " .. (e.err or "unknown"), vim.log.levels.ERROR)
+                end
             end
             for _, unit in ipairs(units) do unit:mark_deleting(false) end
             ws:_save_cache()
@@ -4202,7 +4225,7 @@ end
 --- @param on_done? function called when deletion is complete
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning" }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
@@ -4270,7 +4293,7 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done, opts.reason)
+    end, on_done, opts.reason, { stop = opts.stop })
 
     return f
 end
@@ -4520,7 +4543,7 @@ end
 --- build-directory locks of the directories it removes (spec §19.3); see
 --- `_execute_deletion_unlocked`.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning" }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning", stop?: fun(): boolean }
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:execute_deletion(plan, opts, on_done)

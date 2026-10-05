@@ -426,10 +426,15 @@ function M.rm_rf(dir)
 end
 
 --- Asynchronous tree removal over libuv's threadpool (no subprocess, no
---- shell). `done(err|nil)`; a missing path is success.
+--- shell). `done(err|nil, stopped|nil)`; a missing path is success. `stop`
+--- (optional) is asked before each entry: once it returns true no further
+--- entry is started (what was removed stays removed), the directories still
+--- holding entries are kept, and `done` reports `stopped = true`.
 --- @param path string
---- @param done fun(err: string|nil)
-local function rm_tree_async(path, done)
+--- @param done fun(err: string|nil, stopped: boolean|nil)
+--- @param stop? fun(): boolean
+local function rm_tree_async(path, done, stop)
+    if stop and stop() then return done(nil, true) end
     uv.fs_lstat(path, function(lerr, st)
         if not st then
             if lerr and not tostring(lerr):match("^ENOENT") then
@@ -452,8 +457,12 @@ local function rm_tree_async(path, done)
                 if not name then break end
                 names[#names + 1] = name
             end
-            local errors, pending = {}, #names
+            local errors, pending, stopped = {}, #names, false
             local function finish()
+                -- Stopped: entries remain below; the directory is kept.
+                if stopped or (stop and stop()) then
+                    return done(#errors > 0 and table.concat(errors, "; ") or nil, true)
+                end
                 uv.fs_rmdir(path, function(rerr)
                     if rerr then errors[#errors + 1] = "rmdir " .. path .. ": " .. tostring(rerr) end
                     done(#errors > 0 and table.concat(errors, "; ") or nil)
@@ -461,11 +470,12 @@ local function rm_tree_async(path, done)
             end
             if pending == 0 then return finish() end
             for _, name in ipairs(names) do
-                rm_tree_async(path .. "/" .. name, function(e)
+                rm_tree_async(path .. "/" .. name, function(e, s)
                     if e then errors[#errors + 1] = e end
+                    if s then stopped = true end
                     pending = pending - 1
                     if pending == 0 then finish() end
-                end)
+                end, stop)
             end
         end)
     end)
@@ -473,29 +483,39 @@ end
 
 --- Recursively remove a directory/file asynchronously (libuv filesystem
 --- calls — never a shell command built from the path). Links are removed,
---- not followed. Returns a Future.
+--- not followed. Returns a Future (rejected with "stopped" when stopped).
+--- `opts.stop` (optional) is asked before each entry: once it returns true no
+--- further entry is started — what was removed stays removed, the directories
+--- still holding entries are kept — and the callback gets `stopped = true`
+--- (the workspace daemon's cancellable clean wipe, spec §19.15 "Clean"). The
+--- CALLER validates `dir` (Deletion Safety) before calling.
 --- @param dir string
---- @param callback? fun(ok: boolean, err: string|nil) legacy callback (deprecated)
+--- @param callback? fun(ok: boolean, err: string|nil, stopped: boolean|nil) legacy callback (deprecated)
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function M.rm_rf_async(dir, callback)
+function M.rm_rf_async(dir, callback, opts)
     local future_mod = require("loomworks.future")
     if not uv.fs_lstat(dir) then
         if callback then callback(true, nil) end
         return future_mod.resolved(true)
     end
 
+    local stop = opts and opts.stop or nil
     local f = future_mod.create(function(resolve, reject)
-        rm_tree_async(dir, function(err)
+        rm_tree_async(dir, function(err, stopped)
             vim.schedule(function()
-                if err then reject(err) else resolve(true) end
+                if callback then
+                    if stopped then callback(false, err or "stopped", true)
+                    elseif err then callback(false, err)
+                    else callback(true, nil) end
+                end
+                if stopped then reject(err or "stopped")
+                elseif err then reject(err) else resolve(true) end
             end)
-        end)
+        end, stop)
     end)
-
-    if callback then
-        f:next(function() callback(true, nil) end)
-         :catch(function(err) callback(false, err) end)
-    end
+    -- (The callback ran above; a rejection it reports must not go unhandled.)
+    if callback then f:catch(function() end) end
     return f
 end
 

@@ -731,8 +731,8 @@ and its task stream, §19.15; protocol version 4: 3 plus the observer role,
 version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
 plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
-§19.15, §19.16; planned for §19.19 step 5c: protocol version 8, 7 plus the
-routed `clean` request, §19.15); the rest of the
+§19.15, §19.16; protocol version 8: 7 plus the routed `clean` request,
+§19.15); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -990,9 +990,11 @@ reference-based. Read-only queries run on the client's projection.
 [--junit <file>] [-- <args>]`, §16.16; `lw test --target` stays in-process,
 see Routing), and for the preparation of `lw run` (§16.17; see Run;
 `run_prep.lua`, the client's `_finish_routed_run`; device runs stay
-in-process, see Routing); observed by the editor (§19.16); planned for
-§19.19 step 5c: `lw clean [<profile>]` (§16.1; see Clean); other operations
-future.*
+in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
+the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
+the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
+with a stop predicate); observed by the editor (§19.16);
+other operations future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1163,16 +1165,22 @@ build), `cleaning profile: <p>`, one `==> [clean] <name>` line and step per
 project, and `CLEAN OK: <profile>`; a failing step ends the task with the
 in-process failure line and the step's exit code, the later steps not run.
 A **core-performed wipe** (§8.1 `wipe_build_dir`) runs in the daemon process
-under the same rules as in-process: the path is validated first (§4.6:
-non-empty, within the workspace root and never the root itself, links not
-followed, no command interpreter) — a refused path ends the task with the
-in-process `clean refused: unsafe build directory …` line — and is then
-removed without blocking the daemon's endpoint (pings, status and other
+as the SAME build-directory deletion as in-process (§4.6, §4.7; one path for
+both hosts), under the workspace operation lock taken before the
+build-directory locks (§19.3): the path is validated first (§4.6: non-empty,
+within the workspace root and never the root itself, links not followed, no
+command interpreter) — a refused path ends the task with the in-process
+`clean refused: unsafe build directory …` line; the clean's units sharing the
+directory are one deletion batch; the cache says `unknown` on disk before the
+tree is removed and the units are reset only after the removal succeeded; a
+directory still used by a configuration outside the clean is kept (the
+in-process `kept <dir> — still used by another configuration` line). The
+removal does not block the daemon's endpoint (pings, status and other
 clients are served while it runs). Cancelling during a wipe stops it between
-entries; what was removed stays removed and nothing is recorded for the step,
-as for a killed in-process clean. The clean writes the cache exactly when the
-in-process clean does, and any write-back's `model_change` precedes `done`
-(§19.16, End).
+entries (`clean stopped: <reason>`); what was removed stays removed and the
+cache stays `unknown` (never reset after a partial removal, §4.7). The clean
+writes the cache exactly when the in-process clean does, and any write-back's
+`model_change` precedes `done` (§19.16, End).
 
 **Confirmation.** A daemon never prompts. An operation whose in-process form
 asks the user before acting (a confirmation, a picker) either is `declined`
@@ -1494,12 +1502,13 @@ exit status, both ways — the same output, exit code, deploy records and
 persisted cache; plus: the program runs after the task ended and every lock
 was released (a `lw build` of the profile proceeds while it runs), it
 survives `lw daemon stop`, two runs at once, the not-carried device forms
-print their line); planned for step 5c, `lw clean` (a module clean, a
-core-performed wipe, a refused unsafe path, nothing to clean, a failing step,
-an unknown or missing profile, cancellation during a step and during a wipe,
-both ways — the same output, exit code, build-directory contents and
-persisted cache; plus: the daemon answers `ping` while a wipe runs); the
-projection half #88.*
+print their line) and `lw clean` (`tests/daemon_clean_cli_spec.lua`: a module
+clean, a core-performed wipe, a refused unsafe path, nothing to clean, a
+failing step, an unknown or missing profile, both ways — the same output, exit
+code, build-directory contents and persisted cache; plus cancellation during a
+step and during a wipe; `tests/daemon_clean_service_spec.lua`: the daemon
+answers `ping` while a wipe runs, a cancelled wipe stops between entries and
+holds its locks until it has); the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -1539,6 +1548,6 @@ runtime is deferred until that module is actively developed.
      under exclusive build-directory locks, with the in-process deletion
      safety for a core-performed wipe. Configuring is already routed as a
      step of `lw build`. `lw reset`, `lw nuke` and `lw device clean` stay
-     in-process (§19.15, Not routed).
+     in-process (§19.15, Not routed). *(Done.)*
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

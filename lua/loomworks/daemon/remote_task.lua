@@ -3,7 +3,8 @@
 --- `lw build` in a terminal).
 ---
 --- It puts the same RUNTIME state on the editor's objects as a local operation
---- of its kind: its resolved units report `building` (or `configuring`), and
+--- of its kind: its resolved units report `building` (or `configuring`; a
+--- clean's report `cleaning`, the display of the transient clean state), and
 --- its resolved profile counts as having an active operation. Runtime only —
 --- nothing is written to the cache or the working copy, and nothing blocks an
 --- editor operation (the cross-process build-directory locks do).
@@ -34,7 +35,8 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field profile loomworks.Profile|nil the resolved profile
 --- @field profile_name string|nil the profile key the daemon sent (display)
 --- @field units loomworks.RemoteTaskUnit[]
---- @field action string "build" or "configure" — what its units report while it runs
+--- @field action string "build", "configure" or "clean" — what its units report while it
+--- runs (a test or a run builds: "build")
 --- @field start_time number clock seconds (uv.hrtime based, like local tasks)
 --- @field pct integer|nil last progress tick
 --- @field finished boolean
@@ -62,7 +64,7 @@ function M.new(ws, id, meta, clock)
     local self = setmetatable({
         id = id, name = type(meta.name) == "string" and meta.name or ("task " .. tostring(id)),
         kind = kind, origin = type(meta.origin) == "string" and meta.origin or nil,
-        action = kind == "configure" and "configure" or "build",
+        action = (kind == "configure" or kind == "clean") and kind or "build",
         units = {}, start_time = clock, finished = false,
         _chunks = {}, _bytes = 0, _truncated = false, _listeners = {},
     }, RemoteTask)
@@ -205,6 +207,7 @@ local VERBS = {
     configure = { "configured", "configure failed" },
     test = { "tested", "test failed" },
     run = { "prepared", "run failed" },
+    clean = { "cleaned", "clean failed" },
 }
 
 --- One line describing how it ended (fidget, the profile row, the output

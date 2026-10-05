@@ -41,6 +41,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon (`runtime-mode daemon`): `lw clean [<profile>]` now runs
+  in the workspace daemon like `lw build`, with the same output and exit code,
+  after one dim line `lw: cleaning through the workspace daemon (pid N)`, under
+  the same build-directory locks and with the same safety checks before a
+  build directory is removed; Ctrl-C stops it there (a removal stops between
+  entries). The editor shows a clean started in a terminal as its own:
+  `cleaning`, then `cleaned` or `clean failed`. `lw reset`, `lw nuke` and `lw
+  device clean` still run in-process. The daemon protocol is now version 8:
+  an older daemon is restarted when idle. (#TBD)
 - Experimental daemon (`runtime-mode daemon`): the editor now shows an
   operation started in a terminal (`lw build`, `lw test`, `lw run`) exactly
   like its own: the profile row's progress, timer and spinner, the units'
@@ -242,6 +251,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   when only the cleaned profile uses it), and a failed removal is always
   reported as a failure, also for a configuration with no cached build
   directory. (#135)
+- Removing, resetting or wipe-cleaning a build directory that has recorded
+  build state now really writes "unknown" to the cache before the directory
+  is removed; before, the cache file kept saying "built" until the removal
+  finished, so a crash in between left a stale "built" over a missing
+  directory. (#TBD)
 - Experimental daemon: an operation started in a terminal (`lw build`) no
   longer blocks the editor's own. A build from the editor (or build-then-launch)
   was skipped as already running and launched a stale binary, and a single
