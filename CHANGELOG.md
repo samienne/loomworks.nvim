@@ -230,7 +230,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   the configuration is reset to unconfigured only after the removal succeeded
   (it no longer claims "built" over a removed directory), a failed removal
   fails the command, and a directory still used by another configuration is
-  kept. (#PR)
+  kept. (#134)
 - Experimental daemon: an operation started in a terminal (`lw build`) no
   longer blocks the editor's own. A build from the editor (or build-then-launch)
   was skipped as already running and launched a stale binary, and a single
