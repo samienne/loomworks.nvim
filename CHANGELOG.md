@@ -261,6 +261,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- The editor no longer stays stuck loading the workspace until Neovim is
+  restarted after a load or reload fails with an internal error: the next
+  reload runs again, and a failed reload keeps the previous workspace. (#145)
 - When loomworks.json and `.nvim/loomworks.user.json` both changed on disk
   before the next `lw build`/`test`/`clean`/`reset` through the workspace
   daemon (or the editor's next poll), the operation is no longer refused as a

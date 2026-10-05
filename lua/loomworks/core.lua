@@ -291,6 +291,11 @@ function Core:_on_files_read(root, paths, results)
         if old and self._workspace == old and old._tracker then
             old._tracker:resume()
         end
+        -- Leave `initializing` too, or every later `setup` returns early and
+        -- the workspace never loads again: a kept workspace stays live
+        -- (`initialized`), otherwise nothing is loaded.
+        self._state = self._workspace and "initialized" or "uninitialized"
+        self._deps.events.emit("workspace_changed", self._workspace)
         error(err, 0)
     end
 end
