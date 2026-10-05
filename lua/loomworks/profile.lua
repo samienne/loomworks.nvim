@@ -1705,17 +1705,23 @@ end
 
 --- Hard-reset this profile (plan + execute, no UI confirmation): rm -rf the
 --- build directories and drop the config units back to `unconfigured`, keeping
---- the profile itself (spec §16.30). Returns a Future.
+--- the profile itself (spec §16.30). Returns a Future (`true` when every
+--- removal succeeded). `opts.stop` (the daemon's cancellation, §19.15
+--- "Reset") is asked before each entry of the removal; a stopped reset
+--- resolves `false` with the cache left `unknown` (never reset after a
+--- partial removal).
 --- @param on_done? function
+--- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future
-function Profile:reset(on_done)
+function Profile:reset(on_done, opts)
     -- No Operation is created: an Operation drives the editor's live progress UI
     -- and only completes when its units reach their target state via task
     -- tracking. The headless reset runs no tasks, so an Operation here would
     -- never complete — leaking a progress handle at process teardown. The CLI
     -- reports its own result instead.
     -- No profile removal, no deactivation — reset preserves the active profile.
-    return self._workspace:execute_deletion(self:plan_reset(), nil, on_done)
+    local stop = opts and opts.stop or nil
+    return self._workspace:execute_deletion(self:plan_reset(), stop and { stop = stop } or nil, on_done)
 end
 
 --- Clean this profile's configs. Returns a Future.

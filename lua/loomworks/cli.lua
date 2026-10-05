@@ -1340,129 +1340,60 @@ function M.cmd_reset(ws, args)
     die("`lw reset --all` resets every profile — drop the profile argument")
   end
 
-  -- Three sets:
-  --  * lock_dirs   — EVERY computed build dir (a loaded profile carries a
-  --                  computed path even when never built, and another process
-  --                  could be configuring it): all must be held exclusive.
-  --  * removal_dirs — dirs that actually EXIST on disk AND are targeted for
-  --                  physical removal (disposition ≠ "keep"): reported, and
-  --                  verified gone after the deletion.
-  --  * state_to_clear — true if any targeted unit carries build state even with
-  --                  no dir on disk (e.g. a build dir deleted out of band): the
-  --                  reset still clears that stale state.
-  local lock_dirs, lock_seen = {}, {}
-  local removal_dirs, removal_seen = {}, {}
-  local state_to_clear = false
-  local function add_lock(bd)
-    if bd and not lock_seen[bd] then lock_seen[bd] = true; lock_dirs[#lock_dirs + 1] = bd end
-  end
-  local function add_removal(bd)
-    if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
-      removal_seen[bd] = true; removal_dirs[#removal_dirs + 1] = bd
-    end
-  end
-  local scope_label, run
-
+  -- The plan (spec §16.30) is loomworks.reset_plan's, shared with the
+  -- workspace daemon (§19.15 "Reset"): the lock set (every computed build
+  -- dir), the removal set (dirs on disk to remove), the listing, the token.
+  local reset_plan = require("loomworks.reset_plan")
+  local plan
   if all then
-    scope_label = "the whole workspace"
-    for _, unit in pairs(ws._config_units or {}) do
-      local bd = unit:build_dir()
-      add_lock(bd)
-      add_removal(bd) -- reset_all batches every unit; none are "keep"
-      if unit.state_value ~= nil then state_to_clear = true end
-    end
-    for _, o in ipairs(ws:get_orphaned_configs()) do
-      add_lock(o.build_dir_obj and o.build_dir_obj.path or nil)
-      add_removal(o.build_dir_obj and o.build_dir_obj.path or nil)
-      state_to_clear = true -- get_orphaned_configs only returns dirs WITH state
-    end
-    run = function(on_done) ws:reset_all(on_done) end
+    plan = reset_plan.plan(ws, { all = true })
   else
     local profile
     profile, ws = resolve_build_target(ws, profile_name, "lw reset <profile>")
-    scope_label = "profile '" .. profile.key .. "'"
-    -- plan_reset marks a unit shared with another profile as "keep" (its dir is
-    -- retained); only non-keep items are physically removed.
-    for _, item in ipairs(profile:plan_reset().items) do
-      add_lock(item.build_dir)
-      if item.disposition ~= "keep" then
-        add_removal(item.build_dir)
-        if item.unit and item.unit.state_value ~= nil then state_to_clear = true end
-      end
-    end
-    run = function(on_done) profile:reset(on_done) end
+    plan = reset_plan.plan(ws, { profile = profile })
   end
 
-  if #removal_dirs == 0 and not state_to_clear then
-    out("nothing to reset for " .. scope_label .. " — no build directories to remove.")
+  if reset_plan.is_empty(plan) then
+    out(reset_plan.nothing_message(plan))
     return 0
   end
 
-  if #removal_dirs > 0 then
-    out(string.format("Will remove %d build director%s and reset %s to unconfigured:",
-      #removal_dirs, (#removal_dirs == 1) and "y" or "ies", scope_label))
-    for _, d in ipairs(removal_dirs) do out("  " .. d) end
-  else
-    out("Will reset " .. scope_label .. " to unconfigured "
-      .. "(no build directories on disk; clearing cached state).")
-  end
+  for _, line in ipairs(reset_plan.listing(plan)) do out(line) end
 
   -- Destructive → confirm. `-y` skips; a non-interactive host without it refuses
   -- rather than deleting unprompted (spec §16.30).
   if not yes then
-    if not interactive() then
-      die("refusing to remove build directories without confirmation.\n"
-        .. "  Re-run with -y to reset " .. scope_label .. ".")
-    end
-    local answer = prompt_line("Reset " .. scope_label .. "? [y/N]")
+    if not interactive() then die(reset_plan.unconfirmed_message(plan)) end
+    local answer = prompt_line(reset_plan.prompt(plan))
     answer = (answer or ""):lower()
     if answer ~= "y" and answer ~= "yes" then
-      die("aborted — nothing was removed")
+      die(reset_plan.ABORTED)
     end
   end
 
   -- Exclusive like clean/delete: hold every target dir's lock across the async
-  -- deletion, driving it to completion headlessly (spec §16.6, §16.30). The
-  -- deletion's on_done fires when the rm subprocess exits, but the process
-  -- exiting does not guarantee the directory is gone: on Windows a failed rm
-  -- leaves it, and a successful rm can leave it delete-pending for a moment.
-  -- So after logical completion we VERIFY genuine on-disk absence (polling out
-  -- delete-pending) and fail loudly if a directory truly could not be removed —
-  -- reset must not report success while a build tree survives.
-  local done, still_present = false, nil
+  -- deletion (spec §16.6, §16.30). reset_plan.execute runs the deletion and
+  -- then VERIFIES genuine on-disk absence (polling out delete-pending without
+  -- blocking) — reset must not report success while a build tree survives.
+  -- This host waits on it; the daemon keeps serving instead.
+  local verify_ms = M._reset_verify_ms or reset_plan.VERIFY_MS
+  local settled, res = false, nil
   -- Lock order (spec §19.3): the workspace operation lock first, then every
   -- build directory's lock; the workspace's own deletion re-enters both.
   local op_tok = ws:_op_lock("reset")
   on_exit(function() require("loomworks.op_lock").release(op_tok) end)
-  with_build_dir_locks(lock_dirs, "reset", function()
-    run(function() done = true end)
-    if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then return end
-    if #removal_dirs > 0 then
-      local pending = {}
-      for _, d in ipairs(removal_dirs) do pending[d] = true end
-      vim.wait(M._reset_verify_ms or RESET_VERIFY_MS, function()
-        local any = false
-        for d in pairs(pending) do
-          if uv.fs_stat(d) == nil then pending[d] = nil else any = true end
-        end
-        return not any
-      end, 20)
-      local left = {}
-      for d in pairs(pending) do left[#left + 1] = d end
-      if #left > 0 then table.sort(left); still_present = left end
-    end
+  with_build_dir_locks(plan.lock_dirs, "reset", function()
+    reset_plan.execute(ws, plan, { verify_ms = verify_ms }, function(code, msg)
+      settled, res = true, { code = code, msg = msg }
+    end)
+    -- Backstop only: execute's own timers settle it (timeout / verify bound).
+    vim.wait(reset_plan.TIMEOUT_MS + verify_ms + 5000, function() return settled end, 20)
   end, ws)
   require("loomworks.op_lock").release(op_tok)
-  if not done then
-    die("reset timed out — a build-directory deletion did not complete")
-  end
-  if still_present then
-    die(string.format("reset failed — %d build director%s could not be removed:\n  %s",
-      #still_present, (#still_present == 1) and "y" or "ies",
-      table.concat(still_present, "\n  ")))
-  end
+  if not settled then die(reset_plan.TIMED_OUT) end
+  if res.code ~= 0 then die(res.msg, res.code) end
 
-  out("RESET OK: " .. scope_label)
+  out(reset_plan.ok_line(plan))
   return 0
 end
 
