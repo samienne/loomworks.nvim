@@ -102,10 +102,12 @@ function M.format(reply, now)
 end
 
 --- The running-task lines for `lw status` under the Runtime row (empty when
---- the daemon is not asked or runs nothing).
+--- the daemon is not asked or runs nothing), and the `status` reply they came
+--- from (nil when the daemon was not asked or did not answer), so `lw status`
+--- can also show those tasks' profiles running (spec §16.18).
 --- @param root string
 --- @param opts? { state?: table, own_key_id?: string|false, query?: fun(endpoint: string): table|nil, string|nil, now?: integer }
---- @return string[]
+--- @return string[] lines, table|nil reply
 function M.lines(root, opts)
     opts = opts or {}
     local st = opts.state or require("loomworks.daemon.inspect").state(root)
@@ -120,7 +122,7 @@ function M.lines(root, opts)
     if not ok then reply, why = nil, tostring(reply) end
     if not reply then return { "  running tasks: unavailable (" .. tostring(why or "no reply") .. ")" } end
     if not reply._lw_version then reply._lw_version = st.handle.lw_version end
-    return M.format(reply, opts.now)
+    return M.format(reply, opts.now), reply
 end
 
 return M

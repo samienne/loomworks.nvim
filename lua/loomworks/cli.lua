@@ -7260,21 +7260,38 @@ local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
 --- @param numbers table<string, integer> profile.key → stable number (profile_numbering)
 local function status_profile_rows(pal, plist, active_key, grouped, tw, numbers)
   numbers = numbers or {}
-  local longest, num_w = 0, 1
+  local longest, num_w, set_w, state_w = 0, 1, 0, 0
+  -- Build state (§16.18): the editor's aggregate `Profile:status()` label,
+  -- written as one whitespace-free token (`1 built, 1 unconfigured` →
+  -- `1-built,1-unconfigured`) so a script can split the row on whitespace.
+  local states = {}
+  local dwidth = require("loomworks.description").width
   for _, p in ipairs(plist) do
     longest = math.max(longest, #tostring(p.key))
     num_w = math.max(num_w, #tostring(numbers[p.key] or ""))
+    set_w = math.max(set_w, dwidth(trunc(p._configuration_set_name or "?", PROFILE_SET_W)))
+    local ok, label = pcall(function() return p.status and p:status() or nil end)
+    if ok and type(label) == "string" and label ~= "" then
+      states[p] = (label:gsub(", ", ","):gsub("%s+", "-"))
+      state_w = math.max(state_w, #" state=" + #states[p])
+    end
   end
-  -- The number column widens the fixed overhead; take it off the name budget.
-  local name_w = fit_column(longest, tw, PROFILE_RESERVED + num_w, 8)
-  -- "<mark><n> <name> set=<set>" — the stable number is a label here, so it
-  -- keeps its value even though the section lists the active profile first.
+  -- The number and state columns widen the fixed overhead; take them off the
+  -- name budget.
+  local name_w = fit_column(longest, tw, PROFILE_RESERVED + num_w + state_w, 8)
+  -- "<mark><n> <name> set=<set> state=<state>" — the stable number is a label
+  -- here, so it keeps its value even though the section lists the active
+  -- profile first. The set column is padded only when a state follows it.
   local fmt = "%s%" .. num_w .. "s %-" .. name_w .. "s set=%s"
   local rows = {}
   for _, p in ipairs(plist) do
     local is_active = (p.key == active_key)
+    local set = trunc(p._configuration_set_name or "?", PROFILE_SET_W)
+    if states[p] then
+      set = set .. string.rep(" ", set_w - dwidth(set)) .. " state=" .. states[p]
+    end
     local row = string.format(fmt, is_active and "*" or " ", tostring(numbers[p.key] or ""),
-      trunc(p.key, name_w), trunc(p._configuration_set_name or "?", PROFILE_SET_W))
+      trunc(p.key, name_w), set)
     rows[#rows + 1] = (is_active and pal.active(row) or row)
       .. M._summary_suffix(require("loomworks.description").width(row), p.description, tw, pal)
       .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
@@ -8101,9 +8118,23 @@ function M.cmd_status(root, opts)
   do
     local row = M._runtime_row(root)
     if row then out(pal.title("Runtime") .. string.rep(" ", 10) .. pal.dim(row)) end
-    local ok, lines = pcall(function() return require("loomworks.daemon.running").lines(root) end)
+    local ok, lines, reply = pcall(function() return require("loomworks.daemon.running").lines(root) end)
     if ok then
       for _, l in ipairs(lines) do out(pal.dim(l)) end
+    end
+    -- The same reply's tasks put their running state on this process's
+    -- profiles and units, exactly as the editor shows an observed task
+    -- (§19.16), so the Profiles rows' `state=` shows them running (§16.18).
+    -- Display only, never persisted; a bad entry is skipped.
+    if ok and type(reply) == "table" and type(reply.tasks) == "table" then
+      local rt = require("loomworks.daemon.remote_task")
+      local clock = uv.hrtime() / 1e9
+      for _, entry in ipairs(reply.tasks) do
+        pcall(function()
+          local task = rt.adopt(ws, entry, clock)
+          if task then task:attach_units() end
+        end)
+      end
     end
   end
 
@@ -10244,6 +10275,12 @@ with their configurations. Each section is limited to fit a page — use
 `lw target`, `lw profile list`, `lw configset list`, or `lw project list` for the full
 lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
+
+Each profile row shows its build state after its set: the editor's status
+label as one whitespace-free field, `state=built`, `state=configured`,
+`state=unconfigured`, `state=unknown`, or counts when its projects differ
+(`state=1-built,1-unconfigured`). A task the workspace daemon runs shows as
+running (`state=1-building`). Read fresh from the cache on every run.
 
 For a profile with a C/C++ project the overview shows a `Cache` line — the
 resolved compiler-cache launcher (ccache/sccache), or that caching is `off` /

@@ -1608,7 +1608,22 @@ one ran it, so the commands it prints read `./lw.sh …` from `lw.sh` and
 `lw` with no command prints workspace status and the active profile, and
 ends with the everyday commands (`Common: build, run, test, clean, reset,
 health, pull, worktree add, publish`) and a pointer to `lw help`, which lists
-every command, its sub-commands and the help topics. Commands that create
+every command, its sub-commands and the help topics. Each profile row shows
+the profile's build state, the same label as the editor's status page, as one
+whitespace-free field: `state=built`, `state=configured`,
+`state=unconfigured`, `state=unknown`, or counts when the projects differ
+(`state=1-built,1-unconfigured`); a task the workspace daemon is running shows
+as `state=1-building` (or `configuring`, `cleaning`). It is read fresh from
+the cache on every run, so it shows whether a `lw build` or `lw clean` took
+effect:
+
+```
+Profiles (2)
+*1 Release:ninja-msvc set=Release state=built
+ 2 Debug:ninja-msvc   set=Debug   state=unconfigured
+```
+
+Commands that create
 something end with the next step (`lw init` names `lw project add`,
 `lw profile create` names `lw build <profile>`), and empty lists name the
 command that fills them. In a fresh git worktree with no profiles, status

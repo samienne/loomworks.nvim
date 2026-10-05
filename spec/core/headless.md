@@ -841,6 +841,24 @@ When no launcher is resolved, `--cache-stats` reports that there is nothing to
 query rather than erroring; with **no active profile** (or an active profile
 without a C/C++ project) it prints a one-line reason instead of nothing.
 
+Each row of the overview's **profile list** carries the profile's **build
+state** as a `state=<label>` field after its configuration set, so a user or
+script can see that a build or clean took effect. The label is the
+interactive host's aggregate profile status (`spec/ui.md` §1.5
+`{status_label}`) — the same vocabulary and the same aggregation over the
+profile's configuration units, never a separate one: a single word when every
+unit agrees (`built`, `configured`, `unconfigured`, `unknown`, `empty` for a
+profile with no projects), otherwise the per-state counts (`1 built, 1
+unconfigured`, `1 building`, `2/2 cleaning`). On the status line it is written
+as one token, spaces as `-` and `, ` as `,` (`state=1-built,1-unconfigured`),
+so a field split on whitespace yields it whole. The state is the last
+persisted one (the build cache, §2), read fresh by each invocation; while the
+workspace daemon runs a task (§19.6 "Running tasks"), the profiles and units
+that task resolves to show it running (`building`, `configuring`, `cleaning`),
+exactly as the interactive host shows a task it observes in the daemon
+(§19.16). An operation another process runs **in-process** (no daemon) is not
+visible to the overview; its result shows once it persists.
+
 The overview shows the workspace runtime's `Runtime` line and, when the
 workspace daemon is running tasks, one line per task (operation, profile,
 origin, elapsed, percent) — §19.6. Asking the daemon is bounded, never
