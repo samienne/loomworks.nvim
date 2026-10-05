@@ -24,8 +24,9 @@ local M = {}
 --- `build` request and its task stream (§19.15); 4 the observer role and the
 --- `model_change` / `retiring` broadcasts (§19.11, §19.12, §19.16); 5 the
 --- routed `test` request (the batch `lw test`, §19.15); 6 the `prepare_run`
---- request (the preparation of `lw run`, §19.15 "Run").
-M.PROTOCOL = 6
+--- request (the preparation of `lw run`, §19.15 "Run"); 7 `origin` in the
+--- task `start` meta and `tasks` in the `status` reply (§19.11, §19.15, §19.16).
+M.PROTOCOL = 7
 
 local function uv() return vim.uv or vim.loop end
 

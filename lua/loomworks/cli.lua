@@ -6070,7 +6070,7 @@ local function collect_targets(ws, profile)
     local project = unit and unit._project
     local mod = project and project._module and project._module.impl
     if mod and mod.parse_targets then
-      local st = unit:state()
+      local st = unit:local_state()
       if st ~= "configured" and st ~= "built" then unconfigured[#unconfigured + 1] = project.key end
     end
   end
@@ -8061,10 +8061,16 @@ function M.cmd_status(root, opts)
   end
 
   -- Runtime row (spec §19.6): from the runtime lock and handle files only —
-  -- never launches or connects.
+  -- never launches or connects. Under it, a busy daemon's running tasks: asked
+  -- with a bounded `status` request, never launching one; a failed query is
+  -- one line and changes nothing else.
   do
     local row = M._runtime_row(root)
     if row then out(pal.title("Runtime") .. string.rep(" ", 10) .. pal.dim(row)) end
+    local ok, lines = pcall(function() return require("loomworks.daemon.running").lines(root) end)
+    if ok then
+      for _, l in ipairs(lines) do out(pal.dim(l)) end
+    end
   end
 
   -- Trust row (spec §17.10): what loomworks may run on whose word. A refused

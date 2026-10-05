@@ -41,6 +41,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon (`runtime-mode daemon`): the editor now shows an
+  operation started in a terminal (`lw build`, `lw test`, `lw run`) exactly
+  like its own: the profile row's progress, timer and spinner, the units'
+  running state on the status page and in the statusline, the same fidget
+  entry and end message, and normal Tasks rows, each with a dim `lw` (or
+  `editor`) marker naming who started it; Enter offers `Show output` (no
+  cancel). Operations already running when the editor connects are picked up
+  too. `lw status` lists a busy daemon's running tasks under its `Runtime`
+  row (operation, profile, origin, elapsed, percent), asking the daemon for at
+  most about a second and never starting one. The daemon protocol is now
+  version 7: an older daemon is restarted when idle. (#132)
 - Experimental daemon (`runtime-mode daemon`): `lw run` now builds, deploys
   and resolves the launch in the workspace daemon, with the same output and
   exit code, after one dim line `lw: preparing the run through the workspace
@@ -141,7 +152,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   what chose it (`env`, `setup`, `lw setting`, `default`), and is hidden only
   when nothing chose. A daemon of another protocol or file format is named
   there in the warning colour with both versions and the fix (update the
-  plugin, or pin or install a matching `lw`). (#TBD)
+  plugin, or pin or install a matching `lw`). (#131)
 - `lw cleanup` (without `--all`) now lists the runtime logs earlier versions
   kept in the data directory (`daemon/logs`) whatever their age: they are
   always leftovers now that the log lives in the workspace. `--all` adds only
@@ -213,6 +224,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- Experimental daemon: an operation started in a terminal (`lw build`) no
+  longer blocks the editor's own. A build from the editor (or build-then-launch)
+  was skipped as already running and launched a stale binary, and a single
+  build task was refused; they now run and meet the build-directory lock like
+  any other process. Unloading the workspace while such an operation runs no
+  longer leaves a failed last result on the profile. (#132)
 - A save that had to reclaim a crashed writer's lock on the working copy or
   cache, and took longer than the lock wait to do it (a slow, busy machine),
   no longer goes ahead without the lock it just freed. (#127)

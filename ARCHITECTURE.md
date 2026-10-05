@@ -613,6 +613,12 @@ re-cut onto master step by step; this section is expanded as each step lands.
   live / starting / hung / foreign / attached / stale / unreadable) and the
   `Runtime` row text; `M._runtime_row` in `cli.lua` renders it in
   `lw status`.
+- `running.lua` — the running-task lines under that row (§19.6):
+  `should_query` (handle live, busy, this lw's `key_id`), `query` (one
+  `client = "cli"` connection + `status`, bounded by `TIMEOUT_MS` ~1 s),
+  `format` (op, profile, origin, elapsed, percent; an older daemon's reply
+  without `tasks` is one line), `lines(root)` (a failed query is one line);
+  `cli.lua`'s status overview prints them dim, never changing its exit.
 - `command.lua` — `lw daemon <sub>`, kept out of `cli.lua` (at the 200-local
   limit); `cli.lua`'s `M.cmd_daemon` passes its output helpers
   (`M._daemon_host`). `stop` sends the frozen `stop` and waits for R to be
@@ -757,7 +763,14 @@ re-cut onto master step by step; this section is expanded as each step lands.
   does not confirm it gone), abandons its pipes and finishes without
   recording.
 - `daemon/tasks.lua` — tasks owned by a connection; `line` / `output` /
-  `progress` / `done` events. Owner: every event, flow-controlled — past
+  `progress` / `done` events. `Task:start` fills `meta.origin` from the
+  owner's `hello.client` (`origin_of`) and keeps the meta and `started_at`;
+  `Stream:snapshot()` is the `status` reply's `tasks` (protocol 7, filled by
+  `Server:status` from `service.tasks`). A task's cache write-back
+  (`build_run.after_step` → `_save_cache` → `on_written` →
+  `Server:model_changed`) is synchronous and precedes `finish` → `done` on
+  every connection's ordered write queue, so `model_change` reaches a client
+  before the `done` (§19.16 End). Owner: every event, flow-controlled — past
   `OWNER_HIGH` queued bytes on its socket (`get_write_queue_size`) the task
   pauses the step's flow, and each completed owner write resumes it once the
   queue is below `OWNER_LOW`. Observers: `OBSERVER_CAP_BYTES` of output per
@@ -805,13 +818,23 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `version.observer_compatible`; daemons `retiring` / incompatible / untrusted
   go into `skip` (pid:start). Keepalive `ping` timer. `model_change` (seq /
   generation) → `ws._tracker:sync()`. `task` events → RemoteTasks; events
-  `daemon_task_started|progress|stopped`, `daemon_runtime_changed`.
+  `daemon_task_started|progress|stopped`, `daemon_runtime_changed`. Joining
+  late: each connect sends `status` (`_join_late`) and adopts every listed
+  task not yet seen (`remote_task.adopt`: start time from `started_at`,
+  percent from `percent`); tasks are kept in start order.
 - `daemon/remote_task.lua` — RemoteTask: resolves `start` meta once at the
   wire boundary (profile by key among `ws:get_profiles()`, units through that
   profile's ProfileProjects to their ConfigUnit); unresolved keys stay names
   for display; keeps output (≤ `OUTPUT_CAP_BYTES`), `follow` for the output
   buffer; `attach_units` / `detach_units` set `ConfigUnit._remote_task`
-  (`ConfigUnit:state()` reports `building` while it runs).
+  (`ConfigUnit:state()` reports `building`/`configuring` while it runs,
+  `shown_action()` and `Project:running_action()` the action for display,
+  `elapsed()` its time) and `Profile._remote_tasks` (`has_active_operation()`,
+  `operation_elapsed()`; on removal after the end, `_last_operation` = its
+  `outcome()`). `running_action()` / `is_running()` / `Profile:is_running()`
+  stay local-only: they gate cancel and blocking, which a remote task never
+  does. `origin_label()` is the `lw` / `editor` marker of the Tasks rows,
+  the profile row and the fidget entry; remote tasks never enter overseer.
 - `daemon/host_binary.lua` — `LOOMWORKS_LW` > provisioned pinned binary
   (`boot.pin` + `boot.paths.data_dir()/pinned/lw-<ver>-<asset>`) > `lw` on
   `PATH` (`.exe` on Windows).

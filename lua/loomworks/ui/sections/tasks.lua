@@ -124,27 +124,107 @@ local function show_remote_output(task)
     vim.api.nvim_win_set_buf(0, buf)
 end
 
---- Rows of a remote task (one per unit; one for the profile when it has none).
+--- Rows of a remote task (one per unit; one for the profile when it has
+--- none), in a local task row's format with `{pct}%` in place of `[N/M]`
+--- and the dimmed origin marker as the last token (spec/ui.md §1.9).
 --- @param task loomworks.RemoteTask
 --- @param now number
---- @return string[]
+--- @return {[1]: string, [2]: string}[][] chunk lists
 local function remote_rows(task, now)
     local detail = {}
     if task.pct then detail[#detail + 1] = task.pct .. "%" end
-    local s = format_elapsed(now - (task.start_time or now))
+    local s = format_elapsed(task:elapsed(now))
     if s ~= "" then detail[#detail + 1] = s end
     local tail = #detail > 0 and ("  " .. table.concat(detail, "  ")) or ""
+    local origin = task:origin_label()
+    local function row(text)
+        local chunks = { { text .. tail, "DiagnosticInfo" } }
+        if origin then chunks[#chunks + 1] = { "  " .. origin, "Comment" } end
+        return chunks
+    end
     local rows = {}
     for _, u in ipairs(task.units) do
         local unit = u.unit
         local pkey = unit and unit._project and unit._project.key or u.project
         local ckey = unit and unit:config_key() or u.configuration or "?"
-        rows[#rows + 1] = string.format("▸ %s : %s — %s (daemon)%s", pkey, ckey, task.kind, tail)
+        rows[#rows + 1] = row(string.format("▸ %s : %s — %s", pkey, ckey, task.kind))
     end
     if #rows == 0 then
-        rows[1] = string.format("▸ %s — %s (daemon)%s", task.profile_name or task.name, task.kind, tail)
+        rows[1] = row(string.format("▸ %s — %s", task.profile_name or task.name, task.kind))
     end
     return rows
+end
+
+--- A local task's row: Enter offers Cancel task / Open overseer.
+--- @param tree loomworks.Tree
+--- @param lw table
+--- @param task loomworks.ActiveTaskInfo
+--- @param now number
+local function render_local(tree, lw, task, now)
+    local label = string.format("▸ %s : %s — %s",
+        task.project_key or "?",
+        task.config_key or "?",
+        task.action or "?")
+    local detail = task_detail(task, now)
+    if detail ~= "" then label = label .. "  " .. detail end
+    local task_id = task.task_id
+    local task_label = string.format("%s:%s (%s)",
+        task.project_key or "?",
+        task.config_key or "?",
+        task.action or "?")
+    tree:item(label, {
+        hl = "DiagnosticInfo",
+        spinning = true,
+        direct = true,
+        on_enter = function()
+            vim.ui.select(
+                { "Cancel task", "Open overseer" },
+                {
+                    prompt = "Task " .. task_label .. ":",
+                    format_item = function(s) return s end,
+                },
+                function(choice)
+                    if not choice then return end
+                    if choice == "Cancel task" then
+                        lw.cancel_task(task_id)
+                    elseif choice == "Open overseer" then
+                        -- Best-effort: open the overseer task list
+                        -- so the user can inspect output. We don't
+                        -- focus a specific task because there's no
+                        -- stable overseer API for that yet.
+                        local ok, ov = pcall(require, "overseer")
+                        if ok and ov.open then
+                            ov.open({ enter = true })
+                        end
+                    end
+                end
+            )
+        end,
+    })
+end
+
+--- A remote task's rows (core §19.16): Enter offers only `Show output` — it
+--- is not in overseer's list, and it belongs to its client (never cancelled
+--- from here, §19.15).
+--- @param tree loomworks.Tree
+--- @param task loomworks.RemoteTask
+--- @param now number
+local function render_remote(tree, task, now)
+    for _, chunks in ipairs(remote_rows(task, now)) do
+        tree:item(chunks, {
+            hl = "DiagnosticInfo",
+            spinning = true,
+            direct = true,
+            on_enter = function()
+                vim.ui.select({ "Show output" }, {
+                    prompt = "Task " .. task.name .. ":",
+                    format_item = function(s) return s end,
+                }, function(choice)
+                    if choice == "Show output" then show_remote_output(task) end
+                end)
+            end,
+        })
+    end
 end
 
 --- Confirm + execute the nuclear reset.
@@ -215,66 +295,24 @@ return function(tree, ctx)
     })
     tree:blank()
 
-    for _, task in ipairs(tasks) do
-        local label = string.format("▸ %s : %s — %s",
-            task.project_key or "?",
-            task.config_key or "?",
-            task.action or "?")
-        local detail = task_detail(task, now)
-        if detail ~= "" then label = label .. "  " .. detail end
-        local task_id = task.task_id
-        local task_label = string.format("%s:%s (%s)",
-            task.project_key or "?",
-            task.config_key or "?",
-            task.action or "?")
-        tree:item(label, {
-            hl = "DiagnosticInfo",
-            spinning = true,
-            direct = true,
-            on_enter = function()
-                vim.ui.select(
-                    { "Cancel task", "Open overseer" },
-                    {
-                        prompt = "Task " .. task_label .. ":",
-                        format_item = function(s) return s end,
-                    },
-                    function(choice)
-                        if not choice then return end
-                        if choice == "Cancel task" then
-                            lw.cancel_task(task_id)
-                        elseif choice == "Open overseer" then
-                            -- Best-effort: open the overseer task list
-                            -- so the user can inspect output. We don't
-                            -- focus a specific task because there's no
-                            -- stable overseer API for that yet.
-                            local ok, ov = pcall(require, "overseer")
-                            if ok and ov.open then
-                                ov.open({ enter = true })
-                            end
-                        end
-                    end
-                )
-            end,
-        })
+    -- Local and remote tasks (core §19.16) in one list, ordered by start.
+    local entries = {}
+    for i, task in ipairs(tasks) do
+        entries[#entries + 1] = { local_task = task, start = task.start_time or now, seq = i }
     end
+    for i, task in ipairs(remote) do
+        entries[#entries + 1] = { remote = task, start = task.start_time or now, seq = #tasks + i }
+    end
+    table.sort(entries, function(a, b)
+        if a.start ~= b.start then return a.start < b.start end
+        return a.seq < b.seq
+    end)
 
-    -- Tasks observed in the workspace daemon (core §19.16): shown, never
-    -- cancelled from here (they belong to their client, §19.15).
-    for _, task in ipairs(remote) do
-        for _, label in ipairs(remote_rows(task, now)) do
-            tree:item(label, {
-                hl = "DiagnosticInfo",
-                spinning = true,
-                direct = true,
-                on_enter = function()
-                    vim.ui.select({ "Show output" }, {
-                        prompt = "Daemon task " .. task.name .. ":",
-                        format_item = function(s) return s end,
-                    }, function(choice)
-                        if choice == "Show output" then show_remote_output(task) end
-                    end)
-                end,
-            })
+    for _, entry in ipairs(entries) do
+        if entry.local_task then
+            render_local(tree, lw, entry.local_task, now)
+        else
+            render_remote(tree, entry.remote, now)
         end
     end
 

@@ -862,7 +862,10 @@ local function start_one_task(overseer, task_def, on_complete)
     return f
 end
 
---- Check whether a task should be launched, skipped, or deferred based on ConfigUnit state.
+--- Check whether a task should be launched, skipped, or deferred based on the
+--- ConfigUnit's local state: a task observed in the workspace daemon never
+--- holds an editor task back (spec §19.16) — the cross-process
+--- build-dir lock (§16.6) gates it.
 --- Configure tasks: only launch if unconfigured or configure_failed.
 --- Build tasks: skip if already building, defer if currently configuring,
 --- block if in unknown state.
@@ -871,7 +874,7 @@ end
 local function check_task_readiness(task_def)
     local lw_meta = task_def.loomworks
     local unit = lw_meta.unit
-    local state = unit:state()
+    local state = unit:local_state()
 
     -- Unknown state blocks all actions — user must clean/delete first
     if state == "unknown" then return "block" end
@@ -946,7 +949,7 @@ local function launch_tasks(overseer, task_defs, on_all_done, opts)
         local unit = task_def.loomworks.unit
         local unsub
         unsub = unit:on_state_change(function(u)
-            local new_state = u:state()
+            local new_state = u:local_state()
             if new_state == "configuring" then return end
             unsub()
             if new_state == "configure_failed" then
@@ -1823,7 +1826,7 @@ function M.launch_single_task(task_def, unit, on_complete)
         return future_mod.rejected("overseer.nvim not found")
     end
 
-    local state = unit:state()
+    local state = unit:local_state()
     if state == "unknown" or state == "building" then
         if on_complete then vim.schedule(function() on_complete(false) end) end
         return future_mod.rejected("unit in " .. state .. " state")

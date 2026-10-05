@@ -185,6 +185,7 @@ end
 --- Runtime state:
 --- @field _operations loomworks.Operation[] active operations
 --- @field _last_operation { message: string, success: boolean }|nil
+--- @field _remote_tasks loomworks.RemoteTask[]|nil tasks observed in the workspace daemon that run this profile (spec §19.16); runtime only
 --- @field _intent? "local"|"shared"|"local+shared" intended publish state; nil before data_model.refresh's first sync
 local Profile = {}
 Profile.__index = Profile
@@ -1163,10 +1164,50 @@ function Profile:active_operations()
     return self._operations or {}
 end
 
---- Check if this profile has any active operations.
+--- Register a task observed in the workspace daemon that runs this profile
+--- (spec §19.16): it counts as an active operation (spec/ui.md §1.5).
+--- Runtime only; it never blocks an editor operation.
+--- @param task loomworks.RemoteTask
+function Profile:add_remote_task(task)
+    self._remote_tasks = self._remote_tasks or {}
+    for _, t in ipairs(self._remote_tasks) do
+        if t == task then return end
+    end
+    self._remote_tasks[#self._remote_tasks + 1] = task
+end
+
+--- Remove a remote task; once it ended, its end message becomes the
+--- profile's last operation result, as a local operation's does. A task
+--- cleared by workspace teardown (spec §19.16 Teardown) did not end: it
+--- leaves the last result alone.
+--- @param task loomworks.RemoteTask
+function Profile:remove_remote_task(task)
+    local list = self._remote_tasks
+    if not list then return end
+    for i, t in ipairs(list) do
+        if t == task then
+            table.remove(list, i)
+            if task.finished and not task.cleared then
+                self._last_operation = { message = task:outcome(), success = task.exit_code == 0 }
+            end
+            break
+        end
+    end
+    if #list == 0 then self._remote_tasks = nil end
+end
+
+--- The running tasks observed in the workspace daemon on this profile.
+--- @return loomworks.RemoteTask[]
+function Profile:remote_tasks()
+    return self._remote_tasks or {}
+end
+
+--- Check if this profile has any active operations — local, or a task
+--- observed in the workspace daemon (spec §19.16).
 --- @return boolean
 function Profile:has_active_operation()
-    return self._operations ~= nil and #self._operations > 0
+    return (self._operations ~= nil and #self._operations > 0)
+        or (self._remote_tasks ~= nil and #self._remote_tasks > 0)
 end
 
 --- Get the last completed operation result.
@@ -1178,8 +1219,16 @@ end
 --- Get elapsed seconds for the first active operation.
 --- @return number|nil seconds
 function Profile:operation_elapsed()
-    if not self._operations or #self._operations == 0 then return nil end
-    return self._operations[1]:elapsed()
+    if self._operations and #self._operations > 0 then
+        return self._operations[1]:elapsed()
+    end
+    local remote = self._remote_tasks and self._remote_tasks[1]
+    if remote then
+        local ws = self._workspace
+        local clock = ws and ws._core and ws._core._deps and ws._core._deps.clock
+        return remote:elapsed(clock and clock() or ((vim.uv or vim.loop).hrtime() / 1e9))
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -1444,7 +1493,7 @@ end
 function Profile:is_configured()
     for _, pp in ipairs(self:projects()) do
         if pp._config_unit then
-            local state = pp._config_unit:state()
+            local state = pp._config_unit:local_state()
             if state and state ~= "unconfigured" then
                 return true
             end
@@ -1453,7 +1502,9 @@ function Profile:is_configured()
     return false
 end
 
---- Check if this profile has any running tasks.
+--- Check if this profile has any running tasks of this editor (the ones it
+--- can cancel). A task observed in the workspace daemon is not one
+--- (`has_active_operation` covers it, spec §19.16).
 --- @return boolean
 function Profile:is_running()
     if not self.mappings then return false end

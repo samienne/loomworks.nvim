@@ -493,9 +493,14 @@ return function(tree, ctx)
             and ws:profile_has_artifact_conflict(profile) or false
 
         local tail = " (" .. status_label .. ")"
+        -- A task observed in the workspace daemon counts as the profile's
+        -- active Operation (spec/ui.md §1.5), plus its origin marker.
+        local remote = profile:remote_tasks()[1]
+        local origin = remote and #profile:active_operations() == 0 and remote:origin_label() or nil
         if has_operation then
             local pps = profile:projects()
             local pct = helpers.aggregate_progress(pps)
+            if not pct and remote then pct = remote.pct end
             if pct then
                 tail = tail .. " " .. pct .. "%"
             end
@@ -527,12 +532,11 @@ return function(tree, ctx)
         -- status suffix; without one it stays a plain string like every other
         -- profile row.
         local display
-        if has_conflict then
-            display = {
-                { head, hl },
-                { " [conflict]", "LoomworksConflict" },
-                { tail, hl },
-            }
+        if has_conflict or origin then
+            display = { { head, hl } }
+            if has_conflict then display[#display + 1] = { " [conflict]", "LoomworksConflict" } end
+            display[#display + 1] = { tail, hl }
+            if origin then display[#display + 1] = { "  " .. origin, "Comment" } end
         else
             display = head .. tail
         end

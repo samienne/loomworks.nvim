@@ -1537,7 +1537,7 @@ function Workspace:_invalidate_overwritten_by(builder)
         for _, p in ipairs(arts) do bset[normalize(p)] = true end
         for _, other in pairs(self._config_units) do
             if other ~= builder and not other._removed
-                    and other:state() == "built" then
+                    and other:local_state() == "built" then
                 local oarts = other:artifacts()
                 if oarts then
                     for _, p in ipairs(oarts) do
@@ -1611,7 +1611,7 @@ function Workspace:artifact_conflicts_for(unit)
             for _, other in ipairs(units) do
                 if other ~= unit and not seen[other]
                         and not other._removed
-                        and other:state() == "built"
+                        and other:local_state() == "built"
                         and not other:is_overwritten() then
                     seen[other] = true
                     out[#out + 1] = other

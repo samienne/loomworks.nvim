@@ -296,17 +296,30 @@ function ConfigUnit:configured_here()
     return s == "configured" or s == "built" or s == "failed_build"
 end
 
---- Get the derived state for this unit.
---- Priority: deleting > running > first-class field.
+--- Get the derived state for this unit, as shown.
+--- Priority: deleting > running (this editor's task, else a task observed in
+--- the workspace daemon) > first-class field. For display: a remote task never
+--- blocks an editor operation (spec §19.16), so readiness and gating decisions
+--- use `local_state()`.
 --- @return loomworks.ConfigUnitState
 function ConfigUnit:state()
+    if not self._deleting and not self._action
+            and self._remote_task and not self._remote_task.finished then
+        -- A build another client runs in the workspace daemon (spec §19.16).
+        return self._remote_task.action == "configure" and "configuring" or "building"
+    end
+    return self:local_state()
+end
+
+--- The unit's state as this process knows it, ignoring a task observed in
+--- the workspace daemon (spec §19.16). What every decision (task readiness,
+--- the build gate, operation progress) reads: the cross-process build-dir
+--- locks (§16.6), not a remote task, serialize the editor behind `lw`.
+--- @return loomworks.ConfigUnitState
+function ConfigUnit:local_state()
     if self._deleting then return "deleting" end
     if self._action then
         return self._action == "configure" and "configuring" or "building"
-    end
-    -- A build another client runs in the workspace daemon (spec §19.16).
-    if self._remote_task and not self._remote_task.finished then
-        return self._remote_task.action == "configure" and "configuring" or "building"
     end
     local state = self.state_value
     if not state then return "unconfigured" end
@@ -327,6 +340,17 @@ end
 --- @return string|nil "configure" or "build"
 function ConfigUnit:running_action()
     return self._action
+end
+
+--- The action this unit is shown running: its own task's, else that of a task
+--- observed in the workspace daemon (spec §19.16). Display only — never a
+--- reason to block or cancel anything (`running_action` is).
+--- @return string|nil "configure" or "build"
+function ConfigUnit:shown_action()
+    if self._action then return self._action end
+    local t = self._remote_task
+    if t and not t.finished then return t.action end
+    return nil
 end
 
 --- Mark this unit as run by a task observed in the workspace daemon (spec
@@ -395,7 +419,7 @@ end
 --- build directory to lose.
 --- @return boolean
 function ConfigUnit:missing_build_dir_needs_reconfigure()
-    local state = self:state()
+    local state = self:local_state()
     if state ~= "configured" and state ~= "built"
             and state ~= "build_failed" and state ~= "configure_failed" then
         return false
@@ -715,7 +739,7 @@ ConfigUnit.ORPHAN_STATE_REASON = "configure record missing (existing build direc
 --- @param build_dir? string the unit's build directory (default: its own)
 --- @return boolean
 function ConfigUnit:has_orphan_configure_state(build_dir)
-    if self:state() ~= "unconfigured" then return false end
+    if self:local_state() ~= "unconfigured" then return false end
     local bd = build_dir or self:build_dir()
     if type(bd) ~= "string" or bd == "" then return false end
     local mod = self:_module_impl()
@@ -740,7 +764,7 @@ end
 --- @param orphan_state? boolean the build directory already holds configure state
 --- @return string|nil
 function ConfigUnit:configure_reason(forced, profile, orphan_state)
-    local state = self:state()
+    local state = self:local_state()
     if state == "unconfigured" then
         return orphan_state and ConfigUnit.ORPHAN_STATE_REASON or "first configure"
     end
@@ -942,7 +966,12 @@ end
 --- Get elapsed seconds since the running task started.
 --- @return number|nil seconds
 function ConfigUnit:elapsed()
-    if not self._start_time then return nil end
+    if not self._start_time then
+        -- A task observed in the workspace daemon (spec §19.16).
+        local t = self:remote_task()
+        if t then return t:elapsed(self._workspace._core._deps.clock()) end
+        return nil
+    end
     return self._workspace._core._deps.clock() - self._start_time
 end
 

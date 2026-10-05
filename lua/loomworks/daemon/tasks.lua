@@ -2,7 +2,9 @@
 ---
 --- A running operation streams `task` events, separate from model changes:
 ---
----   { kind = "task", task_id, phase = "start", meta = { name, kind, steps } }
+---   { kind = "task", task_id, phase = "start", meta = { name, kind, profile, units, origin } }
+---       `origin` is the owner's `hello.client` (`cli` / `editor`), set here,
+---       never taken from the request (protocol 7)
 ---   { kind = "task", task_id, phase = "line", stream = "out"|"note"|"err", text }
 ---       one of loomworks's own lines (status lines, notes) — the client prints
 ---       it exactly as the in-process host prints it (stdout line, stderr
@@ -60,6 +62,9 @@ M._queued = queued
 --- @field paused boolean the step's output is paused for the owner to catch up
 --- @field flow table|nil the running step's output control (`pause`, `resume`)
 --- @field obs table<table, { bytes: integer, truncated: boolean }> per observer
+--- @field meta table|nil the `start` meta (with `origin`), once started
+--- @field started_at integer|nil wall-clock seconds (os.time) it started
+--- @field last_pct integer last progress percent sent (-1 before the first tick)
 local Task = {}
 Task.__index = Task
 
@@ -103,6 +108,33 @@ end
 --- Any task running?
 --- @return boolean
 function Stream:busy() return self.count > 0 end
+
+--- The running (started, not finished) tasks as the `status` reply's `tasks`
+--- (spec §19.11): `{ task_id, name, kind, profile, units, origin, started_at,
+--- percent? }` each, in start order.
+--- @return table[]
+function Stream:snapshot()
+    local out = {}
+    for id, t in pairs(self.tasks) do
+        if t.meta and not t.finished then
+            local m = t.meta
+            out[#out + 1] = { task_id = id, name = m.name, kind = m.kind, profile = m.profile,
+                units = m.units, origin = m.origin, started_at = t.started_at,
+                percent = (t.last_pct or -1) >= 0 and t.last_pct or nil }
+        end
+    end
+    table.sort(out, function(a, b) return a.task_id < b.task_id end)
+    return out
+end
+
+--- The origin of a task owned by `conn`: its `hello.client` (§19.15).
+--- @param conn table|nil
+--- @return string|nil
+function M.origin_of(conn)
+    local c = conn and conn.peer and conn.peer.client
+    if c == "cli" or c == "editor" then return c end
+    return nil
+end
 
 --- Send `msg` to the owner, flow-controlled (see the header).
 function Task:_to_owner(msg)
@@ -166,9 +198,15 @@ function Task:_emit(msg, observe)
     end
 end
 
---- Announce the task.
+--- Announce the task. Its `origin` is filled from the owner (§19.15).
 --- @param meta table
-function Task:start(meta) self:_emit({ phase = "start", meta = meta }) end
+function Task:start(meta)
+    meta = meta or {}
+    meta.origin = M.origin_of(self.owner)
+    self.meta = meta
+    self.started_at = os.time()
+    self:_emit({ phase = "start", meta = meta })
+end
 
 --- One of loomworks's own lines.
 --- @param stream "out"|"note"|"err"
