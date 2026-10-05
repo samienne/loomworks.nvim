@@ -409,7 +409,11 @@ function Service:on_stopping(reason)
     -- Whatever still holds a lock releases it here.
     local build_lock = require("loomworks.build_lock")
     for run in pairs(self.runs) do
-        for _, h in ipairs(run.held or {}) do build_lock.release(h) end
+        if run.release_all then
+            run.release_all() -- build-dir locks and a clean's operation lock
+        else
+            for _, h in ipairs(run.held or {}) do build_lock.release(h) end
+        end
         if run.task then
             run.task:done(run.cancel_code or 1, (run.op or "build") .. " stopped: the workspace daemon stopped")
         end

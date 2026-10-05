@@ -188,6 +188,7 @@ end
 --- @field finished boolean|nil
 --- @field held table[] the build-directory lock handles held
 --- @field op_tok table|nil a clean's workspace operation lock (it wipes)
+--- @field release_all fun()|nil releases the build-directory locks and the operation lock (also on daemon stop)
 --- @field child table|nil the running step { obj, pid, start }
 --- @field wiping boolean|nil a clean's wipe is running (cancel stops it between entries)
 --- @field ctx table|nil the service request that started it
@@ -224,6 +225,7 @@ function M.run(svc, ctx)
             if ws._op_unlock then ws:_op_unlock(tok) else require("loomworks.op_lock").release(tok) end
         end
     end
+    run.release_all = release_all
     local function finish(code, err, fields)
         if run.finished then return end
         run.finished = true

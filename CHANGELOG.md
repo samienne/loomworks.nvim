@@ -49,7 +49,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   entries). The editor shows a clean started in a terminal as its own:
   `cleaning`, then `cleaned` or `clean failed`. `lw reset`, `lw nuke` and `lw
   device clean` still run in-process. The daemon protocol is now version 8:
-  an older daemon is restarted when idle. (#TBD)
+  an older daemon is restarted when idle. (#137)
 - Experimental daemon (`runtime-mode daemon`): the editor now shows an
   operation started in a terminal (`lw build`, `lw test`, `lw run`) exactly
   like its own: the profile row's progress, timer and spinner, the units'
@@ -255,7 +255,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   build state now really writes "unknown" to the cache before the directory
   is removed; before, the cache file kept saying "built" until the removal
   finished, so a crash in between left a stale "built" over a missing
-  directory. (#TBD)
+  directory. (#137)
 - Experimental daemon: an operation started in a terminal (`lw build`) no
   longer blocks the editor's own. A build from the editor (or build-then-launch)
   was skipped as already running and launched a stale binary, and a single
