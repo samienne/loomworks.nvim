@@ -77,14 +77,48 @@ describe("editor runtime-mode selection (§19.1)", function()
     end)
 
     it("reads the file on every call and never writes it", function()
+        local uv = vim.uv or vim.loop
         local path = settings_file('{"runtime-mode":"daemon"}')
-        local before = vim.fn.readfile(path)
-        assert.equals("daemon", runtime.editor_select({ getenv = env_of({}), settings_file = path }).mode)
+        local st0 = assert(uv.fs_stat(path))
+        -- The read path (selection, twice) leaves the file as it was.
+        for _ = 1, 2 do
+            local s = runtime.editor_select({ getenv = env_of({}), settings_file = path })
+            assert.same({ "daemon", "lw setting" }, { s.mode, s.source })
+        end
+        local st1 = assert(uv.fs_stat(path))
+        assert.same({ '{"runtime-mode":"daemon"}' }, vim.fn.readfile(path))
+        assert.same({ st0.mtime.sec, st0.mtime.nsec, st0.size }, { st1.mtime.sec, st1.mtime.nsec, st1.size })
+        -- Absent: selection does not create it.
+        local missing = settings_file(nil)
+        assert.equals("default", runtime.editor_select({ getenv = env_of({}), settings_file = missing }).source)
+        assert.is_nil(uv.fs_stat(missing))
+        -- Read on every call: a change by lw is seen by the next selection.
         local f = assert(io.open(path, "w")); f:write('{"runtime-mode":"in-process"}'); f:close()
         local s = runtime.editor_select({ getenv = env_of({}), settings_file = path })
         assert.same({ "in-process", "lw setting" }, { s.mode, s.source })
-        assert.same({ '{"runtime-mode":"in-process"}' }, vim.fn.readfile(path))
-        assert.is_table(before)
+    end)
+
+    it("a directory at the settings path is unreadable (a note), not absent", function()
+        local path = settings_file(nil)
+        vim.fn.mkdir(path, "p")
+        local v, err = runtime.read_setting(path)
+        assert.is_nil(v)
+        assert.truthy(err and err:find("cannot read lw's settings file", 1, true), err)
+        local s = runtime.editor_select({ getenv = env_of({}), settings_file = path })
+        assert.same({ "in-process", "default" }, { s.mode, s.source })
+        assert.truthy(s.warning and s.warning:find("cannot read lw's settings file", 1, true), s.warning)
+    end)
+
+    it("bad JSON or a non-object is a note; empty or a missing key is absent", function()
+        local v, err = runtime.read_setting(settings_file("{ not json"))
+        assert.is_nil(v)
+        assert.truthy(err and err:find("is not a JSON object", 1, true), err)
+        v, err = runtime.read_setting(settings_file('"daemon"'))
+        assert.is_nil(v)
+        assert.truthy(err and err:find("is not a JSON object", 1, true), err)
+        assert.same({}, { runtime.read_setting(settings_file("  \n")) })
+        assert.same({}, { runtime.read_setting(settings_file("{}")) })
+        assert.same({}, { runtime.read_setting(settings_file(nil)) })
     end)
 
     it("the default settings file is lw's own (boot.paths.config_file)", function()

@@ -117,21 +117,26 @@ M.NO_DAEMON = "no-daemon"
 --- Read lw's own `runtime-mode` setting from the per-user settings file
 --- `lw settings` writes (spec §16.40, `<config>/config.json`). Read only,
 --- never written. A missing file, an empty file or a missing key is absent
---- (nil, nil); a file that exists but cannot be read or is not a JSON object
---- returns nil and the reason.
+--- (nil, nil); a path that exists but is not a readable regular file (e.g. a
+--- directory), or a file that is not a JSON object, returns nil and the reason.
 --- @param path? string the settings file (default `boot.paths.config_file()`)
 --- @return any value, string|nil err
 function M.read_setting(path)
     path = path or require("boot.paths").config_file()
+    local uv = vim.uv or vim.loop
+    local unreadable = "cannot read lw's settings file " .. path
+    local st = uv.fs_stat(path)
+    if not st then return nil, nil end
+    -- A directory (or any other non-regular file) at the path is unreadable,
+    -- never absent: on POSIX `io.open` succeeds on a directory and the read
+    -- returns nil.
+    if st.type ~= "file" then return nil, unreadable end
     local f = io.open(path, "r")
-    if not f then
-        local uv = vim.uv or vim.loop
-        if uv.fs_stat(path) then return nil, "cannot read lw's settings file " .. path end
-        return nil, nil
-    end
+    if not f then return nil, unreadable end
     local content = f:read("*a")
     f:close()
-    if not content or content:match("^%s*$") then return nil, nil end
+    if content == nil then return nil, unreadable end
+    if content:match("^%s*$") then return nil, nil end
     local ok, data = pcall(vim.json.decode, content)
     if not ok or type(data) ~= "table" then
         return nil, "lw's settings file " .. path .. " is not a JSON object"

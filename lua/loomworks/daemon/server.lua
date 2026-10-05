@@ -127,7 +127,20 @@ function Server:_handle_record()
         lock_nonce = self.R and self.R.record and self.R.record.lock_nonce or nil,
         -- Which data directory's key this daemon authenticates with (§19.6).
         key_id = self.key and auth.key_id(self.key) or nil,
+        -- The executable this daemon runs (display only: the editor's
+        -- version-mismatch note names it, §19.16).
+        exe = self:_exe(),
     }
+end
+
+--- This daemon's executable path (forward slashes), nil when unknown.
+function Server:_exe()
+    if self._exe_path == nil then
+        local uv = vim.uv or vim.loop
+        local ok, exe = pcall(uv.exepath)
+        self._exe_path = (ok and type(exe) == "string" and exe ~= "") and exe:gsub("\\", "/") or false
+    end
+    return self._exe_path or nil
 end
 
 --- The handle rewrite (§19.6): how long one rewrite may retry a rename that
