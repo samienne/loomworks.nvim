@@ -319,10 +319,12 @@ shares a build directory with other configurations:
 
 1. A reverse index (`_build_dir_refs`) maps each build directory to the set
    of cache keys that reference it. Rebuilt during every remerge. Build
-   directories are compared by resolved real path (the normalized path when
-   the directory does not exist), so one folder spelled differently -- a
-   junction or symlink, a Windows 8.3 short name -- is one directory; this
-   applies equally to grouping a clean's wipes into one batch (§4.7).
+   directories are compared by resolved real path (for a directory that does
+   not exist yet, the real path of its nearest existing ancestor plus the rest
+   of the path), so one folder spelled differently -- a junction or symlink, a
+   Windows 8.3 short name, an aliased workspace root -- is one directory; this
+   applies equally to grouping a clean's wipes into one batch (§4.7) and to
+   the build-directory locks (§5.3, §16.6).
 2. Before adding a directory to the deletion queue, subtract the cache keys
    being deleted in the current batch from the ref set.
 3. If remaining refs > 0 → skip the directory (don't rm -rf). The cache
@@ -638,6 +640,9 @@ the build. The build dir operation queue prevents this:
 **Queue ordering**: FIFO. Shared operations are batched (multiple shared ops
 run concurrently when dequeued), but shared batching stops at an exclusive
 boundary.
+
+**Identity**: A build directory's lock is keyed by its §4.6 identity, so
+operations naming one folder by two spellings share one lock.
 
 **Scope**: The build dir lock is a separate layer from task readiness
 (section 5.1). Readiness checks ConfigUnit state; the build dir lock gates

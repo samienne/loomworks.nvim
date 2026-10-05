@@ -144,15 +144,17 @@ function M.resolve_target(ws, name, opts)
 end
 
 --- Build directories in the canonical lock order of spec §19.3: by
---- normalized path (§2.3 normalization: forward slashes, no trailing slash,
---- lowercased on Windows), duplicates dropped.
+--- the normalized identity (§4.6 real path, then §2.3 normalization: forward
+--- slashes, no trailing slash, lowercased on Windows), duplicates dropped.
 --- @param dirs string[]
 --- @return string[]
 function M.lock_order(dirs)
     local win = package.config:sub(1, 1) == "\\"
     local seen, keyed = {}, {}
     for _, d in ipairs(dirs or {}) do
-        local k = d:gsub("\\", "/"):gsub("/+$", "")
+        -- By identity (spec §4.6): one folder spelled two ways is one lock
+        -- (its lockfile is one file, loomworks.build_lock).
+        local k = require("loomworks.dir_identity").resolve(d):gsub("/+$", "")
         if win then k = k:lower() end
         if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
     end

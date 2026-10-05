@@ -28,7 +28,15 @@ local M = {}
 M.HEARTBEAT_MS = 5000
 M.STALE_SECONDS = 20
 
-local function lock_path(build_dir) return build_dir .. ".loomworks-lock" end
+--- The lockfile of a build directory: `<dir>.loomworks-lock` beside the
+--- directory's IDENTITY (loomworks.dir_identity, spec §4.6) — its real path,
+--- or for a directory not created yet the real path of its nearest existing
+--- ancestor plus the rest — so every spelling of one folder (junction or
+--- symlink, 8.3 short name, aliased workspace root) finds the same lockfile,
+--- before and after configure creates the directory.
+local function lock_path(build_dir)
+    return require("loomworks.dir_identity").resolve(build_dir) .. ".loomworks-lock"
+end
 M.lock_path = lock_path
 
 --- Locks this process holds, by normalized lockfile path (for the phase

@@ -206,7 +206,9 @@ rules of §2.3 and §5.3. This contract does not itself serialize cross-process
 concurrent access to a shared build directory; a host MAY add advisory
 exclusion. loomworks does: configure/build/clean/reset (§16.30) hold a
 **per-build-directory advisory lockfile** — an `O_EXCL` create (atomic across
-processes) with an
+processes) of `<dir>.loomworks-lock` beside the directory's §4.6 identity (its
+resolved real path, so every spelling of one folder finds the same lockfile,
+before and after configure creates the directory) with an
 mtime heartbeat so a crashed holder's lock goes stale and is reclaimed. The
 editor and the CLI share this lock, so neither operates on a directory the other
 holds — in particular a reset (§16.30) cannot remove a directory the other is

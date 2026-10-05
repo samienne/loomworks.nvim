@@ -1175,7 +1175,7 @@ end
 M._with_build_dir_locks = with_build_dir_locks -- exported for tests
 
 --- Build directories in the canonical lock order of spec §19.3: by
---- normalized path (§2.3 normalization), duplicates dropped.
+--- normalized identity (§4.6, §2.3), duplicates dropped.
 --- @param dirs string[]
 --- @return string[]
 function M._lock_order(dirs)

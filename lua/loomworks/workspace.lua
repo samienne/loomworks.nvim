@@ -1363,11 +1363,13 @@ function Workspace:_rebuild_profile_projects_for(profile)
 end
 
 
---- The identity of a build directory for shared-directory protection
---- (spec §4.6): its resolved real path when it exists — so one physical
---- folder spelled differently (a junction or symlink, a Windows 8.3 short
---- name, `..` segments) is ONE directory — else its normalized path (a
---- missing directory cannot be wiped, so nothing to reconcile). Always
+--- The identity of a build directory for shared-directory protection and
+--- the build-directory locks (spec §4.6, §16.6): its resolved real path when
+--- it exists — so one physical folder spelled differently (a junction or
+--- symlink, a Windows 8.3 short name, an aliased root, `..` segments) is ONE
+--- directory — else the real path of its nearest existing ancestor plus the
+--- rest of the path, so a lock taken before configure creates the directory
+--- keeps its identity afterwards (loomworks.dir_identity). Always
 --- `normalize`d. Only a comparison key: display paths and the deletion
 --- target keep their own spelling.
 --- @param path string|nil
@@ -1375,10 +1377,7 @@ end
 function Workspace:_build_dir_identity(path)
     if not path or path == "" then return path end
     local deps = self._core._deps
-    local realpath = deps.realpath or function(p) return (vim.uv or vim.loop).fs_realpath(p) end
-    local resolved = realpath(path)
-    if resolved then return deps.normalize((resolved:gsub("\\", "/"))) end
-    return deps.normalize(path)
+    return deps.normalize(require("loomworks.dir_identity").resolve(path, deps.realpath))
 end
 
 --- Rebuild the build dir reverse index from ConfigUnit objects, keyed by
@@ -1915,22 +1914,43 @@ end
 --- @field exclusive boolean true if an exclusive op is running
 --- @field shared_count number number of concurrent shared ops
 --- @field queue { fn: function, lock_type: "exclusive"|"shared" }[]
+--- @field dir string the normalized spelling the entry was created with (display)
+--- @field spellings table<string, true> normalized spellings it was taken by
+
+--- Find the lock entry of a build directory (any spelling). Entries are
+--- keyed by `_build_dir_identity` (spec §4.6), so one folder spelled two
+--- ways is one lock; a spelling the entry was taken by also finds it, so a
+--- release still matches if the identity moved meanwhile (a link removed).
+--- @param dir string build directory path (any spelling)
+--- @return loomworks.BuildDirLock|nil lock, string key
+function Workspace:_find_lock(dir)
+    local locks = self._build_dir_locks
+    local key = self:_build_dir_identity(dir)
+    if locks[key] then return locks[key], key end
+    local n = self._core._deps.normalize(dir)
+    for k, lock in pairs(locks) do
+        if lock.spellings and lock.spellings[n] then return lock, k end
+    end
+    return nil, key
+end
 
 --- Get or create a lock entry for a build directory.
---- @param dir string normalized build directory path
---- @return loomworks.BuildDirLock
+--- @param dir string build directory path (any spelling)
+--- @return loomworks.BuildDirLock lock, string key
 function Workspace:_get_lock(dir)
-    local lock = self._build_dir_locks[dir]
+    local lock, key = self:_find_lock(dir)
+    local n = self._core._deps.normalize(dir)
     if not lock then
-        lock = { exclusive = false, shared_count = 0, queue = {} }
-        self._build_dir_locks[dir] = lock
+        lock = { exclusive = false, shared_count = 0, queue = {}, dir = n, spellings = {} }
+        self._build_dir_locks[key] = lock
     end
-    return lock
+    lock.spellings[n] = true
+    return lock, key
 end
 
 --- Try to acquire a build dir lock. If the lock can be acquired immediately,
 --- calls fn() and returns true. Otherwise queues fn for later and returns false.
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling; locks go by identity)
 --- @param lock_type "exclusive"|"shared" exclusive for configure/delete/clean, shared for build
 --- @param fn function called when lock is acquired (immediately or dequeued)
 --- @return boolean acquired true if lock was acquired immediately
@@ -1957,10 +1977,10 @@ function Workspace:acquire_build_dir_lock(dir, lock_type, fn)
 end
 
 --- Release a build dir lock and dequeue the next compatible operation(s).
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @param lock_type "exclusive"|"shared"
 function Workspace:release_build_dir_lock(dir, lock_type)
-    local lock = self._build_dir_locks[dir]
+    local lock, key = self:_find_lock(dir)
     if not lock then return end
 
     if lock_type == "shared" then
@@ -1970,7 +1990,7 @@ function Workspace:release_build_dir_lock(dir, lock_type)
     end
 
     -- Dequeue: run as many compatible queued items as possible
-    self:_dequeue_build_dir_lock(dir)
+    self:_dequeue_build_dir_lock(key)
 end
 
 --- Acquire the cross-process file lock for a build dir, refcounted
@@ -1979,14 +1999,16 @@ end
 --- complements the in-process queue lock above — together they serialize a
 --- build dir both within this process and across processes (editor + CLI).
 --- Fail-fast: returns (false, reason) when another live process holds it.
---- @param dir string normalized build dir
+--- @param dir string build dir (any spelling; held by identity, spec §4.6)
 --- @param action string "configure"|"build"|"clean"
 --- @return boolean ok, string|nil reason
 function Workspace:_acquire_file_lock(dir, action)
     self._build_dir_file_locks = self._build_dir_file_locks or {}
-    local entry = self._build_dir_file_locks[dir]
+    local key = self:_file_lock_key(dir)
+    local entry = self._build_dir_file_locks[key]
     if entry then
         entry.refs = entry.refs + 1
+        if entry.spellings then entry.spellings[self._core._deps.normalize(dir)] = true end
         return true
     end
     local build_lock = require("loomworks.op_lock").locks(self._core._deps, self.root).build
@@ -1994,7 +2016,8 @@ function Workspace:_acquire_file_lock(dir, action)
         { what = "build directory " .. self:_display_build_dir(dir), command = "lw build",
           unlock = self:_display_build_dir(dir) })
     if not handle then return false, err end
-    self._build_dir_file_locks[dir] = { handle = handle, refs = 1, build = build_lock }
+    self._build_dir_file_locks[key] = { handle = handle, refs = 1, build = build_lock,
+        spellings = { [self._core._deps.normalize(dir)] = true } }
     if handle.reclaimed then
         local line = self:_recover_interrupted_build_dir(dir, handle.reclaimed)
         if line then self._core._deps.notify("loomworks: " .. line, vim.log.levels.WARN) end
@@ -2101,21 +2124,40 @@ function Workspace:_recover_interrupted_build_dir(dir, reclaimed)
     return line
 end
 
+--- The key of a build dir in `_build_dir_file_locks`: its identity
+--- (`_build_dir_identity`, spec §4.6), or the key of an entry taken by this
+--- very spelling (so a release matches even if the identity moved meanwhile).
+--- @param dir string build dir (any spelling) or a key
+--- @return string
+function Workspace:_file_lock_key(dir)
+    local locks = self._build_dir_file_locks or {}
+    if locks[dir] then return dir end
+    local key = self:_build_dir_identity(dir)
+    if locks[key] then return key end
+    local n = self._core._deps.normalize(dir)
+    for k, e in pairs(locks) do
+        if e.spellings and e.spellings[n] then return k end
+    end
+    return key
+end
+
 --- Release one reference to the cross-process file lock; frees it at zero refs.
---- @param dir string normalized build dir
+--- @param dir string build dir (any spelling) or the key `_deletion_build_locks` returned
 function Workspace:_release_file_lock(dir)
     local locks = self._build_dir_file_locks
-    local entry = locks and locks[dir]
+    if not locks then return end
+    local key = self:_file_lock_key(dir)
+    local entry = locks[key]
     if not entry then return end
     entry.refs = entry.refs - 1
     if entry.refs <= 0 then
         (entry.build or require("loomworks.build_lock")).release(entry.handle)
-        locks[dir] = nil
+        locks[key] = nil
     end
 end
 
 --- Dequeue and run compatible operations from the build dir lock queue.
---- @param dir string
+--- @param dir string the lock's key (`_find_lock`)
 function Workspace:_dequeue_build_dir_lock(dir)
     local lock = self._build_dir_locks[dir]
     if not lock or #lock.queue == 0 then
@@ -2148,18 +2190,18 @@ function Workspace:_dequeue_build_dir_lock(dir)
 end
 
 --- Check whether a build dir has any queued operations waiting.
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @return boolean
 function Workspace:has_queued_operations(dir)
-    local lock = self._build_dir_locks[dir]
+    local lock = self:_find_lock(dir)
     return lock ~= nil and #lock.queue > 0
 end
 
 --- Check whether a build dir currently has an active lock (exclusive or shared).
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @return boolean locked, string|nil lock_type
 function Workspace:is_build_dir_locked(dir)
-    local lock = self._build_dir_locks[dir]
+    local lock = self:_find_lock(dir)
     if not lock then return false, nil end
     if lock.exclusive then return true, "exclusive" end
     if lock.shared_count > 0 then return true, "shared" end
@@ -3064,7 +3106,7 @@ function Workspace:get_build_dir_locks_info()
     for dir, lock in pairs(self._build_dir_locks or {}) do
         if lock.exclusive or lock.shared_count > 0 or #lock.queue > 0 then
             out[#out + 1] = {
-                dir = dir,
+                dir = lock.dir or dir,
                 exclusive = lock.exclusive,
                 shared_count = lock.shared_count,
                 queue_depth = #lock.queue,
@@ -3085,16 +3127,17 @@ end
 --- went sideways and a lock got stuck without a live holder. The UI
 --- surfaces it as the "force release" action in the Tasks section.
 ---
---- @param dir string normalized build directory path
+--- @param dir string build directory path (any spelling)
 --- @return boolean released true if there was a lock to release
 function Workspace:force_release_build_dir_lock(dir)
-    local lock = self._build_dir_locks and self._build_dir_locks[dir]
+    if not self._build_dir_locks then return false end
+    local lock, key = self:_find_lock(dir)
     if not lock then return false end
     lock.exclusive = false
     lock.shared_count = 0
     -- Drain whatever the dequeuer is willing to start. This also
     -- garbage-collects the entry if nothing's left waiting.
-    self:_dequeue_build_dir_lock(dir)
+    self:_dequeue_build_dir_lock(key)
     return true
 end
 
@@ -4467,9 +4510,10 @@ end
 --- its own reference, and two deletions of one directory each hold one, so
 --- the lockfile stays until the last of them ends. A lock this process holds
 --- outside the table — the CLI's `lw reset`, which keeps it until the
---- deletion has completed — is left to its holder. Returns the normalized
---- directories referenced (release with `_release_file_lock`), or nil + the
---- refusal message (nothing held).
+--- deletion has completed — is left to its holder. Directories go by identity
+--- (`_build_dir_identity`, spec §4.6): one folder spelled two ways is one
+--- lock. Returns the keys referenced (release with `_release_file_lock`), or
+--- nil + the refusal message (nothing held).
 --- @param dirs string[] validated build directories
 --- @param operation string
 --- @return string[]|nil refs, string|nil message
@@ -4479,7 +4523,7 @@ function Workspace:_deletion_build_locks(dirs, operation)
     local norm = self._core._deps.normalize
     local keyed, seen = {}, {}
     for _, d in ipairs(dirs) do
-        local k = norm(d)
+        local k = self:_file_lock_key(d)
         if not seen[k] then seen[k] = true; keyed[#keyed + 1] = { k = k, d = d } end
     end
     table.sort(keyed, function(a, b) return a.k < b.k end)
@@ -4505,7 +4549,8 @@ function Workspace:_deletion_build_locks(dirs, operation)
                 undo()
                 return nil, msg
             end
-            self._build_dir_file_locks[e.k] = { handle = h, refs = 1, build = build_lock }
+            self._build_dir_file_locks[e.k] = { handle = h, refs = 1, build = build_lock,
+                spellings = { [norm(e.d)] = true } }
             refs[#refs + 1] = e.k
             if h.reclaimed then
                 local line = self:_recover_interrupted_build_dir(e.d, h.reclaimed)

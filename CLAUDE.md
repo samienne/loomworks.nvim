@@ -333,14 +333,19 @@ These are implementation-specific details not covered by the spec or architectur
   All path comparisons (build dir refs, locks, stray detection, prefix checks) use normalized
   (lowercased) paths. Cached `build_dir` values retain original casing for display.
 - clangd auto-reloads when compile_commands.json changes on disk — no explicit restart needed
-- **Build dir reverse index**: `_build_dir_refs` maps normalized build dir → set
-  of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
+- **Build dir reverse index**: `_build_dir_refs` maps the build dir's resolved
+  identity (`_build_dir_identity`: realpath; for a missing dir the realpath of
+  its nearest existing ancestor + the rest, normalized) → set of cache keys. Rebuilt in `_sync_build_dir_refs()` during remerge. Used by
   deletion safety (skip rm-rf of shared dirs) and UI hints ("shared" indicator).
 - **Build dir operation queue**: `_build_dir_locks` provides per-build-dir
   exclusive/shared locks with FIFO queue. Exclusive for configure/delete/clean,
   shared for build. `acquire_build_dir_lock()` in overseer.lua before task start,
   `release_build_dir_lock()` in task_tracker on complete/dispose (idempotent).
   Prevents concurrent operations from corrupting shared build directories.
+  Keyed by the same identity as `_build_dir_refs` (`_find_lock`), as are the
+  file-lock table `_build_dir_file_locks` and the lockfile path
+  (`build_lock.lock_path` via `dir_identity.resolve`), so every spelling of one
+  folder is one lock.
 - **Module domain object** (`module.lua`): wraps a stateless module function
   table (cmake.lua, meson.lua, typescript.lua) as a per-workspace domain object.
   Owns the Tool registry for its module type. No `_workspace` back-reference.

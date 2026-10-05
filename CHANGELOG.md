@@ -239,6 +239,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `RUNNER~1`): shared build directories are now recognized by their real
   path, and a clean that wipes one folder spelled two ways wipes it once.
   (#139)
+- Two operations on one build directory spelled two ways (a junction or
+  symlink, a Windows 8.3 short name, a workspace opened through an aliased
+  root) can no longer configure or clean it at the same time: the editor's
+  operation queue and the cross-process lockfile `<dir>.loomworks-lock` now
+  go by the directory's real path, so `lw unlock` finds a lock by any
+  spelling too. (#PR)
 - `lw clean` on a project that cleans by wiping its build directory (a shell
   project without `clean_cmd`) now treats the wipe as a build-directory
   deletion: the cache is marked unknown before the directory is removed and
