@@ -247,7 +247,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   spelling too; `lw unlock <build dir>` refuses a path whose real location
   is outside the workspace root. An older `lw` still derives the lockfile
   from the spelled path, so through an aliased spelling (e.g. a symlinked
-  workspace root) it and this version do not exclude each other — use one
+  workspace root) it and this version do not exclude each other; use one
   version per workspace. (#140)
 - `lw clean` on a project that cleans by wiping its build directory (a shell
   project without `clean_cmd`) now treats the wipe as a build-directory
