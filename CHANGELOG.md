@@ -49,7 +49,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   profile as running (`state=1-building`). So a script or agent can tell that a
   `lw build` or `lw clean` took effect. The editor's status page now also
   labels a profile whose units are all `unknown` (after an interrupted clean)
-  as `unknown` instead of an empty label. (#PR)
+  as `unknown` instead of an empty label. (#141)
 - Experimental daemon (`runtime-mode daemon`): `lw clean [<profile>]` now runs
   in the workspace daemon like `lw build`, with the same output and exit code,
   after one dim line `lw: cleaning through the workspace daemon (pid N)`, under
