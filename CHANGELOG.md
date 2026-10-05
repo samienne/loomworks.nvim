@@ -133,6 +133,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- Experimental daemon in the editor: the plugin now also follows `lw`'s own
+  setting (`lw settings set runtime-mode daemon`), after `LOOMWORKS_RUNTIME`
+  (and `LOOMWORKS_NO_DAEMON` / `CI`) and the setup option `runtime.mode`; it
+  reads the setting on each workspace load and never writes it. The status
+  page's `Runtime:` line is now the header's last line, names the mode and
+  what chose it (`env`, `setup`, `lw setting`, `default`), and is hidden only
+  when nothing chose. A daemon of another protocol or file format is named
+  there in the warning colour with both versions and the fix (update the
+  plugin, or pin or install a matching `lw`). (#TBD)
 - `lw cleanup` (without `--all`) now lists the runtime logs earlier versions
   kept in the data directory (`daemon/logs`) whatever their age: they are
   always leftovers now that the log lives in the workspace. `--all` adds only

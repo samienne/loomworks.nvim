@@ -5,6 +5,15 @@ they don't get lost.
 
 ---
 
+## Daemon tasks in overseer and build messages
+
+Decided 2026-10-05: in daemon observer mode, a CLI-started (remote) task shows
+in fidget, lualine and the status page, with its output, but not in overseer's
+task list, and its output is not parsed into the quickfix list or diagnostics
+(spec/core/daemon.md §19.16). Design both together in the step where editor
+operations themselves run in the daemon: then the editor's own builds leave
+overseer too unless daemon tasks can appear there.
+
 ## Variable rename: what should it cascade to?
 
 Found while fixing PR #75. Renaming a variable in the editor's variable editor

@@ -53,14 +53,6 @@ local function render_fn(tree)
     tree:blank()
     tree:leaf("Workspace: " .. ws.name, "Type")
     tree:leaf("Root:      " .. ws.root, "Comment")
-    -- daemon runtime mode (spec/ui.md §1.1, core §19.16): the observer's
-    -- state or its one current note.
-    local runtime_line = lw.daemon_runtime_line and lw.daemon_runtime_line() or nil
-    if runtime_line then
-        local obs = require("loomworks.daemon.observer").of(lw.get_workspace())
-        tree:leaf("Runtime:   " .. runtime_line,
-            (obs and obs.state == "connected") and "Comment" or "DiagnosticWarn")
-    end
     -- Banner when loomworks.json is missing on disk: the workspace still
     -- functions from user.json, and :w will publish it.
     local config_path = ws.root .. "/loomworks.json"
@@ -69,6 +61,12 @@ local function render_fn(tree)
             "DiagnosticWarn")
     end
     tree:leaf("[?] help  [L] load  [<C-n>] reset", "Comment")
+    -- The header's last line (spec/ui.md §1.1, core §19.1, §19.16): the
+    -- runtime mode, its source and the observer's state or one current note.
+    local runtime_line, runtime_warn = lw.daemon_runtime_line()
+    if runtime_line then
+        tree:leaf("Runtime:   " .. runtime_line, runtime_warn and "DiagnosticWarn" or "Comment")
+    end
     tree:blank()
 
     local active_set = lw.get_active_configuration_set()
@@ -289,6 +287,9 @@ function M.close()
 end
 function M.toggle()  view:toggle() end
 function M.refresh() view:refresh() end
+
+--- Test seam: the render function (assembles the page into a Tree).
+M._render_fn = render_fn
 
 function M.is_open()
     return view:is_open()

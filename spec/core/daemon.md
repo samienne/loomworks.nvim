@@ -35,7 +35,9 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 (`in-process` | `daemon`), `LOOMWORKS_RUNTIME`, the editor option
 `runtime.mode` (the editor observes the daemon in `daemon` mode, §19.16) — and the selection of
 attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
-(`daemon/runtime.lua`); the end-state values future.*
+(`daemon/runtime.lua`), and the editor's selection with lw's `runtime-mode`
+setting and the source on its Runtime line (`runtime.editor_select`,
+`observer.runtime_line`); the end-state values future.*
 
 A command runs its operation in one of two ways:
 
@@ -54,8 +56,16 @@ shared even in CI); `CI=true` in the environment; the host setting
 (§19.10). Otherwise the command runs shared. An invalid configured value is
 reported and ignored (falls through to the next source).
 
-The editor selects the same way from its setup option `runtime.mode`, and runs
-attached inside the editor process when it has no host binary (§19.16).
+The editor selects its mode in this precedence: the environment
+(`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI` as above); its setup
+option `runtime.mode`; lw's own setting `runtime-mode`, read from the per-user
+settings file `lw settings` writes (§16.40, `<config>/config.json`); and the
+`in-process` default. The editor reads that file on each workspace load, never
+writes it, and treats a missing file or key as absent; an unreadable file or an
+invalid value is the observer's note (§19.16) and falls through to the default.
+`no-daemon` selects `in-process` in the editor. The status page's Runtime line
+names the source that decided (spec/ui.md §1.1). The editor runs attached
+inside its own process when it has no host binary (§19.16).
 
 **During the transition** the setting `runtime-mode` takes `in-process` (the
 default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
@@ -482,7 +492,8 @@ dangerous things.
 ### 19.6 Discovery: the handle file and the Runtime row
 
 *Status: master — the handle (`daemon/handle.lua`, written and heartbeated
-by `daemon/server.lua`), the Runtime row and `lw daemon status`.*
+by `daemon/server.lua`), the Runtime row and `lw daemon status`; the running-task
+lines future.*
 
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
@@ -517,7 +528,8 @@ still refreshes the published file's time meanwhile. A record identical to the
 one last written is not rewritten.
 
 **Runtime row.** `lw status` shows one `Runtime` line computed **only** from the
-handle and the runtime lock — it never launches or connects:
+handle and the runtime lock — it never launches or connects (the running-task
+lines below may connect, never launch):
 
 ```
 Runtime   daemon pid 4242, 2 clients, idle 12m
@@ -535,6 +547,29 @@ Runtime   unreadable daemon handle — the next workspace command recovers it (d
 `no daemon (starts on the next command)` is shown in `daemon` mode,
 `in-process` in `in-process` mode, when neither the runtime lock nor a handle
 exists.
+
+**Running tasks.** Under the Runtime line, `lw status` lists the daemon's
+running tasks, one line each: the operation (`kind`), the profile, the origin
+(`lw` for `cli`, `editor`), the elapsed time since `started_at`, and the
+percent when known:
+
+```
+Runtime   daemon pid 4242, 2 clients
+  build  Debug:ninja-gcc   (lw)      1m12s  43%
+  test   Release:msvc-17   (editor)  8s
+```
+
+It asks only a daemon the handle shows live, on this host, busy (a running
+task makes it busy, §19.11) and with this lw's `key_id` — so an idle daemon
+is never contacted — by connecting, authenticating and sending `status`
+(§19.11), with a bound of about a second; it never launches one. `status` is
+in the frozen control subset (§19.8), so this works across a version
+mismatch, and the connection is never a `retire`. A reply without `tasks` (an
+older daemon) shows `  running tasks: not reported by daemon lw <version>`; a
+failed or timed-out query shows one line, `  running tasks: unavailable
+(<reason>)`. None of this changes `lw status`'s exit status or its other
+output. `lw status` has no machine-readable (`--json`) form, so there is none
+to extend.
 
 #### 19.6.1 Listing every daemon of this user
 
@@ -692,7 +727,9 @@ pipe would hand the user's credentials to that host.
 and its task stream, §19.15; protocol version 4: 3 plus the observer role,
 `model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16; protocol
 version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
-plus the `prepare_run` request, §19.15); the rest of the
+plus the `prepare_run` request, §19.15; *(draft)* protocol version 7: 6 plus
+`origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
+§19.15, §19.16); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -839,7 +876,12 @@ build.*
   that daemon. Observer connections never hold off retirement: a retiring
   daemon exits once it has no running build and no authenticated client other
   than observers. (They still count for the idle timeout and in `clients`.)
-  `status` reports `observers`, the number of observer connections.
+  `status` reports `observers`, the number of observer connections, and
+  `tasks`: one `{ task_id, name, kind, profile, units, origin, started_at,
+  percent? }` per running task — its `start` meta (§19.15), the wall-clock
+  time it started, and its last progress percent, absent before the first
+  tick. An addition to the frozen `status` shape (§19.8): a daemon of an
+  older protocol omits it.
 - **Idle exit.** With no connection, no running task and no request for the
   idle timeout — setting `daemon-idle-timeout`, default 1 hour — the daemon
   exits.
@@ -950,11 +992,12 @@ future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
-CLI streams into the editor): `start` (`meta = { name, kind, profile, units }`
-— `profile` the profile's key, `units` one `{ project, configuration }` per
+CLI streams into the editor): `start` (`meta = { name, kind, profile, units,
+origin }` — `profile` the profile's key, `units` one `{ project, configuration }` per
 project of the profile, the project key and its configuration unit's key;
 semantic keys, which a client resolves to its own domain objects at the
-boundary, §19.14), `line` (one of loomworks's own lines —
+boundary, §19.14; `origin` the owner's `hello.client`, `cli` or `editor`,
+set by the daemon, never taken from the request), `line` (one of loomworks's own lines —
 a status line on standard output, a note on standard error), `output` (a
 step's raw bytes, `stdout` or `stderr`), `progress` (coalesced: a tick only
 when the integer percent advances) and `done` (`exit_code`, and the refusal or
@@ -1251,8 +1294,9 @@ The editor's own run and debug launches stay in-process in this step
 ### 19.16 The editor as a client
 
 *Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
-`daemon/host_binary.lua`, `daemon/remote_task.lua`); commands and the attached
-editor future.*
+`daemon/host_binary.lua`, `daemon/remote_task.lua`); remote tasks shown as
+local ones (Running state, Joining late, End, UI below), the origin marker and
+the mismatch note's wording future; commands and the attached editor future.*
 
 **End state.** The editor uses the **same daemon as the CLI**. It connects,
 authenticates and holds a keepalive (§19.11). Operations move from the editor
@@ -1273,8 +1317,8 @@ operations to commands, its launches stay in-process; the observer shows a
 CLI run's preparation as a remote task (`kind = run`) like a build, and never
 the program.
 
-**Step 4: the observer.** In `daemon` mode (the setup option `runtime.mode` or
-`LOOMWORKS_RUNTIME`, with `LOOMWORKS_NO_DAEMON` and `CI` as in §19.1), each
+**Step 4: the observer.** In `daemon` mode (selected as in §19.1: the
+environment, the setup option `runtime.mode`, then lw's `runtime-mode` setting), each
 workspace the editor loads gets an **observer**. It watches the task streams
 and model changes of operations started elsewhere (a `lw build` in a
 terminal). It runs none of the editor's own operations, which stay on the
@@ -1323,16 +1367,34 @@ in-process path. In `in-process` mode nothing below happens.
     that does not resolve (another working copy, a profile the editor has not
     loaded yet) is kept and shown **by name only**; no domain object is
     created or hydrated for it.
-  - **Running state.** A resolved configuration unit reports `building`
-    for the task's lifetime, without the editor running anything. It never blocks an
-    editor operation: the cross-process build-directory locks (§16.6) do.
+  - **Running state.** A remote task puts the same runtime state on the
+    editor's objects as a local operation of its `kind` would (§3): each
+    resolved configuration unit reports `building` (or the kind's state), so
+    its build directory shows it too, and the resolved profile counts as
+    having an active operation (spec/ui.md §1.5). The state is runtime-only:
+    the editor never writes the cache or the working copy for a remote task
+    and runs nothing. It never blocks an editor operation: the cross-process
+    build-directory locks (§16.6) do.
+  - **Joining late.** On each connect the observer sends `status` and adopts
+    every task in its `tasks` (§19.11) as a remote task, its output starting
+    from that moment; a task already ended is never shown.
   - **Output.** The task's lines and output are kept, capped at about 1 MiB
     per task, then one truncation notice.
-  - **End.** A task ends on `done`, or when the connection drops (it is then
-    shown as ended "the workspace daemon disconnected").
-  - **UI.** The editor shows remote tasks in progress (fidget), in the status
-    page's Tasks section marked `(daemon)` (spec/ui.md §1.9), and in the
-    status line as an in-process build of the same units.
+  - **End.** A task ends on `done` (success, failure or cancellation), or
+    when the connection drops (it is then shown as ended "the workspace
+    daemon disconnected"). Either way its runtime state is cleared at once;
+    the unit's state after the task is whatever the editor's files then say.
+    The daemon sends the `model_change` of the task's cache write-back
+    (§19.12) before its `done`, so the editor has already reloaded the
+    outcome when the running state clears.
+  - **UI.** A remote task is shown exactly as a local task of the same kind
+    and profile: in progress (fidget, the same entry and end message), in the
+    status page's Profiles and Tasks sections (spec/ui.md §1.5, §1.9), and
+    in the status line. It is neither cancelled nor restarted from the editor
+    (§19.15). Its only difference is an **origin marker** naming who started
+    it, from `meta.origin` (§19.15). It is not added to the task runner's task
+    list; that, and turning its output into the quickfix list and diagnostics,
+    belong to the step where editor operations themselves run in the daemon.
 - **Teardown.** Unloading or swapping the workspace stops its observer: the
   timers stop, the connection closes, remote tasks are cleared. The daemon
   keeps running (§19.11).
@@ -1342,7 +1404,12 @@ in-process path. In `in-process` mode nothing below happens.
 
 A version mismatch the editor cannot repair by restarting (its plugin code and
 the resolved binary differ in protocol or schemas) is shown inline. The editor
-keeps running in-process.
+keeps running in-process. The note is never silent: it stays on the Runtime
+line (warning highlight) for as long as the mismatch lasts, naming both sides'
+protocol (or schema) and versions, the binary's path, and the remedy (update
+the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon (lw
+setting) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
+update the plugin or the pin — running in-process`.
 
 ### 19.17 Parity
 
