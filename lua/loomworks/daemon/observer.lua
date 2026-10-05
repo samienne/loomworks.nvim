@@ -461,12 +461,16 @@ function Observer:_forget(id)
     end
 end
 
---- End every running remote task (`reason`).
-function Observer:_end_tasks(reason)
+--- End every running remote task (`reason`). `cleared`: teardown — the
+--- tasks are dropped, not ended, so no end result is recorded (§19.16).
+--- @param reason string
+--- @param cleared? boolean
+function Observer:_end_tasks(reason, cleared)
     local ids = vim.list_extend({}, self._order)
     for _, id in ipairs(ids) do
         local task = self._tasks[id]
         if task then
+            if cleared then task.cleared = true end
             task:finish(nil, nil, reason, self:_clock())
             self:_forget(id)
             self:_emit("daemon_task_stopped", { task = task })
@@ -524,7 +528,7 @@ function Observer:stop()
     local c = self.conn
     self.conn = nil
     if c then c.on_close = nil; c:close() end
-    self:_end_tasks("the workspace was unloaded")
+    self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
 end
 

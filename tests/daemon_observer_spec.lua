@@ -271,6 +271,145 @@ describe("the observer (§19.16)", function()
         owner_client:close()
     end)
 
+    it("a remote task never blocks an editor build or launch (the build-dir locks do)", function()
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        local unit = pp._config_unit
+        -- Build it for real first, so the editor's build is a plain build
+        -- (no configure in front of it).
+        local cli = require("loomworks.cli")
+        local orig_write = io.write
+        io.write = function() end
+        local ok, err = pcall(cli.cmd_build, ws, { "build", profile.key })
+        io.write = orig_write
+        assert.is_true(ok, tostring(err))
+        assert.equals("built", unit:state())
+        assert.is_nil(unit:configure_reason(false, profile))
+        s = new_server(root)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        local owner_client = assert(client.session(s.srv.address))
+        local owner
+        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
+        local t = tasks_mod.new(s.srv):create(owner)
+        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
+            { project = pp:project_key(), configuration = pp:config_key() } } })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        -- Shown building, yet nothing the editor runs is gated on it.
+        assert.equals("building", unit:state())
+        assert.equals("built", unit:local_state())
+        local created = {}
+        local orig_overseer = package.loaded["overseer"]
+        package.loaded["overseer"] = {
+            new_task = function(spec)
+                created[#created + 1] = spec
+                return { id = #created, subscribe = function() end, start = function() end,
+                    stop = function() end, is_complete = function() return false end }
+            end,
+        }
+        local settled = nil
+        local okc, cerr = pcall(function()
+            require("loomworks.overseer").run_profile_action(profile, "build")
+                :next(function() settled = "resolved" end, function(e) settled = "rejected: " .. tostring(e) end)
+            -- The build starts (it meets the build-dir lock (§16.6) of a
+            -- real `lw build`); it is not skipped and resolved as done.
+            assert.is_true(vim.wait(5000, function() return #created > 0 end, 10),
+                "editor build was skipped: " .. tostring(settled))
+            assert.is_nil(settled)
+        end)
+        -- A single build task is not rejected because of the remote task either.
+        local single = nil
+        local oks, serr = pcall(function()
+            local f = require("loomworks.overseer").launch_single_task({
+                name = "single", builder = function() return { cmd = { vim.v.progpath, "--version" } } end,
+                loomworks = { unit = unit, action = "build" },
+            }, unit)
+            f:next(function() single = "resolved" end, function(e) single = "rejected: " .. tostring(e) end)
+            vim.wait(200, function() return single ~= nil end, 10)
+            assert.is_nil(single)
+        end)
+        package.loaded["overseer"] = orig_overseer
+        assert.is_true(okc, tostring(cerr))
+        assert.is_true(oks, tostring(serr))
+        t:done(0)
+        owner_client:close()
+    end)
+
+    it("a task both broadcast (`start`) and listed in the join-late status reply is adopted once", function()
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        local unit = pp._config_unit
+        local started = {}
+        on("daemon_task_started", function(d) started[#started + 1] = d.task end)
+        obs = attach({ spawn = function() end })
+        local meta = { name = "dev", kind = "build", profile = profile.key, origin = "cli",
+            units = { { project = pp:project_key(), configuration = pp:config_key() } } }
+        -- A connection whose status reply is held until the test releases it.
+        local function fake_conn()
+            local c = { pending = nil }
+            function c:request(_, cb) self.pending = cb end
+            function c:close() end
+            return c
+        end
+        local function reply(c, id)
+            local entry = vim.tbl_extend("force", { task_id = id, started_at = os.time() }, meta)
+            c.pending({ tasks = { entry } })
+            vim.wait(50)
+        end
+        -- The broadcast first, then the reply listing the same task.
+        local c1 = fake_conn()
+        obs.conn = c1
+        obs:_join_late(c1)
+        obs:_on_message({ kind = "task", phase = "start", task_id = 7, meta = meta })
+        reply(c1, 7)
+        assert.equals(1, #started)
+        assert.equals(1, #ws:get_daemon_tasks())
+        assert.equals(1, #profile:remote_tasks())
+        -- The reply first, then a late-arriving broadcast of the same task.
+        local c2 = fake_conn()
+        obs.conn = c2
+        obs:_join_late(c2)
+        reply(c2, 8)
+        obs:_on_message({ kind = "task", phase = "start", task_id = 8, meta = meta })
+        assert.equals(2, #started)
+        assert.equals(2, #ws:get_daemon_tasks())
+        assert.equals(2, #profile:remote_tasks())
+        -- Each ends once; then nothing of either is left.
+        obs:_on_message({ kind = "task", phase = "done", task_id = 7, exit_code = 0 })
+        obs:_on_message({ kind = "task", phase = "done", task_id = 8, exit_code = 0 })
+        assert.same({}, ws:get_daemon_tasks())
+        assert.same({}, profile:remote_tasks())
+        assert.is_nil(unit:shown_action())
+        obs.conn = nil
+    end)
+
+    it("workspace teardown with a remote task running clears it without recording a failure", function()
+        s = new_server(root)
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        local unit = pp._config_unit
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        local owner_client = assert(client.session(s.srv.address))
+        local owner
+        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
+        local t = tasks_mod.new(s.srv):create(owner)
+        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
+            { project = pp:project_key(), configuration = pp:config_key() } } })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        local before = profile:operation()
+        assert.equals("building", unit:state())
+        core:shutdown()
+        obs = nil
+        assert.same({}, profile:remote_tasks())
+        assert.is_false(profile:has_active_operation())
+        assert.is_nil(unit:shown_action())
+        assert.is_true(unit:state() ~= "building")
+        -- Not an operation that ended: the last result is what it was before.
+        assert.equals(before, profile:operation())
+        owner_client:close()
+    end)
+
     it("a dropped connection clears the remote tasks' running state at once", function()
         s = new_server(root)
         local profile = ws:get_profiles()[1]

@@ -1177,7 +1177,9 @@ function Profile:add_remote_task(task)
 end
 
 --- Remove a remote task; once it ended, its end message becomes the
---- profile's last operation result, as a local operation's does.
+--- profile's last operation result, as a local operation's does. A task
+--- cleared by workspace teardown (spec §19.16 Teardown) did not end: it
+--- leaves the last result alone.
 --- @param task loomworks.RemoteTask
 function Profile:remove_remote_task(task)
     local list = self._remote_tasks
@@ -1185,7 +1187,7 @@ function Profile:remove_remote_task(task)
     for i, t in ipairs(list) do
         if t == task then
             table.remove(list, i)
-            if task.finished then
+            if task.finished and not task.cleared then
                 self._last_operation = { message = task:outcome(), success = task.exit_code == 0 }
             end
             break
@@ -1491,7 +1493,7 @@ end
 function Profile:is_configured()
     for _, pp in ipairs(self:projects()) do
         if pp._config_unit then
-            local state = pp._config_unit:state()
+            local state = pp._config_unit:local_state()
             if state and state ~= "unconfigured" then
                 return true
             end

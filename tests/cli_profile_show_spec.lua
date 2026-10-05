@@ -25,6 +25,7 @@ local function fake_pp(o)
     targets = o.targets, -- nil → no build targets enumerated
     build_dir = nil,     -- keep ensure_unit_targets a no-op
     state = function() return o.state or "configured" end,
+    local_state = function() return o.state or "configured" end,
   }
   return {
     _project = project,

@@ -224,6 +224,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- Experimental daemon: an operation started in a terminal (`lw build`) no
+  longer blocks the editor's own. A build from the editor (or build-then-launch)
+  was skipped as already running and launched a stale binary, and a single
+  build task was refused; they now run and meet the build-directory lock like
+  any other process. Unloading the workspace while such an operation runs no
+  longer leaves a failed last result on the profile. (#132)
 - A save that had to reclaim a crashed writer's lock on the working copy or
   cache, and took longer than the lock wait to do it (a slow, busy machine),
   no longer goes ahead without the lock it just freed. (#127)

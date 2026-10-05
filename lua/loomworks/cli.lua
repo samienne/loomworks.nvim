@@ -6070,7 +6070,7 @@ local function collect_targets(ws, profile)
     local project = unit and unit._project
     local mod = project and project._module and project._module.impl
     if mod and mod.parse_targets then
-      local st = unit:state()
+      local st = unit:local_state()
       if st ~= "configured" and st ~= "built" then unconfigured[#unconfigured + 1] = project.key end
     end
   end

@@ -41,6 +41,7 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field exit_code integer|nil
 --- @field error string|nil
 --- @field end_reason string|nil why it ended without `done` (disconnect)
+--- @field cleared boolean|nil it was cleared by teardown, not ended: no end result is recorded
 --- @field duration number|nil seconds it ran, once finished
 --- @field _chunks string[] kept output
 --- @field _bytes integer

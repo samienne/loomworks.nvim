@@ -105,7 +105,7 @@ function Operation:_check_unit(unit)
 
     if self._mode == "deletion" then
         if not unit:is_deleting() then
-            local state = unit:state()
+            local state = unit:local_state()
             self._unit_done[unit] = true
             -- "unknown" means deletion failed (partial delete, crash)
             self._unit_ok[unit] = state ~= "unknown"
@@ -113,7 +113,7 @@ function Operation:_check_unit(unit)
         return
     end
 
-    local state = unit:state()
+    local state = unit:local_state()
     local target = self.target_states[unit]
 
     local state_rank = STATE_RANK[state]
@@ -141,7 +141,7 @@ end
 function Operation:_on_unit_change(unit)
     if self.completed then return end
     local log = self._workspace and self._workspace._core and self._workspace._core._deps.log
-    local state = unit:state()
+    local state = unit:local_state()
     if log then log:debug("Operation[%d/%s]: unit change %s → state=%s done=%s",
         self.id, self.action,
         unit._config_key or "?",
