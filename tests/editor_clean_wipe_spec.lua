@@ -42,6 +42,40 @@ local function make_ws(build_dir)
   return root
 end
 
+--- Two shell projects A and B (Debug + Release, no clean_cmd => wipe) that
+--- both build into `${workspace_root}/build`; profiles Both (A=Debug,
+--- B=Debug) and Other (A=Release).
+local function make_shared_ws()
+  local root = vim.fn.tempname():gsub("\\", "/")
+  local projects = {}
+  for _, name in ipairs({ "A", "B" }) do
+    vim.fn.mkdir(root .. "/" .. name, "p")
+    projects[name] = { shell = {
+      build_dir = "${workspace_root}/build",
+      configure_cmd = { "true" },
+      build_cmd = { "true" },
+      configurations = { Debug = vim.empty_dict(), Release = vim.empty_dict() },
+    } }
+  end
+  local f = assert(io.open(root .. "/loomworks.json", "w"))
+  f:write(vim.json.encode({ projects = projects })); f:close()
+  quiet(function()
+    cli.cmd_cset("create", root, { "configuration-set", "create", "Both", "A=Debug", "B=Debug" })
+    cli.cmd_cset("create", root, { "configuration-set", "create", "Other", "A=Release" })
+    cli.cmd_profile_create(root, { "profile", "create", "Other" })
+    cli.cmd_profile_create(root, { "profile", "create", "Both", "--activate" })
+  end)
+  return root
+end
+
+local function units_of(profile)
+  local units = {}
+  for _, pp in ipairs(profile:projects()) do
+    units[#units + 1] = assert(pp._config_unit, "profile project has no config unit")
+  end
+  return units
+end
+
 local function load(root)
   local ws = assert(cli._load_workspace(root, false))
   local by = {}
@@ -78,6 +112,24 @@ local function wait(f)
   f:next(function() done, ok = true, true end):catch(function() done, ok = true, false end)
   vim.wait(5000, function() return done end, 10)
   return ok, done
+end
+
+--- Make the clean's per-project wipes overlap, as they do in the editor when
+--- a running task has to be stopped first or the rm-rf subprocess is slow:
+--- stopping tasks and the removal both complete asynchronously.
+local function overlap_deletions(ws, io_mod)
+  ws.stop_tasks_then = function()
+    return require("loomworks.future").create(function(resolve)
+      vim.defer_fn(function() resolve(true) end, 20)
+    end)
+  end
+  io_mod.rm_rf_async = function(dir, cb)
+    vim.defer_fn(function()
+      vim.fn.delete(dir, "rf")
+      if cb then cb(true, nil) end
+    end, 30)
+    return require("loomworks.future").resolved(true)
+  end
 end
 
 describe("editor clean (wipe_build_dir)", function()
@@ -177,5 +229,69 @@ describe("editor clean (wipe_build_dir)", function()
     assert.equals("unknown", unit.state_value)
     assert.equals("unknown", cached_state(root, unit).state)
     assert.is_false(unit:is_deleting(), "unit is unmarked after the failure")
+  end)
+  it("wipes a build dir shared only by units of the same profile clean", function()
+    local root = make_shared_ws()
+    local ws, by = load(root)
+    local units = units_of(by.Both)
+    assert.equals(2, #units)
+    local dir = root .. "/build"
+    for _, u in ipairs(units) do fake_built(ws, u, dir) end
+    overlap_deletions(ws, io_mod)
+    ws:_save_cache()
+
+    local skipped = {}
+    local real_notify = ws._core._deps.notify
+    ws._core._deps.notify = function(msg, ...)
+      if tostring(msg):find("skipped deleting", 1, true) then skipped[#skipped + 1] = msg end
+      return real_notify(msg, ...)
+    end
+
+    local ok, done = wait(by.Both:clean())
+    assert.is_true(done, "clean settles")
+    assert.is_true(ok, "clean succeeds")
+    assert.is_nil(uv.fs_stat(dir), "the dir shared only within the clean is wiped")
+    ws._core._deps.notify = real_notify
+    assert.same({}, skipped, "no unit of the clean is treated as an outside reference")
+    for _, u in ipairs(units) do
+      assert.is_nil(u.state_value, "unit reset after the wipe")
+    end
+  end)
+
+  it("keeps a dir shared within the clean that a unit outside it references", function()
+    local root = make_shared_ws()
+    local ws, by = load(root)
+    local units = units_of(by.Both)
+    local other = units_of(by.Other)[1]
+    local dir = root .. "/build"
+    for _, u in ipairs(units) do fake_built(ws, u, dir) end
+    overlap_deletions(ws, io_mod)
+    fake_built(ws, other, dir)
+    ws:_save_cache()
+
+    local ok = wait(by.Both:clean())
+    assert.is_true(ok)
+    assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "dir referenced outside the clean survives")
+    assert.equals("built", other.state_value, "the outside config's state is untouched")
+  end)
+
+  it("fails when the removal fails for a unit with no cached build dir", function()
+    local root = make_ws("${workspace_root}/out")
+    local ws, by = load(root)
+    local unit = unit_of(by.Dev)
+    local dir = root .. "/out"
+    vim.fn.mkdir(dir, "p")
+    unit.build_dir_value = nil
+    unit.state_value = "configured"
+    ws:_sync_build_dir_refs()
+    ws:_save_cache()
+    io_mod.rm_rf_async = function(_, cb)
+      if cb then vim.schedule(function() cb(false, "boom") end) end
+      return require("loomworks.future").resolved(false)
+    end
+
+    local ok, done = wait(by.Dev:clean())
+    assert.is_true(done, "clean settles")
+    assert.is_false(ok, "a failed removal must not be reported as success")
   end)
 end)

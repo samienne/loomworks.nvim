@@ -236,7 +236,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   the build directory is removed, the configuration is reset to unconfigured
   only after the removal succeeded, a failed removal fails the clean and
   leaves the configuration unknown, and a directory still used by another
-  configuration is kept. (#135)
+  configuration is kept. In both the editor and `lw clean`, projects of the
+  cleaned profile that share one build directory are wiped together (the
+  directory is removed once, and `lw clean` no longer reports it as "kept"
+  when only the cleaned profile uses it), and a failed removal is always
+  reported as a failure, also for a configuration with no cached build
+  directory. (#135)
 - Experimental daemon: an operation started in a terminal (`lw build`) no
   longer blocks the editor's own. A build from the editor (or build-then-launch)
   was skipped as already running and launched a stale binary, and a single

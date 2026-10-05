@@ -44,6 +44,38 @@ local function make_ws(build_dir)
   return root
 end
 
+--- Two shell projects A and B (Debug + Release, no clean_cmd => wipe) that
+--- both build into `${workspace_root}/build`; profiles Both (A=Debug,
+--- B=Debug) and Other (A=Release).
+local function make_shared_ws()
+  local root = vim.fn.tempname():gsub("\\", "/")
+  local projects = {}
+  for _, name in ipairs({ "A", "B" }) do
+    vim.fn.mkdir(root .. "/" .. name, "p")
+    projects[name] = { shell = {
+      build_dir = "${workspace_root}/build",
+      configure_cmd = { "true" },
+      build_cmd = { "true" },
+      configurations = { Debug = vim.empty_dict(), Release = vim.empty_dict() },
+    } }
+  end
+  local f = assert(io.open(root .. "/loomworks.json", "w"))
+  f:write(vim.json.encode({ projects = projects })); f:close()
+  capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Both", "A=Debug", "B=Debug" }) end)
+  capture(function() cli.cmd_cset("create", root, { "configuration-set", "create", "Other", "A=Release" }) end)
+  capture(function() cli.cmd_profile_create(root, { "profile", "create", "Other" }) end)
+  capture(function() cli.cmd_profile_create(root, { "profile", "create", "Both", "--activate" }) end)
+  return root
+end
+
+local function units_of(profile)
+  local units = {}
+  for _, pp in ipairs(profile:projects()) do
+    units[#units + 1] = assert(pp._config_unit, "profile project has no config unit")
+  end
+  return units
+end
+
 local function load(root)
   local ws = assert(cli._load_workspace(root, false))
   local by = {}
@@ -171,5 +203,62 @@ describe("lw clean (wipe_build_dir)", function()
     assert.matches("could not remove", r.stderr .. r.stdout)
     assert.equals("unknown", unit.state_value)
     assert.equals("unknown", cached_state(root, unit).state)
+  end)
+  it("wipes a build dir shared only by units of the same profile clean", function()
+    local root = make_shared_ws()
+    local ws, by = load(root)
+    local units = units_of(by.Both)
+    assert.equals(2, #units)
+    local dir = root .. "/build"
+    for _, u in ipairs(units) do fake_built(ws, u, dir) end
+    ws:_save_cache()
+
+    local r = capture(function() return cli.cmd_clean(ws, by.Both.key) end)
+    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    assert.is_nil(uv.fs_stat(dir), "the dir shared only within the clean is wiped")
+    assert.is_nil((r.stdout .. r.stderr):find("kept", 1, true),
+      "not reported as kept: no config outside the clean uses it: " .. r.stdout)
+    for _, u in ipairs(units) do
+      assert.is_nil(u.state_value, "unit reset after the wipe")
+    end
+  end)
+
+  it("keeps a dir shared within the clean that a unit outside it references", function()
+    local root = make_shared_ws()
+    local ws, by = load(root)
+    local units = units_of(by.Both)
+    local other = units_of(by.Other)[1]
+    local dir = root .. "/build"
+    for _, u in ipairs(units) do fake_built(ws, u, dir) end
+    fake_built(ws, other, dir)
+    ws:_save_cache()
+
+    local r = capture(function() return cli.cmd_clean(ws, by.Both.key) end)
+    assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+    assert.is_not_nil(uv.fs_stat(dir .. "/marker.txt"), "dir referenced outside the clean survives")
+    assert.equals("built", other.state_value, "the outside config's state is untouched")
+  end)
+
+  it("fails when the removal fails for a unit with no cached build dir", function()
+    local root = make_ws("${workspace_root}/out")
+    local ws, by = load(root)
+    local unit = unit_of(by.Dev)
+    local dir = root .. "/out"
+    vim.fn.mkdir(dir, "p")
+    unit.build_dir_value = nil
+    unit.state_value = "configured"
+    ws:_sync_build_dir_refs()
+    ws:_save_cache()
+    -- The removal fails but the directory vanishes anyway (e.g. removed
+    -- concurrently): the deletion's own outcome must decide, not a re-stat.
+    io_mod.rm_rf_async = function(d, cb)
+      vim.fn.delete(d, "rf")
+      if cb then vim.schedule(function() cb(false, "boom") end) end
+      return require("loomworks.future").resolved(false)
+    end
+
+    local r = capture(function() return cli.cmd_clean(ws, by.Dev.key) end)
+    assert.is_not_nil(r.exit_code, "a failed removal must not be reported as success")
+    assert.matches("could not remove", r.stderr .. r.stdout)
   end)
 end)
