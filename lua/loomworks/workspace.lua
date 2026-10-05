@@ -4060,7 +4060,7 @@ function Workspace:clean_wipe_build_dir(unit, build_dir)
         unit and { [unit] = true } or {}) > 0
     local f = self:execute_deletion({ items = {
         { unit = unit, build_dir = build_dir, disposition = "reset" },
-    } })
+    } }, { reason = "cleaning" })
     return f, shared
 end
 
@@ -4185,7 +4185,7 @@ end
 --- @param on_done? function called when deletion is complete
 --- Execute a deletion plan asynchronously. Returns a Future.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning" }
 --- @param on_done? function legacy callback (deprecated)
 --- @return loomworks.Future
 function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
@@ -4253,7 +4253,7 @@ function Workspace:_execute_deletion_unlocked(plan, opts, on_done)
         if #eff_reset > 0 then
             self:reset_cached_configs(eff_reset)
         end
-    end, on_done)
+    end, on_done, opts.reason)
 
     return f
 end
@@ -4503,7 +4503,7 @@ end
 --- build-directory locks of the directories it removes (spec §19.3); see
 --- `_execute_deletion_unlocked`.
 --- @param plan loomworks.DeletionPlan
---- @param opts? { deactivate_profile?: loomworks.Profile }
+--- @param opts? { deactivate_profile?: loomworks.Profile, reason?: "deleting"|"cleaning" }
 --- @param on_done? function
 --- @return loomworks.Future
 function Workspace:execute_deletion(plan, opts, on_done)

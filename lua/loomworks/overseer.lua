@@ -547,7 +547,16 @@ local function collect_configuration_clean_tasks(unit)
         compiler_cache = resolve_compiler_cache(project, unit._configuration, tool_data, ws._active_profile),
     }
 
-    return mod.clean_tasks(project_ctx, variant)
+    local clean = mod.clean_tasks(project_ctx, variant)
+    -- A wipe deletes this unit's build dir: the runner needs the unit for
+    -- crash safety and shared-dir protection (spec §4.6, §4.7).
+    for _, task_def in ipairs(clean or {}) do
+        if task_def.loomworks and task_def.loomworks.wipe_build_dir
+                and task_def.loomworks.unit == nil then
+            task_def.loomworks.unit = unit
+        end
+    end
+    return clean
 end
 
 --- Collect clean task definitions for all projects in a profile.
@@ -628,8 +637,13 @@ end
 --- (CLAUDE.md): nil/empty build_dir => nothing to wipe; the path (possibly
 --- cache-sourced) must pass `_validate_build_dir` (canonical, trailing-"/"
 --- boundary, never the workspace root); removal is in-process
---- (`io.rm_rf_async`: libuv calls, links not followed) — no shell. The caller
---- has already marked the cache (crash safety) as for any clean.
+--- (`io.rm_rf_async`: libuv calls, links not followed) — no shell.
+--- With the task's config unit (`loomworks.unit`, set by the clean task
+--- collectors) the wipe is a build-directory DELETION (spec §4.6, §4.7) via
+--- `Workspace:clean_wipe_build_dir`: cache `unknown` on disk before the tree
+--- is removed, the unit reset to unconfigured only after the removal
+--- succeeded, a directory still referenced by another config kept. The Future
+--- rejects when the removal failed (the unit is left `unknown`).
 --- @param ws loomworks.Workspace|nil
 --- @param task_def table
 --- @return loomworks.Future
@@ -639,6 +653,18 @@ local function wipe_build_dir(ws, task_def)
     if type(bd) ~= "string" or bd == "" then return future_mod.resolved(true) end
     if not ws or not ws:_validate_build_dir(bd, ws.root) then
         return future_mod.rejected("clean refused: unsafe build directory " .. tostring(bd))
+    end
+    local unit = task_def.loomworks.unit
+    if unit and ws.clean_wipe_build_dir then
+        local f = ws:clean_wipe_build_dir(unit, bd)
+        return f:next(function(ok)
+            -- `false`: a lock was refused (reported); `unknown`: the removal
+            -- failed (reported by the deletion) — the clean did not happen.
+            if ok == false or unit.state_value == "unknown" then
+                error("could not remove " .. bd, 0)
+            end
+            return true
+        end)
     end
     local io_dep = (ws._core and ws._core._deps and ws._core._deps.io) or require("loomworks.io")
     return io_dep.rm_rf_async(bd)
