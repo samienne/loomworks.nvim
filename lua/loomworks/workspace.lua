@@ -1145,6 +1145,7 @@ function Workspace:remerge(raw_config, raw_cache, raw_user)
     local result = data_model.refresh(self, config, cache, active_set, all_profile_defs, current, {
         modules_registry = self._core._deps.modules,
         normalize = self._core._deps.normalize,
+        build_dir_key = function(p) return self:_build_dir_identity(p) end,
         tools_by_type = self._tools_by_type,
         default_target_data = default_target_data,
         device_data = device_data,
@@ -1362,18 +1363,36 @@ function Workspace:_rebuild_profile_projects_for(profile)
 end
 
 
---- Rebuild the build dir reverse index from ConfigUnit objects.
---- Delegates to data_model.sync_build_dir_refs.
+--- The identity of a build directory for shared-directory protection
+--- (spec §4.6): its resolved real path when it exists — so one physical
+--- folder spelled differently (a junction or symlink, a Windows 8.3 short
+--- name, `..` segments) is ONE directory — else its normalized path (a
+--- missing directory cannot be wiped, so nothing to reconcile). Always
+--- `normalize`d. Only a comparison key: display paths and the deletion
+--- target keep their own spelling.
+--- @param path string|nil
+--- @return string|nil
+function Workspace:_build_dir_identity(path)
+    if not path or path == "" then return path end
+    local deps = self._core._deps
+    local realpath = deps.realpath or function(p) return (vim.uv or vim.loop).fs_realpath(p) end
+    local resolved = realpath(path)
+    if resolved then return deps.normalize((resolved:gsub("\\", "/"))) end
+    return deps.normalize(path)
+end
+
+--- Rebuild the build dir reverse index from ConfigUnit objects, keyed by
+--- `_build_dir_identity`. Delegates to data_model.sync_build_dir_refs.
 function Workspace:_sync_build_dir_refs()
     self._build_dir_refs = data_model.sync_build_dir_refs(
-        self._config_units, self._core._deps.normalize)
+        self._config_units, function(p) return self:_build_dir_identity(p) end)
 end
 
 --- Get the ConfigUnits that share a build directory.
---- @param build_dir string normalized build directory path
+--- @param build_dir string build directory path (any spelling)
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
-    return self._build_dir_refs[build_dir] or {}
+    return self._build_dir_refs[self:_build_dir_identity(build_dir)] or {}
 end
 
 --- Rebuild the output-artifact reverse index from ConfigUnit objects (§5.9).
@@ -4040,14 +4059,16 @@ function Workspace:_delete_build_dirs_async(dirs, callback, opts)
 end
 
 --- Shared-directory protection (spec §4.6): how many config units OUTSIDE the
---- batch being deleted still reference the build directory `normalized`.
---- A deletion removes the directory only when this is 0.
---- @param normalized string normalized build directory path
+--- batch being deleted still reference the build directory `dir`, compared
+--- by real path (`_build_dir_identity`: another spelling of the same folder
+--- is the same directory). A deletion removes the directory only when this
+--- is 0.
+--- @param dir string build directory path (any spelling)
 --- @param deleting_units table<loomworks.ConfigUnit, true> the batch's units
 --- @return integer
-function Workspace:_remaining_build_dir_refs(normalized, deleting_units)
+function Workspace:_remaining_build_dir_refs(dir, deleting_units)
     local remaining = 0
-    for _, ref_unit in ipairs(self._build_dir_refs[normalized] or {}) do
+    for _, ref_unit in ipairs(self:get_build_dir_refs(dir)) do
         if not deleting_units[ref_unit] then remaining = remaining + 1 end
     end
     return remaining
@@ -4076,7 +4097,6 @@ end
 --- @param opts? { stop?: fun(): boolean }
 --- @return loomworks.Future, boolean shared
 function Workspace:clean_wipe_build_dir(units, build_dir, opts)
-    local norm = self._core._deps.normalize
     local batch, items = {}, {}
     for _, unit in ipairs(units or {}) do
         if not batch[unit] then
@@ -4087,7 +4107,7 @@ function Workspace:clean_wipe_build_dir(units, build_dir, opts)
     if #items == 0 then
         items[1] = { build_dir = build_dir, disposition = "reset" }
     end
-    local shared = self:_remaining_build_dir_refs(norm(build_dir), batch) > 0
+    local shared = self:_remaining_build_dir_refs(build_dir, batch) > 0
     local f = self:execute_deletion({ items = items },
         { reason = "cleaning", stop = opts and opts.stop or nil })
     return f, shared

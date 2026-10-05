@@ -1632,7 +1632,10 @@ function M.run_profile_clean(profile, on_complete)
     local wipe_group = {}
     do
         local groups = {}
-        local norm = ws and ws._core and ws._core._deps and ws._core._deps.normalize
+        -- Grouped by build-dir identity (real path): one folder spelled two
+        -- ways is one batch.
+        local norm = ws and ws._build_dir_identity and function(p) return ws:_build_dir_identity(p) end
+            or (ws and ws._core and ws._core._deps and ws._core._deps.normalize)
         for _, td in ipairs(tasks) do
             local lw = td.loomworks
             if norm and lw and lw.wipe_build_dir and lw.unit

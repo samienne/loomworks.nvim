@@ -233,6 +233,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- Deleting or cleaning a configuration no longer removes a build directory
+  that another configuration still uses under a different spelling of the
+  same folder (a junction or symlink, a Windows 8.3 short name such as
+  `RUNNER~1`): shared build directories are now recognized by their real
+  path, and a clean that wipes one folder spelled two ways wipes it once.
+  (#TBD)
 - `lw clean` on a project that cleans by wiping its build directory (a shell
   project without `clean_cmd`) now treats the wipe as a build-directory
   deletion: the cache is marked unknown before the directory is removed and
