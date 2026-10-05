@@ -5,6 +5,21 @@ they don't get lost.
 
 ---
 
+## Daemon step 5d: route `lw reset`
+
+Decided 2026-10-05: `lw reset` shares build directories with build and clean,
+so it moves into the workspace daemon after step 5c, using the confirmation
+rule from spec/core/daemon.md section 19.15 (the client asks first and the
+request carries the answer). A standalone `lw configure` command was
+considered and not added: configuring stays a step of `lw build`
+(`--reconfigure` forces it).
+
+## Two meanings of "clean"
+
+The editor's `C` action deletes the build directory and resets the unit to
+unconfigured (spec section 4.7), while `lw clean` runs the build system's own
+clean target. Decide whether to align the names or the behaviour.
+
 ## Daemon tasks in overseer and build messages
 
 Decided 2026-10-05: in daemon observer mode, a CLI-started (remote) task shows

@@ -1,6 +1,6 @@
 --- loomworks/daemon/service.lua — the daemon's live workspace and the
---- routed operations: `build` and the batch `test` (spec §19.15, §19.19
---- steps 3 and 5).
+--- routed operations: `build`, the batch `test`, the preparation of a run and
+--- `clean` (spec §19.15, §19.19 steps 3, 5 and 5c).
 ---
 --- **Live workspace.** The daemon loads its workspace on the first operation
 --- (through the host's loader — the same load as the in-process path, which
@@ -41,6 +41,11 @@
 --- foreign kit (device runs stay in the client). The task builds, selects,
 --- deploys and resolves the launch; its `done` carries the resolved `launch`
 --- (or `device = true`) and the client executes the program.
+---
+--- **Request** `{ kind = "clean", args = { profile? }, … }` (§19.15 "Clean")
+--- — the same outcomes; also "refused" with the in-process `nothing to clean
+--- …` line when the profile has no configured build directory to clean,
+--- decided after resolution and before any lock (as in-process).
 
 local build_run = require("loomworks.build_run")
 local envscope = require("loomworks.daemon.envscope")
@@ -228,6 +233,14 @@ function Service:on_run(conn, msg)
     return self:_on_operation("run", conn, msg)
 end
 
+--- Handle a `clean` request (`lw clean`, spec §19.15 "Clean") on an
+--- authenticated connection.
+--- @param conn table
+--- @param msg table
+function Service:on_clean(conn, msg)
+    return self:_on_operation("clean", conn, msg)
+end
+
 --- Is `a` (a `prepare_run` request's args) well-formed?
 --- @param a table
 --- @return boolean
@@ -244,7 +257,7 @@ end
 
 --- A routed operation's request: validate it, then accept it in a model
 --- segment.
---- @param op "build"|"test"|"run"
+--- @param op "build"|"test"|"run"|"clean"
 --- @param conn table
 --- @param msg table
 function Service:_on_operation(op, conn, msg)
@@ -278,7 +291,7 @@ function Service:_on_operation(op, conn, msg)
 end
 
 --- The model segment that accepts (or refuses / declines) a build, a test
---- run or a run's preparation.
+--- run, a run's preparation or a clean.
 function Service:_accept(ctx)
     if ctx.conn.closed then return end
     local ws, refusal, decline = self:live(ctx)
@@ -310,6 +323,15 @@ function Service:_accept(ctx)
         return ctx.reply({ outcome = "declined", reason = "profile '" .. profile.key .. "' builds for "
             .. platform .. "; device runs stay in this process" })
     end
+    -- Nothing to clean: refused with the in-process line, before any lock.
+    local clean_steps
+    if ctx.op == "clean" then
+        clean_steps = build_run.plan_clean(profile)
+        if not clean_steps then
+            return ctx.reply({ outcome = "refused", message = build_run.nothing_to_clean_message(profile),
+                exit_code = 1, notes = ctx.notes })
+        end
+    end
     local task = self.tasks:create(ctx.conn)
     ctx.task, ctx.ws, ctx.profile = task, ws, profile
     ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile.key, pid = self.server.pid,
@@ -319,6 +341,8 @@ function Service:_accept(ctx)
     local args
     if ctx.op == "test" then
         args = { extra = extra, junit = a.junit }
+    elseif ctx.op == "clean" then
+        args = {}
     elseif ctx.op == "run" then
         -- (The program's arguments: an empty list is still a list.)
         args = { target = a.target, project = a.project, kind = a.kind, cwd = a.cwd, extra = a.extra or {},
@@ -329,6 +353,7 @@ function Service:_accept(ctx)
     end
     local run = runner.run(self, {
         op = ctx.op, task = task, ws = ws, profile = profile, env = ctx.env, command = ctx.command, args = args,
+        clean_steps = clean_steps,
     })
     self.server:log("%s %s (task %d) accepted", ctx.op, profile.key, task.id)
     if run and not run.finished then
@@ -384,7 +409,11 @@ function Service:on_stopping(reason)
     -- Whatever still holds a lock releases it here.
     local build_lock = require("loomworks.build_lock")
     for run in pairs(self.runs) do
-        for _, h in ipairs(run.held or {}) do build_lock.release(h) end
+        if run.release_all then
+            run.release_all() -- build-dir locks and a clean's operation lock
+        else
+            for _, h in ipairs(run.held or {}) do build_lock.release(h) end
+        end
         if run.task then
             run.task:done(run.cancel_code or 1, (run.op or "build") .. " stopped: the workspace daemon stopped")
         end

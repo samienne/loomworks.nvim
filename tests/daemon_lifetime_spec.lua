@@ -358,12 +358,14 @@ describe("ensure (§19.9 through a workspace command)", function()
             assert.truthy(ms < 1000, ms .. " ms")
         end)
 
-        it("lw build, lw test and lw run ask for the routed bound; other workspace commands do not", function()
+        it("lw build, test, run and clean ask for the routed bound; other workspace commands do not", function()
             local cli = require("loomworks.cli")
             assert.is_true(cli.ROUTED_COMMANDS.build)
             assert.is_true(cli.ROUTED_COMMANDS.test)
             assert.is_true(cli.ROUTED_COMMANDS.run)
-            for _, c in ipairs({ "profiles", "clean", "configure" }) do
+            assert.is_true(cli.ROUTED_COMMANDS.clean)
+            -- Not routed (§19.15): reset, nuke, device clean, configure.
+            for _, c in ipairs({ "profiles", "reset", "nuke", "device", "configure" }) do
                 assert.is_nil(cli.ROUTED_COMMANDS[c], c)
             end
             -- `lw test --target` and a device run stay in-process (§19.15):
@@ -375,6 +377,10 @@ describe("ensure (§19.9 through a workspace command)", function()
             assert.is_false(cli._routed_command({ "run", "app", "--device", "X" }))
             assert.is_false(cli._routed_command({ "run", "app", "--fresh" }))
             assert.is_false(cli._routed_command({ "profiles" }))
+            assert.is_true(cli._routed_command({ "clean", "dev" }))
+            assert.is_true(cli._routed_command({ "clean" }))
+            assert.same({ profile = "dev" }, cli._clean_request({ "clean", "dev" }))
+            assert.equals("lw: cleaning through the workspace daemon (pid 12)", cli._delegation_line(12, false, "clean"))
             local seen = {}
             local real = ensure.ensure
             ensure.ensure = function(_, o) seen[#seen + 1] = o.routed; return "off" end

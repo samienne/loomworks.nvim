@@ -271,6 +271,68 @@ describe("the observer (§19.16)", function()
         owner_client:close()
     end)
 
+    it("a remote clean shows its units cleaning, ends cleaned / clean failed, titled Cleaning (lw)", function()
+        -- fidget with a recording progress API (the title is the handle's message).
+        local titles = {}
+        local saved = package.loaded["fidget.progress"]
+        package.loaded["fidget.progress"] = { handle = { create = function(o)
+            titles[#titles + 1] = o.message
+            return { report = function() end, finish = function() end, cancel = function() end }
+        end } }
+        require("loomworks.fidget").setup()
+        package.loaded["fidget.progress"] = saved
+        s = new_server(root)
+        local stopped = {}
+        on("daemon_task_stopped", function(d) stopped[#stopped + 1] = d.task end)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        local unit = pp._config_unit
+        local before = unit:local_state()
+        local owner_client = assert(client.session(s.srv.address))
+        local owner
+        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
+        local stream = tasks_mod.new(s.srv)
+        local units = { { project = pp:project_key(), configuration = pp:config_key() } }
+        local t = stream:create(owner)
+        t:start({ name = "dev", kind = "clean", profile = profile.key, units = units })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        local rt = ws:get_daemon_tasks()[1]
+        -- The display of the transient clean state, as a local clean's.
+        assert.equals("deleting", unit:state())
+        assert.equals("cleaning", unit:deleting_reason())
+        assert.equals("cleaning", (require("loomworks.ui.helpers").resolve_unit_status(unit)))
+        assert.is_nil(unit:shown_action())
+        assert.is_false(unit:is_deleting())
+        assert.equals(before, unit:local_state())
+        assert.is_true(profile:has_active_operation())
+        assert.equals("Cleaning (lw)", titles[#titles])
+        t:done(0)
+        assert.is_true(vim.wait(5000, function() return #stopped == 1 end, 10))
+        assert.truthy(rt:outcome():find("^cleaned in "), rt:outcome())
+        assert.truthy(profile:operation().message:find("^cleaned in "), profile:operation().message)
+        assert.is_nil(unit:deleting_reason())
+        assert.equals(before, unit:state())
+        local t2 = stream:create(owner)
+        t2:start({ name = "dev", kind = "clean", profile = profile.key, units = units })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        local rt2 = ws:get_daemon_tasks()[1]
+        t2:done(3, "clean failed (exit 3): app: clean Debug")
+        assert.is_true(vim.wait(5000, function() return #stopped == 2 end, 10))
+        assert.truthy(rt2:outcome():find("^clean failed in .*: clean failed %(exit 3%)"), rt2:outcome())
+        -- A remote test or run shows its units building.
+        for _, kind in ipairs({ "test", "run" }) do
+            local tk = stream:create(owner)
+            tk:start({ name = "dev", kind = kind, profile = profile.key, units = units })
+            assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+            assert.equals("building", unit:state(), kind)
+            tk:done(0)
+            assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 0 end, 10))
+        end
+        owner_client:close()
+    end)
+
     it("a remote task never blocks an editor build or launch (the build-dir locks do)", function()
         local profile = ws:get_profiles()[1]
         local pp = profile:projects()[1]

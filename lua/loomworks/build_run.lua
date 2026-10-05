@@ -701,6 +701,156 @@ function M.failure_message(step, code, extra_hint, signal)
 end
 
 -- ---------------------------------------------------------------------------
+-- Headless clean (§16.1) — `lw clean`, shared by the in-process host (cli.lua
+-- `cmd_clean`) and the workspace daemon (daemon/runner.lua, §19.15 "Clean"):
+-- the plan, the lines, the failure lines and the core-performed wipe (one
+-- deletion path, `wipe_step` over Workspace:clean_wipe_build_dir). A host
+-- differs only in how a module clean step is spawned and in how it waits for
+-- the asynchronous wipe (the in-process host waits; the daemon keeps serving
+-- and passes its cancellation as the wipe's stop predicate). A failing module
+-- step reports `failure_message` (kind "clean").
+-- ---------------------------------------------------------------------------
+
+--- The clean steps of a profile (overseer.plan_profile_clean: one step per
+--- project, a configured build directory that exists on disk), or nil when
+--- there is nothing to clean (`nothing_to_clean_message`).
+--- @param profile table
+--- @return table[]|nil
+function M.plan_clean(profile)
+    local steps = require("loomworks.overseer").plan_profile_clean(profile)
+    if not steps or #steps == 0 then return nil end
+    return steps
+end
+
+--- The refusal of a clean with nothing to clean (exit 1).
+--- @param profile table
+--- @return string
+function M.nothing_to_clean_message(profile)
+    return "nothing to clean for profile '" .. profile.key .. "' — no configured build directories."
+end
+
+--- The line announcing a clean step.
+--- @param step table
+--- @return string
+function M.clean_step_line(step)
+    return string.format("==> [clean] %s", step.name or "?")
+end
+
+--- How long a wipe waits, after the removal, for the directory to be gone on
+--- disk (Windows delete-pending: an antivirus/indexer handle keeps the entry
+--- in the namespace until it closes) before the removal counts as failed.
+--- Instant on a healthy filesystem. Polled with a timer, never blocking.
+M.WIPE_VERIFY_MS = 30000
+
+--- The key a wipe groups a build directory under (the workspace's path
+--- normalization: case-folded on Windows).
+local function wipe_key(ws, dir)
+    local n = ws._core and ws._core._deps and ws._core._deps.normalize or vim.fs.normalize
+    return n(dir)
+end
+
+--- The wipe groups of a clean (`plan_clean` steps): the clean's units per
+--- normalized build directory. Every unit of the clean using a directory is
+--- ONE deletion batch (spec §4.6), so a directory shared only among them is
+--- wiped once (one unit per batch would see the others as outside references
+--- and keep it); the later steps of the group find it done.
+--- @param ws table
+--- @param steps table[]
+--- @return table<string, { units: table[], wiped: boolean }>
+function M.wipe_groups(ws, steps)
+    local groups = {}
+    for _, step in ipairs(steps or {}) do
+        if step.wipe_build_dir and step.build_dir then
+            local k = wipe_key(ws, step.build_dir)
+            local g = groups[k] or { units = {}, wiped = false }
+            groups[k] = g
+            if step.unit then g.units[#g.units + 1] = step.unit end
+        end
+    end
+    return groups
+end
+
+--- Does a clean plan contain a core-performed wipe (a deletion: it takes the
+--- workspace operation lock, before the build-directory locks, spec §19.3)?
+--- @param steps table[]
+--- @return boolean
+function M.has_wipe(steps)
+    for _, step in ipairs(steps or {}) do
+        if step.wipe_build_dir then return true end
+    end
+    return false
+end
+
+--- A core-performed wipe (spec §8.1 `wipe_build_dir`) — the ONE wipe path of
+--- both hosts (in-process `lw clean` and the workspace daemon, §19.15
+--- "Clean"): a build-directory DELETION (§4.6, §4.7) through
+--- `Workspace:clean_wipe_build_dir`: validated against the workspace root
+--- (`_validate_build_dir`: non-empty, within the root, never the root itself —
+--- Deletion Safety), the cache `unknown` on disk before the asynchronous
+--- removal, the units reset only after it succeeded, a directory still used
+--- by a config outside the group kept. `groups` from `wipe_groups`.
+--- `opts.stop` (the daemon's cancellation) is asked before each entry; a
+--- stopped wipe leaves the cache `unknown`. `opts.verify_ms`: the
+--- delete-pending budget (`WIPE_VERIFY_MS`).
+--- `done(code, message, stopped, note)`: 0 on success (`note`: the line to
+--- print, e.g. a kept shared directory); else the exit code and the line the
+--- CLI prints; `stopped` when the removal was stopped (nothing more to say).
+--- `done` runs from a scheduled callback or a timer (hosts reschedule model
+--- work); the caller already holds the build-directory locks of the dir
+--- (the deletion's own lock acquisition re-enters them).
+--- @param ws table
+--- @param step table a plan_clean step with `wipe_build_dir`
+--- @param groups table from wipe_groups
+--- @param opts? { stop?: fun(): boolean, verify_ms?: integer }
+--- @param done fun(code: integer|nil, message: string|nil, stopped: boolean|nil, note: string|nil)
+function M.wipe_step(ws, step, groups, opts, done)
+    opts = opts or {}
+    local dir = step.build_dir
+    if not ws:_validate_build_dir(dir, ws.root) then
+        return done(1, "clean refused: unsafe build directory " .. tostring(dir))
+    end
+    local g = groups and groups[wipe_key(ws, dir)]
+    if g and g.wiped then return done(0) end
+    local stop = opts.stop
+    if stop and stop() then return done(nil, nil, true) end
+    if g then g.wiped = true end
+    local function failed()
+        return done(1, "clean failed: could not remove " .. dir .. ": " .. (step.name or "?"))
+    end
+    local f, shared = ws:clean_wipe_build_dir(g and g.units or (step.unit and { step.unit } or {}), dir,
+        { stop = stop })
+    local settled = false
+    local function settle(ok)
+        if settled then return end
+        settled = true
+        -- The deletion's own outcome decides (`false` = lock refused, removal
+        -- failed or stopped), never the unit's state.
+        if not ok then
+            if stop and stop() then return done(nil, nil, true) end
+            return failed()
+        end
+        if shared then
+            return done(0, nil, nil, "kept " .. dir .. " — still used by another configuration")
+        end
+        local uv = vim.uv or vim.loop
+        if not uv.fs_stat(dir) then return done(0) end
+        -- Delete-pending: poll for genuine absence without blocking.
+        local budget = opts.verify_ms or M.WIPE_VERIFY_MS
+        local waited, timer = 0, uv.new_timer()
+        timer:start(20, 20, function()
+            waited = waited + 20
+            local gone = uv.fs_stat(dir) == nil
+            if gone or waited >= budget then
+                timer:stop()
+                timer:close()
+                if gone then done(0) else failed() end
+            end
+        end)
+    end
+    f:next(function(v) settle(v == true) end):catch(function() settle(false) end)
+end
+
+-- ---------------------------------------------------------------------------
 -- Headless test runs (§16.16) — the batch `lw test` around the build steps,
 -- shared by the in-process host (cli.lua `cmd_test`) and the workspace daemon
 -- (daemon/runner.lua, §19.15): every line and refusal is returned as the text

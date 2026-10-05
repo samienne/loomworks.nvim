@@ -1267,86 +1267,45 @@ local RESET_VERIFY_MS = 30000
 --- `lw clean [profile]` — run each project's build-system clean (e.g.
 --- `meson compile --clean`, `cmake --build --target clean`) on the profile's
 --- configured build dirs. Removes build artifacts but keeps the configuration
---- (a later build reconfigures only if stale). Dies on any failure.
+--- (a later build reconfigures only if stale). Dies on any failure. The plan,
+--- lines and the core-performed wipe are loomworks.build_run's, shared with
+--- the workspace daemon (spec §19.15 "Clean").
 function M.cmd_clean(ws, profile_name)
-  local overseer = require("loomworks.overseer")
+  local build_run = require("loomworks.build_run")
   local profile
   profile, ws = resolve_build_target(ws, profile_name, "lw clean <profile>")
-  local steps = overseer.plan_profile_clean(profile)
-  if not steps or #steps == 0 then
-    die("nothing to clean for profile '" .. profile.key ..
-      "' — no configured build directories.")
-  end
+  local steps = build_run.plan_clean(profile)
+  if not steps then die(build_run.nothing_to_clean_message(profile)) end
   -- A core-performed wipe is a deletion, which takes the workspace operation
-  -- lock; lock order (spec §19.3) puts it before the build-directory locks.
+  -- lock; lock order (spec §19.3) puts it before the build-directory locks
+  -- (the deletion's own acquisition then re-enters both).
   local op_tok
-  for _, step in ipairs(steps) do
-    if step.wipe_build_dir then op_tok = ws:_op_lock("clean"); break end
-  end
-  if op_tok then
+  if build_run.has_wipe(steps) then
+    op_tok = ws:_op_lock("clean")
     on_exit(function() require("loomworks.op_lock").release(op_tok) end)
   end
-  -- Wipe steps of the same build directory are ONE deletion batch (spec
-  -- §4.6): every unit of this clean using the dir is subtracted, so a dir
-  -- shared only among them is wiped once; the later steps find it done.
-  local norm = vim.fs.normalize
-  if ws._core and ws._core._deps and ws._core._deps.normalize then norm = ws._core._deps.normalize end
-  local wipe_units, wiped = {}, {}
-  for _, step in ipairs(steps) do
-    if step.wipe_build_dir and step.unit then
-      local key = norm(step.build_dir)
-      wipe_units[key] = wipe_units[key] or {}
-      table.insert(wipe_units[key], step.unit)
-    end
-  end
+  local groups = build_run.wipe_groups(ws, steps)
   with_build_locks(profile, "clean", function()
     out("cleaning profile: " .. profile.key)
     for _, step in ipairs(steps) do
-      out(string.format("==> [clean] %s", step.name or "?"))
+      out(build_run.clean_step_line(step))
       if step.wipe_build_dir then
         -- Core-performed wipe (spec §8.1) = a build-directory deletion
-        -- (§4.6, §4.7): validated against the workspace root (never the root
-        -- itself), cache `unknown` on disk before the in-process removal, the
-        -- unit reset to unconfigured only after it succeeded, and a dir still
-        -- referenced by another config kept.
-        if not ws:_validate_build_dir(step.build_dir, ws.root) then
-          die("clean refused: unsafe build directory " .. tostring(step.build_dir))
+        -- (§4.6, §4.7), the daemon's same path (build_run.wipe_step).
+        local done, res = false, nil
+        build_run.wipe_step(ws, step, groups,
+          { verify_ms = M._reset_verify_ms or RESET_VERIFY_MS },
+          function(code, msg, _, note) done, res = true, { code = code, msg = msg, note = note } end)
+        if not vim.wait(RESET_TIMEOUT_MS + (M._reset_verify_ms or RESET_VERIFY_MS),
+            function() return done end, 20) then
+          die("clean timed out — the build-directory deletion did not complete: "
+            .. (step.name or "?"))
         end
-        local key = norm(step.build_dir)
-        if not wiped[key] then
-          wiped[key] = true
-          local done, ok = false, false
-          local f, shared = ws:clean_wipe_build_dir(
-            wipe_units[key] or (step.unit and { step.unit } or {}), step.build_dir)
-          f:next(function(v) done, ok = true, v == true end)
-           :catch(function() done = true end)
-          if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then
-            die("clean timed out — the build-directory deletion did not complete: "
-              .. (step.name or "?"))
-          end
-          -- The deletion's own outcome decides (`false` = lock refused or
-          -- removal failed, both reported), not the unit's state.
-          if not ok then
-            die("clean failed: could not remove " .. step.build_dir .. ": "
-              .. (step.name or "?"))
-          end
-          if shared then
-            out("kept " .. step.build_dir .. " — still used by another configuration")
-          else
-            vim.wait(M._reset_verify_ms or RESET_VERIFY_MS,
-              function() return uv.fs_stat(step.build_dir) == nil end, 20)
-            if uv.fs_stat(step.build_dir) ~= nil then
-              die("clean failed: could not remove " .. step.build_dir .. ": "
-                .. (step.name or "?"))
-            end
-          end
-        end
+        if res.code ~= 0 then die(res.msg, res.code) end
+        if res.note then out(res.note) end
       else
         local code, sig = run_spec(step, ws.root)
-        if code ~= 0 then
-          die(string.format("clean failed (%s): %s",
-            require("loomworks.build_run").exit_text(code, sig), step.name or "?"), code)
-        end
+        if code ~= 0 then die(build_run.failure_message(step, code, nil, sig), code) end
       end
     end
   end)
@@ -7514,8 +7473,8 @@ M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 --- Workspace commands routed to the workspace daemon (spec §19.15): their
 --- ensure step waits longer for a slow daemon (§19.10) before they run
 --- in-process. `test`: its batch form (§19.19 step 5); `run`: its preparation
---- (§19.15 "Run"; the program runs here).
-M.ROUTED_COMMANDS = { build = true, test = true, run = true }
+--- (§19.15 "Run"; the program runs here); `clean` (§19.15 "Clean", step 5c).
+M.ROUTED_COMMANDS = { build = true, test = true, run = true, clean = true }
 
 --- Would argv `args` be routed to the daemon, for the ensure step's bound
 --- (§19.10)? A routed command, except `lw test --target` and a `lw run` with a
@@ -7588,7 +7547,7 @@ end
 --- @param op? "build"|"test"|"run" (default "build")
 --- @return string
 function M._delegation_line(pid, color, op)
-  local what = ({ test = "testing", run = "preparing the run" })[op] or "building"
+  local what = ({ test = "testing", run = "preparing the run", clean = "cleaning" })[op] or "building"
   local line = "lw: " .. what .. " through the workspace daemon"
   if type(pid) == "number" and pid > 0 then line = line .. " (pid " .. math.floor(pid) .. ")" end
   if color == nil then color = M._stderr_supports_color() end
@@ -7622,6 +7581,15 @@ function M._build_request(args)
   if pre[2] then return nil end
   req.profile = pre[1]
   return req
+end
+
+--- The request a `lw clean` argv routes as (spec §19.15 "Clean"): the same
+--- parse as `cmd_clean` — `{ profile? }`, the first operand (`cmd_clean`
+--- refuses no argument form; the profile resolution refuses, as in-process).
+--- @param args string[] argv, args[1] == "clean"
+--- @return table
+function M._clean_request(args)
+  return { profile = args[2] }
 end
 
 --- The request a `lw test` argv routes as (spec §19.15): the same parse as
@@ -7807,8 +7775,8 @@ function M._delegate_build(root, args, ensured, opts)
   return M._delegate("build", root, args, ensured, opts)
 end
 
---- Route `lw build`, the batch `lw test` or the preparation of `lw run` to
---- the workspace daemon (spec §19.15, §19.19 steps 3 and 5). A routed run's
+--- Route `lw build`, the batch `lw test`, the preparation of `lw run` or `lw
+--- clean` to the workspace daemon (spec §19.15, §19.19 steps 3, 5 and 5c). A routed run's
 --- program then runs here, after the connection was closed
 --- (`_finish_routed_run`).
 --- Only when this command has a daemon (`ensured` is "used", "launched" or
@@ -7820,7 +7788,7 @@ end
 --- build in this process's environment (sent with the request).
 --- `lw test --target` (the named-executable form) and a `lw run` with a
 --- device option stay in-process with one line (§19.15).
---- @param op "build"|"test"|"run"
+--- @param op "build"|"test"|"run"|"clean"
 --- @param root string
 --- @param args string[]
 --- @param ensured string|nil
@@ -7844,6 +7812,7 @@ function M._delegate(op, root, args, ensured, opts)
   local req, run_args
   if op == "test" then req = M._test_request(args)
   elseif op == "run" then req, run_args = M._run_request(args)
+  elseif op == "clean" then req = M._clean_request(args)
   else req = M._build_request(args) end
   -- `--target` / a device option always says why in its own words, whatever
   -- the runtime is.
@@ -12383,10 +12352,10 @@ local function main()
     finish(M.cmd_target(root, a))
   end
 
-  -- `lw build` and the batch `lw test` routed to the workspace daemon (spec
-  -- §19.15, §19.19 steps 3 and 5):
+  -- `lw build`, the batch `lw test`, the preparation of `lw run` and `lw
+  -- clean` routed to the workspace daemon (spec §19.15, §19.19 steps 3, 5, 5c):
   -- nil = not routed (every other case runs in-process exactly as before).
-  if command == "build" or command == "test" or command == "run" then
+  if command == "build" or command == "test" or command == "run" or command == "clean" then
     local routed = M._delegate(command, root, a, ensured)
     if routed then finish(routed) end
   end

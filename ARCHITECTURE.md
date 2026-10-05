@@ -907,6 +907,44 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `ROUTED_COMMANDS.run`; `_routed_command` gives a device run the plain
   ensure bound.
 
+**Step 5c: `lw clean` (spec §19.15 "Clean")** adds:
+
+- `build_run.lua` — the clean pieces both hosts use: `plan_clean` (over
+  `overseer.plan_profile_clean`, nil = nothing to clean),
+  `nothing_to_clean_message`, `clean_step_line`, `has_wipe`, `wipe_groups`
+  (the clean's units per normalized build dir: one deletion batch each) and
+  `wipe_step(ws, step, groups, opts, done)` — the ONE core-performed wipe of
+  both hosts: `Workspace:_validate_build_dir` against the root, then
+  `Workspace:clean_wipe_build_dir` (→ `execute_deletion` → `_run_deletion`:
+  cache `unknown` first, reset after success, shared dir kept), then a
+  non-blocking delete-pending check (`WIPE_VERIFY_MS`). `opts.stop` reaches
+  the async removal through `execute_deletion` opts → `_run_deletion` →
+  `_delete_build_dirs_async` → `io.rm_rf_async(dir, cb, { stop })`; a
+  stopped removal resolves the deletion `false` with the cache left
+  `unknown`. `cli.cmd_clean` takes the op lock (when it wipes), the build
+  locks, and waits for each `wipe_step`; a failing module step reports
+  `failure_message` (kind `clean`).
+- `io.lua` — `rm_rf_async(dir, cb, opts)`: `opts.stop` asked before each
+  entry (links unlinked, never followed; no shell); the callback's third
+  value is `stopped`.
+- `daemon/runner.lua` — `ctx.op == "clean"`: the locks (record operation
+  `clean`), then `ctx.clean_steps` (planned by the service before any lock):
+  a module step through the streamed `spawn`; a wipe through
+  `build_run.wipe_step` (stop predicate = `run.cancelled`, completion back in
+  a model segment). A clean that wipes takes the workspace operation lock
+  (`run.op_tok`) before the build locks; the deletion re-enters both (op
+  lock nesting, `build_lock.held_by_me`). `run.wiping` makes `cancel` wait
+  for the removal to stop before the locks are released.
+- `daemon/service.lua` — `on_clean` (`_on_operation("clean", …)`; usage `lw
+  clean <profile>`; nothing to clean → `refused` before any lock);
+  `server.lua` dispatches it; `protocol.KIND.clean`; protocol 8.
+- `cli.lua` — `M._clean_request` (`{ profile = args[2] }`, `cmd_clean`'s
+  parse), `ROUTED_COMMANDS.clean`, `_delegation_line(…, "clean")`.
+- Observer — `remote_task.lua`: a `clean` task's `action` is `clean` (end
+  verbs `cleaned` / `clean failed`); `ConfigUnit:state()` shows it as
+  `deleting` with `deleting_reason()` `cleaning` (a local clean's display),
+  `shown_action()` nil; fidget's `ACTION_TITLE.clean` gives `Cleaning (lw)`.
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller

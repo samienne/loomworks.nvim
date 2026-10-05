@@ -574,6 +574,9 @@ function Server:_dispatch_request(conn, msg)
         -- The preparation of `lw run` (§19.15 "Run"); the program runs in
         -- the client.
         return self.service:on_run(conn, msg)
+    elseif msg.kind == K.clean and self.service then
+        -- `lw clean` (§19.15 "Clean", §19.19 step 5c).
+        return self.service:on_clean(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end

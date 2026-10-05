@@ -4,7 +4,12 @@
 --- or the preparation of `lw run` (§19.15 "Run"): the same locks and build
 --- (unless `no_build`), the locks released, then the launch target selected,
 --- deployed and its launch spec resolved (loomworks.run_prep), returned in
---- the task's `done` for the client to execute.
+--- the task's `done` for the client to execute — or a clean (`lw clean`,
+--- §19.15 "Clean"): the same locks, then each project's clean step — a module
+--- clean spawned like a build step, or a core-performed wipe
+--- (loomworks.build_run.wipe_step: the in-process build-directory deletion,
+--- Workspace:clean_wipe_build_dir — asynchronous, so the endpoint keeps
+--- serving, and stoppable between entries by the run's cancellation).
 ---
 --- It runs the SAME step sequence as the in-process `lw build`
 --- (`cli.run_build_steps` over `loomworks.build_run`):
@@ -176,13 +181,16 @@ end
 
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
---- @field op "build"|"test"|"run" the operation
+--- @field op "build"|"test"|"run"|"clean" the operation
 --- @field cancelled boolean
 --- @field cancel_reason string|nil
 --- @field cancel_code integer|nil
 --- @field finished boolean|nil
 --- @field held table[] the build-directory lock handles held
+--- @field op_tok table|nil a clean's workspace operation lock (it wipes)
+--- @field release_all fun()|nil releases the build-directory locks and the operation lock (also on daemon stop)
 --- @field child table|nil the running step { obj, pid, start }
+--- @field wiping boolean|nil a clean's wipe is running (cancel stops it between entries)
 --- @field ctx table|nil the service request that started it
 --- @field cancel fun(reason?: string, code?: integer)
 
@@ -191,13 +199,15 @@ end
 --- still held — each native test runner, every one even after one failed; or
 --- the preparation of a run (`ctx.op == "run"`, §19.15 "Run"): the build (not
 --- under `args.no_build`), the locks released, then `prepare` (target, gate,
---- deploy, launch spec), ending the task with `launch` or `device`.
+--- deploy, launch spec), ending the task with `launch` or `device`; or a clean
+--- (`ctx.op == "clean"`, §19.15 "Clean"): the locks, then `ctx.clean_steps`
+--- (planned by the service before any lock, build_run.plan_clean).
 --- @param svc table the build service (with_model, host)
---- @param ctx table the request: { op?, env, args, command, task, ws, profile }
+--- @param ctx table the request: { op?, env, args, command, task, ws, profile, clean_steps? }
 --- @return loomworks.daemon.BuildRun
 function M.run(svc, ctx)
     local task, ws, profile, args = ctx.task, ctx.ws, ctx.profile, ctx.args or {}
-    local op = (ctx.op == "test" or ctx.op == "run") and ctx.op or "build"
+    local op = (ctx.op == "test" or ctx.op == "run" or ctx.op == "clean") and ctx.op or "build"
     local testing = op == "test"
     local running = op == "run"
     -- `lw run --print` / `--dry-run` keep the build's lines off stdout (§16.17).
@@ -209,7 +219,13 @@ function M.run(svc, ctx)
     local function release_all()
         for _, h in ipairs(run.held) do build_lock.release(h) end
         run.held = {}
+        if run.op_tok then
+            local tok = run.op_tok
+            run.op_tok = nil
+            if ws._op_unlock then ws:_op_unlock(tok) else require("loomworks.op_lock").release(tok) end
+        end
     end
+    run.release_all = release_all
     local function finish(code, err, fields)
         if run.finished then return end
         run.finished = true
@@ -230,6 +246,11 @@ function M.run(svc, ctx)
         if run.child then
             -- Its exit (any code) then finishes the run without recording.
             M.kill(run.child)
+        elseif run.wiping then
+            -- The wipe stops between entries (its stop predicate sees
+            -- `cancelled`); its end then finishes the run, the locks held
+            -- until nothing more is removed.
+            return
         else
             svc:with_model(ctx, function() finish(run.cancel_code, stopped()) end)
         end
@@ -385,6 +406,56 @@ function M.run(svc, ctx)
         } })
     end
 
+    -- ---- a clean (op == "clean"), after the locks ---------------------------
+    -- Exactly what the in-process `lw clean` does (cli.cmd_clean, over
+    -- loomworks.build_run): one line and step per project, the first failure
+    -- ends it. Nothing is recorded for a step (as in-process).
+    local csteps, ci = ctx.clean_steps or {}, 0
+    local wipe_groups = build_run.wipe_groups(ws, csteps)
+    local next_clean
+    local function clean_step_done(step, code, signal)
+        if ended_by_cancel() then return end
+        code, signal = build_run.exit_status(code, signal)
+        if code ~= 0 then return finish(code, build_run.failure_message(step, code, nil, signal)) end
+        task:progress(ci / #csteps)
+        next_clean()
+    end
+    next_clean = function()
+        if run.cancelled then return finish(run.cancel_code, stopped()) end
+        local okc, why = current()
+        if not okc then return finish(1, stopped(why)) end
+        ci = ci + 1
+        if ci > #csteps then
+            release_all()
+            task:line("out", "CLEAN OK: " .. profile.key)
+            return finish(0)
+        end
+        local step = csteps[ci]
+        task:progress((ci - 1) / #csteps)
+        task:line("out", build_run.clean_step_line(step))
+        if not step.wipe_build_dir then
+            return spawn(step, function(code, signal) clean_step_done(step, code, signal) end)
+        end
+        -- The core-performed wipe: the in-process deletion (build_run.wipe_step
+        -- over Workspace:clean_wipe_build_dir — cache `unknown` first, reset
+        -- only after success, a dir shared outside the clean kept). Its
+        -- removal is asynchronous; the run's cancellation is its stop
+        -- predicate (a stopped wipe leaves the cache `unknown`). The locks this
+        -- run holds are re-entered by the deletion.
+        run.wiping = true
+        build_run.wipe_step(ws, step, wipe_groups, { stop = function() return run.cancelled end },
+            function(code, msg, _, note)
+                svc:with_model(ctx, function()
+                    run.wiping = false
+                    if run.cancelled then return finish(run.cancel_code, stopped()) end
+                    if code ~= 0 then return finish(code, msg) end
+                    if note then task:line("out", note) end
+                    task:progress(ci / #csteps)
+                    next_clean()
+                end)
+            end)
+    end
+
     -- ---- the build steps ---------------------------------------------------
     local steps, i = nil, 0
     local next_step
@@ -441,6 +512,13 @@ function M.run(svc, ctx)
     task:start({ name = profile.key, kind = op, profile = profile.key, units = units })
     -- `--no-build` / `--dry-run`: no build, no lock — straight to the launch.
     if running and args.no_build then prepare(); return run end
+    -- A clean that wipes performs a deletion: the workspace operation lock
+    -- first (spec §19.3 lock order, as in-process cli.cmd_clean).
+    if op == "clean" and build_run.has_wipe(csteps) then
+        local tok, omsg = ws:_op_lock("clean")
+        if not tok then finish(1, omsg or "clean refused: the workspace operation lock is held"); return run end
+        run.op_tok = tok
+    end
     -- Locks first, exactly like the in-process with_build_dir_locks: every
     -- build directory, canonical order, fail-fast. A test run holds them
     -- across the build AND the test runs (a native runner may rebuild).
@@ -449,7 +527,7 @@ function M.run(svc, ctx)
         local shown = ws._display_build_dir and ws:_display_build_dir(bd) or bd
         local lctx = { what = shown, command = ctx.command or ("lw " .. op), unlock = shown }
         local h, msg = lock_break.acquire(function()
-            local hh, _, info = build_lock.acquire(bd, "build", lctx)
+            local hh, _, info = build_lock.acquire(bd, op == "clean" and "clean" or "build", lctx)
             return hh, info
         end, lctx)
         if not h then finish(1, msg); return run end
@@ -458,6 +536,12 @@ function M.run(svc, ctx)
             local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
             if line then task:line("err", "lw: " .. line .. "\n") end
         end
+    end
+
+    if op == "clean" then
+        task:line("out", "cleaning profile: " .. profile.key)
+        next_clean()
+        return run
     end
 
     local plan_err

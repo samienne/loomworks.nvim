@@ -731,7 +731,8 @@ and its task stream, §19.15; protocol version 4: 3 plus the observer role,
 version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
 plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
-§19.15, §19.16); the rest of the
+§19.15, §19.16; protocol version 8: 7 plus the routed `clean` request,
+§19.15); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -989,8 +990,11 @@ reference-based. Read-only queries run on the client's projection.
 [--junit <file>] [-- <args>]`, §16.16; `lw test --target` stays in-process,
 see Routing), and for the preparation of `lw run` (§16.17; see Run;
 `run_prep.lua`, the client's `_finish_routed_run`; device runs stay
-in-process, see Routing); observed by the editor (§19.16); other operations
-future.*
+in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
+the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
+the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
+with a stop predicate); observed by the editor (§19.16);
+other operations future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1146,6 +1150,44 @@ standard error, so standard output carries only the report. Hence:
   the client's real terminal (colour, size, redraws), unlike the build's
   tools above.
 
+**Clean.** *(Step 5c.)* `clean { args, interactive, env, command }` — `lw
+clean [<profile>]` (§16.1: each project's build-system clean on the
+profile's build directories; the configuration is kept) — has the outcomes of
+`build`; `args` carries `profile`. It is also `refused`, with the in-process
+`nothing to clean for profile '<p>' …` line and its exit code, when the
+profile has no configured build directory to clean — decided after
+resolution and before any lock, as in-process. Its task's `meta.kind` is
+`clean`. An accepted request does, and prints, exactly what the in-process
+clean does: the build-directory locks of §16.6 taken **exclusive** up front in
+canonical order with the §19.5 record (holder kind `daemon`, operation
+`clean`; a dead holder's lock reclaimed and its state recovered as for a
+build), `cleaning profile: <p>`, one `==> [clean] <name>` line and step per
+project, and `CLEAN OK: <profile>`; a failing step ends the task with the
+in-process failure line and the step's exit code, the later steps not run.
+A **core-performed wipe** (§8.1 `wipe_build_dir`) runs in the daemon process
+as the SAME build-directory deletion as in-process (§4.6, §4.7; one path for
+both hosts), under the workspace operation lock taken before the
+build-directory locks (§19.3): the path is validated first (§4.6: non-empty,
+within the workspace root and never the root itself, links not followed, no
+command interpreter) — a refused path ends the task with the in-process
+`clean refused: unsafe build directory …` line; the clean's units sharing the
+directory are one deletion batch; the cache says `unknown` on disk before the
+tree is removed and the units are reset only after the removal succeeded; a
+directory still used by a configuration outside the clean is kept (the
+in-process `kept <dir> — still used by another configuration` line). The
+removal does not block the daemon's endpoint (pings, status and other
+clients are served while it runs). Cancelling during a wipe stops it between
+entries (`clean stopped: <reason>`); what was removed stays removed and the
+cache stays `unknown` (never reset after a partial removal, §4.7). The clean
+writes the cache exactly when the in-process clean does, and any write-back's
+`model_change` precedes `done` (§19.16, End).
+
+**Confirmation.** A daemon never prompts. An operation whose in-process form
+asks the user before acting (a confirmation, a picker) either is `declined`
+for that form (profile onboarding, above) or is asked by the client before it
+sends the request, the request then carrying the answer; no routed operation
+of this step asks one.
+
 **Environment.** A routed build behaves as if the client process had run it.
 The client sends its **whole environment** with the request; the daemon
 applies it to the operation and to nothing else:
@@ -1212,7 +1254,7 @@ is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
 that step, releases its locks and ends the task nonzero (`build stopped:
 <reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
-for a run's preparation). A client that loses the connection after its operation was
+for a run's preparation; `clean stopped: <reason>` for a clean). A client that loses the connection after its operation was
 accepted reports a failure; it never re-runs the operation another way (for a
 run: it starts no program). Cancellation ends with the task: a run's program,
 started after it, is never the daemon's to stop (Run). A
@@ -1292,6 +1334,29 @@ remote program's liveness stay with the client process:
 
 The editor's own run and debug launches stay in-process in this step
 (§19.16).
+
+`lw clean` (step 5c) is routed by the same rules, an argument `cmd_clean`
+refuses taking the place of one `cmd_build` refuses, and its lines name the
+clean: `lw: the workspace daemon declined the clean (<reason>); running
+without it`, `lw: the workspace daemon could not take the clean (<reason>);
+running without it` and `lw: cleaning through the workspace daemon (pid N)`.
+It has no form the daemon does not carry. Configuring has no command of its
+own: it is a step of the routed build (`lw build --reconfigure` forces it,
+§16.4), and runs in the daemon with it.
+
+**Not routed.** These commands touch build directories but stay on the
+in-process path in this step; they are not routed commands, so they print no
+daemon line, and their cross-process locks (§16.6, §19.3) serialize them with
+the daemon's operations as with any other process:
+
+- `lw reset` (§16.30) — destructive, with a confirmation (`-y`); when it is
+  routed, its confirmation follows Confirmation above;
+- `lw nuke` — removes the workspace's build state (`.nvim/build/`, the build
+  and health caches), taking every build-directory lock first (§19.3);
+- `lw device clean` (§16.34) — its device locks and the device's staging stay
+  with the client process, as for a device run;
+- the editor's own operations, including its clean, delete and configure
+  actions (§19.16).
 
 ### 19.16 The editor as a client
 
@@ -1374,7 +1439,10 @@ in-process path. In `in-process` mode nothing below happens.
     editor's objects as a local operation of its `kind` would (§3): each
     resolved configuration unit reports `building` (or the kind's state), so
     its build directory shows it too, and the resolved profile counts as
-    having an active operation (spec/ui.md §1.5). The state is runtime-only:
+    having an active operation (spec/ui.md §1.5). A remote `clean` shows its
+    units `cleaning`, the display of the transient clean state (§3.1, transition rule 5),
+    without changing their cached state; a remote `test` or `run` shows
+    `building`. The state is runtime-only:
     the editor never writes the cache or the working copy for a remote task
     and runs nothing. It never blocks an editor operation: the cross-process
     build-directory locks (§16.6) do.
@@ -1391,7 +1459,8 @@ in-process path. In `in-process` mode nothing below happens.
     (§19.12) before its `done`, so the editor has already reloaded the
     outcome when the running state clears.
   - **UI.** A remote task is shown exactly as a local task of the same kind
-    and profile: in progress (fidget, the same entry and end message), in the
+    and profile: in progress (fidget, the same entry and end message — for
+    a `clean`, `cleaned` / `clean failed`, as a local clean's), in the
     status page's Profiles and Tasks sections (spec/ui.md §1.5, §1.9), and
     in the status line. It is neither cancelled nor restarted from the editor
     (§19.15). Its only difference is an **origin marker** naming who started
@@ -1433,7 +1502,13 @@ exit status, both ways — the same output, exit code, deploy records and
 persisted cache; plus: the program runs after the task ended and every lock
 was released (a `lw build` of the profile proceeds while it runs), it
 survives `lw daemon stop`, two runs at once, the not-carried device forms
-print their line); the projection half #88.*
+print their line) and `lw clean` (`tests/daemon_clean_cli_spec.lua`: a module
+clean, a core-performed wipe, a refused unsafe path, nothing to clean, a
+failing step, an unknown or missing profile, both ways — the same output, exit
+code, build-directory contents and persisted cache; plus cancellation during a
+step and during a wipe; `tests/daemon_clean_service_spec.lua`: the daemon
+answers `ping` while a wipe runs, a cancelled wipe stops between entries and
+holds its locks until it has); the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -1469,5 +1544,10 @@ runtime is deferred until that module is actively developed.
    the batch `lw test`; the preparation of `lw run` (§19.15, Run; protocol
    6) — the program runs in the client; device runs and the editor's
    launches stay in-process.
+   - **5c — `lw clean`** (§19.15, Clean; protocol 8): executed in the daemon
+     under exclusive build-directory locks, with the in-process deletion
+     safety for a core-performed wipe. Configuring is already routed as a
+     step of `lw build`. `lw reset`, `lw nuke` and `lw device clean` stay
+     in-process (§19.15, Not routed). *(Done.)*
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

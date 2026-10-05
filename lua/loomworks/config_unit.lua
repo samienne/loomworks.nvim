@@ -305,8 +305,11 @@ end
 function ConfigUnit:state()
     if not self._deleting and not self._action
             and self._remote_task and not self._remote_task.finished then
-        -- A build another client runs in the workspace daemon (spec §19.16).
-        return self._remote_task.action == "configure" and "configuring" or "building"
+        -- A build another client runs in the workspace daemon (spec §19.16);
+        -- a clean shows as a local clean does (`deleting`, reason `cleaning`).
+        local a = self._remote_task.action
+        if a == "clean" then return "deleting" end
+        return a == "configure" and "configuring" or "building"
     end
     return self:local_state()
 end
@@ -345,11 +348,13 @@ end
 --- The action this unit is shown running: its own task's, else that of a task
 --- observed in the workspace daemon (spec §19.16). Display only — never a
 --- reason to block or cancel anything (`running_action` is).
+--- A remote clean is shown as a local clean is (`state()` "deleting",
+--- `deleting_reason()` "cleaning"), not as a running action.
 --- @return string|nil "configure" or "build"
 function ConfigUnit:shown_action()
     if self._action then return self._action end
     local t = self._remote_task
-    if t and not t.finished then return t.action end
+    if t and not t.finished and t.action ~= "clean" then return t.action end
     return nil
 end
 
@@ -1305,10 +1310,17 @@ function ConfigUnit:mark_deleting(flag, reason)
     self:_notify()
 end
 
---- Get the reason this unit is being deleted/cleaned.
+--- Get the reason this unit is being deleted/cleaned — its own, else
+--- "cleaning" while a clean observed in the workspace daemon runs it (spec
+--- §19.16; display only, `state()`).
 --- @return "deleting"|"cleaning"|nil
 function ConfigUnit:deleting_reason()
-    return self._deleting_reason
+    if self._deleting_reason then return self._deleting_reason end
+    if not self._action then
+        local t = self._remote_task
+        if t and not t.finished and t.action == "clean" then return "cleaning" end
+    end
+    return nil
 end
 
 -- ---------------------------------------------------------------------------
