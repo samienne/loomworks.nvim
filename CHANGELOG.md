@@ -41,6 +41,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon (`runtime-mode daemon`): the editor now shows an
+  operation started in a terminal (`lw build`, `lw test`, `lw run`) exactly
+  like its own: the profile row's progress, timer and spinner, the units'
+  running state on the status page and in the statusline, the same fidget
+  entry and end message, and normal Tasks rows, each with a dim `lw` (or
+  `editor`) marker naming who started it; Enter offers `Show output` (no
+  cancel). Operations already running when the editor connects are picked up
+  too. `lw status` lists a busy daemon's running tasks under its `Runtime`
+  row (operation, profile, origin, elapsed, percent), asking the daemon for at
+  most about a second and never starting one. The daemon protocol is now
+  version 7: an older daemon is restarted when idle. (#TBD)
 - Experimental daemon (`runtime-mode daemon`): `lw run` now builds, deploys
   and resolves the launch in the workspace daemon, with the same output and
   exit code, after one dim line `lw: preparing the run through the workspace

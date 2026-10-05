@@ -720,7 +720,7 @@ return function(tree, ctx)
                         local config_overwritten = false
                         if cname_cfg then
                             for _, cu in ipairs(proj:config_units_for_configuration(cname_cfg) or {}) do
-                                if cu:is_running() then
+                                if cu:shown_action() then
                                     config_has_running = true
                                 end
                                 if cu.is_overwritten and cu:is_overwritten() then

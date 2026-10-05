@@ -266,4 +266,8 @@ function Operation:cancel(message)
     })
 end
 
+--- The compact duration of an operation's end message (`1m05s`), shared with
+--- the remote tasks observed in the workspace daemon (spec §19.16).
+Operation.format_duration = format_duration
+
 return Operation

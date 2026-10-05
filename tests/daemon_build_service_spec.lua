@@ -93,6 +93,73 @@ describe("daemon build service (§19.15)", function()
         assert.is_false(srv.busy)
     end)
 
+    it("sends the cache write-back's model_change before the task's done, to the owner and an observer (§19.16 End)", function()
+        local seen = {}
+        local obs = assert(client.session(srv.address, { client = "editor", role = "observer",
+            on_message = function(m) seen[#seen + 1] = m end }))
+        local all = {}
+        local conn = assert(client.session(srv.address, {
+            on_message = function(m) all[#all + 1] = m end }))
+        local done
+        conn:request({ kind = "build", args = { profile = "dev" }, interactive = false,
+            env = envscope.capture(), command = "lw build" }, function() end)
+        assert.is_true(vim.wait(60000, function()
+            for _, m in ipairs(all) do if m.kind == "task" and m.phase == "done" then done = m; return true end end
+            return false
+        end, 10))
+        assert.equals(0, done.exit_code)
+        local function order(list)
+            local last_change, done_at, start
+            for i, m in ipairs(list) do
+                if m.kind == "model_change" then last_change = i end
+                if m.kind == "task" and m.phase == "done" then done_at = done_at or i end
+                if m.kind == "task" and m.phase == "start" then start = start or m end
+            end
+            return last_change, done_at, start
+        end
+        local c1, d1, s1 = order(all)
+        assert.is_not_nil(c1, "no model_change for the write-back")
+        assert.is_true(c1 < d1)
+        -- The start meta carries the owner's origin (protocol 7).
+        assert.equals("cli", s1.meta.origin)
+        assert.is_true(vim.wait(10000, function() local _, d = order(seen); return d ~= nil end, 10))
+        local c2, d2, s2 = order(seen)
+        assert.is_true(c2 ~= nil and c2 < d2)
+        assert.equals("cli", s2.meta.origin)
+        conn:close(); obs:close()
+    end)
+
+    it("status lists the running tasks with their origin; none once ended (§19.11, protocol 7)", function()
+        local pidfile = H.tmp() .. "/pid"
+        local r = build(srv, { profile = "dev" }, { env = { LW_TEST_SLEEP = "60000", LW_TEST_PIDFILE = pidfile } })
+        assert.is_true(vim.wait(30000, function() return read(pidfile .. ".configure") ~= nil end, 20))
+        r.wait_reply()
+        local q = assert(client.session(srv.address, { client = "editor" }))
+        local st = assert(client.request(q, { kind = "status" }))
+        assert.equals(1, #st.tasks, vim.inspect(st.tasks))
+        local t = st.tasks[1]
+        assert.equals("build", t.kind)
+        assert.equals("dev", t.profile)
+        assert.equals("dev", t.name)
+        assert.equals("cli", t.origin)
+        assert.equals("app", t.units[1].project)
+        assert.is_number(t.task_id)
+        assert.is_true(math.abs(os.time() - t.started_at) < 120)
+        -- `lw status` lists it under the Runtime row (§19.6): the handle shows
+        -- a live, busy daemon with this lw's key.
+        local lines
+        assert.is_true(vim.wait(5000, function()
+            lines = require("loomworks.daemon.running").lines(root)
+            return #lines == 1
+        end, 50), vim.inspect(lines))
+        assert.truthy(lines[1]:find("^  build  dev  %(lw%)  %d+s  ?%d*%%?$"), lines[1])
+        r.conn:close()
+        assert.is_true(vim.wait(15000, function() return not srv.busy end, 20))
+        st = assert(client.request(q, { kind = "status" }))
+        assert.same({}, st.tasks)
+        q:close()
+    end)
+
     it("refuses before any side effect, with the in-process message", function()
         local r = build(srv, {})
         assert.is_true(r.wait_reply())

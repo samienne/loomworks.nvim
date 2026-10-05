@@ -493,7 +493,7 @@ dangerous things.
 
 *Status: master — the handle (`daemon/handle.lua`, written and heartbeated
 by `daemon/server.lua`), the Runtime row and `lw daemon status`; the running-task
-lines future.*
+lines (`daemon/running.lua`).*
 
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
@@ -729,7 +729,7 @@ pipe would hand the user's credentials to that host.
 and its task stream, §19.15; protocol version 4: 3 plus the observer role,
 `model_change` and `retiring` broadcasts, §19.11, §19.12, §19.16; protocol
 version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
-plus the `prepare_run` request, §19.15; *(draft)* protocol version 7: 6 plus
+plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
 §19.15, §19.16); the rest of the
 broadcasts #88.*

@@ -329,6 +329,17 @@ function ConfigUnit:running_action()
     return self._action
 end
 
+--- The action this unit is shown running: its own task's, else that of a task
+--- observed in the workspace daemon (spec §19.16). Display only — never a
+--- reason to block or cancel anything (`running_action` is).
+--- @return string|nil "configure" or "build"
+function ConfigUnit:shown_action()
+    if self._action then return self._action end
+    local t = self._remote_task
+    if t and not t.finished then return t.action end
+    return nil
+end
+
 --- Mark this unit as run by a task observed in the workspace daemon (spec
 --- §19.16). Reporting only: it never blocks an editor operation (the
 --- cross-process build-directory locks do).
@@ -942,7 +953,12 @@ end
 --- Get elapsed seconds since the running task started.
 --- @return number|nil seconds
 function ConfigUnit:elapsed()
-    if not self._start_time then return nil end
+    if not self._start_time then
+        -- A task observed in the workspace daemon (spec §19.16).
+        local t = self:remote_task()
+        if t then return t:elapsed(self._workspace._core._deps.clock()) end
+        return nil
+    end
     return self._workspace._core._deps.clock() - self._start_time
 end
 

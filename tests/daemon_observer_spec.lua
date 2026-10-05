@@ -199,6 +199,18 @@ describe("the observer (§19.16)", function()
         assert.is_nil(rt.units[2].unit)
         assert.equals("ghost", rt.units[2].project)
         assert.equals("building", unit:state())
+        -- The same runtime state as a local operation (§19.16 Running state):
+        -- the profile has an active operation, but nothing the editor could
+        -- cancel; the unit's project shows it running; the origin is the owner's.
+        assert.equals("cli", rt.origin)
+        assert.equals("lw", rt:origin_label())
+        assert.is_true(profile:has_active_operation())
+        assert.equals(rt, profile:remote_tasks()[1])
+        assert.is_false(profile:is_running())
+        assert.is_nil(unit:running_action())
+        assert.equals("build", unit:shown_action())
+        assert.equals("build", unit._project:running_action())
+        assert.is_number(profile:operation_elapsed())
         t:line("out", "building profile: dev")
         t:output("stdout", "compiler says hi\n")
         t:progress(0.5)
@@ -209,6 +221,77 @@ describe("the observer (§19.16)", function()
         assert.equals(0, rt.exit_code)
         assert.same({}, ws:get_daemon_tasks())
         assert.is_true(unit:state() ~= "building")
+        assert.is_false(profile:has_active_operation())
+        assert.is_nil(unit:shown_action())
+        -- Its end message is the profile's last operation, as a local one's.
+        assert.truthy(profile:operation().message:find("^built in "), profile:operation().message)
+        assert.is_true(profile:operation().success)
+        owner_client:close()
+    end)
+
+    it("joins late: adopts the tasks a status reply lists, with their start time and percent", function()
+        s = new_server(root)
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        local unit = pp._config_unit
+        -- A task already running (owned by a CLI connection) before the editor connects.
+        local owner_client = assert(client.session(s.srv.address))
+        local owner
+        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
+        local stream = tasks_mod.new(s.srv)
+        s.srv.service = { tasks = stream, owns_task = function() return false end,
+            on_conn_closed = function() end, on_stopping = function() end }
+        local t = stream:create(owner)
+        t:start({ name = "dev", kind = "test", profile = profile.key, units = {
+            { project = pp:project_key(), configuration = pp:config_key() } } })
+        t.started_at = os.time() - 75
+        t:progress(0.3)
+        local started = {}
+        on("daemon_task_started", function(d) started[#started + 1] = d.task end)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return #started == 1 end, 10), obs:runtime_line())
+        local rt = ws:get_daemon_tasks()[1]
+        assert.equals(t.id, rt.id)
+        assert.equals("test", rt.kind)
+        assert.equals("cli", rt.origin)
+        assert.equals(30, rt.pct)
+        assert.is_true(rt:elapsed(obs:_clock()) >= 74)
+        assert.equals(unit, rt.units[1].unit)
+        assert.equals("building", unit:state())
+        assert.is_true(profile:has_active_operation())
+        -- Its output starts now; it ends on done like any other.
+        t:output("stdout", "later output\n")
+        assert.is_true(vim.wait(5000, function() return rt:output():find("later output", 1, true) ~= nil end, 10))
+        t:done(1, "tests failed")
+        assert.is_true(vim.wait(5000, function() return rt.finished end, 10))
+        assert.same({}, ws:get_daemon_tasks())
+        assert.is_false(profile:has_active_operation())
+        assert.truthy(rt:outcome():find("test failed", 1, true), rt:outcome())
+        s.srv.service = nil
+        owner_client:close()
+    end)
+
+    it("a dropped connection clears the remote tasks' running state at once", function()
+        s = new_server(root)
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        local unit = pp._config_unit
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        local owner_client = assert(client.session(s.srv.address))
+        local owner
+        for c in pairs(s.srv.conns) do if c.authed and not c.observer then owner = c end end
+        local t = tasks_mod.new(s.srv):create(owner)
+        t:start({ name = "dev", kind = "build", profile = profile.key, units = {
+            { project = pp:project_key(), configuration = pp:config_key() } } })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        local rt = ws:get_daemon_tasks()[1]
+        assert.equals("building", unit:state())
+        obs.conn:close()
+        assert.is_true(vim.wait(5000, function() return rt.finished end, 10))
+        assert.equals("the workspace daemon disconnected", rt:outcome())
+        assert.is_true(unit:state() ~= "building")
+        assert.is_false(profile:has_active_operation())
         owner_client:close()
     end)
 
@@ -373,24 +456,109 @@ describe("remote task output cap (§19.16)", function()
 end)
 
 describe("status page Tasks section: remote tasks (spec/ui.md §1.9)", function()
-    it("one row per unit marked (daemon); resolved units by their objects, unresolved by name", function()
-        local unit = { _project = { key = "app" }, config_key = function() return "Debug" end }
-        local t = remote_task.new(nil, 7, { name = "dev", kind = "build", profile = "dev" }, 0)
-        t.units = { { unit = unit, project = "app", configuration = "Debug" },
-            { project = "ghost", configuration = "Nope" } }
-        t.pct = 40
+    local function render(local_tasks, remote)
         local rows = {}
         local tree = {
             leaf = function() end, blank = function() end,
-            item = function(_, label) rows[#rows + 1] = label end,
+            item = function(_, label, opts) rows[#rows + 1] = { label = label, opts = opts } end,
         }
         require("loomworks.ui.sections.tasks")(tree, { lw = {
-            get_active_tasks = function() return {} end,
-            get_daemon_tasks = function() return { t } end,
+            get_active_tasks = function() return local_tasks end,
+            get_daemon_tasks = function() return remote end,
             get_build_dir_locks_info = function() return {} end,
         } })
+        return rows
+    end
+    local function text(label)
+        if type(label) == "string" then return label end
+        local t = {}
+        for _, c in ipairs(label) do t[#t + 1] = c[1] end
+        return table.concat(t)
+    end
+    local function now() return (vim.uv or vim.loop).hrtime() / 1e9 end
+
+    it("rows in a local task's format with the dim origin marker last; unresolved units by name", function()
+        local unit = { _project = { key = "app" }, config_key = function() return "Debug" end }
+        local t = remote_task.new(nil, 7, { name = "dev", kind = "build", profile = "dev", origin = "cli" }, now())
+        t.units = { { unit = unit, project = "app", configuration = "Debug" },
+            { project = "ghost", configuration = "Nope" } }
+        t.pct = 40
+        local rows = render({}, { t })
         -- rows[1] is the reset action.
-        assert.truthy(rows[2]:find("app : Debug — build (daemon)  40%", 1, true), rows[2])
-        assert.truthy(rows[3]:find("ghost : Nope — build (daemon)", 1, true), rows[3])
+        assert.truthy(text(rows[2].label):find("^▸ app : Debug — build  40%%  %d+s  lw$"), text(rows[2].label))
+        assert.truthy(text(rows[3].label):find("^▸ ghost : Nope — build"), text(rows[3].label))
+        assert.same({ "  lw", "Comment" }, rows[2].label[#rows[2].label])
+        local e = remote_task.new(nil, 8, { name = "p", kind = "test", profile = "p", origin = "editor" }, now())
+        local erow = text(render({}, { e })[2].label)
+        assert.truthy(erow:find("^▸ p — test  %d+s  editor$"), erow)
+    end)
+
+    it("orders local and remote tasks by start; Enter on a remote row offers Show output only", function()
+        local n = now()
+        local early = remote_task.new(nil, 1, { name = "dev", kind = "build", profile = "dev", origin = "cli" }, n - 100)
+        local late = remote_task.new(nil, 2, { name = "rel", kind = "build", profile = "rel", origin = "cli" }, n - 1)
+        local loc = { task_id = 9, project_key = "app", config_key = "Debug", action = "build", start_time = n - 50 }
+        local rows = render({ loc }, { early, late })
+        assert.truthy(text(rows[2].label):find("dev", 1, true))
+        assert.truthy(text(rows[3].label):find("app : Debug", 1, true))
+        assert.truthy(text(rows[4].label):find("rel", 1, true))
+        local offered
+        local real = vim.ui.select
+        vim.ui.select = function(items) offered = items end
+        rows[2].opts.on_enter()
+        vim.ui.select = real
+        assert.same({ "Show output" }, offered)
+    end)
+end)
+
+describe("lw status running-task lines (§19.6)", function()
+    local running = require("loomworks.daemon.running")
+    local live = { kind = "live", handle = { valid = true, busy = true, endpoint = "x", key_id = "k",
+        lw_version = "0.1.44" } }
+
+    it("asks only a live, busy daemon with this lw's key", function()
+        assert.is_true(running.should_query(live, "k"))
+        assert.is_false(running.should_query(live, "other"))
+        assert.is_false(running.should_query(live, false))
+        local idle = { kind = "live", handle = { valid = true, busy = false, endpoint = "x", key_id = "k" } }
+        assert.is_false(running.should_query(idle, "k"))
+        assert.is_false(running.should_query({ kind = "starting", handle = live.handle }, "k"))
+        local asked = 0
+        assert.same({}, running.lines("/r", { state = idle, own_key_id = "k",
+            query = function() asked = asked + 1 end }))
+        assert.equals(0, asked)
+    end)
+
+    it("one line per task: operation, profile, origin, elapsed, percent", function()
+        local lines = running.lines("/r", { state = live, own_key_id = "k", now = 1000, query = function()
+            return { tasks = {
+                { task_id = 1, kind = "build", profile = "Debug:ninja-gcc", origin = "cli", started_at = 928, percent = 43 },
+                { task_id = 2, kind = "test", profile = "Release:msvc-17", origin = "editor", started_at = 992 },
+            } }
+        end })
+        assert.same({
+            "  build  Debug:ninja-gcc  (lw)      1m12s  43%",
+            "  test   Release:msvc-17  (editor)  8s",
+        }, lines)
+    end)
+
+    it("an old daemon or a failed query is one line; no tasks, no lines", function()
+        assert.same({ "  running tasks: not reported by daemon lw 0.1.42" },
+            running.lines("/r", { state = live, own_key_id = "k", query = function()
+                return { _lw_version = "0.1.42" } end }))
+        assert.same({ "  running tasks: unavailable (timeout)" },
+            running.lines("/r", { state = live, own_key_id = "k", query = function() return nil, "timeout" end }))
+        assert.same({}, running.lines("/r", { state = live, own_key_id = "k", query = function()
+            return { tasks = {} } end }))
+    end)
+
+    it("queries a real daemon's status", function()
+        local root = H.workspace()
+        local s = new_server(root)
+        local reply = running.query(s.srv.address, { timeout_ms = 30000 })
+        assert.is_not_nil(reply)
+        assert.same({}, reply.tasks)
+        assert.is_string(reply._lw_version)
+        s.srv:stop("test end", 0)
     end)
 end)

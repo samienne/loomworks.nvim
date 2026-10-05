@@ -19,8 +19,12 @@
 ---   * on `model_change` applies the workspace files' pending changes at once
 ---     (the file tracker's `sync`, §19.12);
 ---   * turns observed `task` streams into RemoteTasks resolved to the
----     workspace's domain objects (loomworks.daemon.remote_task), which the
----     status page, fidget and the statusline show.
+---     workspace's domain objects (loomworks.daemon.remote_task), which put
+---     the same runtime running state on units and profile as a local
+---     operation and which the status page, fidget and the statusline show
+---     like local tasks (never in overseer's task list);
+---   * on each connect asks `status` and adopts the tasks already running
+---     ("Joining late", protocol 7 `tasks`).
 ---
 --- Every problem is the observer's one current NOTE (the status page's
 --- Runtime line) — never a notification, never repeated.
@@ -312,6 +316,46 @@ function Observer:_on_connected(target, conn, err)
     self:_set("connected", "observing the workspace daemon (pid " .. tostring(target.pid) .. ")")
     -- What the daemon wrote before we connected: catch up now.
     self:_reload()
+    self:_join_late(conn)
+end
+
+--- Joining late (spec §19.16): ask `status` and adopt every task in its
+--- `tasks` (§19.11) as a remote task, its output starting now. A task whose
+--- `start` already arrived on the stream is kept; one that ended before the
+--- reply was computed is not in it (the daemon sends the reply before any
+--- later `done`).
+--- @param conn loomworks.daemon.Conn
+function Observer:_join_late(conn)
+    if type(conn.request) ~= "function" then return end
+    conn:request({ kind = "status" }, function(reply)
+        vim.schedule(function()
+            if self.state == "stopped" or self.conn ~= conn or type(reply) ~= "table" then return end
+            local list = type(reply.tasks) == "table" and reply.tasks or {}
+            local clock = self:_clock()
+            for _, entry in ipairs(list) do
+                local id = type(entry) == "table" and entry.task_id or nil
+                if id ~= nil and not self._tasks[id] then
+                    local task = remote_task.adopt(self.ws, entry, clock)
+                    if task then self:_add(task) end
+                end
+            end
+        end)
+    end)
+end
+
+--- Track a running remote task and put its running state on the editor's
+--- objects.
+--- @param task loomworks.RemoteTask
+function Observer:_add(task)
+    self._tasks[task.id] = task
+    self._order[#self._order + 1] = task.id
+    table.sort(self._order, function(a, b)
+        local ta, tb = self._tasks[a], self._tasks[b]
+        if ta.start_time ~= tb.start_time then return ta.start_time < tb.start_time end
+        return a < b
+    end)
+    task:attach_units()
+    self:_emit("daemon_task_started", { task = task })
 end
 
 function Observer:_start_keepalive()
@@ -393,12 +437,7 @@ function Observer:_on_task(msg)
     local task = self._tasks[id]
     if msg.phase == "start" then
         if task then return end
-        task = remote_task.new(self.ws, id, msg.meta, self:_clock())
-        self._tasks[id] = task
-        self._order[#self._order + 1] = id
-        task:attach_units()
-        self:_emit("daemon_task_started", { task = task })
-        return
+        return self:_add(remote_task.new(self.ws, id, msg.meta, self:_clock()))
     end
     if not task then return end -- started before we connected: not shown
     if msg.phase == "line" or msg.phase == "output" then
@@ -407,7 +446,9 @@ function Observer:_on_task(msg)
         task.pct = tonumber(msg.pct)
         self:_emit("daemon_task_progress", { task = task })
     elseif msg.phase == "done" then
-        task:finish(tonumber(msg.exit_code), msg.error)
+        -- Its cache write-back's `model_change` came first (§19.16 End): the
+        -- editor already reloaded the outcome when the running state clears.
+        task:finish(tonumber(msg.exit_code), msg.error, nil, self:_clock())
         self:_forget(id)
         self:_emit("daemon_task_stopped", { task = task })
     end
@@ -426,7 +467,7 @@ function Observer:_end_tasks(reason)
     for _, id in ipairs(ids) do
         local task = self._tasks[id]
         if task then
-            task:finish(nil, nil, reason)
+            task:finish(nil, nil, reason, self:_clock())
             self:_forget(id)
             self:_emit("daemon_task_stopped", { task = task })
         end

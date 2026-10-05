@@ -519,6 +519,9 @@ function Server:status()
     r.root = self.root
     r.retiring = self.retiring
     r.observers = self:observer_count()
+    -- The running tasks (protocol 7, §19.11): each one's `start` meta, when it
+    -- started and its last percent.
+    r.tasks = self.service and self.service.tasks and self.service.tasks:snapshot() or {}
     return r
 end
 
