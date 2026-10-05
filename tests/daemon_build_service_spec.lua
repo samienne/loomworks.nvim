@@ -268,6 +268,37 @@ describe("daemon build service (§19.15)", function()
         r.conn:close()
     end)
 
+    it("applies a loomworks.json AND a working-copy change made together before the next build (§19.15, §2.7)", function()
+        local r = build(srv)
+        assert.is_true(r.wait_done())
+        r.conn:close()
+        -- Another process changes the build command and, before the daemon
+        -- syncs, the working copy (a profile description, signed like lw does).
+        local cfg = vim.json.decode(read(root .. "/loomworks.json"))
+        table.insert(cfg.projects.app.shell.build_cmd, "changed")
+        local f = io.open(root .. "/loomworks.json", "w"); f:write(vim.json.encode(cfg)); f:close()
+        local upath = root .. "/.nvim/loomworks.user.json"
+        local status, body = trust.verify("user", read(upath))
+        assert.equals("valid", status)
+        local user = vim.json.decode(body)
+        user.profiles.dev.description = "edited elsewhere"
+        local signed = trust.sign("user", trust.encode(user))
+        f = io.open(upath, "wb"); f:write(signed); f:close()
+        r = build(srv)
+        assert.is_true(r.wait_reply())
+        assert.is_nil(r.reply.outcome == "refused" and r.reply.message or nil)
+        assert.is_true(r.wait_done())
+        assert.truthy(r.text("output"):find("ARGS=changed", 1, true), r.text("output"))
+        r.conn:close()
+        -- Both edits are applied, and the working copy on disk keeps the other one.
+        local ws = require("loomworks")._core()._workspace
+        local desc = {}
+        for _, p in pairs(ws:get_profiles()) do desc[#desc + 1] = p.description end
+        assert.same({ "edited elsewhere" }, desc)
+        local _, now = trust.verify("user", read(upath))
+        assert.equals("edited elsewhere", vim.json.decode(now).profiles.dev.description)
+    end)
+
     it("re-checks trust on the live workspace: a tampered working copy is refused", function()
         local r = build(srv)
         assert.is_true(r.wait_done())

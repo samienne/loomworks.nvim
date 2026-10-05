@@ -217,6 +217,14 @@ function Core:setup(opts)
         return
     end
 
+    -- The live workspace is being replaced: until this load completes (it
+    -- reads the files itself) the old one applies no file change — applying
+    -- one would save the working copy under the bytes this load read, leaving
+    -- the new workspace a stale baseline (spec §2.7). Resumed if the load fails
+    -- and the old workspace stays.
+    if self._workspace and self._workspace._tracker then
+        self._workspace._tracker:pause()
+    end
     self._deps.read_files_async(
         { paths.config, paths.user, paths.cache },
         function(results)
@@ -268,6 +276,30 @@ end
 --- @param paths table
 --- @param results table<string, string|nil>
 function Core:_on_files_read(root, paths, results)
+    -- `setup` paused the live workspace's tracker. On a normal return it is
+    -- either replaced (torn down) or resumed by `fail`; an error raised in
+    -- between would leave the kept workspace paused for good — resume it, then
+    -- rethrow.
+    local old = self._workspace
+    local ok, err = xpcall(self._load_files, function(e)
+        if type(e) == "string" and not e:find("stack traceback:", 1, true) then
+            return debug.traceback(e, 2)
+        end
+        return e
+    end, self, root, paths, results)
+    if not ok then
+        if old and self._workspace == old and old._tracker then
+            old._tracker:resume()
+        end
+        error(err, 0)
+    end
+end
+
+--- Body of `_on_files_read`: assemble, validate and swap in the workspace.
+--- @param root string
+--- @param paths table
+--- @param results table<string, string|nil>
+function Core:_load_files(root, paths, results)
     local ws_mod = self._deps.workspace
 
     local function fail(msg, setup_error)
@@ -282,6 +314,10 @@ function Core:_on_files_read(root, paths, results)
         if setup_error and (setup_error.trust or setup_error.newer) and self._workspace then
             self._workspace:teardown()
             self._workspace = nil
+        end
+        -- A workspace kept after a failed reload tracks its files again.
+        if self._workspace and self._workspace._tracker then
+            self._workspace._tracker:resume()
         end
         self._setup_error = setup_error
         self._state = "uninitialized"

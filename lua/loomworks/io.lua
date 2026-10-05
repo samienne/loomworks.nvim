@@ -308,7 +308,8 @@ end
 --- sorted, pretty encoding as `write_json`, with the signature member first.
 --- When the key is unavailable the file is still written, unsigned (it will be
 --- refused or discarded on the next read — never trusted) and the error is
---- returned as a third value so callers can report it.
+--- returned as a third value so callers can report it. A file that already
+--- holds exactly these bytes is left untouched (reported as written).
 --- @param path string
 --- @param kind "user"|"cache"|"health"
 --- @param tbl table
@@ -321,6 +322,12 @@ function M.write_json_signed(path, kind, tbl)
     if not pretty then return false, err end
     local signed, sign_err = require("loomworks.trust").sign(kind, pretty)
     local bytes = signed or pretty
+    -- Already on disk byte for byte: nothing to write (no rewrite another
+    -- process would see as a change). Inside a transaction every write is
+    -- staged as usual.
+    if not M._txn_hook and M.read_file(path) == bytes then
+        return true, nil, sign_err, bytes
+    end
     local wok, werr = M.write_file_atomic(path, bytes)
     return wok, werr, sign_err, wok and bytes or nil
 end

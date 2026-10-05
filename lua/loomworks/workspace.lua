@@ -585,6 +585,7 @@ end
 --- @field _import_writing boolean|nil true while `commit_import` saves the working copy
 --- @field _merged_config table|nil last merged config (internal shape) — supplies-check for _shared_ignored diagnostics
 --- @field _status_cursor_row integer|nil last cursor row on the status page; runtime-only, not persisted
+--- @field _file_batch? { save_user: boolean } set while one tracker sync's changes are applied (spec §2.7)
 --- @field _disk_baseline table<"user"|"cache", { text: string|nil }> per guarded
 ---     file, the exact bytes this process last read from or wrote to disk
 ---     (`text` nil = absent). A save whose file no longer matches is stale
@@ -8092,6 +8093,8 @@ function Workspace:_start_tracking(paths)
         callback = function(path, content)
             self:_on_file_changed(path, content)
         end,
+        -- One sync's changes are applied together (spec §2.7).
+        batch = function(deliver) self:_apply_file_changes(deliver) end,
         schedule = self._core._deps.schedule,
         read_file = self._core._deps.io.read_file,
         -- The workspace daemon applies external changes itself, right before
@@ -8211,6 +8214,32 @@ function Workspace:teardown()
     return self:stop_tasks_then(task_ids)
 end
 
+--- Apply one sync's external changes together (the file tracker's `batch`
+--- wrapper, spec §2.7, §19.15). The tracker has already read every watched
+--- file, so a loomworks.json reassembly sees the working copy's new bytes. The
+--- working copy is re-saved once, after every change is applied: saving it
+--- in between (before its own change was reconciled) would compare the disk
+--- against an outdated baseline and refuse the pending external edit as a
+--- concurrent write.
+--- @param deliver fun() fires `_on_file_changed` for each change
+function Workspace:_apply_file_changes(deliver)
+    if self._file_batch then return deliver() end
+    local batch = { save_user = false }
+    self._file_batch = batch
+    -- The traceback is taken at the error point, so the rethrow keeps it.
+    local ok, err = xpcall(deliver, function(e)
+        if type(e) == "string" and not e:find("stack traceback:", 1, true) then
+            return debug.traceback(e, 2)
+        end
+        return e
+    end)
+    self._file_batch = nil
+    if not ok then error(err, 0) end
+    -- (A refused file that reloaded the workspace, §17.4, tore this one
+    -- down: `_save_user` then writes nothing.)
+    if batch.save_user then self:_save_user() end
+end
+
 --- Handle a tracked file change.
 --- @param path string absolute file path that changed
 --- @param content string|nil new raw content
@@ -8291,7 +8320,12 @@ function Workspace:_on_file_changed(path, content)
                 -- _serialize_user records any intent that differs from the
                 -- new baseline's default, including overrides that became
                 -- necessary because upstream removed an item.
-                self:_save_user()
+                -- Inside a tracker sync, once all its changes are applied.
+                if self._file_batch then
+                    self._file_batch.save_user = true
+                else
+                    self:_save_user()
+                end
                 self._core._deps.notify("loomworks: config reloaded", vim.log.levels.INFO)
             else
                 self._core._deps.notify("loomworks: config reload failed: " .. val_err, vim.log.levels.WARN)

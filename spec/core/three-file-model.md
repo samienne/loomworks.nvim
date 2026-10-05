@@ -691,6 +691,14 @@ copy neither intended (a profile naming a set the other process removed).
 Refusing keeps both on-disk states intact; redoing a change is cheap, and the
 window in which it can happen is a few seconds of concurrent editing.
 
+Reconciling external changes is not a save of this process's own change: the
+changes one check finds (a poll, or the daemon's sync before an operation,
+§19.15) are applied together. Every watched file is read first, so a
+loomworks.json reassembly uses the working copy's new bytes, and the working
+copy re-save that follows a loomworks.json change happens once, after all of
+them are applied. Two files changed together are therefore never refused as
+a stale save. A save whose bytes already match the file writes nothing.
+
 **Write lock.** The re-read, the merge and the write happen under a short-lived
 per-file advisory lock: an exclusive create (`O_EXCL`) of
 `<file>.lock` beside the file, held only for that step (milliseconds). A
