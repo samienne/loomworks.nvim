@@ -165,6 +165,29 @@ describe("shared build dir protection by real path (spec 4.6)", function()
     assert.equals("built", dev.state_value)
   end)
 
+  it("still finds a reference indexed before its dir existed (aliased root)", function()
+    -- The index keys a missing dir by its normalized spelling; once the dir
+    -- exists a lookup resolves it to its real path. Through an aliased root
+    -- those differ, and a stale index must not hide the reference.
+    local root = make_ws("${workspace_root}/out")
+    local rootlink = vim.fn.tempname():gsub("\\", "/")
+    assert(uv.fs_symlink(root, rootlink, is_win and { junction = true } or nil))
+    local ws, by = load(root)
+    local dev, rel = unit_of(by.Dev), unit_of(by.Rel)
+    local aliased = rootlink .. "/out"
+    fake_built(ws, rel, aliased) -- indexed while <root>/out does not exist
+    vim.fn.mkdir(root .. "/out", "p")
+    local mf = assert(io.open(root .. "/out/marker.txt", "w")); mf:write("x"); mf:close()
+    dev.build_dir_value = root .. "/out"
+    dev.state_value = "built"
+
+    assert.equals(1, #ws:get_build_dir_refs(aliased), "the stale-keyed reference is still found")
+    local f, shared = ws:clean_wipe_build_dir({ dev }, root .. "/out")
+    assert.is_true(shared, "kept: the other unit's reference was indexed under the old key")
+    assert.is_true(wait(f))
+    assert.is_not_nil(uv.fs_stat(root .. "/out/marker.txt"), "the dir survives")
+  end)
+
   it("groups a clean's wipes of one dir spelled two ways into one batch", function()
     local root = make_ws("${workspace_root}/out")
     local dir, alias = link_alias(root)

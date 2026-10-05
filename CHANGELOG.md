@@ -238,7 +238,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   same folder (a junction or symlink, a Windows 8.3 short name such as
   `RUNNER~1`): shared build directories are now recognized by their real
   path, and a clean that wipes one folder spelled two ways wipes it once.
-  (#TBD)
+  (#139)
 - `lw clean` on a project that cleans by wiping its build directory (a shell
   project without `clean_cmd`) now treats the wipe as a build-directory
   deletion: the cache is marked unknown before the directory is removed and

@@ -1389,10 +1389,25 @@ function Workspace:_sync_build_dir_refs()
 end
 
 --- Get the ConfigUnits that share a build directory.
+--- An index key can be stale: a directory indexed while missing is keyed by
+--- its normalized spelling, and once it exists that spelling may resolve to
+--- another real path (an aliased root). Every key is therefore re-resolved
+--- and compared, so a missed reference never lets a shared directory be
+--- wiped. The index holds one key per build directory, so this stays small.
 --- @param build_dir string build directory path (any spelling)
 --- @return loomworks.ConfigUnit[]
 function Workspace:get_build_dir_refs(build_dir)
-    return self._build_dir_refs[self:_build_dir_identity(build_dir)] or {}
+    if not build_dir or build_dir == "" then return {} end
+    local id = self:_build_dir_identity(build_dir)
+    local out, seen = {}, {}
+    for key, list in pairs(self._build_dir_refs or {}) do
+        if key == id or self:_build_dir_identity(key) == id then
+            for _, unit in ipairs(list) do
+                if not seen[unit] then seen[unit] = true; out[#out + 1] = unit end
+            end
+        end
+    end
+    return out
 end
 
 --- Rebuild the output-artifact reverse index from ConfigUnit objects (§5.9).
