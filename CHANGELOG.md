@@ -397,7 +397,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   its percent from the build tool's progress lines (`[N/M]` for ninja), as an
   editor build does. It moved only between configure and build steps, so
   `lw status`, the editor's progress and a late-joining editor showed 0% for
-  the whole of an already configured build. (#PR)
+  the whole of an already configured build. (#136)
 
 ### Removed
 - `lw update`, deprecated since 0.1.37. Use `lw bootstrap upgrade` (or
