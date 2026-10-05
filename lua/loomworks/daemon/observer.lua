@@ -171,7 +171,8 @@ end
 
 --- The note for a daemon this plugin cannot observe (spec §19.16 "version
 --- mismatch"): both sides' protocol (or file formats) and versions, the
---- binary's path when this observer launched it, and the remedy.
+--- binary's path when known (the daemon's handle names it; else the binary
+--- this observer launched), and the remedy.
 --- @param ch table the daemon's challenge { protocol, lw_version, schemas }
 --- @param what "protocol"|"schemas" what differs (version.observer_compatible)
 --- @param binary string|nil the host binary the daemon was launched from
@@ -259,7 +260,9 @@ function Observer:_connect(st)
     end
     local connect = self.opts.connect or require("loomworks.daemon.client").connect
     self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
-    local target = { pid = h.pid, start_time = h.start_time }
+    -- `exe`: the executable the daemon's handle names (§19.6; display only).
+    local target = { pid = h.pid, start_time = h.start_time,
+        exe = type(h.exe) == "string" and h.exe ~= "" and h.exe or nil }
     self._connecting = target
     connect(h.endpoint, {
         client = "editor", role = "observer", timeout_ms = M.CONNECT_MS,
@@ -290,7 +293,7 @@ function Observer:_on_connected(target, conn, err)
         self.skip[daemon_id(target.pid, target.start_time)] = true
         conn.on_close = nil
         conn:close()
-        return self:_set("waiting", M.mismatch_note(ch, what, self._binary))
+        return self:_set("waiting", M.mismatch_note(ch, what, target.exe or self._binary))
     end
     if conn.welcome and conn.welcome.retiring then
         self.skip[daemon_id(target.pid, target.start_time)] = true

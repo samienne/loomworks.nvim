@@ -294,6 +294,11 @@ describe("the observer (§19.16)", function()
         end })
         assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
         assert.truthy(obs:runtime_line():find("not observing it", 1, true), obs:runtime_line())
+        -- The CLI (here: another process) started it: the handle names its
+        -- executable, and the note carries that path (§19.6, §19.16).
+        local h = assert(require("loomworks.daemon.handle").read(root))
+        assert.is_string(h.exe)
+        assert.truthy(obs:runtime_line():find("lw v9.0.0 at " .. h.exe, 1, true), obs:runtime_line())
         vim.wait(300)
         assert.equals(1, connects)
         assert.equals(1, closed)

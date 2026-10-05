@@ -498,8 +498,10 @@ lines future.*
 A daemon publishes `<root>/.nvim/loomworks.daemon.json` after binding its
 endpoint: `{ pid, host, os, start_time, endpoint, protocol, lw_version,
 schemas = { user, cache }, session_generation, started_at, clients, busy,
-idle_since, lock_nonce, key_id }` (`start_time` is the daemon's process start time of
-§19.5, `lock_nonce` its runtime-lock record's nonce). `key_id` is a
+idle_since, lock_nonce, key_id, exe }` (`start_time` is the daemon's process start time of
+§19.5, `lock_nonce` its runtime-lock record's nonce, `exe` the path of the
+executable it runs — for display only, such as the editor's version-mismatch
+note, §19.16; never executed or trusted for a decision). `key_id` is a
 non-secret fingerprint of the daemon key K it authenticates with (§19.8): the
 first 16 hex digits of HMAC-SHA256(K, `"loomworks-daemon-key-id-v1"`). It
 tells, without connecting, whether a daemon belongs to this lw's data
@@ -1295,8 +1297,9 @@ The editor's own run and debug launches stay in-process in this step
 
 *Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
 `daemon/host_binary.lua`, `daemon/remote_task.lua`); remote tasks shown as
-local ones (Running state, Joining late, End, UI below), the origin marker and
-the mismatch note's wording future; commands and the attached editor future.*
+local ones (Running state, Joining late, End, UI below), the origin marker
+and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
+and the attached editor future.*
 
 **End state.** The editor uses the **same daemon as the CLI**. It connects,
 authenticates and holds a keepalive (§19.11). Operations move from the editor
@@ -1406,7 +1409,9 @@ A version mismatch the editor cannot repair by restarting (its plugin code and
 the resolved binary differ in protocol or schemas) is shown inline. The editor
 keeps running in-process. The note is never silent: it stays on the Runtime
 line (warning highlight) for as long as the mismatch lasts, naming both sides'
-protocol (or schema) and versions, the binary's path, and the remedy (update
+protocol (or schema) and versions, the binary's path when known (the
+daemon's handle `exe`, §19.6, whoever started it; an older daemon's handle may
+not name one), and the remedy (update
 the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon (lw
 setting) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
 update the plugin or the pin — running in-process`.
