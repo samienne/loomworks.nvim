@@ -605,6 +605,13 @@ local function collect_profile_clean_tasks(profile)
         local clean = mod.clean_tasks(project_ctx, active_config)
         if clean then
             for _, task_def in ipairs(clean) do
+                -- A wipe is a build-directory deletion of this unit's dir: the
+                -- runner needs the unit for crash safety and shared-dir
+                -- protection (spec §4.6).
+                if task_def.loomworks and task_def.loomworks.wipe_build_dir
+                        and task_def.loomworks.unit == nil then
+                    task_def.loomworks.unit = pp._config_unit
+                end
                 tasks[#tasks + 1] = task_def
             end
         end
@@ -1179,7 +1186,8 @@ end
 --- carries a ready-to-spawn `{cmd, cwd, env}`.
 --- @param profile loomworks.Profile
 --- @return table[]|nil steps list of { kind, name, build_dir, cmd, cwd, env } — or
----   { kind, name, build_dir, wipe_build_dir = true } for a core-performed wipe
+---   { kind, name, build_dir, wipe_build_dir = true, unit } for a core-performed
+---   wipe (run it with `Workspace:clean_wipe_build_dir(unit, build_dir)`)
 function M.plan_profile_clean(profile)
     local tasks = collect_profile_clean_tasks(profile)
     if not tasks then return nil end
@@ -1196,6 +1204,7 @@ function M.plan_profile_clean(profile)
                     name = td.name,
                     build_dir = build_dir,
                     wipe_build_dir = true,
+                    unit = td.loomworks.unit,
                 }
             end
         elseif td.builder and (not build_dir or uv.fs_stat(build_dir)) then
