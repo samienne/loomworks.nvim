@@ -160,6 +160,39 @@ describe("daemon build service (§19.15)", function()
         q:close()
     end)
 
+    it("the running task's percent follows the build tool's progress lines (status, late joiner)", function()
+        local pidfile = H.tmp() .. "/pid"
+        local r = build(srv, { profile = "dev" }, { env = { LW_TEST_SLEEP = "60000", LW_TEST_SLEEP_STEP = "build",
+            LW_TEST_PIDFILE = pidfile, LW_TEST_PROGRESS = "3/4" } })
+        -- configure (step 1 of 2) ran, the build step printed `[3/4]` and sleeps:
+        -- (1 + 3/4) / 2 = 88%, not the step-boundary 50%.
+        assert.is_true(vim.wait(60000, function() return read(pidfile .. ".build") ~= nil end, 20))
+        local q = assert(client.session(srv.address, { client = "editor" }))
+        local st
+        for _ = 1, 100 do -- (no request inside a vim.wait condition)
+            st = assert(client.request(q, { kind = "status" }))
+            if st.tasks[1] and st.tasks[1].percent ~= nil and st.tasks[1].percent >= 88 then break end
+            vim.wait(100)
+        end
+        assert.equals(88, st.tasks[1] and st.tasks[1].percent, vim.inspect(st.tasks))
+        -- The owner's stream carried the same tick.
+        local last
+        for _, m in ipairs(r.events) do if m.phase == "progress" then last = m.pct end end
+        assert.equals(88, last)
+        -- `lw status` shows it.
+        local lines
+        assert.is_true(vim.wait(5000, function()
+            lines = require("loomworks.daemon.running").lines(root)
+            return #lines == 1 and lines[1]:find("88%%$") ~= nil
+        end, 50), vim.inspect(lines))
+        -- An editor that joins now adopts the current percent, not 0.
+        local adopted = require("loomworks.daemon.remote_task").adopt(nil, st.tasks[1], 0, os.time())
+        assert.equals(88, adopted.pct)
+        r.conn:close()
+        assert.is_true(vim.wait(15000, function() return not srv.busy end, 20))
+        q:close()
+    end)
+
     it("refuses before any side effect, with the in-process message", function()
         local r = build(srv, {})
         assert.is_true(r.wait_reply())

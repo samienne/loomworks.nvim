@@ -1162,6 +1162,10 @@ function M.plan_profile_build(profile, opts)
                         -- falls back / refuses otherwise.
                         applied_build_args = td.loomworks and td.loomworks.applied_build_args or nil,
                         applied_build_targets = td.loomworks and td.loomworks.applied_build_targets or nil,
+                        -- The module's progress parser name (`[N/M]` lines,
+                        -- `loomworks.progress`): the daemon runner's percent
+                        -- within the step, as the editor's task path does.
+                        progress_tool = td.loomworks and td.loomworks.progress_tool or nil,
                         cmd = spec.cmd,
                         -- The command a wrapper runs, for display (§8.1).
                         display_cmd = spec.display_cmd,
