@@ -245,16 +245,36 @@ function M.run(svc, ctx)
     --- Spawn `step` streamed, in the client's environment; `on_exit(code,
     --- signal)` runs in a model segment once it exited. A step that cannot be
     --- spawned is reported as the in-process run_spec reports it (127).
-    local function spawn(step, on_exit)
+    --- `on_progress(fraction)`: the step's own progress, from its module's
+    --- progress parser (`step.progress_tool`, `[N/M]` for ninja) over its
+    --- standard output lines — as the editor's task path reads it.
+    local function spawn(step, on_exit, on_progress)
         local spec, herr = build_run.spawn_spec(step, ws.root)
         if not spec then
             task:line("err", "lw: " .. tostring(herr) .. "\n")
             return on_exit(127)
         end
         local env = envscope.with_overlay(ctx.env, spec.env)
+        local parse = on_progress and type(step.progress_tool) == "string"
+            and require("loomworks.progress").get(step.progress_tool) or nil
+        local partial = ""
+        local function scan(text)
+            partial = partial .. text
+            local last
+            for line in partial:gmatch("([^\r\n]*)[\r\n]") do
+                local u = line ~= "" and parse(line) or nil
+                if u and tonumber(u.current) and tonumber(u.total) and u.total > 0 then last = u end
+            end
+            partial = partial:match("[^\r\n]*$") or ""
+            if #partial > 4096 then partial = "" end -- (no line end: not a progress line)
+            if last then on_progress(math.min(1, last.current / last.total)) end
+        end
         local child = {}
         child.obj = M.spawn({ cmd = spec.cmd, cwd = spec.cwd, env = env }, {
-            output = function(stream, text) task:output(stream, text) end,
+            output = function(stream, text)
+                task:output(stream, text)
+                if parse and stream == "stdout" and type(text) == "string" then pcall(scan, text) end
+            end,
             done = function(code, signal)
                 svc:with_model(ctx, function() on_exit(code, signal) end)
             end,
@@ -406,7 +426,10 @@ function M.run(svc, ctx)
         for _, line in ipairs(build_run.step_lines(ws, step, { verbose = args.verbose })) do
             task:line(out_stream, line)
         end
-        spawn(step, function(code, signal) step_done(step, code, signal) end)
+        -- Within the step, its build tool's progress lines move the percent.
+        local base = i - 1
+        spawn(step, function(code, signal) step_done(step, code, signal) end,
+            function(f) if i == base + 1 then progress((base + f) / #steps) end end)
     end
 
     -- The profile and its units as semantic keys: an observer resolves them

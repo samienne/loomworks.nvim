@@ -152,8 +152,13 @@ if pf then local f = io.open(pf .. "." .. kind, "w"); f:write(tostring(vim.uv.os
 io.write("step " .. kind .. " FOO=" .. tostring(os.getenv("LW_TEST_FOO")) .. " ONLY="
     .. tostring(os.getenv("LW_TEST_ONLY")) .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
 io.stderr:write("stderr of " .. kind .. string.char(10))
+-- A ninja-style `[N/M]` progress line from the build step (LW_TEST_PROGRESS=N/M).
+local prog = os.getenv("LW_TEST_PROGRESS")
+if prog and kind == "build" then io.write("[" .. prog .. "] Building CXX object src/x.cpp.o" .. string.char(10)) end
+io.stdout:flush()
 local ms = tonumber(os.getenv("LW_TEST_SLEEP") or "")
-if ms then vim.uv.sleep(ms) end
+local only = os.getenv("LW_TEST_SLEEP_STEP") -- (sleep in this step only)
+if ms and (not only or only == kind) then vim.uv.sleep(ms) end
 if os.getenv("LW_TEST_FAIL") == kind then os.exit(3) end
 local ks = os.getenv("LW_TEST_KILL")
 if ks and ks:sub(1, #kind + 1) == kind .. ":" then
