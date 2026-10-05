@@ -6821,6 +6821,17 @@ local ANSI_TITLE, ANSI_DIM, ANSI_ACTIVE = term.sgr("1"), term.sgr("2"), term.sgr
 -- Diagnostic severities: red for errors, yellow for warnings. Same tty-only
 -- gating as the rest of the palette — plain on a pipe/redirect.
 local ANSI_ERR, ANSI_WARN = term.sgr("31"), term.sgr("33")
+-- The editor highlight groups the CLI mirrors (a profile's build state,
+-- `Profile:status()` / STATUS_HL, spec §16.18), mapped to the terminal colors
+-- with the same meaning — the one place a highlight group becomes ANSI. Info is
+-- blue, not cyan: cyan is the CLI's command-token color.
+local ANSI_BY_HL = {
+  Comment = ANSI_DIM,
+  DiagnosticInfo = term.sgr("34"),
+  DiagnosticOk = ANSI_ACTIVE,
+  DiagnosticWarn = ANSI_WARN,
+  DiagnosticError = ANSI_ERR,
+}
 
 --- A named set of painters for `lw status`. When `color` is false every field
 --- is the identity function, so the exact same rendering code produces plain
@@ -6843,6 +6854,13 @@ local function status_palette(color)
     inline = color and mk(ANSI_DIM) or function(s) return "`" .. s .. "`" end,
     err = mk(ANSI_ERR),
     warn = mk(ANSI_WARN),
+    -- Paint `s` in the color of editor highlight group `group` (ANSI_BY_HL);
+    -- plain for an unmapped group or with color off.
+    hl = function(group, s)
+      local seq = color and ANSI_BY_HL[group]
+      if not seq then return s end
+      return seq .. s .. ANSI_RESET
+    end,
   }
 end
 
@@ -7239,13 +7257,11 @@ local function fit_column(longest, tw, reserved, min)
 end
 M._fit_column = fit_column
 
--- Fixed, non-name characters on a Profiles row: "* " (mark + space) + " set="
--- (the space before the tail plus the literal "set=") + the set value, which is
--- `trunc(..., PROFILE_SET_W)`, plus a few columns of slack for the inline
--- diagnostic markers (those actually render on their own lines, so the slack is
--- just breathing room). The name column gets whatever the terminal leaves.
-local PROFILE_SET_W = 22
-local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
+-- Fixed, non-name characters on a Profiles row: "* " (mark + space) plus a few
+-- columns of slack for the inline diagnostic markers (those actually render on
+-- their own lines, so the slack is just breathing room). The number and state
+-- columns are added per call; the name column gets whatever the terminal leaves.
+local PROFILE_RESERVED = 2 + 4
 
 --- Build the formatted rows for the Profiles section, sizing the profile-name
 --- column to its content and capping it to `tw` columns. Raw text is formatted
@@ -7253,47 +7269,50 @@ local PROFILE_RESERVED = 2 + 5 + PROFILE_SET_W + 4
 --- for tests; `cmd_status` renders exactly these rows. Returns the row-string
 --- array and the name column width it chose.
 --- @param pal table status_palette()
---- @param plist table Profile-like objects ({ key, _configuration_set_name })
+--- @param plist table Profile-like objects ({ key, status? })
 --- @param active_key string|nil
 --- @param grouped table group_diagnostics() result
 --- @param tw integer terminal width in columns
 --- @param numbers table<string, integer> profile.key → stable number (profile_numbering)
 local function status_profile_rows(pal, plist, active_key, grouped, tw, numbers)
   numbers = numbers or {}
-  local longest, num_w, set_w, state_w = 0, 1, 0, 0
-  -- Build state (§16.18): the editor's aggregate `Profile:status()` label,
-  -- written as one whitespace-free token (`1 built, 1 unconfigured` →
-  -- `1-built,1-unconfigured`) so a script can split the row on whitespace.
+  local longest, num_w, state_w = 0, 1, 0
+  -- Build state (§16.18): the editor's aggregate `Profile:status()` label and
+  -- highlight group, shown verbatim in parentheses after the name. No set
+  -- column: a profile key is always `<set>[:<tools>]` (Profile:_derive_key), so
+  -- the name already shows the set.
   local states = {}
   local dwidth = require("loomworks.description").width
   for _, p in ipairs(plist) do
     longest = math.max(longest, #tostring(p.key))
     num_w = math.max(num_w, #tostring(numbers[p.key] or ""))
-    set_w = math.max(set_w, dwidth(trunc(p._configuration_set_name or "?", PROFILE_SET_W)))
-    local ok, label = pcall(function() return p.status and p:status() or nil end)
+    local ok, label, hl = pcall(function()
+      if p.status then return p:status() end
+    end)
     if ok and type(label) == "string" and label ~= "" then
-      states[p] = (label:gsub(", ", ","):gsub("%s+", "-"))
-      state_w = math.max(state_w, #" state=" + #states[p])
+      states[p] = { text = "(" .. label .. ")", hl = hl }
+      state_w = math.max(state_w, 1 + dwidth(states[p].text))
     end
   end
   -- The number and state columns widen the fixed overhead; take them off the
   -- name budget.
   local name_w = fit_column(longest, tw, PROFILE_RESERVED + num_w + state_w, 8)
-  -- "<mark><n> <name> set=<set> state=<state>" — the stable number is a label
-  -- here, so it keeps its value even though the section lists the active
-  -- profile first. The set column is padded only when a state follows it.
-  local fmt = "%s%" .. num_w .. "s %-" .. name_w .. "s set=%s"
+  -- "<mark><n> <name> (<state>)" — the stable number is a label here, so it
+  -- keeps its value even though the section lists the active profile first.
+  -- The name is padded only when a state follows it.
   local rows = {}
   for _, p in ipairs(plist) do
     local is_active = (p.key == active_key)
-    local set = trunc(p._configuration_set_name or "?", PROFILE_SET_W)
-    if states[p] then
-      set = set .. string.rep(" ", set_w - dwidth(set)) .. " state=" .. states[p]
-    end
-    local row = string.format(fmt, is_active and "*" or " ", tostring(numbers[p.key] or ""),
-      trunc(p.key, name_w), set)
-    rows[#rows + 1] = (is_active and pal.active(row) or row)
-      .. M._summary_suffix(require("loomworks.description").width(row), p.description, tw, pal)
+    local st = states[p]
+    local name = trunc(p.key, name_w)
+    if st then name = name .. string.rep(" ", name_w - dwidth(name)) end
+    local head = string.format("%s%" .. num_w .. "s %s", is_active and "*" or " ",
+      tostring(numbers[p.key] or ""), name)
+    local plain = st and (head .. " " .. st.text) or head
+    local row = (is_active and pal.active(head) or head)
+      .. (st and (" " .. pal.hl(st.hl, st.text)) or "")
+    rows[#rows + 1] = row
+      .. M._summary_suffix(dwidth(plain), p.description, tw, pal)
       .. inline_markers(pal, grouped.by_key["profile:" .. p.key])
   end
   return rows, name_w
@@ -8124,7 +8143,7 @@ function M.cmd_status(root, opts)
     end
     -- The same reply's tasks put their running state on this process's
     -- profiles and units, exactly as the editor shows an observed task
-    -- (§19.16), so the Profiles rows' `state=` shows them running (§16.18).
+    -- (§19.16), so the Profiles rows' state shows them running (§16.18).
     -- Display only, never persisted; a bad entry is skipped.
     if ok and type(reply) == "table" and type(reply.tasks) == "table" then
       local rt = require("loomworks.daemon.remote_task")
@@ -10276,11 +10295,14 @@ with their configurations. Each section is limited to fit a page — use
 lists. Build targets appear only once a project is configured; a hint shows
 when the target list is incomplete.
 
-Each profile row shows its build state after its set: the editor's status
-label as one whitespace-free field, `state=built`, `state=configured`,
-`state=unconfigured`, `state=unknown`, or counts when its projects differ
-(`state=1-built,1-unconfigured`). A task the workspace daemon runs shows as
-running (`state=1-building`). Read fresh from the cache on every run.
+Each profile row shows its build state in parentheses after the profile
+name: the editor's status label, `(built)`, `(configured)`, `(unconfigured)`,
+`(unknown)`, or counts when its projects differ (`(1 built, 1 unconfigured)`).
+A task the workspace daemon runs shows as running (`(1 building)`). On a
+terminal the state is colored as in the editor (built green, configured blue,
+unconfigured dim, running yellow, failed red). The row has no set column: a
+profile's name starts with its configuration set. Read fresh from the cache on
+every run.
 
 For a profile with a C/C++ project the overview shows a `Cache` line — the
 resolved compiler-cache launcher (ccache/sccache), or that caching is `off` /

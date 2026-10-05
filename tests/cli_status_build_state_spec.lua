@@ -1,6 +1,7 @@
--- `lw status` shows each profile's build state (spec §16.18): a `state=<label>`
--- field on the profile row, the editor's aggregate profile status
--- (`Profile:status()`, spec/ui.md §1.5) written as one token. Before, the row
+-- `lw status` shows each profile's build state (spec §16.18): the editor's
+-- aggregate profile status (`Profile:status()`, spec/ui.md §1.5) in
+-- parentheses after the profile name, colored like the editor's highlight on a
+-- terminal. Before, the row
 -- was `*1 Dev set=Dev` both before and after a build or clean, so a CLI user
 -- or agent could not tell whether the operation took effect. A task the
 -- workspace daemon runs shows its profile running (spec §19.6, §19.16).
@@ -63,17 +64,23 @@ local function unit_of(profile)
   return assert(pp._config_unit, "profile project has no config unit"), pp
 end
 
---- The `state=` value of the Profiles-section row for profile `key`.
-local function state_of(text, key)
+--- The Profiles-section row for profile `key`.
+local function row_of(text, key)
   local in_profiles = false
   for line in (text .. "\n"):gmatch("([^\n]*)\n") do
     if line:find("^Profiles") then in_profiles = true
     elseif in_profiles and line:find("^%a") then in_profiles = false end
-    if in_profiles and line:find(" " .. key .. " ", 1, true) and line:find("set=", 1, true) then
-      return line:match("state=(%S+)")
-    end
+    if in_profiles and line:find(" " .. key .. " ", 1, true) then return line end
   end
   return nil
+end
+
+--- The parenthesized state on the Profiles-section row for profile `key`.
+local function state_of(text, key)
+  local line = row_of(text, key)
+  if not line then return nil end
+  local after = line:sub((line:find(" " .. key .. " ", 1, true)) + #key + 1)
+  return after:match("^%s*%(([^)]*)%)%s*$")
 end
 
 local function status_text(root)
@@ -106,6 +113,9 @@ describe("lw status profile build state (spec §16.18)", function()
     local dev_key, rel_key = by0.Dev.key, by0.Rel.key
 
     local before = status_text(root)
+    -- The set is already the name's prefix (a profile key is `<set>[:tools]`),
+    -- so the row carries no separate set column.
+    assert.is_nil(row_of(before, dev_key):find("set=", 1, true), before)
     assert.equals("unconfigured", state_of(before, dev_key), before)
     assert.equals("unconfigured", state_of(before, rel_key), before)
 
@@ -158,8 +168,40 @@ describe("lw status profile build state (spec §16.18)", function()
     } } }
     running.lines = function() return { "  build  " .. by.Rel.key .. "  (lw)  1s" }, reply end
     local text = status_text(root)
-    assert.equals("1-building", state_of(text, by.Rel.key), text)
+    assert.equals("1 building", state_of(text, by.Rel.key), text)
     assert.equals("unconfigured", state_of(text, by.Dev.key), text)
     vim.fn.delete(root, "rf")
+  end)
+end)
+
+describe("lw status profile state color (spec §16.18)", function()
+  local R = require("loomworks.term").render
+  local function grouped() return { by_key = {}, by_project = {} } end
+  local function prof(key, label, hl)
+    return { key = key, _configuration_set_name = key,
+      status = function() return label, hl end }
+  end
+  local cases = {
+    { "built", "DiagnosticOk", "\27[32m" },
+    { "configured", "DiagnosticInfo", "\27[34m" },
+    { "unconfigured", "Comment", "\27[2m" },
+    { "1 failed build", "DiagnosticError", "\27[31m" },
+    { "1 building", "DiagnosticWarn", "\27[33m" },
+  }
+
+  for _, c in ipairs(cases) do
+    it("paints `(" .. c[1] .. ")` with " .. c[2] .. "'s color when color is on", function()
+      local rows = cli._status_profile_rows(cli._status_palette(true),
+        { prof("Dev", c[1], c[2]), prof("Rel", "built", "DiagnosticOk") }, "Rel", grouped(), 100)
+      local out = R(rows[1])
+      assert.is_truthy(out:find(c[3] .. "(" .. c[1] .. ")\27[0m", 1, true), out)
+    end)
+  end
+
+  it("is plain text, label verbatim in parentheses, when color is off", function()
+    local rows = cli._status_profile_rows(cli._status_palette(false),
+      { prof("Dev", "1 built, 1 unconfigured", "DiagnosticInfo") }, "Dev", grouped(), 100)
+    assert.is_truthy(rows[1]:find("^%*  Dev +%(1 built, 1 unconfigured%)$"), rows[1])
+    assert.is_nil(rows[1]:find("\27", 1, true))
   end)
 end)
