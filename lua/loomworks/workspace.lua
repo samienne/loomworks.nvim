@@ -4029,6 +4029,41 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
     return f
 end
 
+--- Shared-directory protection (spec §4.6): how many config units OUTSIDE the
+--- batch being deleted still reference the build directory `normalized`.
+--- A deletion removes the directory only when this is 0.
+--- @param normalized string normalized build directory path
+--- @param deleting_units table<loomworks.ConfigUnit, true> the batch's units
+--- @return integer
+function Workspace:_remaining_build_dir_refs(normalized, deleting_units)
+    local remaining = 0
+    for _, ref_unit in ipairs(self._build_dir_refs[normalized] or {}) do
+        if not deleting_units[ref_unit] then remaining = remaining + 1 end
+    end
+    return remaining
+end
+
+--- Core-performed clean wipe (`wipe_build_dir`, spec §8.1) of `unit`'s build
+--- directory, done as a build-directory DELETION (spec §4.6, §4.7) rather than
+--- a bare rm: validated against the workspace root, the cache marked `unknown`
+--- on disk before the tree is removed, the unit reset to unconfigured only
+--- after the removal succeeded, and a directory still referenced by another
+--- config unit kept (its cache entry is still reset). Holds the operation and
+--- build-directory locks like any deletion. Returns a Future and whether the
+--- directory is kept because it is shared.
+--- @param unit loomworks.ConfigUnit|nil
+--- @param build_dir string
+--- @return loomworks.Future, boolean shared
+function Workspace:clean_wipe_build_dir(unit, build_dir)
+    local norm = self._core._deps.normalize
+    local shared = self:_remaining_build_dir_refs(norm(build_dir),
+        unit and { [unit] = true } or {}) > 0
+    local f = self:execute_deletion({ items = {
+        { unit = unit, build_dir = build_dir, disposition = "reset" },
+    } })
+    return f, shared
+end
+
 --- Common async deletion workflow: cancel conflicting operations, mark items
 --- as deleting, stop running tasks, delete build dirs via async subprocess,
 --- then apply cache mutations.
@@ -4087,14 +4122,8 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                 local normalized = ws._core._deps.normalize(item.build_dir)
                 if not seen_dirs[normalized] and ws:_validate_build_dir(normalized, safe_prefix) then
                     seen_dirs[normalized] = true
-                    local ref_units = ws._build_dir_refs[normalized]
-                    if ref_units then
-                        local remaining_refs = 0
-                        for _, ref_unit in ipairs(ref_units) do
-                            if not deleting_units[ref_unit] then
-                                remaining_refs = remaining_refs + 1
-                            end
-                        end
+                    do
+                        local remaining_refs = ws:_remaining_build_dir_refs(normalized, deleting_units)
                         if remaining_refs > 0 then
                             ws._core._deps.notify(
                                 "loomworks: skipped deleting " .. normalized

@@ -1255,6 +1255,15 @@ function M.cmd_build(ws, args)
   return 0
 end
 
+-- A deletion spawns rm-rf subprocesses; give the whole reset / clean wipe a generous budget
+-- (large trees / slow disks) before declaring it stuck.
+local RESET_TIMEOUT_MS = 120000
+-- After the deletion subprocess exits, the directory can briefly linger on
+-- Windows (delete-pending: an antivirus/indexer handle keeps the entry in the
+-- namespace until it closes). Poll for genuine on-disk absence up to this long
+-- before declaring the removal failed. Instant on a healthy filesystem.
+local RESET_VERIFY_MS = 30000
+
 --- `lw clean [profile]` — run each project's build-system clean (e.g.
 --- `meson compile --clean`, `cmake --build --target clean`) on the profile's
 --- configured build dirs. Removes build artifacts but keeps the configuration
@@ -1268,19 +1277,45 @@ function M.cmd_clean(ws, profile_name)
     die("nothing to clean for profile '" .. profile.key ..
       "' — no configured build directories.")
   end
+  -- A core-performed wipe is a deletion, which takes the workspace operation
+  -- lock; lock order (spec §19.3) puts it before the build-directory locks.
+  local op_tok
+  for _, step in ipairs(steps) do
+    if step.wipe_build_dir then op_tok = ws:_op_lock("clean"); break end
+  end
+  if op_tok then
+    on_exit(function() require("loomworks.op_lock").release(op_tok) end)
+  end
   with_build_locks(profile, "clean", function()
     out("cleaning profile: " .. profile.key)
     for _, step in ipairs(steps) do
       out(string.format("==> [clean] %s", step.name or "?"))
       if step.wipe_build_dir then
-        -- Core-performed wipe (spec §8.1): validated against the workspace
-        -- root (never the root itself), removed in-process — no shell.
+        -- Core-performed wipe (spec §8.1) = a build-directory deletion
+        -- (§4.6, §4.7): validated against the workspace root (never the root
+        -- itself), cache `unknown` on disk before the in-process removal, the
+        -- unit reset to unconfigured only after it succeeded, and a dir still
+        -- referenced by another config kept.
         if not ws:_validate_build_dir(step.build_dir, ws.root) then
           die("clean refused: unsafe build directory " .. tostring(step.build_dir))
         end
-        local ok, err = require("loomworks.io").rm_rf(step.build_dir)
-        if not ok then
-          die("clean failed: " .. tostring(err) .. ": " .. (step.name or "?"))
+        local done = false
+        local f, shared = ws:clean_wipe_build_dir(step.unit, step.build_dir)
+        f:next(function() done = true end):catch(function() done = true end)
+        if not vim.wait(RESET_TIMEOUT_MS, function() return done end, 20) then
+          die("clean timed out — the build-directory deletion did not complete: "
+            .. (step.name or "?"))
+        end
+        if shared then
+          out("kept " .. step.build_dir .. " — still used by another configuration")
+        else
+          vim.wait(M._reset_verify_ms or RESET_VERIFY_MS,
+            function() return uv.fs_stat(step.build_dir) == nil end, 20)
+          if uv.fs_stat(step.build_dir) ~= nil
+              or (step.unit and step.unit.state_value == "unknown") then
+            die("clean failed: could not remove " .. step.build_dir .. ": "
+              .. (step.name or "?"))
+          end
         end
       else
         local code, sig = run_spec(step, ws.root)
@@ -1291,18 +1326,10 @@ function M.cmd_clean(ws, profile_name)
       end
     end
   end)
+  if op_tok then require("loomworks.op_lock").release(op_tok) end
   out("CLEAN OK: " .. profile.key)
   return 0
 end
-
--- A deletion spawns rm-rf subprocesses; give the whole reset a generous budget
--- (large trees / slow disks) before declaring it stuck.
-local RESET_TIMEOUT_MS = 120000
--- After the deletion subprocess exits, the directory can briefly linger on
--- Windows (delete-pending: an antivirus/indexer handle keeps the entry in the
--- namespace until it closes). Poll for genuine on-disk absence up to this long
--- before declaring the removal failed. Instant on a healthy filesystem.
-local RESET_VERIFY_MS = 30000
 
 --- `lw reset [profile] [--all] [-y]` — HARD reset build state (spec §16.30):
 --- remove the build directories (rm -rf, not the build system's own artifact
