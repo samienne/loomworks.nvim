@@ -51,7 +51,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   too. `lw status` lists a busy daemon's running tasks under its `Runtime`
   row (operation, profile, origin, elapsed, percent), asking the daemon for at
   most about a second and never starting one. The daemon protocol is now
-  version 7: an older daemon is restarted when idle. (#TBD)
+  version 7: an older daemon is restarted when idle. (#132)
 - Experimental daemon (`runtime-mode daemon`): `lw run` now builds, deploys
   and resolves the launch in the workspace daemon, with the same output and
   exit code, after one dim line `lw: preparing the run through the workspace
@@ -152,7 +152,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   what chose it (`env`, `setup`, `lw setting`, `default`), and is hidden only
   when nothing chose. A daemon of another protocol or file format is named
   there in the warning colour with both versions and the fix (update the
-  plugin, or pin or install a matching `lw`). (#TBD)
+  plugin, or pin or install a matching `lw`). (#131)
 - `lw cleanup` (without `--all`) now lists the runtime logs earlier versions
   kept in the data directory (`daemon/logs`) whatever their age: they are
   always leftovers now that the log lives in the workspace. `--all` adds only
