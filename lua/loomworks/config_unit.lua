@@ -306,9 +306,10 @@ function ConfigUnit:state()
     if not self._deleting and not self._action
             and self._remote_task and not self._remote_task.finished then
         -- A build another client runs in the workspace daemon (spec §19.16);
-        -- a clean shows as a local clean does (`deleting`, reason `cleaning`).
+        -- a clean shows as a local clean does (`deleting`, reason `cleaning`),
+        -- a reset as the in-process reset's deletion (`deleting`).
         local a = self._remote_task.action
-        if a == "clean" then return "deleting" end
+        if a == "clean" or a == "reset" then return "deleting" end
         return a == "configure" and "configuring" or "building"
     end
     return self:local_state()
@@ -349,12 +350,13 @@ end
 --- observed in the workspace daemon (spec §19.16). Display only — never a
 --- reason to block or cancel anything (`running_action` is).
 --- A remote clean is shown as a local clean is (`state()` "deleting",
---- `deleting_reason()` "cleaning"), not as a running action.
+--- `deleting_reason()` "cleaning"), a remote reset as a deletion (`state()`
+--- "deleting", `deleting_reason()` "deleting"), not as a running action.
 --- @return string|nil "configure" or "build"
 function ConfigUnit:shown_action()
     if self._action then return self._action end
     local t = self._remote_task
-    if t and not t.finished and t.action ~= "clean" then return t.action end
+    if t and not t.finished and t.action ~= "clean" and t.action ~= "reset" then return t.action end
     return nil
 end
 
@@ -1311,14 +1313,15 @@ function ConfigUnit:mark_deleting(flag, reason)
 end
 
 --- Get the reason this unit is being deleted/cleaned — its own, else
---- "cleaning" while a clean observed in the workspace daemon runs it (spec
---- §19.16; display only, `state()`).
+--- "cleaning" while a clean observed in the workspace daemon runs it,
+--- "deleting" while a reset does (spec §19.16; display only, `state()`).
 --- @return "deleting"|"cleaning"|nil
 function ConfigUnit:deleting_reason()
     if self._deleting_reason then return self._deleting_reason end
     if not self._action then
         local t = self._remote_task
         if t and not t.finished and t.action == "clean" then return "cleaning" end
+        if t and not t.finished and t.action == "reset" then return "deleting" end
     end
     return nil
 end

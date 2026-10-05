@@ -1805,7 +1805,7 @@ failure rather than reported as removed. On success the removed directories are
 reported and the exit status is **0**; on any failure the reason is reported and
 the exit status is non-zero.
 
-**Through the workspace daemon.** *(Planned, §19.19 step 5d.)* In
+**Through the workspace daemon.** *(§19.19 step 5d.)* In
 `runtime-mode daemon` the CLI's reset runs in the workspace daemon (§19.15
 "Reset"): the same plan, listing, confirmation, locks, deletion, verification,
 lines and exit codes as above. The daemon never prompts: it returns the

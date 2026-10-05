@@ -185,6 +185,35 @@ describe("lw reset (on-disk)", function()
     assert.equals("built", unit:state())
   end)
 
+  it("a plan confirmed against the daemon's listing: not listed or asked again; a changed one refused (§19.15)",
+    function()
+    local root = make_ws()
+    local ws, profile = load(root)
+    local dir = root .. "/.nvim/build/App/Debug"
+    local unit = fake_build_dir(ws, profile, dir)
+    local token = require("loomworks.reset_plan").plan(ws, { profile = profile }).token
+
+    -- A token that differs (the directories changed since the listing).
+    local bad = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key }, { plan = "0" .. token:sub(2) })
+    end)
+    assert.equals(1, bad.exit_code)
+    assert.is_truthy(bad.stderr:find("the build directories to reset changed since they were listed", 1, true),
+      bad.stderr)
+    assert.equals("", bad.stdout)
+    assert.is_not_nil(uv.fs_stat(dir), "build dir must remain")
+    assert.equals("built", unit:state())
+
+    -- The listed plan: no listing, no prompt (non-interactive, no -y), reset.
+    local ok = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key }, { plan = token })
+    end)
+    assert.is_nil(ok.exit_code, ok.stderr)
+    assert.is_nil(ok.stdout:find("Will remove", 1, true), ok.stdout)
+    assert.is_truthy(ok.stdout:find("RESET OK", 1, true), ok.stdout)
+    assert.is_true(vim.wait(5000, function() return uv.fs_stat(dir) == nil end, 20))
+  end)
+
   it("nothing to reset when the profile has no build dir", function()
     local root = make_ws()
     local ws, profile = load(root)

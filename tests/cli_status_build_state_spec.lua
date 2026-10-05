@@ -172,6 +172,42 @@ describe("lw status profile build state (spec §16.18)", function()
     assert.equals("unconfigured", state_of(text, by.Dev.key), text)
     vim.fn.delete(root, "rf")
   end)
+
+  it("shows a profile the workspace daemon is resetting as deleting (§19.15 Reset)", function()
+    local root = make_ws()
+    local _, by = load(root)
+    local _, pp = unit_of(by.Rel)
+    local reply = { tasks = { {
+      task_id = 8, name = by.Rel.key, kind = "reset", origin = "cli",
+      profile = by.Rel.key, started_at = os.time(),
+      units = { { project = pp:project_key(), configuration = pp:config_key() } },
+    } } }
+    running.lines = function() return {}, reply end
+    local text = status_text(root)
+    assert.equals("1/1 deleting", state_of(text, by.Rel.key), text)
+    assert.equals("unconfigured", state_of(text, by.Dev.key), text)
+    vim.fn.delete(root, "rf")
+  end)
+
+  it("a reset --all (no profile) marks every profile with one of its units (§19.6)", function()
+    local root = make_ws()
+    local _, by = load(root)
+    local _, rp = unit_of(by.Rel)
+    local _, dp = unit_of(by.Dev)
+    local reply = { tasks = { {
+      task_id = 9, name = "--all", kind = "reset", scope = "all", origin = "cli", started_at = os.time(),
+      units = { { project = rp:project_key(), configuration = rp:config_key() },
+        { project = dp:project_key(), configuration = dp:config_key() } },
+    } } }
+    running.lines = function() return {}, reply end
+    local text = status_text(root)
+    assert.equals("1/1 deleting", state_of(text, by.Rel.key), text)
+    assert.equals("1/1 deleting", state_of(text, by.Dev.key), text)
+    -- The running-task line names `--all` in the profile column.
+    local lines = running.format(reply, os.time())
+    assert.truthy(lines[1]:find("^  reset  %-%-all  %(lw%)"), lines[1])
+    vim.fn.delete(root, "rf")
+  end)
 end)
 
 describe("lw status profile state color (spec §16.18)", function()

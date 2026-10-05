@@ -4,8 +4,12 @@
 ---
 --- It puts the same RUNTIME state on the editor's objects as a local operation
 --- of its kind: its resolved units report `building` (or `configuring`; a
---- clean's report `cleaning`, the display of the transient clean state), and
---- its resolved profile counts as having an active operation. Runtime only —
+--- clean's report `cleaning`, the display of the transient clean state; a
+--- reset's `deleting`, the display of the in-process reset's deletion), and
+--- its resolved profile counts as having an active operation. A task without
+--- a profile (`meta.scope = "all"`: `lw reset --all`) resolves its units
+--- among the workspace's configuration units, and every profile with one of
+--- them counts as having it. Runtime only —
 --- nothing is written to the cache or the working copy, and nothing blocks an
 --- editor operation (the cross-process build-directory locks do).
 ---
@@ -33,10 +37,13 @@ M.OUTPUT_CAP_BYTES = 1024 * 1024
 --- @field kind string the operation: "build", "test", "run", …
 --- @field origin string|nil who started it: "cli" or "editor" (`meta.origin`, protocol 7)
 --- @field profile loomworks.Profile|nil the resolved profile
+--- @field profiles loomworks.Profile[] the profiles that count it as their active operation (the resolved
+---   profile; for a workspace-wide task, every profile with one of its resolved units)
+--- @field scope string|nil "all" for a workspace-wide task (no profile)
 --- @field profile_name string|nil the profile key the daemon sent (display)
 --- @field units loomworks.RemoteTaskUnit[]
---- @field action string "build", "configure" or "clean" — what its units report while it
---- runs (a test or a run builds: "build")
+--- @field action string "build", "configure", "clean" or "reset" — what its units report
+--- while it runs (a test or a run builds: "build")
 --- @field start_time number clock seconds (uv.hrtime based, like local tasks)
 --- @field pct integer|nil last progress tick
 --- @field finished boolean
@@ -55,7 +62,7 @@ RemoteTask.__index = RemoteTask
 --- Resolve a task's `start` meta against the workspace (the boundary).
 --- @param ws loomworks.Workspace
 --- @param id integer
---- @param meta table|nil { name, kind, profile, units = { { project, configuration } }, origin }
+--- @param meta table|nil { name, kind, profile, scope, units = { { project, configuration } }, origin }
 --- @param clock number
 --- @return loomworks.RemoteTask
 function M.new(ws, id, meta, clock)
@@ -64,8 +71,8 @@ function M.new(ws, id, meta, clock)
     local self = setmetatable({
         id = id, name = type(meta.name) == "string" and meta.name or ("task " .. tostring(id)),
         kind = kind, origin = type(meta.origin) == "string" and meta.origin or nil,
-        action = (kind == "configure" or kind == "clean") and kind or "build",
-        units = {}, start_time = clock, finished = false,
+        action = (kind == "configure" or kind == "clean" or kind == "reset") and kind or "build",
+        units = {}, profiles = {}, start_time = clock, finished = false,
         _chunks = {}, _bytes = 0, _truncated = false, _listeners = {},
     }, RemoteTask)
     self.profile_name = type(meta.profile) == "string" and meta.profile or nil
@@ -76,6 +83,8 @@ function M.new(ws, id, meta, clock)
         end
     end
     self.profile = profile
+    self.scope = (meta.scope == "all" and not self.profile_name) and "all" or nil
+    if profile then self.profiles[1] = profile end
     for _, u in ipairs(type(meta.units) == "table" and meta.units or {}) do
         if type(u) == "table" and type(u.project) == "string" then
             local cfg = type(u.configuration) == "string" and u.configuration or nil
@@ -87,8 +96,29 @@ function M.new(ws, id, meta, clock)
                         break
                     end
                 end
+            elseif self.scope == "all" and ws and cfg ~= nil then
+                -- No profile: among the workspace's configuration units.
+                for _, cu in pairs(ws._config_units or {}) do
+                    local pk = cu._project and cu._project.key or cu._init_project_key
+                    if pk == u.project and cu:config_key() == cfg then unit = cu; break end
+                end
             end
             self.units[#self.units + 1] = { unit = unit, project = u.project, configuration = cfg }
+        end
+    end
+    if self.scope == "all" and ws then
+        -- Every profile with one of its resolved units has it running.
+        local mine = {}
+        for _, unit in ipairs(self:config_units()) do mine[unit] = true end
+        for _, p in ipairs(ws:get_profiles() or {}) do
+            if not p._removed then
+                for _, pp in ipairs(p:projects()) do
+                    if pp._config_unit and mine[pp._config_unit] then
+                        self.profiles[#self.profiles + 1] = p
+                        break
+                    end
+                end
+            end
         end
     end
     return self
@@ -142,14 +172,18 @@ end
 --- Put the task's running state on the editor's objects: its resolved units
 --- run it, its resolved profile has it as an active operation.
 function RemoteTask:attach_units()
-    if self.profile and self.profile.add_remote_task then self.profile:add_remote_task(self) end
+    for _, p in ipairs(self.profiles) do
+        if p.add_remote_task then p:add_remote_task(self) end
+    end
     for _, unit in ipairs(self:config_units()) do unit:begin_remote_task(self) end
 end
 
 --- Clear the running state this task put on the editor's objects.
 function RemoteTask:detach_units()
     for _, unit in ipairs(self:config_units()) do unit:end_remote_task(self) end
-    if self.profile and self.profile.remove_remote_task then self.profile:remove_remote_task(self) end
+    for _, p in ipairs(self.profiles) do
+        if p.remove_remote_task then p:remove_remote_task(self) end
+    end
 end
 
 --- Append output (a line or raw bytes), within the cap.
@@ -208,6 +242,7 @@ local VERBS = {
     test = { "tested", "test failed" },
     run = { "prepared", "run failed" },
     clean = { "cleaned", "clean failed" },
+    reset = { "reset", "reset failed" },
 }
 
 --- One line describing how it ended (fidget, the profile row, the output

@@ -947,19 +947,36 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `deleting` with `deleting_reason()` `cleaning` (a local clean's display),
   `shown_action()` nil; fidget's `ACTION_TITLE.clean` gives `Cleaning (lw)`.
 
-**Step 5d: `lw reset` (spec §19.15 "Reset") — planned; phase A (host-neutral
-plan and execution) done.** The expected shape follows 5c: the reset planning of `cli.cmd_reset` (lock set,
-removal set, nothing-to-reset, listing lines) lives in `reset_plan.lua`, which both hosts
-use, with a plan token over scope + lock set + removal set; `cli.cmd_reset`
-keeps the prompt and, routed, sends `reset` twice (listing → `confirm`,
-then `yes` + `plan`); `daemon/service.lua` `on_reset` plans before any lock
-and answers `refused` / `confirm` / `accepted`; `daemon/runner.lua`
-`ctx.op == "reset"` takes the op lock then the build locks (record operation
-`reset`) and runs `Profile:reset` / `Workspace:reset_all` with the stop
-predicate threaded through `execute_deletion` (and the orphan deletions), then
-the non-blocking gone-from-disk check; the observer maps `kind = reset` to
-`deleting` and resolves a scope-`all` task's units without a profile;
-protocol 9.
+**Step 5d: `lw reset` (spec §19.15 "Reset"; protocol 9).** The reset
+planning (lock set, removal set, nothing-to-reset, listing lines, plan token
+over scope + lock set + removal set) and its execution (`Profile:reset` /
+`Workspace:reset_all` with the stop predicate threaded through
+`execute_deletion` and the orphan deletions, then the non-blocking
+gone-from-disk check; `opts.settled` once the deletion itself settled) live
+in `reset_plan.lua`, which both hosts use. `cli.cmd_reset` stays the
+in-process host (`opts.plan`: a plan already confirmed from the daemon's
+listing — not listed or asked again, refused when its token differs).
+Routed, `cli._delegate("reset")` sends `reset` (`_reset_request`); a
+`confirm` reply goes to `cli._reset_confirm`, which prints the listing, asks,
+and sends `reset` again with `yes` + `plan` through `_delegate` (`opts.req`);
+when that second request is not routed it runs `cmd_reset(…, { plan })`. A
+`refused` reply with `stream = "out"` (nothing to reset) prints on stdout
+with its exit code. `daemon/service.lua` `on_reset` → `_accept_reset` plans
+before any lock and answers `refused` / `confirm` / `accepted`;
+`daemon/runner.lua` `M.reset` takes the op lock (`ws:_op_lock("reset")`)
+then the build locks of `plan.lock_dirs` (`take_locks`, shared with `M.run`;
+record operation `reset`), runs `reset_plan.execute` with the run's
+cancellation as the stop predicate, and releases the locks only once the task
+ended AND the deletion settled (`maybe_release`; a timed-out deletion keeps
+them), then `svc:on_run_done`. The task's `start` meta is `{ kind = "reset",
+profile?, scope = "all"?, name = <profile> | "--all", units }`; the `status`
+reply's `tasks` carry `scope`. `remote_task.lua` maps `kind = reset` to
+action `reset` (`ConfigUnit:state()` `deleting`, `deleting_reason()`
+`deleting`, `shown_action()` nil; fidget `Resetting`; verbs `reset` / `reset
+failed`) and resolves a scope-`all` task's units among the workspace's
+configuration units, attaching it to every profile with one of them
+(`RemoteTask.profiles`); `running.format` shows `--all` in the profile
+column.
 
 ### Workspace trust (spec §17)
 

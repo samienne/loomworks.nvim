@@ -26,8 +26,9 @@ local M = {}
 --- routed `test` request (the batch `lw test`, §19.15); 6 the `prepare_run`
 --- request (the preparation of `lw run`, §19.15 "Run"); 7 `origin` in the
 --- task `start` meta and `tasks` in the `status` reply (§19.11, §19.15, §19.16);
---- 8 the routed `clean` request (`lw clean`, §19.15 "Clean").
-M.PROTOCOL = 8
+--- 8 the routed `clean` request (`lw clean`, §19.15 "Clean"); 9 the routed
+--- `reset` request and its `confirm` outcome (`lw reset`, §19.15 "Reset").
+M.PROTOCOL = 9
 
 local function uv() return vim.uv or vim.loop end
 

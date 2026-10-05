@@ -577,6 +577,9 @@ function Server:_dispatch_request(conn, msg)
     elseif msg.kind == K.clean and self.service then
         -- `lw clean` (§19.15 "Clean", §19.19 step 5c).
         return self.service:on_clean(conn, msg)
+    elseif msg.kind == K.reset and self.service then
+        -- `lw reset` (§19.15 "Reset", §19.19 step 5d).
+        return self.service:on_reset(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end

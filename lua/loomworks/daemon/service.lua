@@ -46,6 +46,17 @@
 --- — the same outcomes; also "refused" with the in-process `nothing to clean
 --- …` line when the profile has no configured build directory to clean,
 --- decided after resolution and before any lock (as in-process).
+---
+--- **Request** `{ kind = "reset", args = { profile?, all?, yes?, plan? }, … }`
+--- (§19.15 "Reset") — the outcomes of `build`, plus "confirm" (`lines`,
+--- `plan`, `profile_key`): the reset is planned (loomworks.reset_plan, as
+--- in-process) after resolution and before any lock or side effect. Nothing
+--- to reset: "refused" with the in-process line, exit code 0 and `stream =
+--- "out"` (printed on standard output). Without `yes`: "confirm" — the
+--- listing and the plan token; no lock taken, nothing changed. With `yes`
+--- and a `plan` the token differs from: "refused" (`reset_plan.CHANGED`,
+--- exit 1). Otherwise "accepted" (`profile_key` absent for `--all`); the task
+--- prints the listing first only when no `plan` was sent (`-y`).
 
 local build_run = require("loomworks.build_run")
 local envscope = require("loomworks.daemon.envscope")
@@ -241,6 +252,27 @@ function Service:on_clean(conn, msg)
     return self:_on_operation("clean", conn, msg)
 end
 
+--- Handle a `reset` request (`lw reset`, spec §19.15 "Reset") on an
+--- authenticated connection.
+--- @param conn table
+--- @param msg table
+function Service:on_reset(conn, msg)
+    return self:_on_operation("reset", conn, msg)
+end
+
+--- Is `a` (a `reset` request's args) well-formed?
+--- @param a table
+--- @return boolean
+local function reset_args_ok(a)
+    for _, k in ipairs({ "all", "yes" }) do
+        if a[k] ~= nil and type(a[k]) ~= "boolean" then return false end
+    end
+    if a.plan ~= nil and type(a.plan) ~= "string" then return false end
+    -- (`--all` with a profile: cmd_reset refuses it; never sent.)
+    if a.all and a.profile ~= nil then return false end
+    return true
+end
+
 --- Is `a` (a `prepare_run` request's args) well-formed?
 --- @param a table
 --- @return boolean
@@ -257,7 +289,7 @@ end
 
 --- A routed operation's request: validate it, then accept it in a model
 --- segment.
---- @param op "build"|"test"|"run"|"clean"
+--- @param op "build"|"test"|"run"|"clean"|"reset"
 --- @param conn table
 --- @param msg table
 function Service:_on_operation(op, conn, msg)
@@ -284,7 +316,7 @@ function Service:_on_operation(op, conn, msg)
         end
     end
     if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")
-        or (op == "run" and not run_args_ok(a)) then
+        or (op == "run" and not run_args_ok(a)) or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     self:with_model(ctx, function() self:_accept(ctx) end)
@@ -302,6 +334,7 @@ function Service:_accept(ctx)
     if ctx.refused then
         return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
     end
+    if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
     local a = ctx.args
     local profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
         usage = ctx.op == "run" and "lw run <profile> <target>" or ("lw " .. ctx.op .. " <profile>") })
@@ -357,6 +390,58 @@ function Service:_accept(ctx)
     })
     self.server:log("%s %s (task %d) accepted", ctx.op, profile.key, task.id)
     if run and not run.finished then
+        run.ctx = ctx
+        self.runs[run] = true
+    end
+end
+
+--- The model segment that answers a `reset` (see the header): plan before
+--- any lock or side effect, then refuse, ask for the confirmation or accept.
+--- @param ctx table
+--- @param ws table the live workspace
+function Service:_accept_reset(ctx, ws)
+    local reset_plan = require("loomworks.reset_plan")
+    local a = ctx.args
+    local scope
+    if a.all then
+        scope = { all = true }
+    else
+        local profile, err, action = build_run.resolve_target(ws, a.profile,
+            { interactive = ctx.interactive, usage = "lw reset <profile>" })
+        if action == "onboard" then
+            return ctx.reply({ outcome = "declined", reason = "no profile yet (interactive onboarding)" })
+        end
+        if not profile then
+            return ctx.reply({ outcome = "refused", message = err, exit_code = 1, notes = ctx.notes })
+        end
+        scope = { profile = profile }
+    end
+    local plan = reset_plan.plan(ws, scope)
+    local profile_key = plan.profile and plan.profile.key or nil
+    if reset_plan.is_empty(plan) then
+        return ctx.reply({ outcome = "refused", message = reset_plan.nothing_message(plan), exit_code = 0,
+            stream = "out", notes = ctx.notes })
+    end
+    -- The client asks (§19.15 Confirmation): what the question shows, and a
+    -- token of it; no lock, nothing changed.
+    if not a.yes then
+        return ctx.reply({ outcome = "confirm", lines = reset_plan.listing(plan), plan = plan.token,
+            profile_key = profile_key, notes = ctx.notes })
+    end
+    -- Never remove a directory the user was not shown.
+    if a.plan ~= nil and a.plan ~= plan.token then
+        return ctx.reply({ outcome = "refused", message = reset_plan.CHANGED, exit_code = 1, notes = ctx.notes })
+    end
+    local task = self.tasks:create(ctx.conn)
+    ctx.task, ctx.ws = task, ws
+    ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile_key, pid = self.server.pid,
+        notes = ctx.notes })
+    local run = require("loomworks.daemon.runner").reset(self, {
+        op = "reset", task = task, ws = ws, plan = plan, env = ctx.env, command = ctx.command,
+        listing = a.plan == nil,
+    })
+    self.server:log("reset %s (task %d) accepted", profile_key or "--all", task.id)
+    if run and not run.released then
         run.ctx = ctx
         self.runs[run] = true
     end

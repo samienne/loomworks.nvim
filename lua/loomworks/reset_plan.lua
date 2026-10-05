@@ -70,8 +70,21 @@ function M.plan(ws, scope)
 
     local plan
     if scope.all then
-        plan = { scope = "all", scope_key = "all", label = "the whole workspace" }
-        for _, unit in pairs(ws._config_units or {}) do
+        plan = { scope = "all", scope_key = "all", label = M.label_for(nil) }
+        -- A stable order (project key, configuration key): the listing reads
+        -- the same in every process, whatever order the units were loaded in.
+        local all_units = {}
+        for _, unit in pairs(ws._config_units or {}) do all_units[#all_units + 1] = unit end
+        local function key_of(u)
+            return tostring(u._project and u._project.key or u._init_project_key or ""), tostring(u:config_key() or "")
+        end
+        table.sort(all_units, function(a, b)
+            local ap, ac = key_of(a)
+            local bp, bc = key_of(b)
+            if ap ~= bp then return ap < bp end
+            return ac < bc
+        end)
+        for _, unit in ipairs(all_units) do
             local bd = unit:build_dir()
             add_lock(bd)
             add_removal(bd) -- reset_all batches every unit; none are "keep"
@@ -90,7 +103,7 @@ function M.plan(ws, scope)
         plan = {
             scope = "profile", profile = profile,
             scope_key = "profile:" .. profile.key,
-            label = "profile '" .. profile.key .. "'",
+            label = M.label_for(profile.key),
         }
         -- plan_reset marks a unit shared with another profile as "keep" (its
         -- dir is retained); only non-keep items are physically removed.
@@ -142,6 +155,16 @@ end
 --- @return boolean
 function M.is_empty(plan)
     return #plan.removal_dirs == 0 and not plan.state_to_clear
+end
+
+--- The label of a reset's scope from what a client knows of it (§19.15
+--- "Reset": the `confirm` reply's `profile_key`, absent for `--all`) — the
+--- plan's own `label`.
+--- @param profile_key string|nil
+--- @return string
+function M.label_for(profile_key)
+    if profile_key == nil then return "the whole workspace" end
+    return "profile '" .. profile_key .. "'"
 end
 
 --- The line of a reset with nothing to reset (stdout, exit 0).
@@ -222,7 +245,11 @@ end
 --- timer callback (fast context: hosts reschedule model work).
 --- @param ws loomworks.Workspace
 --- @param plan loomworks.ResetPlan
---- @param opts? { stop?: fun(): boolean, timeout_ms?: integer, verify_ms?: integer }
+--- `opts.settled()` runs once the deletion itself has settled (before the
+--- gone-from-disk check; also when `done` already reported a timeout, whose
+--- deletion keeps running): a host that holds the locks across the deletion
+--- releases them only then. Same context as `done`.
+--- @param opts? { stop?: fun(): boolean, timeout_ms?: integer, verify_ms?: integer, settled?: fun() }
 --- @param done fun(code: integer|nil, message: string|nil, stopped: boolean|nil)
 function M.execute(ws, plan, opts, done)
     opts = opts or {}
@@ -274,7 +301,11 @@ function M.execute(ws, plan, opts, done)
         end)
     end
 
+    local deletion_settled = false
     local function on_settled()
+        if deletion_settled then return end
+        deletion_settled = true
+        if opts.settled then opts.settled() end
         if settled then return end
         close_timeout()
         -- The disk decides, not the deletion's outcome (a removal can report

@@ -561,7 +561,7 @@ Runtime   daemon pid 4242, 2 clients
   test   Release:msvc-17   (editor)  8s
 ```
 
-*(Step 5d, planned.)* A `reset --all` task (`meta.scope = "all"`, no
+A `reset --all` task (`meta.scope = "all"`, no
 profile, §19.15 Reset) shows `--all` in the profile column.
 
 It asks only a daemon the handle shows live, on this host, busy (a running
@@ -738,7 +738,7 @@ version 5: 4 plus the routed `test` request, §19.15; protocol version 6: 5
 plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
 §19.15, §19.16; protocol version 8: 7 plus the routed `clean` request,
-§19.15; *(planned, step 5d)* protocol version 9: 8 plus the routed `reset`
+§19.15; protocol version 9: 8 plus the routed `reset`
 request and its `confirm` outcome, §19.15); the rest of the
 broadcasts #88.*
 
@@ -1001,8 +1001,8 @@ in-process, see Routing), and for `lw clean [<profile>]` (§16.1; see Clean;
 the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
 the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
 with a stop predicate); observed by the editor (§19.16);
-*(planned, step 5d)* `lw reset [<profile> | --all] [-y]` (§16.30; see
-Reset); other operations future.*
+`lw reset [<profile> | --all] [-y]` (§16.30; see
+Reset, step 5d); other operations future.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1190,7 +1190,7 @@ cache stays `unknown` (never reset after a partial removal, §4.7). The clean
 writes the cache exactly when the in-process clean does, and any write-back's
 `model_change` precedes `done` (§19.16, End).
 
-**Reset.** *(Step 5d, planned.)* `reset { args, interactive, env, command }`
+**Reset.** *(Step 5d.)* `reset { args, interactive, env, command }`
 — `lw reset [<profile> | --all] [-y]` (§16.30: the profile's build
 directories, or with `--all` every build directory the workspace knows,
 orphaned ones included, removed from disk and their units returned to
@@ -1202,10 +1202,11 @@ without a directory), after resolution and before any lock or side effect,
 and then answers:
 
 - with nothing to reset: `refused`, with the in-process `nothing to reset for
-  <scope> — no build directories to remove.` line and its exit code 0,
-  printed on standard output as in-process;
-- without `yes`: `confirm` (`lines`, `plan`) — no lock taken, nothing
-  changed. `lines` are the in-process listing (`Will remove N build
+  <scope> — no build directories to remove.` line and its exit code 0, and
+  `stream = "out"`: printed on standard output as in-process;
+- without `yes`: `confirm` (`lines`, `plan`, `profile_key` — absent for
+  `--all`; the client names the scope from it in its question and refusals)
+  — no lock taken, nothing changed. `lines` are the in-process listing (`Will remove N build
   directories and reset <scope> to unconfigured:` and one line per directory,
   or the line for cached state without a directory); `plan` is an opaque token
   of the planned scope, lock set and removal set. The client prints the lines
@@ -1416,7 +1417,7 @@ It has no form the daemon does not carry. Configuring has no command of its
 own: it is a step of the routed build (`lw build --reconfigure` forces it,
 §16.4), and runs in the daemon with it.
 
-*(Step 5d, planned.)* `lw reset` is routed by the same rules, an argument
+*(Step 5d.)* `lw reset` is routed by the same rules, an argument
 `cmd_reset` refuses (an unknown flag, `--all` with a profile) taking the
 place of one `cmd_build` refuses, and its lines name the reset: `lw: the
 workspace daemon declined the reset (<reason>); running without it`, `lw:
@@ -1526,7 +1527,7 @@ in-process path. In `in-process` mode nothing below happens.
     having an active operation (spec/ui.md §1.5). A remote `clean` shows its
     units `cleaning`, the display of the transient clean state (§3.1, transition rule 5),
     without changing their cached state; a remote `test` or `run` shows
-    `building`. *(Step 5d, planned.)* A remote `reset` shows its units
+    `building`. *(Step 5d.)* A remote `reset` shows its units
     `deleting`, the display of the transient deletion state (§3.1, transition
     rule 5) of the in-process reset, whose deletion is not a clean. A
     `reset --all` has no profile (`meta.scope = "all"`, §19.15 Reset): its
@@ -1600,18 +1601,22 @@ failing step, an unknown or missing profile, both ways — the same output, exit
 code, build-directory contents and persisted cache; plus cancellation during a
 step and during a wipe; `tests/daemon_clean_service_spec.lua`: the daemon
 answers `ping` while a wipe runs, a cancelled wipe stops between entries and
-holds its locks until it has); *(planned, step 5d)* `lw reset`
+holds its locks until it has); `lw reset`
 (`tests/daemon_reset_cli_spec.lua`: a profile reset, `--all` with an
 orphaned directory, a directory shared with another profile kept, nothing to
 reset, `-y`, a confirmed and a declined prompt, a non-interactive refusal
-without `-y`, a plan changed between listing and confirmation, a directory
-that cannot be removed, a held build-directory lock, an unknown or missing
-profile, both ways — the same output, exit code, build-directory contents
-and persisted cache; plus cancellation during the removal;
-`tests/daemon_reset_service_spec.lua`: the daemon answers `ping` while a
-reset removes, `confirm` takes no lock and changes nothing, a cancelled reset
-stops between entries, leaves the cache `unknown` and holds its locks until
-it has); the projection half #88.*
+without `-y`, an unknown or missing profile, both ways — the same output,
+exit code, build-directory contents and persisted cache; plus a plan changed
+between listing and confirmation, a second request that cannot be routed
+(the daemon stopped while the user answered) and cancellation during the
+removal; `tests/daemon_reset_service_spec.lua`: the daemon answers `ping`
+while a reset removes, `confirm` takes no lock and changes nothing, a changed
+plan is refused, a held build-directory lock refuses the reset naming the
+holder, a cancelled reset stops between entries, leaves the cache `unknown`
+and holds its locks until it has, `--all` is one task without a profile and
+an observer shows every profile with one of its units `deleting`; a directory
+that cannot be removed is `tests/cli_reset_spec.lua`'s, the deletion and its
+check being the one path both hosts run); the projection half #88.*
 
 Because both paths share the deserializer and serializers, correctness is
 differential: running an operation in-process and through the daemon MUST
@@ -1656,6 +1661,6 @@ runtime is deferred until that module is actively developed.
      under the workspace operation lock and exclusive build-directory locks,
      through the same deletion as in-process; its confirmation asked by the
      client from the daemon's listing, the answer carrying a token of the
-     listed plan. *(Planned.)*
+     listed plan.
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

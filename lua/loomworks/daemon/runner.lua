@@ -179,6 +179,38 @@ function M.kill(child)
     if child.obj and child.obj.abandon then pcall(child.obj.abandon, child.obj) end
 end
 
+--- Take the build-directory lock of every directory of `dirs` exclusively,
+--- exactly like the in-process with_build_dir_locks: canonical order
+--- (§19.3), fail-fast, a hung or dead holder handled by lock_break (§19.5),
+--- a dead holder's state recovered as for a build. Each handle is appended
+--- to `run.held` as it is taken (the caller releases them, also on failure).
+--- @param run table
+--- @param ws table
+--- @param task loomworks.daemon.Task
+--- @param dirs string[]
+--- @param operation string the lock record's operation
+--- @param command string the busy message's command
+--- @return boolean ok, string|nil refusal
+local function take_locks(run, ws, task, dirs, operation, command)
+    local build_lock = require("loomworks.build_lock")
+    local lock_break = require("loomworks.lock_break")
+    for _, bd in ipairs(build_run.lock_order(dirs)) do
+        local shown = ws._display_build_dir and ws:_display_build_dir(bd) or bd
+        local lctx = { what = shown, command = command, unlock = shown }
+        local h, msg = lock_break.acquire(function()
+            local hh, _, info = build_lock.acquire(bd, operation, lctx)
+            return hh, info
+        end, lctx)
+        if not h then return false, msg end
+        run.held[#run.held + 1] = h
+        if h.reclaimed and ws._recover_interrupted_build_dir then
+            local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
+            if line then task:line("err", "lw: " .. line .. "\n") end
+        end
+    end
+    return true
+end
+
 --- @class loomworks.daemon.BuildRun
 --- @field task loomworks.daemon.Task
 --- @field op "build"|"test"|"run"|"clean" the operation
@@ -524,21 +556,9 @@ function M.run(svc, ctx)
     -- Locks first, exactly like the in-process with_build_dir_locks: every
     -- build directory, canonical order, fail-fast. A test run holds them
     -- across the build AND the test runs (a native runner may rebuild).
-    local lock_break = require("loomworks.lock_break")
-    for _, bd in ipairs(build_run.lock_order(build_run.profile_build_dirs(profile))) do
-        local shown = ws._display_build_dir and ws:_display_build_dir(bd) or bd
-        local lctx = { what = shown, command = ctx.command or ("lw " .. op), unlock = shown }
-        local h, msg = lock_break.acquire(function()
-            local hh, _, info = build_lock.acquire(bd, op == "clean" and "clean" or "build", lctx)
-            return hh, info
-        end, lctx)
-        if not h then finish(1, msg); return run end
-        run.held[#run.held + 1] = h
-        if h.reclaimed and ws._recover_interrupted_build_dir then
-            local line = ws:_recover_interrupted_build_dir(bd, h.reclaimed)
-            if line then task:line("err", "lw: " .. line .. "\n") end
-        end
-    end
+    local lok, lmsg = take_locks(run, ws, task, build_run.profile_build_dirs(profile),
+        op == "clean" and "clean" or "build", ctx.command or ("lw " .. op))
+    if not lok then finish(1, lmsg); return run end
 
     if op == "clean" then
         task:line("out", "cleaning profile: " .. profile.key)
@@ -571,6 +591,117 @@ function M.run(svc, ctx)
     local tn = build_run.trust_notice(ws, profile)
     if tn then task:line("note", tn) end
     next_step()
+    return run
+end
+
+--- Run an accepted reset (`lw reset`, spec §19.15 "Reset", §16.30): exactly
+--- what the in-process cli.cmd_reset does after its confirmation, over
+--- loomworks.reset_plan — the listing (only for `-y`: a confirmed reset's
+--- client printed it), the workspace operation lock (operation `reset`), then
+--- the build-directory lock of every directory of the plan's lock set,
+--- exclusive, then reset_plan.execute (the ONE deletion path: Profile:reset /
+--- Workspace:reset_all; cache `unknown` before a tree is removed, reset only
+--- after success, shared directories kept) and the non-blocking
+--- gone-from-disk check, then `RESET OK: <scope>`.
+---
+--- The run's cancellation is the deletion's stop predicate (between
+--- entries); a stopped reset leaves the cache `unknown`. The locks are held
+--- until the deletion itself has settled -- also after a timeout ended the
+--- task -- and then released, the operation lock last; only then is the run
+--- reported done to the service (`svc:on_run_done`).
+--- @param svc table the build service
+--- @param ctx table { task, ws, plan, env, command, listing }
+--- @return loomworks.daemon.BuildRun
+function M.reset(svc, ctx)
+    local reset_plan = require("loomworks.reset_plan")
+    local build_lock = require("loomworks.build_lock")
+    local task, ws, plan = ctx.task, ctx.ws, ctx.plan
+    local run = { task = task, op = "reset", cancelled = false, held = {} }
+    ctx.run = run
+    local deleting, settled = false, false
+
+    local function release_all()
+        for _, h in ipairs(run.held) do build_lock.release(h) end
+        run.held = {}
+        if run.op_tok then
+            local tok = run.op_tok
+            run.op_tok = nil
+            if ws._op_unlock then ws:_op_unlock(tok) else require("loomworks.op_lock").release(tok) end
+        end
+    end
+    run.release_all = release_all
+    -- The locks go once the task ended AND no deletion is still running.
+    local function maybe_release()
+        if run.released or not run.finished or (deleting and not settled) then return end
+        run.released = true
+        release_all()
+        if svc.on_run_done then svc:on_run_done(run) end
+    end
+    local function finish(code, err)
+        if run.finished then return end
+        run.finished = true
+        task:done(code, err)
+        maybe_release()
+    end
+    local function stopped()
+        return "reset stopped: " .. tostring(run.cancel_reason)
+    end
+
+    --- Stop the reset (idempotent; a no-op once finished).
+    function run.cancel(reason, code)
+        if run.cancelled or run.finished then return end
+        run.cancelled = true
+        run.cancel_reason = reason or "cancelled"
+        run.cancel_code = code or 1
+        -- A running deletion stops between entries (its stop predicate sees
+        -- `cancelled`); its end finishes the run, the locks held until
+        -- nothing more is removed.
+        if deleting then return end
+        svc:with_model(ctx, function() finish(run.cancel_code, stopped()) end)
+    end
+
+    -- The planned units as semantic keys (an observer resolves them, §19.16);
+    -- `--all` has no profile (`scope = "all"`).
+    local units = {}
+    for _, u in ipairs(plan.units or {}) do
+        local pk = u._project and u._project.key or u._init_project_key
+        if pk then units[#units + 1] = { project = pk, configuration = u:config_key() } end
+    end
+    local pkey = plan.profile and plan.profile.key or nil
+    task:start({ name = pkey or "--all", kind = "reset", profile = pkey,
+        scope = plan.scope == "all" and "all" or nil, units = units })
+    if ctx.listing then
+        for _, line in ipairs(reset_plan.listing(plan)) do task:line("out", line) end
+    end
+
+    -- Lock order (spec §19.3): the workspace operation lock first, then every
+    -- build directory's; the workspace's own deletion re-enters both.
+    local tok, omsg = ws:_op_lock("reset")
+    if not tok then
+        finish(1, ctx.refused or omsg or "reset refused: the workspace operation lock is held")
+        return run
+    end
+    run.op_tok = tok
+    local lok, lmsg = take_locks(run, ws, task, plan.lock_dirs, "reset", ctx.command or "lw reset")
+    if not lok then finish(1, lmsg); return run end
+
+    deleting = true
+    reset_plan.execute(ws, plan, {
+        stop = function() return run.cancelled end,
+        settled = function()
+            svc:with_model(ctx, function()
+                settled = true
+                maybe_release()
+            end)
+        end,
+    }, function(code, msg, was_stopped)
+        svc:with_model(ctx, function()
+            if was_stopped or run.cancelled then return finish(run.cancel_code or 1, stopped()) end
+            if code ~= 0 then return finish(code or 1, msg) end
+            task:line("out", reset_plan.ok_line(plan))
+            finish(0)
+        end)
+    end)
     return run
 end
 

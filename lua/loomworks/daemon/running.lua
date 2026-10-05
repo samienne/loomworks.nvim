@@ -82,7 +82,8 @@ function M.format(reply, now)
         if type(t) == "table" then
             local r = {
                 kind = tostring(t.kind or "?"),
-                profile = tostring(t.profile or t.name or "?"),
+                -- (A workspace-wide task, `lw reset --all`, has no profile.)
+                profile = tostring(t.profile or (t.scope == "all" and "--all") or t.name or "?"),
                 origin = "(" .. origin_text(t.origin) .. ")",
                 elapsed = tonumber(t.started_at) and elapsed_text(now - tonumber(t.started_at)) or "",
                 pct = tonumber(t.percent) and (math.floor(tonumber(t.percent)) .. "%") or nil,
