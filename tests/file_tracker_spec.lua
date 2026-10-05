@@ -76,6 +76,49 @@ describe("FileTracker", function()
         end)
     end)
 
+    describe("sync", function()
+        it("reads every watched file before delivering, inside one batch (spec §2.7)", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1", ["/c"] = "c1" }
+            local tracker, seen, batches
+            tracker = FileTracker.new({
+                callback = function(path, content)
+                    -- While /a is applied, /b already reads as its new bytes.
+                    seen[#seen + 1] = { path, content, tracker:content("/b") }
+                end,
+                batch = function(deliver) batches = batches + 1; deliver() end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b"); tracker:watch("/c")
+            seen, batches = {}, 0
+            tracker:sync()
+            assert.equals(0, batches)
+            disk["/a"], disk["/b"] = "a2", "b2"
+            tracker:sync()
+            assert.equals(1, batches)
+            assert.same({ { "/a", "a2", "b2" }, { "/b", "b2", "b2" } }, seen)
+        end)
+
+        it("skips a change an earlier callback already wrote (mark_written)", function()
+            local disk = { ["/a"] = "a1", ["/b"] = "b1" }
+            local tracker, seen
+            tracker = FileTracker.new({
+                callback = function(path, content)
+                    seen[#seen + 1] = path
+                    if path == "/a" then disk["/b"] = "b3"; tracker:mark_written("/b", "b3") end
+                end,
+                read_file = function(path) return disk[path] end,
+                manual = true,
+            })
+            tracker:watch("/a"); tracker:watch("/b")
+            seen = {}
+            disk["/a"], disk["/b"] = "a2", "b2"
+            tracker:sync()
+            assert.same({ "/a" }, seen)
+            assert.equals("b3", tracker:content("/b"))
+        end)
+    end)
+
     describe("stop", function()
         it("clears all watches", function()
             local tracker = FileTracker.new({

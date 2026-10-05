@@ -261,6 +261,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- When loomworks.json and `.nvim/loomworks.user.json` both changed on disk
+  before the next `lw build`/`test`/`clean`/`reset` through the workspace
+  daemon (or the editor's next poll), the operation is no longer refused as a
+  stale working-copy save: both changes are applied together. (#144)
 - `lw clean` of a project whose build system cleans its own artifacts (cmake,
   meson, a shell project with a clean command) now leaves the profile
   `configured`: `lw status` no longer shows it `(built)` right after a
