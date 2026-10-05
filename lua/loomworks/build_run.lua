@@ -742,9 +742,11 @@ end
 --- Instant on a healthy filesystem. Polled with a timer, never blocking.
 M.WIPE_VERIFY_MS = 30000
 
---- The key a wipe groups a build directory under (the workspace's path
---- normalization: case-folded on Windows).
+--- The key a wipe groups a build directory under: the workspace's build-dir
+--- identity (resolved real path, spec §4.6), so one folder spelled two ways
+--- is one group; plain normalization for a workspace without it.
 local function wipe_key(ws, dir)
+    if ws._build_dir_identity then return ws:_build_dir_identity(dir) end
     local n = ws._core and ws._core._deps and ws._core._deps.normalize or vim.fs.normalize
     return n(dir)
 end
