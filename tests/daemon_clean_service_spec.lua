@@ -53,7 +53,12 @@ end
 --- test points that unit at lib's Debug directory, as cli_clean_wipe_spec
 --- fakes its shared case.
 local function workspace(lib_dir, shared)
-    local root = H.tmp()
+    -- The root in its canonical (realpath'd) form, as the product resolves a
+    -- workspace root (workspace.resolve_root): every build directory the
+    -- daemon derives is spelled from it. The temp dir may be reached through
+    -- another spelling (CI's TEMP is an 8.3 short name, `RUNNER~1`), and the
+    -- paths this spec compares or plants must be the product's spelling.
+    local root = vim.fs.normalize(assert(uv.fs_realpath(H.tmp())))
     for _, d in ipairs({ "app", "lib", ".nvim" }) do vim.fn.mkdir(root .. "/" .. d, "p") end
     local step = root .. "/step.lua"
     write(step, H.STEP)
