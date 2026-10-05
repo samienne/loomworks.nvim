@@ -633,6 +633,19 @@ local function collect_profile_clean_tasks(profile)
     return #tasks > 0 and tasks or nil
 end
 
+--- A module clean task (the build system's artifact clean, not a wipe)
+--- succeeded: record it — the unit's built state drops to `configured`
+--- (spec §4.7; `mark_cached_configs_cleaned` leaves every other state). The
+--- editor records only after success, as the headless runners do
+--- (build_run.after_clean_step): a failed clean keeps the unit `built`.
+--- @param ws loomworks.Workspace|nil
+--- @param unit loomworks.ConfigUnit|nil
+local function record_module_clean(ws, unit)
+    if ws and unit and ws.mark_cached_configs_cleaned then
+        ws:mark_cached_configs_cleaned({ { unit = unit } })
+    end
+end
+
 --- Core-performed clean for a clean task that declares
 --- `loomworks.wipe_build_dir = true` (spec §8.1): the module asks core to
 --- remove the build directory instead of spawning a command. Deletion safety
@@ -1587,7 +1600,10 @@ function M.run_configuration_clean(unit, on_complete)
                 if task and not task:is_complete() then task:stop() end
             end)
             task:subscribe("on_complete", function(_, status)
-                if status == "SUCCESS" then resolve(true)
+                if status == "SUCCESS" then
+                    record_module_clean(unit._workspace,
+                        task_def.loomworks and task_def.loomworks.unit or unit)
+                    resolve(true)
                 else reject("clean task failed") end
             end)
             task:start()
@@ -1688,7 +1704,9 @@ function M.run_profile_clean(profile, on_complete)
                 if task and not task:is_complete() then task:stop() end
             end)
             task:subscribe("on_complete", function(_, status)
-                if status == "SUCCESS" then resolve(true)
+                if status == "SUCCESS" then
+                    record_module_clean(ws, task_def.loomworks and task_def.loomworks.unit)
+                    resolve(true)
                 else reject("clean task failed") end
             end)
             task:start()

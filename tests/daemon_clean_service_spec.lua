@@ -157,6 +157,10 @@ describe("lw clean in the daemon's build service (§19.15 Clean)", function()
         built()
         local libdir = root .. "/out/lib/Debug"
         write(libdir .. "/artifact.o", "x")
+        -- Both units start built (persisted), so the states below prove the
+        -- clean's transitions.
+        assert.equals("built", cached_state(root, "app"))
+        assert.equals("built", lib_cached_state(root))
         local r = request(srv, "clean")
         assert.is_true(r.wait_reply())
         assert.equals("accepted", r.reply.outcome, vim.inspect(r.reply))

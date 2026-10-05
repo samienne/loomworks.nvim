@@ -1131,8 +1131,8 @@ function ConfigUnit:clean(on_done)
     local refs = self:referencing_profiles()
     local profile = refs[1] or nil
     ws:create_operation(profile, "clean", { self }, { [self] = "configured" })
-
-    ws:mark_cached_configs_cleaned(items)
+    -- The built state is recorded per module clean task once it succeeds
+    -- (overseer.record_module_clean); a wipe resets the unit itself.
 
     local running = ws:find_running_tasks_for_items(items)
     local task_ids = {}

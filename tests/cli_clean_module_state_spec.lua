@@ -148,4 +148,37 @@ describe("lw clean (module clean) persists the configured state", function()
     assert.equals("built", (cached(root) or {}).state)
     vim.fn.delete(root, "rf")
   end)
+
+  -- A clean only leaves the built states (spec §4.7): `built` /
+  -- `failed_build` → `configured`; every other state is kept. Persisting
+  -- `configured` for a unit whose configure failed (or whose state is
+  -- `unknown` after an interrupted wipe) would make the next build skip the
+  -- configure and build on an unconfigured directory.
+  for _, case in ipairs({
+    { prior = "built", after = "configured" },
+    { prior = "failed_build", after = "configured" },
+    { prior = "failed_configure", after = "failed_configure" },
+    { prior = "unknown", after = "unknown" },
+  }) do
+    it("a successful module clean on a " .. case.prior .. " unit leaves it " .. case.after, function()
+      local root = make_ws()
+      local key = build(root)
+      -- Put the unit (and its BuildDir, which the cache is serialized from)
+      -- in the prior state, persisted.
+      local ws0, dev0 = load(root)
+      local unit = dev0:projects()[1]._config_unit
+      unit.state_value = case.prior
+      if unit._build_dir then unit._build_dir.state = case.prior end
+      ws0:_save_cache()
+      assert.equals(case.prior, (cached(root) or {}).state, vim.inspect(cached(root)))
+
+      local ws = load(root)
+      local r = stubbed(ws, function() return cli.cmd_clean(ws, key) end)
+      assert.is_nil(r.exit_code, r.stderr .. r.stdout)
+      assert.equals(1, #r.spawned)
+      local c = cached(root)
+      assert.equals(case.after, c and c.state, vim.inspect(c))
+      vim.fn.delete(root, "rf")
+    end)
+  end
 end)

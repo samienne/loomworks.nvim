@@ -247,7 +247,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   meson, a shell project with a clean command) now leaves the profile
   `configured`: `lw status` no longer shows it `(built)` right after a
   successful clean, in-process and through the workspace daemon. The editor's
-  clean now also persists the `configured` state. (#142)
+  clean now also persists the `configured` state, and records it only after
+  the clean succeeded. A clean never marks a configuration whose configure
+  failed (or whose state is unknown) as configured. (#142)
 - Deleting or cleaning a configuration no longer removes a build directory
   that another configuration still uses under a different spelling of the
   same folder (a junction or symlink, a Windows 8.3 short name such as
