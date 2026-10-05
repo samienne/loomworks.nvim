@@ -569,8 +569,10 @@ in the frozen control subset (§19.8), so this works across a version
 mismatch, and the connection is never a `retire`. A reply without `tasks` (an
 older daemon) shows `  running tasks: not reported by daemon lw <version>`; a
 failed or timed-out query shows one line, `  running tasks: unavailable
-(<reason>)`. None of this changes `lw status`'s exit status or its other
-output. `lw status` has no machine-readable (`--json`) form, so there is none
+(<reason>)`. The same reply's `tasks` also mark the profiles and units they
+resolve to as running in the profile list's build state (§16.18), as the
+editor shows an observed task (§19.16); nothing else of `lw status`'s output,
+and never its exit status, depends on the query. `lw status` has no machine-readable (`--json`) form, so there is none
 to extend.
 
 #### 19.6.1 Listing every daemon of this user

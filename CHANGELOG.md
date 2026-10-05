@@ -41,6 +41,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw status` shows each profile's build state in parentheses after its
+  name: `(built)`, `(configured)`, `(unconfigured)`, `(unknown)`, or counts
+  when its projects differ (`(1 built, 1 unconfigured)`), the same label as
+  the editor's status page, colored as in the editor on a terminal. A task the
+  workspace daemon is running shows its profile as running (`(1 building)`).
+  So a script or agent can tell that a `lw build` or `lw clean` took effect.
+  The profile rows no longer repeat the configuration set (`set=<name>`): a
+  profile's name already starts with it. The editor's status page now also
+  labels a profile whose units are all `unknown` (after an interrupted clean)
+  as `unknown` instead of an empty label. (#141)
 - Experimental daemon (`runtime-mode daemon`): `lw clean [<profile>]` now runs
   in the workspace daemon like `lw build`, with the same output and exit code,
   after one dim line `lw: cleaning through the workspace daemon (pid N)`, under

@@ -1530,6 +1530,7 @@ function Profile:status()
         configuring = 0,
         building = 0,
         deleting = 0,
+        unknown = 0,
     }
 
     for _, pp in ipairs(pps) do
@@ -1567,6 +1568,7 @@ function Profile:status()
     if counts.built == total then return "built", STATUS_HL.built end
     if counts.configured == total then return "configured", STATUS_HL.configured end
     if counts.unconfigured == total then return "unconfigured", STATUS_HL.unconfigured end
+    if counts.unknown == total then return "unknown", STATUS_HL.unconfigured end
 
     if failed > 0 then
         local parts = {}
@@ -1587,6 +1589,7 @@ function Profile:status()
     if counts.built > 0 then parts[#parts + 1] = counts.built .. " built" end
     if counts.configured > 0 then parts[#parts + 1] = counts.configured .. " configured" end
     if counts.unconfigured > 0 then parts[#parts + 1] = counts.unconfigured .. " unconfigured" end
+    if counts.unknown > 0 then parts[#parts + 1] = counts.unknown .. " unknown" end
     return table.concat(parts, ", "), STATUS_HL.configured
 end
 

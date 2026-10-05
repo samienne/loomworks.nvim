@@ -841,6 +841,30 @@ When no launcher is resolved, `--cache-stats` reports that there is nothing to
 query rather than erroring; with **no active profile** (or an active profile
 without a C/C++ project) it prints a one-line reason instead of nothing.
 
+Each row of the overview's **profile list** carries the profile's **build
+state** in parentheses after the profile name (`*1 Dev (built)`), so a user or
+script can see that a build or clean took effect. The row has no separate
+configuration-set column: a profile's name is always its configuration set's
+name, followed by `:<tools>` when it has tools (§1.6 "Profile key format"), so
+the set is already visible (the row only displays the name, never parses it).
+The label is the interactive host's aggregate profile status (`spec/ui.md` §1.5
+`{status_label}`) — the same vocabulary and the same aggregation over the
+profile's configuration units, never a separate one: a single word when every
+unit agrees (`built`, `configured`, `unconfigured`, `unknown`, `empty` for a
+profile with no projects), otherwise the per-state counts (`1 built, 1
+unconfigured`, `1 building`, `2/2 cleaning`), written verbatim (`(1 built, 1
+unconfigured)`), aligned in one column after the names. On a terminal
+where the overview is colored (stdout a tty, `NO_COLOR` unset) the
+parenthesized state takes the color of the host's highlight for that label:
+built green, configured (and mixed counts) blue, unconfigured and unknown dim,
+running yellow, failed and cleaning red; elsewhere it is plain. The state is
+the last persisted one (the build cache, §2), read fresh by each invocation; while the
+workspace daemon runs a task (§19.6 "Running tasks"), the profiles and units
+that task resolves to show it running (`building`, `configuring`, `cleaning`),
+exactly as the interactive host shows a task it observes in the daemon
+(§19.16). An operation another process runs **in-process** (no daemon) is not
+visible to the overview; its result shows once it persists.
+
 The overview shows the workspace runtime's `Runtime` line and, when the
 workspace daemon is running tasks, one line per task (operation, profile,
 origin, elapsed, percent) — §19.6. Asking the daemon is bounded, never
