@@ -164,6 +164,33 @@ describe("cross-process build-dir lockfile by identity (spec 16.6)", function()
     assert.is_nil(build_lock.read(dir), "the forced unlock found and removed the lockfile")
   end)
 
+  it("lw unlock refuses a build-dir path whose identity lies outside the workspace root", function()
+    local root = make_ws()
+    -- `<root>/alias` is a junction / symlink to a directory OUTSIDE the root:
+    -- its lockfile `<outside>.loomworks-lock` is not under the root either.
+    local outside = vim.fn.tempname():gsub("\\", "/")
+    vim.fn.mkdir(outside, "p")
+    assert(uv.fs_symlink(outside, root .. "/alias", is_win and { junction = true } or nil))
+    local ws = load(root)
+    hold(outside)
+    local lockfile = build_lock.lock_path(outside)
+    assert.is_not_nil(uv.fs_stat(lockfile))
+    local rw, rs, rx = io.write, io.stderr, os.exit
+    local err, code = {}, nil
+    io.write = function() end
+    io.stderr = { write = function(_, s) err[#err + 1] = s end }
+    os.exit = function(c) code = c or 0; error({ __exit = true }, 0) end
+    local ok, e = pcall(cli._unlock_build_dirs, ws, false, "alias/", true)
+    io.write, io.stderr, os.exit = rw, rs, rx
+    if not ok and not (type(e) == "table" and e.__exit) then error(e, 0) end
+    assert.is_not_nil(uv.fs_stat(lockfile), "the lockfile outside the workspace root is left in place")
+    assert.is_not_nil(build_lock.read(outside))
+    assert.is_truthy(code and code ~= 0, "lw unlock refuses (non-zero exit)")
+    local msg = table.concat(err)
+    assert.is_truthy(msg:find("outside", 1, true), msg)
+    assert.is_truthy(msg:lower():find(lockfile:lower(), 1, true), "names the resolved lockfile: " .. msg)
+  end)
+
   it("orders and de-duplicates locks by identity", function()
     local root = make_ws()
     local dir, alias = link_alias(root)
