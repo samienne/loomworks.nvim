@@ -1101,9 +1101,13 @@ entity record in an interface result or signal (§19.20) carries its `id` from
 this registry and its `key` / `label` for display; a request names an entity
 by a reference that is either `{ id }` or `{ key }` (§19.20). `model_change`
 becomes the `changed { seq, session_generation, scopes? }` signal of
-`loomworks.Workspace/1`, delivered to its subscribers with the same `seq` and
-generation rules; a connection of protocol 10 (v0, §19.8) keeps receiving the
-`model_change` broadcast unconditionally.
+`loomworks.Workspace/1`, delivered to its subscribers under the same
+generation rule. An interface signal's `seq` counts per object **and
+connection**, over only the signals actually sent to that connection: it is
+gapless for that connection, so a gap means a lost signal and the client
+fetches the state again (the `model_change` broadcast's per-workspace `seq`
+above is the protocol-10 form). A connection of protocol 10 (v0, §19.8) keeps
+receiving the `model_change` broadcast unconditionally.
 
 ### 19.13 Snapshot and projection
 
@@ -2111,7 +2115,7 @@ and new methods, which a client calls only after seeing them in
 |--|--|--|
 | `describe` | `{}` | `binary { lw_version, impl, dev }`, `transport { min, max }`, `session_generation`, `objects` — per object its `path`, `owner` (`core` or the module id) and `interfaces`, each `{ name, versions, deprecated?, internal?, same_build?, schema_digest }` (`schema_digest` maps a version to the sha256 of its schema document) — and `root_methods` |
 | `schema` | `{ iface, v }` | that interface version's schema document |
-| `subscribe` | `{ object, iface, v, signals?, args? }` | `{ sub_id, initial? }` |
+| `subscribe` | `{ object, iface, v, signals?, args? }` | `{ sub_id, seq, initial? }` — `seq` is the baseline: the last `seq` of that object sent to this connection (0: none), so the subscription's first signal is `seq + 1` |
 | `unsubscribe` | `{ sub_id }` | `{}` |
 
 The root's signals reach every authenticated connection without a
@@ -2175,8 +2179,10 @@ subscribed version and stamps them with the `sub_id`. An interface declares
 per signal whether subscribing returns its full state as `initial` — every
 view does, so subscribing after a reconnect re-hydrates the client. A
 connection receives only the signals it subscribed to, plus the root's.
-`seq` and `session_generation` follow §19.12: per object monotonic, and a
-gap or a new generation means "get the state again".
+`seq` and `session_generation` follow §19.12: `seq` counts per object and
+connection, over only the signals sent to that connection (gapless for it,
+from the baseline `subscribe` returns), and a gap or a new generation means
+"get the state again".
 
 **Tasks and cancel.** A method its schema declares task-streamed runs as a
 task owned by the calling connection, on the transport's task stream
@@ -2262,9 +2268,14 @@ own repository. The contract is enforced by:
 - a **lint**: every document is valid against the meta-schema and uses only the
   allowed keywords;
 - an **additive ratchet**: against its frozen snapshot, a version's parameters
-  may only gain optional properties, its results and signals only gain
-  properties and enum values; nothing is removed, renamed, retyped or made
-  required. Anything else is a new version;
+  (method `params`, `subscribe_args`, and the transport frames a client sends)
+  may only gain optional properties and enum values, its results and signals
+  only gain properties and alternatives; nothing is removed, renamed, retyped
+  or made required, and a result or signal never gains an enum value.
+  Anything else is a new version. A client that sends a parameter value added
+  after the version first shipped checks the interface's `schema_digest` (or
+  the daemon's version) first, since an older daemon refuses it as
+  `invalid_args`;
 - **registry and schema agreement**: every mounted interface version has a
   document with the published digest, every method a handler, every version
   older than the newest an adapter;
@@ -2273,9 +2284,11 @@ own repository. The contract is enforced by:
 - **client conformance**: the plugin's client against the same transcripts,
   replayed, for every interface version it claims.
 
-Clients **must tolerate** unknown fields and unknown enum values in results and
-signals (shown as unknown or neutral), so an interface may add a field, a
-state or an outcome without a new version.
+Clients **must tolerate** unknown fields in results and signals, so an
+interface may add a field, or an alternative (an outcome) to a union, without
+a new version; a new enum value in a result or signal is a new version, and a
+client still shows a value it does not know as unknown or neutral rather than
+failing.
 
 **Versions and deprecation.** Within an interface version only additive changes
 are allowed. A breaking change makes version `N+1`; the daemon keeps serving

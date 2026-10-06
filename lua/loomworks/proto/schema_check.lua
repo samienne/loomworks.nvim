@@ -7,10 +7,11 @@
 ---     every `pattern` is in the portable subset, every `$ref` resolves, and
 ---     no document under `frozen/` is a draft;
 ---   * `ratchet(old_set, new_set, rel)` — the current document against its
----     frozen snapshot: parameters may only gain optional properties, results
----     and signals only gain properties, enum values and alternatives; nothing
----     is removed, renamed, retyped or made required. Anything else is a new
----     version. The transport document (`transport.json`) is held to the same
+---     frozen snapshot: parameters may only gain optional properties and
+---     enum values (a client that sends a new value checks the interface's
+---     schema digest / version first), results and signals only gain
+---     properties and alternatives, never enum values; nothing is removed,
+---     renamed, retyped or made required. Anything else is a new version. The transport document (`transport.json`) is held to the same
 ---     rules frame by frame (frames a client sends as parameters, the others
 ---     as results); its error codes and definitions are never removed.
 ---
@@ -225,9 +226,12 @@ local function compare(st, old, new, oc, nc, dir, path)
             for v in pairs(os_) do
                 if not ns[v] then st.bad(path, "enum value " .. tostring(v) .. " removed") end
             end
-            if dir == "in" then
+            -- A parameter may gain a value (additive: a client that needs it
+            -- checks the interface's schema digest / version first); a
+            -- result or signal may not (an old client could not read it).
+            if dir == "out" then
                 for v in pairs(ns) do
-                    if not os_[v] then st.bad(path, "parameter enum gained " .. tostring(v)) end
+                    if not os_[v] then st.bad(path, "result or signal enum gained " .. tostring(v)) end
                 end
             end
         end
