@@ -86,6 +86,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _watch userdata|nil the handle-watch timer
 --- @field _keepalive userdata|nil the keepalive ping timer
 --- @field _dropped boolean|nil the last connection dropped (keeps its note while waiting)
+--- @field _dropped_id string|nil the daemon that last dropped us: a reconnect to it is quiet
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
 --- @field _relaunch boolean|nil the observed daemon retired: launch one successor once it has exited
 --- @field opts table the attach options (test seams, see `attach`)
@@ -335,16 +336,25 @@ end
 --- Connect to the live daemon of `st`.
 function Observer:_connect(st)
     local h = st.handle or {}
+    -- The daemon that just dropped us, still live on disk: `lw daemon stop`
+    -- closes its connections before it removes its handle, so a watch tick
+    -- in between sees the stopping daemon. Try it again quietly — keep the
+    -- "disconnected" note and state while trying, and on failure; only a
+    -- connection that succeeds changes what the editor shows.
+    local quiet = self._dropped and self._dropped_id == daemon_id(h.pid, h.start_time) or nil
     local check = self.opts.check or require("loomworks.daemon.endpoint").check
     local eok, why = check(self.root, h.endpoint)
     if not eok then
         self.skip[daemon_id(h.pid, h.start_time)] = true
+        if quiet then return end
         return self:_set("waiting", tostring(why))
     end
     local connect = self.opts.connect or require("loomworks.daemon.client").connect
-    self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
+    if not quiet then
+        self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
+    end
     -- `exe`: the executable the daemon's handle names (§19.6; display only).
-    local target = { pid = h.pid, start_time = h.start_time,
+    local target = { pid = h.pid, start_time = h.start_time, quiet = quiet,
         exe = type(h.exe) == "string" and h.exe ~= "" and h.exe or nil }
     self._connecting = target
     connect(h.endpoint, {
@@ -366,6 +376,7 @@ function Observer:_on_connected(target, conn, err)
     self._connecting = nil
     if not conn then
         if err == "untrusted" then self.skip[daemon_id(target.pid, target.start_time)] = true end
+        if target.quiet then return end
         return self:_set("waiting", "could not reach the workspace daemon (pid " .. tostring(target.pid)
             .. ", " .. tostring(err) .. ")")
     end
@@ -389,6 +400,7 @@ function Observer:_on_connected(target, conn, err)
     self.conn = conn
     self._child = nil
     self._dropped = nil
+    self._dropped_id = nil
     self._relaunch = nil
     self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version }
     self.generation = ch.session_generation
@@ -628,6 +640,7 @@ end
 --- retirement (once, when it has exited), never after a stop (§19.16).
 function Observer:_on_closed(c)
     if c ~= self.conn then return end
+    local d = self.daemon
     self.conn = nil
     self.daemon = nil
     self.mode = nil
@@ -637,6 +650,7 @@ function Observer:_on_closed(c)
     self:_end_tasks("the workspace daemon disconnected")
     if self.state == "stopped" then return end
     self._dropped = true
+    self._dropped_id = d and daemon_id(d.pid, d.start_time) or nil
     if self._retired_note then
         self._retired_note = nil
         self._relaunch = true

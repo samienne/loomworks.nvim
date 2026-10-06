@@ -979,6 +979,37 @@ describe("the observer (§19.16)", function()
         assert.equals(0, f.spawned)
     end)
 
+    -- `lw daemon stop` closes the connections before it removes the handle:
+    -- a watch tick in between still sees the stopping daemon live and tries
+    -- it again. That attempt is quiet — the note stays "disconnected", the
+    -- state never shows `connecting` — and a failed one changes nothing.
+    it("a reconnect to the daemon that just dropped it, failing, keeps the disconnected note", function()
+        local f = fake_daemon()
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        local states = {}
+        on("daemon_runtime_changed", function(o) if o == obs then states[#states + 1] = o.state end end)
+        local real = f.opts.connect
+        obs.opts.connect = function(_, _, cb)
+            f.connects = f.connects + 1
+            cb(nil, "refused")
+        end
+        f.conn:close() -- the handle still names the stopping daemon
+        assert.is_true(vim.wait(5000, function() return f.connects >= 3 end, 10), obs:runtime_line())
+        assert.equals("waiting", obs.state)
+        assert.truthy(obs:runtime_line():find("disconnected", 1, true), obs:runtime_line())
+        assert.is_false(vim.tbl_contains(states, "connecting"), table.concat(states, ","))
+        -- The handle goes: still the disconnected note, nothing launched.
+        f.st = { kind = "none" }
+        vim.wait(300)
+        assert.truthy(obs:runtime_line():find("disconnected", 1, true), obs:runtime_line())
+        assert.equals(0, f.spawned)
+        -- The same daemon answering again (it was not stopping) is observed.
+        obs.opts.connect = real
+        f.st = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } }
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+    end)
+
     it("a `retiring` with no connection does not mark the next drop as a retirement", function()
         obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end })
         obs:_on_message({ kind = "retiring" })
