@@ -289,6 +289,25 @@ describe("daemon server (in-process)", function()
         conn:close()
     end)
 
+    it("a request in flight past the threshold is logged once as a warning, never cleared (§19.9 Busy)", function()
+        local lines = {}
+        srv.opts.log = function(l) lines[#lines + 1] = l end
+        local conn = assert(client.session(srv.address))
+        local sc
+        for c in pairs(srv.conns) do if c.authed then sc = c end end
+        sc.in_flight = sc.in_flight or {}
+        sc.in_flight[77] = { at = uv.now() - server_mod.STUCK_REQUEST_MS - 1000, kind = "x.Y/1.slow" }
+        sc.in_flight[78] = { at = uv.now(), kind = "x.Y/1.fresh" }
+        srv:_tick(); srv:_tick()
+        local warned = {}
+        for _, l in ipairs(lines) do if l:find("in flight for", 1, true) then warned[#warned + 1] = l end end
+        assert.equals(1, #warned)
+        assert.truthy(warned[1]:find("x.Y/1.slow", 1, true))
+        assert.truthy(sc.in_flight[77]) -- never cleared by force
+        assert.is_true(srv:conn_busy(sc))
+        conn:close()
+    end)
+
     it("a replaced runtime-lock record means lost authority: exit 1, nothing touched", function()
         local path = dpaths.lock_path(root)
         local rec = lock_record.new("daemon", { mode = "daemon" })

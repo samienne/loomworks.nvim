@@ -90,6 +90,24 @@ describe("version.identity of a development source", function()
         assert.are_not.equal(a, b)
     end)
 
+    it("LW_TEST_IDENTITY applies to a development build only, never to a release", function()
+        local notice = require("loomworks.release_notice")
+        local saved_rv = notice.running_version
+        local saved_env = vim.env.LW_TEST_IDENTITY
+        local ok, err = pcall(function()
+            vim.env.LW_TEST_IDENTITY = "0.0.1+test.forced"
+            notice.running_version = function() return "0.1.50" end
+            version._set_identity(nil)
+            assert.equals("0.1.50", version.identity())
+            notice.running_version = function() return nil end
+            version._set_identity(nil)
+            assert.equals("0.0.1+test.forced", version.identity())
+        end)
+        notice.running_version = saved_rv
+        vim.env.LW_TEST_IDENTITY = saved_env
+        assert(ok, err)
+    end)
+
     it("a fused executable (bundle base is a file) keeps the executable fingerprint", function()
         local file = (vim.fn.tempname():gsub("\\", "/"))
         write(file, "exe")

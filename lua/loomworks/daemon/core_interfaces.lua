@@ -45,7 +45,7 @@ local envelope = require("loomworks.proto.envelope")
 local M = {}
 
 M.WORKSPACE = { path = "/workspace", iface = "loomworks.Workspace", v = 1 }
-M.TASKS = { path = "/tasks", iface = "loomworks.Tasks", v = 1 } -- (tasks.TASKS_PATH / TASKS_IFACE)
+M.TASKS = { path = "/tasks", iface = "loomworks.Tasks", v = 1 } -- (tasks.TASKS_PATH / TASKS_IFACE / TASKS_V)
 M.SNAPSHOT = { path = "/internal", iface = "lw.internal.Snapshot", v = 1 }
 M.BUILD = { path = "/build", iface = "loomworks.Build", v = 1 }
 M.TESTS = { path = "/tests", iface = "loomworks.Tests", v = 1 }

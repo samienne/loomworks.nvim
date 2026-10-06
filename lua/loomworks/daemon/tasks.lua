@@ -45,6 +45,7 @@ local M = {}
 --- 11 (loomworks.daemon.core_interfaces TASKS).
 M.TASKS_PATH = "/tasks"
 M.TASKS_IFACE = "loomworks.Tasks"
+M.TASKS_V = 1
 
 --- Owner flow control: pause the step's output above this many queued bytes,
 --- resume below `OWNER_LOW`.
@@ -209,8 +210,10 @@ function Task:_observer_ok(conn)
 end
 
 --- Does `conn` observe this task? Below transport 11 every connection does
---- (protocol 10); from 11 only one subscribed to `loomworks.Tasks` on
---- `/tasks` for every task or for this one (§19.15 "Observation").
+--- (protocol 10); from 11 only one subscribed to `loomworks.Tasks/1` on
+--- `/tasks` for every task or for this one (§19.15 "Observation"): the frames
+--- sent are this version's, so a subscription to another version (a later
+--- `/2` beside it) does not take them.
 --- @param conn table
 --- @return boolean
 function Task:_observes(conn)
@@ -219,7 +222,7 @@ function Task:_observes(conn)
     local reg = srv.interfaces
     if not reg then return false end
     for _, s in pairs(reg.subs) do
-        if s.conn == conn and s.object == M.TASKS_PATH and s.iface == M.TASKS_IFACE
+        if s.conn == conn and s.object == M.TASKS_PATH and s.iface == M.TASKS_IFACE and s.v == M.TASKS_V
             and (s.args == nil or s.args.task_id == nil or s.args.task_id == self.id) then
             return true
         end

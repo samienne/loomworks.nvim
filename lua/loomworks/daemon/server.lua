@@ -81,6 +81,10 @@ M.KEEPALIVE_MS = 30000
 M.IDLE_SECONDS = 3600
 --- An unauthenticated connection is closed after this long (§19.8).
 M.AUTH_TIMEOUT_MS = 5000
+--- A request in flight longer than this is logged once as a warning (§19.9
+--- "Busy"): an interface method that answered ASYNC and never replied would
+--- otherwise keep its connection busy silently. Never cleared by force.
+M.STUCK_REQUEST_MS = 10 * 60 * 1000
 
 local function env_ms(name)
     local v = tonumber(os.getenv(name) or "")
@@ -358,6 +362,7 @@ function Server:_tick()
     if not rlock.still_ours(self.R) then
         return self:_lost_lock()
     end
+    self:_warn_stuck_requests()
     -- An attached runtime publishes no handle and never stops for idleness:
     -- it ends with its command (§19.1).
     if self.attached then return end
@@ -478,6 +483,25 @@ function Server:_send(conn, msg, cb)
         if self.retiring then self:_maybe_retire() end
     end
     pcall(function() conn.sock:write(protocol.encode(msg), cb) end)
+end
+
+--- Log once (a warning) each request in flight past STUCK_REQUEST_MS: it
+--- keeps its connection busy (§19.9), so a handler that never answers holds
+--- off an idle restart or a retirement — say so in the runtime log. Checked
+--- on the heartbeat; the request is never cleared here.
+function Server:_warn_stuck_requests()
+    local now = uv.now()
+    for conn in pairs(self.conns) do
+        if conn.in_flight and not conn.closed then
+            for req_id, rec in pairs(conn.in_flight) do
+                if type(rec) == "table" and not rec.warned and now - rec.at >= M.STUCK_REQUEST_MS then
+                    rec.warned = true
+                    self:log("warning: %s request %s (%s) in flight for %ds; the connection stays busy",
+                        self:_peer_text(conn), tostring(req_id), tostring(rec.kind), math.floor((now - rec.at) / 1000))
+                end
+            end
+        end
+    end
 end
 
 --- Is `conn` BUSY (spec §19.9 "Busy", step 5g.3): does it own a running task
@@ -907,7 +931,11 @@ function Server:_dispatch_request(conn, msg)
     -- frozen control subset, which never makes a connection busy (§19.9).
     if entry and msg.req_id ~= nil and not M.CONTROL[msg.kind] then
         conn.in_flight = conn.in_flight or {}
-        conn.in_flight[msg.req_id] = true
+        local what = msg.kind
+        if msg.iface and msg.method then
+            what = string.format("%s/%s.%s", tostring(msg.iface), tostring(msg.v), tostring(msg.method))
+        end
+        conn.in_flight[msg.req_id] = { at = uv.now(), kind = what }
     end
     if entry and entry.control then return entry.control(self, conn, msg, reply) end
     if entry and entry.v0 and self.service then return self.service[entry.v0](self.service, conn, msg) end

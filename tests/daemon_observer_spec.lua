@@ -160,6 +160,28 @@ describe("server: observers, retirement and model_change (§19.11, §19.12)", fu
     end)
 end)
 
+describe("Task:_observes matches the subscription's interface version (§19.15)", function()
+    local function task_with(subs)
+        return setmetatable({ id = "t1", stream = { server = { interfaces = { subs = subs } } } },
+            { __index = tasks_mod.Task })
+    end
+    it("a transport-11 connection subscribed to loomworks.Tasks/1 observes; one on another version does not", function()
+        local conn = { transport = 11 }
+        local function sub(v, args)
+            return { s = { conn = conn, object = "/tasks", iface = "loomworks.Tasks", v = v, args = args } }
+        end
+        assert.is_true(task_with(sub(1)):_observes(conn))
+        local t2 = task_with(sub(2))
+        assert.is_false(t2:_observes(conn))
+        local other = task_with(sub(1, { task_id = "t9" }))
+        assert.is_false(other:_observes(conn))
+        local mine = task_with(sub(1, { task_id = "t1" }))
+        assert.is_true(mine:_observes(conn))
+        -- Below transport 11 every connection observes (protocol 10).
+        assert.is_true(t2:_observes({ transport = 10 }))
+    end)
+end)
+
 describe("version.observer_compatible (§19.9)", function()
     it("needs an equal protocol and schemas no newer; the host version may differ", function()
         local me = version.schemas()

@@ -131,14 +131,6 @@ local _identity
 --- @return string
 function M.identity()
     if _identity then return _identity end
-    -- Test seam (like the other LW_TEST_* variables): a process that claims
-    -- another version, e.g. a daemon of "another release" for the restart
-    -- tests of the version policy (§19.9).
-    local forced = os.getenv("LW_TEST_IDENTITY")
-    if type(forced) == "string" and forced ~= "" then
-        _identity = forced
-        return _identity
-    end
     local ok, rel = pcall(function() return require("loomworks.release_notice").running_version() end)
     if ok and type(rel) == "string" and rel ~= "" then
         _identity = rel
@@ -147,6 +139,15 @@ function M.identity()
     local okb, base = pcall(function() return require("loomworks.save_guard").version() end)
     base = (okb and type(base) == "string" and base) or "0.0.0"
     base = base:gsub("%+dev$", "")
+    -- Test seam (like the other LW_TEST_* variables): a development build
+    -- that claims another version, e.g. a daemon of "another release" for
+    -- the restart tests of the version policy (§19.9). Checked only after
+    -- the release lookup: a release build never honours it.
+    local forced = os.getenv("LW_TEST_IDENTITY")
+    if type(forced) == "string" and forced ~= "" then
+        _identity = forced
+        return _identity
+    end
     local root = M.lua_root() or M.bundle_dir()
     local fp = root and tree_fingerprint(root .. "/loomworks") or exe_fingerprint()
     _identity = base .. "+dev." .. fp
