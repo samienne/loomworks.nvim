@@ -1114,8 +1114,11 @@ Three layers, each with one owner:
   handlers (`daemon/core_interfaces.lua`), so a v0 row and its method share
   one body. Module interfaces
   (5q) are mounted on `/modules/<id>` with the same method ↔ schema check.
-- **Data** — records carrying the `snapshot.registry` ids (opaque decimal
-  strings; `find(id, list)` resolves an `{ id }` reference).
+- **Data** — records carrying the `snapshot.registry` ids (opaque strings
+  from `protocol.session_id(generation, n)`, so an earlier session's id never
+  resolves; `find(id, list)` resolves an `{ id }` reference). Task ids
+  (`tasks.lua`, `Task.id`; `Task.n` the integer a protocol-10 connection
+  gets, `tasks.wire_id`) and `sub_id`s are minted the same way.
 
 `loomworks/proto/` (the guard's `shared` class) holds `envelope.lua`,
 `schema.lua` (the pure-Lua validator of the restricted keyword set; `pattern`
@@ -1187,12 +1190,18 @@ Step 5g.2 part B adds the operations and the CLI's calls:
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
   request kind as its interface method (entities as `{ key }`) and maps the
-  `ok` result back to the v0 reply shape (an `error` becomes `declined`);
-  otherwise it sends the kind. `cli._delegate`, `cli._read_projection` and
+  `ok` result back to the v0 reply shape; an `error` by its code
+  (`on_error`): the v0 request instead (unknown object / interface / method /
+  version), `declined` (invalid args, same build, stopping, retiring), or,
+  for a mutating operation on `internal` / an unknown code, `refused` with
+  exit 1 so it never runs twice; otherwise it sends the kind. `cli._delegate`, `cli._read_projection` and
   `snapshot.fetch` / `query` send through it; the routed client reads a
   task's `done.result` when present.
 - `proto/conformance.lua` types the task frames of a task-streamed call
-  (start meta naming the method, `done.result` against the task result).
+  (start meta naming the method, `done.result` against the task result),
+  orders every task's frames, refuses signals after `unsubscribe` or of
+  another session generation, and checks protocol-10 replies against
+  `transport.json` `v0.replies`.
 
 The
 plugin/binary boundary guard (`tests/split`,

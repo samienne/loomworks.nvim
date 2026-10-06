@@ -64,8 +64,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   are offered as versioned interfaces, and the command line uses them when
   the daemon supports them (older editors and clients keep the earlier
   requests). A client is told when the workspace header changes (loaded,
-  failed, another active profile). Entity ids on the wire are opaque
-  strings. (#TBD)
+  failed, another active profile). Entity, task and subscription ids on the
+  wire are opaque strings tied to the daemon session, so an id kept from an
+  earlier session is refused instead of naming another entity; this also
+  changes the ids in the earlier snapshot reply from integers to strings
+  (deliberate: nothing reads them yet), while older clients keep integer
+  task ids. A daemon operation that failed after it may have started is
+  never run a second time without the daemon: the command fails instead. A
+  test run reports each test step's name, exit code and status. (#TBD)
 - Experimental daemon (`runtime-mode daemon`): the workspace daemon answers
   two read-only requests, a snapshot of its loaded model (from which a client
   builds a read-only copy of the workspace) and host-probing queries (first:

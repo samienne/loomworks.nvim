@@ -848,7 +848,11 @@ is end-of-stream to the other. The standard-I/O transport (`lw daemon run
 the process that spawned it, so the daemon answers that process's `hello`
 directly with `welcome` — no `challenge`, no `auth`, the nonce ignored; the
 versions in `hello` are negotiated as on the socket, and anything other than
-`hello` first closes it. The socket transport keeps the challenge.
+`hello` first closes it. Closing the daemon's standard input ends that
+connection and stops the runtime: as for any disconnect (§19.15), the tasks
+the connection owns are cancelled, and the process exits once they ended
+(the editor's child daemon, step 5p, relies on this: an editor that goes away
+leaves no build running). The socket transport keeps the challenge.
 
 **Frozen control subset.** Framing, `hello`/`challenge`/`auth`/`welcome`,
 `ping`, `status`, `stop` and `retire` (§19.9) never change shape across
@@ -1087,9 +1091,15 @@ The daemon keeps a session-local **opaque-id registry** keyed by object
 identity: an id is assigned once, survives renames (it follows the object, not
 its key) and refreshes (the deserializer reuses a matching object), is never
 reused within a session, and is discarded on restart (a new session
-generation). Snapshots carry a current-key → id index from which a client
-builds its id↔key map, a transport-layer router that domain logic never
-consults.
+generation). An id is an opaque string that carries the session generation,
+so an id cached from an earlier session never names an entity of this one:
+it is a stale reference, refused (§19.20 "Errors and domain results"), never
+resolved to whatever entity the new session numbered alike. Snapshots carry
+a current-key → id index from which a client builds its id↔key map, a
+transport-layer router that domain logic never consults. *(Step 5g.2 part B
+changed the index's ids from integers to these strings, in the protocol-10
+`snapshot` reply too — deliberately: nothing reads them yet, and they share
+the registry with the interfaces' ids.)*
 
 Every model change advances a per-workspace sequence number and broadcasts a
 typed `model_change` stamped with seq and session generation to every
@@ -1101,7 +1111,8 @@ optimization.
 
 **Ids on the interfaces.** *(Step 5g.2: the `changed` signal (part A) and
 references in requests (part B: the operations' interfaces and
-`Profiles/1.compiler_cache`; ids are opaque strings) are implemented; records
+`Profiles/1.compiler_cache`; ids are opaque strings carrying the session
+generation) are implemented; records
 of further interfaces land with the steps that land them, §19.19.)* Ids are the only entity handles on
 the wire: there are no remote object references, proxies or lifetimes. Every
 entity record in an interface result or signal (§19.20) carries its `id` from
@@ -1626,7 +1637,9 @@ control, observer bounds and disconnect-cancellation above. What the
 interface types is the payload: `start.meta` also names `object`, `iface`, `v`
 and `method`, and `done` carries `result`, validated against the method's
 task result schema (for `prepare_run` the launch spec, for a test run its
-structured results). The outcomes of the operations (`accepted`, `refused`,
+structured results: `steps`, one `{ name, exit_code, status }` per test step
+run, and the `junit` files written; per-case results come later as an
+optional field). The outcomes of the operations (`accepted`, `refused`,
 `declined`, `confirm`) are unchanged; they are domain results of the method,
 not errors (§19.20).
 
@@ -2200,6 +2213,23 @@ method needs the workspace and loading it failed; `data` carries the header's
 `internal`. An interface declares its own codes in its schema. A stale
 reference (a removed entity, an id of an earlier session generation) is the
 method's `refused` / not-found result, never an error of the transport.
+Once a mutating method's handler ran, its reply is never turned into an
+error: a reply that does not match its schema (checked in development builds
+and tests) is logged and sent as it is, because it may report what already
+started (an accepted task), and an error would let a client run the
+operation a second time. A non-mutating method's invalid reply may be
+`internal` there.
+
+**The CLI's calls.** Over transport 11 the CLI sends its operations and
+reads as interface calls (`daemon/calls.lua`) and acts on a transport error
+by its code: `unknown_object`, `unknown_interface`, `unknown_method`,
+`unsupported_version` — nothing ran, so the protocol-10 request is sent
+instead (a daemon of step 5g.1 speaks transport 11 without these
+interfaces); `invalid_args`, `same_build_required`, `stopping`, `retiring` —
+nothing ran, the command runs in-process (`declined`); `internal` or an
+unknown code — for a mutating method, which may have started, the command
+fails with exit 1 and is never run a second time in-process; for any other
+method it runs in-process.
 
 **References.** A request names an entity by a reference, `{ id }` or
 `{ key }`. The editor sends ids taken from results and views; the CLI sends
@@ -2225,7 +2255,11 @@ task owned by the calling connection, on the transport's task stream
 back-pressure, observer bounds and disconnect-cancellation are shared by every
 such method of every interface. The interface types the task's `meta` and its
 `done.result`. Observers subscribe to `loomworks.Tasks/1`; only the owner may
-cancel (`forbidden` otherwise); a disconnect still cancels.
+cancel (`forbidden` otherwise); a disconnect still cancels. From transport 11
+a `task_id` and a `sub_id` are opaque strings scoped to the session
+generation, like entity ids (`loomworks.Common/1` `TaskId`); a connection of
+protocol 10 keeps its integer task ids in its task frames, its `accepted`
+replies and `status.tasks`, unchanged.
 
 **Interface catalogue.** The first versions of the core interfaces, landed by
 the steps of §19.19. Their schemas, not this table, are the full contract.
@@ -2344,9 +2378,16 @@ template), `$contains`, `$exact`, `$pattern`, `$len`, combinable. The runner
 validates every received frame: transport frames against the transport
 document, an interface call's `ok` against its result schema and its `error`
 code against the transport's and the method's codes, a signal against its
-schema with a gapless `seq` per object, and the task frames of a
-task-streamed call (the start meta naming the method; `done.result` against
-its task result schema); protocol-10 frames are only matched.
+schema with a gapless `seq` per object, none for a subscription after its
+`unsubscribe` and its `session_generation` (if any) the `welcome`'s, every
+task's frames in order (`start` first, nothing after `done`; integer ids at
+protocol 10, strings from 11) and the task frames of a task-streamed call
+(the start meta naming the method; `done.result` against its task result
+schema); a protocol-10 reply is checked against its v0 shape
+(`transport.json` `v0.replies`), so the v0 aliases provably stay unchanged;
+other protocol-10 frames are only matched. An explicit `null` is a present
+value (`$absent` fails on it, `$any` accepts it), and an object pattern never
+matches an array nor an array pattern an object.
 
 Clients **must tolerate** unknown fields, unknown enum values and unknown
 alternatives in results and signals (an unknown value is shown as unknown or
