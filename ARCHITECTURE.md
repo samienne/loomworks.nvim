@@ -1513,6 +1513,49 @@ runner's `exec` with POSIX utility argv, and every removal is checked against
 
 ---
 
+## Plugin/binary boundary
+
+The Neovim plugin and the `lw` binary are built from this repo, but the plugin
+is heading towards depending on `lw` only through the daemon protocol (§19), so
+the binary can later be rewritten and moved to its own repo. Until the code is
+physically split, a guard test keeps the coupling from growing.
+
+**Three sides.** `tests/split/boundary.lua` assigns every module under `lua/`
+to exactly one side by name pattern (`plugin/*.lua` is always plugin-side):
+
+- **plugin** — editor code: `loomworks` (init), `ui/*`, `lualine.*`,
+  `loomtest.*`, the neotest/loomtest adapters, `debug`, `session_tracker`,
+  `lsp` + `integrations/lsp/*`, `fidget`, `reload`, `auto_load`, `device_log`,
+  `overseer`, `workspace_view`, `daemon/observer`, `daemon/remote_task`,
+  `daemon/host_binary`.
+- **shared** — host-neutral protocol client code both sides may load (pure
+  Lua, no `vim.*` beyond `vim.json`): the future `loomworks.proto.*` and
+  today's `daemon/protocol` and `daemon/version`.
+- **binary** — everything `lw` runs: `main`, `boot/*`, `shim/*`, `cli*`,
+  `core`, `workspace`, the domain objects, `modules/*`, `sdks/*`, `remote/*`,
+  `progress/*`, the rest of `daemon/*`, `integrations/inventory/*`.
+
+**Two ratchets** (`tests/split_boundary_spec.lua`, a static scan; the scanner
+in `tests/split/scan.lua` documents the require spellings it reads and what it
+cannot see). Both compare against `tests/split/allowlist.lua`, which may only
+shrink:
+
+1. **Require edges.** A plugin-side or shared file that requires a binary-side
+   module must be listed under `edges`. A new edge fails; so does a listed edge
+   the code no longer has. Dynamic requires (`require(name)`,
+   `"loomworks." .. id`) are counted per file under `dynamic` and must match.
+2. **Domain reach-ins.** Per plugin-side file, the `core:`, `get_workspace(`
+   and `._workspace` sites are counted against a ceiling under `reach_ins`. A
+   rise fails; a drop fails too until the ceiling is lowered to match.
+
+**Updating.** A new module: add it to `boundary.lua` on its side. Removing
+coupling: delete the edge or lower the number in `allowlist.lua`
+(`nvim -l tests/split/scan.lua` prints today's state in that format). Never
+add an edge or raise a ceiling to make the test pass; route the need through
+the daemon protocol, or move the code to the side it belongs to.
+
+---
+
 ## Testing
 
 ### Running Tests
