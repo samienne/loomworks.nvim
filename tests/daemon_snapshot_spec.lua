@@ -101,9 +101,9 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         local conn = assert(client.loopback_session(srv))
         local a = assert(snapshot.fetch(conn))
         local b = assert(snapshot.fetch(conn))
-        assert.is_number(a.index.projects.app)
-        assert.is_number(a.index.config_sets.dev)
-        assert.is_number(a.index.profiles.dev)
+        assert.is_string(a.index.projects.app)
+        assert.is_string(a.index.config_sets.dev)
+        assert.is_string(a.index.profiles.dev)
         assert.same(a.index, b.index)
         -- Config units by structured key, not an internal formatted id.
         assert.is_true(#a.index.config_units > 0)
@@ -113,7 +113,7 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         end
         local ids = {}
         local function seen(id)
-            assert.is_number(id)
+            assert.is_string(id)
             assert.is_nil(ids[id], "an id is unique")
             ids[id] = true
         end

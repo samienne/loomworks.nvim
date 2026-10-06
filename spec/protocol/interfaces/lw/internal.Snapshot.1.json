@@ -25,6 +25,27 @@
     }
   },
   "$defs": {
+    "Index": {
+      "description": "The semantic-key to id index (spec 19.12): per kind, the current key to the entity's id.",
+      "type": "object",
+      "properties": {
+        "projects": { "type": "object", "additionalProperties": { "$ref": "loomworks.Common/1#/$defs/Id" } },
+        "config_sets": { "type": "object", "additionalProperties": { "$ref": "loomworks.Common/1#/$defs/Id" } },
+        "profiles": { "type": "object", "additionalProperties": { "$ref": "loomworks.Common/1#/$defs/Id" } },
+        "config_units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["project", "configuration", "id"],
+            "properties": {
+              "project": { "type": "string" },
+              "configuration": { "type": "string" },
+              "id": { "$ref": "loomworks.Common/1#/$defs/Id" }
+            }
+          }
+        }
+      }
+    },
     "Snapshot": {
       "type": "object",
       "required": ["outcome", "scope", "tools", "index", "seq", "session_generation"],
@@ -36,7 +57,7 @@
         "cache": { "description": "The cache as the daemon would save it.", "type": "object" },
         "tools": { "description": "Per module type, the detected toolchains.", "type": "object" },
         "shared_ignored": { "type": "object" },
-        "index": { "description": "The semantic-key to id index (spec 19.12).", "type": "object" },
+        "index": { "$ref": "#/$defs/Index" },
         "seq": { "type": "integer" },
         "session_generation": { "type": "integer" },
         "notes": { "type": "array", "items": { "type": "string" } }

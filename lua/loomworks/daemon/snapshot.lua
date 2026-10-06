@@ -36,9 +36,11 @@ M.READ_ONLY = "a read-only projection of the workspace daemon's model (spec §19
 --- @class loomworks.daemon.IdRegistry
 --- Session-local opaque ids keyed by object identity (spec §19.12): assigned
 --- once, never reused within the session; weak keys, so a dropped object
---- frees its entry (its id is still never handed out again).
+--- frees its entry (its id is still never handed out again). An id is a
+--- string on the wire (loomworks.Common/1 `Id`): opaque to clients, which
+--- only compare it and send it back.
 --- @field next integer the last id handed out
---- @field by_obj table<table, integer> object → id (weak keys)
+--- @field by_obj table<table, string> object → id (weak keys)
 local Registry = {}
 Registry.__index = Registry
 
@@ -49,15 +51,27 @@ end
 
 --- The object's id, assigned on first sight.
 --- @param obj table
---- @return integer
+--- @return string
 function Registry:id(obj)
     local id = self.by_obj[obj]
     if not id then
         self.next = self.next + 1
-        id = self.next
+        id = tostring(self.next)
         self.by_obj[obj] = id
     end
     return id
+end
+
+--- The object an id was issued for, among `candidates` (nil: none of them,
+--- e.g. a stale id of a removed entity or an earlier session).
+--- @param id string
+--- @param candidates table[]|nil
+--- @return table|nil
+function Registry:find(id, candidates)
+    for _, obj in pairs(candidates or {}) do
+        if not obj._removed and self.by_obj[obj] == id then return obj end
+    end
+    return nil
 end
 
 --- The semantic-key → id index of a workspace's keyed objects (spec §19.13):
@@ -66,7 +80,7 @@ end
 --- `{ project = <project key>, configuration = <configuration key>, id }`.
 --- @param ws table
 --- @param reg loomworks.daemon.IdRegistry
---- @return { projects: table<string, integer>, config_sets: table<string, integer>, profiles: table<string, integer>, config_units: { project: string, configuration: string, id: integer }[] }
+--- @return { projects: table<string, string>, config_sets: table<string, string>, profiles: table<string, string>, config_units: { project: string, configuration: string, id: string }[] }
 function M.index(ws, reg)
     local idx = { projects = {}, config_sets = {}, profiles = {}, config_units = {} }
     for _, p in pairs(ws._projects or {}) do

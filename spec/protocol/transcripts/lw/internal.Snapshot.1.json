@@ -18,7 +18,7 @@
               "user": { "profiles": { "dev": { "$type": "object" } } },
               "cache": { "$type": "object" },
               "tools": { "$type": "object" },
-              "index": { "projects": { "app": { "$any": true } }, "profiles": { "dev": { "$any": true } } },
+              "index": { "projects": { "app": { "$type": "string" } }, "profiles": { "dev": { "$type": "string" } }, "config_units": [ { "project": "app", "configuration": { "$type": "string" }, "id": { "$type": "string" } } ] },
               "seq": { "$type": "integer" },
               "session_generation": { "$var": "welcome.header.session_generation" }
             }
