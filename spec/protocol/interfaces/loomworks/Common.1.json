@@ -37,7 +37,10 @@
       "required": ["outcome"],
       "properties": {
         "outcome": { "const": "accepted" },
-        "task_id": { "description": "The task the call runs as, for a task-streamed method.", "type": "integer" }
+        "task_id": { "description": "The task the call runs as, for a task-streamed method.", "type": "integer" },
+        "profile_key": { "description": "The profile the operation resolved to.", "type": "string" },
+        "pid": { "description": "The daemon's process id.", "type": "integer" },
+        "notes": { "type": "array", "items": { "type": "string" } }
       }
     },
     "Refused": {
@@ -47,6 +50,7 @@
         "outcome": { "const": "refused" },
         "message": { "type": "string" },
         "exit_code": { "type": "integer" },
+        "stream": { "description": "out: the message is the command's ordinary stdout line (exit_code 0), not an error. Clients treat an unknown stream as an error.", "enum": ["out"] },
         "notes": { "type": "array", "items": { "type": "string" } }
       }
     },
@@ -66,7 +70,9 @@
       "properties": {
         "outcome": { "const": "confirm" },
         "lines": { "type": "array", "items": { "type": "string" } },
-        "plan": { "type": "object" }
+        "plan": { "description": "An opaque token of the plan shown; sent back with the confirmation, which a changed plan refuses.", "type": "string" },
+        "profile_key": { "type": "string" },
+        "notes": { "type": "array", "items": { "type": "string" } }
       }
     },
     "Outcome": {
@@ -97,6 +103,15 @@
     "DebugSpec": {
       "description": "A resolved debug launch; its fields are defined with Launch/1.prepare_debug (step 5k).",
       "type": "object"
+    },
+    "TaskEnd": {
+      "description": "The task result every task-streamed method's result extends (spec 19.15): the exit code the client ends with and the failure it prints as lw: <error>.",
+      "type": "object",
+      "required": ["exit_code"],
+      "properties": {
+        "exit_code": { "type": "integer" },
+        "error": { "type": "string" }
+      }
     },
     "TaskMeta": {
       "description": "The start meta of a task frame (spec 19.15).",

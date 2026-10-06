@@ -42,7 +42,12 @@
                 { "path": "/", "interfaces": { "$contains": [ { "name": "loomworks.Root", "versions": { "$contains": [1] }, "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
                 { "path": "/workspace", "interfaces": { "$contains": [ { "name": "loomworks.Workspace", "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
                 { "path": "/tasks", "interfaces": { "$contains": [ { "name": "loomworks.Tasks", "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
-                { "path": "/internal", "interfaces": { "$contains": [ { "name": "lw.internal.Snapshot", "same_build": true } ] } }
+                { "path": "/internal", "interfaces": { "$contains": [ { "name": "lw.internal.Snapshot", "same_build": true } ] } },
+                { "path": "/build", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Build", "versions": { "$contains": [1] }, "schema_digest": { "1": { "$pattern": "^[0-9a-f]+$" } } } ] } },
+                { "path": "/tests", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Tests", "versions": { "$contains": [1] } } ] } },
+                { "path": "/launch", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Launch", "versions": { "$contains": [1] } } ] } },
+                { "path": "/toolchains", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Toolchains", "versions": { "$contains": [1] } } ] } },
+                { "path": "/profiles", "owner": "core", "interfaces": { "$contains": [ { "name": "loomworks.Profiles", "versions": { "$contains": [1] } } ] } }
               ] }
             }
         } }

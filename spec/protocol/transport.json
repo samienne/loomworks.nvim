@@ -140,7 +140,9 @@
       "properties": {
         "kind": { "const": "task" },
         "task_id": { "type": "integer" },
-        "phase": { "enum": ["start", "line", "output", "progress", "done"] }
+        "phase": { "enum": ["start", "line", "output", "progress", "done"] },
+        "meta": { "description": "start: the task's meta (loomworks.Common/1 TaskMeta); for an interface method's task it names the object, iface, v and method.", "type": "object" },
+        "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (spec 19.20 Tasks and cancel).", "type": "object" }
       }
     }
   },

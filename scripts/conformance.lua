@@ -114,17 +114,25 @@ function M.fixture(name, key_path)
     write(root .. "/step.lua", M.STEP)
     local nv = (vim.v.progpath:gsub("\\", "/"))
     local function cmd(kind) return { nv, "--headless", "-u", "NONE", "-l", root .. "/step.lua", kind } end
-    write(root .. "/loomworks.json", vim.json.encode({
-        projects = { app = { path = "app", shell = {
+    local function app()
+        return { path = "app", shell = {
             build_dir = "${workspace_root}/out/${variant}",
             configure_cmd = cmd("configure"), build_cmd = cmd("build"),
             configurations = { Debug = vim.empty_dict() },
-        } } },
+        } }
+    end
+    write(root .. "/loomworks.json", vim.json.encode({
+        projects = { app = app() },
         configuration_sets = { dev = { app = "Debug" } },
     }))
     local trust = require("loomworks.trust")
     trust._set_key_path(key_path)
-    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } } }
+    -- A launch configuration `hello` (honored only from the working copy,
+    -- spec 17.10): the program Launch/1.prepare_run resolves.
+    local user_app = app()
+    user_app.launch = { hello = { command = nv, args = { "--version" } } }
+    local user = { _meta = { version = 2 }, profiles = { dev = { configuration_set = "dev" } },
+        projects = { app = user_app } }
     local signed, serr = trust.sign("user", trust.encode(user))
     trust._set_key_path(nil)
     if not signed then error(serr) end

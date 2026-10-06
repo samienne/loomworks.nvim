@@ -2,7 +2,7 @@
   "interface": "loomworks.Workspace",
   "version": 1,
   "status": "draft",
-  "description": "Object /workspace (spec 19.20): the workspace's header and its model changes. Step 5g.2 lands header and the changed signal; the command methods follow in step 5o.",
+  "description": "Object /workspace (spec 19.20): the workspace's header and its model changes. Step 5g.2 lands header and the changed and header_changed signals; the command methods follow in step 5o.",
   "methods": {
     "header": {
       "description": "The always-warm header (spec 19.13 Header): the session fields and the model's state. Never loads the workspace.",
@@ -27,6 +27,14 @@
             "items": { "enum": ["config", "user", "cache"] }
           }
         }
+      }
+    },
+    "header_changed": {
+      "description": "The header's state, name, active profile or load error changed (a load, a reload, a failed load, a write that changed the active profile).",
+      "args": {
+        "type": "object",
+        "required": ["header"],
+        "properties": { "header": { "$ref": "#/$defs/Header" } }
       }
     }
   },

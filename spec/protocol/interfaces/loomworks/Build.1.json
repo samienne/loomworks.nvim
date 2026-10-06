@@ -1,0 +1,181 @@
+{
+  "interface": "loomworks.Build",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /build (spec 19.15, 19.20): the build operations of lw build, lw clean and lw reset as task-streamed methods; the protocol-10 build, clean and reset requests stay as their v0 aliases. Each replies with the operation's outcome (accepted with the task_id, refused, declined, confirm) and streams the task on the transport's task stream.",
+  "methods": {
+    "build": {
+      "description": "Build the profile (lw build [<profile>] [--target <name>]... [--force] [--reconfigure] [-v] [-- <args>]).",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          },
+          "targets": {
+            "description": "Only these build targets (--target).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "extra": {
+            "description": "Arguments passed to the build tool (after --).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "reconfigure": {
+            "type": "boolean"
+          },
+          "verbose": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The build's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "clean": {
+      "description": "Clean the profile's build directories (lw clean [<profile>]); nothing to clean is the refused result.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The clean's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    },
+    "reset": {
+      "description": "Hard-reset build directories (lw reset [<profile> | --all] [-y], spec 16.30): without yes the result is confirm with the plan's lines and token; with yes (and that token as plan) the reset runs as a task. Nothing to reset is refused with stream out and exit code 0.",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          },
+          "all": {
+            "description": "Every profile's build directories (not with profile).",
+            "type": "boolean"
+          },
+          "yes": {
+            "description": "Confirmed: run without asking.",
+            "type": "boolean"
+          },
+          "plan": {
+            "description": "The token of the confirm result the user accepted; a changed plan is refused.",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The reset's end.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    }
+  }
+}

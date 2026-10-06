@@ -64,7 +64,12 @@
 --- subscribed signal's `seq` is the previous one of its object on this
 --- connection + 1 (from the baseline `subscribe` returned). Frames of
 --- protocol 10 (v0 replies, `model_change`, ...) are not interface frames:
---- they are not validated, only matched.
+--- they are not validated, only matched. The task frames of a task an
+--- interface call started (its `ok` result `accepted` with a `task_id`, for
+--- a method the schema declares task-streamed) are: the `start` meta must
+--- name the method (`object`, `iface`, `v`, `method`) and match the
+--- method's task meta schema, and the `done` must carry a `result` matching
+--- its task result schema.
 ---
 --- A driver is `{ send(frame) -> ok, err; recv(timeout_ms) -> frame | nil,
 --- err; close(); now?() -> ms }`; `recv` blocks up to `timeout_ms` (0: only
@@ -88,7 +93,9 @@ M.FORMAT = 1
 ---          and build commands that print a line and exit 0, slept
 ---          `LW_TEST_SLEEP` ms when the client environment sets it), the
 ---          configuration set `dev` (`app` = `Debug`) and a trusted working
----          copy with the profile `dev`
+---          copy with the profile `dev` and, on `app`, the launch
+---          configuration `hello` (an existing program, run with one
+---          argument)
 M.FIXTURES = { empty = true, shell = true }
 
 --- Default per-step timeout.
@@ -335,7 +342,7 @@ Session.__index = Session
 --- @return loomworks.proto.ConformanceSession
 function M.session(driver, opts)
     opts = opts or {}
-    local self = setmetatable({ driver = driver, set = opts.set or documents.set(), calls = {}, subs = {},
+    local self = setmetatable({ driver = driver, set = opts.set or documents.set(), calls = {}, subs = {}, tasks = {},
         last_seq = {}, queue = {}, vars = opts.vars or {}, received = 0 }, Session)
     local transport = self.set:load("transport.json")
     self.transport = transport
@@ -380,6 +387,13 @@ function Session:check_received(frame)
                 if not okr then
                     return false, string.format("%s/%d.%s result: %s", call.iface, call.v, call.method, tostring(rerr))
                 end
+                -- A task-streamed method's accepted task: its frames are typed.
+                local r = frame.result
+                if doc.methods[call.method].task and type(r) == "table" and r.outcome == "accepted"
+                    and r.task_id ~= nil then
+                    self.tasks[r.task_id] = { iface = call.iface, v = call.v, method = call.method,
+                        object = call.object, rel = rel }
+                end
             end
             -- Track subscriptions and their seq baselines.
             if call.iface == "loomworks.Root" and call.method == "subscribe" and type(frame.result) == "table" then
@@ -406,6 +420,7 @@ function Session:check_received(frame)
         end
         return true
     end
+    if frame.kind == "task" then return self:check_task(frame) end
     if frame.kind == "signal" then
         local doc, rel = self:_iface(frame.iface, frame.v)
         if not doc then return false, "signal of an interface without a document: " .. tostring(rel) end
@@ -429,6 +444,33 @@ function Session:check_received(frame)
         elseif frame.object ~= "/" then
             return false, "a signal of " .. tostring(frame.object) .. " without a sub_id"
         end
+    end
+    return true
+end
+
+--- Validate a task frame of an interface method's task (see the header):
+--- the start meta names the method and matches its task meta schema; the
+--- `done` carries a `result` matching its task result schema. Tasks no
+--- interface call started (protocol-10 requests) are only matched.
+--- @param frame table
+--- @return boolean ok, string|nil err
+function Session:check_task(frame)
+    local t = self.tasks[frame.task_id]
+    if not t then return true end
+    local base = "/methods/" .. t.method .. "/task/"
+    local what = string.format("%s/%d.%s task %s", t.iface, t.v, t.method, tostring(frame.task_id))
+    if frame.phase == "start" then
+        local m = type(frame.meta) == "table" and frame.meta or {}
+        if m.object ~= t.object or m.iface ~= t.iface or m.v ~= t.v or m.method ~= t.method then
+            return false, what .. ": the start meta does not name its method"
+        end
+        local ok, err = self.set:validate(t.rel, base .. "meta", frame.meta)
+        if not ok then return false, what .. " meta: " .. tostring(err) end
+    elseif frame.phase == "done" then
+        self.tasks[frame.task_id] = nil
+        if frame.result == nil then return false, what .. ": done without a result" end
+        local ok, err = self.set:validate(t.rel, base .. "result", frame.result)
+        if not ok then return false, what .. " result: " .. tostring(err) end
     end
     return true
 end

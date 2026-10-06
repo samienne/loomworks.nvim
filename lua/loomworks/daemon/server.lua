@@ -497,7 +497,10 @@ function Server:model_changed()
         if conn.authed and not conn.closed then self:_send(conn, msg) end
     end
     if self.interfaces then
-        require("loomworks.daemon.core_interfaces").changed(self.interfaces, self.seq, self.generation)
+        local core_ifaces = require("loomworks.daemon.core_interfaces")
+        core_ifaces.changed(self.interfaces, self.seq, self.generation)
+        -- (A write may change the header: the active profile, the name.)
+        if self.service then pcall(core_ifaces.header_check, self.service) end
     end
 end
 

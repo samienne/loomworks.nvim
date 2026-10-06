@@ -2,7 +2,7 @@
   "transcripts": 1,
   "interface": "loomworks.Workspace",
   "version": 1,
-  "description": "Object /workspace (spec 19.13 Header, 19.12, 19.20): header and the changed signal.",
+  "description": "Object /workspace (spec 19.13 Header, 19.12, 19.20): header and the changed and header_changed signals.",
   "cases": [
     {
       "name": "header reports the session and an unloaded model without loading it",
@@ -51,6 +51,29 @@
             "sub_id": { "$var": "sub" }, "seq": 1,
             "args": { "seq": { "$type": "integer" }, "session_generation": { "$var": "welcome.header.session_generation" } }
         } }
+      ]
+    },
+    {
+      "name": "a subscriber receives header_changed when a call loads the workspace, and none when the header stays the same",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["header_changed"] } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "expect": {
+            "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "header_changed",
+            "sub_id": { "$var": "sub" }, "seq": 1,
+            "args": { "header": {
+              "root": { "$var": "welcome.header.root" }, "pid": { "$var": "welcome.header.pid" },
+              "session_generation": { "$var": "welcome.header.session_generation" },
+              "state": "loaded", "name": { "$type": "string" }, "error": { "$absent": true }
+            } }
+        } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "expect_none": { "kind": "signal", "object": "/workspace", "name": "header_changed" }, "within_ms": 200 }
       ]
     }
   ]

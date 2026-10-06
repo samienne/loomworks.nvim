@@ -377,10 +377,12 @@ function M.run(svc, ctx)
         if ti > #tsteps then
             release_all()
             for _, p in ipairs(wrote) do task:line("out", "JUnit: " .. p) end
+            -- The structured results (Tests/1.run's task result, §19.15).
+            local results = { result = { steps = #tsteps, failed = failed, junit = wrote } }
             local ok_line, failure = build_run.test_summary(profile, failed, #tsteps)
-            if failure then return finish(1, failure) end
+            if failure then return finish(1, failure, results) end
             task:line("out", ok_line)
-            return finish(0)
+            return finish(0, nil, results)
         end
         local step = tsteps[ti]
         task:line("out", string.format("==> [test] %s", step.name or "?"))
@@ -395,7 +397,7 @@ function M.run(svc, ctx)
         if not ts or #ts == 0 then
             release_all()
             task:line("out", build_run.no_tests_line(profile, units))
-            return finish(0)
+            return finish(0, nil, { result = { steps = 0, failed = {}, junit = {} } })
         end
         local okj, jerr = build_run.prepare_junit(args.junit)
         if not okj then return finish(1, jerr) end

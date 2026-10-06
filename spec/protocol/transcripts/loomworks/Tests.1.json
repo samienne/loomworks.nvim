@@ -1,0 +1,39 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Tests",
+  "version": 1,
+  "description": "Object /tests (spec 19.15, 19.20): run as a task-streamed method with its structured results.",
+  "cases": [
+    {
+      "name": "run builds, finds no tests and ends with the structured results",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "dev" }, "command": "lw test" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task" }, "profile_key": "dev" } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "kind": "test", "profile": "dev" }
+        } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
+            "result": { "exit_code": 0, "steps": 0, "failed": [], "junit": [] }
+        }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "an unknown profile is refused and unknown arguments are invalid",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tests", "iface": "loomworks.Tests", "v": 1, "method": "run", "args": { "filter": "x" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    }
+  ]
+}

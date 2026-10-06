@@ -1,0 +1,84 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Build",
+  "version": 1,
+  "description": "Object /build (spec 19.15, 19.20): build, clean and reset as task-streamed methods; references by key and by id; the outcomes as domain results.",
+  "cases": [
+    {
+      "name": "build is accepted; its start meta names the method and its done carries the task result",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "command": "lw build" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task", "$type": "integer" }, "profile_key": "dev", "pid": { "$var": "welcome.header.pid" } } } },
+        { "expect": {
+            "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
+            "meta": { "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "kind": "build", "profile": "dev", "origin": "cli" }
+        } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0, "result": { "$exact": { "exit_code": 0 } } }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "a profile named by its id from the snapshot index builds; clean then runs as a task",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "index": { "profiles": { "dev": { "$bind": "dev_id", "$type": "string" } } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "id": { "$var": "dev_id" } } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "accepted", "task_id": { "$bind": "build" }, "profile_key": "dev" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "build" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0 } }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 3, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "clean", "args": { "profile": { "key": "dev" }, "command": "lw clean" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "clean" }, "profile_key": "dev" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "clean" }, "phase": "start", "meta": { "method": "clean", "kind": "clean" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "clean" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0 } }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "reset asks for confirmation with a plan token, runs once confirmed, then has nothing to reset",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "build" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "build" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "reset", "args": { "profile": { "key": "dev" }, "command": "lw reset" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "confirm", "lines": { "$type": "array" }, "plan": { "$bind": "plan", "$type": "string" }, "profile_key": "dev" } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "reset", "args": { "profile": { "key": "dev" }, "yes": true, "plan": { "$var": "plan" }, "command": "lw reset" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "reset" } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "reset" }, "phase": "start", "meta": { "method": "reset", "kind": "reset" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "reset" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0 } }, "timeout_ms": 60000 },
+        { "send": { "kind": "call", "req_id": 4, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "reset", "args": { "profile": { "key": "dev" }, "yes": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 4, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 0, "stream": "out" } } }
+      ]
+    },
+    {
+      "name": "an unknown profile and a stale id are refused; malformed arguments are errors or declined",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "nope" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "id": "no-such-id" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "targets": "app" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 4, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev", "id": "1" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 4, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 5, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 5, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "reset", "args": { "all": true, "profile": { "key": "dev" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 6, "result": { "outcome": "declined", "reason": { "$type": "string" } } } }
+      ]
+    }
+  ]
+}

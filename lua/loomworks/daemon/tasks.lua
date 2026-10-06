@@ -13,9 +13,11 @@
 ---       raw bytes of a build step
 ---   { kind = "task", task_id, phase = "progress", pct }
 ---       coalesced: only when the integer percent advances
----   { kind = "task", task_id, phase = "done", exit_code, error? }
+---   { kind = "task", task_id, phase = "done", exit_code, error?, result? }
 ---       the end; `error` is the refusal / failure the client prints as
----       `lw: <error>` before exiting with `exit_code`
+---       `lw: <error>` before exiting with `exit_code`; `result` only for the
+---       task of an interface method (`Task.call`, spec §19.20): its task
+---       result, typed by the method's schema
 ---
 --- The client that started the task (its OWNER) receives every event,
 --- unbounded and in order: the stream is its terminal. It is FLOW-CONTROLLED:
@@ -65,6 +67,7 @@ M._queued = queued
 --- @field meta table|nil the `start` meta (with `origin`), once started
 --- @field started_at integer|nil wall-clock seconds (os.time) it started
 --- @field last_pct integer last progress percent sent (-1 before the first tick)
+--- @field call loomworks.daemon.TaskCall|nil the interface method it runs for (§19.20): `{ object, iface, v, method, result = fun(exit_code, err, fields, extra): table }`
 local Task = {}
 Task.__index = Task
 
@@ -204,13 +207,19 @@ function Task:info()
         percent = (self.last_pct or -1) >= 0 and self.last_pct or nil }
 end
 
---- Announce the task. Its `origin` is filled from the owner (§19.15).
+--- Announce the task. Its `origin` is filled from the owner (§19.15), and
+--- for the task of an interface method (`task.call`, §19.20 "Tasks and
+--- cancel") the meta also names its `object`, `iface`, `v` and `method`.
 --- The stream's `on_started(task, info)` hook (loomworks.Tasks/1's
 --- `started` signal) runs after the `start` frame.
 --- @param meta table
 function Task:start(meta)
     meta = meta or {}
     meta.origin = M.origin_of(self.owner)
+    local call = self.call
+    if call then
+        meta.object, meta.iface, meta.v, meta.method = call.object, call.iface, call.v, call.method
+    end
     self.meta = meta
     self.started_at = os.time()
     self:_emit({ phase = "start", meta = meta })
@@ -265,12 +274,23 @@ end
 --- @param exit_code integer
 --- @param err? string the refusal / failure (printed as `lw: <err>`)
 --- @param fields? table more fields of the `done` event (a run's `launch` /
----   `device`, §19.15 "Run")
+---   `device`, §19.15 "Run"); its `result` (a test run's structured results)
+---   is never a field of the frame itself: it goes into the task result of
+---   an interface method's task only
 function Task:done(exit_code, err, fields)
     if self.finished then return end
     self.finished = true
     local msg = { phase = "done", exit_code = exit_code, error = err }
-    for k, v in pairs(fields or {}) do msg[k] = v end
+    local extra
+    for k, v in pairs(fields or {}) do
+        if k == "result" then extra = v else msg[k] = v end
+    end
+    -- The task of an interface method: `done.result`, typed by the method's
+    -- task result schema (§19.15 "Tasks of interface methods").
+    if self.call and self.call.result then
+        local ok, result = pcall(self.call.result, exit_code, err, fields or {}, extra)
+        if ok then msg.result = result end
+    end
     self:_emit(msg)
     local s = self.stream
     if s.tasks[self.id] then

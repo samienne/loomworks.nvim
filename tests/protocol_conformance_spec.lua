@@ -1,5 +1,5 @@
 -- Protocol conformance (spec §19.20 "Schemas and conformance", step 5g.2
--- part A): every golden transcript under spec/protocol/transcripts/ replayed
+-- parts A and B): every golden transcript under spec/protocol/transcripts/ replayed
 -- against this checkout's daemon over the standard-I/O transport
 -- (`lw daemon run --stdio`) and over the loopback transport; the engine's
 -- matchers and frame validation; and what a single-connection transcript
@@ -25,7 +25,10 @@ describe("conformance transcripts (§19.20)", function()
         local have = {}
         for _, rel in ipairs(FILES) do have[rel] = true end
         for _, rel in ipairs({ "transcripts/loomworks/Root.1.json", "transcripts/loomworks/Workspace.1.json",
-            "transcripts/loomworks/Tasks.1.json", "transcripts/lw/internal.Snapshot.1.json" }) do
+            "transcripts/loomworks/Tasks.1.json", "transcripts/lw/internal.Snapshot.1.json",
+            "transcripts/loomworks/Build.1.json", "transcripts/loomworks/Tests.1.json",
+            "transcripts/loomworks/Launch.1.json", "transcripts/loomworks/Toolchains.1.json",
+            "transcripts/loomworks/Profiles.1.json" }) do
             assert.is_true(have[rel] == true, rel)
         end
     end)
@@ -100,6 +103,32 @@ describe("conformance engine", function()
         ok = engine.run_case({ name = "t", handshake = false, steps = {}, allow = { { kind = "model_change" } } },
             canned({ J('{"kind":"model_change","seq":1}') }), { timeout_ms = 10, settle_ms = 0 })
         assert.is_true(ok)
+    end)
+
+    it("types the task frames of a task-streamed method: the start meta names it, done carries its result", function()
+        local function run(frames)
+            local build = { send = J('{"kind":"call","req_id":1,"object":"/build","iface":"loomworks.Build","v":1,"method":"build","args":{},"env":{}}') }
+            return engine.run_case({ name = "t", handshake = false, allow = { { kind = "task" } },
+                steps = { build, { expect = { kind = "ok", req_id = 1 } } } }, canned(frames),
+                { timeout_ms = 10, settle_ms = 0 })
+        end
+        local accepted = J('{"kind":"ok","req_id":1,"result":{"outcome":"accepted","task_id":4}}')
+        local start = J('{"kind":"task","task_id":4,"phase":"start","meta":{"object":"/build","iface":"loomworks.Build","v":1,"method":"build","kind":"build"}}')
+        local ok, err = run({ accepted, start, J('{"kind":"task","task_id":4,"phase":"done","exit_code":0,"result":{"exit_code":0}}') })
+        assert.is_true(ok, err)
+        ok, err = run({ accepted, start, J('{"kind":"task","task_id":4,"phase":"done","exit_code":0}') })
+        assert.is_false(ok)
+        assert.truthy(err:find("done without a result", 1, true), err)
+        ok, err = run({ accepted, J('{"kind":"task","task_id":4,"phase":"start","meta":{"kind":"build"}}') })
+        assert.is_false(ok)
+        assert.truthy(err:find("does not name its method", 1, true), err)
+        ok, err = run({ accepted, start, J('{"kind":"task","task_id":4,"phase":"done","exit_code":0,"result":{"exit_code":"zero"}}') })
+        assert.is_false(ok)
+        assert.truthy(err:find("result", 1, true), err)
+        -- A task no interface call started (protocol 10) is only matched.
+        ok, err = run({ J('{"kind":"ok","req_id":1,"result":{"outcome":"refused","message":"m","exit_code":1}}'),
+            J('{"kind":"task","task_id":9,"phase":"done","exit_code":0}') })
+        assert.is_true(ok, err)
     end)
 end)
 
