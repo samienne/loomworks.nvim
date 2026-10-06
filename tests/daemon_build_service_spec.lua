@@ -131,6 +131,42 @@ describe("daemon build service (§19.15)", function()
         conn:close(); obs:close()
     end)
 
+    it("transport 11: Workspace/1.changed of the write-back arrives before the task's done, to the owner and an observer subscribed to /workspace (§19.16 End)", function()
+        local function sub(c, object, iface)
+            assert(client.call_sync(c, "/", "loomworks.Root", 1, "subscribe", { object = object, iface = iface, v = 1 }))
+        end
+        local seen = {}
+        local obs = assert(client.session(srv.address, { client = "editor", role = "observer",
+            on_message = function(m) seen[#seen + 1] = m end }))
+        assert.equals(11, obs.transport)
+        sub(obs, "/tasks", "loomworks.Tasks")
+        sub(obs, "/workspace", "loomworks.Workspace")
+        local all = {}
+        local conn = assert(client.session(srv.address, { on_message = function(m) all[#all + 1] = m end }))
+        sub(conn, "/workspace", "loomworks.Workspace")
+        conn:request({ kind = "build", args = { profile = "dev" }, interactive = false,
+            env = envscope.capture(), command = "lw build" }, function() end)
+        local function order(list)
+            local last_change, done_at, v0
+            for i, m in ipairs(list) do
+                if m.kind == "signal" and m.object == "/workspace" and m.name == "changed" then last_change = i end
+                if m.kind == "model_change" then v0 = true end
+                if m.kind == "task" and m.phase == "done" then done_at = done_at or i end
+            end
+            return last_change, done_at, v0
+        end
+        assert.is_true(vim.wait(60000, function() local _, d = order(all); return d ~= nil end, 10))
+        local c1, d1, v01 = order(all)
+        assert.is_not_nil(c1, "no Workspace.changed for the write-back")
+        assert.is_true(c1 < d1)
+        assert.is_nil(v01) -- no v0 broadcast on transport 11
+        assert.is_true(vim.wait(10000, function() local _, d = order(seen); return d ~= nil end, 10))
+        local c2, d2, v02 = order(seen)
+        assert.is_true(c2 ~= nil and c2 < d2)
+        assert.is_nil(v02)
+        conn:close(); obs:close()
+    end)
+
     it("status lists the running tasks with their origin; none once ended (§19.11, protocol 7)", function()
         local pidfile = H.tmp() .. "/pid"
         local r = build(srv, { profile = "dev" }, { env = { LW_TEST_SLEEP = "60000", LW_TEST_PIDFILE = pidfile } })
