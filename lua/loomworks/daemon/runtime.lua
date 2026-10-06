@@ -85,6 +85,34 @@ end
 
 local function truthy(v) return v ~= nil and v ~= "" and v ~= "0" and v:lower() ~= "false" end
 
+--- How long an attached run waits for another attached run that holds the
+--- workspace's runtime lock before it fails "workspace busy" (spec §19.2):
+--- the setting and its default (5 s).
+M.BUSY_WAIT_SETTING = "runtime-busy-wait"
+M.BUSY_WAIT_DEFAULT_MS = 5000
+
+--- Parse a busy-wait value: `0` (no wait), `<n>ms`, or a duration of
+--- `parse_duration` (`5`, `5s`, `1m`). Returns milliseconds, or nil when invalid.
+--- @param v any
+--- @return integer|nil
+function M.parse_busy_wait(v)
+    if v == 0 or v == "0" then return 0 end
+    if type(v) == "string" then
+        local ms = tonumber(v:match("^%s*(%d+)%s*ms%s*$") or "")
+        if ms then return ms end
+    end
+    local s = M.parse_duration(v)
+    return s and s * 1000 or nil
+end
+
+--- The busy wait in milliseconds from a settings table (an invalid value
+--- falls back to the default).
+--- @param cfg table|nil
+--- @return integer
+function M.busy_wait_ms(cfg)
+    return M.parse_busy_wait(cfg and cfg[M.BUSY_WAIT_SETTING]) or M.BUSY_WAIT_DEFAULT_MS
+end
+
 --- Does this command use the workspace daemon (spec §19.1)? During the
 --- transition: only in `daemon` mode, and not when attached is selected —
 --- in this precedence: the `--no-daemon` flag; `LOOMWORKS_NO_DAEMON` (`1`

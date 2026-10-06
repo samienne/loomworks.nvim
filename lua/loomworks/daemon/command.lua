@@ -371,6 +371,37 @@ function M.stop(root, host, opts)
     return 0
 end
 
+--- A server for `root` with the build service attached the way every
+--- runtime has it (§19.15, §19.19 step 3): the host's workspace load (loaded
+--- on the first operation, then kept live) and the runtime log (§19.10).
+--- @param root string
+--- @param host table the CLI host (`build` = the service's workspace host)
+--- @param opts table server options (loomworks.daemon.server.new)
+--- @return loomworks.daemon.Server
+function M._new_server(root, host, opts)
+    opts.log = opts.log or require("loomworks.daemon.rlog").writer(root)
+    local srv = require("loomworks.daemon.server").new(root, opts)
+    if host.build then require("loomworks.daemon.service").attach(srv, host.build) end
+    return srv
+end
+
+--- Start an attached runtime for one command (§19.1 "Loopback"): the
+--- daemon's server and build service inside this process, holding R in
+--- `attached` mode with `command`, reached over `client.loopback_session`.
+--- The caller stops it (`srv:stop`) when the command ends; stopping releases
+--- R and returns here (never ends the process). Returns the server, or nil +
+--- message + exit status (server.EXIT_HELD while another runtime holds R).
+--- @param root string
+--- @param host table the CLI host, as for `run_server`
+--- @param command string the command R names, e.g. "build"
+--- @return loomworks.daemon.Server|nil srv, string|nil err, integer|nil code
+function M.start_attached(root, host, command)
+    local srv = M._new_server(root, host, {})
+    local ok, err, code = srv:start_attached({ command = command })
+    if not ok then return nil, err, code end
+    return srv
+end
+
 --- `lw daemon run [--root <dir>]`: serve in the foreground until stopped.
 --- @param root string|nil
 --- @param args string[]
@@ -384,14 +415,10 @@ function M.run_server(root, args, host)
     if not root then host.die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace") end
     local server_mod = require("loomworks.daemon.server")
     local rt = require("loomworks.daemon.runtime")
-    local srv = server_mod.new(root, {
+    local srv = M._new_server(root, host, {
         exit = function(code) host.finish(code) end,
-        log = require("loomworks.daemon.rlog").writer(root),
         idle_seconds = rt.idle_seconds(host.config),
     })
-    -- Routed operations (§19.15, §19.19 step 3): the build service, with the
-    -- host's workspace load (loaded on the first build, then kept live).
-    if host.build then require("loomworks.daemon.service").attach(srv, host.build) end
     local ok, err, code = srv:start()
     if not ok then
         if code == server_mod.EXIT_HELD then

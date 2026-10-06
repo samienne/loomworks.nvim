@@ -285,4 +285,61 @@ function M.alive(pid, start)
     return type(start) == "string" and proc.alive(pid, start) == true
 end
 
+--- `s` (stdout or stderr, root already replaced) comparable across the three
+--- runtimes: CRLF as LF, the daemon's delegation line dropped, pids and
+--- durations masked.
+--- @param s string
+--- @return string
+function M.parity_text(s)
+    s = s:gsub("\r\n", "\n")
+    s = s:gsub("[^\n]*through the workspace daemon[^\n]*\n", "")
+    s = s:gsub("pid %d+", "pid N"):gsub("%d+%.%d+ ?s%f[%W]", "<t>"):gsub("%d+ ?ms%f[%W]", "<t>")
+    return s
+end
+
+--- Three-way parity (spec §19.1 "Loopback during the transition", §19.17):
+--- `o.args` on three workspaces — `o.roots[1]` in-process
+--- (LOOMWORKS_RUNTIME=in-process), `[2]` routed through a live daemon (daemon
+--- mode: launched by the run itself), `[3]` attached (`--no-daemon` in daemon
+--- mode, no daemon running) — with the same exit code, output
+--- (`o.norm(s, root)` then `parity_text`) and state (`o.state(root)`). The
+--- daemon is stopped afterwards. Returns the in-process result.
+--- @param o { roots: string[], args: string[], lw: function, norm: function, state: function, env: table, extra?: table, stdin?: string, routed?: boolean }
+--- @return table
+function M.three_way(o)
+    local function with(t) return vim.tbl_extend("force", o.extra or {}, t) end
+    local a, b, c = o.roots[1], o.roots[2], o.roots[3]
+    local what = table.concat(o.args, " ")
+    local ra = o.lw(a, o.args, with({ LOOMWORKS_RUNTIME = "in-process" }), o.stdin)
+    local rb = o.lw(b, o.args, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
+    local rc = o.lw(c, { "--no-daemon", unpack(o.args) }, with({ LOOMWORKS_RUNTIME = "daemon" }), o.stdin)
+    if o.routed ~= false then
+        assert(rb.stderr:find("through the workspace daemon", 1, true), what .. ": not routed\n" .. rb.stderr)
+        local f = io.open(c .. "/.nvim/loomworks.daemon.log", "rb")
+        local log = f and f:read("*a") or ""
+        if f then f:close() end
+        local op
+        for _, x in ipairs(o.args) do if x:sub(1, 1) ~= "-" then op = x; break end end
+        assert(log:find("attached run of " .. tostring(op), 1, true), what .. ": not attached\n" .. log)
+        -- Served by the attached runtime: its service accepted the request as
+        -- a task (not merely started, then fell back in-process) ...
+        assert(log:find("\n[^\n]*" .. vim.pesc(tostring(op)) .. " [^\n]*%(task %d+%) accepted"),
+            what .. ": no attached task\n" .. log)
+        -- ... and no daemon was involved (§19.1 rule c).
+        assert(not rc.stderr:find("through the workspace daemon", 1, true), what .. ": daemon line\n" .. rc.stderr)
+    end
+    M.stop_daemon(b, o.env)
+    local ea = M.parity_text(o.norm(ra.stdout, a))
+    local fa = M.parity_text(o.norm(ra.stderr, a))
+    for _, x in ipairs({ { rb, b, "daemon" }, { rc, c, "attached" } }) do
+        local r, root, how = x[1], x[2], what .. " (" .. x[3] .. ")"
+        assert.equals(ra.code, r.code, how .. "\n" .. r.stderr)
+        assert.equals(ea, M.parity_text(o.norm(r.stdout, root)), how)
+        assert.equals(fa, M.parity_text(o.norm(r.stderr, root)), how)
+        assert.same(o.state(a), o.state(root), how)
+    end
+    assert.is_nil(uv.fs_stat(c .. "/.nvim/loomworks.daemon.lock"), what .. ": R not released")
+    return ra
+end
+
 return M

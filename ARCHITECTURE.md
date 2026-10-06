@@ -696,7 +696,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   handshake (match / stop + relaunch an idle mismatched daemon / retire a
   busy one and bypass it / leave one with newer schemas alone); `ensure(root,
   opts)`: `runtime.select` (mode, `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`),
-  then connect + reconcile + `ping`, or launch; a hung daemon is reported, or
+  then connect + reconcile + `ping` (`meet(root, st, opts)`, also used by
+  `cli._delegate_attached` for a live daemon an attached selection finds,
+  with `no_launch`: an idle mismatched daemon is only stopped), or launch; a
+  hung daemon is reported, or
   under `--break-locks` recovered through `command.recover` (the non-exiting
   §19.5 sequence `stop --force` / `kill` also use) and relaunched; problems
   are one stderr line, never a failed command. Each step waits at most
@@ -978,6 +981,50 @@ failed`) and resolves a scope-`all` task's units among the workspace's
 configuration units, attaching it to every profile with one of them
 (`RemoteTask.profiles`); `running.format` shows `--all` in the profile
 column.
+
+**Step 5e: loopback (spec §19.1 "Loopback during the transition").**
+`daemon/loopback.lua` `pair()` returns two connected in-memory
+ends with the pipe methods the server, client and task streams call
+(`write(data, cb)`, `read_start`, `read_stop`, `close`, `is_closing`,
+`get_write_queue_size`); delivery is `vim.schedule`d (ordered, never inline,
+never in a fast callback), a writer's queue counts bytes its peer has not
+read (so `tasks.lua` owner flow control works unchanged), and `close` is
+EOF to the peer after the bytes already written. `daemon/server.lua` shares
+`_acquire` (versions, root check, R, stale handle removal) and `_start_tick`
+between `start` (daemon: key, endpoint, handle, signals) and
+`start_attached({ command })` (R in `attached` mode; no endpoint, key, handle
+or idle stop; `_tick` checks only the root and `still_ours`; `stop` releases R
+and records `exit_code` instead of ending the process unless the host
+injected `exit`). `Server:adopt(sock, peer)` registers a connection in the
+authenticated state through `_authed` (the same counting, log and `welcome`
+as `_handshake`) and `_read`. `daemon/client.lua` shares `frame_reader` and
+`handshake_guard` between `connect` and `loopback_connect(server, opts, cb)`
+(synthesized `challenge`, reader starting at `welcome`);
+`loopback_session(server, opts)` is the synchronous form and
+`loopback_sessioner(server)` the `opts.session(endpoint, opts)` hook
+`cli._delegate` takes. `daemon/command.lua` `_new_server(root, host, opts)`
+attaches the build service and the runtime log for both `run_server` and
+`start_attached(root, host, command)`. In the CLI, `cli._attached_selected(ensured)`
+says whether a routed operation's selection is attached in `daemon` mode
+(`ensure` returned `off` with `runtime.select` in daemon mode, or `failed`);
+`cli._delegate_attached(op, root, args)` parses the request first (a form
+that stays in-process, or an untrusted workspace, never takes R), starts the
+attached server (retrying `start_attached` for `runtime-busy-wait` while R is
+held; a `live` daemon is used through the normal `_delegate` path instead),
+then calls `_delegate` with `attached = true`, the loopback sessioner,
+`release` (stop + unload the service's workspace, so a later in-process load
+starts clean; a run calls it before its program) and `lost`. With `attached`,
+`_delegate` skips the daemon-state, endpoint and `--break-locks` checks and
+prints none of the daemon's lines. R is released by `release` after the
+call, and by an exit hook on `die` / `finish` / Ctrl-C (which cancels the
+running task through `Service:on_stopping`). A lost R (`Server:_lost_lock`
+in an attached run) first calls `Service:freeze_writes()`, which sets
+`Workspace._no_write` so `_save_cache` / `_save_user` write nothing, then
+`on_stopping`, which marks the service `stopping` so `_drain` and
+`_on_operation` decline requests not yet accepted. `lost()` runs one `_tick`
+on the spot (a confirmation prompt blocks the loop) and every attached
+fallback checks it, so a command that lost R exits 1 rather than continuing
+in-process.
 
 ### Workspace trust (spec §17)
 

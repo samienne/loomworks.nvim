@@ -14,6 +14,24 @@ request carries the answer). A standalone `lw configure` command was
 considered and not added: configuring stays a step of `lw build`
 (`--reconfigure` forces it).
 
+## Daemon follow-ups (after step 5e)
+
+- `lw daemon stop` on a daemon that is already retiring still triggers the
+  editor's relaunch (needs a stopping broadcast).
+- The successor launched after a version retirement is often the version
+  just retired: one wasted start per retirement.
+- Daemon log lines include the client name/version unescaped (newline
+  injection into the log).
+- `lw trust --discard` from the CLI does not make the editor reload.
+- Idea: show client-executed runs (the daemon only prepares `lw run`; its
+  task ends before the program exits) in `lw status` and the status page.
+- An attached selection whose runtime lock is held on another host still
+  runs in-process with only the "could not take" line; decide whether it
+  should wait and fail busy.
+- No end-to-end test for an attached device run found by probing (the
+  device stubs are in-process only).
+- `ensure.meet` with `no_launch` is only tested through a mocked meet.
+
 ## Two meanings of "clean"
 
 The editor's `C` action deletes the build directory and resets the unit to

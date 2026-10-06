@@ -322,6 +322,14 @@ describe("lw reset through the workspace daemon (real processes)", function()
             again.stdout)
         assert.is_nil(uv.fs_lstat(appdir))
     end)
+
+    it("three-way parity: in-process, through a live daemon, attached (§19.1)", function()
+        local roots3 = { workspace(), workspace(), workspace() }
+        for _, root in ipairs(roots3) do build(root) end
+        H.three_way({ roots = roots3, args = { "--no-input", "reset", "dev", "-y" }, lw = lw, env = env,
+            norm = function(s, root) return norm(s, { ["<ROOT>"] = root }) end,
+            state = function(root) return { cache = cache_of(root, env.data .. "/trust.key"), out = tree_of(root .. "/out") } end })
+    end)
 end)
 
 describe("daemon processes", function()

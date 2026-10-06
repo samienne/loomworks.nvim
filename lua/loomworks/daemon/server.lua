@@ -51,6 +51,11 @@ local M = {}
 --- launching client connects to the holder instead of failing).
 M.EXIT_HELD = 3
 
+--- `stop_reason` of a runtime whose lock was taken over (§19.2), and of one
+--- whose workspace root was removed (§19.11).
+M.LOST_LOCK = "the runtime lock was taken over"
+M.ROOT_REMOVED = "the workspace root was removed"
+
 --- Heartbeat period of the handle / lost-lock / lifetime checks.
 M.TICK_MS = 5000
 --- Keepalive interval (§19.11): a connection silent for three is dropped.
@@ -66,6 +71,9 @@ local function env_ms(name)
 end
 
 --- @class loomworks.daemon.Server
+--- @field attached boolean|nil an attached runtime (§19.1): no endpoint, handle or idle stop
+--- @field exit_code integer|nil an attached runtime's exit status, recorded when it stopped
+--- @field stop_reason string|nil why it stopped (`LOST_LOCK`, `ROOT_REMOVED`, or the `stop` reason)
 local Server = {}
 Server.__index = Server
 
@@ -156,7 +164,7 @@ M.HANDLE_LOG_AFTER_MS = 5000
 --- handshake or a reply; the rewrite publishes the record as it is then.
 --- @param delay_ms? integer
 function Server:_handle_changed(delay_ms)
-    if self.stopped or self._handle_pending then return end
+    if self.stopped or self.attached or self._handle_pending then return end
     self._handle_pending = true
     local t = uv.new_timer()
     t:start(delay_ms or 0, 0, function()
@@ -206,11 +214,13 @@ function Server:_write_handle()
     return nil
 end
 
---- Start serving. Returns true, or nil + message + exit status (EXIT_HELD
+--- The part of starting both runtimes share (§19.1, §19.2): the versions
+--- computed, the root checked, R acquired in `mode` (a predecessor's stale
+--- handle removed). Returns true, or nil + message + exit status (EXIT_HELD
 --- when another runtime holds the lock).
+--- @param lock_opts { mode?: string, command?: string }
 --- @return boolean|nil ok, string|nil err, integer|nil code
-function Server:start()
-    lock_record.set_holder_kind("daemon")
+function Server:_acquire(lock_opts)
     -- Computed here, outside any libuv callback: the editor host forbids
     -- vim.fn (the fingerprint's sha256) in fast callbacks.
     self.identity = version.identity()
@@ -219,7 +229,7 @@ function Server:start()
     if not st or st.type ~= "directory" then
         return nil, "workspace root " .. self.root .. " does not exist", 1
     end
-    local R, holder = rlock.try_acquire(self.root)
+    local R, holder = rlock.try_acquire(self.root, lock_opts)
     if not R then
         holder = holder or {}
         return nil, string.format("the runtime lock is held by %s (pid %s on %s, %s)",
@@ -233,6 +243,23 @@ function Server:start()
     end
     -- Holding R, any handle present is a predecessor's (stale): remove it.
     handle.remove(self.root)
+    return true
+end
+
+--- Start the heartbeat timer (§19.2).
+function Server:_start_tick()
+    self.timer = uv.new_timer()
+    self.timer:start(self.tick_ms, self.tick_ms, function() self:_guard(self._tick) end)
+end
+
+--- Start serving. Returns true, or nil + message + exit status (EXIT_HELD
+--- when another runtime holds the lock).
+--- @return boolean|nil ok, string|nil err, integer|nil code
+function Server:start()
+    lock_record.set_holder_kind("daemon")
+    local aok, aerr, acode = self:_acquire({ mode = "daemon" })
+    if not aok then return nil, aerr, acode end
+    local R = self.R
     local key, kerr = auth.key()
     if not key then
         rlock.release(R)
@@ -251,8 +278,7 @@ function Server:start()
     local sst = uv.fs_lstat(addr)
     self.sock_ino = sst and sst.type == "socket" and sst.ino or nil
     self:_write_handle()
-    self.timer = uv.new_timer()
-    self.timer:start(self.tick_ms, self.tick_ms, function() self:_guard(self._tick) end)
+    self:_start_tick()
     if package.config:sub(1, 1) ~= "\\" and uv.new_signal then
         pcall(function()
             self.sigterm = uv.new_signal()
@@ -261,6 +287,31 @@ function Server:start()
     end
     self:log("daemon pid %d serving %s on %s (lw %s, protocol %d)", self.pid, self.root, addr,
         self.identity, protocol.VERSION)
+    return true
+end
+
+--- Start an attached runtime (§19.1 "Loopback"): the daemon's code inside
+--- the client process for the length of one command. R is held in `attached`
+--- mode with the command; there is no endpoint, no authentication key, no
+--- handle and no idle stop — its clients are loopback connections handed to
+--- `adopt`. Its tick only checks that the root still exists and R is still
+--- its own. `stop` (and a lost R) release R and return to the caller: unless
+--- the host injected `opts.exit`, the exit status is only recorded
+--- (`exit_code`), never `os.exit`. Returns true, or nil + message + exit
+--- status (EXIT_HELD when another runtime holds the lock).
+--- @param opts { command: string }
+--- @return boolean|nil ok, string|nil err, integer|nil code
+function Server:start_attached(opts)
+    opts = opts or {}
+    self.attached = true
+    if not self.opts.exit then
+        self.exit = function(code) self.exit_code = code end
+    end
+    local aok, aerr, acode = self:_acquire({ mode = "attached", command = opts.command })
+    if not aok then return nil, aerr, acode end
+    self:_start_tick()
+    self:log("attached run of %s (pid %d) on %s (lw %s, protocol %d)", tostring(opts.command), self.pid,
+        self.root, self.identity, protocol.VERSION)
     return true
 end
 
@@ -281,11 +332,14 @@ function Server:_tick()
     -- Root removed (§19.11): checked first — its lock went with it.
     local rst = uv.fs_stat(self.root)
     if not rst or rst.type ~= "directory" then
-        return self:stop("the workspace root was removed", 0)
+        return self:stop(M.ROOT_REMOVED, 0)
     end
     if not rlock.still_ours(self.R) then
         return self:_lost_lock()
     end
+    -- An attached runtime publishes no handle and never stops for idleness:
+    -- it ends with its command (§19.1).
+    if self.attached then return end
     -- The heartbeat keeps the published handle fresh even while a rewrite is
     -- still failing; a failing rewrite (or a removed handle) is retried here.
     local touched = handle.touch(self.root)
@@ -321,6 +375,20 @@ end
 --- authority — stop at once, write nothing, exit nonzero (§19.2).
 function Server:_lost_lock()
     if self.stopped then return end
+    self.stop_reason = M.LOST_LOCK
+    if self.service then
+        -- No workspace file is written from here on (§19.2): a clean's wipe or
+        -- a reset's deletion still settling, a segment drained below, never
+        -- save the cache or the working copy. (What a deletion wrote before
+        -- it started — its entries `unknown` — stays: crash safety.)
+        if self.service.freeze_writes then pcall(self.service.freeze_writes, self.service) end
+        -- An attached runtime's running operation is this command's (§19.2):
+        -- it is cancelled as on Ctrl-C — its steps' process trees killed —
+        -- before the command ends; its clients (the loopback) are told.
+        if self.attached then
+            pcall(self.service.on_stopping, self.service, "the runtime lock was taken over")
+        end
+    end
     self.stopped = true
     self:log("the runtime lock was taken over; exiting without touching the workspace")
     for conn in pairs(self.conns) do pcall(function() conn.sock:close() end) end
@@ -333,11 +401,15 @@ function Server:_lost_lock()
 end
 
 --- Stop: close clients and the endpoint, remove the handle and socket while
---- still holding R, release R, end the process (§19.11). Idempotent.
+--- still holding R, release R, end the process (§19.11). Idempotent. An
+--- attached runtime has no endpoint or handle: it closes its loopback
+--- connections, releases R and returns to its caller (`exit` records the
+--- status, §19.1).
 --- @param reason string
 --- @param code? integer exit status (default 0)
 function Server:stop(reason, code)
     if self.stopped then return end
+    self.stop_reason = self.stop_reason or reason
     -- Running operations end first (§19.11, §19.15): their step processes
     -- are killed and their build locks released while this process still
     -- holds R; their clients are told before the connections close.
@@ -349,7 +421,9 @@ function Server:stop(reason, code)
     for _, h in ipairs({ self.timer, self.sigterm, self.listener }) do
         pcall(function() if h and not h:is_closing() then h:close() end end)
     end
-    if rlock.still_ours(self.R) then
+    if self.attached then
+        -- Nothing published: only R to release.
+    elseif rlock.still_ours(self.R) then
         handle.remove(self.root, { pid = self.pid, start_time = self.start_time })
         endpoint.cleanup(self.root, self.address, self.candidates, self.sock_ino)
     elseif not uv.fs_stat(self.root) then
@@ -450,13 +524,7 @@ function Server:_on_connection(err)
     conn.auth_timer:start(self.auth_timeout_ms, 0, function()
         if not conn.authed then self:_close(conn, "not authenticated in time") end
     end)
-    sock:read_start(function(rerr, chunk)
-        local ok, err = pcall(self._on_read, self, conn, rerr, chunk)
-        if not ok then
-            self:log("internal error on a connection: %s", tostring(err))
-            pcall(self._close, self, conn)
-        end
-    end)
+    self:_read(conn)
 end
 
 --- Bytes (or EOF / an error) arrived on a connection.
@@ -501,25 +569,64 @@ function Server:_handshake(conn, msg)
     end
     if conn.state == "challenged" and msg.kind == K.auth
         and auth.equal(msg.client_proof, auth.client_proof(self.key, self.address, conn.nc, conn.ns)) then
-        conn.authed, conn.state = true, "authed"
-        conn.decoder.max = protocol.MAX_FRAME
         pcall(function() conn.auth_timer:stop(); conn.auth_timer:close() end)
         conn.auth_timer = nil
-        self.n_clients = self.n_clients + 1
-        self.last_request = os.time()
-        self:log("%s connected (lw %s, %d client(s))", self:_peer_text(conn), tostring(conn.peer and conn.peer.lw_version),
-            self.n_clients)
-        self:_send(conn, {
-            kind = K.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
-            retiring = self.retiring,
-            header = { root = self.root, pid = self.pid, lw_version = self.identity,
-                session_generation = self.generation },
-        })
-        self:_handle_changed()
-        return
+        return self:_authed(conn)
     end
     -- Anything else before authentication, or a failed proof: closed, no detail.
     self:_close(conn, "authentication failed")
+end
+
+--- A connection became authenticated: counted, logged and welcomed.
+--- @param conn table
+function Server:_authed(conn)
+    conn.authed, conn.state = true, "authed"
+    conn.decoder.max = protocol.MAX_FRAME
+    self.n_clients = self.n_clients + 1
+    self.last_request = os.time()
+    self:log("%s connected (lw %s, %d client(s))", self:_peer_text(conn), tostring(conn.peer and conn.peer.lw_version),
+        self.n_clients)
+    self:_send(conn, {
+        kind = protocol.KIND.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
+        retiring = self.retiring,
+        header = { root = self.root, pid = self.pid, lw_version = self.identity,
+            session_generation = self.generation },
+    })
+    self:_handle_changed()
+end
+
+--- Start reading a connection's bytes into `_on_read`.
+--- @param conn table
+function Server:_read(conn)
+    conn.sock:read_start(function(rerr, chunk)
+        local ok, err = pcall(self._on_read, self, conn, rerr, chunk)
+        if not ok then
+            self:log("internal error on a connection: %s", tostring(err))
+            pcall(self._close, self, conn)
+        end
+    end)
+end
+
+--- Register a connection that needs no authentication — the loopback end of
+--- an attached run (§19.1): in the state `_handshake` leaves an authenticated
+--- connection in, welcomed over the connection itself. `peer` is what a
+--- `hello` announces (`protocol`, `lw_version`, `schemas`, `client`, `role`).
+--- Returns the connection, or nil + error once the server stopped.
+--- @param sock table a stream with the pipe methods (loomworks.daemon.loopback)
+--- @param peer table
+--- @return table|nil conn, string|nil err
+function Server:adopt(sock, peer)
+    if self.stopped then return nil, "the runtime has stopped" end
+    peer = peer or {}
+    local conn = { sock = sock, decoder = protocol.new_decoder(protocol.MAX_FRAME), state = "new",
+        last_seen = uv.now(), loopback = true,
+        peer = { protocol = peer.protocol, lw_version = peer.lw_version, schemas = peer.schemas,
+            client = peer.client, role = peer.role } }
+    conn.observer = peer.role == "observer"
+    self.conns[conn] = true
+    self:_authed(conn)
+    self:_read(conn)
+    return conn
 end
 
 --- The status a `status` request returns (frozen shape: only additions).

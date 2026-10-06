@@ -250,7 +250,7 @@ describe("lw test through the workspace daemon (real processes)", function()
         assert.truthy(next(reports), "no JUnit file written")
     end)
 
-    it("--target and the opt-outs stay in-process; --target says so in one line", function()
+    it("--target and in-process mode stay in-process (--target says so in one line); an attached selection uses a live daemon", function()
         local root = workspace()
         local r = lw(root, { "--no-input", "test", "dev" })
         assert.equals(0, r.code, r.stderr)
@@ -266,7 +266,11 @@ describe("lw test through the workspace daemon (real processes)", function()
             local args = { "--no-input", "test", "dev" }
             vim.list_extend(args, case[1])
             local x = lw(root, args, case[2])
-            assert.is_nil(x.stderr:find("testing through the workspace daemon", 1, true), vim.inspect(case))
+            -- An attached selection (§19.1, §19.2) finds the daemon live and
+            -- uses it as a shared client; in-process mode never does.
+            local shared = case[1][1] == "--no-daemon" or (case[2] and (case[2].CI or case[2].LOOMWORKS_NO_DAEMON))
+            assert.equals(shared and true or false,
+                x.stderr:find("testing through the workspace daemon", 1, true) ~= nil, vim.inspect(case))
             local _, fallbacks = x.stderr:gsub("running without it", "")
             assert.equals(case[3] and 1 or 0, fallbacks, x.stderr)
             if case[3] then
@@ -311,6 +315,11 @@ describe("lw test through the workspace daemon (real processes)", function()
         assert.equals(0, again.code, again.stderr)
         assert.truthy(again.stderr:find(NOTICE, 1, true), again.stderr)
         assert.truthy(again.stdout:find("TESTS OK: dev", 1, true), again.stdout)
+    end)
+
+    it("three-way parity: in-process, through a live daemon, attached (§19.1)", function()
+        H.three_way({ roots = { workspace(), workspace(), workspace() }, args = { "--no-input", "test", "dev" },
+            lw = lw, norm = norm, env = env, state = function(root) return cache_of(root, env.data .. "/trust.key") end })
     end)
 end)
 

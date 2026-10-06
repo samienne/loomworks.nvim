@@ -120,7 +120,8 @@ describe("lw build through the workspace daemon (real processes)", function()
         for _, c in ipairs(cases) do
             local args = { "--no-input" }
             vim.list_extend(args, c[1])
-            local ra = lw(a, { "--no-daemon", unpack(args) }, c[2])
+            -- The in-process path itself (`--no-daemon` now runs attached, §19.1).
+            local ra = lw(a, args, vim.tbl_extend("force", c[2] or {}, { LOOMWORKS_RUNTIME = "in-process" }))
             local rb = lw(b, args, c[2])
             local what = table.concat(c[1], " ")
             assert.equals(ra.code, rb.code, what .. "\n" .. rb.stderr)
@@ -135,7 +136,7 @@ describe("lw build through the workspace daemon (real processes)", function()
         end
     end)
 
-    it("prints the notice only when the build is routed; every other case runs in-process", function()
+    it("prints the notice only when the build is routed (an attached selection uses a live daemon); every other case runs in-process", function()
         local root = workspace()
         local r = lw(root, { "--no-input", "build", "dev" })
         assert.equals(0, r.code, r.stderr)
@@ -152,10 +153,14 @@ describe("lw build through the workspace daemon (real processes)", function()
             vim.list_extend(args, case[1])
             local x = lw(root, args, case[2])
             assert.equals(0, x.code, x.stderr)
-            assert.is_nil(x.stderr:find("building through the workspace daemon", 1, true), vim.inspect(case))
+            -- An attached selection (§19.1, §19.2) finds the daemon live and
+            -- uses it as a shared client; in-process mode never does.
+            local shared = case[1][1] == "--no-daemon" or (case[2] and (case[2].CI or case[2].LOOMWORKS_NO_DAEMON))
+            assert.equals(shared and true or false,
+                x.stderr:find("building through the workspace daemon", 1, true) ~= nil, vim.inspect(case))
             assert.truthy(x.stdout:find("BUILD OK: dev", 1, true))
-            -- Explicit opt-outs are silent; --break-locks (daemon mode, not
-            -- routed) says so in exactly one line.
+            -- Explicit opt-outs are silent; --break-locks (daemon mode, a
+            -- live daemon) says so in exactly one line.
             local _, fallbacks = x.stderr:gsub("running without it", "")
             assert.equals(case[1][1] == "--break-locks" and 1 or 0, fallbacks, x.stderr)
         end
@@ -350,8 +355,11 @@ ffi.C.GenerateConsoleCtrlEvent(0, 0)
         local pidfile = H.tmp() .. "/pid"
         local e = vim.deepcopy(env)
         e.vars.LW_TEST_SLEEP, e.vars.LW_TEST_PIDFILE = "60000", pidfile
-        -- In-process first: the daemon build is refused.
-        local c = H.lw_start({ "--no-input", "--no-daemon", "build", "dev" }, { env = e, cwd = root })
+        -- In-process first (the in-process runtime: `--no-daemon` runs
+        -- attached, §19.1): the daemon build is refused.
+        local ip = vim.deepcopy(e)
+        ip.vars.LOOMWORKS_RUNTIME = "in-process"
+        local c = H.lw_start({ "--no-input", "build", "dev" }, { env = ip, cwd = root })
         local ok = vim.wait(60000, function() return read(pidfile .. ".configure") ~= nil end, 20)
         if not ok then c.kill(); c.wait(5000) end
         assert.is_true(ok, c.stderr())
@@ -374,7 +382,7 @@ ffi.C.GenerateConsoleCtrlEvent(0, 0)
         if not ok then c.kill(); c.wait(5000) end
         assert.is_true(ok, c.stderr())
         local d = require("loomworks.daemon.rlock").read(root)
-        r = lw(root, { "--no-input", "--no-daemon", "build", "dev" })
+        r = lw(root, { "--no-input", "build", "dev" }, { LOOMWORKS_RUNTIME = "in-process" })
         assert.equals(1, r.code, r.stderr)
         assert.truthy(r.stderr:find("is in use by the workspace daemon (pid " .. d.pid, 1, true), r.stderr)
         c.kill(); c.wait(10000)
@@ -457,6 +465,11 @@ ffi.C.GenerateConsoleCtrlEvent(0, 0)
         assert.equals(norm(ra.stdout, a), norm(rb.stdout, b))
         assert.equals(norm(ra.stderr, a), drop_notice(norm(rb.stderr, b)))
         assert.truthy(ra.stderr:find("lw: 2 program settings in loomworks.json ignored", 1, true), ra.stderr)
+    end)
+
+    it("three-way parity: in-process, through a live daemon, attached (§19.1)", function()
+        H.three_way({ roots = { workspace(), workspace(), workspace() }, args = { "--no-input", "build", "dev" },
+            lw = lw, norm = norm, env = env, state = function(root) return cache_of(root, env.data .. "/trust.key") end })
     end)
 end)
 

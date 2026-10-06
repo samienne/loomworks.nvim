@@ -6706,6 +6706,7 @@ local function effective_config_default(key)
     return (rt.is_valid(v) and v) or rt.DEFAULT
   end
   if key == "daemon-idle-timeout" then return "1h" end
+  if key == "runtime-busy-wait" then return "5s" end
   return nil
 end
 
@@ -6746,6 +6747,9 @@ function M.cmd_settings(sub, key, value)
     end
     if key == "daemon-idle-timeout" and not require("loomworks.daemon.runtime").parse_duration(value) then
       die("invalid daemon-idle-timeout '" .. value .. "' — use seconds, or a number with s, m or h (30m, 1h)")
+    end
+    if key == "runtime-busy-wait" and not require("loomworks.daemon.runtime").parse_busy_wait(value) then
+      die("invalid runtime-busy-wait '" .. value .. "' — use 0, seconds, or a number with ms, s or m (500ms, 5s)")
     end
     -- Path-like values use forward slashes so the bootstrap can read them raw.
     cfg[key] = (key == "dev-lua") and value:gsub("\\", "/") or value
@@ -7624,7 +7628,9 @@ end
 --- the reset again with `yes` and the listed plan's token. When that second
 --- request is not routed (the daemon stopped or was retired meanwhile), the
 --- reset runs in-process with the user's answer, never asking again, and
---- refuses when its plan differs from the one shown.
+--- refuses when its plan differs from the one shown — except after an
+--- attached runtime lost its lock (`opts.lost()`, §19.2): nothing is reset,
+--- exit 1.
 --- @param root string
 --- @param args string[]
 --- @param req table the first request (`_reset_request`)
@@ -7641,11 +7647,23 @@ function M._reset_confirm(root, args, req, reply, ensured, opts)
   local answer = prompt_line(reset_plan.prompt(shown))
   answer = (answer or ""):lower()
   if answer ~= "y" and answer ~= "yes" then die(reset_plan.ABORTED) end
+  -- An attached runtime whose lock was lost while the prompt waited (§19.2)
+  -- has no authority left: nothing is reset, here or in-process.
+  local function lost_exit()
+    local why = opts and opts.lost and opts.lost()
+    if why then return M._lost_runtime_exit("reset", why) end
+  end
+  local gone = lost_exit()
+  if gone then return gone end
   local token = tostring(reply.plan or "")
   local second = vim.deepcopy(req)
   second.yes, second.plan = true, token
   local routed = M._delegate("reset", root, args, ensured, vim.tbl_extend("force", opts or {}, { req = second }))
   if routed then return routed end
+  gone = lost_exit()
+  if gone then return gone end
+  -- An attached runtime ends before the in-process reset loads the workspace.
+  if opts and opts.release then opts.release() end
   return M.cmd_reset(load_workspace(root), args, { plan = token })
 end
 
@@ -7727,8 +7745,9 @@ end
 --- @param r loomworks.cli.RunArgs
 --- @param done table { code, launch?, device?, profile_key? } (`profile_key`: the
 --- `accepted` reply's)
+--- @param attached? boolean an attached run (§19.1): no daemon line
 --- @return integer
-function M._finish_routed_run(root, req, r, done)
+function M._finish_routed_run(root, req, r, done, attached)
   if done.device then
     local ws = load_workspace(root)
     -- The profile the daemon built (its `accepted` reply), never re-resolved:
@@ -7743,8 +7762,10 @@ function M._finish_routed_run(root, req, r, done)
     local lt, serr = require("loomworks.run_prep").select(ws, profile, req.target, r.proj_scope, r.kind)
     if not lt then die(serr) end
     local f = M._foreign_of(lt)
-    note("lw: the workspace daemon could not take the run (" .. tostring(f and f.name or lt:display_name())
-      .. " runs on a device in this process); continuing without it")
+    if not attached then
+      note("lw: the workspace daemon could not take the run (" .. tostring(f and f.name or lt:display_name())
+        .. " runs on a device in this process); continuing without it")
+    end
     return M._run_launch_target(lt, ws, M._run_target_opts(r))
   end
   local l = done.launch
@@ -7838,7 +7859,7 @@ end
 --- (`_finish_routed_run`).
 --- Only when this command has a daemon (`ensured` is "used", "launched" or
 --- "restarted" — runtime-mode daemon, not `--no-daemon` / CI, versions
---- matched), the arguments parse, `--break-locks` is not given (it stays
+--- matched) or runs attached (`opts.attached`, below), the arguments parse, `--break-locks` is not given (it stays
 --- in-process), and the workspace is trusted. Returns nil to run in-process
 --- (nothing was done), or the exit code once the daemon refused or ran the
 --- build — an accepted build is NEVER re-run in-process. The daemon runs the
@@ -7852,30 +7873,42 @@ end
 --- @param root string
 --- @param args string[]
 --- @param ensured string|nil
---- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer, req?: table }
+--- An attached run (`opts.attached`, spec §19.1 "Loopback", from
+--- `_delegate_attached`) sends the same request to the server it started in
+--- this process (`opts.session`): no daemon state, endpoint or
+--- `--break-locks` checks, and none of the daemon's lines — a case it does
+--- not take runs in-process silently, as before step 5e. `opts.release`
+--- releases its runtime lock (a run's, before the program starts);
+--- `opts.lost()` says why the runtime stopped by itself meanwhile (its lock
+--- taken over, the root removed; false while it runs): from then on no path
+--- falls back to in-process (§19.2).
+--- @param opts? { session?: function, keepalive_ms?: integer, connect_ms?: integer, req?: table, attached?: boolean, release?: function, lost?: function }
 --- @return integer|nil exit code
 function M._delegate(op, root, args, ensured, opts)
   opts = opts or {}
+  local attached = opts.attached == true
   local inspect = require("loomworks.daemon.inspect")
   local function could_not(reason)
-    note(M._not_routed_line("the workspace daemon could not take the " .. op, reason))
+    if not attached then note(M._not_routed_line("the workspace daemon could not take the " .. op, reason)) end
     return nil
   end
+  -- An attached runtime that stopped by itself (its lock taken over, the
+  -- root removed; §19.2, §19.11) ends the command.
+  local function lost_lock()
+    return M._lost_runtime_exit(op, opts.lost and opts.lost() or nil)
+  end
+  local function lost() return attached and opts.lost ~= nil and opts.lost() and true or false end
   -- Every outcome that does not route in daemon mode prints one line saying
   -- why (§19.15): ensure() printed it for a bypass, a newer daemon, a hung,
   -- starting or unstartable one; "off" is in-process mode or an explicit
   -- `--no-daemon` / LOOMWORKS_NO_DAEMON / CI.
   local have = ensured == "used" or ensured == "launched" or ensured == "restarted"
-  if not have and ensured ~= "elsewhere" then return nil end
+  if not attached and not have and ensured ~= "elsewhere" then return nil end
   -- An argument cmd_build / cmd_test refuses, and a workspace the machine
   -- refuses: the in-process path reports them (that is the line).
   local req, run_args
   if opts.req then req = opts.req
-  elseif op == "test" then req = M._test_request(args)
-  elseif op == "run" then req, run_args = M._run_request(args)
-  elseif op == "clean" then req = M._clean_request(args)
-  elseif op == "reset" then req = M._reset_request(args)
-  else req = M._build_request(args) end
+  else req, run_args = M._routed_request(op, args) end
   -- `--target` / a device option always says why in its own words, whatever
   -- the runtime is.
   if req == "target" then
@@ -7887,16 +7920,21 @@ function M._delegate(op, root, args, ensured, opts)
   -- `lw run --print` / `--dry-run`: the whole task stream on stderr, so
   -- stdout carries only the report (§19.15 "Run").
   local quiet = op == "run" and req and req.quiet
-  if ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
-  if require("loomworks.lock_break").requested then
+  if not attached and ensured == "elsewhere" then return could_not(M._runtime_reason(inspect.state(root))) end
+  -- (Attached, `--break-locks` runs here: its recovery is this process's.)
+  if not attached and require("loomworks.lock_break").requested then
     return could_not("--break-locks runs the " .. op .. " in this process")
   end
   if not req or not M._daemon_workspace_trusted(root) then return nil end
-  local st = inspect.state(root)
-  if st.kind ~= "live" then return could_not(M._runtime_reason(st)) end
   local client = require("loomworks.daemon.client")
-  local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
-  if not eok then return could_not(ewhy) end
+  local endpoint
+  if not attached then
+    local st = inspect.state(root)
+    if st.kind ~= "live" then return could_not(M._runtime_reason(st)) end
+    local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
+    if not eok then return could_not(ewhy) end
+    endpoint = st.handle.endpoint
+  end
   local task_id, done, accepted, profile_key = nil, nil, false, nil
   local function on_message(m)
     if m.kind ~= "task" or m.task_id == nil or m.task_id ~= task_id then return end
@@ -7917,9 +7955,13 @@ function M._delegate(op, root, args, ensured, opts)
     end
   end
   local session = opts.session or client.session
-  local conn, cerr = session(st.handle.endpoint, { timeout_ms = opts.connect_ms or 5000, on_message = on_message })
+  local conn, cerr = session(endpoint, { timeout_ms = opts.connect_ms or 5000, on_message = on_message })
   if not conn then
-    note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
+    -- Never an in-process fallback once an attached runtime lost its lock.
+    if lost() then return lost_lock() end
+    if not attached then
+      note("lw: could not reach the workspace daemon (" .. tostring(cerr) .. "); running without it")
+    end
     return nil
   end
   -- Ctrl-C cancels the routed operation (§19.15): the interrupt handler runs the
@@ -7940,7 +7982,8 @@ function M._delegate(op, root, args, ensured, opts)
     if r.outcome == "accepted" then
       task_id, accepted = r.task_id, true
       profile_key = type(r.profile_key) == "string" and r.profile_key or nil
-      note(M._delegation_line(r.pid, nil, op))
+      -- No daemon is involved in an attached run (§19.1 rule c).
+      if not attached then note(M._delegation_line(r.pid, nil, op)) end
     end
   end)
   -- No timeout: loading the workspace or a build takes as long as it takes
@@ -7961,13 +8004,18 @@ function M._delegate(op, root, args, ensured, opts)
   waiting(function() return reply ~= nil or rerr ~= nil end)
   if not reply then
     conn:close()
+    if lost() then return lost_lock() end
     -- Nothing was accepted: run without it, as for a daemon that cannot be
     -- started (§19.10).
     return could_not(rerr or "connection lost")
   end
   if reply.outcome == "declined" then
     conn:close()
-    note(M._not_routed_line("the workspace daemon declined the " .. op, reply.reason or "no reason given"))
+    -- (A stopping attached runtime declines: never in-process then.)
+    if lost() then return lost_lock() end
+    if not attached then
+      note(M._not_routed_line("the workspace daemon declined the " .. op, reply.reason or "no reason given"))
+    end
     return nil
   end
   if reply.outcome == "refused" then
@@ -7987,22 +8035,248 @@ function M._delegate(op, root, args, ensured, opts)
   end
   if not accepted then
     conn:close()
+    if lost() then return lost_lock() end
     return could_not("unexpected reply")
   end
   waiting(function() return done ~= nil end)
   conn:close()
+  -- Its runtime lock taken over mid-operation: the running task was
+  -- cancelled (its steps killed) as on Ctrl-C (§19.2); the command ends.
+  if lost() then
+    if ctrl_c_enabled then M._restore_console_ctrl_c() end
+    return lost_lock()
+  end
   -- The routed operation ended: this process's Ctrl-C state as it started,
   -- before a run's program (or the in-process device run) inherits it.
   if ctrl_c_enabled then M._restore_console_ctrl_c() end
   if not done then
+    if attached then return lost_lock() end
     errw("lw: lost the connection to the workspace daemon during the " .. op .. " — it was not re-run here\n")
     return 1
   end
   if done.error then die(tostring(done.error), done.code) end
   -- A run: the task (and every lock) ended; the program runs here, never the
   -- daemon's (§19.15 "Run").
-  if op == "run" and done.code == 0 then return M._finish_routed_run(root, req, run_args, done) end
+  -- An attached run releases the runtime lock when its preparation ends,
+  -- before the program runs (§19.1 rule a): the program is not the runtime's.
+  if op == "run" and opts.release then opts.release() end
+  if op == "run" and done.code == 0 then return M._finish_routed_run(root, req, run_args, done, attached) end
   return done.code
+end
+
+--- The exit of an attached run whose runtime stopped by itself (spec §19.2,
+--- §19.11): one stderr line saying why, exit status 1. `why` is what
+--- `_delegate_attached`'s `lost()` returns (the attached server's
+--- `stop_reason`): loomworks.daemon.server LOST_LOCK, ROOT_REMOVED, or another
+--- reason.
+--- @param op string
+--- @param why string|boolean|nil
+--- @return integer
+function M._lost_runtime_exit(op, why)
+  local server_mod = require("loomworks.daemon.server")
+  if why == server_mod.ROOT_REMOVED then
+    errw("lw: the workspace root was removed during the " .. op .. " — stopped\n")
+  elseif why == server_mod.LOST_LOCK or type(why) ~= "string" then
+    errw("lw: the workspace runtime lock was taken over during the " .. op .. " — stopped\n")
+  else
+    errw("lw: the workspace runtime stopped during the " .. op .. " (" .. why .. ")\n")
+  end
+  return 1
+end
+
+--- The request argv routes as for `op` (`_build_request`, `_test_request`,
+--- `_run_request`, `_clean_request`, `_reset_request`): the request (or
+--- "target" / "device" for a form that stays in-process, nil for arguments
+--- the in-process path refuses), and a run's parsed arguments.
+--- @param op "build"|"test"|"run"|"clean"|"reset"
+--- @param args string[]
+--- @return table|string|nil req, loomworks.cli.RunArgs|nil run_args
+function M._routed_request(op, args)
+  if op == "test" then return M._test_request(args) end
+  if op == "run" then return M._run_request(args) end
+  if op == "clean" then return M._clean_request(args) end
+  if op == "reset" then return M._reset_request(args) end
+  return M._build_request(args)
+end
+
+--- Is this command's selection attached in `runtime-mode daemon` (spec §19.1
+--- "Loopback during the transition")? `--no-daemon`, LOOMWORKS_NO_DAEMON=1,
+--- CI, or a daemon that could not be started (`ensured == "failed"`, or nil:
+--- the ensure step itself failed with an error — never in-process without the
+--- runtime lock). Never in `in-process` mode (the default).
+--- @param ensured string|nil `_ensure_daemon`'s outcome
+--- @return boolean
+function M._attached_selected(ensured)
+  if ensured == "failed" then return true end
+  if ensured ~= "off" and ensured ~= nil then return false end
+  local rt = require("loomworks.daemon.runtime")
+  local sel = rt.select(read_config()[rt.SETTING], { flag = M._no_daemon })
+  if ensured == nil then return sel.mode == rt.DAEMON end
+  return sel.mode == rt.DAEMON and not sel.daemon
+end
+
+--- The "workspace busy" refusal of an attached run (spec §19.2): `lk` is the
+--- runtime lock's record (loomworks.daemon.inspect `state().lock`).
+--- @param lk table|nil
+--- @return string
+function M._busy_message(lk)
+  lk = lk or {}
+  local rlock = require("loomworks.daemon.rlock")
+  local who = string.format("%s (pid %s on %s)", rlock.holder_text(lk), tostring(lk.pid or "?"),
+    tostring(lk.host or "?"))
+  if lk.mode == "attached" then
+    return "workspace busy: " .. who .. " is running here without a daemon — retry when it finishes"
+  end
+  return "workspace busy: " .. who .. " holds this workspace — retry when it finishes"
+end
+
+--- An attached selection meets the live daemon `st` holding the runtime lock
+--- (spec §19.2, §19.9): loomworks.daemon.ensure.meet — the endpoint check,
+--- handshake and version reconcile of the normal daemon-mode path — except
+--- that an idle daemon of another version is only stopped (`no_launch`): the
+--- command then runs attached. `opts.meet` (tests) replaces it.
+--- @param root string
+--- @param st table loomworks.daemon.inspect `state()`, kind "live"
+--- @param opts table `_delegate_attached`'s
+--- @return string "used" | "stopped" | "bypass" | "newer" | "failed"
+function M._meet_live(root, st, opts)
+  if opts.meet then return opts.meet(root, st) end
+  local ensure = require("loomworks.daemon.ensure")
+  local ok, outcome = pcall(ensure.meet, root, st, {
+    note = note, log = require("loomworks.daemon.rlog").writer(root), no_launch = true,
+    step_ms = ensure.step_ms(true),
+  })
+  if not ok then
+    note("lw: could not use the workspace daemon (" .. (tostring(outcome):match("[^\n]*")) .. "); running without it")
+    return "failed"
+  end
+  return outcome
+end
+
+--- A shared selection (daemon mode, `ensured == "elsewhere"`) whose runtime
+--- lock an attached run holds (spec §19.2): wait `runtime-busy-wait` for it,
+--- then fail "workspace busy", exit 1 (`die`). When it ends in time, the
+--- ensure step runs again (the daemon is launched or used as usual) and its
+--- outcome is returned. Any other holder (another host, a daemon still
+--- starting): "elsewhere", unchanged.
+--- @param root string
+--- @return string|nil `_ensure_daemon`'s outcome
+function M._await_attached_runtime(root)
+  local inspect = require("loomworks.daemon.inspect")
+  local st = inspect.state(root)
+  if st.kind ~= "attached" then return "elsewhere" end
+  local wait = require("loomworks.daemon.runtime").busy_wait_ms(read_config())
+  vim.wait(math.max(1, wait), function()
+    st = inspect.state(root)
+    return st.kind ~= "attached"
+  end, 25)
+  if st.kind == "attached" then die(M._busy_message(st.lock), 1) end
+  return M._ensure_daemon(root, true)
+end
+
+--- Run a routed operation attached (spec §19.1 "Loopback during the
+--- transition", §19.19 step 5e): start the daemon's server and build service
+--- in this process, holding the runtime lock in `attached` mode for the
+--- command, and send the same request over the loopback transport
+--- (`_delegate` with `attached`). A live daemon holding the lock is used as a
+--- shared client instead; another attached run (or a daemon still starting)
+--- is waited for `runtime-busy-wait`, then the command fails "workspace
+--- busy", exit 1 (§19.2). The lock is released on every path — return,
+--- error, `die`/`finish` and Ctrl-C (an exit hook, which also cancels the
+--- running task). Returns nil to run in-process (a form the service does not
+--- take), or the exit code.
+--- @param op "build"|"test"|"run"|"clean"|"reset"
+--- @param root string
+--- @param args string[]
+--- @param opts? table as for `_delegate`; `start` (tests) replaces
+--- loomworks.daemon.command.start_attached
+--- @return integer|nil exit code
+function M._delegate_attached(op, root, args, opts)
+  opts = opts or {}
+  -- The forms that stay in-process (`lw test --target`, device options),
+  -- arguments the in-process path refuses, and a workspace this machine
+  -- refuses never take the runtime lock: in-process, silently.
+  local req = M._routed_request(op, args)
+  if type(req) ~= "table" or not M._daemon_workspace_trusted(root) then return nil end
+  local server_mod = require("loomworks.daemon.server")
+  local inspect = require("loomworks.daemon.inspect")
+  local host = M._daemon_host()
+  local start = opts.start or require("loomworks.daemon.command").start_attached
+  local deadline = uv.now() + require("loomworks.daemon.runtime").busy_wait_ms(host.config)
+  local srv, code, st
+  while true do
+    local _
+    srv, _, code = start(root, host, op)
+    if srv or code ~= server_mod.EXIT_HELD then break end
+    st = inspect.state(root)
+    local met
+    if st.kind == "live" then
+      -- A live daemon: connect to it as a shared client (§19.2) after the
+      -- same version handshake as the normal path (§19.9, `_meet_live`).
+      met = M._meet_live(root, st, opts)
+      if met == "used" then return M._delegate(op, root, args, "used", opts) end
+      -- A version bypass, a newer daemon, one that cannot be reached: its
+      -- line is printed, and the command runs without it, as for a shared
+      -- selection.
+      if met ~= "stopped" then return nil end
+      -- An idle daemon of another version was stopped (nothing launched):
+      -- the lock is free, start attached at once (still within the wait).
+    end
+    if uv.now() >= deadline then break end
+    if met ~= "stopped" then
+      vim.wait(math.max(1, math.min(100, deadline - uv.now())), function() return false end, 10)
+    end
+  end
+  if not srv then
+    if code == server_mod.EXIT_HELD then
+      st = st or inspect.state(root)
+      if st.kind == "hung" then
+        die("the workspace runtime is not responding (" .. M._runtime_reason(st) .. ") — see `lw daemon status`")
+      end
+      die(M._busy_message(st.lock), 1)
+    end
+    -- Not startable here (e.g. the root is gone): the in-process path reports it.
+    return nil
+  end
+  local released = false
+  local function release()
+    if released then return end
+    released = true
+    pcall(srv.stop, srv, "the command ended", 0)
+    -- The service loaded the workspace into this process's core with its own
+    -- hooks: unload it, so an in-process load after it (a fallback, a device
+    -- run) starts clean.
+    if srv.service and srv.service._unload then pcall(srv.service._unload, srv.service) end
+  end
+  -- `die` / `finish` / Ctrl-C: stopping cancels the running task (its steps
+  -- killed, its build locks released) and releases the runtime lock.
+  on_exit(function()
+    if not released then released = true; pcall(srv.stop, srv, "interrupted", 130) end
+  end)
+  local o = vim.tbl_extend("force", opts, {
+    attached = true,
+    session = require("loomworks.daemon.client").loopback_sessioner(srv),
+    release = release,
+    -- Stopped by itself (its lock taken over, or the root removed): why
+    -- (the server's `stop_reason`), else false.
+    lost = function()
+      if released then return false end
+      -- Checked now, not only on the next heartbeat: a prompt blocked the
+      -- loop (the root and the lock record, as the heartbeat does).
+      if srv.stopped ~= true then pcall(srv._tick, srv) end
+      if srv.stopped ~= true then return false end
+      return srv.stop_reason or server_mod.LOST_LOCK
+    end,
+  })
+  o.start = nil
+  local ok, res = xpcall(M._delegate, debug.traceback, op, root, args, "attached", o)
+  -- A runtime that stopped by itself never lets the caller run the command
+  -- in-process (nil) without the lock (§19.2).
+  local why = o.lost()
+  release()
+  if not ok then error(res, 0) end
+  if res == nil and why then return M._lost_runtime_exit(op, why) end
+  return res
 end
 
 --- Record a kill or forced unlock in the runtime log (spec §19.5, §19.10).
@@ -9941,7 +10215,7 @@ function M.cmd_complete(cword, words)
     if n == 1 then emit({ "list", "get", "set", "unset" }) end
     if n == 2 and has({ "get", "set", "unset" }, sub) then
       emit({ "dev-lua", "default-source", "release-url", "module-index", "channel", "release-notes",
-        "runtime-mode", "daemon-idle-timeout" })
+        "runtime-mode", "daemon-idle-timeout", "runtime-busy-wait" })
     end
     if n == 3 and sub == "set" and a[3] == "release-notes" then emit({ "on", "off" }) end
     if n == 3 and sub == "set" and a[3] == "runtime-mode" then emit({ "in-process", "daemon" }) end
@@ -10646,10 +10920,16 @@ without it (one line says so). If it cannot start, does not answer, or is
 still starting, one line says so and the command runs without it. A daemon
 that stopped responding is named with the recovery command; a command given
 `--break-locks` recovers it (asks it to stop, kills it, starts a fresh one).
-These never start or use it: `--no-daemon`, LOOMWORKS_NO_DAEMON=1, and
+These never start it: `--no-daemon`, LOOMWORKS_NO_DAEMON=1, and
 CI=true (LOOMWORKS_NO_DAEMON=0 overrides CI). CI is detected by the `CI`
 variable only: Jenkins and Azure Pipelines do not set it — set
-LOOMWORKS_NO_DAEMON=1 there.
+LOOMWORKS_NO_DAEMON=1 there. In daemon mode these (and a daemon that could
+not be started) run `lw build`, `lw test`, `lw run`'s preparation, `lw clean`
+and `lw reset` with the daemon's own code inside the lw process, holding the
+workspace for the command, with no "through the workspace daemon" line; a
+running daemon is still used. When another such command holds the workspace,
+lw waits `runtime-busy-wait` (default 5s; 0, or a number with ms, s or m) and
+then fails "workspace busy" (exit 1).
 
 A routed build runs in the environment of the `lw build` that asked for it
 (its PATH, compiler and SDK variables, …): lw sends its environment to the
@@ -12080,8 +12360,9 @@ for custom variants.
 
 Global: --no-input (alias --non-interactive) never prompts — a missing
 required value errors instead of waiting. Also enabled by LW_NO_INPUT or CI.
---no-daemon: this command neither starts nor uses the workspace daemon
-(`lw help daemon`).
+--no-daemon: this command starts no workspace daemon; in daemon mode its
+build/test/run/clean/reset run the daemon's code in this process, or use a
+running daemon (`lw help daemon`).
 Otherwise prompting is on only when stdin is a terminal. In non-interactive
 mode `lw build` also ignores the active profile (and never picks a sole profile)
 — pass the profile explicitly.
@@ -12454,7 +12735,14 @@ local function main()
   -- as before).
   if command == "build" or command == "test" or command == "run" or command == "clean"
       or command == "reset" then
-    local routed = M._delegate(command, root, a, ensured)
+    -- An attached selection in daemon mode runs them attached (§19.1
+    -- "Loopback during the transition", step 5e).
+    local routed
+    -- A runtime lock an attached run holds: wait for it, or "workspace
+    -- busy" (§19.2).
+    if ensured == "elsewhere" and M._routed_command(a) then ensured = M._await_attached_runtime(root) end
+    if M._attached_selected(ensured) then routed = M._delegate_attached(command, root, a)
+    else routed = M._delegate(command, root, a, ensured) end
     if routed then finish(routed) end
   end
 
