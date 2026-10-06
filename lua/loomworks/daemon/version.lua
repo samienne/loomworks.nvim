@@ -29,8 +29,32 @@ local M = {}
 --- 8 the routed `clean` request (`lw clean`, §19.15 "Clean"); 9 the routed
 --- `reset` request and its `confirm` outcome (`lw reset`, §19.15 "Reset");
 --- 10 the `snapshot` and `query` requests and the model fields of the
---- `welcome` header (§19.13, §19.14).
-M.PROTOCOL = 10
+--- `welcome` header (§19.13, §19.14); 11 the transport-only version: the
+--- message envelope (`call` / `ok` / `error` / `signal` / `task`), the root
+--- object `/` (`loomworks.Root/1`), `protocol_min` and `welcome.objects`
+--- (§19.8, §19.20). From 11 the number versions the transport only;
+--- everything else is an interface with its own version.
+M.PROTOCOL = 11
+
+--- The oldest transport this build still speaks (spec §19.8): a daemon of
+--- protocol 11 serves clients of 10, whose request kinds are v0 aliases.
+M.PROTOCOL_MIN = 10
+
+--- The transport version two ranges agree on (spec §19.9 "From protocol
+--- 11"): the highest in the overlap of `[min, max]` and ours, or nil when
+--- they do not overlap. A peer that states no `protocol_min` (protocol 10 and
+--- older) states the range `[max, max]`.
+--- @param max integer|nil the peer's `protocol`
+--- @param min integer|nil the peer's `protocol_min`
+--- @return integer|nil
+function M.negotiate(max, min)
+    if type(max) ~= "number" then return nil end
+    if type(min) ~= "number" or min > max then min = max end
+    local hi = math.min(max, M.PROTOCOL)
+    local lo = math.max(min, M.PROTOCOL_MIN)
+    if hi < lo then return nil end
+    return hi
+end
 
 local function uv() return vim.uv or vim.loop end
 
@@ -157,12 +181,13 @@ function M.matches(peer, opts)
 end
 
 --- May an editor OBSERVE a daemon with these announced versions (spec §19.9,
---- §19.16)? An equal protocol and schemas no newer than ours; the host version
---- may differ. Returns false + what is wrong ("protocol" | "schemas").
+--- §19.16)? Overlapping transport ranges (`negotiate`; before protocol 11
+--- this was an equal protocol) and schemas no newer than ours; the host
+--- version may differ. Returns false + what is wrong ("protocol" | "schemas").
 --- @param peer table
 --- @return boolean ok, string|nil what
 function M.observer_compatible(peer)
-    if type(peer) ~= "table" or peer.protocol ~= M.PROTOCOL then return false, "protocol" end
+    if type(peer) ~= "table" or not M.negotiate(peer.protocol, peer.protocol_min) then return false, "protocol" end
     local ps = peer.schemas
     if type(ps) ~= "table" or type(ps.user) ~= "number" or type(ps.cache) ~= "number" then
         return false, "schemas"

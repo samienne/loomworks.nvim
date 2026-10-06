@@ -50,6 +50,28 @@ function Conn:request(msg, cb)
     pcall(function() self.pipe:write(protocol.encode(msg)) end)
 end
 
+--- Call an interface method (spec §19.20): sends a `call` frame stamped with
+--- the interface version; `cb(result|nil, err)` with the `ok` reply's
+--- `result`, or the structured error object (`{ code, message, data? }`;
+--- loomworks.proto.envelope) — a closed connection is `{ code = "closed" }`.
+--- @param object string
+--- @param iface string
+--- @param v integer
+--- @param method string
+--- @param args table|nil
+--- @param cb fun(result: any, err: loomworks.proto.ErrorObject|nil)
+--- @param env? table<string, string> the client's environment
+function Conn:call(object, iface, v, method, args, cb, env)
+    local frame = require("loomworks.proto.envelope").call(object, iface, v, method, args, env)
+    self:request(frame, function(reply, err)
+        if not reply then
+            if type(err) ~= "table" then err = { code = tostring(err or M.ERR_CLOSED), message = tostring(err) } end
+            return cb(nil, err)
+        end
+        cb(reply.result, nil)
+    end)
+end
+
 --- Stop reading from the daemon (test seam: a client blocked writing a
 --- paused terminal stops reading its connection the same way).
 function Conn:pause_reading()
@@ -115,7 +137,13 @@ local function frame_reader(conn, opts, state, finish, is_done, on_challenge)
                 local p = msg.req_id and conn._pending[msg.req_id]
                 if p then
                     conn._pending[msg.req_id] = nil
-                    if msg.kind == protocol.KIND.error then p(nil, tostring(msg.error)) else p(msg) end
+                    if msg.kind == protocol.KIND.error then
+                        -- An interface call's error is a structured object
+                        -- (§19.20); a v0 request's a string.
+                        p(nil, type(msg.error) == "table" and msg.error or tostring(msg.error))
+                    else
+                        p(msg)
+                    end
                 elseif opts.on_message then
                     pcall(opts.on_message, msg)
                 end
@@ -162,7 +190,7 @@ function M.connect(endpoint, opts, cb)
     -- Built before going asynchronous: the editor host forbids vim.fn (the
     -- version fingerprint's sha256) inside libuv callbacks.
     local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = protocol.VERSION,
-        lw_version = version.identity(), schemas = version.schemas(),
+        protocol_min = protocol.VERSION_MIN, lw_version = version.identity(), schemas = version.schemas(),
         client = opts.client or "cli", role = opts.role, nonce = nc })
     local pipe = uv.new_pipe(false)
     local conn = setmetatable({ pipe = pipe, _pending = {}, endpoint = endpoint }, Conn)
@@ -205,11 +233,12 @@ function M.loopback_connect(server, opts, cb)
     local mine, theirs = require("loomworks.daemon.loopback").pair()
     local conn = setmetatable({ pipe = mine, _pending = {}, loopback = true }, Conn)
     conn.challenge = { kind = protocol.KIND.challenge, protocol = protocol.VERSION,
-        lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
+        protocol_min = protocol.VERSION_MIN, lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
     local finish, is_done = handshake_guard(conn, opts, cb)
     conn._reader = frame_reader(conn, opts, "auth", finish, is_done)
     mine:read_start(conn._reader)
-    local ok, err = server:adopt(theirs, { protocol = protocol.VERSION, lw_version = version.identity(),
+    local ok, err = server:adopt(theirs, { protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+        lw_version = version.identity(),
         schemas = version.schemas(), client = opts.client or "cli", role = opts.role })
     if not ok then
         pcall(function() theirs:close() end)
@@ -265,6 +294,25 @@ function M.request(conn, msg, timeout_ms)
     conn:request(msg, function(r, e) res = { r, e } end)
     vim.wait(timeout_ms or M.TIMEOUT_MS, function() return res ~= nil end, 5)
     if not res then return nil, M.ERR_TIMEOUT end
+    return res[1], res[2]
+end
+
+--- `Conn:call` synchronously (pumping the event loop): the result, or nil +
+--- the error object.
+--- @param conn loomworks.daemon.Conn
+--- @param object string
+--- @param iface string
+--- @param v integer
+--- @param method string
+--- @param args? table
+--- @param opts? { env?: table<string, string>, timeout_ms?: integer }
+--- @return any result, loomworks.proto.ErrorObject|nil err
+function M.call_sync(conn, object, iface, v, method, args, opts)
+    opts = opts or {}
+    local res
+    conn:call(object, iface, v, method, args, function(r, e) res = { r, e } end, opts.env)
+    vim.wait(opts.timeout_ms or M.TIMEOUT_MS, function() return res ~= nil end, 5)
+    if not res then return nil, { code = M.ERR_TIMEOUT, message = "no answer in time" } end
     return res[1], res[2]
 end
 
