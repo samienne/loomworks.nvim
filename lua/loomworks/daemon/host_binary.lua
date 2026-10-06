@@ -45,6 +45,11 @@ end
 function M.on_path()
     local ok, exe = pcall(vim.fn.exepath, "lw")
     if not ok or type(exe) ~= "string" or exe == "" then return nil end
+    -- The binary itself, not PATH's spelling of it (`lw.EXE` via PATHEXT, a
+    -- link): the daemon it starts then reports the executable the CLI does.
+    local uv = vim.uv or vim.loop
+    local real = uv.fs_realpath(exe)
+    if type(real) == "string" and real ~= "" then exe = real end
     exe = exe:gsub("\\", "/")
     if is_win() and not exe:lower():match("%.exe$") then return nil end
     return exe

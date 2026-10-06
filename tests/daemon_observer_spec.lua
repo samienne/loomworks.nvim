@@ -627,6 +627,76 @@ describe("the observer (§19.16)", function()
         assert.is_nil(obs._child)
     end)
 
+    -- A fake daemon session for the relaunch tests: inspect says what is on
+    -- disk, connect hands back a conn whose close reports the drop.
+    local function fake_daemon()
+        local f = { st = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } },
+            spawned = 0, connects = 0 }
+        f.opts = { inspect = function() return f.st end, check = function() return true end,
+            resolve = function() return "lw" end,
+            spawn = function() f.spawned = f.spawned + 1; f.child = { pid = 99 }; return f.child end,
+            connect = function(_, copts, cb)
+                f.connects = f.connects + 1
+                local conn = { challenge = { protocol = version.PROTOCOL, schemas = version.schemas(),
+                    lw_version = "0.1.0" }, welcome = { seq = 0 } }
+                function conn.close(c)
+                    if c.closed then return end
+                    c.closed = true
+                    if copts.on_close then copts.on_close(c) end
+                end
+                f.conn = conn
+                cb(conn)
+            end }
+        return f
+    end
+
+    it("after a retired daemon exits, launches one successor (once) and connects to it", function()
+        local f = fake_daemon()
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals(0, f.spawned)
+        -- Retiring (a version change): the observer disconnects and waits.
+        f.st = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } }
+        obs:_on_message({ kind = "retiring" })
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        vim.wait(200)
+        assert.equals(0, f.spawned)
+        -- The retired daemon exits: the editor launches one daemon itself.
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        assert.equals("launching", obs.state)
+        -- It comes up: the observer connects to it.
+        f.st = { kind = "live", handle = { pid = 4343, start_time = "u", endpoint = "e" } }
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals(4343, obs.daemon.pid)
+        assert.equals(1, f.spawned)
+    end)
+
+    it("after a retired daemon exits, a successor that fails is not launched again", function()
+        local f = fake_daemon()
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        obs:_on_message({ kind = "retiring" })
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        f.child.code = 1
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        vim.wait(400)
+        assert.equals(1, f.spawned)
+    end)
+
+    it("a daemon stopped by the user (no retirement) is never relaunched", function()
+        local f = fake_daemon()
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        f.conn:close() -- `lw daemon stop`: the connection just drops
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        vim.wait(400)
+        assert.equals(0, f.spawned)
+    end)
+
     it("a `retiring` with no connection does not mark the next drop as a retirement", function()
         obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end })
         obs:_on_message({ kind = "retiring" })

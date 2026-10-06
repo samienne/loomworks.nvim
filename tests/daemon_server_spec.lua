@@ -685,6 +685,18 @@ describe("version handshake (§19.9)", function()
         assert.is_nil(rlock.read(root))
     end)
 
+    it("an idle mismatched daemon with only an observer is stopped and replaced, not bypassed", function()
+        srv.identity = "0.1.0"
+        local observer = assert(client.session(srv.address, { client = "editor", role = "observer" }))
+        local launched
+        local conn = assert(client.session(srv.address))
+        local out = ensure.reconcile(root, conn, { launch = function(r) launched = r; return true end })
+        assert.equals("restarted", out)
+        assert.equals(0, exited)
+        assert.equals(root, launched)
+        observer:close()
+    end)
+
     it("a busy mismatched daemon is retired, never stopped; the command bypasses it", function()
         srv.identity = "0.1.0"
         local other = assert(client.session(srv.address))

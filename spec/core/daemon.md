@@ -791,15 +791,17 @@ in the handshake. A CLI client **matches** a daemon when all of them are equal
 paths, sizes and modification times of its Lua sources whenever they are on
 disk — a development source tree or a directory bundle — so editing a source
 is a mismatch; only a fused executable, whose sources cannot change, uses the
-executable itself). An editor
+executable itself, identified by its resolved path, so every spelling of it
+(a link, a differently cased name) is the same executable). An editor
 client **observing** a daemon (§19.16) needs less: an equal protocol and schemas
 no newer than its own — the daemon's host version may differ (the editor's
 code ships with the plugin, the daemon's with the resolved host binary).
 
 On a mismatch, after authenticating:
 
-- **Idle daemon** (no other client, no running task) — the client stops it
-  (§19.11) and launches its own binary in its place.
+- **Idle daemon** (no client other than this one and observers, no running
+  task) — the client stops it (§19.11) and launches its own binary in its
+  place; observers never count as busy.
 - **Busy daemon** — the client sends `retire`: the daemon accepts no new
   operations from mismatched clients, keeps serving its attached clients, and
   exits as soon as it is idle; the next command launches the current binary.
@@ -1501,7 +1503,7 @@ in-process path. In `in-process` mode nothing below happens.
 - **Launch.** The observer launches `<binary> daemon run --root <root>`
   (§19.10: detached, no inherited handles, the state directory as working
   directory) only when no daemon is live on workspace load or on an explicit
-  `:LoomworksDaemon connect`. Readiness is not awaited in a blocking wait: the
+  `:LoomworksDaemon connect`, and once after a retirement (below). Readiness is not awaited in a blocking wait: the
   observer watches the handle. An early exit other than "another daemon won"
   is a note. A daemon that is starting, hung, of another host, or attached is
   not launched over; the observer notes it and watches.
@@ -1512,14 +1514,18 @@ in-process path. In `in-process` mode nothing below happens.
     closes. It neither restarts nor retires that daemon, and does not connect
     to it again.
   - **Keepalive.** While connected it sends `ping` about every 30 s.
-- **Never relaunch.** When the connection drops, the observer never launches
-  a daemon by itself — the daemon stopped (`lw daemon stop`), crashed, was
-  retired or dropped this observer. This keeps `lw daemon stop` meaningful.
+- **No relaunch after a stop.** When the connection drops because the daemon
+  stopped (`lw daemon stop`), crashed or dropped this observer, the observer
+  never launches a daemon by itself. This keeps `lw daemon stop` meaningful.
   It watches the handle (about every 2 s) and connects again when a live
   daemon appears. It skips one it was told is `retiring` or found
   incompatible, identified by pid and start time.
 - **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
-  disconnects at once, so a version change completes (§19.11).
+  disconnects at once, so a version change completes (§19.11). Once that
+  daemon has exited and no other daemon is live, the observer launches one
+  daemon itself (one attempt, not a loop: an early exit is a note) and
+  connects to it; a successor another client started first is observed
+  instead.
 - **Model changes.** On `model_change` the editor applies its files' pending
   changes at once (§19.12).
 - **Tasks.** Each observed task becomes a **remote task** in the editor.

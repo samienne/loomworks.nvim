@@ -88,7 +88,9 @@ function M.reconcile(root, conn, opts)
         return "newer", M.newer_line(info)
     end
     local st = client.request(conn, { kind = "status" }, step)
-    local others = st and ((tonumber(st.clients) or 1) - 1) or 1
+    -- Clients besides this one; observers (an editor watching) never hold
+    -- off a restart (§19.11).
+    local others = st and ((tonumber(st.clients) or 1) - 1 - (tonumber(st.observers) or 0)) or 1
     local busy = (st == nil) or st.busy == true or others > 0
     if busy then
         client.request(conn, { kind = "retire" }, step)
