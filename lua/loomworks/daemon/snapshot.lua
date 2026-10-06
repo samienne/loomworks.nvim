@@ -152,6 +152,25 @@ M.QUERIES = {
         end
         return { tools = out }
     end,
+    --- The compiler cache a profile resolves for one of its projects, as the
+    --- `Cache` row shows it (`lw profile query <profile> <project> cache`):
+    --- `args.profile` (key), `args.project` (key) → `{ cache = text }` ("" for
+    --- a module that does not cache C/C++). Probes the client's PATH.
+    profile_cache = function(ws, args)
+        -- (Wire keys are resolved to objects here, at the boundary, §19.14.)
+        local profile
+        for _, p in pairs(ws._profiles or {}) do
+            if not p._removed and p.key == args.profile then profile = p end
+        end
+        if not profile then return nil, "no profile '" .. tostring(args.profile) .. "'" end
+        for _, pp in ipairs(profile:projects()) do
+            if pp:project_key() == args.project then
+                local status = profile:compiler_cache_status(pp)
+                return { cache = status and (status.text:gsub("^Cache: ", "")) or "" }
+            end
+        end
+        return nil, "project '" .. tostring(args.project) .. "' is not mapped in profile '" .. profile.key .. "'"
+    end,
 }
 
 -- ========================== client side ==========================
@@ -175,7 +194,9 @@ end
 --- Build the read-only projection of a full snapshot (see the header).
 --- @param root string the workspace root
 --- @param snap table a reply to a `snapshot` of scope "all"
---- @param opts? { notify?: function }
+--- `opts.tools` replaces the snapshot's toolchain detection (tools_by_type:
+--- a fresh `tools` query, or the machine-level tool cache).
+--- @param opts? { notify?: function, tools?: table }
 --- @return table|nil ws, string|nil err
 function M.project(root, snap, opts)
     opts = opts or {}
@@ -183,7 +204,7 @@ function M.project(root, snap, opts)
         return nil, "a projection needs a snapshot of every scope"
     end
     local ws_mod = require("loomworks.workspace")
-    local tools = vim.deepcopy(snap.tools or {})
+    local tools = vim.deepcopy(opts.tools or snap.tools or {})
     local core = require("loomworks.core").new({
         notify = opts.notify or function() end,
         on_written = false,

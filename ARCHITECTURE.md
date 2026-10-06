@@ -1001,7 +1001,28 @@ snap)` builds the read-only projection on a private `Core.new` (no
 `workspace.assemble_snapshot` — `assemble` split at `_assemble_parsed`, so
 the user and cache tables are parsed exactly as file bodies — then
 `Workspace.new` + `remerge`, with `_no_write` set first so it never saves
-and no file tracker.
+and no file tracker (`opts.tools` replaces the snapshot's detection: a fresh
+`tools` query, or the machine-level tool cache). `QUERIES.profile_cache` is
+`Profile:compiler_cache_status` for one (profile, project) pair, both resolved
+from their keys at the boundary.
+
+**Read-only CLI commands on the projection.** `cli.lua` `read_workspace(root,
+wait_tools, opts)` is the one seam: `M._read_projection` returns the
+projection in `daemon` mode, else nil and the command loads in-process as
+before. Selection: the dispatch records its ensure outcome
+(`M._read_ensured`); "used"/"launched"/"restarted" connect to the shared
+daemon, an attached selection (`_attached_selected`) starts the loopback
+runtime (`command.start_attached`, released as soon as the projection is
+built), anything else reads in-process. `lw status` has no ensure step and
+launches nothing: a live daemon (after `_meet_live`) is used, no runtime at
+all means loopback. The snapshot (and the `tools` query for `lw tools`) is
+asked with keepalive pings and no timeout; a refusal ends the command with
+the runtime's message (the in-process line), a declined request or a failed
+connection falls back in-process. `opts.keep` leaves the session open for
+`M._read_query` (`lw profile query ... cache` asks `profile_cache`). Commands on
+it: status, profile show/query, the read form of describe, project / config /
+configset / launch list and show, config get, tools. Commands that write
+never read through it; `lw health` still probes in-process.
 
 **Step 5e: loopback (spec §19.1 "Loopback during the transition").**
 `daemon/loopback.lua` `pair()` returns two connected in-memory

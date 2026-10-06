@@ -86,6 +86,10 @@ operations (`lw build`, `lw test`, the preparation of `lw run`, `lw clean`,
 `lw reset`; §19.15) attached: the client starts the daemon's server and build
 service in its own process, holds the runtime lock in `attached` mode for the
 command (§19.2), and sends the same request over the loopback transport. The
+read-only commands (`lw status`, `lw profile show` / `query`, the read form of
+`describe`, `project` / `config` / `configset` / `launch` list and show,
+`config get`, `lw tools`; §19.13, §19.14) read the projection the same
+selection serves: the shared daemon's, or the loopback runtime's. The
 operations not yet routed (profile and project mutations, publish / import /
 pull, devices — they need the command machinery of §19.14) and every
 operation in `in-process` mode (still the default) run on the in-process path
@@ -991,8 +995,9 @@ workspace to load. `lw daemon list` and `lw daemon stop --all` /
 *Status: master for the coarse `model_change` broadcast (`daemon/server.lua`
 `model_changed`, sent after each committed write of a state file by the
 daemon — the working copy or the cache, `Workspace:_record_written`), whose
-client re-reads the files (§19.16); the opaque-id registry, scope snapshots
-and the re-pull protocol #88.*
+client re-reads the files (§19.16), and for the opaque-id registry and the
+current-key → id index (`daemon/snapshot.lua` `registry`, `index`; carried in
+a snapshot, §19.13); the id-keyed broadcasts and the re-pull protocol #88.*
 
 **Step 4 form.** `model_change { seq, session_generation }`: `seq` advances by
 one per broadcast within a session. The editor, which still loads the
@@ -1022,9 +1027,9 @@ optimization.
 
 *Status: master for the `snapshot` request, the projection builder and the
 `welcome` header (`daemon/snapshot.lua`, `daemon/service.lua`
-`on_snapshot`, `workspace.assemble_snapshot`; protocol 10); no command reads
-a projection yet. Re-pulls on `model_change` and the view-scoped model
-future.*
+`on_snapshot`, `workspace.assemble_snapshot`; protocol 10); the read-only CLI
+commands read a projection in `daemon` mode (`cli.lua` `read_workspace`,
+§19.1). Re-pulls on `model_change` and the view-scoped model future.*
 
 The daemon is model-authoritative; a client keeps a **projection** for
 rendering and integration. The client builds it with the **same deserializer**
@@ -1078,8 +1083,9 @@ workspace. Sending `welcome` never loads the workspace.
 ### 19.14 Commands
 
 *Status: #88 (mutation commands); the set of commands grows per §19.19.
-Master for the `query` request with the `tools` query (`daemon/snapshot.lua`
-`QUERIES`, `daemon/service.lua` `on_query`; protocol 10).*
+Master for the `query` request with the `tools` and `profile_cache` queries
+(`daemon/snapshot.lua` `QUERIES`, `daemon/service.lua` `on_query`; protocol
+10); `lw health` still probes in-process.*
 
 A mutation is a **command** the daemon applies to its model with the
 operation's locks (§19.3) and persists. Commands are FIFO-serialized: a
@@ -1100,7 +1106,9 @@ failed query or a workspace the daemon cannot load; `outcome = "declined"`
 (`reason`) as for `snapshot`. A query is read-only: it changes neither the
 model nor any file. The registry starts with `tools` (the toolchains each
 module type detects in the client's environment: `result.tools`, module type
-→ list of `{ key, label, tool_data }`).
+→ list of `{ key, label, tool_data }`) and `profile_cache` (`args.profile`
+and `args.project`, keys: `result.cache`, the compiler cache that profile
+resolves for that project as `lw profile query … cache` prints it).
 
 ### 19.15 Task stream and delegated operations
 

@@ -750,6 +750,23 @@ end
 -- Test seam: load a real workspace the way dispatch does (build/clean/reset).
 M._load_workspace = load_workspace
 
+--- The workspace a read-only command reads (spec §19.13, §19.14): in
+--- `runtime-mode daemon`, the read-only projection of the runtime's model
+--- (`M._read_projection`); otherwise — `in-process` mode, or a runtime that
+--- cannot serve it — the in-process load, exactly as before. A projection
+--- never saves (`_no_write`): only commands that write nothing read through
+--- this.
+--- @param root string
+--- @param wait_tools? boolean as for load_workspace (the in-process load only)
+--- @param opts? loomworks.cli.ReadOpts
+--- @return table workspace
+local function read_workspace(root, wait_tools, opts)
+  local ws = M._read_projection(root, opts)
+  if ws then return ws end
+  return load_workspace(root, wait_tools)
+end
+M._read_workspace = read_workspace
+
 -- ---------------------------------------------------------------------------
 -- Commands
 -- ---------------------------------------------------------------------------
@@ -3189,7 +3206,7 @@ end
 --- `lw launch show <project> <name>` (also `[<project>:]<name>` /
 --- `--project`/`--launch`).
 function M.cmd_launch_show(root, args)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local proj_name, name = consume_launch_address(ws, args, 3)
   if not (proj_name and name) then
     die("usage: lw launch show [<project>] <name>  (also <project>:<name> / --project P --launch N)")
@@ -3217,7 +3234,7 @@ function M.cmd_launch_remove(root, args)
 end
 
 function M.cmd_launch(sub, root, args)
-  if sub == nil or sub == "list" then return M.cmd_launch_list(load_workspace(root, false), args[3]) end
+  if sub == nil or sub == "list" then return M.cmd_launch_list(read_workspace(root, false), args[3]) end
   if sub == "add" or sub == "create" then return M.cmd_launch_add(root, args) end
   if sub == "set" or sub == "edit" then return M.cmd_launch_set(root, args) end
   if sub == "show" then return M.cmd_launch_show(root, args) end
@@ -4290,7 +4307,7 @@ end
 
 --- `lw project [list]` — list the workspace's projects.
 function M.cmd_project_list(root)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local sorted = {}
   for _, p in ipairs(ws._projects or {}) do sorted[#sorted + 1] = p end
   if #sorted == 0 then out("(no projects)"); return 0 end
@@ -4319,7 +4336,7 @@ end
 --- the configuration sets that map it.
 function M.cmd_project_show(root, name)
   if not name then die("usage: lw project show <name>") end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local proj = resolve_project(ws, name)
   local t = proj.type or (proj._module and proj._module.id) or "?"
   out(string.format("%s  (%s)", proj.key, t))
@@ -4680,7 +4697,7 @@ M._get_param = get_param
 
 --- `lw config list [project]` — configs for one project, or all.
 function M.cmd_configuration_list(root, proj_name)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local projs = {}
   if proj_name then
     projs = { resolve_project(ws, proj_name) }
@@ -4833,7 +4850,7 @@ end
 --- `lw config show <project> <name>`
 function M.cmd_configuration_show(root, proj_name, cfg_name)
   if not proj_name or not cfg_name then die("usage: lw config show <project> <name>") end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local proj = resolve_project(ws, proj_name)
   local cfg = resolve_config(proj, cfg_name, false)
   local kind = cfg.is_user and "user" or (cfg:is_auto_gen() and "module-generated" or "preset")
@@ -4881,7 +4898,7 @@ function M.cmd_configuration_get(root, proj_name, cfg_name, param)
       "  param: inherits | languages | options.<KEY> | variables.<NAME> | env[.<NAME>]\n" ..
       "         | overrides[.<family>[.<NAME> | .env[.<NAME>]]] | <module field>")
   end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local cfg = resolve_config(resolve_project(ws, proj_name), cfg_name, false)
   if param == "description" then
     if cfg.description then M._describe_print(cfg.description) else out("(unset)") end
@@ -5107,7 +5124,7 @@ end
 
 --- `lw configset list` — all sets with their mappings.
 function M.cmd_cset_list(root)
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local sets = {}
   for _, cs in ipairs(ws._config_sets or {}) do sets[#sets + 1] = cs end
   if #sets == 0 then out("(no configuration sets)"); return 0 end
@@ -5142,7 +5159,7 @@ end
 --- `lw configset show <name>`
 function M.cmd_cset_show(root, name)
   if not name then die("usage: lw configset show <name>") end
-  local ws = load_workspace(root, false)
+  local ws = read_workspace(root, false)
   local cs = resolve_config_set(ws, name)
   out(cs.name)
   M._describe_block(cs.description)
@@ -5691,7 +5708,10 @@ function M.cmd_describe(kind, root, args)
   end
   if #ops < n_ops then die(usage) end
   local o = M._describe_parse(rest, usage)
-  local ws = load_workspace(root, false)
+  -- The read form reads the runtime's projection in daemon mode (§19.13);
+  -- a form that writes loads the workspace in-process.
+  local reading = not (o.paras or o.text ~= nil or o.stdin or o.file or o.edit or o.clear)
+  local ws = reading and read_workspace(root, false) or load_workspace(root, false)
   if kind == "project" then
     local proj = resolve_project(ws, ops[1])
     return M._describe_item(ws, proj, "project", proj.key, "projects", nil, o)
@@ -6456,7 +6476,8 @@ function M.cmd_profile_query(root, args)
     die("usage: lw profile query <profile> <project> <field>\n" ..
       "  fields: build-dir | config | state | tool | cache | variables | variables.<name>")
   end
-  local ws = load_workspace(root, false)
+  -- `cache` probes the host: asked of the runtime (§19.14) on a session kept open.
+  local ws = read_workspace(root, false, { keep = field == "cache" })
   -- Deterministic machine path: resolve by key only, never a positional number
   -- (numbers are an interactive convenience that shifts on profile add/remove).
   local profile = resolve_profile(ws, profile_name, { no_number = true })
@@ -6504,7 +6525,8 @@ function M.cmd_profile_query(root, args)
     local t = pp:tool_object()
     value = t and t.key or ""
   elseif field == "cache" then
-    value = M._profile_query_cache(profile, pp)
+    local q = ws._projection and M._read_query("profile_cache", { profile = profile.key, project = project_key })
+    value = q and q.cache or M._profile_query_cache(profile, pp)
   elseif field == "variables" then
     -- Deterministic, machine-parseable: sorted `name=value` lines.
     local resolved = resolved_variables()
@@ -8279,6 +8301,178 @@ function M._delegate_attached(op, root, args, opts)
   return res
 end
 
+--- @class loomworks.cli.ReadOpts
+--- Options of `read_workspace` / `M._read_projection`.
+--- @field tools? "query"|table "query": build the projection from the
+--- runtime's `tools` query (a fresh detection in this process's environment,
+--- `lw tools`, §19.14); a table: this detection (tools_by_type, `lw tools
+--- --cached`); absent: the detection the runtime's model holds
+--- @field keep? boolean keep the session open until the command ends, for
+--- `M._read_query` (`lw profile query … cache`)
+
+--- What the dispatch's ensure step returned for this command
+--- (`_ensure_daemon`), and whether it ran: `lw status` has none (it never
+--- launches a daemon, §19.6), so `_read_projection` selects for it itself.
+--- @type string|nil
+M._read_ensured = nil
+--- @type boolean
+M._read_ensure_ran = false
+--- The command an attached read names in the runtime log ("attached run of …").
+--- @type string|nil
+M._read_label = nil
+--- The open session a `keep` read leaves for `M._read_query` (nil otherwise).
+--- @type { ask: fun(msg: table): table|nil, string|nil }|nil
+M._read_session = nil
+
+--- The read-only projection of the runtime's model for a read-only command
+--- (spec §19.13), or nil to load the workspace in-process. Only in
+--- `runtime-mode daemon`, with the routed commands' selection (§19.1): a
+--- shared daemon this command's ensure step used or launched is connected to;
+--- an attached selection (`--no-daemon`, CI, the setting, a failed launch)
+--- starts the runtime in this process for the read and sends the same
+--- requests over the loopback transport (released as soon as the projection
+--- is built). `lw status` launches nothing: it uses a live daemon, else (no
+--- runtime at all) the loopback. Any other runtime state, a workspace this
+--- machine refuses, a connection that fails or a declined request: nil (the
+--- in-process path, which reports a refusal itself). A refused snapshot ends
+--- the command with the runtime's message — the same line the in-process
+--- load prints.
+--- @param root string
+--- @param opts? loomworks.cli.ReadOpts
+--- @return table|nil ws the projection (`_projection`, `_no_write`)
+function M._read_projection(root, opts)
+  opts = opts or {}
+  if completion_mode or not root then return nil end
+  local rt = require("loomworks.daemon.runtime")
+  local sel = rt.select(read_config()[rt.SETTING], { flag = M._no_daemon })
+  if sel.mode ~= rt.DAEMON or not M._daemon_workspace_trusted(root) then return nil end
+  local inspect = require("loomworks.daemon.inspect")
+  local shared
+  if M._read_ensure_ran then
+    local e = M._read_ensured
+    if e == "used" or e == "launched" or e == "restarted" then shared = true
+    elseif M._attached_selected(e) then shared = false
+    else return nil end
+  elseif not sel.daemon then
+    shared = false
+  else
+    local st = inspect.state(root)
+    if st.kind == "live" then
+      local met = M._meet_live(root, st, {})
+      if met == "used" then shared = true
+      elseif met == "stopped" then shared = false
+      else return nil end
+    elseif st.kind == "none" then
+      shared = false
+    else
+      return nil
+    end
+  end
+  local client = require("loomworks.daemon.client")
+  local conn, release
+  if shared then
+    local st = inspect.state(root)
+    if st.kind ~= "live" or not require("loomworks.daemon.endpoint").check(root, st.handle.endpoint) then
+      return nil
+    end
+    conn = client.session(st.handle.endpoint, { timeout_ms = 5000 })
+    if not conn then return nil end
+    release = function() pcall(conn.close, conn) end
+  else
+    local srv = require("loomworks.daemon.command").start_attached(root, M._daemon_host(), M._read_label or "status")
+    if not srv then return nil end
+    local released = false
+    release = function()
+      if released then return end
+      released = true
+      pcall(srv.stop, srv, "the command ended", 0)
+      -- The service loaded the workspace into this process's core: unload
+      -- it, so an in-process load after it starts clean.
+      if srv.service and srv.service._unload then pcall(srv.service._unload, srv.service) end
+    end
+    conn = client.loopback_sessioner(srv)(nil, { timeout_ms = 5000 })
+    if not conn then release(); return nil end
+  end
+  on_exit(release)
+  -- No timeout (loading the workspace takes as long as it takes); kept alive
+  -- with pings, as a routed operation.
+  local keepalive = tonumber(os.getenv("LW_TEST_DAEMON_KEEPALIVE_MS") or "")
+    or require("loomworks.daemon.server").KEEPALIVE_MS
+  local function ask(msg)
+    local res
+    conn:request(msg, function(r, e) res = { r, e } end)
+    local last = uv.now()
+    while not res and not conn.closed do
+      vim.wait(keepalive, function() return res ~= nil or conn.closed end, 10)
+      if not res and not conn.closed and uv.now() - last >= keepalive then
+        last = uv.now()
+        conn:request({ kind = "ping" }, function() end)
+      end
+    end
+    if not res then return nil, "the connection closed" end
+    return res[1], res[2]
+  end
+  local env = require("loomworks.daemon.envscope").capture()
+  local KIND = require("loomworks.daemon.protocol").KIND
+  -- The reply, or nil (the in-process path); a refusal ends the command.
+  local function answered(r)
+    if not r or r.kind == "error" or r.outcome == "declined" then return nil end
+    if r.outcome == "refused" then
+      for _, n in ipairs(type(r.notes) == "table" and r.notes or {}) do errw(tostring(n) .. "\n") end
+      die(r.message or "the workspace runtime refused the request")
+    end
+    if r.outcome ~= "ok" then return nil end
+    return r
+  end
+  local snap = answered((ask({ kind = KIND.snapshot, scope = "all", env = env })))
+  if not snap then release(); return nil end
+  local tools = type(opts.tools) == "table" and opts.tools or nil
+  if opts.tools == "query" then
+    local q = answered((ask({ kind = KIND.query, name = "tools", args = {}, env = env })))
+    if not (q and type(q.result) == "table") then release(); return nil end
+    tools = {}
+    for mod_type, rows in pairs(q.result.tools or {}) do
+      local list = {}
+      for _, t in ipairs(rows) do
+        list[#list + 1] = { tool_key = t.key, tool_label = t.label, tool_data = t.tool_data }
+      end
+      tools[mod_type] = list
+    end
+  end
+  local ws = require("loomworks.daemon.snapshot").project(root, snap, {
+    tools = tools,
+    -- As the in-process load: warnings and errors on stderr.
+    notify = function(msg, level)
+      if not level or level >= vim.log.levels.WARN then errw(tostring(msg) .. "\n") end
+    end,
+  })
+  if not ws then release(); return nil end
+  if opts.keep then
+    M._read_session = { ask = function(msg)
+      msg.env = msg.env or env
+      return ask(msg)
+    end }
+  else
+    release()
+  end
+  return ws
+end
+
+--- Run a host-probing query (spec §19.14) on the session a `keep` read left
+--- open: its `result`, or nil when there is none (the caller computes the
+--- value in-process). A refusal ends the command with its message.
+--- @param name string
+--- @param args? table
+--- @return table|nil result
+function M._read_query(name, args)
+  local s = M._read_session
+  if not s then return nil end
+  local r = s.ask({ kind = require("loomworks.daemon.protocol").KIND.query, name = name, args = args or {} })
+  if not r or r.kind == "error" or r.outcome == "declined" then return nil end
+  if r.outcome == "refused" then die(r.message or ("query " .. name .. " failed")) end
+  return type(r.result) == "table" and r.result or nil
+end
+
 --- Record a kill or forced unlock in the runtime log (spec §19.5, §19.10).
 --- @param root string|nil
 --- @param line string
@@ -8362,7 +8556,7 @@ function M.cmd_status(root, opts)
     -- The page is unchanged — `--check` only sets the exit status (§16.18).
     return opts.check and 1 or 0
   end
-  local ws = load_workspace(root, false) -- pinned info only; skip tool detection
+  local ws = read_workspace(root, false) -- pinned info only; skip tool detection
   local pal = status_palette(stdout_supports_color())
   out(pal.title("loomworks — " .. (ws.name or "?")) .. "  " .. pal.dim("(" .. ws.root .. ")"))
   -- Reached by walking out of a submodule (spec §1.1): say so, so acting on the
@@ -9362,7 +9556,7 @@ M._resolve_profile_for_show = resolve_profile_for_show
 --- @param profile_name string|nil
 --- @return integer exit code
 function M.cmd_profile_show(root, profile_name)
-  local ws = load_workspace(root)
+  local ws = read_workspace(root)
   local profile = resolve_profile_for_show(ws, profile_name)
   for _, line in ipairs(profile_show_rows(ws, profile)) do out(line) end
   return 0
@@ -10032,7 +10226,19 @@ function M.cmd_tools(root, args)
       human_age(os.time() - (c.timestamp or os.time()))))
   end
 
-  local ws = load_workspace(root) -- served from cache or scanned per the mode
+  -- daemon mode (§19.14): the projection, its tools a fresh `tools` query (or
+  -- the cached detection with --cached); a scan refreshes the machine-level
+  -- cache as the in-process scan does.
+  local ws = M._read_projection(root, { tools = cached and ((read_tool_cache() or {}).tools_by_type or {}) or "query" })
+  if ws and not cached then
+    local needed = {}
+    for _, p in ipairs(ws._projects or {}) do
+      local t = p.type or (p._module and p._module.id)
+      if t then needed[t] = true end
+    end
+    write_tool_cache(ws._tools_by_type or {}, needed)
+  end
+  ws = ws or load_workspace(root) -- served from cache or scanned per the mode
   local mods = {}
   for _, m in pairs(ws._modules or {}) do mods[#mods + 1] = m end
   table.sort(mods, function(a, b) return a.id < b.id end)
@@ -12656,7 +12862,13 @@ local function main()
   -- and `unlock` clears stuck locks — none of them may wait on (or start) a
   -- daemon.
   local ensured
-  if not M.NO_DAEMON_COMMANDS[command] then ensured = M._ensure_daemon(root, M._routed_command(a)) end
+  if not M.NO_DAEMON_COMMANDS[command] then
+    ensured = M._ensure_daemon(root, M._routed_command(a))
+    -- The read-only commands read the runtime's projection with this
+    -- selection (§19.13, `_read_projection`).
+    M._read_ensured, M._read_ensure_ran = ensured, true
+  end
+  M._read_label = table.concat({ command, a[2] and a[2]:sub(1, 1) ~= "-" and a[2] or nil }, " ")
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).

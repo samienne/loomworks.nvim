@@ -358,6 +358,7 @@ function Service:on_snapshot(conn, msg)
     return self:_on_model_request(conn, msg, function(ws)
         local snap = snapshot.build(ws, msg.scope, self.ids)
         snap.seq, snap.session_generation = self.server.seq, self.server.generation
+        self.server:log("snapshot (scope %s) for %s", tostring(snap.scope), self.server:_peer_text(conn))
         return snap
     end, bad)
 end
