@@ -913,9 +913,10 @@ code ships with the plugin, the daemon's with the resolved host binary).
 
 On a mismatch, after authenticating:
 
-- **Idle daemon** (no client other than this one and observers, no running
-  task) — the client stops it (§19.11) and launches its own binary in its
-  place; observers never count as busy.
+- **Idle daemon** (no connection other than this one is busy — none owns a
+  running task or has a request in flight, "Busy" below) — the client stops
+  it (§19.11) and launches its own binary in its place; a connection that
+  only observes or subscribes (an editor) never counts as busy.
 - **Busy daemon** — the client sends `retire`: the daemon accepts no new
   operations from mismatched clients, keeps serving its attached clients, and
   exits as soon as it is idle; the next command launches the current binary.
@@ -1021,8 +1022,8 @@ exit, all clients connect to the winner.
 connects for a moment (handshake, `ping`) and leaves; the keepalive rule
 applies to every authenticated connection, except one that owns a running
 operation (§19.15). A running build makes the daemon busy (handle `busy`); a
-`retire`d daemon exits when it has no authenticated client and no running
-build.*
+`retire`d daemon exits when no connection is busy (§19.9 "Busy",
+`Server:_retire_idle`, step 5g.3).*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a
@@ -1030,9 +1031,12 @@ build.*
 - **Observers and retirement.** A `retire`d daemon broadcasts `retiring` to
   every connected observer (§19.16), and `welcome` carries `retiring` for one
   that connects later; an observer then disconnects and does not reconnect to
-  that daemon. Observer connections never hold off retirement: a retiring
-  daemon exits once it has no running build and no authenticated client other
-  than observers. (They still count for the idle timeout and in `clients`.)
+  that daemon. A retiring daemon exits once **no connection is busy** — none
+  owns a running task or has a request in flight (§19.9 "Busy"); a connection
+  that only observes or subscribes, or an idle client still connected, never
+  holds it off. (Every connection still counts for the idle timeout and in
+  `clients`.) A request left in flight for a long time (10 minutes) is noted
+  once in the runtime log, never cleared: it keeps its connection busy.
   `status` reports `observers`, the number of observer connections, and
   `tasks`: one `{ task_id, name, kind, profile, units, origin, started_at,
   percent? }` per running task — its `start` meta (§19.15), the wall-clock
@@ -1793,9 +1797,10 @@ then the workspace's shared daemon, owned by the editor, and CLI clients
 connect to it instead of being refused as busy. It ends when the editor
 closes the workspace.
 
-**Interface client.** *(Step 5g.3: discovery through `welcome.objects`, the
-`/tasks` and `/workspace` subscriptions and the per-feature note; the views
-and operations: plan, steps 5j–5o.)* On every connect, including
+**Interface client.** *(Step 5g.3: discovery through `Root.describe` with
+`welcome.objects` as the fallback, the `/tasks` and `/workspace`
+subscriptions, `objects_changed` and the per-feature note; the views and
+operations: plan, steps 5j–5o.)* On every connect, including
 each reconnect, the editor **discovers** the daemon through the root object
 (`welcome.objects`, `Root.describe`; §19.20), picks per interface the highest
 version both sides support, and subscribes to the views and tasks it shows,
@@ -1803,7 +1808,15 @@ taking their full state from each subscription's `initial`. A missing or
 incompatible interface degrades only the feature that needs it, with one
 Runtime-line note naming the interface and both versions (e.g. `lsp
 configuration: daemon offers loomworks.LspConfig/2, editor needs /1`); it
-never fails the connection or the other features. Only a transport mismatch
+never fails the connection or the other features. The describe is bounded
+(about 3 s) and never blocks the editor; when it fails or times out the editor
+uses `welcome.objects`. An interface that appears later (the root's
+`objects_changed`) is subscribed to then, and a refused subscription is
+retried once, on the next `objects_changed` or reconnect. A missing interface
+is noted only when the editor gets nothing for it: a daemon of transport 11
+that offers none of the observed views and still sends the protocol-10
+broadcasts (step 5g.1; its `status` has no `busy_clients`) is observed
+through them without a note. Only a transport mismatch
 (no overlap of the ranges, §19.9) makes the daemon incompatible as a whole.
 Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
 through the v0 broadcasts as below and notes interface features as "daemon

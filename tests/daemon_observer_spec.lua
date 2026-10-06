@@ -150,8 +150,9 @@ describe("server: observers, retirement and model_change (§19.11, §19.12)", fu
         assert.equals("changed", c[1].name)
         assert.equals(2, c[1].args.seq)
         c4:close()
-        -- (c1 busy: a retiring daemon with only idle clients exits at once.)
-        server_conn(s.srv, function(c) return not c.observer end).in_flight = { [999] = true }
+        -- (c1 busy: a retiring daemon with only idle clients exits at once.
+        -- Picked by its transport: c4's server side may not be closed yet.)
+        server_conn(s.srv, function(c) return not c.observer and c.transport == 10 end).in_flight = { [999] = true }
         assert(client.request(c1, { kind = "retire" }))
         local c3 = assert(client.session(s.srv.address, { client = "editor", role = "observer" }))
         assert.is_true(c3.welcome.retiring)
@@ -317,12 +318,122 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         assert.equals("interfaces", obs.mode)
+        -- The note follows `status` (`busy_clients`: a daemon that delivers
+        -- by subscription only, so the editor really gets nothing).
+        assert.is_true(vim.wait(5000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         assert.equals("tasks: daemon offers no loomworks.Tasks, editor needs /1; "
             .. "model changes: daemon offers no loomworks.Workspace, editor needs /1", obs.feature_note)
         assert.truthy(obs:runtime_line():find("observing the workspace daemon", 1, true))
         assert.truthy(obs:runtime_line():find("editor needs /1", 1, true))
         assert.equals("tasks: daemon offers loomworks.Tasks/2,/3, editor needs /1",
             observer.feature_note(observer.TASKS, { 2, 3 }))
+    end)
+
+    --- A connect that rewrites the connection the observer gets: `edit(conn)`
+    --- before the observer sees it.
+    local function connect_with(edit)
+        return function(ep, o, cb)
+            return client.connect(ep, o, function(conn, err)
+                if conn then edit(conn) end
+                cb(conn, err)
+            end)
+        end
+    end
+    local function subs_of(srv)
+        local sc = server_conn(srv, function(c) return c.observer end)
+        local out = {}
+        for _, sub in ipairs(srv.interfaces:subscriptions_of(sc)) do out[#out + 1] = sub.object end
+        table.sort(out)
+        return out
+    end
+
+    it("re-describes on connect and subscribes from describe's objects (§19.16 Interface client)", function()
+        s = new_server(root)
+        -- welcome.objects without the views: only Root.describe offers them.
+        obs = attach({ connect = connect_with(function(conn)
+            conn.welcome.objects = { { path = "/", interfaces = {} } }
+        end) })
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))
+        assert.is_nil(obs.feature_note)
+    end)
+
+    it("falls back to welcome.objects when describe fails", function()
+        s = new_server(root)
+        obs = attach({ connect = connect_with(function(conn)
+            local call = conn.call
+            conn.call = function(self, object, iface, v, method, args, cb, env)
+                if method == "describe" then return cb(nil, { code = "internal", message = "no" }) end
+                return call(self, object, iface, v, method, args, cb, env)
+            end
+        end) })
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))
+    end)
+
+    it("falls back to welcome.objects when describe never answers (bounded)", function()
+        s = new_server(root)
+        obs = attach({ describe_ms = 100, connect = connect_with(function(conn)
+            local call = conn.call
+            conn.call = function(self, object, iface, v, method, args, cb, env)
+                if method == "describe" then return end -- never answers
+                return call(self, object, iface, v, method, args, cb, env)
+            end
+        end) })
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))
+    end)
+
+    it("subscribes when /tasks and /workspace appear later (objects_changed); the note clears", function()
+        s = new_server(root, false)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
+        mount_views(s.srv)
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 2 end, 10))
+        assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
+        assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
+    end)
+
+    it("a refused subscription is retried once on the next objects_changed", function()
+        s = new_server(root)
+        local refusals = 0
+        obs = attach({ connect = connect_with(function(conn)
+            local call = conn.call
+            conn.call = function(self, object, iface, v, method, args, cb, env)
+                if method == "subscribe" and args.object == "/tasks" and refusals < 1 then
+                    refusals = refusals + 1
+                    return cb(nil, { code = "internal", message = "busy" })
+                end
+                return call(self, object, iface, v, method, args, cb, env)
+            end
+        end) })
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.same({ "/workspace" }, subs_of(s.srv))
+        assert.truthy((obs.feature_note or ""):find("tasks: loomworks.Tasks/1 refused (busy)", 1, true))
+        assert(s.srv:registry():mount("/other", "core", "loomworks.Tasks", 1, { methods = {
+            list = function() return { tasks = {} } end,
+            cancel = function() return { outcome = "ok" } end,
+        } }))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 2 end, 10))
+        assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
+    end)
+
+    it("a transport-11 daemon offering neither view and sending v0 broadcasts (step 5g.1) gets no note", function()
+        s = new_server(root, false)
+        obs = attach({ connect = connect_with(function(conn)
+            -- A 5g.1 daemon's `status` has no `busy_clients`.
+            local request = conn.request
+            conn.request = function(self, msg, cb)
+                return request(self, msg, function(reply, err)
+                    if type(reply) == "table" then reply.busy_clients = nil end
+                    cb(reply, err)
+                end)
+            end
+        end) })
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        vim.wait(300)
+        assert.is_nil(obs.feature_note)
+        assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
 
     it("with no daemon and no host binary: one note, nothing launched, then observes a daemon that appears", function()
