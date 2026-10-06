@@ -28,7 +28,7 @@
       "mutates": false
     },
     "subscribe": {
-      "description": "Subscribe the calling connection to one interface version of one object, optionally to some of its signals and filtered by args as the interface defines.",
+      "description": "Subscribe the calling connection to one interface version of one object, optionally to some of its signals and filtered by args, valid against the interface's subscribe_args (none when it declares none).",
       "params": {
         "type": "object",
         "required": ["object", "iface", "v"],
@@ -45,6 +45,7 @@
         "required": ["sub_id"],
         "properties": {
           "sub_id": { "type": "integer" },
+          "seq": { "description": "The last seq of this object the connection was sent before subscribing (0: none): seq counts per object and connection only the signals sent, so the next one is seq + 1 and a gap means a lost signal.", "type": "integer", "minimum": 0 },
           "initial": { "description": "The full state, for an interface whose subscribed signals declare it." }
         }
       },

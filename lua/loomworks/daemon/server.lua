@@ -424,7 +424,11 @@ function Server:stop(reason, code)
     if self.service then pcall(self.service.on_stopping, self.service, reason) end
     self.stopped = true
     self:log("stopping: %s", tostring(reason))
-    for conn in pairs(self.conns) do pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end) end
+    for conn in pairs(self.conns) do
+        pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end)
+        -- Its subscriptions end with it (§19.20), as on any close.
+        if self.interfaces then self.interfaces:drop_conn(conn) end
+    end
     self.conns = {}
     for _, h in ipairs({ self.timer, self.sigterm, self.listener }) do
         pcall(function() if h and not h:is_closing() then h:close() end end)

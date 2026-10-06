@@ -27,12 +27,14 @@ M.ERR_UNTRUSTED = "untrusted"   -- the server's proof did not verify
 M.ERR_CONNECT = "connect"       -- nothing accepted the connection
 M.ERR_TIMEOUT = "timeout"       -- no answer in time
 M.ERR_CLOSED = "closed"         -- the daemon closed the connection
+M.ERR_TRANSPORT = "transport"   -- the negotiated transport has no interface calls (protocol 10)
 
 --- @class loomworks.daemon.Conn
 --- @field pipe userdata the libuv pipe, or a loomworks.daemon.LoopbackEnd
 --- @field loopback boolean|nil an attached run's in-memory connection (§19.1)
 --- @field challenge table the daemon's announced versions (protocol, lw_version, schemas, session_generation)
 --- @field welcome table
+--- @field transport integer|nil the transport both sides agreed on (§19.9 "From protocol 11"), from the challenge
 --- @field closed boolean|nil
 --- @field on_close fun(conn: loomworks.daemon.Conn)|nil called once when the connection closes
 ---   after it was established (either side; runs in a libuv callback)
@@ -53,7 +55,9 @@ end
 --- Call an interface method (spec §19.20): sends a `call` frame stamped with
 --- the interface version; `cb(result|nil, err)` with the `ok` reply's
 --- `result`, or the structured error object (`{ code, message, data? }`;
---- loomworks.proto.envelope) — a closed connection is `{ code = "closed" }`.
+--- loomworks.proto.envelope) — a closed connection is `{ code = "closed" }`,
+--- and a connection whose negotiated transport is below 11 fails at once with
+--- `{ code = "transport" }` (M.ERR_TRANSPORT; client-side, never on the wire).
 --- @param object string
 --- @param iface string
 --- @param v integer
@@ -62,6 +66,13 @@ end
 --- @param cb fun(result: any, err: loomworks.proto.ErrorObject|nil)
 --- @param env? table<string, string> the client's environment
 function Conn:call(object, iface, v, method, args, cb, env)
+    -- Interface calls are transport 11 (§19.8): a daemon of protocol 10
+    -- would only answer "unknown request kind".
+    if not (type(self.transport) == "number" and self.transport >= 11) then
+        return cb(nil, { code = M.ERR_TRANSPORT,
+            message = string.format("the daemon's transport is %s; interface calls need 11",
+                tostring(self.transport or "not agreed")) })
+    end
     local frame = require("loomworks.proto.envelope").call(object, iface, v, method, args, env)
     self:request(frame, function(reply, err)
         if not reply then
@@ -202,6 +213,7 @@ function M.connect(endpoint, opts, cb)
             return false
         end
         conn.challenge = msg
+        conn.transport = version.negotiate(msg.protocol, msg.protocol_min)
         pcall(function()
             pipe:write(protocol.encode({ kind = protocol.KIND.auth,
                 client_proof = auth.client_proof(key, endpoint, nc, msg.server_nonce) }))
@@ -234,6 +246,7 @@ function M.loopback_connect(server, opts, cb)
     local conn = setmetatable({ pipe = mine, _pending = {}, loopback = true }, Conn)
     conn.challenge = { kind = protocol.KIND.challenge, protocol = protocol.VERSION,
         protocol_min = protocol.VERSION_MIN, lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
+    conn.transport = version.negotiate(conn.challenge.protocol, conn.challenge.protocol_min)
     local finish, is_done = handshake_guard(conn, opts, cb)
     conn._reader = frame_reader(conn, opts, "auth", finish, is_done)
     mine:read_start(conn._reader)

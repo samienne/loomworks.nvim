@@ -6,17 +6,21 @@
 --- `enum`, `const`, `oneOf`, `$ref`, `$defs`, `minimum`, `maximum`, `pattern`,
 --- `description` — with JSON Schema 2020-12 semantics for those keywords. Pure
 --- Lua (shared by the daemon and the plugin, runs under `nvim -l` and the luvi
---- host); the only `vim.*` it touches is the JSON null sentinel.
+--- host); the only `vim.*` it touches are the JSON null sentinel and the
+--- empty-dict marker.
 ---
 --- `pattern` takes the portable regular-expression subset `M.translate_pattern`
---- understands (anchors, literals, `.`, classes `[...]`, the escapes `\d \w \s`
---- and `\` + punctuation, and the quantifiers `* + ?` on a single atom — no
---- groups, alternation or counted repetition); the lint refuses any other
---- pattern, so every validator in every language reads it identically.
+--- understands (anchors, literals, `.` — any character but `\n` and `\r`, as
+--- in ECMA-262 —, classes `[...]` whose ranges join two ASCII letters or digits,
+--- the escapes `\d \w \s` and `\` + punctuation, and the quantifiers `* + ?`
+--- on a single atom — no groups, alternation or counted repetition); the lint
+--- refuses any other pattern, so every validator in every language reads it
+--- identically. Matching is bytewise: keep patterns to ASCII.
 ---
 --- Values are decoded JSON: objects and arrays are Lua tables (an empty table
---- is both, unless it carries the empty-dict marker), JSON null is `vim.NIL`
---- (or nil inside a table).
+--- is an object only with the empty-dict marker, which decoding `{}` sets, and
+--- otherwise an array), JSON null is `vim.NIL` (or nil inside a table). A
+--- value built in Lua is brought to its wire shape first by `M.shape`.
 
 local M = {}
 
@@ -46,19 +50,22 @@ function M.is_array(t)
     return n == #t
 end
 
---- Is the table a JSON object (string keys only; an empty table is one)?
+--- Is the table a JSON object (string keys only)? An empty table is one only
+--- with the empty-dict marker (decoded `{}`), never a decoded `[]`.
 --- @param t table
 --- @return boolean
 function M.is_object(t)
     if type(t) ~= "table" or (NIL ~= nil and t == NIL) then return false end
+    if next(t) == nil then return EMPTY_DICT_MT == nil or getmetatable(t) == EMPTY_DICT_MT end
     for k in pairs(t) do
         if type(k) ~= "string" then return false end
     end
     return true
 end
 
---- The JSON type names a value has (an empty table is "object" and "array";
---- an integral number is "integer" and "number").
+--- The JSON type names a value has (an empty table is "object" with the
+--- empty-dict marker, else "array"; an integral number is "integer" and
+--- "number").
 local function has_type(v, name)
     if name == "null" then return is_null(v) end
     if is_null(v) then return false end
@@ -139,24 +146,37 @@ function M.translate_pattern(re)
         elseif c == "[" then
             local j, cls = i + 1, { "[" }
             if re:sub(j, j) == "^" then cls[#cls + 1] = "^"; j = j + 1 end
-            local closed = false
+            local closed, items = false, 0
             while j <= n do
                 local d = re:sub(j, j)
-                if d == "]" and #cls > 1 and not (#cls == 2 and cls[2] == "^") then closed = true; break end
+                if d == "]" and items > 0 then closed = true; break end
                 if d == "\\" then
                     local e = re:sub(j + 1, j + 1)
                     if ESCAPE_IN_CLASS[e] then cls[#cls + 1] = ESCAPE_IN_CLASS[e]
                     elseif e ~= "" and e:match("%p") then cls[#cls + 1] = "%" .. e
                     else return nil, "unsupported escape in class \\" .. e end
+                    if re:sub(j + 2, j + 2) == "-" and re:sub(j + 3, j + 3) ~= "]" then
+                        return nil, "range from an escape"
+                    end
                     j = j + 2
-                elseif d == "-" and #cls > 1 and re:sub(j + 1, j + 1) ~= "]" then
-                    cls[#cls + 1] = "-"; j = j + 1
                 elseif d == "[" then
                     return nil, "nested class"
+                elseif re:sub(j + 1, j + 1) == "-" and re:sub(j + 2, j + 2) ~= "]" and j + 2 <= n then
+                    -- A range joins two ASCII letters or digits (a Lua class
+                    -- reads `%x-y` as three items, so punctuation ends are
+                    -- refused rather than mistranslated).
+                    local hi = re:sub(j + 2, j + 2)
+                    if not (d:match("%w") and hi:match("%w")) then
+                        return nil, "range " .. d .. "-" .. hi .. " does not join two letters or digits"
+                    end
+                    if hi < d then return nil, "reversed range " .. d .. "-" .. hi end
+                    cls[#cls + 1] = d .. "-" .. hi
+                    j = j + 3
                 else
                     cls[#cls + 1] = d:match("%w") and d or ("%" .. d)
                     j = j + 1
                 end
+                items = items + 1
             end
             if not closed then return nil, "unterminated class" end
             cls[#cls + 1] = "]"
@@ -169,7 +189,8 @@ function M.translate_pattern(re)
         elseif c == "(" or c == ")" or c == "|" or c == "{" or c == "}" then
             return nil, "unsupported construct '" .. c .. "'"
         elseif c == "." then
-            out[#out + 1] = "."; atom_open = true
+            -- ECMA-262 `.`: any character but a line terminator.
+            out[#out + 1] = "[^\n\r]"; atom_open = true
         elseif c == "^" or c == "$" then
             return nil, "anchor '" .. c .. "' in the middle"
         else
@@ -339,6 +360,105 @@ local function check(node, v, path, ctx, depth)
     return true
 end
 
+
+-- ---------------------------------------------------------------------------
+-- Shaping Lua-built values
+-- ---------------------------------------------------------------------------
+
+local function empty_object()
+    if EMPTY_DICT_MT then return setmetatable({}, EMPTY_DICT_MT) end
+    return {}
+end
+
+-- The JSON type names a node admits (through `$ref` and `oneOf`), or nil
+-- for any.
+local function admitted(node, ctx, depth)
+    if depth > 32 or type(node) ~= "table" then return nil end
+    local set
+    local function narrow(s)
+        if not s then return end
+        if not set then set = s; return end
+        local both = {}
+        for k in pairs(set) do if s[k] then both[k] = true end end
+        set = both
+    end
+    if type(node["$ref"]) == "string" then
+        local t, tctx = M.resolve_ref(node["$ref"], ctx)
+        if t then narrow(admitted(t, tctx, depth + 1)) end
+    end
+    if node.type ~= nil then
+        local s = {}
+        for _, n in ipairs(type(node.type) == "table" and node.type or { node.type }) do s[n] = true end
+        narrow(s)
+    end
+    if type(node.oneOf) == "table" then
+        local u = {}
+        for _, b in ipairs(node.oneOf) do
+            local s = admitted(b, ctx, depth + 1)
+            if not s then u = nil; break end
+            for k in pairs(s) do u[k] = true end
+        end
+        narrow(u)
+    end
+    return set
+end
+
+local function shape(node, v, ctx, depth)
+    if depth > 64 or type(node) ~= "table" or type(v) ~= "table" or is_null(v) then return v end
+    if next(v) == nil then
+        if EMPTY_DICT_MT and getmetatable(v) == EMPTY_DICT_MT then return v end
+        local s = admitted(node, ctx, 0)
+        if s and s.object and not s.array then return empty_object() end
+        return v
+    end
+    if type(node["$ref"]) == "string" then
+        local t, tctx = M.resolve_ref(node["$ref"], ctx)
+        if t then v = shape(t, v, tctx, depth + 1) end
+    end
+    local copy
+    local function set(k, nv)
+        if nv == v[k] then return end
+        if not copy then
+            copy = {}
+            for kk, vv in pairs(v) do copy[kk] = vv end
+        end
+        copy[k] = nv
+    end
+    if M.is_array(v) then
+        if node.items ~= nil then
+            for i = 1, #v do set(i, shape(node.items, v[i], ctx, depth + 1)) end
+        end
+    elseif M.is_object(v) then
+        local props, addl = node.properties, node.additionalProperties
+        for k, x in pairs(v) do
+            local sub = (props and props[k]) or (type(addl) == "table" and addl or nil)
+            if sub ~= nil then set(k, shape(sub, x, ctx, depth + 1)) end
+        end
+    end
+    v = copy or v
+    if type(node.oneOf) == "table" then
+        for _, b in ipairs(node.oneOf) do
+            local cand = shape(b, v, ctx, depth + 1)
+            if check(b, cand, "", ctx, 0) then return cand end
+        end
+    end
+    return v
+end
+
+--- Bring a value built in Lua to the wire shape `schema` describes: an empty
+--- table where the schema admits an object and not an array becomes an
+--- empty-dict-marked table (encoded `{}`); any other empty table stays an
+--- array (`[]`). Tables are copied, never changed in place. Same options as
+--- `M.validate`.
+--- @param schema table|boolean
+--- @param value any
+--- @param opts? { doc?: table, base?: any, resolve_doc?: fun(name: string, base: any): table|nil, any }
+--- @return any
+function M.shape(schema, value, opts)
+    opts = opts or {}
+    local ctx = { doc = opts.doc or schema, base = opts.base, resolve_doc = opts.resolve_doc }
+    return shape(schema, value, ctx, 0)
+end
 
 --- Validate `value` against `schema`. `opts.doc` is the document the schema
 --- belongs to (for `#/...` references; default the schema itself),

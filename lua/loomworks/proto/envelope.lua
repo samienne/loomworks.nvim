@@ -75,12 +75,15 @@ function M.call(object, iface, v, method, args, env)
         args = obj(args), env = env }
 end
 
---- An `ok` reply to a call.
+--- An `ok` reply to a call. `result` goes out as given (nil: `{}`): an empty
+--- table encodes as `[]` unless it carries the empty-dict marker, so a
+--- server brings it to its schema's shape first (loomworks.proto.schema
+--- `shape`).
 --- @param req_id any
 --- @param result any
 --- @return table
 function M.ok(req_id, result)
-    if type(result) == "table" and next(result) == nil then result = M.empty() end
+    if result == nil then result = M.empty() end
     return { kind = M.KIND.ok, req_id = req_id, result = result }
 end
 

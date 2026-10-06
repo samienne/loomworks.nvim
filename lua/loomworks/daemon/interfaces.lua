@@ -21,8 +21,11 @@
 --- `describe`, `schema`, `subscribe`, `unsubscribe`. Its signals
 --- (`objects_changed`, `retiring`) reach every connection of transport 11
 --- without a subscription; other interfaces' signals reach only the
---- connections subscribed to them, stamped with the `sub_id` and a per-object
---- `seq`. A connection's subscriptions are dropped when it closes.
+--- connections subscribed to them, stamped with the `sub_id` and a `seq` per
+--- object and connection: it counts only the signals of that object the
+--- connection is actually sent, so a gap means a lost signal, never one
+--- filtered out (§19.12, §19.20); `subscribe` returns the value it starts
+--- from. A connection's subscriptions are dropped when it closes.
 
 local envelope = require("loomworks.proto.envelope")
 local schema = require("loomworks.proto.schema")
@@ -88,7 +91,7 @@ end
 --- @field iface string
 --- @field v integer
 --- @field signals table<string, true>|nil nil: every signal of the interface
---- @field args table the interface-defined filter
+--- @field args table the subscription's `args` (valid against the interface's `subscribe_args`)
 
 --- @class loomworks.daemon.Registry
 --- @field server loomworks.daemon.Server
@@ -96,7 +99,7 @@ end
 --- @field docs loomworks.proto.DocumentSet
 --- @field types table<string, table<integer, { doc: table, rel: string }>> types-only documents
 --- @field subs table<integer, loomworks.daemon.Subscription>
---- @field seq table<string, integer> per-object signal sequence numbers
+--- @field seq table<table, table<string, integer>> per connection, per object: the last `seq` sent
 --- @field validate_out boolean validate results and signals (development builds and tests)
 local Registry = {}
 Registry.__index = Registry
@@ -109,7 +112,7 @@ Registry.__index = Registry
 function M.new(server, opts)
     opts = opts or {}
     local self = setmetatable({ server = server, objects = {}, docs = opts.docs or documents.set(),
-        types = {}, subs = {}, seq = {}, _next_sub = 0, _digests = {} }, Registry)
+        types = {}, subs = {}, seq = setmetatable({}, { __mode = "k" }), _next_sub = 0, _digests = {} }, Registry)
     if opts.validate_out ~= nil then
         self.validate_out = opts.validate_out
     else
@@ -221,7 +224,10 @@ end
 local function sorted_keys(t)
     local ks = {}
     for k in pairs(t) do ks[#ks + 1] = k end
-    table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
+    table.sort(ks, function(a, b)
+        if type(a) == "number" and type(b) == "number" then return a < b end
+        return tostring(a) < tostring(b)
+    end)
     return ks
 end
 
@@ -280,6 +286,14 @@ function Registry:_validate(e, node, value)
     return schema.validate(node, value, { doc = e.doc, base = e.rel, resolve_doc = self.docs:resolver() })
 end
 
+--- Bring a value a handler built to the wire shape of a schema node of a
+--- mounted document (an empty table the schema types as an object encodes
+--- as `{}`, any other as `[]`).
+function Registry:_shape(e, node, value)
+    if node == nil then return value end
+    return schema.shape(node, value, { doc = e.doc, base = e.rel, resolve_doc = self.docs:resolver() })
+end
+
 --- Is the connection on transport 11 or later (it understands envelope frames)?
 --- @param conn table
 --- @return boolean
@@ -323,14 +337,15 @@ function Registry:call(conn, msg)
     function ctx.reply(result)
         if answered then return end
         answered = true
-        local okr, rverr = self:_validate(e, mdoc.result, result == nil and envelope.empty() or result)
+        result = self:_shape(e, mdoc.result, result == nil and envelope.empty() or result)
+        local okr, rverr = self:_validate(e, mdoc.result, result)
         if not okr then
             local what = string.format("%s/%d.%s result does not match its schema: %s", msg.iface, msg.v,
                 msg.method, tostring(rverr))
             self:_log("%s", what)
             if self.validate_out then return fail(envelope.err(ERR.internal, what)) end
         end
-        send(envelope.ok(req_id, result == nil and envelope.empty() or result))
+        send(envelope.ok(req_id, result))
     end
     function ctx.fail(err)
         if answered then return end
@@ -359,8 +374,9 @@ function Registry:root_signal(name, args)
     if not server or not server.conns then return end
     local root = self.objects["/"] and self.objects["/"].ifaces[envelope.ROOT_IFACE]
     local e = root and root[envelope.ROOT_V]
+    local sdoc = e and e.doc.signals and e.doc.signals[name]
+    if e then args = self:_shape(e, sdoc and sdoc.args, args) end
     if e and self.validate_out then
-        local sdoc = e.doc.signals and e.doc.signals[name]
         local ok, verr = self:_validate(e, sdoc and sdoc.args, args)
         if not ok then self:_log("root signal %s does not match its schema: %s", name, tostring(verr)) end
     end
@@ -382,24 +398,49 @@ end
 function Registry:emit(object, iface, v, name, args, accept)
     local e = self:resolve(object, iface, v)
     if not e then return 0 end
+    local sdoc = e.doc.signals and e.doc.signals[name]
+    args = self:_shape(e, sdoc and sdoc.args, args)
     if self.validate_out then
-        local sdoc = e.doc.signals and e.doc.signals[name]
         local ok, verr = self:_validate(e, sdoc and sdoc.args, args)
         if not ok then
             self:_log("signal %s/%d.%s does not match its schema: %s", iface, v, name, tostring(verr))
         end
     end
-    self.seq[object] = (self.seq[object] or 0) + 1
-    local seq, n = self.seq[object], 0
+    local n = 0
     for _, id in ipairs(sorted_keys(self.subs)) do
         local s = self.subs[id]
         if s and s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
             and not s.conn.closed and (not accept or accept(s.args)) then
-            self.server:_send(s.conn, envelope.signal(object, iface, v, name, args, s.id, seq))
+            self.server:_send(s.conn,
+                envelope.signal(object, iface, v, name, args, s.id, self:_next_seq(s.conn, object)))
             n = n + 1
         end
     end
     return n
+end
+
+--- The `seq` of the next signal of `object` sent to `conn` (counted per
+--- connection and object, only for signals actually sent).
+--- @param conn table
+--- @param object string
+--- @return integer
+function Registry:_next_seq(conn, object)
+    local per = self.seq[conn]
+    if not per then
+        per = {}
+        self.seq[conn] = per
+    end
+    per[object] = (per[object] or 0) + 1
+    return per[object]
+end
+
+--- The last `seq` of `object` sent to `conn` (0: none yet).
+--- @param conn table
+--- @param object string
+--- @return integer
+function Registry:last_seq(conn, object)
+    local per = self.seq[conn]
+    return per and per[object] or 0
 end
 
 --- Drop a closed connection's subscriptions.
@@ -408,6 +449,7 @@ function Registry:drop_conn(conn)
     for id, s in pairs(self.subs) do
         if s.conn == conn then self.subs[id] = nil end
     end
+    self.seq[conn] = nil
 end
 
 --- The subscriptions of a connection (tests, status).
@@ -489,21 +531,25 @@ function M.root_impl()
         else
             names = sorted_keys(declared)
         end
+        -- The subscription's args are always checked: against the
+        -- interface's `subscribe_args`, or empty when it declares none.
         local sub_args = args.args or envelope.empty()
+        if e.doc.subscribe_args ~= nil then
+            local ok, verr = reg:_validate(e, e.doc.subscribe_args, sub_args)
+            if not ok then return nil, envelope.err(ERR.invalid_args, "/args" .. verr) end
+        elseif next(sub_args) ~= nil then
+            return nil, envelope.err(ERR.invalid_args,
+                string.format("/args: %s/%d takes no subscription args", args.iface, args.v))
+        end
         local want_initial = false
         for _, s in ipairs(names) do
-            local sd = declared[s]
-            if sd.filter ~= nil then
-                local ok, verr = reg:_validate(e, sd.filter, sub_args)
-                if not ok then return nil, envelope.err(ERR.invalid_args, "/args" .. verr) end
-            end
-            if sd.initial then want_initial = true end
+            if declared[s].initial then want_initial = true end
         end
         reg._next_sub = reg._next_sub + 1
         local sub = { id = reg._next_sub, conn = ctx.conn, object = args.object, iface = args.iface,
             v = args.v, signals = set, args = sub_args }
         reg.subs[sub.id] = sub
-        local result = { sub_id = sub.id }
+        local result = { sub_id = sub.id, seq = reg:last_seq(ctx.conn, args.object) }
         if want_initial and e.impl.initial then
             local ok, initial = pcall(e.impl.initial, ctx, sub_args, names)
             if not ok then

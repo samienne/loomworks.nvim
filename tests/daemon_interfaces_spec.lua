@@ -21,7 +21,8 @@ client.TIMEOUT_MS = 30000
 
 local ROOT, RIF = "/", "loomworks.Root"
 
---- A test interface: one method, one signal with an initial state and a filter.
+--- A test interface: one method, a signal with an initial state, another
+--- without, and subscription args (`subscribe_args`).
 local function test_doc(extra)
     local doc = {
         interface = "lwtest.Echo", version = 1, status = "draft",
@@ -35,9 +36,12 @@ local function test_doc(extra)
             ticked = {
                 args = { type = "object", required = { "n" }, properties = { n = { type = "integer" } } },
                 initial = true,
-                filter = { type = "object", properties = { only = { type = "integer" } } },
+            },
+            tocked = {
+                args = { type = "object", required = { "n" }, properties = { n = { type = "integer" } } },
             },
         },
+        subscribe_args = { type = "object", additionalProperties = false, properties = { only = { type = "integer" } } },
     }
     for k, v in pairs(extra or {}) do doc[k] = v end
     return doc
@@ -197,8 +201,9 @@ describe("root object over the socket (§19.20)", function()
         local conn = assert(client.session(srv.address, { on_message = box.on_message }))
         local other = assert(client.session(srv.address))
         local r = assert(client.call_sync(conn, ROOT, RIF, 1, "subscribe",
-            { object = "/echo", iface = "lwtest.Echo", v = 1, args = { only = 2 } }))
+            { object = "/echo", iface = "lwtest.Echo", v = 1, signals = { "ticked" }, args = { only = 2 } }))
         assert.is_number(r.sub_id)
+        assert.equals(0, r.seq)
         assert.same({ n = 0 }, r.initial)
         local echo = assert(client.call_sync(other, "/echo", "lwtest.Echo", 1, "echo", { text = "hi" }))
         assert.equals("hi", echo.text)
@@ -210,7 +215,32 @@ describe("root object over the socket (§19.20)", function()
         assert.equals(r.sub_id, s.sub_id)
         assert.equals("/echo", s.object)
         assert.equals(1, s.v)
-        assert.equals(1, s.seq)
+        assert.equals(r.seq + 1, s.seq)
+        -- Signals this connection is never sent use up no seq: emitted to
+        -- nobody, refused by the filter, a signal it did not subscribe to,
+        -- the other connection's.
+        assert.equals(0, srv.interfaces:emit("/echo", "lwtest.Echo", 1, "ticked", { n = 9 },
+            function(a) return a.only == 7 end))
+        local r2 = assert(client.call_sync(other, ROOT, RIF, 1, "subscribe",
+            { object = "/echo", iface = "lwtest.Echo", v = 1, signals = { "tocked" } }))
+        assert.equals(0, r2.seq)
+        assert.equals(1, srv.interfaces:emit("/echo", "lwtest.Echo", 1, "tocked", { n = 1 }))
+        assert.equals(1, srv.interfaces:emit("/echo", "lwtest.Echo", 1, "tocked", { n = 2 }))
+        assert(client.call_sync(other, ROOT, RIF, 1, "unsubscribe", { sub_id = r2.sub_id }))
+        assert.equals(1, srv.interfaces:emit("/echo", "lwtest.Echo", 1, "ticked", { n = 10 }))
+        assert.is_true(vim.wait(5000, function() return #box.signals("ticked") == 2 end, 10))
+        assert.equals(s.seq + 1, box.signals("ticked")[2].seq)
+        -- A later subscription of the same connection starts from the last
+        -- seq it was sent on that object.
+        local r3 = assert(client.call_sync(conn, ROOT, RIF, 1, "subscribe",
+            { object = "/echo", iface = "lwtest.Echo", v = 1, signals = { "tocked" } }))
+        assert.equals(s.seq + 1, r3.seq)
+        assert(client.call_sync(conn, ROOT, RIF, 1, "unsubscribe", { sub_id = r3.sub_id }))
+        -- Subscription args are checked against subscribe_args.
+        local _, ae = client.call_sync(conn, ROOT, RIF, 1, "subscribe",
+            { object = "/echo", iface = "lwtest.Echo", v = 1, args = { only = "x" } })
+        assert.equals("invalid_args", ae.code)
+        assert.truthy(ae.message:find("/args/only", 1, true), ae.message)
         -- An unknown signal name is invalid_args.
         local _, e = client.call_sync(conn, ROOT, RIF, 1, "subscribe",
             { object = "/echo", iface = "lwtest.Echo", v = 1, signals = { "nope" } })
@@ -227,6 +257,77 @@ describe("root object over the socket (§19.20)", function()
         assert(client.call_sync(other, ROOT, RIF, 1, "subscribe", { object = "/echo", iface = "lwtest.Echo", v = 1 }))
         other:close()
         assert.is_true(vim.wait(5000, function() return next(srv.interfaces.subs) == nil end, 10))
+        conn:close()
+    end)
+
+    it("an interface without subscribe_args refuses subscription args", function()
+        local doc = test_doc()
+        doc.subscribe_args = nil
+        assert(srv.interfaces:mount("/plain", "core", "lwtest.Echo", 1, echo_impl({ doc = doc })))
+        local conn = assert(client.session(srv.address))
+        local _, e = client.call_sync(conn, ROOT, RIF, 1, "subscribe",
+            { object = "/plain", iface = "lwtest.Echo", v = 1, args = { only = 2 } })
+        assert.equals("invalid_args", e.code)
+        assert.truthy(e.message:find("takes no subscription args", 1, true), e.message)
+        assert(client.call_sync(conn, ROOT, RIF, 1, "subscribe", { object = "/plain", iface = "lwtest.Echo", v = 1 }))
+        assert(client.call_sync(conn, ROOT, RIF, 1, "subscribe",
+            { object = "/plain", iface = "lwtest.Echo", v = 1, args = vim.empty_dict() }))
+        conn:close()
+    end)
+
+    it("an empty result goes out as its schema types it: [] for an array, {} for an object", function()
+        local doc = test_doc()
+        doc.methods.list = { params = { type = "object" }, result = { type = "array", items = { type = "string" } } }
+        doc.methods.nested = { params = { type = "object" }, result = { type = "object", properties = {
+            items = { type = "array" }, meta = { type = "object" } } } }
+        assert(srv.interfaces:mount("/lists", "core", "lwtest.Echo", 1, echo_impl({ doc = doc, methods = {
+            echo = function(_, a) return { text = a.text } end,
+            list = function() return {} end,
+            nested = function() return { items = {}, meta = {} } end,
+        } })))
+        local conn = assert(client.session(srv.address))
+        local l, e = client.call_sync(conn, "/lists", "lwtest.Echo", 1, "list", {})
+        assert.is_nil(e)
+        assert.same({}, l)
+        assert.is_nil(getmetatable(l)) -- decoded from [], not {}
+        local nres = assert(client.call_sync(conn, "/lists", "lwtest.Echo", 1, "nested", {}))
+        assert.is_nil(getmetatable(nres.items))
+        assert.equals(vim._empty_dict_mt, getmetatable(nres.meta))
+        conn:close()
+    end)
+
+    it("describe lists versions in numeric order", function()
+        for _, v in ipairs({ 10, 9 }) do
+            local doc = test_doc({ version = v })
+            assert(srv.interfaces:mount("/multi", "core", "lwtest.Echo", v, echo_impl({ doc = doc })))
+        end
+        local conn = assert(client.session(srv.address))
+        local d = assert(client.call_sync(conn, ROOT, RIF, 1, "describe", {}))
+        local found
+        for _, o in ipairs(d.objects) do if o.path == "/multi" then found = o end end
+        assert.same({ 9, 10 }, found.interfaces[1].versions)
+        local _, e = client.call_sync(conn, "/multi", "lwtest.Echo", 3, "echo", { text = "x" })
+        assert.same({ 9, 10 }, e.data.versions)
+        conn:close()
+    end)
+
+    it("stop drops every connection's subscriptions", function()
+        assert(srv.interfaces:mount("/echo", "core", "lwtest.Echo", 1, echo_impl()))
+        local conn = assert(client.session(srv.address))
+        assert(client.call_sync(conn, ROOT, RIF, 1, "subscribe", { object = "/echo", iface = "lwtest.Echo", v = 1 }))
+        assert.is_not_nil(next(srv.interfaces.subs))
+        srv:stop("test", 0)
+        assert.is_nil(next(srv.interfaces.subs))
+        conn:close()
+    end)
+
+    it("the client records the agreed transport and refuses an interface call below 11 at once", function()
+        local conn = assert(client.session(srv.address))
+        assert.equals(11, conn.transport)
+        conn.transport = 10 -- as against a daemon of protocol 10
+        local _, e = client.call_sync(conn, ROOT, RIF, 1, "describe", {})
+        assert.equals(client.ERR_TRANSPORT, e.code)
+        assert.truthy(e.message:find("need 11", 1, true), e.message)
         conn:close()
     end)
 

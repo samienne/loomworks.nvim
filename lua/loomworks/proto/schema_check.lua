@@ -4,12 +4,15 @@
 ---   * `lint(set, rel)` — the document is valid against its meta-schema
 ---     (`meta/interface.schema.json`, or `meta/transport.schema.json` for
 ---     `transport.json`), every schema node uses only the allowed keywords,
----     every `pattern` is in the portable subset and every `$ref` resolves;
+---     every `pattern` is in the portable subset, every `$ref` resolves, and
+---     no document under `frozen/` is a draft;
 ---   * `ratchet(old_set, new_set, rel)` — the current document against its
 ---     frozen snapshot: parameters may only gain optional properties, results
 ---     and signals only gain properties, enum values and alternatives; nothing
 ---     is removed, renamed, retyped or made required. Anything else is a new
----     version.
+---     version. The transport document (`transport.json`) is held to the same
+---     rules frame by frame (frames a client sends as parameters, the others
+---     as results); its error codes and definitions are never removed.
 ---
 --- Pure Lua (shared); used by the tests and by any tool that checks a
 --- document set.
@@ -83,12 +86,9 @@ function M.schema_nodes(doc, rel)
     end
     for _, name in ipairs(sorted_keys(doc.signals)) do
         local s = doc.signals[name]
-        if type(s) == "table" then
-            for _, k in ipairs({ "args", "filter" }) do
-                if s[k] ~= nil then root(s[k], "/signals/" .. name .. "/" .. k) end
-            end
-        end
+        if type(s) == "table" and s.args ~= nil then root(s.args, "/signals/" .. name .. "/args") end
     end
+    if doc.subscribe_args ~= nil then root(doc.subscribe_args, "/subscribe_args") end
     for _, name in ipairs(sorted_keys(doc.frames)) do root(doc.frames[name], "/frames/" .. name) end
     for _, name in ipairs(sorted_keys(doc["$defs"])) do root(doc["$defs"][name], "/$defs/" .. name) end
     return out
@@ -110,6 +110,10 @@ function M.lint(set, rel)
     if not rel:match("^meta/") then
         local ok, verr = set:validate(M.meta_for(rel), "", doc)
         if not ok then bad("not valid against %s: %s", M.meta_for(rel), tostring(verr)) end
+    end
+    -- A frozen snapshot is what a stable release shipped: never a draft.
+    if rel:match("^frozen/") and doc.status == "draft" then
+        bad("a draft is never frozen (status draft under frozen/)")
     end
     -- An interface document's name and version agree with its path.
     if doc.interface ~= nil then
@@ -273,6 +277,35 @@ local function compare(st, old, new, oc, nc, dir, path)
     end
 end
 
+--- The frames a client sends (compared as parameters); every other frame is
+--- the daemon's (compared as results).
+M.CLIENT_FRAMES = { hello = true, auth = true, call = true }
+
+-- The transport document against its frozen copy: frames, error codes and
+-- definitions are never removed; each frame is compared in its direction.
+function M._ratchet_transport(st, old, new, oc, nc)
+    if (tonumber(new.transport) or 0) < (tonumber(old.transport) or 0) then
+        st.bad("/transport", "lowered")
+    end
+    for _, name in ipairs(sorted_keys(old.frames)) do
+        local nf = new.frames and new.frames[name]
+        local p = "/frames/" .. name
+        if nf == nil then
+            st.bad(p, "frame removed")
+        else
+            compare(st, old.frames[name], nf, oc, nc, M.CLIENT_FRAMES[name] and "in" or "out", p)
+        end
+    end
+    for _, code in ipairs(sorted_keys(old.error_codes)) do
+        if not (new.error_codes and new.error_codes[code]) then
+            st.bad("/error_codes/" .. code, "error code removed")
+        end
+    end
+    for _, name in ipairs(sorted_keys(old["$defs"])) do
+        if not (new["$defs"] and new["$defs"][name]) then st.bad("/$defs/" .. name, "definition removed") end
+    end
+end
+
 --- Check the current document `rel` of `new_set` against its frozen copy in
 --- `old_set` (same relative path). Returns the problems (empty: additive).
 --- @param old_set loomworks.proto.DocumentSet
@@ -287,11 +320,20 @@ function M.ratchet(old_set, new_set, rel)
     if not new then return { rel .. ": removed (" .. tostring(nerr) .. ") — a shipped version is never removed" } end
     local st = { seen = {} }
     function st.bad(path, what)
+        if rel == "transport.json" then
+            problems[#problems + 1] = string.format("%s%s: %s — a breaking transport change: make transport %d",
+                rel, path, what, (tonumber(new.transport) or 0) + 1)
+            return
+        end
         problems[#problems + 1] = string.format("%s%s: %s — make version %d", rel, path,
             what, (tonumber(new.version) or 0) + 1)
     end
     local oc = { doc = old, base = rel, resolve_doc = old_set:resolver() }
     local nc = { doc = new, base = rel, resolve_doc = new_set:resolver() }
+    if rel == "transport.json" then
+        M._ratchet_transport(st, old, new, oc, nc)
+        return problems
+    end
     for _, k in ipairs({ "interface", "version" }) do
         if old[k] ~= new[k] then st.bad("/" .. k, "changed") end
     end
@@ -328,11 +370,16 @@ function M.ratchet(old_set, new_set, rel)
         else
             compare(st, os_.args, ns.args, oc, nc, "out", p .. "/args")
             if (os_.initial == true) ~= (ns.initial == true) then st.bad(p, "initial changed") end
-            if os_.filter ~= nil then
-                if ns.filter == nil then st.bad(p, "filter removed")
-                else compare(st, os_.filter, ns.filter, oc, nc, "in", p .. "/filter") end
-            end
         end
+    end
+    -- Subscription args are parameters. None before: a new schema may only
+    -- accept optional args (an old client sends none).
+    if old.subscribe_args ~= nil then
+        if new.subscribe_args == nil then st.bad("/subscribe_args", "subscription args removed")
+        else compare(st, old.subscribe_args, new.subscribe_args, oc, nc, "in", "/subscribe_args") end
+    elseif new.subscribe_args ~= nil and type(new.subscribe_args.required) == "table"
+        and #new.subscribe_args.required > 0 then
+        st.bad("/subscribe_args", "subscription args made required")
     end
     for _, code in ipairs(sorted_keys(old.errors)) do
         if not (new.errors and new.errors[code]) then st.bad("/errors/" .. code, "error code removed") end

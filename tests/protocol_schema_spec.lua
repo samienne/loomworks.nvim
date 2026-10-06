@@ -43,9 +43,15 @@ describe("schema validator (restricted keyword set)", function()
         assert.is_true(ok({ type = "number" }, 3.5))
         assert.is_true(ok({ type = { "string", "null" } }, vim.NIL))
         assert.is_false(ok({ type = "string" }, vim.NIL))
-        assert.is_true(ok({ type = "object" }, {}))
+        assert.is_true(ok({ type = "object" }, vim.empty_dict()))
         assert.is_true(ok({ type = "array" }, {}))
         assert.is_false(ok({ type = "array" }, vim.empty_dict()))
+        -- A decoded [] is an array, never an object; a decoded {} the reverse.
+        assert.is_false(ok({ type = "object" }, vim.json.decode("[]")))
+        assert.is_true(ok({ type = "object" }, vim.json.decode("{}")))
+        local either = { oneOf = { { type = "object" }, { type = "array" } } }
+        assert.is_true(ok(either, vim.json.decode("[]")))
+        assert.is_true(ok(either, vim.json.decode("{}")))
         assert.is_false(ok({ type = "object" }, { 1, 2 }))
         assert.is_false(ok({ type = "array" }, { a = 1 }))
     end)
@@ -84,7 +90,15 @@ describe("schema validator (restricted keyword set)", function()
         assert.is_true(ok({ pattern = "^[0-9a-f]+$" }, "00ff"))
         assert.is_false(ok({ pattern = "^[0-9a-f]+$" }, "00fg"))
         assert.is_true(ok({ pattern = "a-b%c" }, "xa-b%cx"))
-        for _, bad in ipairs({ "(a|b)", "a{2}", "a|b", "^a^", "\\q", "[abc" }) do
+        -- `.` is any character but a line terminator (ECMA-262).
+        assert.is_true(ok({ pattern = "^a.b$" }, "a-b"))
+        assert.is_false(ok({ pattern = "^a.b$" }, "a\nb"))
+        assert.is_false(ok({ pattern = "^a.b$" }, "a\rb"))
+        -- Ranges join two letters or digits; a range with a punctuation end
+        -- (which a Lua class would misread) is refused.
+        assert.is_true(ok({ pattern = "^[a-cX-Z0-2_-]+$" }, "aZ1_-"))
+        assert.is_false(ok({ pattern = "^[a-c]+$" }, "-"))
+        for _, bad in ipairs({ "(a|b)", "a{2}", "a|b", "^a^", "\\q", "[abc", "[!-/]", "[a-%]", "[\\.-z]", "[z-a]" }) do
             assert.is_nil((schema.translate_pattern(bad)), bad)
         end
     end)
@@ -155,6 +169,20 @@ describe("protocol documents (lint)", function()
             return documents.read(rel)
         end), "interfaces/lwtest/Lint.1.json"), "\n")
         assert.truthy(text:find("lives at interfaces/lwtest/Lint.1.json", 1, true), text)
+    end)
+
+    it("the lint refuses a draft under frozen/", function()
+        local doc = vim.json.decode(documents.read("interfaces/loomworks/Root.1.json"))
+        local function lint(status)
+            doc.status = status
+            return table.concat(check.lint(documents.set(function(rel)
+                if rel == "frozen/interfaces/loomworks/Root.1.json" then return vim.json.encode(doc) end
+                return documents.read(rel)
+            end), "frozen/interfaces/loomworks/Root.1.json"), "\n")
+        end
+        local text = lint("draft")
+        assert.truthy(text:find("a draft is never frozen", 1, true), text)
+        assert.falsy(lint("stable"):find("a draft is never frozen", 1, true))
     end)
 end)
 
@@ -230,5 +258,57 @@ describe("additive ratchet", function()
         one(function(d) d["$defs"].Unused = nil end, "definition removed")
         one(function(d) d.methods.get.mutates = true end, "mutates changed")
         one(function() end, "/oneOf", function(t) t["$defs"].Out.oneOf[2] = { const = "w" } end)
+        one(function(d) d.subscribe_args = { type = "object", required = { "x" },
+            properties = { x = { type = "string" } } } end, "subscription args made required")
+    end)
+
+    it("checks subscription args as parameters", function()
+        local function with(sa_old, sa_new)
+            local old, new = base(), base()
+            old.subscribe_args, new.subscribe_args = sa_old, sa_new
+            return check.ratchet(mem_set({ [REL] = old, ["interfaces/lwtest/T.1.json"] = types() }),
+                mem_set({ [REL] = new, ["interfaces/lwtest/T.1.json"] = types() }), REL)
+        end
+        local sa = function() return { type = "object", properties = { only = { type = "integer" } } } end
+        assert.same({}, with(nil, sa()))
+        local grown = sa()
+        grown.properties.more = { type = "string" }
+        assert.same({}, with(sa(), grown))
+        assert.truthy(table.concat(with(sa(), nil), "\n"):find("subscription args removed", 1, true))
+        local req = sa()
+        req.required = { "only" }
+        assert.truthy(table.concat(with(sa(), req), "\n"):find("parameter 'only' made required", 1, true))
+    end)
+
+    it("holds the transport document to the same rules: frames, error codes, definitions", function()
+        local TR = "transport.json"
+        local cur = vim.json.decode(documents.read(TR))
+        local function tdiff(mutate)
+            local new = vim.json.decode(documents.read(TR))
+            mutate(new)
+            local function over(d)
+                return documents.set(function(rel)
+                    if rel == TR then return vim.json.encode(d) end
+                    return documents.read(rel)
+                end)
+            end
+            return table.concat(check.ratchet(over(cur), over(new), TR), "\n")
+        end
+        assert.equals("", tdiff(function(d)
+            d.frames.welcome.properties = d.frames.welcome.properties or {}
+            d.frames.welcome.properties.extra = { type = "string" }
+            d.error_codes.brand_new = { description = "x" }
+        end))
+        local text = tdiff(function(d) d.frames.signal = nil end)
+        assert.truthy(text:find("/frames/signal: frame removed", 1, true), text)
+        assert.truthy(text:find("make transport 12", 1, true), text)
+        text = tdiff(function(d) d.error_codes.forbidden = nil end)
+        assert.truthy(text:find("/error_codes/forbidden: error code removed", 1, true), text)
+        text = tdiff(function(d)
+            d.frames.hello.required = d.frames.hello.required or {}
+            table.insert(d.frames.hello.required, "brand_new")
+            d.frames.hello.properties.brand_new = { type = "string" }
+        end)
+        assert.truthy(text:find("parameter 'brand_new' made required", 1, true), text)
     end)
 end)

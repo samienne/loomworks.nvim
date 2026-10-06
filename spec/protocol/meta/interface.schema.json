@@ -18,6 +18,7 @@
     "types_only": { "description": "Shared definitions only; mounted on no object (loomworks.Common).", "type": "boolean" },
     "methods": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Method" } },
     "signals": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Signal" } },
+    "subscribe_args": { "description": "The schema of a subscription's args (Root.subscribe); absent: a subscription takes none.", "$ref": "#/$defs/Schema" },
     "errors": { "type": "object", "additionalProperties": { "$ref": "#/$defs/ErrorDecl" } },
     "$defs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Schema" } }
   },
@@ -52,8 +53,7 @@
       "properties": {
         "description": { "type": "string" },
         "args": { "$ref": "#/$defs/Schema" },
-        "initial": { "description": "Subscribing returns the full state as `initial`.", "type": "boolean" },
-        "filter": { "description": "The subscription `args` this signal is filtered by.", "$ref": "#/$defs/Schema" }
+        "initial": { "description": "Subscribing returns the full state as `initial`.", "type": "boolean" }
       }
     },
     "ErrorDecl": {
