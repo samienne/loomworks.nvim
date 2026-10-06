@@ -74,7 +74,7 @@ local to each file and restart at §1.
 | Exporting the configuration as a published snapshot, or importing one into the working copy (another machine) | `specification.md` §16.39 (+ §2.4 for the serializer and intent, §17.5 for the signed write) |
 | What lw keeps outside the workspace (per-user data, temp files, pinned releases), housekeeping of crash leftovers, `lw cleanup` | `specification.md` §16.40 (+ §19.7, §19.10 for the daemon's socket and runtime log) |
 | Descriptions of projects, configurations, sets, profiles (storage, display, editing) | `specification.md` §1.10 (model), §2.4 (publish), §16.35 (CLI), §17.11 (sanitising); [`spec/ui.md`](spec/ui.md) §1.16 |
-| The workspace runtime: the daemon, `--no-daemon`, runtime lock, workspace operation lock and lock order, journalled multi-file commits, handle/endpoint/auth/version handshake, daemon lifetime, routing operations to the daemon | `specification.md` §19 (rationale and step plan: [`DAEMON.md`](DAEMON.md); + §2.7, §16.6, §18.7 for the existing locks) |
+| The workspace runtime: the daemon, `--no-daemon`, runtime lock, workspace operation lock and lock order, journalled multi-file commits, handle/endpoint/auth/version handshake, daemon lifetime, routing operations to the daemon, the daemon's discoverable versioned interfaces and their schemas (§19.20) | `specification.md` §19 (rationale and step plan: [`DAEMON.md`](DAEMON.md); + §2.7, §16.6, §18.7 for the existing locks) |
 
 **Naming rule for core**: core sections forbid module / tool / compiler /
 SDK / integration names in normative prose. Specific names may appear in

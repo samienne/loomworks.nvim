@@ -1,0 +1,156 @@
+{
+  "transport": 11,
+  "protocol_min": 10,
+  "description": "The transport layer (spec 19.8, 19.20): the handshake, the frozen control subset and, from protocol 11, the message envelope. Only this layer carries the protocol number. Fields are only ever added; a receiver ignores a field it does not know.",
+  "error_codes": {
+    "unknown_object": { "description": "No object at that path." },
+    "unknown_interface": { "description": "The object does not implement that interface." },
+    "unsupported_version": { "description": "The interface is not served at that version; data.versions lists the offered ones." },
+    "unknown_method": { "description": "The interface version has no such method." },
+    "invalid_args": { "description": "The call's args (or its envelope) do not match the method's schema; the message names the first violation." },
+    "same_build_required": { "description": "The interface is same_build and the client's lw_version is not the daemon's." },
+    "not_loaded": { "description": "The method needs the workspace and loading it failed; data carries the header's state and error." },
+    "stopping": { "description": "The daemon is stopping." },
+    "retiring": { "description": "The daemon is retiring and accepts no new operation from this client." },
+    "forbidden": { "description": "Not allowed for this connection (e.g. cancelling another connection's task)." },
+    "internal": { "description": "The call failed inside the daemon. A client treats an unknown code as internal." }
+  },
+  "frames": {
+    "hello": {
+      "type": "object",
+      "required": ["kind", "protocol", "nonce"],
+      "properties": {
+        "kind": { "const": "hello" },
+        "protocol": { "type": "integer" },
+        "protocol_min": { "description": "From protocol 11; absent: equal to protocol.", "type": "integer" },
+        "lw_version": { "type": "string" },
+        "schemas": { "$ref": "#/$defs/FileSchemas" },
+        "client": { "enum": ["cli", "editor"] },
+        "role": { "enum": ["observer"] },
+        "nonce": { "type": "string" }
+      }
+    },
+    "challenge": {
+      "type": "object",
+      "required": ["kind", "protocol", "server_nonce", "server_proof"],
+      "properties": {
+        "kind": { "const": "challenge" },
+        "protocol": { "type": "integer" },
+        "protocol_min": { "description": "From protocol 11; absent: equal to protocol.", "type": "integer" },
+        "lw_version": { "type": "string" },
+        "schemas": { "$ref": "#/$defs/FileSchemas" },
+        "session_generation": { "type": "integer" },
+        "server_nonce": { "type": "string" },
+        "server_proof": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["kind", "client_proof"],
+      "properties": {
+        "kind": { "const": "auth" },
+        "client_proof": { "type": "string" }
+      }
+    },
+    "welcome": {
+      "type": "object",
+      "required": ["kind", "header"],
+      "properties": {
+        "kind": { "const": "welcome" },
+        "header": {
+          "type": "object",
+          "required": ["root", "pid", "lw_version", "session_generation"],
+          "properties": {
+            "root": { "type": "string" },
+            "pid": { "type": "integer" },
+            "lw_version": { "type": "string" },
+            "session_generation": { "type": "integer" }
+          }
+        },
+        "seq": { "type": "integer" },
+        "clients": { "type": "integer" },
+        "busy": { "type": "boolean" },
+        "retiring": { "type": "boolean" },
+        "objects": {
+          "description": "From protocol 11: describe().objects without digests.",
+          "type": "array",
+          "items": { "$ref": "interfaces/loomworks/Root.1.json#/$defs/Object" }
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "required": ["kind", "req_id", "object", "iface", "v", "method"],
+      "properties": {
+        "kind": { "const": "call" },
+        "req_id": { "type": "integer" },
+        "object": { "type": "string" },
+        "iface": { "type": "string" },
+        "v": { "type": "integer", "minimum": 1 },
+        "method": { "type": "string" },
+        "args": { "type": "object" },
+        "env": { "$ref": "interfaces/loomworks/Common.1.json#/$defs/Environment" }
+      }
+    },
+    "ok": {
+      "type": "object",
+      "required": ["kind", "req_id"],
+      "properties": {
+        "kind": { "const": "ok" },
+        "req_id": { "type": "integer" },
+        "result": {}
+      }
+    },
+    "error": {
+      "description": "The reply to an interface call that could not be processed. A v0 request's error reply carries error as a string instead.",
+      "type": "object",
+      "required": ["kind", "req_id", "error"],
+      "properties": {
+        "kind": { "const": "error" },
+        "req_id": { "type": "integer" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "type": "string" },
+            "message": { "type": "string" },
+            "data": {}
+          }
+        }
+      }
+    },
+    "signal": {
+      "type": "object",
+      "required": ["kind", "object", "iface", "v", "name", "args"],
+      "properties": {
+        "kind": { "const": "signal" },
+        "object": { "type": "string" },
+        "iface": { "type": "string" },
+        "v": { "type": "integer" },
+        "name": { "type": "string" },
+        "sub_id": { "type": "integer" },
+        "seq": { "type": "integer" },
+        "args": { "type": "object" }
+      }
+    },
+    "task": {
+      "description": "A task-stream event (spec 19.15).",
+      "type": "object",
+      "required": ["kind", "task_id", "phase"],
+      "properties": {
+        "kind": { "const": "task" },
+        "task_id": { "type": "integer" },
+        "phase": { "enum": ["start", "line", "output", "progress", "done"] }
+      }
+    }
+  },
+  "$defs": {
+    "FileSchemas": {
+      "type": "object",
+      "properties": {
+        "user": { "type": "integer" },
+        "cache": { "type": "integer" }
+      }
+    }
+  }
+}

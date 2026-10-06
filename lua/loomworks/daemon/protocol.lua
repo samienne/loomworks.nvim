@@ -16,6 +16,8 @@ local M = {}
 
 --- The wire protocol version (loomworks.daemon.version.PROTOCOL).
 M.VERSION = require("loomworks.daemon.version").PROTOCOL
+--- The oldest transport still spoken (loomworks.daemon.version.PROTOCOL_MIN).
+M.VERSION_MIN = require("loomworks.daemon.version").PROTOCOL_MIN
 
 --- Frame cap before authentication (spec §19.8).
 M.PREAUTH_MAX = 64 * 1024
@@ -52,6 +54,11 @@ M.KIND = {
     -- daemon was retired (observers disconnect)
     model_change = "model_change",
     retiring = "retiring",
+    -- the message envelope of protocol 11 (§19.20, loomworks.proto.envelope):
+    -- an interface call and an interface signal (replies are `ok` / `error`,
+    -- the error then a structured object)
+    call = "call",
+    signal = "signal",
 }
 
 --- Encode a message table as a frame.

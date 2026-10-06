@@ -10,9 +10,13 @@
 ---      handle (§19.6);
 ---   3. serve: every connection must authenticate first (§19.8 — only
 ---      `hello` / `auth`, 64 KiB frame cap, ~5 s, no broadcast before
----      `welcome`); then the frozen control requests `ping`, `status`, `stop`,
----      `retire`, and — with a build service attached (`lw daemon run`,
----      loomworks.daemon.service) — the routed `build` operation (§19.15);
+---      `welcome`, which lists the objects, §19.20); then, through one
+---      dispatch table (`M.DISPATCH`), the frozen control requests `ping`,
+---      `status`, `stop`, `retire`, the interface envelope's `call` (the
+---      registry loomworks.daemon.interfaces, with the root object `/`), and
+---      — with a build service attached (`lw daemon run`,
+---      loomworks.daemon.service) — the protocol-10 request kinds as v0
+---      aliases (§19.8, §19.15);
 ---   4. heartbeat (about 5 s): R's own timer refreshes the lock; the server
 ---      refreshes the handle (rewriting it if it was removed) and checks that
 ---      R still carries its record — a replaced record means the lock was
@@ -74,6 +78,7 @@ end
 --- @field attached boolean|nil an attached runtime (§19.1): no endpoint, handle or idle stop
 --- @field exit_code integer|nil an attached runtime's exit status, recorded when it stopped
 --- @field stop_reason string|nil why it stopped (`LOST_LOCK`, `ROOT_REMOVED`, or the `stop` reason)
+--- @field interfaces loomworks.daemon.Registry|nil the interface registry with the root object (§19.20), created on start
 local Server = {}
 Server.__index = Server
 
@@ -225,6 +230,9 @@ function Server:_acquire(lock_opts)
     -- vim.fn (the fingerprint's sha256) in fast callbacks.
     self.identity = version.identity()
     self.schemas = version.schemas()
+    -- The interface registry with the root object (§19.20); its schema
+    -- digests are computed here too, outside any callback.
+    self.interfaces = self.interfaces or require("loomworks.daemon.interfaces").new(self)
     local st = uv.fs_stat(self.root)
     if not st or st.type ~= "directory" then
         return nil, "workspace root " .. self.root .. " does not exist", 1
@@ -416,7 +424,11 @@ function Server:stop(reason, code)
     if self.service then pcall(self.service.on_stopping, self.service, reason) end
     self.stopped = true
     self:log("stopping: %s", tostring(reason))
-    for conn in pairs(self.conns) do pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end) end
+    for conn in pairs(self.conns) do
+        pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end)
+        -- Its subscriptions end with it (§19.20), as on any close.
+        if self.interfaces then self.interfaces:drop_conn(conn) end
+    end
     self.conns = {}
     for _, h in ipairs({ self.timer, self.sigterm, self.listener }) do
         pcall(function() if h and not h:is_closing() then h:close() end end)
@@ -498,6 +510,8 @@ function Server:_close(conn, why)
     pcall(function() if not conn.sock:is_closing() then conn.sock:close() end end)
     self.conns[conn] = nil
     if why then self:log("closed a connection: %s", why) end
+    -- Its subscriptions end with it (§19.20).
+    if self.interfaces then self.interfaces:drop_conn(conn) end
     -- Its operations belong to it: cancelled (§19.15).
     if conn.authed and self.service then pcall(self.service.on_conn_closed, self.service, conn) end
     if conn.authed then
@@ -556,12 +570,16 @@ function Server:_handshake(conn, msg)
         local ns = auth.nonce()
         if not ns then return self:_close(conn, "no random source") end
         conn.nc, conn.ns, conn.state = msg.nonce, ns, "challenged"
-        conn.peer = { protocol = msg.protocol, lw_version = msg.lw_version, schemas = msg.schemas,
-            client = msg.client, role = msg.role }
+        conn.peer = { protocol = msg.protocol, protocol_min = msg.protocol_min, lw_version = msg.lw_version,
+            schemas = msg.schemas, client = msg.client, role = msg.role }
+        -- The transport both sides agree on (§19.9 "From protocol 11"); nil
+        -- with no overlap — the frozen control subset still serves it.
+        conn.transport = version.negotiate(msg.protocol, msg.protocol_min)
         -- An observer (§19.16) never holds off a retirement.
         conn.observer = msg.role == "observer"
         self:_send(conn, {
-            kind = K.challenge, protocol = protocol.VERSION, lw_version = self.identity,
+            kind = K.challenge, protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+            lw_version = self.identity,
             schemas = self.schemas, session_generation = self.generation,
             server_nonce = ns, server_proof = auth.server_proof(self.key, self.address, conn.nc, ns),
         })
@@ -599,9 +617,12 @@ function Server:_authed(conn)
             end
         end
     end
+    -- Transport fields beside the header (protocol 11, §19.8): the objects
+    -- (describe().objects without digests, §19.20).
+    local objects = self.interfaces and self.interfaces:object_list(false) or nil
     self:_send(conn, {
         kind = protocol.KIND.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
-        retiring = self.retiring, header = header,
+        retiring = self.retiring, header = header, objects = objects,
     })
     self:_handle_changed()
 end
@@ -631,8 +652,9 @@ function Server:adopt(sock, peer)
     peer = peer or {}
     local conn = { sock = sock, decoder = protocol.new_decoder(protocol.MAX_FRAME), state = "new",
         last_seen = uv.now(), loopback = true,
-        peer = { protocol = peer.protocol, lw_version = peer.lw_version, schemas = peer.schemas,
-            client = peer.client, role = peer.role } }
+        peer = { protocol = peer.protocol, protocol_min = peer.protocol_min, lw_version = peer.lw_version,
+            schemas = peer.schemas, client = peer.client, role = peer.role } }
+    conn.transport = version.negotiate(peer.protocol, peer.protocol_min)
     conn.observer = peer.role == "observer"
     self.conns[conn] = true
     self:_authed(conn)
@@ -652,15 +674,76 @@ function Server:status()
     return r
 end
 
---- Authenticated requests: the frozen control subset.
 --- An authenticated request: a handler error is a typed error reply (§19.8),
 --- never a crash.
 function Server:_dispatch(conn, msg)
     local ok, err = pcall(self._dispatch_request, self, conn, msg)
     if not ok then
         self:log("handler error for %s: %s", tostring(msg.kind), tostring(err))
-        self:_send(conn, { kind = protocol.KIND.error, req_id = msg.req_id, error = "internal error" })
+        -- An interface call gets the structured error; a v0 request the string.
+        local e = "internal error"
+        if msg.kind == protocol.KIND.call then e = { code = "internal", message = "internal error" } end
+        self:_send(conn, { kind = protocol.KIND.error, req_id = msg.req_id, error = e })
     end
+end
+
+--- The dispatch table (spec §19.20, step 5g.1): one entry per request kind.
+--- `call` is the interface envelope, served by the registry
+--- (loomworks.daemon.interfaces); the frozen control subset answers itself;
+--- the request kinds of protocol 10 are v0 ALIASES, served unchanged by the
+--- build service's handlers — the same handlers the interface methods of
+--- step 5g.2 adapt — and only when a service is attached (else, as before,
+--- an unknown kind). A v0 request gets a v0 reply: `error` is a string.
+---   control = fun(server, conn, msg, reply)
+---   v0      = the build service's method name
+--- @type table<string, { control?: fun(server: loomworks.daemon.Server, conn: table, msg: table, reply: fun(fields: table|nil, cb: function|nil)), v0?: string }>
+M.DISPATCH = {
+    [protocol.KIND.ping] = { control = function(_, _, _, reply) return reply({}) end },
+    [protocol.KIND.status] = {
+        control = function(server, _, _, reply)
+            local st = server:status()
+            st.kind = protocol.KIND.ok
+            return reply(st)
+        end,
+    },
+    [protocol.KIND.stop] = {
+        control = function(server, _, _, reply)
+            return reply({}, function() server:stop("stop requested", 0) end)
+        end,
+    },
+    [protocol.KIND.retire] = { control = function(server, _, _, reply) server:_retire(); return reply({}) end },
+    [protocol.KIND.call] = {
+        control = function(server, conn, msg)
+            server.interfaces = server.interfaces or require("loomworks.daemon.interfaces").new(server)
+            return server.interfaces:call(conn, msg)
+        end,
+    },
+    -- Routed operations (§19.15): `build` (step 3), the batch `test` (step
+    -- 5), the preparation of `lw run` (the program runs in the client), `lw
+    -- clean` (step 5c), `lw reset` (step 5d).
+    [protocol.KIND.build] = { v0 = "on_build" },
+    [protocol.KIND.test] = { v0 = "on_test" },
+    [protocol.KIND.prepare_run] = { v0 = "on_run" },
+    [protocol.KIND.clean] = { v0 = "on_clean" },
+    [protocol.KIND.reset] = { v0 = "on_reset" },
+    -- The model: a scope snapshot for the client's projection (§19.13); a
+    -- host-probing query in the client's environment (§19.14).
+    [protocol.KIND.snapshot] = { v0 = "on_snapshot" },
+    [protocol.KIND.query] = { v0 = "on_query" },
+}
+
+--- Mark the daemon retiring (§19.11): observers are told with the v0
+--- `retiring` broadcast (they disconnect on it and never hold the retirement
+--- off), every connection of transport 11 with the root's `retiring` signal.
+function Server:_retire()
+    local first = not self.retiring
+    self.retiring = true
+    if not first then return end
+    self:log("retiring: a client of another version asked; exits when idle")
+    for c in pairs(self.conns) do
+        if c.authed and not c.closed and c.observer then self:_send(c, { kind = protocol.KIND.retiring }) end
+    end
+    if self.interfaces then self.interfaces:root_signal("retiring", {}) end
 end
 
 function Server:_dispatch_request(conn, msg)
@@ -672,48 +755,9 @@ function Server:_dispatch_request(conn, msg)
         fields.req_id = msg.req_id
         self:_send(conn, fields, cb)
     end
-    if msg.kind == K.ping then
-        return reply({})
-    elseif msg.kind == K.status then
-        local st = self:status()
-        st.kind = K.ok
-        return reply(st)
-    elseif msg.kind == K.stop then
-        return reply({}, function() self:stop("stop requested", 0) end)
-    elseif msg.kind == K.retire then
-        local first = not self.retiring
-        self.retiring = true
-        if first then
-            self:log("retiring: a client of another version asked; exits when idle")
-            -- Observers disconnect on it and never hold the retirement off.
-            for c in pairs(self.conns) do
-                if c.authed and not c.closed and c.observer then self:_send(c, { kind = K.retiring }) end
-            end
-        end
-        return reply({})
-    elseif msg.kind == K.build and self.service then
-        -- Routed operations (§19.15, §19.19 step 3).
-        return self.service:on_build(conn, msg)
-    elseif msg.kind == K.test and self.service then
-        -- The batch `lw test` (§19.15, §19.19 step 5).
-        return self.service:on_test(conn, msg)
-    elseif msg.kind == K.prepare_run and self.service then
-        -- The preparation of `lw run` (§19.15 "Run"); the program runs in
-        -- the client.
-        return self.service:on_run(conn, msg)
-    elseif msg.kind == K.clean and self.service then
-        -- `lw clean` (§19.15 "Clean", §19.19 step 5c).
-        return self.service:on_clean(conn, msg)
-    elseif msg.kind == K.reset and self.service then
-        -- `lw reset` (§19.15 "Reset", §19.19 step 5d).
-        return self.service:on_reset(conn, msg)
-    elseif msg.kind == K.snapshot and self.service then
-        -- A scope snapshot for the client's projection (§19.13).
-        return self.service:on_snapshot(conn, msg)
-    elseif msg.kind == K.query and self.service then
-        -- A host-probing query in the client's environment (§19.14).
-        return self.service:on_query(conn, msg)
-    end
+    local entry = type(msg.kind) == "string" and M.DISPATCH[msg.kind] or nil
+    if entry and entry.control then return entry.control(self, conn, msg, reply) end
+    if entry and entry.v0 and self.service then return self.service[entry.v0](self.service, conn, msg) end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end
 

@@ -1,0 +1,94 @@
+{
+  "description": "Meta-schema of a loomworks interface document (spec 19.20 'Schemas and conformance'). Written in the restricted keyword set it enforces.",
+  "type": "object",
+  "required": ["interface", "version", "status", "methods"],
+  "additionalProperties": false,
+  "properties": {
+    "interface": {
+      "description": "<namespace>.<Name>; loomworks.* is core, lw.internal.* same-build facilities, a module's namespace its module id.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*\\.[A-Za-z][A-Za-z0-9_.]*$"
+    },
+    "version": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["draft", "stable", "deprecated"] },
+    "description": { "type": "string" },
+    "frozen": { "description": "Never versioned past this version (loomworks.Root/1, spec 19.8).", "type": "boolean" },
+    "same_build": { "description": "Callable only by a client of the daemon's own lw_version.", "type": "boolean" },
+    "internal": { "description": "Not a stable contract (lw.internal.*).", "type": "boolean" },
+    "types_only": { "description": "Shared definitions only; mounted on no object (loomworks.Common).", "type": "boolean" },
+    "methods": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Method" } },
+    "signals": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Signal" } },
+    "subscribe_args": { "description": "The schema of a subscription's args (Root.subscribe); absent: a subscription takes none.", "$ref": "#/$defs/Schema" },
+    "errors": { "type": "object", "additionalProperties": { "$ref": "#/$defs/ErrorDecl" } },
+    "$defs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Schema" } }
+  },
+  "$defs": {
+    "Method": {
+      "type": "object",
+      "required": ["params", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "params": { "$ref": "#/$defs/Schema" },
+        "result": { "$ref": "#/$defs/Schema" },
+        "task": {
+          "description": "Present for a task-streamed method (spec 19.15): the task's start meta and its done result.",
+          "type": "object",
+          "required": ["meta", "result"],
+          "additionalProperties": false,
+          "properties": {
+            "meta": { "$ref": "#/$defs/Schema" },
+            "result": { "$ref": "#/$defs/Schema" }
+          }
+        },
+        "errors": { "type": "array", "items": { "$ref": "#/$defs/ErrorCode" } },
+        "needs_env": { "type": "boolean" },
+        "mutates": { "type": "boolean" }
+      }
+    },
+    "Signal": {
+      "type": "object",
+      "required": ["args"],
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "args": { "$ref": "#/$defs/Schema" },
+        "initial": { "description": "Subscribing returns the full state as `initial`.", "type": "boolean" }
+      }
+    },
+    "ErrorDecl": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "description": { "type": "string" } }
+    },
+    "ErrorCode": { "type": "string", "pattern": "^[a-z][a-z0-9_.]*$" },
+    "TypeName": { "enum": ["object", "array", "string", "number", "integer", "boolean", "null"] },
+    "Schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "oneOf": [
+            { "$ref": "#/$defs/TypeName" },
+            { "type": "array", "items": { "$ref": "#/$defs/TypeName" } }
+          ]
+        },
+        "properties": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Schema" } },
+        "required": { "type": "array", "items": { "type": "string" } },
+        "additionalProperties": {
+          "oneOf": [ { "type": "boolean" }, { "$ref": "#/$defs/Schema" } ]
+        },
+        "items": { "$ref": "#/$defs/Schema" },
+        "enum": { "type": "array" },
+        "const": {},
+        "oneOf": { "type": "array", "items": { "$ref": "#/$defs/Schema" } },
+        "$ref": { "type": "string" },
+        "$defs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/Schema" } },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "pattern": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}

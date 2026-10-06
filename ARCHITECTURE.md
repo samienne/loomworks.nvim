@@ -596,7 +596,7 @@ re-cut onto master step by step; this section is expanded as each step lands.
 - `paths.lua` — the runtime lock / handle paths under `.nvim/`, the per-user
   state directory (`<data dir>/daemon`) and the root hash naming per-user
   files.
-- `version.lua` — what the handshake compares: `PROTOCOL`, the host identity
+- `version.lua` — what the handshake compares: `PROTOCOL` (with `PROTOCOL_MIN` and `negotiate`, the transport range), the host identity
   (release version, or `<version>+dev.<fingerprint>` over the source files'
   paths/sizes/mtimes for a development build — the on-disk root `lua_root()`,
   else a `luvi <dir>` bundle's directory `bundle_dir()`; only a fused
@@ -662,7 +662,7 @@ re-cut onto master step by step; this section is expanded as each step lands.
   candidate paths), `read_dacl` / `user_sid` for tests.
 - `server.lua` — `Server:start()` (R → stale handle removed → K → endpoint →
   handle → tick timer), per-connection handshake state machine
-  (`new` → `challenged` → `authed`, auth timer), `_dispatch` of
+  (`new` → `challenged` → `authed`, auth timer), `_dispatch` through `M.DISPATCH` of
   `ping`/`status`/`stop`/`retire`, `_tick` (R still ours, else `_lost_lock`:
   exit 1 touching nothing; handle mtime or rewrite), `stop` (close all,
   remove handle + socket while R is ours, release R, `opts.exit`). Identity
@@ -1080,6 +1080,63 @@ in an attached run) first calls `Service:freeze_writes()`, which sets
 on the spot (a confirmation prompt blocks the loop) and every attached
 fallback checks it, so a command that lost R exits 1 rather than continuing
 in-process.
+
+**Interfaces (spec §19.20 — step 5g.1 built; 5g.2, 5g.3 and 5q plan).**
+Three layers, each with one owner:
+
+- **Transport** — `daemon/protocol.lua` (framing, kinds incl. `call` /
+  `signal`), `daemon/version.lua` (`PROTOCOL = 11`, `PROTOCOL_MIN = 10`,
+  `negotiate(max, min)`: the highest version in the overlap of two ranges;
+  the server stores it per connection as `conn.transport`, and the editor's
+  `observer_compatible` needs only an overlap) and the shared
+  `proto/envelope.lua` (frame builders, `check_call`, the transport error
+  codes, `code_of`: an unknown code is `internal`). `hello` / `challenge`
+  carry `protocol_min`; `welcome` carries `objects` beside `header`.
+- **Interfaces** — `daemon/interfaces.lua`: the `Registry` of mounted
+  `(object, iface, v)` with their schema documents, digests and handlers
+  (`mount` refuses a version whose schema methods and handlers disagree;
+  `unmount`), `call` (route → `args` validated against the method's
+  parameters → handler → `ok`, the result validated in development builds and
+  tests, `validate_out`; a result or signal is first brought to its
+  schema's shape, `schema.shape`, so an empty table goes out as `{}` only
+  where the schema types an object), the subscriptions (`Root.subscribe` /
+  `unsubscribe`, `args` checked against the interface's `subscribe_args` —
+  none without one —, `emit` stamps `sub_id` and a `seq` counted per
+  connection and object over the signals actually sent, `subscribe` returning
+  the baseline; dropped with the connection and on `stop`) and the root signals (`root_signal`: `objects_changed` on a
+  new or vanished object, `retiring` from `Server:_retire`) sent to
+  transport-11 connections only. `M.root_impl()` is `loomworks.Root/1`.
+  `server.lua`'s `M.DISPATCH` is the one dispatch table: `control` rows (the
+  frozen subset, and `call` into the registry) and `v0` rows naming the build
+  service handler of each protocol-10 kind, served only with a service
+  attached (else "unknown request kind", as before) and answered with v0
+  replies. Step 5g.2 points those rows at interface methods through an
+  argument/result adapter; the service bodies stay shared. Module interfaces
+  (5q) are mounted on `/modules/<id>` with the same method ↔ schema check.
+- **Data** — records carrying the `snapshot.registry` ids.
+
+`loomworks/proto/` (the guard's `shared` class) holds `envelope.lua`,
+`schema.lua` (the pure-Lua validator of the restricted keyword set; `pattern`
+takes a portable regex subset translated to Lua patterns), `documents.lua`
+(where the documents are — `spec/protocol/` in a source tree,
+`loomworks/protocol/` in a release or dev bundle, added by
+`scripts/release/build_bundle.sh` / `scripts/dev-install.sh` — and a
+`DocumentSet` that loads them and resolves `<name>/<v>#…` and relative-path
+references) and `schema_check.lua` (`lint`, `ratchet`). The client stub is
+`daemon/client.lua`'s `Conn:call` / `call_sync`. The documents live in
+`spec/protocol/`: `transport.json`, `meta/interface.schema.json` and
+`meta/transport.schema.json`, `interfaces/loomworks/Root.1.json` and
+`Common.1.json`, and `frozen/` (empty until a stable release ships an
+interface version). `tests/protocol_schema_spec.lua` lints every document and
+ratchets every frozen copy; `tests/daemon_interfaces_spec.lua` covers the root
+object over the socket and the loopback and the v0 aliases. Fixture
+transcripts and the conformance runner come with step 5g.2. The
+plugin/binary boundary guard (`tests/split`,
+#149) enforces that the plugin reaches the binary only through the protocol;
+its interface ratchet (step 5g.3) adds that every plugin-side call names an
+interface version with a schema under `spec/protocol/` and client-conformance
+transcripts. The two are complementary: the guard says *only through the
+protocol*, the schemas say *what the protocol is*.
 
 ### Workspace trust (spec §17)
 

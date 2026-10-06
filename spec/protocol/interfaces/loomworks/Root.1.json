@@ -1,0 +1,138 @@
+{
+  "interface": "loomworks.Root",
+  "version": 1,
+  "status": "stable",
+  "frozen": true,
+  "description": "Object / (spec 19.20 'The root object'): discovery, schemas and subscriptions. Frozen (spec 19.8): never versioned past 1; it only gains optional fields and new methods, which a client calls only after seeing them in describe().root_methods.",
+  "methods": {
+    "describe": {
+      "description": "The binary, the transport range, the session generation, the objects with their interfaces, and the root's methods.",
+      "params": { "type": "object" },
+      "result": { "$ref": "#/$defs/Description" },
+      "needs_env": false,
+      "mutates": false
+    },
+    "schema": {
+      "description": "One interface version's schema document.",
+      "params": {
+        "type": "object",
+        "required": ["iface", "v"],
+        "properties": {
+          "iface": { "type": "string" },
+          "v": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "result": { "description": "The schema document (meta/interface.schema.json).", "type": "object" },
+      "errors": ["unknown_interface", "unsupported_version"],
+      "needs_env": false,
+      "mutates": false
+    },
+    "subscribe": {
+      "description": "Subscribe the calling connection to one interface version of one object, optionally to some of its signals and filtered by args, valid against the interface's subscribe_args (none when it declares none).",
+      "params": {
+        "type": "object",
+        "required": ["object", "iface", "v"],
+        "properties": {
+          "object": { "type": "string" },
+          "iface": { "type": "string" },
+          "v": { "type": "integer", "minimum": 1 },
+          "signals": { "type": "array", "items": { "type": "string" } },
+          "args": { "type": "object" }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": ["sub_id"],
+        "properties": {
+          "sub_id": { "type": "integer" },
+          "seq": { "description": "The last seq of this object the connection was sent before subscribing (0: none): seq counts per object and connection only the signals sent, so the next one is seq + 1 and a gap means a lost signal.", "type": "integer", "minimum": 0 },
+          "initial": { "description": "The full state, for an interface whose subscribed signals declare it." }
+        }
+      },
+      "errors": ["unknown_object", "unknown_interface", "unsupported_version", "same_build_required"],
+      "needs_env": false,
+      "mutates": false
+    },
+    "unsubscribe": {
+      "description": "Drop one of the calling connection's subscriptions (an unknown sub_id is not an error).",
+      "params": {
+        "type": "object",
+        "required": ["sub_id"],
+        "properties": { "sub_id": { "type": "integer" } }
+      },
+      "result": { "type": "object" },
+      "needs_env": false,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "objects_changed": {
+      "description": "Objects appeared or disappeared (a module loaded, the workspace loaded or unloaded). Reaches every authenticated connection without a subscription.",
+      "args": {
+        "type": "object",
+        "required": ["added", "removed"],
+        "properties": {
+          "added": { "type": "array", "items": { "type": "string" } },
+          "removed": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "retiring": {
+      "description": "The daemon was retired (spec 19.11): it exits once idle. Reaches every authenticated connection without a subscription.",
+      "args": { "type": "object" }
+    }
+  },
+  "$defs": {
+    "Description": {
+      "type": "object",
+      "required": ["binary", "transport", "session_generation", "objects", "root_methods"],
+      "properties": {
+        "binary": {
+          "type": "object",
+          "required": ["lw_version", "impl", "dev"],
+          "properties": {
+            "lw_version": { "type": "string" },
+            "impl": { "description": "The implementation (lua).", "type": "string" },
+            "dev": { "description": "A development build.", "type": "boolean" }
+          }
+        },
+        "transport": {
+          "type": "object",
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer" },
+            "max": { "type": "integer" }
+          }
+        },
+        "session_generation": { "type": "integer" },
+        "objects": { "type": "array", "items": { "$ref": "#/$defs/Object" } },
+        "root_methods": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "Object": {
+      "type": "object",
+      "required": ["path", "owner", "interfaces"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "owner": { "description": "core, or the module id.", "type": "string" },
+        "interfaces": { "type": "array", "items": { "$ref": "#/$defs/InterfaceInfo" } }
+      }
+    },
+    "InterfaceInfo": {
+      "type": "object",
+      "required": ["name", "versions"],
+      "properties": {
+        "name": { "type": "string" },
+        "versions": { "type": "array", "items": { "type": "integer" } },
+        "deprecated": { "type": "array", "items": { "type": "integer" } },
+        "internal": { "type": "boolean" },
+        "same_build": { "type": "boolean" },
+        "schema_digest": {
+          "description": "Per version (as a string key) the sha256 of its schema document. Absent from welcome.objects.",
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]+$" }
+        }
+      }
+    }
+  }
+}
