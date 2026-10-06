@@ -367,7 +367,9 @@ function M.trust_user_prefs(root, opts)
             vim.log.levels.INFO)
         -- Valid again since a load refused it (restored, or re-signed by
         -- `lw trust`): load the workspace now (spec §17.4).
-        if err and err.trust and err.trust.kind == "user" then
+        local norm = core._deps.normalize
+        if err and err.trust and err.trust.kind == "user" and err.root
+            and norm(err.root) == norm(root) then
             core:setup({ root = root })
         end
         return "valid"

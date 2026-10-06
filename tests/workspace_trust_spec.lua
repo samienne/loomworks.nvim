@@ -257,17 +257,24 @@ describe("a refused working copy that becomes valid loads again (§17.4)", funct
     local USER = { _meta = { version = 2 }, active_profile = "debug" }
 
     -- Test deps whose FileTracker records each tracker (its watched paths,
-    -- whether it was stopped) and lets a test deliver a change by hand.
-    local function setup_core(files)
+    -- whether it was stopped) and lets a test deliver a change by hand. Like
+    -- the real tracker, `watch` takes its baseline from a fresh read;
+    -- `hooks.before_watch` runs just before it (a change racing the watch).
+    local function setup_core(files, hooks)
+        hooks = hooks or {}
         local trackers = {}
         local deps = h.make_test_deps(files, {
             trust = trust,
             FileTracker = { new = function(o)
-                local t = { opts = o, paths = {}, stopped = false, paused = false }
-                function t:watch(p) self.paths[#self.paths + 1] = p end
+                local t = { opts = o, paths = {}, stopped = false, paused = false, seen = {} }
+                function t:watch(p)
+                    if hooks.before_watch then hooks.before_watch(p) end
+                    self.paths[#self.paths + 1] = p
+                    self.seen[p] = o.read_file and o.read_file(p)
+                end
                 function t:unwatch() end
                 function t:stop() self.stopped = true end
-                function t:content(p) return files[p] end
+                function t:content(p) return self.seen[p] end
                 function t:mark_written() end
                 function t:pause() self.paused = true end
                 function t:resume() self.paused = false end
@@ -350,6 +357,76 @@ describe("a refused working copy that becomes valid loads again (§17.4)", funct
         assert.are_not.equal(w, w2)
         core:setup({ root = "/other" }) -- another workspace (cwd change)
         assert.is_true(w2.stopped)
+        core:shutdown()
+    end)
+
+    it("a working copy that becomes valid while the watch starts loads (no change event)", function()
+        local files = {}
+        local signed = h.signed("user", USER)
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = (signed:gsub('"debug"', '"other"'))
+        local core, trackers = setup_core(files, { before_watch = function(p)
+            if p == UPATH then files["loomworks.user.json"] = signed end
+        end })
+        core:setup({ root = "/root" })
+        assert.is_nil(core:get_setup_error())
+        assert.is_not_nil(core:get_workspace())
+        assert.is_nil(core._refused_watch)
+        assert.is_true(trackers[1].stopped, "the refusal watch stopped")
+        core:shutdown()
+    end)
+
+    it("a refused cache starts no watch", function()
+        local files = {}
+        local cache_text = h.signed("cache", vim.json.decode(h.make_cache_json()))
+        trust._set_key_path(key_dir .. "/this-machine/trust.key") -- signed elsewhere
+        files["loomworks.json"] = h.make_config_json()
+        files["loomworks.user.json"] = h.signed("user", USER)
+        files["loomworks.cache.json"] = cache_text
+        local core, trackers = setup_core(files)
+        core:setup({ root = "/root" })
+        assert.equals("cache", core:get_setup_error().trust.kind)
+        for _, t in ipairs(trackers) do
+            for _, p in ipairs(t.paths) do
+                assert.is_falsy(p:find("loomworks.cache.json", 1, true), "no watch on the refused cache")
+            end
+        end
+        core:shutdown()
+    end)
+
+    it(":LoomworksTrust on another root never replaces the refused workspace", function()
+        local files = {}
+        local core = refused(files)
+        files["loomworks.user.json"] = h.signed("user", USER) -- valid under any root
+        local lw = require("loomworks")
+        local gc = lw._core()
+        local saved = { gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root }
+        local refusal = core:get_setup_error()
+        gc._deps, gc._workspace, gc._setup_error, gc._state =
+            core._deps, nil, refusal, "uninitialized"
+        local ok, res = pcall(lw.trust_user_prefs, "/other", {
+            confirm = function() error("no prompt for a valid file") end })
+        local ws, serr = gc._workspace, gc._setup_error
+        gc:shutdown()
+        gc._deps, gc._workspace, gc._setup_error, gc._state, gc._pending_root =
+            saved[1], saved[2], saved[3], saved[4], saved[5]
+        core:shutdown()
+        assert.is_true(ok, tostring(res))
+        assert.equals("valid", res)
+        assert.is_nil(ws, "no workspace was loaded for the other root")
+        assert.equals(refusal, serr)
+    end)
+
+    it("a valid change whose file is invalid again on disk is refused again", function()
+        local files = {}
+        local core, trackers, signed = refused(files)
+        local w = assert(watcher_of(trackers, UPATH))
+        -- The event carries a valid content, but the file was edited again.
+        w.opts.callback(UPATH, signed)
+        assert.is_nil(core:get_workspace())
+        assert.equals("invalid", core:get_setup_error().trust.status)
+        local w2 = assert(watcher_of(trackers, UPATH), "the file is watched again")
+        assert.are_not.equal(w, w2)
         core:shutdown()
     end)
 

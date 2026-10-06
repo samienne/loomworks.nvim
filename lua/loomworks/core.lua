@@ -529,25 +529,33 @@ end
 --- workspace again. A change that still does not verify is ignored, so an
 --- invalid file is never re-refused (and re-notified) in a loop. Only a host
 --- that tracks files itself keeps one (not the CLI, nor the daemon). Stopped
---- by the next `setup` and by `shutdown`.
+--- by the next `setup` and by `shutdown`. Only the working copy is watched
+--- (a refused cache is reset, not restored).
 --- @param setup_error table the refusal (`{ root, trust = { kind, path } }`)
 function Core:_watch_refused(setup_error)
     self:_stop_refused_watch()
     if self._deps.quiet_trust_errors or self._deps.manual_file_tracking then return end
     local t, root = setup_error.trust, setup_error.root
+    if t.kind ~= "user" then return end
     local tracker
+    local function reload_if_valid(content)
+        if self._refused_watch ~= tracker then return end
+        if not content or self._deps.trust.verify(t.kind, content) ~= "valid" then return end
+        self:_stop_refused_watch()
+        self:setup({ root = root })
+    end
     tracker = self._deps.FileTracker.new({
-        callback = function(_, content)
-            if self._refused_watch ~= tracker then return end
-            if not content or self._deps.trust.verify(t.kind, content) ~= "valid" then return end
-            self:_stop_refused_watch()
-            self:setup({ root = root })
-        end,
+        callback = function(_, content) reload_if_valid(content) end,
         schedule = self._deps.schedule,
         read_file = self._deps.io.read_file,
     })
     self._refused_watch = tracker
     tracker:watch(t.path)
+    -- The watch takes its baseline from a fresh read: a file that became
+    -- valid since the refusing read would never report a change, so check
+    -- that baseline now.
+    local seeded = tracker:content(t.path)
+    self._deps.schedule(function() reload_if_valid(seeded) end)
 end
 
 --- Stop the watch on a file refused for trust, if any.
