@@ -466,6 +466,28 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         }
     end
 
+    local data = M._assemble_parsed(root, config, user_content, cache_content)
+    -- Update cache hash from raw content
+    if data.cache._meta then
+        data.cache._meta.loomworks_hash = cache_mod.compute_hash(config_content or "")
+    end
+    data.user_trust = user_trust
+    data.cache_trust = cache_trust
+    -- Program-bearing fields removed from the shared layer (spec §17.6).
+    data.shared_ignored = shared_ignored
+    return data, nil
+end
+
+--- The part of `assemble` after the signatures were verified and the shared
+--- snapshot parsed: parse the working copy and the cache bodies and validate
+--- them. Shared with `assemble_snapshot` (the daemon's projection, §19.13), so
+--- a projection is built by the same deserializer as an on-disk load.
+--- @param root string
+--- @param config table parsed (and stripped) loomworks.json
+--- @param user_content string|nil verified user.json body
+--- @param cache_content string|nil verified cache body
+--- @return loomworks.WorkspaceData
+function M._assemble_parsed(root, config, user_content, cache_content)
     local user_data, user_version_mismatch, user_newer
     if user_content then
         user_data, user_version_mismatch, user_newer = user_mod.parse(user_content)
@@ -496,11 +518,6 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         cache_version_mismatch = false
     end
 
-    -- Update cache hash from raw content
-    if cache_data._meta then
-        cache_data._meta.loomworks_hash = cache_mod.compute_hash(config_content or "")
-    end
-
     -- Validate cache internal consistency
     local cache_consistent = true
     if not cache_version_mismatch then
@@ -527,11 +544,30 @@ function M.assemble(root, config_content, user_content, cache_content, opts)
         user_projects_invalid = user_projects_invalid,
         -- Trust status of the signed files: "valid" | "unsigned" | "invalid",
         -- nil when the file is absent (spec §17.4).
-        user_trust = user_trust,
-        cache_trust = cache_trust,
+        user_trust = nil,
+        cache_trust = nil,
         -- Program-bearing fields removed from the shared layer (spec §17.6).
-        shared_ignored = shared_ignored,
-    }, nil
+        shared_ignored = {},
+    }
+end
+
+--- Assemble workspace data from a daemon snapshot (spec §19.13) instead of
+--- files: `snap.config` is the published baseline as the daemon loaded it
+--- (parsed and stripped), `snap.user` / `snap.cache` the file-shaped working
+--- copy and cache tables. They go through the same parsing as file bodies
+--- (`_assemble_parsed`); nothing is verified (the wire is authenticated) and
+--- nothing is read from disk.
+--- @param root string
+--- @param snap table { config, user, cache, shared_ignored }
+--- @return loomworks.WorkspaceData
+function M.assemble_snapshot(root, snap)
+    local config = vim.deepcopy(snap.config or { projects = {} })
+    config.projects = config.projects or {}
+    local data = M._assemble_parsed(root, config,
+        snap.user and vim.json.encode(snap.user) or nil,
+        snap.cache and vim.json.encode(snap.cache) or nil)
+    data.shared_ignored = vim.deepcopy(snap.shared_ignored or {})
+    return data
 end
 
 -- ========================== Workspace class ==========================
@@ -566,6 +602,8 @@ end
 --- @field _tool_waiters function[]
 --- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
 --- @field _no_write string|nil set (the reason) when the runtime holding this workspace lost its lock (§19.2): the cache and the working copy are never saved again
+--- @field _projection boolean|nil a read-only projection of the workspace daemon's model (spec §19.13, daemon/snapshot.lua `project`); `_no_write` is set
+--- @field _index table|nil a projection's current-key → opaque-id index from its snapshot (§19.12)
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)

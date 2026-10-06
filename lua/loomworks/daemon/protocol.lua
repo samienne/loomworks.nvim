@@ -43,6 +43,11 @@ M.KIND = {
     clean = "clean",
     reset = "reset",
     task = "task",
+    -- the model (§19.13, §19.14): a scope snapshot for a client's
+    -- projection; a read-only query that probes the host in the client's
+    -- environment
+    snapshot = "snapshot",
+    query = "query",
     -- broadcasts (§19.11, §19.12): a committed write of a state file; the
     -- daemon was retired (observers disconnect)
     model_change = "model_change",

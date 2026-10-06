@@ -982,6 +982,27 @@ configuration units, attaching it to every profile with one of them
 (`RemoteTask.profiles`); `running.format` shows `--all` in the profile
 column.
 
+**Snapshot, projection and queries (spec §19.13, §19.14; protocol 10).**
+`daemon/snapshot.lua` holds both sides. Daemon: `build(ws, scope, reg)`
+serializes the live model with its own serializers — `config` is
+`Workspace._shared_baseline`, `user` `Workspace:_serialize_user()`, `cache`
+`Workspace:_serialize_cache()` (each `_meta`-stamped as a save stamps it) —
+plus `_tools_by_type`, `_shared_ignored` and the key → id `index` from the
+service's session-local `registry()` (weak-keyed object → id, §19.12);
+`header(ws, err)` is the welcome's model fields (`Service:header`, from the
+host's optional `error_state()`; `Server:_authed` merges them into
+`welcome.header`). `QUERIES` is the host-probing registry (`tools`:
+`merge.detect_tools` over the live model, unassigned). `Service:on_snapshot` /
+`on_query` share `_on_model_request`: env validation, then a model segment
+that runs `live(ctx)` and replies (no task, no lock). Client: `fetch(conn)` /
+`query(conn, name, args)` work on a pipe or loopback session; `project(root,
+snap)` builds the read-only projection on a private `Core.new` (no
+`on_written`, no target scan, detection answered from the snapshot) through
+`workspace.assemble_snapshot` — `assemble` split at `_assemble_parsed`, so
+the user and cache tables are parsed exactly as file bodies — then
+`Workspace.new` + `remerge`, with `_no_write` set first so it never saves
+and no file tracker.
+
 **Step 5e: loopback (spec §19.1 "Loopback during the transition").**
 `daemon/loopback.lua` `pair()` returns two connected in-memory
 ends with the pipe methods the server, client and task streams call

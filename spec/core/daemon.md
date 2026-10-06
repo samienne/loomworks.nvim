@@ -792,7 +792,9 @@ plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
 §19.15, §19.16; protocol version 8: 7 plus the routed `clean` request,
 §19.15; protocol version 9: 8 plus the routed `reset`
-request and its `confirm` outcome, §19.15); the rest of the
+request and its `confirm` outcome, §19.15; protocol version 10: 9 plus
+the `snapshot` and `query` requests and the model fields of the `welcome`
+header, §19.13, §19.14); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -1018,7 +1020,11 @@ optimization.
 
 ### 19.13 Snapshot and projection
 
-*Status: #88.*
+*Status: master for the `snapshot` request, the projection builder and the
+`welcome` header (`daemon/snapshot.lua`, `daemon/service.lua`
+`on_snapshot`, `workspace.assemble_snapshot`; protocol 10); no command reads
+a projection yet. Re-pulls on `model_change` and the view-scoped model
+future.*
 
 The daemon is model-authoritative; a client keeps a **projection** for
 rendering and integration. The client builds it with the **same deserializer**
@@ -1034,9 +1040,46 @@ broadcasts, so a status-line redraw never queries); a **view-scoped model**
 it on close); and **transient queries** (pickers and commands query, act,
 discard).
 
+**`snapshot` request.** `snapshot { scope, env }`: `scope` is `all` (the
+default), `config`, `user` or `cache`; `env` is the requesting client's
+environment, as for a routed operation (§19.15), in which the daemon loads
+or re-validates its workspace before answering. The reply is `ok` with
+`outcome = "ok"` and:
+
+- `config` (scope `config`): the published baseline as the daemon loaded it
+  from `loomworks.json` (parsed, program-bearing fields stripped, §17.6);
+- `user` (scope `user`): the working copy as the model serializes it for
+  `loomworks.user.json`, with its schema `_meta`;
+- `cache` (scope `cache`): the cache as the model serializes it for
+  `loomworks.cache.json`, with its schema `_meta`;
+- always: `tools` (the resolved toolchain detection the model holds),
+  `shared_ignored` (the stripped program-bearing fields, §17.6), `index`
+  (the current-key → id index of §19.12: `projects`, `config_sets`,
+  `profiles` and `config_units`, each key → id), `seq` and
+  `session_generation`.
+
+A scope the request does not name is absent. A workspace the daemon cannot
+load is answered `outcome = "refused"` (`message`), and a request it does not
+carry (stopping, malformed, another environment while a build runs)
+`outcome = "declined"` (`reason`), as for a routed operation. A snapshot takes
+no lock, starts no task and writes nothing. A client builds its projection
+from a snapshot of scope `all` through the deserializer of the on-disk load,
+fed these tables instead of the files' bytes (their signatures are not
+re-verified: the wire is authenticated). A projection is read-only: it never
+saves the working copy or the cache, and it watches no files.
+
+**Header.** `welcome.header` carries `root`, `pid`, `lw_version` and
+`session_generation`, plus the model's `state`: `loaded` with the
+workspace's `name` and `active_profile` (the active profile's key, absent when
+none); `error` or `refused` (a trust, newer-schema or journal refusal) with
+the load failure's `error` message; or `unloaded` before the daemon loaded the
+workspace. Sending `welcome` never loads the workspace.
+
 ### 19.14 Commands
 
-*Status: #88 (mutation commands); the set of commands grows per §19.19.*
+*Status: #88 (mutation commands); the set of commands grows per §19.19.
+Master for the `query` request with the `tools` query (`daemon/snapshot.lua`
+`QUERIES`, `daemon/service.lua` `on_query`; protocol 10).*
 
 A mutation is a **command** the daemon applies to its model with the
 operation's locks (§19.3) and persists. Commands are FIFO-serialized: a
@@ -1044,7 +1087,20 @@ command's `model_change` broadcast precedes any later command's and precedes
 its own acknowledgement, which carries only the outcome (`ok`, `rolled-back`,
 `partially-applied`) or an error. Wire arguments (semantic keys) are resolved
 to domain objects at the serialization boundary; domain logic stays
-reference-based. Read-only queries run on the client's projection.
+reference-based.
+
+Read-only queries run on the client's projection, except queries that probe
+the host (health, tools, sdk detect, profile query), which are `query {name,
+args, env}` requests run in the client's environment. `name` names a query of
+the daemon's registry, `args` (an object, default empty) its arguments, and
+`env` the requesting client's environment, which the query runs in (a model
+segment, §19.15). The reply is `ok` with `outcome = "ok"` and `result` (the
+query's JSON object); `outcome = "refused"` (`message`) for an unknown name, a
+failed query or a workspace the daemon cannot load; `outcome = "declined"`
+(`reason`) as for `snapshot`. A query is read-only: it changes neither the
+model nor any file. The registry starts with `tools` (the toolchains each
+module type detects in the client's environment: `result.tools`, module type
+→ list of `{ key, label, tool_data }`).
 
 ### 19.15 Task stream and delegated operations
 

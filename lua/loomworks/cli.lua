@@ -8322,6 +8322,15 @@ function M._daemon_build_host()
       if ws then vim.wait(ms, function() return ws._tool_state == "scanned" end, 25) end
     end,
     setup_error = function() return M._setup_failure(core()).message end,
+    -- The failed load the welcome header reports (spec §19.13), nil when
+    -- none: `refused` for a trust, newer-schema or journal refusal.
+    error_state = function()
+      local c = core()
+      local e = c.get_setup_error and c:get_setup_error()
+      if not e then return nil end
+      return { message = M._setup_failure(c).message,
+        refused = (e.trust or e.newer or e.journal) and true or nil }
+    end,
     unknown_target_hint = function(ws, step, targets) return M._unknown_target_hint(ws, step, targets) end,
   }
 end
