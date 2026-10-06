@@ -2230,7 +2230,9 @@ from (spec §17, `lw help trust`):
   working copy written by hand, by an earlier loomworks, or copied from
   another machine is **refused** until you review it: `lw trust` (or `:LoomworksTrust`
   / `T` on the status page) lists the program settings it contains and re-signs
-  it on confirmation; `lw trust --discard` (or `U`) deletes it instead. After
+  it on confirmation; `lw trust --discard` (or `U`) deletes it instead. A
+  refused working copy that becomes valid again (restored, or trusted with
+  `lw trust` from a terminal) loads in the editor on its own. After
   upgrading, each existing workspace asks for this once. The signature does not
   bind the directory: a working copy this machine signed stays trusted when you
   move or copy it to another workspace on this machine (or seed a git

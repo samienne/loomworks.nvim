@@ -365,6 +365,13 @@ function M.trust_user_prefs(root, opts)
     if review.status == "valid" then
         vim.notify("loomworks: .nvim/loomworks.user.json is already trusted (signed by this machine)",
             vim.log.levels.INFO)
+        -- Valid again since a load refused it (restored, or re-signed by
+        -- `lw trust`): load the workspace now (spec §17.4).
+        local norm = core._deps.normalize
+        if err and err.trust and err.trust.kind == "user" and err.root
+            and norm(err.root) == norm(root) then
+            core:setup({ root = root })
+        end
         return "valid"
     end
     local prog, other = require("loomworks.program_fields").review(review.data, require("loomworks.modules"))
