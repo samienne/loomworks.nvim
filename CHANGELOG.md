@@ -261,6 +261,20 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- The editor and `lw` no longer restart or retire each other's workspace
+  daemon over and over when the same `lw` binary is reached through
+  different spellings of its path (`lw.exe` and `lw.EXE` on Windows, or a
+  link): a release-less build is identified by the executable's resolved
+  path. (#147)
+- A command that finds an idle workspace daemon of another version now
+  restarts it even while the editor is watching it, instead of treating it as
+  busy and running without it. (#147)
+- After the workspace daemon it watches retires for a version change and
+  exits, the editor starts one new daemon itself and reconnects, instead of
+  waiting for a successor forever. A daemon stopped with `lw daemon stop` is
+  still never restarted by the editor. (#147)
+- The daemon log records each client that connects and disconnects (CLI or
+  editor observer, and its lw version). (#147)
 - The editor loads a workspace refused for an untrusted
   `.nvim/loomworks.user.json` as soon as that file is valid again (restored,
   or trusted with `lw trust`), and `:LoomworksTrust` on an already-trusted

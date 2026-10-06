@@ -411,6 +411,12 @@ function Server:model_changed()
     end
 end
 
+--- "cli client" / "editor observer": who a connection is, for the log.
+function Server:_peer_text(conn)
+    local p = conn.peer or {}
+    return tostring(p.client or "unknown") .. " " .. (conn.observer and "observer" or "client")
+end
+
 function Server:_close(conn, why)
     if conn.closed then return end
     conn.closed = true
@@ -422,6 +428,7 @@ function Server:_close(conn, why)
     if conn.authed and self.service then pcall(self.service.on_conn_closed, self.service, conn) end
     if conn.authed then
         self.n_clients = self.n_clients - 1
+        self:log("%s disconnected (%d client(s))", self:_peer_text(conn), self.n_clients)
         if self.n_clients == 0 then self.idle_since = os.time() end
         self:_handle_changed()
         self:_maybe_retire()
@@ -500,6 +507,8 @@ function Server:_handshake(conn, msg)
         conn.auth_timer = nil
         self.n_clients = self.n_clients + 1
         self.last_request = os.time()
+        self:log("%s connected (lw %s, %d client(s))", self:_peer_text(conn), tostring(conn.peer and conn.peer.lw_version),
+            self.n_clients)
         self:_send(conn, {
             kind = K.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
             retiring = self.retiring,

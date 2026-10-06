@@ -88,8 +88,15 @@ end
 local function exe_fingerprint()
     local ok, exe = pcall(uv().exepath)
     if not ok or type(exe) ~= "string" then return "unknown" end
+    -- The executable itself, not the spelling that reached it: the CLI
+    -- launches from its own `exepath` (`…\lw.exe`) while the editor finds
+    -- `lw` on PATH (`…\lw.EXE`, via PATHEXT), or through a link; the same
+    -- binary must fingerprint the same (§19.9).
+    local real = uv().fs_realpath(exe)
+    local id = (type(real) == "string" and real or exe):gsub("\\", "/")
+    if vim.fn.has("win32") == 1 then id = id:lower() end
     local st = uv().fs_stat(exe)
-    return vim.fn.sha256(string.format("%s:%d:%d", exe:gsub("\\", "/"), st and st.size or 0,
+    return vim.fn.sha256(string.format("%s:%d:%d", id, st and st.size or 0,
         st and st.mtime and st.mtime.sec or 0)):sub(1, 16)
 end
 

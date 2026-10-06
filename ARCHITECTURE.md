@@ -814,8 +814,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   (load / `:LoomworksDaemon connect`) connects to a live daemon or launches
   one through `launch.spawn(root, { argv = { <host binary> } })` without a
   blocking readiness wait; a uv timer (`WATCH_MS`) watches the handle and
-  connects when a live daemon appears — the only way back after a drop (never
-  a relaunch). `client.connect` with `client = "editor"`, `role =
+  connects when a live daemon appears — the only way back after a drop, except
+  that after a `retiring` drop (`_relaunch`) the watch launches one successor
+  once the retired daemon has exited and none is live (§19.16). `client.connect` with `client = "editor"`, `role =
   "observer"`, `on_message` / `on_close` (both only `vim.schedule`);
   `version.observer_compatible`; daemons `retiring` / incompatible / untrusted
   go into `skip` (pid:start). Keepalive `ping` timer. `model_change` (seq /

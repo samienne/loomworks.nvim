@@ -101,4 +101,30 @@ describe("version.identity of a development source", function()
         version._set_identity(nil)
         assert.equals(a, version.identity())
     end)
+
+    it("a fused executable has one identity whatever path spelling reaches it (lw.exe / lw.EXE / a link)", function()
+        local dir = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(dir, "p")
+        local exe = dir .. "/lw.exe"
+        write(exe, "exe")
+        package.loaded.luvi = { bundle = { base = exe } }
+        version.lua_root = function() return nil end
+        local uv = vim.uv or vim.loop
+        local spellings = { exe, (exe:gsub("/", "\\")) }
+        if vim.fn.has("win32") == 1 then spellings[#spellings + 1] = dir .. "/lw.EXE" end
+        local link = dir .. "/link-lw.exe"
+        if uv.fs_symlink(exe, link) then spellings[#spellings + 1] = link end
+        local saved_exepath = uv.exepath
+        local ids = {}
+        local ok, err = pcall(function()
+            for _, p in ipairs(spellings) do
+                uv.exepath = function() return p end
+                version._set_identity(nil)
+                ids[#ids + 1] = version.identity()
+            end
+        end)
+        uv.exepath = saved_exepath
+        assert(ok, err)
+        for i = 2, #ids do assert.equals(ids[1], ids[i]) end
+    end)
 end)

@@ -8,8 +8,10 @@
 ---
 ---   * resolves a host binary (loomworks.daemon.host_binary) and launches
 ---     `<binary> daemon run --root <root>` only when no daemon is live on
----     workspace load or on an explicit `:LoomworksDaemon connect` — never
----     after a connection dropped (`lw daemon stop` must stop it);
+---     workspace load or on an explicit `:LoomworksDaemon connect`, and once
+---     after the observed daemon retired (a version change) and exited with
+---     no successor — never after any other drop (`lw daemon stop` must stop
+---     it);
 ---   * watches the handle (WATCH_MS) and connects to a live daemon whose
 ---     protocol equals ours and whose schemas are not newer (the host
 ---     version may differ), as `client = "editor"`, `role = "observer"`, and
@@ -68,6 +70,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _keepalive userdata|nil the keepalive ping timer
 --- @field _dropped boolean|nil the last connection dropped (keeps its note while waiting)
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
+--- @field _relaunch boolean|nil the observed daemon retired: launch one successor once it has exited
 --- @field opts table the attach options (test seams, see `attach`)
 --- @field watch_ms integer handle-watch interval
 --- @field keepalive_ms integer keepalive ping interval
@@ -139,8 +142,9 @@ function Observer:_inspect()
 end
 
 --- Start observing: connect to a live daemon, or launch one (spec §19.16:
---- only here — on workspace load, or `explicit` from `:LoomworksDaemon
---- connect` — never after a drop), then keep watching the handle.
+--- here — on workspace load, or `explicit` from `:LoomworksDaemon connect` —
+--- and once after a retirement (`_on_watch`), never after another drop), then
+--- keep watching the handle.
 --- @param explicit boolean
 function Observer:start(explicit)
     if self.state == "stopped" then return end
@@ -247,6 +251,12 @@ function Observer:_on_watch()
         if self.skip[daemon_id(h.pid, h.start_time)] then return end
         return self:_connect(st)
     end
+    -- The daemon retired for a version change and has exited, and nothing
+    -- took its place: launch one successor ourselves — once (§19.16).
+    if self._relaunch and (st.kind == "none" or st.kind == "stale" or st.kind == "unreadable") then
+        self._relaunch = nil
+        return self:_launch()
+    end
     if self.state ~= "launching" and self.state ~= "no-binary" then
         local note = M.state_note(st)
         if self.state ~= "waiting" or not self._dropped then self:_set("waiting", note) end
@@ -301,6 +311,7 @@ function Observer:_on_connected(target, conn, err)
     end
     if conn.welcome and conn.welcome.retiring then
         self.skip[daemon_id(target.pid, target.start_time)] = true
+        self._relaunch = true
         conn.on_close = nil
         conn:close()
         return self:_set("waiting", "the workspace daemon (pid " .. tostring(target.pid)
@@ -309,6 +320,7 @@ function Observer:_on_connected(target, conn, err)
     self.conn = conn
     self._child = nil
     self._dropped = nil
+    self._relaunch = nil
     self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version }
     self.generation = ch.session_generation
     self.seq = tonumber(conn.welcome and conn.welcome.seq) or 0
@@ -376,7 +388,8 @@ function Observer:_stop_timer(field)
 end
 
 --- The connection closed (the daemon stopped, crashed, retired, or dropped
---- this observer). Never relaunch: watch for the next live daemon.
+--- this observer). Watch for the next live daemon; relaunch only after a
+--- retirement (once, when it has exited), never after a stop (§19.16).
 function Observer:_on_closed(c)
     if c ~= self.conn then return end
     self.conn = nil
@@ -387,8 +400,10 @@ function Observer:_on_closed(c)
     self._dropped = true
     if self._retired_note then
         self._retired_note = nil
+        self._relaunch = true
         return self:_set("waiting", "the workspace daemon is retiring — waiting for its successor")
     end
+    self._relaunch = nil
     self:_set("waiting", "the workspace daemon disconnected — waiting for it")
 end
 
