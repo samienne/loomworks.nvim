@@ -91,8 +91,8 @@ describe("conformance engine", function()
         assert.truthy(err:find("neither a transport code", 1, true), err)
         local sub = { send = J('{"kind":"call","req_id":1,"object":"/","iface":"loomworks.Root","v":1,"method":"subscribe","args":{"object":"/tasks","iface":"loomworks.Tasks","v":1}}') }
         ok, err = run({ sub, { expect = { kind = "ok", req_id = 1 } }, { expect = { kind = "signal" } } }, {
-            J('{"kind":"ok","req_id":1,"result":{"sub_id":1,"seq":0}}'),
-            J('{"kind":"signal","object":"/tasks","iface":"loomworks.Tasks","v":1,"name":"ended","sub_id":1,"seq":2,"args":{"task_id":1,"exit_code":0}}'),
+            J('{"kind":"ok","req_id":1,"result":{"sub_id":"g.1","seq":0}}'),
+            J('{"kind":"signal","object":"/tasks","iface":"loomworks.Tasks","v":1,"name":"ended","sub_id":"g.1","seq":2,"args":{"task_id":"g.1","exit_code":0}}'),
         })
         assert.is_false(ok)
         assert.truthy(err:find("gap", 1, true), err)
@@ -112,23 +112,115 @@ describe("conformance engine", function()
                 steps = { build, { expect = { kind = "ok", req_id = 1 } } } }, canned(frames),
                 { timeout_ms = 10, settle_ms = 0 })
         end
-        local accepted = J('{"kind":"ok","req_id":1,"result":{"outcome":"accepted","task_id":4}}')
-        local start = J('{"kind":"task","task_id":4,"phase":"start","meta":{"object":"/build","iface":"loomworks.Build","v":1,"method":"build","kind":"build"}}')
-        local ok, err = run({ accepted, start, J('{"kind":"task","task_id":4,"phase":"done","exit_code":0,"result":{"exit_code":0}}') })
+        local accepted = J('{"kind":"ok","req_id":1,"result":{"outcome":"accepted","task_id":"g.4"}}')
+        local start = J('{"kind":"task","task_id":"g.4","phase":"start","meta":{"object":"/build","iface":"loomworks.Build","v":1,"method":"build","kind":"build"}}')
+        local ok, err = run({ accepted, start, J('{"kind":"task","task_id":"g.4","phase":"done","exit_code":0,"result":{"exit_code":0}}') })
         assert.is_true(ok, err)
-        ok, err = run({ accepted, start, J('{"kind":"task","task_id":4,"phase":"done","exit_code":0}') })
+        ok, err = run({ accepted, start, J('{"kind":"task","task_id":"g.4","phase":"done","exit_code":0}') })
         assert.is_false(ok)
         assert.truthy(err:find("done without a result", 1, true), err)
-        ok, err = run({ accepted, J('{"kind":"task","task_id":4,"phase":"start","meta":{"kind":"build"}}') })
+        ok, err = run({ accepted, J('{"kind":"task","task_id":"g.4","phase":"start","meta":{"kind":"build"}}') })
         assert.is_false(ok)
         assert.truthy(err:find("does not name its method", 1, true), err)
-        ok, err = run({ accepted, start, J('{"kind":"task","task_id":4,"phase":"done","exit_code":0,"result":{"exit_code":"zero"}}') })
+        ok, err = run({ accepted, start, J('{"kind":"task","task_id":"g.4","phase":"done","exit_code":0,"result":{"exit_code":"zero"}}') })
         assert.is_false(ok)
         assert.truthy(err:find("result", 1, true), err)
         -- A task no interface call started (protocol 10) is only matched.
         ok, err = run({ J('{"kind":"ok","req_id":1,"result":{"outcome":"refused","message":"m","exit_code":1}}'),
-            J('{"kind":"task","task_id":9,"phase":"done","exit_code":0}') })
+            J('{"kind":"task","task_id":"g.9","phase":"start","meta":{"kind":"build"}}'),
+            J('{"kind":"task","task_id":"g.9","phase":"done","exit_code":0}') })
         assert.is_true(ok, err)
+    end)
+
+    it("orders every task's frames: start first, nothing after done", function()
+        local function run(frames)
+            return engine.run_case({ name = "t", handshake = false, allow = { { kind = "task" } }, steps = {} },
+                canned(frames), { timeout_ms = 10, settle_ms = 0 })
+        end
+        local start = J('{"kind":"task","task_id":7,"phase":"start","meta":{"kind":"build"}}')
+        local line = J('{"kind":"task","task_id":7,"phase":"line","stream":"out","text":"x"}')
+        local done = J('{"kind":"task","task_id":7,"phase":"done","exit_code":0}')
+        local ok, err = run({ start, line, done })
+        assert.is_true(ok, err)
+        ok, err = run({ line, start, done })
+        assert.is_false(ok)
+        assert.truthy(err:find("before its start", 1, true), err)
+        ok, err = run({ start, done, line })
+        assert.is_false(ok)
+        assert.truthy(err:find("after its done", 1, true), err)
+        ok, err = run({ start, start })
+        assert.is_false(ok)
+        assert.truthy(err:find("second start", 1, true), err)
+        -- The same rule for an interface method's task.
+        local build = { send = J('{"kind":"call","req_id":1,"object":"/build","iface":"loomworks.Build","v":1,"method":"build","args":{},"env":{}}') }
+        ok, err = engine.run_case({ name = "t", handshake = false, allow = { { kind = "task" } },
+            steps = { build, { expect = { kind = "ok", req_id = 1 } } } }, canned({
+                J('{"kind":"ok","req_id":1,"result":{"outcome":"accepted","task_id":"g.4"}}'),
+                J('{"kind":"task","task_id":"g.4","phase":"start","meta":{"object":"/build","iface":"loomworks.Build","v":1,"method":"build","kind":"build"}}'),
+                J('{"kind":"task","task_id":"g.4","phase":"done","exit_code":0,"result":{"exit_code":0}}'),
+                J('{"kind":"task","task_id":"g.4","phase":"progress","pct":5}'),
+            }), { timeout_ms = 10, settle_ms = 0 })
+        assert.is_false(ok)
+        assert.truthy(err:find("after its done", 1, true), err)
+    end)
+
+    it("fails a signal after its unsubscribe and a signal of another session generation", function()
+        local sub = { send = J('{"kind":"call","req_id":1,"object":"/","iface":"loomworks.Root","v":1,"method":"subscribe","args":{"object":"/tasks","iface":"loomworks.Tasks","v":1}}') }
+        local unsub = { send = J('{"kind":"call","req_id":2,"object":"/","iface":"loomworks.Root","v":1,"method":"unsubscribe","args":{"sub_id":"g.1"}}') }
+        local ok, err = engine.run_case({ name = "t", handshake = false, steps = { sub, { expect = { kind = "ok", req_id = 1 } },
+            unsub, { expect = { kind = "ok", req_id = 2 } }, { expect = { kind = "signal" } } } }, canned({
+                J('{"kind":"ok","req_id":1,"result":{"sub_id":"g.1","seq":0}}'),
+                J('{"kind":"ok","req_id":2,"result":{}}'),
+                J('{"kind":"signal","object":"/tasks","iface":"loomworks.Tasks","v":1,"name":"ended","sub_id":"g.1","seq":1,"args":{"task_id":"g.1","exit_code":0}}'),
+            }), { timeout_ms = 10, settle_ms = 0 })
+        assert.is_false(ok)
+        assert.truthy(err:find("after its unsubscribe", 1, true), err)
+        local wsub = { send = J('{"kind":"call","req_id":1,"object":"/","iface":"loomworks.Root","v":1,"method":"subscribe","args":{"object":"/workspace","iface":"loomworks.Workspace","v":1}}') }
+        ok, err = engine.run_case({ name = "t", handshake = false, steps = { wsub, { expect = { kind = "ok", req_id = 1 } },
+            { expect = { kind = "signal" } } } }, canned({
+                J('{"kind":"ok","req_id":1,"result":{"sub_id":"g.1","seq":0}}'),
+                J('{"kind":"signal","object":"/workspace","iface":"loomworks.Workspace","v":1,"name":"changed","sub_id":"g.1","seq":1,"args":{"seq":1,"session_generation":99}}'),
+            }), { timeout_ms = 10, settle_ms = 0, vars = { welcome = { header = { session_generation = 42 } } } })
+        assert.is_false(ok)
+        assert.truthy(err:find("session generation", 1, true), err)
+    end)
+
+    it("an explicit null is present: $absent fails on it, $any accepts it; {} and [] never match each other", function()
+        assert.is_false((engine.match(J('{"a":{"$absent":true}}'), J('{"a":null}'), {})))
+        assert.is_true((engine.match(J('{"a":{"$any":true}}'), J('{"a":null}'), {})))
+        assert.is_true((engine.match(J('{"a":{"$absent":true}}'), J('{}'), {})))
+        assert.is_false((engine.match(J('{"a":{"$any":true}}'), J('{}'), {})))
+        assert.is_false((engine.match(J('{"a":[]}'), J('{"a":{}}'), {})))
+        assert.is_false((engine.match(J('{"a":{}}'), J('{"a":[]}'), {})))
+        assert.is_true((engine.match(J('{"a":[]}'), J('{"a":[]}'), {})))
+        assert.is_true((engine.match(J('{"a":{}}'), J('{"a":{"b":1}}'), {})))
+    end)
+
+    it("validates a protocol-10 reply against its v0 shape", function()
+        local function run(frames, hello_protocol)
+            local steps = {}
+            if hello_protocol then
+                steps[#steps + 1] = { send = { kind = "hello", protocol = hello_protocol, nonce = "0" } }
+            end
+            steps[#steps + 1] = { send = J('{"kind":"build","req_id":1,"args":{}}') }
+            steps[#steps + 1] = { expect = { kind = "ok", req_id = 1 } }
+            return engine.run_case({ name = "t", handshake = false, steps = steps }, canned(frames),
+                { timeout_ms = 10, settle_ms = 0 })
+        end
+        local ok, err = run({ J('{"kind":"ok","req_id":1,"outcome":"accepted","task_id":3,"profile_key":"dev"}') })
+        assert.is_true(ok, err)
+        ok, err = run({ J('{"kind":"ok","req_id":1,"task_id":3}') })
+        assert.is_false(ok)
+        assert.truthy(err:find("v0 build reply", 1, true), err)
+        ok, err = run({ J('{"kind":"ok","req_id":1,"outcome":"accepted","task_id":"g.3"}') }, 10)
+        assert.is_false(ok)
+        assert.truthy(err:find("not an integer", 1, true), err)
+        ok, err = run({ J('{"kind":"ok","req_id":1,"outcome":"accepted","task_id":3}') }, 11)
+        assert.is_false(ok)
+        assert.truthy(err:find("not a string", 1, true), err)
+        ok, err = run({ J('{"kind":"error","req_id":1,"error":{"code":"x","message":"y"}}') })
+        assert.is_false(ok)
+        assert.truthy(err:find("non-string error", 1, true), err)
     end)
 end)
 

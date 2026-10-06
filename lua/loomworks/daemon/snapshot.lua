@@ -38,15 +38,21 @@ M.READ_ONLY = "a read-only projection of the workspace daemon's model (spec §19
 --- once, never reused within the session; weak keys, so a dropped object
 --- frees its entry (its id is still never handed out again). An id is a
 --- string on the wire (loomworks.Common/1 `Id`): opaque to clients, which
---- only compare it and send it back.
+--- only compare it and send it back. It carries the session generation
+--- (`protocol.session_id`), so an id of an earlier session never resolves
+--- in this one: it is a stale reference, refused (§19.20 "Errors and domain
+--- results").
 --- @field next integer the last id handed out
+--- @field generation integer|string|nil the session generation ids carry
 --- @field by_obj table<table, string> object → id (weak keys)
 local Registry = {}
 Registry.__index = Registry
 
+--- @param generation? integer|string the session generation the ids carry
 --- @return loomworks.daemon.IdRegistry
-function M.registry()
-    return setmetatable({ next = 0, by_obj = setmetatable({}, { __mode = "k" }) }, Registry)
+function M.registry(generation)
+    return setmetatable({ next = 0, generation = generation, by_obj = setmetatable({}, { __mode = "k" }) },
+        Registry)
 end
 
 --- The object's id, assigned on first sight.
@@ -56,7 +62,7 @@ function Registry:id(obj)
     local id = self.by_obj[obj]
     if not id then
         self.next = self.next + 1
-        id = tostring(self.next)
+        id = require("loomworks.daemon.protocol").session_id(self.generation, self.next)
         self.by_obj[obj] = id
     end
     return id
@@ -68,6 +74,7 @@ end
 --- @param candidates table[]|nil
 --- @return table|nil
 function Registry:find(id, candidates)
+    if type(id) ~= "string" then return nil end
     for _, obj in pairs(candidates or {}) do
         if not obj._removed and self.by_obj[obj] == id then return obj end
     end

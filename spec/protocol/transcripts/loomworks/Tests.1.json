@@ -20,7 +20,7 @@
         } },
         { "expect": {
             "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0,
-            "result": { "exit_code": 0, "steps": 0, "failed": [], "junit": [] }
+            "result": { "exit_code": 0, "steps": [], "junit": [], "failed": { "$absent": true } }
         }, "timeout_ms": 120000 }
       ]
     },

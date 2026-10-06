@@ -85,7 +85,8 @@ end
 --- @field fail fun(e: loomworks.proto.ErrorObject) fail an ASYNC call
 
 --- @class loomworks.daemon.Subscription
---- @field id integer
+--- @field id string the opaque, session-scoped `sub_id` (protocol.session_id)
+--- @field n integer the per-session counter (the subscriptions' order)
 --- @field conn table
 --- @field object string
 --- @field iface string
@@ -98,7 +99,7 @@ end
 --- @field objects table<string, { path: string, owner: string, ifaces: table<string, table<integer, loomworks.daemon.MountedInterface>> }>
 --- @field docs loomworks.proto.DocumentSet
 --- @field types table<string, table<integer, { doc: table, rel: string }>> types-only documents
---- @field subs table<integer, loomworks.daemon.Subscription>
+--- @field subs table<string, loomworks.daemon.Subscription> by `sub_id`
 --- @field seq table<table, table<string, integer>> per connection, per object: the last `seq` sent
 --- @field validate_out boolean validate results and signals (development builds and tests)
 local Registry = {}
@@ -219,6 +220,14 @@ function Registry:unmount(path, name, v)
         self.objects[path] = nil
         self:root_signal("objects_changed", { added = {}, removed = { path } })
     end
+end
+
+--- The subscriptions in the order they were made.
+local function subs_in_order(subs)
+    local list = {}
+    for _, sub in pairs(subs) do list[#list + 1] = sub end
+    table.sort(list, function(a, b) return a.n < b.n end)
+    return list
 end
 
 local function sorted_keys(t)
@@ -343,7 +352,11 @@ function Registry:call(conn, msg)
             local what = string.format("%s/%d.%s result does not match its schema: %s", msg.iface, msg.v,
                 msg.method, tostring(rverr))
             self:_log("%s", what)
-            if self.validate_out then return fail(envelope.err(ERR.internal, what)) end
+            -- Development builds and tests make a non-mutating method's bad
+            -- result an error. A mutating method's reply is sent as it is:
+            -- it may say what already started (an accepted task), and an
+            -- error would let the client run the operation a second time.
+            if self.validate_out and not mdoc.mutates then return fail(envelope.err(ERR.internal, what)) end
         end
         send(envelope.ok(req_id, result))
     end
@@ -407,9 +420,8 @@ function Registry:emit(object, iface, v, name, args, accept)
         end
     end
     local n = 0
-    for _, id in ipairs(sorted_keys(self.subs)) do
-        local s = self.subs[id]
-        if s and s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
+    for _, s in ipairs(subs_in_order(self.subs)) do
+        if s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
             and not s.conn.closed and (not accept or accept(s.args)) then
             self.server:_send(s.conn,
                 envelope.signal(object, iface, v, name, args, s.id, self:_next_seq(s.conn, object)))
@@ -457,8 +469,8 @@ end
 --- @return loomworks.daemon.Subscription[]
 function Registry:subscriptions_of(conn)
     local out = {}
-    for _, id in ipairs(sorted_keys(self.subs)) do
-        if self.subs[id].conn == conn then out[#out + 1] = self.subs[id] end
+    for _, s in ipairs(subs_in_order(self.subs)) do
+        if s.conn == conn then out[#out + 1] = s end
     end
     return out
 end
@@ -546,7 +558,8 @@ function M.root_impl()
             if declared[s].initial then want_initial = true end
         end
         reg._next_sub = reg._next_sub + 1
-        local sub = { id = reg._next_sub, conn = ctx.conn, object = args.object, iface = args.iface,
+        local sub = { id = require("loomworks.daemon.protocol").session_id(ctx.server.generation, reg._next_sub),
+            n = reg._next_sub, conn = ctx.conn, object = args.object, iface = args.iface,
             v = args.v, signals = set, args = sub_args }
         reg.subs[sub.id] = sub
         local result = { sub_id = sub.id, seq = reg:last_seq(ctx.conn, args.object) }

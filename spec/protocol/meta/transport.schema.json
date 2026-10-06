@@ -16,6 +16,16 @@
       }
     },
     "frames": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } },
+    "v0": {
+      "description": "The protocol-10 reply shapes, by request kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "replies": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } },
+        "$defs": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } }
+      }
+    },
     "$defs": { "type": "object", "additionalProperties": { "$ref": "interface.schema.json#/$defs/Schema" } }
   }
 }

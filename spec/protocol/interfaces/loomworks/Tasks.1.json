@@ -23,7 +23,7 @@
         "type": "object",
         "required": ["task_id"],
         "additionalProperties": false,
-        "properties": { "task_id": { "type": "integer", "minimum": 1 } }
+        "properties": { "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" } }
       },
       "result": {
         "oneOf": [
@@ -42,7 +42,7 @@
   },
   "signals": {
     "started": {
-      "description": "A task started (its start frame follows on the task stream).",
+      "description": "A task started (after its start frame on the task stream).",
       "args": {
         "type": "object",
         "required": ["task"],
@@ -55,7 +55,7 @@
         "type": "object",
         "required": ["task_id", "exit_code"],
         "properties": {
-          "task_id": { "type": "integer" },
+          "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
           "exit_code": { "type": "integer" },
           "error": { "description": "The refusal or failure the owner prints as lw: <error>.", "type": "string" }
         }
@@ -66,7 +66,7 @@
     "description": "Optionally only one task's signals.",
     "type": "object",
     "additionalProperties": false,
-    "properties": { "task_id": { "type": "integer", "minimum": 1 } }
+    "properties": { "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" } }
   },
   "$defs": {
     "TaskInfo": {
@@ -74,7 +74,7 @@
       "type": "object",
       "required": ["task_id"],
       "properties": {
-        "task_id": { "type": "integer" },
+        "task_id": { "$ref": "loomworks.Common/1#/$defs/TaskId" },
         "name": { "type": "string" },
         "kind": { "description": "The operation (build, test, run, clean, reset, ...). Clients show an unknown kind as neutral.", "type": "string" },
         "profile": { "description": "The profile's key.", "type": "string" },

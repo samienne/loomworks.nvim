@@ -101,7 +101,7 @@ Service.__index = Service
 --- @return loomworks.daemon.BuildService
 function M.attach(server, host)
     local self = setmetatable({ server = server, host = host, runs = {}, queue = {},
-        ids = snapshot.registry() }, Service)
+        ids = snapshot.registry(server.generation) }, Service)
     self.tasks = tasks_mod.new(server)
     self.tasks.on_change = function() self:_update_busy() end
     -- The task signals of loomworks.Tasks/1 (§19.20), to /tasks subscribers.
@@ -596,8 +596,8 @@ function Service:_accept(ctx)
     local task = self.tasks:create(ctx.conn)
     task.call = ctx.call
     ctx.task, ctx.ws, ctx.profile = task, ws, profile
-    ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile.key, pid = self.server.pid,
-        notes = ctx.notes })
+    ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile.key,
+        pid = self.server.pid, notes = ctx.notes })
     local runner = require("loomworks.daemon.runner")
     local extra = (a.extra and #a.extra > 0) and a.extra or nil
     local args
@@ -617,7 +617,7 @@ function Service:_accept(ctx)
         op = ctx.op, task = task, ws = ws, profile = profile, env = ctx.env, command = ctx.command, args = args,
         clean_steps = clean_steps,
     })
-    self.server:log("%s %s (task %d) accepted", ctx.op, profile.key, task.id)
+    self.server:log("%s %s (task %s) accepted", ctx.op, profile.key, task.id)
     if run and not run.finished then
         run.ctx = ctx
         self.runs[run] = true
@@ -666,13 +666,13 @@ function Service:_accept_reset(ctx, ws)
     local task = self.tasks:create(ctx.conn)
     task.call = ctx.call
     ctx.task, ctx.ws = task, ws
-    ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile_key, pid = self.server.pid,
-        notes = ctx.notes })
+    ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile_key,
+        pid = self.server.pid, notes = ctx.notes })
     local run = require("loomworks.daemon.runner").reset(self, {
         op = "reset", task = task, ws = ws, plan = plan, env = ctx.env, command = ctx.command,
         listing = a.plan == nil,
     })
-    self.server:log("reset %s (task %d) accepted", profile_key or "--all", task.id)
+    self.server:log("reset %s (task %s) accepted", profile_key or "--all", task.id)
     if run and not run.released then
         run.ctx = ctx
         self.runs[run] = true
@@ -683,7 +683,7 @@ end
 function Service:on_run_done(run)
     self.runs[run] = nil
     if run.task then
-        self.server:log("%s task %d ended%s", run.op or "build", run.task.id,
+        self.server:log("%s task %s ended%s", run.op or "build", run.task.id,
             run.cancelled and (": " .. tostring(run.cancel_reason)) or "")
     end
     -- A reset whose deletion outlived its task kept the server busy.

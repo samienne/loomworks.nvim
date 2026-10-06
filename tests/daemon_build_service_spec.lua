@@ -143,7 +143,9 @@ describe("daemon build service (§19.15)", function()
         assert.equals("dev", t.name)
         assert.equals("cli", t.origin)
         assert.equals("app", t.units[1].project)
-        assert.is_number(t.task_id)
+        -- (An opaque string on this transport-11 session; a protocol-10
+        -- connection keeps its integer, §19.20.)
+        assert.is_string(t.task_id)
         assert.is_true(math.abs(os.time() - t.started_at) < 120)
         -- `lw status` lists it under the Runtime row (§19.6): the handle shows
         -- a live, busy daemon with this lw's key.

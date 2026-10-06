@@ -35,13 +35,15 @@
 --- consumed or be matched by one of the case's `allow` patterns.
 ---
 --- Patterns are partial: an object pattern names the fields it checks
---- (others are allowed — clients tolerate unknown fields), an array pattern
---- has the actual array's length. A table whose keys all start with `$` is
+--- (others are allowed — clients tolerate unknown fields) and never matches
+--- an array (`{}` is not `[]`), an array pattern has the actual array's
+--- length and never matches an object (`[]` is not `{}`). A table whose keys all start with `$` is
 --- a matcher:
 ---
----   { "$any": true }            present, any value
+---   { "$any": true }            present, any value (an explicit null too)
 ---   { "$type": "<json type>" }  of that type (integer, string, object, ...)
----   { "$absent": true }         the field is absent
+---   { "$absent": true }         the field is absent (an explicit null is
+---                               present: it fails)
 ---   { "$bind": "<name>" }       binds the value (equal to it if already bound)
 ---   { "$var": "<name>[.<field>...]" }
 ---                               equals a bound variable (in a template:
@@ -62,14 +64,21 @@
 --- method's result schema; an `error`'s code is a transport code or one the
 --- method declares; a `signal` against its interface's signal schema, and a
 --- subscribed signal's `seq` is the previous one of its object on this
---- connection + 1 (from the baseline `subscribe` returned). Frames of
---- protocol 10 (v0 replies, `model_change`, ...) are not interface frames:
---- they are not validated, only matched. The task frames of a task an
---- interface call started (its `ok` result `accepted` with a `task_id`, for
---- a method the schema declares task-streamed) are: the `start` meta must
---- name the method (`object`, `iface`, `v`, `method`) and match the
---- method's task meta schema, and the `done` must carry a `result` matching
---- its task result schema.
+--- connection + 1 (from the baseline `subscribe` returned); a signal of a
+--- subscription the connection dropped (`unsubscribe` answered) fails, and
+--- a signal's `session_generation` must be welcome's. The reply to a
+--- protocol-10 request is validated against its v0 shape where
+--- transport.json has one (`v0.replies.<request kind>`; an `error` reply's
+--- `error` is a string); other protocol-10 frames (`model_change`, ...) are
+--- only matched. Every task frame follows its task's order: `start` first,
+--- then `line` / `output` / `progress`, then `done`, nothing after it; its
+--- `task_id` is an integer on a connection of protocol 10 and the opaque
+--- string from transport 11. The task frames of a task an interface call
+--- started (its `ok` result `accepted` with a `task_id`, for a method the
+--- schema declares task-streamed) are also typed: the `start` meta must name
+--- the method (`object`, `iface`, `v`, `method`) and match the method's task
+--- meta schema, and the `done` must carry a `result` matching its task
+--- result schema.
 ---
 --- A driver is `{ send(frame) -> ok, err; recv(timeout_ms) -> frame | nil,
 --- err; close(); now?() -> ms }`; `recv` blocks up to `timeout_ms` (0: only
@@ -263,7 +272,7 @@ end
 --- @return boolean ok, string|nil err
 function match(expected, actual, vars, path)
     path = path or ""
-    if is_matcher(expected) then return match_matcher(expected, actual, vars, path == "" and "/" or path, not is_null(actual)) end
+    if is_matcher(expected) then return match_matcher(expected, actual, vars, path == "" and "/" or path, actual ~= nil) end
     if type(expected) ~= "table" then
         if is_null(expected) then
             if is_null(actual) then return true end
@@ -285,10 +294,14 @@ function match(expected, actual, vars, path)
         end
         return true
     end
+    -- An object pattern (`{}` included) never matches an array.
+    if schema.is_array(actual) or is_null(actual) then
+        return false, string.format("%s: expected an object, got %s", path == "" and "/" or path, encode(actual))
+    end
     for k, e in pairs(expected) do
         local a = actual[k]
         if is_matcher(e) then
-            local ok, err = match_matcher(e, a, vars, path .. "/" .. tostring(k), not is_null(a))
+            local ok, err = match_matcher(e, a, vars, path .. "/" .. tostring(k), a ~= nil)
             if not ok then return false, err end
         else
             if a == nil then return false, path .. "/" .. tostring(k) .. ": missing" end
@@ -331,6 +344,10 @@ end
 --- @field calls table<integer, table> req_id -> the call frame sent
 --- @field subs table<integer, { object: string, iface: string, v: integer }>
 --- @field last_seq table<string, integer> per object: the last seq received
+--- @field dropped table<any, true> sub_ids the connection unsubscribed
+--- @field v0 table<integer, string> req_id -> the kind of a protocol-10 request sent
+--- @field task_state table<any, "started"|"done"> per task_id: where its frames are
+--- @field negotiated integer|nil the transport the handshake agreed on
 --- @field queue table[] received frames not consumed
 --- @field vars table
 local Session = {}
@@ -343,7 +360,8 @@ Session.__index = Session
 function M.session(driver, opts)
     opts = opts or {}
     local self = setmetatable({ driver = driver, set = opts.set or documents.set(), calls = {}, subs = {}, tasks = {},
-        last_seq = {}, queue = {}, vars = opts.vars or {}, received = 0 }, Session)
+        last_seq = {}, dropped = {}, v0 = {}, task_state = {}, queue = {}, vars = opts.vars or {}, received = 0 },
+        Session)
     local transport = self.set:load("transport.json")
     self.transport = transport
     self.codes = {}
@@ -374,8 +392,8 @@ end
 function Session:check_received(frame)
     if type(frame) ~= "table" or type(frame.kind) ~= "string" then return false, "a frame without a kind" end
     local call = (frame.kind == "ok" or frame.kind == "error") and self.calls[frame.req_id] or nil
-    -- A v0 reply (no tracked interface call) is a protocol-10 frame.
-    if (frame.kind == "ok" or frame.kind == "error") and not call then return true end
+    -- A v0 reply (no tracked interface call): its v0 shape, where one exists.
+    if (frame.kind == "ok" or frame.kind == "error") and not call then return self:check_v0_reply(frame) end
     local ok, err = self:check_transport(frame)
     if not ok then return false, frame.kind .. " frame: " .. tostring(err) end
     if call then
@@ -393,6 +411,14 @@ function Session:check_received(frame)
                     and r.task_id ~= nil then
                     self.tasks[r.task_id] = { iface = call.iface, v = call.v, method = call.method,
                         object = call.object, rel = rel }
+                end
+            end
+            -- A dropped subscription: no signal of it may follow.
+            if call.iface == "loomworks.Root" and call.method == "unsubscribe" then
+                local id = (call.args or {}).sub_id
+                if self.subs[id] then
+                    self.subs[id] = nil
+                    self.dropped[id] = true
                 end
             end
             -- Track subscriptions and their seq baselines.
@@ -429,7 +455,16 @@ function Session:check_received(frame)
         end
         local oks, serr = self.set:validate(rel, "/signals/" .. frame.name .. "/args", frame.args)
         if not oks then return false, string.format("%s/%d signal %s: %s", frame.iface, frame.v, frame.name, tostring(serr)) end
+        local gen = type(frame.args) == "table" and frame.args.session_generation or nil
+        local welcome_gen = M.lookup(self.vars, "welcome.header.session_generation")
+        if gen ~= nil and welcome_gen ~= nil and not schema.equal(gen, welcome_gen) then
+            return false, string.format("signal %s of session generation %s, but welcome's is %s", frame.name,
+                encode(gen), encode(welcome_gen))
+        end
         if frame.sub_id ~= nil then
+            if self.dropped[frame.sub_id] then
+                return false, "signal for sub_id " .. tostring(frame.sub_id) .. " after its unsubscribe"
+            end
             local sub = self.subs[frame.sub_id]
             if not sub then return false, "signal for an unknown sub_id " .. tostring(frame.sub_id) end
             if sub.object ~= frame.object or sub.iface ~= frame.iface or sub.v ~= frame.v then
@@ -455,7 +490,25 @@ end
 --- @param frame table
 --- @return boolean ok, string|nil err
 function Session:check_task(frame)
-    local t = self.tasks[frame.task_id]
+    local id = frame.task_id
+    if self.negotiated ~= nil then
+        local want = self.negotiated >= 11 and "string" or "integer"
+        if not json_type_ok(want, id) then
+            return false, string.format("task_id %s is not a%s %s at transport %d", encode(id),
+                want == "integer" and "n" or "", want, self.negotiated)
+        end
+    end
+    local st = self.task_state[id]
+    if st == "done" then return false, "task " .. tostring(id) .. ": a " .. tostring(frame.phase) .. " frame after its done" end
+    if frame.phase == "start" then
+        if st then return false, "task " .. tostring(id) .. ": a second start" end
+        self.task_state[id] = "started"
+    elseif not st then
+        return false, "task " .. tostring(id) .. ": a " .. tostring(frame.phase) .. " frame before its start"
+    elseif frame.phase == "done" then
+        self.task_state[id] = "done"
+    end
+    local t = self.tasks[id]
     if not t then return true end
     local base = "/methods/" .. t.method .. "/task/"
     local what = string.format("%s/%d.%s task %s", t.iface, t.v, t.method, tostring(frame.task_id))
@@ -471,6 +524,35 @@ function Session:check_task(frame)
         if frame.result == nil then return false, what .. ": done without a result" end
         local ok, err = self.set:validate(t.rel, base .. "result", frame.result)
         if not ok then return false, what .. " result: " .. tostring(err) end
+    end
+    return true
+end
+
+--- Validate the reply to a protocol-10 request against its v0 shape
+--- (transport.json `v0.replies.<kind>`; see the header). A reply to no
+--- request this session sent is only matched.
+--- @param frame table
+--- @return boolean ok, string|nil err
+function Session:check_v0_reply(frame)
+    local kind = self.v0[frame.req_id]
+    if kind == nil then return true end
+    self.v0[frame.req_id] = nil
+    if frame.kind == "error" then
+        if type(frame.error) ~= "string" then
+            return false, "the v0 error reply to " .. kind .. " carries a non-string error " .. encode(frame.error)
+        end
+        return true
+    end
+    local replies = self.transport and self.transport.v0 and self.transport.v0.replies or {}
+    if replies[kind] == nil then return true end
+    local ok, err = self.set:validate("transport.json", "/v0/replies/" .. kind, frame)
+    if not ok then return false, "v0 " .. kind .. " reply: " .. tostring(err) end
+    if frame.task_id ~= nil and self.negotiated ~= nil then
+        local want = self.negotiated >= 11 and "string" or "integer"
+        if not json_type_ok(want, frame.task_id) then
+            return false, string.format("v0 %s reply: task_id %s is not a%s %s at transport %d", kind,
+                encode(frame.task_id), want == "integer" and "n" or "", want, self.negotiated)
+        end
     end
     return true
 end
@@ -496,7 +578,14 @@ function Session:send(frame, malformed)
         local ok, err = self:check_transport(frame)
         if not ok then error({ conformance = "the transcript sends an invalid " .. tostring(frame.kind) .. ": " .. tostring(err) }) end
     end
-    if frame.kind == "call" and type(frame.req_id) == "number" then self.calls[frame.req_id] = frame end
+    if frame.kind == "call" and type(frame.req_id) == "number" then
+        self.calls[frame.req_id] = frame
+    elseif frame.kind == "hello" and type(frame.protocol) == "number" and self.transport then
+        -- The transport the daemon agrees on: the highest both speak.
+        self.negotiated = math.min(frame.protocol, self.transport.transport or frame.protocol)
+    elseif type(frame.req_id) == "number" and type(frame.kind) == "string" then
+        self.v0[frame.req_id] = frame.kind
+    end
     local ok, err = self.driver.send(frame)
     if ok == false or (ok == nil and err) then error({ conformance = "send failed: " .. tostring(err) }) end
 end

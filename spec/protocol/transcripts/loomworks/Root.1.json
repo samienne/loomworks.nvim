@@ -85,7 +85,7 @@
       "name": "subscribe returns the seq baseline; a signal or args it does not declare is invalid; unsubscribe always succeeds",
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1 } } },
-        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub", "$type": "integer" }, "seq": 0, "initial": { "$absent": true } } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub", "$type": "string" }, "seq": 0, "initial": { "$absent": true } } } },
         { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["nothing_like_this"] } } },
         { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "args": { "x": 1 } } } },
@@ -94,7 +94,7 @@
         { "expect": { "kind": "error", "req_id": 4, "error": { "code": "unknown_object" } } },
         { "send": { "kind": "call", "req_id": 5, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "unsubscribe", "args": { "sub_id": { "$var": "sub" } } } },
         { "expect": { "kind": "ok", "req_id": 5, "result": { "$exact": {} } } },
-        { "send": { "kind": "call", "req_id": 6, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "unsubscribe", "args": { "sub_id": 424242 } } },
+        { "send": { "kind": "call", "req_id": 6, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "unsubscribe", "args": { "sub_id": "no-such-subscription" } } },
         { "expect": { "kind": "ok", "req_id": 6 } }
       ]
     }

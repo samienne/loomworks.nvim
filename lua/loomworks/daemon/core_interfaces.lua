@@ -97,7 +97,7 @@ end
 function M.tasks_impl(service)
     local methods = {}
     function methods.list(ctx)
-        local rows = service.tasks:snapshot()
+        local rows = service.tasks:snapshot(ctx.conn)
         for _, r in ipairs(rows) do
             local t = service.tasks.tasks[r.task_id]
             r.owned = t ~= nil and t.owner == ctx.conn
@@ -111,7 +111,7 @@ function M.tasks_impl(service)
         end
         if t.owner ~= ctx.conn then
             return nil, envelope.err(envelope.ERR.forbidden,
-                string.format("task %d belongs to another client", args.task_id))
+                string.format("task %s belongs to another client", tostring(args.task_id)))
         end
         local run = service:run_of_task(t)
         if not run then

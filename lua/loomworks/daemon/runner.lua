@@ -357,12 +357,13 @@ function M.run(svc, ctx)
     local function progress(f) task:progress(testing and f / 2 or f) end
 
     -- ---- the test phase (op == "test"), after the build steps -------------
-    local tsteps, ti, failed, wrote = nil, 0, {}, {}
+    local tsteps, ti, failed, wrote, ran = nil, 0, {}, {}, {}
     local next_test
     local function test_done(step, code, signal)
         if ended_by_cancel() then return end
         code = build_run.exit_status(code, signal)
         if code ~= 0 then failed[#failed + 1] = step.name or "?" end
+        ran[#ran + 1] = { name = step.name or "?", exit_code = code, status = code == 0 and "passed" or "failed" }
         -- JUnit at the caller's path, also for a failed run (CI wants it).
         local path, warning = build_run.junit_result(step)
         if path then wrote[#wrote + 1] = path elseif warning then task:line("err", warning) end
@@ -378,7 +379,7 @@ function M.run(svc, ctx)
             release_all()
             for _, p in ipairs(wrote) do task:line("out", "JUnit: " .. p) end
             -- The structured results (Tests/1.run's task result, §19.15).
-            local results = { result = { steps = #tsteps, failed = failed, junit = wrote } }
+            local results = { result = { steps = ran, junit = wrote } }
             local ok_line, failure = build_run.test_summary(profile, failed, #tsteps)
             if failure then return finish(1, failure, results) end
             task:line("out", ok_line)
@@ -397,7 +398,7 @@ function M.run(svc, ctx)
         if not ts or #ts == 0 then
             release_all()
             task:line("out", build_run.no_tests_line(profile, units))
-            return finish(0, nil, { result = { steps = 0, failed = {}, junit = {} } })
+            return finish(0, nil, { result = { steps = {}, junit = {} } })
         end
         local okj, jerr = build_run.prepare_junit(args.junit)
         if not okj then return finish(1, jerr) end

@@ -9,7 +9,7 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "list", "args": {} } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "tasks": [] } } },
-        { "send": { "kind": "call", "req_id": 2, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": 7 } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": { "task_id": "no-such-task" } } },
         { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$type": "string" }, "exit_code": 1 } } },
         { "send": { "kind": "call", "req_id": 3, "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "method": "cancel", "args": {} } },
         { "expect": { "kind": "error", "req_id": 3, "error": { "code": "invalid_args" } } },
@@ -27,7 +27,7 @@
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1 } } },
         { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "all" }, "seq": 0 } } },
-        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "args": { "task_id": 999 } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/tasks", "iface": "loomworks.Tasks", "v": 1, "args": { "task_id": "no-such-task" } } } },
         { "expect": { "kind": "ok", "req_id": 2, "result": { "sub_id": { "$bind": "other" }, "seq": 0 } } },
         { "send": { "kind": "build", "req_id": 3, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
         { "expect": { "kind": "ok", "req_id": 3, "outcome": "accepted", "task_id": { "$bind": "task" } } },

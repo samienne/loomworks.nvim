@@ -13,7 +13,7 @@
       ],
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "key": "dev" }, "command": "lw build" }, "env": { "$var": "env" } } },
-        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task", "$type": "integer" }, "profile_key": "dev", "pid": { "$var": "welcome.header.pid" } } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "accepted", "task_id": { "$bind": "task", "$type": "string" }, "profile_key": "dev", "pid": { "$var": "welcome.header.pid" } } } },
         { "expect": {
             "kind": "task", "task_id": { "$var": "task" }, "phase": "start",
             "meta": { "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "kind": "build", "profile": "dev", "origin": "cli" }
@@ -38,6 +38,34 @@
         { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "accepted", "task_id": { "$bind": "clean" }, "profile_key": "dev" } } },
         { "expect": { "kind": "task", "task_id": { "$var": "clean" }, "phase": "start", "meta": { "method": "clean", "kind": "clean" } } },
         { "expect": { "kind": "task", "task_id": { "$var": "clean" }, "phase": "done", "exit_code": 0, "result": { "exit_code": 0 } }, "timeout_ms": 60000 }
+      ]
+    },
+    {
+      "name": "the protocol-10 build alias keeps its v0 shape at protocol 10: integer task ids, flat outcome",
+      "description": "An older client negotiates 10 and is served unchanged (spec 19.8, 19.15); its replies are checked against transport.json v0.replies.",
+      "fixture": "shell",
+      "hello": { "protocol": 10, "protocol_min": 10 },
+      "allow": [ { "kind": "model_change" }, { "kind": "task", "phase": "line" }, { "kind": "task", "phase": "output" }, { "kind": "task", "phase": "progress" } ],
+      "steps": [
+        { "expect_none": { "kind": "signal" }, "within_ms": 100 },
+        { "send": { "kind": "build", "req_id": 1, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
+        { "expect": { "kind": "ok", "req_id": 1, "outcome": "accepted", "task_id": { "$bind": "task", "$type": "integer" }, "profile_key": "dev" } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "start", "meta": { "kind": "build", "profile": "dev", "method": { "$absent": true } } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0, "result": { "$absent": true } }, "timeout_ms": 120000 }
+      ]
+    },
+    {
+      "name": "an id of an earlier session generation is a stale reference: refused, never another entity",
+      "description": "Ids carry the session generation (spec 19.12, 19.20). 1.1 stands for an id the first entity got in an earlier session (generation 1): before ids carried the generation, it would have named whatever entity this session numbered 1.",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok", "index": { "profiles": { "dev": { "$type": "string" } } } } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "reset", "args": { "profile": { "id": "1.1" }, "yes": true }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/build", "iface": "loomworks.Build", "v": 1, "method": "build", "args": { "profile": { "id": "1" } }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "refused", "message": { "$pattern": "stale reference" }, "exit_code": 1 } } }
       ]
     },
     {

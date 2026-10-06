@@ -58,7 +58,8 @@ end
 M._queued = queued
 
 --- @class loomworks.daemon.Task
---- @field id integer
+--- @field id string the opaque, session-scoped id (protocol.session_id)
+--- @field n integer the per-session counter (a protocol-10 connection's task id)
 --- @field owner table the owning connection
 --- @field finished boolean
 --- @field paused boolean the step's output is paused for the owner to catch up
@@ -86,7 +87,8 @@ end
 --- @return loomworks.daemon.Task
 function Stream:create(conn)
     self.next_id = self.next_id + 1
-    local t = setmetatable({ id = self.next_id, owner = conn, stream = self, finished = false,
+    local t = setmetatable({ id = protocol.session_id(self.server and self.server.generation, self.next_id),
+        n = self.next_id, owner = conn, stream = self, finished = false,
         paused = false, last_pct = -1, obs = setmetatable({}, { __mode = "k" }) }, Task)
     -- Called as each write to the owner completes: resume a paused step once
     -- the owner caught up.
@@ -114,15 +116,39 @@ function Stream:busy() return self.count > 0 end
 
 --- The running (started, not finished) tasks as the `status` reply's `tasks`
 --- (spec §19.11): `{ task_id, name, kind, profile, scope?, units, origin,
---- started_at, percent? }` each, in start order.
+--- started_at, percent? }` each, in start order; each `task_id` as `conn`
+--- takes it (M.wire_id).
+--- @param conn? table the connection the rows are for (nil: the opaque id)
 --- @return table[]
-function Stream:snapshot()
-    local out = {}
+function Stream:snapshot(conn)
+    local list = {}
     for _, t in pairs(self.tasks) do
-        if t.meta and not t.finished then out[#out + 1] = t:info() end
+        if t.meta and not t.finished then list[#list + 1] = t end
     end
-    table.sort(out, function(a, b) return a.task_id < b.task_id end)
+    table.sort(list, function(a, b) return a.n < b.n end)
+    local out = {}
+    for i, t in ipairs(list) do out[i] = t:info(conn) end
     return out
+end
+
+--- A task's id as `conn` takes it: the opaque, session-scoped string of
+--- transport 11 (§19.20), or the integer of protocol 10 (v0, §19.15: its
+--- task frames, `accepted` replies and `status` rows keep their shape).
+--- @param task loomworks.daemon.Task
+--- @param conn? table nil: the opaque id
+--- @return string|integer
+function M.wire_id(task, conn)
+    if conn == nil or protocol.opaque_ids(conn) then return task.id end
+    return task.n
+end
+
+--- `msg` (a task frame of `task`) as `conn` takes it (M.wire_id).
+local function for_conn(task, msg, conn)
+    if protocol.opaque_ids(conn) then return msg end
+    local c = {}
+    for k, v in pairs(msg) do c[k] = v end
+    c.task_id = task.n
+    return c
 end
 
 --- The origin of a task owned by `conn`: its `hello.client` (§19.15).
@@ -138,7 +164,7 @@ end
 function Task:_to_owner(msg)
     local o = self.owner
     if not o or o.closed then return end
-    self.stream.server:_send(o, msg, self._drained)
+    self.stream.server:_send(o, for_conn(self, msg, o), self._drained)
     if not self.paused and queued(o) > M.OWNER_HIGH then
         self.paused = true
         if self.flow then pcall(self.flow.pause, self.flow) end
@@ -192,17 +218,18 @@ function Task:_emit(msg, observe)
     if observe == false then return end
     local srv = self.stream.server
     for _, conn in ipairs(self:_observers()) do
-        if self:_observer_ok(conn) then srv:_send(conn, msg) end
+        if self:_observer_ok(conn) then srv:_send(conn, for_conn(self, msg, conn)) end
     end
 end
 
 --- The task as a row of the `status` reply's `tasks` and of
 --- loomworks.Tasks/1: `{ task_id, name, kind, profile, scope?, units,
---- origin, started_at, percent? }`.
+--- origin, started_at, percent? }`, its `task_id` as `conn` takes it.
+--- @param conn? table nil: the opaque id
 --- @return table
-function Task:info()
+function Task:info(conn)
     local m = self.meta or {}
-    return { task_id = self.id, name = m.name, kind = m.kind, profile = m.profile,
+    return { task_id = M.wire_id(self, conn), name = m.name, kind = m.kind, profile = m.profile,
         scope = m.scope, units = m.units, origin = m.origin, started_at = self.started_at,
         percent = (self.last_pct or -1) >= 0 and self.last_pct or nil }
 end
@@ -249,12 +276,12 @@ function Task:output(stream, text)
         if not st.truncated and self:_observer_ok(conn) then
             if st.bytes + #text > M.OBSERVER_CAP_BYTES then
                 st.truncated = true
-                srv:_send(conn, { kind = protocol.KIND.task, task_id = self.id, phase = "output",
+                srv:_send(conn, { kind = protocol.KIND.task, task_id = M.wire_id(self, conn), phase = "output",
                     stream = "stderr", text = "[loomworks: task output truncated after "
                         .. math.floor(st.bytes / 1024) .. " KiB]\n" })
             else
                 st.bytes = st.bytes + #text
-                srv:_send(conn, msg)
+                srv:_send(conn, for_conn(self, msg, conn))
             end
         end
     end

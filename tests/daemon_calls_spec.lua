@@ -45,6 +45,95 @@ describe("calls.frame", function()
     end)
 end)
 
+describe("calls error policy (§19.20)", function()
+    it("declares mutates as the methods' schemas do", function()
+        local set = require("loomworks.proto.documents").set()
+        for kind, op in pairs(calls.OPERATIONS) do
+            local doc = assert(set:interface(op[2], 1), op[2])
+            assert.equals(doc.methods[op[3]].mutates == true, op.mutates == true, kind)
+        end
+        for name, q in pairs(calls.QUERIES) do
+            local doc = assert(set:interface(q[2], 1), q[2])
+            assert.is_false(doc.methods[q[3]].mutates, name)
+        end
+    end)
+
+    it("maps each transport error code to retry, decline or fail", function()
+        for _, code in ipairs({ "unknown_object", "unknown_interface", "unknown_method", "unsupported_version" }) do
+            assert.equals("retry_v0", calls.on_error(code, true), code)
+            assert.equals("retry_v0", calls.on_error(code, false), code)
+        end
+        for _, code in ipairs({ "invalid_args", "same_build_required", "stopping", "retiring" }) do
+            assert.equals("declined", calls.on_error(code, true), code)
+            assert.equals("declined", calls.on_error(code, false), code)
+        end
+        for _, code in ipairs({ "internal", "not_loaded", "forbidden", "some_future_code" }) do
+            assert.equals("failed", calls.on_error(code, true), code)
+            assert.equals("declined", calls.on_error(code, false), code)
+        end
+    end)
+
+    --- A transport-11 connection whose interface calls fail with `code`;
+    --- its protocol-10 requests are answered `accepted`.
+    local function failing_conn(code)
+        local conn = { transport = 11, sent = {} }
+        function conn.request(_, msg, cb)
+            conn.sent[#conn.sent + 1] = msg.kind
+            if msg.kind == "call" then return cb(nil, { code = code, message = "boom" }) end
+            cb({ kind = "ok", outcome = "accepted", task_id = 3 })
+        end
+        return conn
+    end
+
+    local function ask(conn, msg)
+        local got
+        calls.request(conn, msg, function(r, e) got = { r, e } end)
+        return got[1], got[2]
+    end
+
+    it("sends the protocol-10 request when the daemon does not serve the interface", function()
+        for _, code in ipairs({ "unknown_object", "unknown_interface", "unknown_method", "unsupported_version" }) do
+            local conn = failing_conn(code)
+            local r = ask(conn, { kind = "build", args = { profile = "dev" } })
+            assert.equals("accepted", r.outcome, code)
+            assert.same({ "call", "build" }, conn.sent, code)
+        end
+    end)
+
+    it("declines (runs in-process) when the call was not processed", function()
+        for _, code in ipairs({ "invalid_args", "same_build_required", "stopping", "retiring" }) do
+            local conn = failing_conn(code)
+            local r = ask(conn, { kind = "test", args = {} })
+            assert.equals("declined", r.outcome, code)
+            assert.truthy(r.reason:find(code, 1, true), r.reason)
+            assert.same({ "call" }, conn.sent, code)
+        end
+    end)
+
+    it("fails a mutating call on internal or an unknown code, never running it again", function()
+        for _, code in ipairs({ "internal", "some_future_code" }) do
+            for _, kind in ipairs({ "build", "clean", "reset", "test", "prepare_run" }) do
+                local conn = failing_conn(code)
+                local r = ask(conn, { kind = kind, args = {} })
+                assert.equals("refused", r.outcome, kind)
+                assert.equals(1, r.exit_code)
+                assert.truthy(r.message:find(code, 1, true), r.message)
+                assert.same({ "call" }, conn.sent, kind)
+            end
+        end
+    end)
+
+    it("declines a non-mutating call on internal", function()
+        local conn = failing_conn("internal")
+        local r = ask(conn, { kind = "snapshot", scope = "config" })
+        assert.equals("declined", r.outcome)
+        conn = failing_conn("internal")
+        r = ask(conn, { kind = "query", name = "tools", args = {} })
+        assert.equals("declined", r.outcome)
+        assert.same({ "call" }, conn.sent)
+    end)
+end)
+
 describe("the CLI's requests over transport 11 (§19.20)", function()
     local root, srv
     before_each(function()
@@ -107,6 +196,24 @@ describe("the CLI's requests over transport 11 (§19.20)", function()
         r = assert(calls.request_sync(conn, { kind = "build", args = { bogus = true }, env = envscope.capture() }))
         assert.equals("declined", r.outcome)
         assert.truthy(r.reason:find("invalid_args", 1, true), r.reason)
+        conn:close()
+    end)
+
+    it("a daemon without the interface (step 5g.1) gets the protocol-10 request", function()
+        srv.interfaces:unmount("/build")
+        local events = {}
+        local conn = session(events)
+        assert.equals(11, conn.transport)
+        local r = assert(calls.request_sync(conn, { kind = "build", args = { profile = "dev" }, interactive = false,
+            command = "lw build", env = envscope.capture() }))
+        assert.equals("accepted", r.outcome, vim.inspect(r))
+        assert.same({ "call", "build" }, conn.sent)
+        assert.is_true(vim.wait(60000, function()
+            for _, m in ipairs(events) do
+                if m.kind == "task" and m.task_id == r.task_id and m.phase == "done" then return true end
+            end
+            return false
+        end, 10))
         conn:close()
     end)
 

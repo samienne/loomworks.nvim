@@ -128,7 +128,7 @@
         "iface": { "type": "string" },
         "v": { "type": "integer" },
         "name": { "type": "string" },
-        "sub_id": { "type": "integer" },
+        "sub_id": { "description": "The subscription (loomworks.Root/1 subscribe): an opaque string.", "type": "string" },
         "seq": { "type": "integer" },
         "args": { "type": "object" }
       }
@@ -139,10 +139,77 @@
       "required": ["kind", "task_id", "phase"],
       "properties": {
         "kind": { "const": "task" },
-        "task_id": { "type": "integer" },
+        "task_id": { "description": "From transport 11 the opaque task id (loomworks.Common/1 TaskId, a string); a protocol-10 connection keeps its integer.", "type": ["string", "integer"] },
         "phase": { "enum": ["start", "line", "output", "progress", "done"] },
         "meta": { "description": "start: the task's meta (loomworks.Common/1 TaskMeta); for an interface method's task it names the object, iface, v and method.", "type": "object" },
         "result": { "description": "done of an interface method's task: its task result, typed by the method's schema (spec 19.20 Tasks and cancel).", "type": "object" }
+      }
+    }
+  },
+  "v0": {
+    "description": "The protocol-10 (v0) replies (spec 19.8, 19.15): the shape a protocol-10 request's ok reply keeps, so the v0 aliases stay unchanged for older clients. Minimal: the fields clients read. A v0 error reply carries error as a string. task_id is an integer on a connection of protocol 10 and the opaque string from transport 11 (the conformance engine checks which).",
+    "replies": {
+      "ping": { "type": "object", "required": ["kind", "req_id"], "properties": { "kind": { "const": "ok" }, "req_id": { "type": "integer" } } },
+      "status": {
+        "type": "object",
+        "required": ["kind", "req_id", "pid", "root"],
+        "properties": {
+          "kind": { "const": "ok" },
+          "req_id": { "type": "integer" },
+          "pid": { "type": "integer" },
+          "root": { "type": "string" },
+          "retiring": { "type": "boolean" },
+          "observers": { "type": "integer" },
+          "tasks": { "type": "array", "items": { "type": "object", "required": ["task_id"], "properties": { "task_id": { "type": ["integer", "string"] } } } }
+        }
+      },
+      "build": { "$ref": "#/v0/$defs/Operation" },
+      "clean": { "$ref": "#/v0/$defs/Operation" },
+      "reset": { "$ref": "#/v0/$defs/Operation" },
+      "test": { "$ref": "#/v0/$defs/Operation" },
+      "prepare_run": { "$ref": "#/v0/$defs/Operation" },
+      "snapshot": {
+        "type": "object",
+        "required": ["kind", "req_id", "outcome"],
+        "properties": {
+          "kind": { "const": "ok" },
+          "req_id": { "type": "integer" },
+          "outcome": { "type": "string" },
+          "scope": { "type": "string" },
+          "index": { "type": "object" }
+        }
+      },
+      "query": {
+        "type": "object",
+        "required": ["kind", "req_id", "outcome"],
+        "properties": {
+          "kind": { "const": "ok" },
+          "req_id": { "type": "integer" },
+          "outcome": { "type": "string" },
+          "result": { "type": "object" }
+        }
+      }
+    },
+    "$defs": {
+      "Operation": {
+        "description": "The operations' outcome union, flat on the reply (spec 19.15).",
+        "type": "object",
+        "required": ["kind", "req_id", "outcome"],
+        "properties": {
+          "kind": { "const": "ok" },
+          "req_id": { "type": "integer" },
+          "outcome": { "enum": ["accepted", "refused", "declined", "confirm"] },
+          "task_id": { "type": ["integer", "string"] },
+          "profile_key": { "type": "string" },
+          "pid": { "type": "integer" },
+          "message": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "stream": { "type": "string" },
+          "reason": { "type": "string" },
+          "lines": { "type": "array", "items": { "type": "string" } },
+          "plan": { "type": "string" },
+          "notes": { "type": "array", "items": { "type": "string" } }
+        }
       }
     }
   },

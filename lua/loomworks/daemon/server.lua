@@ -614,7 +614,9 @@ function Server:_handshake(conn, msg)
     end
     -- A private pipe (`adopt_pipe`: standard I/O, a loopback end): `hello`
     -- alone, answered by `welcome` — no challenge, no proof.
-    if conn.state == "hello" and msg.kind == K.hello and type(msg.protocol) == "number" then
+    -- Only `adopt_pipe` sets `private`: a socket connection can never take
+    -- this path, whatever its state.
+    if conn.private == true and conn.state == "hello" and msg.kind == K.hello and type(msg.protocol) == "number" then
         conn.peer = { protocol = msg.protocol, protocol_min = msg.protocol_min, lw_version = msg.lw_version,
             schemas = msg.schemas, client = msg.client, role = msg.role }
         conn.transport = version.negotiate(msg.protocol, msg.protocol_min)
@@ -703,21 +705,22 @@ end
 function Server:adopt_pipe(sock, on_close)
     if self.stopped then return nil, "the runtime has stopped" end
     local conn = { sock = sock, decoder = protocol.new_decoder(protocol.PREAUTH_MAX), state = "hello",
-        last_seen = uv.now(), loopback = true, on_close = on_close }
+        last_seen = uv.now(), loopback = true, private = true, on_close = on_close }
     self.conns[conn] = true
     self:_read(conn)
     return conn
 end
 
 --- The status a `status` request returns (frozen shape: only additions).
-function Server:status()
+--- @param conn? table the asking connection (its tasks' `task_id` form, tasks.wire_id)
+function Server:status(conn)
     local r = self:_handle_record()
     r.root = self.root
     r.retiring = self.retiring
     r.observers = self:observer_count()
     -- The running tasks (protocol 7, §19.11): each one's `start` meta, when it
     -- started and its last percent.
-    r.tasks = self.service and self.service.tasks and self.service.tasks:snapshot() or {}
+    r.tasks = self.service and self.service.tasks and self.service.tasks:snapshot(conn) or {}
     return r
 end
 
@@ -747,8 +750,8 @@ end
 M.DISPATCH = {
     [protocol.KIND.ping] = { control = function(_, _, _, reply) return reply({}) end },
     [protocol.KIND.status] = {
-        control = function(server, _, _, reply)
-            local st = server:status()
+        control = function(server, conn, _, reply)
+            local st = server:status(conn)
             st.kind = protocol.KIND.ok
             return reply(st)
         end,

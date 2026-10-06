@@ -323,7 +323,7 @@ function M.three_way(o)
         assert(log:find("attached run of " .. tostring(op), 1, true), what .. ": not attached\n" .. log)
         -- Served by the attached runtime: its service accepted the request as
         -- a task (not merely started, then fell back in-process) ...
-        assert(log:find("\n[^\n]*" .. vim.pesc(tostring(op)) .. " [^\n]*%(task %d+%) accepted"),
+        assert(log:find("\n[^\n]*" .. vim.pesc(tostring(op)) .. " [^\n]*%(task [^)]+%) accepted"),
             what .. ": no attached task\n" .. log)
         -- ... and no daemon was involved (§19.1 rule c).
         assert(not rc.stderr:find("through the workspace daemon", 1, true), what .. ": daemon line\n" .. rc.stderr)

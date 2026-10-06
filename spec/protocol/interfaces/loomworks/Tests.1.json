@@ -56,15 +56,30 @@
               "type": "string"
             },
             "steps": {
-              "description": "The test steps run (0: the profile has no tests).",
-              "type": "integer",
-              "minimum": 0
-            },
-            "failed": {
-              "description": "The names of the steps that failed.",
+              "description": "The test steps run, in order (empty: the profile has no tests). Per-case results come later as an optional field.",
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "object",
+                "required": [
+                  "name",
+                  "exit_code",
+                  "status"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "exit_code": {
+                    "type": "integer"
+                  },
+                  "status": {
+                    "description": "passed (exit code 0) or failed. Clients show an unknown status as failed.",
+                    "enum": [
+                      "passed",
+                      "failed"
+                    ]
+                  }
+                }
               }
             },
             "junit": {
