@@ -1081,7 +1081,7 @@ on the spot (a confirmation prompt blocks the loop) and every attached
 fallback checks it, so a command that lost R exits 1 rather than continuing
 in-process.
 
-**Interfaces (spec §19.20 — steps 5g.1 and 5g.2 built; 5g.3 and 5q plan).**
+**Interfaces (spec §19.20 — steps 5g.1, 5g.2 and 5g.3 built; 5q plan).**
 Three layers, each with one owner:
 
 - **Transport** — `daemon/protocol.lua` (framing, kinds incl. `call` /
@@ -1149,9 +1149,12 @@ Step 5g.2 part A adds the first core interfaces and conformance:
   `ended` from the stream's `on_started` / `on_ended` hooks, filtered by the
   subscription's `task_id`) and `/internal` `lw.internal.Snapshot/1` (`get`
   = `Service:_on_model_request` with a `deliver` callback answering the
-  call, the answer shared with `on_snapshot` via `_snapshot_answer`). Task
-  frames and `model_change` still go to every connection (5g.3 binds them
-  to subscriptions).
+  call, the answer shared with `on_snapshot` via `_snapshot_answer`). From
+  step 5g.3 a transport-11 connection gets task frames only for tasks it
+  owns or its `/tasks` subscription matches (`Task:_observes`), and no
+  `model_change` / `retiring` broadcast (`server.takes_v0_broadcasts`): it
+  subscribes to `Workspace/1.changed` and gets the root's `retiring`
+  signal; connections below 11 keep every broadcast.
 - `daemon/stdio.lua` — `lw daemon run --root <root> --stdio`: an attached
   runtime whose one connection is this process's standard input and output
   (`Server:adopt_pipe`: the first frame is `hello`, answered by `welcome`
@@ -1203,12 +1206,36 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   another session generation, and checks protocol-10 replies against
   `transport.json` `v0.replies`.
 
+Step 5g.3 adds the policies:
+
+- `daemon/ensure.lua` `policy` — the CLI's version policy: over transport 11
+  `Root.describe().binary.lw_version` plus the challenge's schemas must equal
+  its own (`version.cli_policy_matches`); below 11 (or with no answer to
+  `describe`) the challenge as before; no agreed transport is a mismatch.
+  A mismatch then takes the idle-restart / busy-retire flow, `retire` being
+  frozen control and so sent whatever the transports.
+- `daemon/server.lua` — busy (§19.9): `conn.in_flight` records every request
+  but the frozen control kinds until a frame naming its `req_id` (not a task
+  frame) is sent; `conn_busy` = a command in flight or a task the service
+  says the connection owns; `status.busy_clients` counts the busy
+  connections besides the asker (the CLI uses it, falling back to the old
+  `clients - 1 - observers` for an older daemon); `_maybe_retire` exits a
+  retiring daemon when nothing is busy, after its connections' write queues
+  drained (at most `RETIRE_DRAIN_MS`).
+- `daemon/observer.lua` `_subscribe` — on a transport-11 daemon whose
+  `welcome.objects` offers them, subscribes to `/tasks` `loomworks.Tasks/1`
+  and `/workspace` `loomworks.Workspace/1` (mode `interfaces`), handling
+  `Workspace.changed` and the root `retiring` signal like their v0 forms; a
+  missing or refused interface is a per-feature note on the Runtime line;
+  otherwise mode `v0`. It reports `connected` once the subscriptions settled.
+
 The
 plugin/binary boundary guard (`tests/split`,
 #149) enforces that the plugin reaches the binary only through the protocol;
-its interface ratchet (step 5g.3) adds that every plugin-side call names an
-interface version with a schema under `spec/protocol/` and client-conformance
-transcripts. The two are complementary: the guard says *only through the
+its interface ratchet (step 5g.3, `scan.interface_refs`) adds that every
+plugin-side interface reference is written `iface = "<name>", v = <n>` and
+names an interface version with a schema under `spec/protocol/interfaces/`
+and transcripts under `spec/protocol/transcripts/`. The two are complementary: the guard says *only through the
 protocol*, the schemas say *what the protocol is*.
 
 ### Workspace trust (spec §17)
