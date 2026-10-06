@@ -84,6 +84,46 @@ describe("plugin/binary boundary", function()
         end
     end)
 
+    -- The interface ratchet (spec §19.19 step 5g.3, §19.20): every interface
+    -- the plugin calls or subscribes to is named with its version, and that
+    -- version has a schema and conformance transcripts under spec/protocol/.
+    it("names only interface versions with a schema and transcripts (interface ratchet)", function()
+        local bad = {}
+        local function exists(rel)
+            local fh = io.open(scan.root .. "/spec/protocol/" .. rel, "rb")
+            if fh then fh:close() end
+            return fh ~= nil
+        end
+        local n = 0
+        for _, rel in ipairs(scan.sorted_keys(current.interfaces)) do
+            local e = current.interfaces[rel]
+            for _, name in ipairs(e.unversioned) do
+                bad[#bad + 1] = ("%s: %q names no interface version (write `iface = %q, v = <n>`)")
+                    :format(rel, name, name)
+            end
+            for _, r in ipairs(e.refs) do
+                n = n + 1
+                local ns, rest = r.iface:match("^([%w_]+)%.(.+)$")
+                local schema = ns and ("interfaces/%s/%s.%d.json"):format(ns, rest, r.v)
+                local transcripts = ns and ("transcripts/%s/%s.%d.json"):format(ns, rest, r.v)
+                if not (schema and exists(schema)) then
+                    bad[#bad + 1] = ("%s:%d: %s/%d has no schema (spec/protocol/%s)"):format(rel, r.line, r.iface,
+                        r.v, tostring(schema))
+                end
+                if not (transcripts and exists(transcripts)) then
+                    bad[#bad + 1] = ("%s:%d: %s/%d has no transcripts (spec/protocol/%s)"):format(rel, r.line,
+                        r.iface, r.v, tostring(transcripts))
+                end
+            end
+        end
+        if #bad > 0 then
+            fail("Plugin-side interface references without a schema'd, transcribed version:", bad,
+                "The plugin may call an interface only at a version the protocol defines (spec/protocol/). " .. SEE)
+        end
+        -- The observer's subscriptions are the first such references.
+        assert.is_true(n >= 3)
+    end)
+
     it("does not raise domain reach-ins per plugin file (ratchet 2)", function()
         local rose, dropped = {}, {}
         local ceil = allow.reach_ins or {}

@@ -13,7 +13,12 @@
 ---     (`"loomworks." .. name`, `"boot." .. x`). These are counted per file, since
 ---     the target cannot be known statically;
 ---   * reach-ins (plugin-side only): `core:`, `get_workspace(` and `._workspace`,
----     the ways the editor gets at binary-side domain objects without a require.
+---     the ways the editor gets at binary-side domain objects without a require;
+---   * interface references (plugin-side only, the interface ratchet of step
+---     5g.3): `iface = "<name>", v = <n>` names an interface version; any other
+---     quoted interface name (`"loomworks.<Upper>..."`, `"lw.<...>"`) is
+---     unversioned. The guard checks each version has a schema and
+---     transcripts under spec/protocol/.
 ---
 --- Not caught: an aliased require (`local r = require; r("x")`),
 --- `package.loaded[...]` / `package.preload[...]` lookups, `loadfile`/`dofile`,
@@ -137,12 +142,45 @@ function M.scan_file(rel)
     return targets, dynamic, reach
 end
 
+-- Interface references (the interface ratchet, step 5g.3): a versioned one
+-- is `iface = "<name>", v = <n>` (the observer's interface tables); any other
+-- quoted interface name (`"loomworks.Tasks"`, `"lw.internal.Snapshot"`) in
+-- plugin-side code names no version and fails the guard.
+local IFACE_VERSIONED = {
+    'iface%s*=%s*"([%w_.]+)"%s*,%s*v%s*=%s*(%d+)',
+    "iface%s*=%s*'([%w_.]+)'%s*,%s*v%s*=%s*(%d+)",
+}
+local IFACE_NAME = {
+    '"(loomworks%.%u[%w_]*)"', "'(loomworks%.%u[%w_]*)'",
+    '"(lw%.[%w_.]*%u[%w_]*)"', "'(lw%.[%w_.]*%u[%w_]*)'",
+}
+
+--- The interface versions a file names (`refs`, `{ iface, v, line }`) and
+--- the interface names it quotes without a version (`unversioned`).
+--- @param rel string
+--- @return table[] refs, string[] unversioned
+function M.interface_refs(rel)
+    local refs, unversioned = {}, {}
+    for n, line in ipairs(code_lines(rel)) do
+        local rest = line
+        for _, pat in ipairs(IFACE_VERSIONED) do
+            for name, v in line:gmatch(pat) do refs[#refs + 1] = { iface = name, v = tonumber(v), line = n } end
+            rest = rest:gsub(pat, "")
+        end
+        for _, pat in ipairs(IFACE_NAME) do
+            for name in rest:gmatch(pat) do unversioned[#unversioned + 1] = name end
+        end
+    end
+    return refs, unversioned
+end
+
 --- Current state of the tree.
---- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts }
+--- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts, interfaces }
+---   `interfaces[rel]` = { refs, unversioned } of each plugin-side file naming one
 function M.current()
     local res = {
         unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {},
-        counts = { plugin = 0, shared = 0, binary = 0 },
+        counts = { plugin = 0, shared = 0, binary = 0 }, interfaces = {},
     }
     local files = M.files()
     local side_by_mod = {}
@@ -171,6 +209,10 @@ function M.current()
             if #bad > 0 then res.edges[rel] = bad end
             if dynamic > 0 then res.dynamic[rel] = dynamic end
             if side == "plugin" and reach > 0 then res.reach_ins[rel] = reach end
+            if side == "plugin" then
+                local refs, unversioned = M.interface_refs(rel)
+                if #refs > 0 or #unversioned > 0 then res.interfaces[rel] = { refs = refs, unversioned = unversioned } end
+            end
         end
     end
     return res
