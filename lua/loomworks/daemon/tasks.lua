@@ -115,13 +115,8 @@ function Stream:busy() return self.count > 0 end
 --- @return table[]
 function Stream:snapshot()
     local out = {}
-    for id, t in pairs(self.tasks) do
-        if t.meta and not t.finished then
-            local m = t.meta
-            out[#out + 1] = { task_id = id, name = m.name, kind = m.kind, profile = m.profile,
-                scope = m.scope, units = m.units, origin = m.origin, started_at = t.started_at,
-                percent = (t.last_pct or -1) >= 0 and t.last_pct or nil }
-        end
+    for _, t in pairs(self.tasks) do
+        if t.meta and not t.finished then out[#out + 1] = t:info() end
     end
     table.sort(out, function(a, b) return a.task_id < b.task_id end)
     return out
@@ -198,7 +193,20 @@ function Task:_emit(msg, observe)
     end
 end
 
+--- The task as a row of the `status` reply's `tasks` and of
+--- loomworks.Tasks/1: `{ task_id, name, kind, profile, scope?, units,
+--- origin, started_at, percent? }`.
+--- @return table
+function Task:info()
+    local m = self.meta or {}
+    return { task_id = self.id, name = m.name, kind = m.kind, profile = m.profile,
+        scope = m.scope, units = m.units, origin = m.origin, started_at = self.started_at,
+        percent = (self.last_pct or -1) >= 0 and self.last_pct or nil }
+end
+
 --- Announce the task. Its `origin` is filled from the owner (§19.15).
+--- The stream's `on_started(task, info)` hook (loomworks.Tasks/1's
+--- `started` signal) runs after the `start` frame.
 --- @param meta table
 function Task:start(meta)
     meta = meta or {}
@@ -206,6 +214,8 @@ function Task:start(meta)
     self.meta = meta
     self.started_at = os.time()
     self:_emit({ phase = "start", meta = meta })
+    local s = self.stream
+    if s.on_started then pcall(s.on_started, self, self:info()) end
 end
 
 --- One of loomworks's own lines.
@@ -267,6 +277,9 @@ function Task:done(exit_code, err, fields)
         s.tasks[self.id] = nil
         s.count = s.count - 1
     end
+    -- loomworks.Tasks/1's `ended` signal, after the `done` frame (only for
+    -- a task that announced its start).
+    if s.on_ended and self.meta then pcall(s.on_ended, self, exit_code, err) end
     if s.on_change then pcall(s.on_change, s) end
 end
 

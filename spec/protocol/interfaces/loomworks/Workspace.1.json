@@ -1,0 +1,52 @@
+{
+  "interface": "loomworks.Workspace",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /workspace (spec 19.20): the workspace's header and its model changes. Step 5g.2 lands header and the changed signal; the command methods follow in step 5o.",
+  "methods": {
+    "header": {
+      "description": "The always-warm header (spec 19.13 Header): the session fields and the model's state. Never loads the workspace.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "$ref": "#/$defs/Header" },
+      "needs_env": false,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "changed": {
+      "description": "A committed write of a state file (spec 19.12): the model changed; a client fetches the state again. The interface form of the protocol-10 model_change broadcast.",
+      "args": {
+        "type": "object",
+        "required": ["seq", "session_generation"],
+        "properties": {
+          "seq": { "description": "The workspace's model sequence number (the model_change seq of protocol 10).", "type": "integer", "minimum": 0 },
+          "session_generation": { "type": "integer" },
+          "scopes": {
+            "description": "The scopes that changed, when known (absent: any).",
+            "type": "array",
+            "items": { "enum": ["config", "user", "cache"] }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Header": {
+      "type": "object",
+      "required": ["root", "pid", "lw_version", "session_generation", "state"],
+      "properties": {
+        "root": { "type": "string" },
+        "pid": { "type": "integer" },
+        "lw_version": { "type": "string" },
+        "session_generation": { "type": "integer" },
+        "state": {
+          "description": "loaded; unloaded before the daemon loaded the workspace; error or refused (a trust, newer-schema or journal refusal) with the load failure's message. Clients show an unknown state as neutral.",
+          "enum": ["loaded", "unloaded", "error", "refused"]
+        },
+        "name": { "description": "The workspace's name (state loaded).", "type": "string" },
+        "active_profile": { "description": "The active profile's key (state loaded; absent when none).", "type": "string" },
+        "error": { "description": "The load failure (state error or refused).", "type": "string" }
+      }
+    }
+  }
+}

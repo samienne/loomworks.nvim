@@ -1,0 +1,99 @@
+{
+  "interface": "loomworks.Tasks",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /tasks (spec 19.15 Tasks of interface methods, 19.20): the running tasks, their observation by subscription and their cancellation by their owner. The task frames themselves are the transport's task stream (spec 19.15), not signals of this interface.",
+  "methods": {
+    "list": {
+      "description": "The running tasks (started, not ended), in start order.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": {
+        "type": "object",
+        "required": ["tasks"],
+        "properties": {
+          "tasks": { "type": "array", "items": { "$ref": "#/$defs/TaskInfo" } }
+        }
+      },
+      "needs_env": false,
+      "mutates": false
+    },
+    "cancel": {
+      "description": "Cancel a running task. Only its owner may (forbidden otherwise); a task that is not running (ended, unknown) is the refused result, never an error.",
+      "params": {
+        "type": "object",
+        "required": ["task_id"],
+        "additionalProperties": false,
+        "properties": { "task_id": { "type": "integer", "minimum": 1 } }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["outcome"],
+            "properties": { "outcome": { "const": "ok" } }
+          },
+          { "$ref": "loomworks.Common/1#/$defs/Refused" }
+        ]
+      },
+      "errors": ["forbidden"],
+      "needs_env": false,
+      "mutates": true
+    }
+  },
+  "signals": {
+    "started": {
+      "description": "A task started (its start frame follows on the task stream).",
+      "args": {
+        "type": "object",
+        "required": ["task"],
+        "properties": { "task": { "$ref": "#/$defs/TaskInfo" } }
+      }
+    },
+    "ended": {
+      "description": "A task ended (after its done frame).",
+      "args": {
+        "type": "object",
+        "required": ["task_id", "exit_code"],
+        "properties": {
+          "task_id": { "type": "integer" },
+          "exit_code": { "type": "integer" },
+          "error": { "description": "The refusal or failure the owner prints as lw: <error>.", "type": "string" }
+        }
+      }
+    }
+  },
+  "subscribe_args": {
+    "description": "Optionally only one task's signals.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { "task_id": { "type": "integer", "minimum": 1 } }
+  },
+  "$defs": {
+    "TaskInfo": {
+      "description": "A running task: its start meta (spec 19.15) with its id, when it started and its last percent.",
+      "type": "object",
+      "required": ["task_id"],
+      "properties": {
+        "task_id": { "type": "integer" },
+        "name": { "type": "string" },
+        "kind": { "description": "The operation (build, test, run, clean, reset, ...). Clients show an unknown kind as neutral.", "type": "string" },
+        "profile": { "description": "The profile's key.", "type": "string" },
+        "scope": { "type": "string" },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "project": { "type": "string" },
+              "configuration": { "type": "string" }
+            }
+          }
+        },
+        "origin": { "description": "The owner's hello.client. Clients show an unknown origin as neutral.", "enum": ["cli", "editor"] },
+        "started_at": { "description": "Wall-clock seconds.", "type": "integer" },
+        "percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "owned": { "description": "The calling connection owns it (it may cancel it).", "type": "boolean" }
+      }
+    }
+  }
+}

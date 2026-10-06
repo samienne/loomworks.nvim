@@ -232,7 +232,7 @@ function Server:_acquire(lock_opts)
     self.schemas = version.schemas()
     -- The interface registry with the root object (§19.20); its schema
     -- digests are computed here too, outside any callback.
-    self.interfaces = self.interfaces or require("loomworks.daemon.interfaces").new(self)
+    self:registry()
     local st = uv.fs_stat(self.root)
     if not st or st.type ~= "directory" then
         return nil, "workspace root " .. self.root .. " does not exist", 1
@@ -487,7 +487,8 @@ function Server:_maybe_retire()
 end
 
 --- A committed write of a state file (§19.12): advance the sequence number
---- and tell every authenticated client.
+--- and tell every authenticated client (the protocol-10 `model_change`
+--- broadcast), and the subscribers of loomworks.Workspace/1 (`changed`).
 function Server:model_changed()
     if self.stopped then return end
     self.seq = self.seq + 1
@@ -495,6 +496,22 @@ function Server:model_changed()
     for conn in pairs(self.conns) do
         if conn.authed and not conn.closed then self:_send(conn, msg) end
     end
+    if self.interfaces then
+        require("loomworks.daemon.core_interfaces").changed(self.interfaces, self.seq, self.generation)
+    end
+end
+
+--- The interface registry with the root object (§19.20), created on first
+--- use, with the core interfaces of the attached build service mounted
+--- (loomworks.daemon.core_interfaces; a service attached later mounts them
+--- itself).
+--- @return loomworks.daemon.Registry
+function Server:registry()
+    if not self.interfaces then
+        self.interfaces = require("loomworks.daemon.interfaces").new(self)
+        if self.service then require("loomworks.daemon.core_interfaces").mount(self.interfaces, self.service) end
+    end
+    return self.interfaces
 end
 
 --- "cli client" / "editor observer": who a connection is, for the log.
@@ -521,6 +538,7 @@ function Server:_close(conn, why)
         self:_handle_changed()
         self:_maybe_retire()
     end
+    if conn.on_close then pcall(conn.on_close) end
 end
 
 function Server:_on_connection(err)
@@ -589,6 +607,15 @@ function Server:_handshake(conn, msg)
         and auth.equal(msg.client_proof, auth.client_proof(self.key, self.address, conn.nc, conn.ns)) then
         pcall(function() conn.auth_timer:stop(); conn.auth_timer:close() end)
         conn.auth_timer = nil
+        return self:_authed(conn)
+    end
+    -- A private pipe (`adopt_pipe`: standard I/O, a loopback end): `hello`
+    -- alone, answered by `welcome` — no challenge, no proof.
+    if conn.state == "hello" and msg.kind == K.hello and type(msg.protocol) == "number" then
+        conn.peer = { protocol = msg.protocol, protocol_min = msg.protocol_min, lw_version = msg.lw_version,
+            schemas = msg.schemas, client = msg.client, role = msg.role }
+        conn.transport = version.negotiate(msg.protocol, msg.protocol_min)
+        conn.observer = msg.role == "observer"
         return self:_authed(conn)
     end
     -- Anything else before authentication, or a failed proof: closed, no detail.
@@ -662,6 +689,23 @@ function Server:adopt(sock, peer)
     return conn
 end
 
+--- Register a connection over a private pipe that needs no authentication
+--- — the standard input and output of `lw daemon run --stdio` (§19.16), or
+--- a loopback end (the conformance runner, §19.20): its first frame must be
+--- `hello` (whose `nonce` is ignored), answered directly by `welcome`;
+--- anything else closes it. `on_close` runs once it closed.
+--- @param sock table a stream with the pipe methods (loomworks.daemon.loopback)
+--- @param on_close? fun()
+--- @return table|nil conn, string|nil err
+function Server:adopt_pipe(sock, on_close)
+    if self.stopped then return nil, "the runtime has stopped" end
+    local conn = { sock = sock, decoder = protocol.new_decoder(protocol.PREAUTH_MAX), state = "hello",
+        last_seen = uv.now(), loopback = true, on_close = on_close }
+    self.conns[conn] = true
+    self:_read(conn)
+    return conn
+end
+
 --- The status a `status` request returns (frozen shape: only additions).
 function Server:status()
     local r = self:_handle_record()
@@ -714,8 +758,7 @@ M.DISPATCH = {
     [protocol.KIND.retire] = { control = function(server, _, _, reply) server:_retire(); return reply({}) end },
     [protocol.KIND.call] = {
         control = function(server, conn, msg)
-            server.interfaces = server.interfaces or require("loomworks.daemon.interfaces").new(server)
-            return server.interfaces:call(conn, msg)
+            return server:registry():call(conn, msg)
         end,
     },
     -- Routed operations (§19.15): `build` (step 3), the batch `test` (step

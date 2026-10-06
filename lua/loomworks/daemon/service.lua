@@ -104,9 +104,32 @@ function M.attach(server, host)
         ids = snapshot.registry() }, Service)
     self.tasks = tasks_mod.new(server)
     self.tasks.on_change = function() self:_update_busy() end
+    -- The task signals of loomworks.Tasks/1 (§19.20), to /tasks subscribers.
+    local core_ifaces = require("loomworks.daemon.core_interfaces")
+    self.tasks.on_started = function(t, info)
+        if server.interfaces then core_ifaces.task_signal(server.interfaces, t, "started", { task = info }) end
+    end
+    self.tasks.on_ended = function(t, exit_code, err)
+        if server.interfaces then
+            core_ifaces.task_signal(server.interfaces, t, "ended",
+                { task_id = t.id, exit_code = exit_code, error = type(err) == "string" and err or nil })
+        end
+    end
     envscope.install()
     server.service = self
+    -- The core interfaces it serves (step 5g.2), once the registry exists.
+    if server.interfaces then core_ifaces.mount(server.interfaces, self) end
     return self
+end
+
+--- The run a task belongs to (nil: none, or it already ended).
+--- @param task loomworks.daemon.Task
+--- @return table|nil
+function Service:run_of_task(task)
+    for run in pairs(self.runs) do
+        if run.task == task then return run end
+    end
+    return nil
 end
 
 --- Is a reset's deletion still running after its task ended (a timeout,
@@ -334,12 +357,15 @@ end
 --- @param msg table
 --- @param answer fun(ws: table, ctx: table): table
 --- @param bad string|nil a validation failure: declined as malformed
-function Service:_on_model_request(conn, msg, answer, bad)
+--- @param deliver? fun(fields: table) answer an interface call instead of a v0 reply
+function Service:_on_model_request(conn, msg, answer, bad, deliver)
     local srv = self.server
     local env, eerr = envscope.validate(msg.env)
     local ctx = { op = msg.kind, conn = conn, env = env, args = {} }
     function ctx.reply(fields)
         ctx.replied = true
+        -- An interface method's adapter takes the fields as its result.
+        if deliver then return deliver(fields) end
         fields.kind = protocol.KIND.ok
         fields.req_id = msg.req_id
         srv:_send(conn, fields)
@@ -375,12 +401,21 @@ end
 --- @param msg table
 function Service:on_snapshot(conn, msg)
     local bad = not snapshot.valid_scope(msg.scope) and "malformed request" or nil
-    return self:_on_model_request(conn, msg, function(ws)
-        local snap = snapshot.build(ws, msg.scope, self.ids)
+    return self:_on_model_request(conn, msg, self:_snapshot_answer(conn, msg.scope), bad)
+end
+
+--- The model segment's answer to a snapshot of `scope` (the `snapshot`
+--- request and lw.internal.Snapshot/1.get).
+--- @param conn table
+--- @param scope string|nil
+--- @return fun(ws: table): table
+function Service:_snapshot_answer(conn, scope)
+    return function(ws)
+        local snap = snapshot.build(ws, scope, self.ids)
         snap.seq, snap.session_generation = self.server.seq, self.server.generation
         self.server:log("snapshot (scope %s) for %s", tostring(snap.scope), self.server:_peer_text(conn))
         return snap
-    end, bad)
+    end
 end
 
 --- Handle a `query` request (§19.14): a registered host-probing query run

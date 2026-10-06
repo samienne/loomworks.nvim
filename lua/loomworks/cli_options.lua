@@ -149,7 +149,7 @@ M.COMMANDS = {
       list = spec({ flags = { "--json" }, valued = { "--under" }, eq = { "--under=" } }),
       stop = spec({ flags = { "--force", "--all" }, valued = { "--under" }, eq = { "--under=" } }),
       kill = spec({ flags = { "--all", "--strays" }, valued = { "--under" }, eq = { "--under=" } }),
-      restart = spec({ flags = { "--force" } }), run = spec({ valued = { "--root" }, eq = { "--root=" } }) },
+      restart = spec({ flags = { "--force" } }), run = spec({ flags = { "--stdio" }, valued = { "--root" }, eq = { "--root=" } }) },
     default = NONE,
   },
   profile = {
