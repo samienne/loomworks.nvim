@@ -265,7 +265,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `.nvim/loomworks.user.json` as soon as that file is valid again (restored,
   or trusted with `lw trust`), and `:LoomworksTrust` on an already-trusted
   file loads it too, instead of keeping the refusal until a directory change
-  or `:LoomworksReload`. (#PR)
+  or `:LoomworksReload`. (#146)
 - The editor no longer stays stuck loading the workspace until Neovim is
   restarted after a load or reload fails with an internal error: the next
   reload runs again, and a failed reload keeps the previous workspace. (#145)
