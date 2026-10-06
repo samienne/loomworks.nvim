@@ -805,10 +805,10 @@ plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 §19.15; protocol version 9: 8 plus the routed `reset`
 request and its `confirm` outcome, §19.15; protocol version 10: 9 plus
 the `snapshot` and `query` requests and the model fields of the `welcome`
-header, §19.13, §19.14); the rest of the
-broadcasts #88. Plan: protocol version 11 — the transport-only version
-(envelope, root object, `protocol_min`, `welcome.objects`; below and §19.20) —
-is step 5g.1; until then no message below marked 11 exists.*
+header, §19.13, §19.14; protocol version 11, step 5g.1: the transport-only
+version — the envelope, the root object, `protocol_min`, `welcome.objects`
+(below and §19.20; `daemon/interfaces.lua`, `proto/envelope.lua`) — accepting
+clients of 10 and 11); the rest of the broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
 and a newline (`<len>\n<json>`). Every request carries a `req_id` that its
@@ -849,7 +849,7 @@ is end-of-stream to the other.
 `ping`, `status`, `stop` and `retire` (§19.9) never change shape across
 versions, so any two versions can always authenticate, inspect and retire each
 other. Fields of these messages are only ever added, never removed, renamed or
-retyped, and a receiver ignores a field it does not know. *(Plan, step 5g.1.)*
+retyped, and a receiver ignores a field it does not know. *(Step 5g.1.)*
 From protocol 11 the frozen subset also covers the `retiring` broadcast, the
 envelope kinds and their routing fields (`kind`, `req_id`, `object`, `iface`,
 `v`, `method`, `sub_id`, `task_id`), the transport error codes (§19.20; new
@@ -857,7 +857,7 @@ codes may be added, a client treats an unknown one as `internal`) and the root
 interface `loomworks.Root/1` (§19.20), so any two versions sharing a transport
 can also discover each other.
 
-**What the protocol number versions.** *(Plan, step 5g.1.)* From protocol 11,
+**What the protocol number versions.** *(Step 5g.1.)* From protocol 11,
 `protocol` versions the **transport** only: the framing, authentication, the
 handshake, the message envelope (`call`, `ok`, `error`, `signal`, `task`;
 §19.20), flow control (§19.15) and the root object. Everything a client does
@@ -882,9 +882,10 @@ structured `error` object.
 workspace command in `daemon` mode. During the transition a version-bypass
 run is the in-process path, and a daemon with newer schemas is reported in
 one line and not used — the command itself still runs in-process, where the
-file-level checks of §2.7 apply. The transport range, the CLI policy and the
-generalised busy rule under "From protocol 11" are plan: step 5g.1 (range)
-and step 5g.3 (policy, busy rule).*
+file-level checks of §2.7 apply. The transport range under "From protocol
+11" is step 5g.1 (`version.negotiate`; an editor observes a daemon whose range
+overlaps its own); the CLI policy and the generalised busy rule are plan,
+step 5g.3.*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -920,7 +921,7 @@ A client never stops a busy daemon, and never drives a daemon it does not
 match. A daemon whose schemas are newer than the client's is never stopped by
 it; the client refuses with the update message of §2.7 "Reading a newer file".
 
-**From protocol 11.** *(Plan, steps 5g.1 and 5g.3.)* The rules above split
+**From protocol 11.** *(Transport: step 5g.1; the rest plan, step 5g.3.)* The rules above split
 into a protocol rule and a client policy:
 
 - **Transport.** Client and daemon agree on the highest transport version in
@@ -1989,7 +1990,7 @@ runtime is deferred until that module is actively developed.
    - **5f — Plugin/binary boundary**: the classification manifest and the
      ratcheting guard test (`tests/split`), no behaviour change. *(In review,
      #149.)*
-   - **5g.1 — Transport 11 and the root object** (§19.8, §19.20): the envelope
+   - **5g.1 — Transport 11 and the root object** *(done)* (§19.8, §19.20): the envelope
      (`call`, structured `error`, `signal`), `loomworks.Root/1`
      (`describe`, `schema`, `subscribe`, `unsubscribe`, `objects_changed`),
      `welcome.objects`, `protocol_min`; the daemon accepts protocols 10 and
@@ -2047,9 +2048,20 @@ runtime is deferred until that module is actively developed.
 
 ### 19.20 Interfaces
 
-*Status: plan; nothing in this section is implemented. The transport
-envelope, the root object, the schema format, the validator and the lint and
-ratchet tests are step 5g.1; the first interfaces, their transcripts and the
+*Status: step 5g.1 is implemented on `staging/daemon`: the transport
+envelope (`call`, `ok`, the structured `error`, `signal`; task frames as
+before), the root object with `loomworks.Root/1` (`describe`, `schema`,
+`subscribe`, `unsubscribe`, `objects_changed`, `retiring`) and
+`welcome.objects` (`daemon/interfaces.lua`), the schema format and the
+documents of the transport, `loomworks.Root/1` and `loomworks.Common/1`
+(`spec/protocol/`, shipped in the bundle as `loomworks/protocol/`), the
+validator and the lint and ratchet tests (`proto/schema.lua`,
+`proto/schema_check.lua`). Arguments are always validated; results are
+validated in development builds and tests (a violation is an `internal`
+error), signals only logged. No core interface beyond the root exists yet, so
+`not_loaded`, `stopping`, `retiring` and `forbidden` are defined but not yet
+returned, and `frozen/` is empty until a stable release ships an interface
+version. The rest is plan: the first interfaces, their transcripts and the
 conformance runner step 5g.2; the CLI policy, the busy rule and the guard's
 interface ratchet step 5g.3; the editor's interfaces steps 5j–5o; module
 interfaces step 5q; out-of-process providers are reserved and built later
