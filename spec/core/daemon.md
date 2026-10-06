@@ -75,8 +75,10 @@ inside its own process when it has no host binary (§19.16).
 default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
 `in-process` mode no daemon is launched or used. In `daemon` mode every
 workspace command ensures the daemon is running (launching it if absent)
-and routes the operations that have moved (§19.19); all other operations run
-on the in-process path. When the default flips, `in-process` is accepted as a
+— except read-only commands (§19.14), which never launch, stop or restart a
+daemon; they use a live compatible one or read in-process — and routes the
+operations that have moved (§19.19); all other operations run on the
+in-process path. When the default flips, `in-process` is accepted as a
 synonym of `no-daemon`.
 
 **Loopback during the transition (§19.19 step 5e).** In `daemon` mode, an

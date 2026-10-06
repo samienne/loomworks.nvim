@@ -153,13 +153,11 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
     --- Three-way parity of `args` on `roots3`: only the shared daemon's read
     --- is served by a snapshot and builds a projection; the in-process and
     --- the attached (`--no-daemon`) reads are in-process (no loopback
-    --- runtime, §19.1). `launch`: start the daemon of the shared root first
-    --- (`lw status` never launches one).
-    local function parity(roots3, args, launch)
-        if launch then
-            local r = lw(roots3[2], { "--no-input", "project", "list" })
-            assert.equals(0, r.code, r.stderr)
-        end
+    --- runtime, §19.1). The daemon of the shared root is started first: a
+    --- read-only command never launches one, and three_way stops it after.
+    local function parity(roots3, args)
+        local r = lw(roots3[2], { "--no-input", "daemon", "restart" })
+        assert.equals(0, r.code, r.stderr)
         local before, proj = {}, {}
         for i, root in ipairs(roots3) do before[i], proj[i] = snapshots(root), projections(root) end
         local res = H.three_way({ roots = roots3, args = args, lw = lw, env = env, routed = false,
@@ -178,7 +176,7 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
 
     it("every read-only command family: same output, exit code and files", function()
         local roots3 = { workspace(), workspace(), workspace() }
-        local r = parity(roots3, { "status" }, true)
+        local r = parity(roots3, { "status" })
         assert.truthy(r.stdout:find("dev", 1, true), r.stdout)
         r = parity(roots3, { "profile", "show", "dev" })
         assert.equals(0, r.code, r.stderr)
@@ -204,9 +202,31 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         assert.equals(1, r.code)
     end)
 
+    it("with no daemon running a read launches none and reads in-process (§19.1)", function()
+        local root = workspace()
+        local inspect = require("loomworks.daemon.inspect")
+        assert.equals("none", inspect.state(root).kind)
+        for _, args in ipairs({ { "project", "list" }, { "project", "describe", "app" },
+            { "config", "list" }, { "profile", "show", "dev" }, { "launch", "list" } }) do
+            local what = table.concat(args, " ")
+            local inproc = lw(root, args, { LOOMWORKS_RUNTIME = "in-process" })
+            local r = lw(root, { "--no-input", unpack(args) })
+            assert.equals(inproc.code, r.code, what .. ": " .. r.stderr)
+            assert.equals(norm(inproc.stdout, root), norm(r.stdout, root), what)
+            assert.equals("none", inspect.state(root).kind, what .. ": launched a daemon")
+        end
+        assert.equals(0, projections(root), "a projection without a daemon")
+        assert.equals(0, snapshots(root))
+        -- A form that writes keeps the ensure step: it launches the daemon.
+        local w = lw(root, { "--no-input", "project", "describe", "app", "Changed." })
+        assert.equals(0, w.code, w.stderr)
+        assert.are_not.equals("none", inspect.state(root).kind)
+        H.stop_daemon(root, env)
+    end)
+
     it("a daemon that does not answer in time: the read falls back in-process with a note", function()
         local root = workspace()
-        local r = lw(root, { "--no-input", "project", "list" })
+        local r = lw(root, { "--no-input", "daemon", "restart" })
         assert.equals(0, r.code, r.stderr)
         local inproc = lw(root, { "status" }, { LOOMWORKS_RUNTIME = "in-process" })
         local n = projections(root)

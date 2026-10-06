@@ -7510,6 +7510,50 @@ end
 --- settings, help, daemon …).
 M.NO_DAEMON_COMMANDS = { trust = true, nuke = true, unlock = true }
 
+--- The read-only sub-commands of each command (spec §19.1, §19.14; `lw
+--- status` is dispatched before the guard): they read a live compatible
+--- daemon's projection or in-process (`read_workspace`), so their ensure step
+--- never launches a daemon. `false` = the bare command (its list form).
+M.READ_ONLY_SUBS = {
+  project = { [false] = true, list = true, show = true },
+  config = { [false] = true, list = true, show = true, get = true },
+  configset = { [false] = true, list = true, show = true },
+  profile = { show = true, query = true },
+  launch = { [false] = true, list = true, show = true },
+}
+M.READ_ONLY_ALIAS = {
+  configuration = "config", cfg = "config", ["configuration-set"] = "configset", cs = "configset",
+}
+--- The commands with a `describe` sub-command read by `cmd_describe`, and its
+--- item operand count.
+M.DESCRIBE_OPS = { project = 1, config = 2, configset = 1, profile = 1 }
+
+--- Is argv `args` a read-only command (spec §19.1, §19.14): `lw tools`,
+--- `profile show` / `query`, `project` / `config` / `configset` / `launch`
+--- list and show, `config get`, and the read form of `describe` (no
+--- description source, `--clear` or `--edit`; only `--json`)? Like the
+--- NO_DAEMON_COMMANDS its ensure step is skipped: it never launches, stops or
+--- restarts a daemon. Commands that write keep the ensure step.
+--- @param args string[]
+--- @return boolean
+function M._read_only_command(args)
+  local command = args[1]
+  if command == "tools" then return true end
+  command = M.READ_ONLY_ALIAS[command] or command
+  local subs = M.READ_ONLY_SUBS[command]
+  if not subs then return false end
+  local sub = args[2]
+  if sub == nil then return subs[false] == true end
+  if subs[sub] then return true end
+  if sub == "describe" and M.DESCRIBE_OPS[command] then
+    for i = 3 + M.DESCRIBE_OPS[command], #args do
+      if args[i] ~= "--json" then return false end
+    end
+    return #args >= 2 + M.DESCRIBE_OPS[command]
+  end
+  return false
+end
+
 --- Workspace commands routed to the workspace daemon (spec §19.15): their
 --- ensure step waits longer for a slow daemon (§19.10) before they run
 --- in-process. `test`: its batch form (§19.19 step 5); `run`: its preparation
@@ -12849,9 +12893,10 @@ local function main()
   -- it (below), so its ensure gives a slow daemon longer (§19.10).
   -- Not the recovery commands: `trust` / `nuke` repair a refused workspace
   -- and `unlock` clears stuck locks — none of them may wait on (or start) a
-  -- daemon.
+  -- daemon. Nor the read-only commands: like `lw status` they read a live
+  -- compatible daemon or in-process and never launch one (§19.1, §19.14).
   local ensured
-  if not M.NO_DAEMON_COMMANDS[command] then
+  if not M.NO_DAEMON_COMMANDS[command] and not M._read_only_command(a) then
     ensured = M._ensure_daemon(root, M._routed_command(a))
   end
 
