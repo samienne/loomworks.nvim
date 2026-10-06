@@ -1,0 +1,57 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.Workspace",
+  "version": 1,
+  "description": "Object /workspace (spec 19.13 Header, 19.12, 19.20): header and the changed signal.",
+  "cases": [
+    {
+      "name": "header reports the session and an unloaded model without loading it",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "header", "args": {} } },
+        { "expect": {
+            "kind": "ok", "req_id": 1,
+            "result": {
+              "root": { "$var": "welcome.header.root" },
+              "pid": { "$var": "welcome.header.pid" },
+              "lw_version": { "$var": "lw_version" },
+              "session_generation": { "$var": "welcome.header.session_generation" },
+              "state": "unloaded",
+              "name": { "$absent": true }
+            }
+        } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "header", "args": { "x": 1 } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "header reports the loaded model once an operation loaded it",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "method": "header", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "state": "loaded", "name": { "$type": "string" }, "error": { "$absent": true } } } }
+      ]
+    },
+    {
+      "name": "a subscriber receives changed for a committed write, with gapless seq",
+      "fixture": "shell",
+      "allow": [
+        { "kind": "task" },
+        { "kind": "model_change" },
+        { "kind": "signal", "object": "/workspace", "name": "changed" }
+      ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "signals": ["changed"] } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "sub_id": { "$bind": "sub" }, "seq": 0 } } },
+        { "send": { "kind": "build", "req_id": 2, "args": { "profile": "dev" }, "interactive": false, "env": { "$var": "env" }, "command": "lw build" } },
+        { "expect": { "kind": "ok", "req_id": 2, "outcome": "accepted", "task_id": { "$bind": "task" } } },
+        { "expect": { "kind": "task", "task_id": { "$var": "task" }, "phase": "done", "exit_code": 0 }, "timeout_ms": 120000 },
+        { "expect": {
+            "kind": "signal", "object": "/workspace", "iface": "loomworks.Workspace", "v": 1, "name": "changed",
+            "sub_id": { "$var": "sub" }, "seq": 1,
+            "args": { "seq": { "$type": "integer" }, "session_generation": { "$var": "welcome.header.session_generation" } }
+        } }
+      ]
+    }
+  ]
+}

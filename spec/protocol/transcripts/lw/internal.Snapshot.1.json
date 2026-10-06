@@ -1,0 +1,50 @@
+{
+  "transcripts": 1,
+  "interface": "lw.internal.Snapshot",
+  "version": 1,
+  "description": "Object /internal (spec 19.13 As interfaces): get, same-build only, in the client's environment.",
+  "cases": [
+    {
+      "name": "get returns the scope's tables, the tools, the index, seq and the session generation",
+      "fixture": "shell",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": {}, "env": { "$var": "env" } } },
+        { "expect": {
+            "kind": "ok", "req_id": 1,
+            "result": {
+              "outcome": "ok", "scope": "all",
+              "config": { "projects": { "app": { "$type": "object" } }, "configuration_sets": { "dev": { "app": "Debug" } } },
+              "user": { "profiles": { "dev": { "$type": "object" } } },
+              "cache": { "$type": "object" },
+              "tools": { "$type": "object" },
+              "index": { "projects": { "app": { "$any": true } }, "profiles": { "dev": { "$any": true } } },
+              "seq": { "$type": "integer" },
+              "session_generation": { "$var": "welcome.header.session_generation" }
+            }
+        } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "config" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok", "scope": "config", "config": { "$type": "object" }, "user": { "$absent": true }, "cache": { "$absent": true } } } }
+      ]
+    },
+    {
+      "name": "get needs the client environment and a known scope",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "error", "req_id": 1, "error": { "code": "invalid_args" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": { "scope": "everything" }, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "a client of another lw version is refused same_build_required",
+      "hello": { "lw_version": "0.0.0+conformance.other" },
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1, "method": "get", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "error", "req_id": 1, "error": { "code": "same_build_required" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/internal", "iface": "lw.internal.Snapshot", "v": 1 } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "same_build_required" } } }
+      ]
+    }
+  ]
+}
