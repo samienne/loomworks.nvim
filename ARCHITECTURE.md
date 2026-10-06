@@ -1081,6 +1081,34 @@ on the spot (a confirmation prompt blocks the loop) and every attached
 fallback checks it, so a command that lost R exits 1 rather than continuing
 in-process.
 
+**Interfaces (spec §19.20 — plan, steps 5g.1–5g.3 and 5q; nothing built yet).**
+Three layers, each with one owner:
+
+- **Transport** — `daemon/protocol.lua` (framing) plus the envelope and the
+  root object `/` (`loomworks.Root/1`); the only thing `protocol` versions.
+- **Interfaces** — `daemon/interfaces.lua`: the registry of mounted
+  `(object, iface, v)` and the dispatch table `(object, iface, v, method) →
+  handler` that replaces `server.lua`'s `_dispatch_request` chain (the frozen
+  control subset stays hard-wired before it). Protocol 10's kinds are rows
+  keyed `("legacy", kind)` pointing at the same handlers through an
+  argument/result adapter; the service bodies (`_on_operation`,
+  `_on_model_request`, `with_model`) are shared, never forked. Module
+  interfaces are mounted on `/modules/<id>` from the module table's
+  `interfaces` after a method ↔ schema check.
+- **Data** — records carrying the `snapshot.registry` ids.
+
+Client side, `loomworks/proto/` (the guard's `shared` class) holds the codec,
+the envelope, the interface client stub and a pure-Lua validator for the
+restricted JSON Schema keyword subset — nothing interface-specific beyond
+loading documents. The documents live in `spec/protocol/` (`transport.json`,
+`interfaces/<namespace>/<Name>.<v>.json`, `fixtures/` transcripts, `frozen/`
+release snapshots, `meta/`). The plugin/binary boundary guard (`tests/split`,
+#149) enforces that the plugin reaches the binary only through the protocol;
+its interface ratchet (step 5g.3) adds that every plugin-side call names an
+interface version with a schema under `spec/protocol/` and client-conformance
+transcripts. The two are complementary: the guard says *only through the
+protocol*, the schemas say *what the protocol is*.
+
 ### Workspace trust (spec §17)
 
 Where each gate sits — every one is on a single choke point so a new caller
