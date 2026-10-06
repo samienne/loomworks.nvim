@@ -232,6 +232,8 @@ describe("additive ratchet", function()
             d.methods.get.result.properties.more = { type = "string" }         -- a result field
             table.insert(d.methods.get.result.required, "more")
             table.insert(d.methods.get.params.properties.mode.enum, "c")       -- a parameter value
+            table.insert(d.methods.get.result.properties.state.enum, "broken") -- a result state
+            table.insert(d.signals.changed.args.properties.kind.enum, "z")     -- a signal value
             d.signals.changed.args.properties.why = { type = "string" }        -- a signal field
             d.methods.put = { params = { type = "object" }, result = { type = "object" } } -- a method
         end, function(t)
@@ -252,10 +254,6 @@ describe("additive ratchet", function()
         one(function(d) d.methods.get.params.properties.req = { type = "string" }
             table.insert(d.methods.get.params.required, "req") end, "parameter 'req' made required")
         one(function(d) d.methods.get.params.properties.id.type = "integer" end, "retyped from string to integer")
-        one(function(d) table.insert(d.methods.get.result.properties.state.enum, "broken") end,
-            "result or signal enum gained broken")
-        one(function(d) table.insert(d.signals.changed.args.properties.kind.enum, "z") end,
-            "/signals/changed/args/properties/kind: result or signal enum gained z")
         one(function(d) d.methods.get.params.properties.mode.enum = { "a" } end, "enum value b removed")
         one(function(d) d.methods.get.result.properties.state.enum = { "on" } end, "enum value off removed")
         one(function(d) d.methods.get.result.required = {} end, "'state' no longer required")

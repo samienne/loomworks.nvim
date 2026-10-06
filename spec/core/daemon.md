@@ -2270,9 +2270,9 @@ own repository. The contract is enforced by:
 - an **additive ratchet**: against its frozen snapshot, a version's parameters
   (method `params`, `subscribe_args`, and the transport frames a client sends)
   may only gain optional properties and enum values, its results and signals
-  only gain properties and alternatives; nothing is removed, renamed, retyped
-  or made required, and a result or signal never gains an enum value.
-  Anything else is a new version. A client that sends a parameter value added
+  only gain properties, enum values and alternatives; nothing is removed
+  (including an enum value), renamed, retyped or made required. Anything else
+  is a new version. A client that sends a parameter value added
   after the version first shipped checks the interface's `schema_digest` (or
   the daemon's version) first, since an older daemon refuses it as
   `invalid_args`;
@@ -2284,11 +2284,10 @@ own repository. The contract is enforced by:
 - **client conformance**: the plugin's client against the same transcripts,
   replayed, for every interface version it claims.
 
-Clients **must tolerate** unknown fields in results and signals, so an
-interface may add a field, or an alternative (an outcome) to a union, without
-a new version; a new enum value in a result or signal is a new version, and a
-client still shows a value it does not know as unknown or neutral rather than
-failing.
+Clients **must tolerate** unknown fields, unknown enum values and unknown
+alternatives in results and signals (an unknown value is shown as unknown or
+neutral, never a failure), so an interface may add a field, a state or an
+outcome without a new version.
 
 **Versions and deprecation.** Within an interface version only additive changes
 are allowed. A breaking change makes version `N+1`; the daemon keeps serving
