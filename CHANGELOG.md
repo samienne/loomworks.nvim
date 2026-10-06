@@ -41,6 +41,20 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon (`runtime-mode daemon`): the workspace daemon answers
+  two read-only requests, a snapshot of its loaded model (from which a client
+  builds a read-only copy of the workspace) and host-probing queries (first:
+  the detected toolchains) run in the requesting client's environment; its
+  welcome now names the workspace, its active profile and a failed load. The
+  read-only commands (`lw status`, `lw profile show` / `query`, `describe`,
+  `project` / `config` / `configset` / `launch` list and show, `config get`,
+  `lw tools`) read that copy in daemon mode when a daemon of the same `lw`
+  version is already running, with the same output as before; they never
+  launch, stop or restart a daemon, and read in-process otherwise (also with
+  `--no-daemon` or CI, or when the daemon does not answer in time, with a
+  one-line note). The daemon protocol version is
+  now 10: a daemon started by an earlier `lw` is restarted when idle, or
+  retired when busy, the first time the new `lw` talks to it. (#150)
 - `lw status` shows each profile's build state in parentheses after its
   name: `(built)`, `(configured)`, `(unconfigured)`, `(unknown)`, or counts
   when its projects differ (`(1 built, 1 unconfigured)`), the same label as

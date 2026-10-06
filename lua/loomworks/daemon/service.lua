@@ -57,10 +57,25 @@
 --- and a `plan` the token differs from: "refused" (`reset_plan.CHANGED`,
 --- exit 1). Otherwise "accepted" (`profile_key` absent for `--all`); the task
 --- prints the listing first only when no `plan` was sent (`-y`).
+---
+--- **Request** `{ kind = "snapshot", scope?, env }` (§19.13) → reply `ok`
+--- with `outcome = "ok"`, the scope's tables, `tools`, `shared_ignored`,
+--- `index`, `seq` and `session_generation` (loomworks.daemon.snapshot); or
+--- "refused" / "declined" as for `build`. No task, no lock. A loaded model is
+--- served as it is (`live` with `as_is`: no reload for another environment,
+--- no file check, no tool wait); with none loaded, it is loaded in the
+--- request's environment without waiting for tool detection.
+---
+--- **Request** `{ kind = "query", name, args?, env }` (§19.14) → reply `ok`
+--- with `outcome = "ok"` and `result`; "refused" (`message`) for an unknown
+--- query or a failed one; "declined" as for `build`. Read-only: it runs in
+--- the request's environment (its model segment) against the model as it is,
+--- loaded as for `snapshot`, and never unloads it.
 
 local build_run = require("loomworks.build_run")
 local envscope = require("loomworks.daemon.envscope")
 local protocol = require("loomworks.daemon.protocol")
+local snapshot = require("loomworks.daemon.snapshot")
 local tasks_mod = require("loomworks.daemon.tasks")
 
 local M = {}
@@ -70,11 +85,13 @@ M.LOAD_WAIT_MS = 45000
 
 --- @class loomworks.daemon.BuildService
 --- @field server loomworks.daemon.Server
---- @field host table { load(root, handlers) → ws|nil, err; unload(); current() → the loaded
----   workspace (nil while it (re)loads); settle(ms); setup_error() → refusal; unknown_target_hint? }
+--- @field host table { load(root, handlers, opts?: { wait_tools?: boolean }) → ws|nil, err; unload(); current() → the loaded
+---   workspace (nil while it (re)loads); settle(ms); setup_error() → refusal; unknown_target_hint?;
+---   error_state?() → { message, refused? }|nil, the failed load the welcome header reports }
 --- @field ws table|nil the live workspace
 --- @field env_sig string|nil the environment signature `ws` was loaded in
 --- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
+--- @field ids loomworks.daemon.IdRegistry the session's opaque-id registry (§19.12)
 local Service = {}
 Service.__index = Service
 
@@ -83,7 +100,8 @@ Service.__index = Service
 --- @param host table
 --- @return loomworks.daemon.BuildService
 function M.attach(server, host)
-    local self = setmetatable({ server = server, host = host, runs = {}, queue = {} }, Service)
+    local self = setmetatable({ server = server, host = host, runs = {}, queue = {},
+        ids = snapshot.registry() }, Service)
     self.tasks = tasks_mod.new(server)
     self.tasks.on_change = function() self:_update_busy() end
     envscope.install()
@@ -202,15 +220,27 @@ end
 
 --- The live workspace for request `ctx`, re-validated (see the header).
 --- Returns ws; or nil + refusal message; or nil, nil, decline reason.
+--- `as_is` (the read-only `snapshot` and `query` requests): a loaded model is
+--- returned as it is — never reloaded for another environment, no commit
+--- journal or file check (they may write), no wait for tool detection — and
+--- with none loaded, the load does not wait for tool detection either.
 --- @param ctx table
+--- @param as_is? boolean
 --- @return table|nil ws, string|nil refusal, string|nil decline
-function Service:live(ctx)
+function Service:live(ctx, as_is)
     local root = self.server.root
     local sig = envscope.signature(ctx.env)
     if self.ws and self.host.current() ~= self.ws then
         -- Unloaded under us (a refusal during an earlier sync).
         self.ws, self.env_sig = nil, nil
         self:_stop_stale_runs("the workspace was unloaded (refused or reloaded .nvim files)")
+    end
+    if as_is then
+        if self.ws then return self.ws end
+        local ws, err = self.host.load(root, self:handlers(), { wait_tools = false })
+        if not ws then return nil, err or "failed to load workspace" end
+        self.ws, self.env_sig = ws, sig
+        return ws
     end
     if self.ws and self.env_sig ~= sig then
         if next(self.runs) then
@@ -284,6 +314,93 @@ end
 --- @param msg table
 function Service:on_reset(conn, msg)
     return self:_on_operation("reset", conn, msg)
+end
+
+--- The `welcome` header's model fields (§19.13): the live workspace's name
+--- and active profile, else the host's load failure. Never loads.
+--- @return table
+function Service:header()
+    local ws = self.ws
+    if ws and self.host.current and self.host.current() ~= ws then ws = nil end
+    local err = (not ws and self.host.error_state) and self.host.error_state() or nil
+    return snapshot.header(ws, err)
+end
+
+--- A read-only model request (`snapshot`, `query`): validate it, then answer
+--- it in a model segment against the live workspace, in the client's
+--- environment. `answer(ws, ctx)` returns the reply's fields (`outcome`
+--- defaults to "ok").
+--- @param conn table
+--- @param msg table
+--- @param answer fun(ws: table, ctx: table): table
+--- @param bad string|nil a validation failure: declined as malformed
+function Service:_on_model_request(conn, msg, answer, bad)
+    local srv = self.server
+    local env, eerr = envscope.validate(msg.env)
+    local ctx = { op = msg.kind, conn = conn, env = env, args = {} }
+    function ctx.reply(fields)
+        ctx.replied = true
+        fields.kind = protocol.KIND.ok
+        fields.req_id = msg.req_id
+        srv:_send(conn, fields)
+    end
+    if not env then return ctx.reply({ outcome = "declined", reason = eerr }) end
+    if bad then return ctx.reply({ outcome = "declined", reason = bad }) end
+    if self.stopping or srv.stopped then
+        return ctx.reply({ outcome = "declined", reason = "the workspace runtime is stopping" })
+    end
+    self:with_model(ctx, function()
+        if ctx.conn.closed then return end
+        -- Tests: a slow model segment (the client's read deadline, §19.1).
+        local delay = tonumber(env.LW_TEST_MODEL_DELAY_MS or "")
+        if delay then vim.wait(delay, function() return ctx.conn.closed end, 10) end
+        local ws, refusal, decline = self:live(ctx, true)
+        if not ws then
+            if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
+            return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1, notes = ctx.notes })
+        end
+        if ctx.refused then
+            return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
+        end
+        local fields = answer(ws, ctx)
+        fields.outcome = fields.outcome or "ok"
+        fields.notes = ctx.notes
+        ctx.reply(fields)
+    end)
+end
+
+--- Handle a `snapshot` request (§19.13): the scope's tables of the live
+--- model, its toolchain detection and the current-key → id index.
+--- @param conn table
+--- @param msg table
+function Service:on_snapshot(conn, msg)
+    local bad = not snapshot.valid_scope(msg.scope) and "malformed request" or nil
+    return self:_on_model_request(conn, msg, function(ws)
+        local snap = snapshot.build(ws, msg.scope, self.ids)
+        snap.seq, snap.session_generation = self.server.seq, self.server.generation
+        self.server:log("snapshot (scope %s) for %s", tostring(snap.scope), self.server:_peer_text(conn))
+        return snap
+    end, bad)
+end
+
+--- Handle a `query` request (§19.14): a registered host-probing query run
+--- against the live model in the client's environment.
+--- @param conn table
+--- @param msg table
+function Service:on_query(conn, msg)
+    local bad = (type(msg.name) ~= "string" or (msg.args ~= nil and type(msg.args) ~= "table"))
+        and "malformed request" or nil
+    return self:_on_model_request(conn, msg, function(ws)
+        local fn = snapshot.QUERIES[msg.name]
+        if not fn then return { outcome = "refused", message = "unknown query: " .. msg.name, exit_code = 1 } end
+        self.server:log("query %s for %s", msg.name, self.server:_peer_text(conn))
+        local ok, result, err = pcall(fn, ws, msg.args or {})
+        if not ok or result == nil then
+            return { outcome = "refused", message = "query " .. msg.name .. " failed: "
+                .. tostring(ok and err or result), exit_code = 1 }
+        end
+        return { result = result }
+    end, bad)
 end
 
 --- Is `a` (a `reset` request's args) well-formed?

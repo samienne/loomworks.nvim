@@ -27,8 +27,10 @@ local M = {}
 --- request (the preparation of `lw run`, §19.15 "Run"); 7 `origin` in the
 --- task `start` meta and `tasks` in the `status` reply (§19.11, §19.15, §19.16);
 --- 8 the routed `clean` request (`lw clean`, §19.15 "Clean"); 9 the routed
---- `reset` request and its `confirm` outcome (`lw reset`, §19.15 "Reset").
-M.PROTOCOL = 9
+--- `reset` request and its `confirm` outcome (`lw reset`, §19.15 "Reset");
+--- 10 the `snapshot` and `query` requests and the model fields of the
+--- `welcome` header (§19.13, §19.14).
+M.PROTOCOL = 10
 
 local function uv() return vim.uv or vim.loop end
 

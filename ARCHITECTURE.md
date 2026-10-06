@@ -982,6 +982,61 @@ configuration units, attaching it to every profile with one of them
 (`RemoteTask.profiles`); `running.format` shows `--all` in the profile
 column.
 
+**Snapshot, projection and queries (spec §19.13, §19.14; protocol 10).**
+`daemon/snapshot.lua` holds both sides. Daemon: `build(ws, scope, reg)`
+serializes the live model with its own serializers — `config` is
+`Workspace._shared_baseline`, `user` `Workspace:_serialize_user()`, `cache`
+`Workspace:_serialize_cache()` (each `_meta`-stamped as a save stamps it) —
+plus `_tools_by_type` as wire tool rows (`tool_rows` / `tools_from_rows`,
+the one `{ key, label, tool_data }` shape of the snapshot and the `tools`
+query), `_shared_ignored` and the semantic-key → id `index` (config units as
+`{ project, configuration, id }` rows) from the service's session-local
+`registry()` (weak-keyed object → id, §19.12);
+`header(ws, err)` is the welcome's model fields (`Service:header`, from the
+host's optional `error_state()`; `Server:_authed` adds them to
+`welcome.header`, never replacing the session fields). `QUERIES` is the host-probing registry (`tools`:
+`merge.detect_tools` over the live model, unassigned). `Service:on_snapshot` /
+`on_query` share `_on_model_request`: env validation, then a model segment
+that runs `live(ctx, true)` and replies (no task, no lock). `as_is` serves a
+loaded model unchanged (no env-signature reload, no journal or tracker
+check, no tool wait); with none loaded, `host.load(root, handlers,
+{ wait_tools = false })` loads it without waiting for detection (the CLI's
+`tool_cache_mode` latch is skipped in the daemon, so detection still runs). Client: `fetch(conn)` /
+`query(conn, name, args)` work on a pipe or loopback session; `project(root,
+snap)` builds the read-only projection on a private `Core.new` (a no-op
+`events` bus, no `on_written`, no target scan, detection answered from the
+snapshot) through
+`workspace.assemble_snapshot` — `assemble` split at `_assemble_parsed`, so
+the user and cache tables are parsed exactly as file bodies — then
+`Workspace.new` + `remerge`, with `_no_write` set first so it never saves
+and no file tracker (`opts.tools` replaces the snapshot's detection: a fresh
+`tools` query, or the machine-level tool cache). `QUERIES.profile_cache` is
+`Profile:compiler_cache_status` for one (profile, project) pair, both resolved
+from their keys at the boundary, answered as fields; the CLI formats them
+with `profile.lua` `compiler_cache_text` (the `Cache:` row's formatter). The
+service logs `snapshot (scope ...)` and `query <name>` lines.
+
+**Read-only CLI commands on the projection.** `cli.lua` `read_workspace(root,
+wait_tools, opts)` is the one seam: `M._read_projection` returns the
+projection in `daemon` mode, else nil and the command loads in-process as
+before. It has no runtime side effects: only a shared selection
+(`runtime.select`, `sel.daemon`) whose daemon is already live
+(`inspect.state`), passes the endpoint check and runs this version
+(`version.matches` on the session's challenge) is used; it never launches,
+reconciles (no `_meet_live`), starts a loopback runtime or takes the runtime
+lock. Each request is bounded: `READ_DEADLINE_MS` (snapshot) /
+`READ_QUERY_DEADLINE_MS` (queries), or `READ_MISSED_PINGS` unanswered pings
+one `READ_PING_MS` apart; then a one-line note and the in-process read. A
+refusal ends the command with the runtime's message (the in-process line), a
+declined request or a failed connection falls back in-process.
+`LW_TEST_READ_TRACE` (tests) appends a `projection <root>` line when one is
+built; `LW_TEST_MODEL_DELAY_MS` in a request's env (tests) delays its model
+segment. `opts.keep` leaves the session open for
+`M._read_query` (`lw profile query ... cache` asks `profile_cache`). Commands on
+it: status, profile show/query, the read form of describe, project / config /
+configset / launch list and show, config get, tools. Commands that write
+never read through it; `lw health` still probes in-process.
+
 **Step 5e: loopback (spec §19.1 "Loopback during the transition").**
 `daemon/loopback.lua` `pair()` returns two connected in-memory
 ends with the pipe methods the server, client and task streams call

@@ -75,8 +75,10 @@ inside its own process when it has no host binary (§19.16).
 default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
 `in-process` mode no daemon is launched or used. In `daemon` mode every
 workspace command ensures the daemon is running (launching it if absent)
-and routes the operations that have moved (§19.19); all other operations run
-on the in-process path. When the default flips, `in-process` is accepted as a
+— except read-only commands (§19.14), which never launch, stop or restart a
+daemon; they use a live compatible one or read in-process — and routes the
+operations that have moved (§19.19); all other operations run on the
+in-process path. When the default flips, `in-process` is accepted as a
 synonym of `no-daemon`.
 
 **Loopback during the transition (§19.19 step 5e).** In `daemon` mode, an
@@ -86,6 +88,15 @@ operations (`lw build`, `lw test`, the preparation of `lw run`, `lw clean`,
 `lw reset`; §19.15) attached: the client starts the daemon's server and build
 service in its own process, holds the runtime lock in `attached` mode for the
 command (§19.2), and sends the same request over the loopback transport. The
+read-only commands (`lw status`, `lw profile show` / `query`, the read form of
+`describe`, `project` / `config` / `configset` / `launch` list and show,
+`config get`, `lw tools`; §19.13, §19.14) read the projection of a live
+shared daemon when one is compatible (it authenticates and runs this lw's
+version), and otherwise read in-process; never through the loopback. A read
+never launches, stops or restarts a daemon and never takes the runtime lock;
+a daemon that does not answer in time (a bounded wait, unanswered keepalive
+pings) is left alone and the command reads in-process after a one-line note.
+The
 operations not yet routed (profile and project mutations, publish / import /
 pull, devices — they need the command machinery of §19.14) and every
 operation in `in-process` mode (still the default) run on the in-process path
@@ -792,7 +803,9 @@ plus the `prepare_run` request, §19.15; protocol version 7: 6 plus
 `origin` in the task `start` meta and `tasks` in the `status` reply, §19.11,
 §19.15, §19.16; protocol version 8: 7 plus the routed `clean` request,
 §19.15; protocol version 9: 8 plus the routed `reset`
-request and its `confirm` outcome, §19.15); the rest of the
+request and its `confirm` outcome, §19.15; protocol version 10: 9 plus
+the `snapshot` and `query` requests and the model fields of the `welcome`
+header, §19.13, §19.14); the rest of the
 broadcasts #88.*
 
 **Framing.** A message is a JSON object prefixed by its decimal byte length
@@ -813,6 +826,8 @@ address from the handle.
    sending anything else and reports the endpoint as untrusted. Otherwise →
    `auth { client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc) }`
 4. daemon verifies → `welcome { header, seq, clients, busy, retiring }` (§19.13).
+   Welcome fields are only ever added, inside `header`: a later field never
+   replaces `root`, `pid`, `lw_version` or `session_generation`.
 
 Nonces are 32 random bytes (hex); proofs are compared in constant time. Before
 `welcome` the daemon accepts only `hello` and `auth`, caps a frame at 64 KiB
@@ -989,8 +1004,9 @@ workspace to load. `lw daemon list` and `lw daemon stop --all` /
 *Status: master for the coarse `model_change` broadcast (`daemon/server.lua`
 `model_changed`, sent after each committed write of a state file by the
 daemon — the working copy or the cache, `Workspace:_record_written`), whose
-client re-reads the files (§19.16); the opaque-id registry, scope snapshots
-and the re-pull protocol #88.*
+client re-reads the files (§19.16), and for the opaque-id registry and the
+current-key → id index (`daemon/snapshot.lua` `registry`, `index`; carried in
+a snapshot, §19.13); the id-keyed broadcasts and the re-pull protocol #88.*
 
 **Step 4 form.** `model_change { seq, session_generation }`: `seq` advances by
 one per broadcast within a session. The editor, which still loads the
@@ -1018,7 +1034,11 @@ optimization.
 
 ### 19.13 Snapshot and projection
 
-*Status: #88.*
+*Status: master for the `snapshot` request, the projection builder and the
+`welcome` header (`daemon/snapshot.lua`, `daemon/service.lua`
+`on_snapshot`, `workspace.assemble_snapshot`; protocol 10); the read-only CLI
+commands read a projection in `daemon` mode (`cli.lua` `read_workspace`,
+§19.1). Re-pulls on `model_change` and the view-scoped model future.*
 
 The daemon is model-authoritative; a client keeps a **projection** for
 rendering and integration. The client builds it with the **same deserializer**
@@ -1034,9 +1054,56 @@ broadcasts, so a status-line redraw never queries); a **view-scoped model**
 it on close); and **transient queries** (pickers and commands query, act,
 discard).
 
+**`snapshot` request.** `snapshot { scope, env }`: `scope` is `all` (the
+default), `config`, `user` or `cache`; `env` is the requesting client's
+environment, as for a routed operation (§19.15). A loaded model is served as
+it is, whatever the requester's environment: a snapshot never reloads it,
+runs no file check and waits for no tool detection. With no model loaded the
+daemon loads it in the requester's environment, without waiting for tool
+detection (it goes on in the background). The reply is `ok` with
+`outcome = "ok"` and:
+
+- `config` (scope `config`): the published baseline as the daemon loaded it
+  from `loomworks.json` (parsed, program-bearing fields stripped, §17.6);
+- `user` (scope `user`): the working copy as the model serializes it for
+  `loomworks.user.json`, with its schema `_meta`;
+- `cache` (scope `cache`): the cache as the model serializes it for
+  `loomworks.cache.json`, with its schema `_meta`;
+- always: `tools` (the toolchain detection the model holds, as tool rows:
+  module type → list of `{ key, label, tool_data }`, `key` absent for a
+  module whose single toolchain has none; the same shape as the `tools`
+  query, §19.14), `shared_ignored` (the stripped program-bearing fields,
+  §17.6), `index` (the semantic-key → id index of §19.12: `projects`
+  project key → id, `config_sets` name → id, `profiles` profile key → id,
+  and `config_units` a list of `{ project, configuration, id }` by project
+  and configuration key; an unchanged model keeps its ids across
+  snapshots), `seq` and `session_generation`.
+
+A scope the request does not name is absent. A workspace the daemon cannot
+load is answered `outcome = "refused"` (`message`), and a request it does not
+carry (stopping, malformed, another environment while a build runs)
+`outcome = "declined"` (`reason`), as for a routed operation. A snapshot takes
+no lock, starts no task and writes nothing to a loaded model; the load it
+triggers when none is loaded is the ordinary workspace load (it may complete
+a commit journal, §19.4). A client builds its projection
+from a snapshot of scope `all` through the deserializer of the on-disk load,
+fed these tables instead of the files' bytes (their signatures are not
+re-verified: the wire is authenticated). A projection is read-only: it never
+saves the working copy or the cache, and it watches no files.
+
+**Header.** `welcome.header` carries `root`, `pid`, `lw_version` and
+`session_generation`, plus the model's `state`: `loaded` with the
+workspace's `name` and `active_profile` (the active profile's key, absent when
+none); `error` or `refused` (a trust, newer-schema or journal refusal) with
+the load failure's `error` message; or `unloaded` before the daemon loaded the
+workspace. Sending `welcome` never loads the workspace.
+
 ### 19.14 Commands
 
-*Status: #88 (mutation commands); the set of commands grows per §19.19.*
+*Status: #88 (mutation commands); the set of commands grows per §19.19.
+Master for the `query` request with the `tools` and `profile_cache` queries
+(`daemon/snapshot.lua` `QUERIES`, `daemon/service.lua` `on_query`; protocol
+10); `lw health` still probes in-process.*
 
 A mutation is a **command** the daemon applies to its model with the
 operation's locks (§19.3) and persists. Commands are FIFO-serialized: a
@@ -1044,7 +1111,27 @@ command's `model_change` broadcast precedes any later command's and precedes
 its own acknowledgement, which carries only the outcome (`ok`, `rolled-back`,
 `partially-applied`) or an error. Wire arguments (semantic keys) are resolved
 to domain objects at the serialization boundary; domain logic stays
-reference-based. Read-only queries run on the client's projection.
+reference-based.
+
+Read-only queries run on the client's projection, except queries that probe
+the host (health, tools, sdk detect, profile query), which are `query {name,
+args, env}` requests run in the client's environment. `name` names a query of
+the daemon's registry, `args` (an object, default empty) its arguments, and
+`env` the requesting client's environment, which the query runs in (a model
+segment, §19.15). The reply is `ok` with `outcome = "ok"` and `result` (the
+query's JSON object); `outcome = "refused"` (`message`) for an unknown name, a
+failed query or a workspace the daemon cannot load; `outcome = "declined"`
+(`reason`) as for `snapshot`. A query is read-only: it changes neither the
+model nor any file, and it runs against the model as it is (loaded as for
+`snapshot` when none is), never unloading it for another environment. The
+registry starts with `tools` (the toolchains each module type detects in the
+client's environment, detected once per query: `result.tools`, tool rows as
+in a snapshot's `tools`, §19.13) and `profile_cache` (`args.profile` and
+`args.project`, keys: `result.cache`, the compiler cache that profile
+resolves for that project, as fields `{ policy, tool?, path?, present,
+stale, msvc_auto_off, applicable, not_applied_reason?, not_applied_hint? }`
+that the client formats as `lw profile query … cache` prints it; `cache`
+absent when that project's module does not cache C/C++).
 
 ### 19.15 Task stream and delegated operations
 

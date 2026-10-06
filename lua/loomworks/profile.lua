@@ -656,6 +656,28 @@ function Profile:projects()
     return self._projects_list or {}
 end
 
+--- The `Cache:` row text of a compiler-cache status (`Profile:compiler_cache_status`
+--- fields `policy`, `applicable`, `not_applied_reason`, `tool`,
+--- `msvc_auto_off`). Pure: also formats the structured result of the daemon's
+--- `profile_cache` query (spec §19.14).
+--- @param st { policy: string, applicable: boolean, not_applied_reason?: string, tool?: string, msvc_auto_off?: boolean }
+--- @return string
+local function compiler_cache_text(st)
+    local policy = st.policy or "auto"
+    if policy == "off" then
+        return "Cache: off"
+    elseif st.applicable == false then
+        return "Cache: not applied (" .. (st.not_applied_reason or "not supported") .. ")"
+    elseif st.tool then
+        return "Cache: " .. st.tool
+    elseif st.msvc_auto_off then
+        return "Cache: auto (off for MSVC-style)"
+    elseif policy == "auto" then
+        return "Cache: auto (none found)"
+    end
+    return "Cache: " .. policy .. " (not found)"
+end
+
 --- Profile-level compiler-cache status (spec/ui.md profile Cache row, headless
 --- §16.18). Returns nil when the profile contains no C/C++-caching module.
 --- Otherwise a display-ready descriptor: the effective `cache` policy, the
@@ -721,22 +743,7 @@ function Profile:compiler_cache_status(pp)
         end
     end
 
-    local text
-    if policy == "off" then
-        text = "Cache: off"
-    elseif not applicable then
-        text = "Cache: not applied (" .. (not_applied_reason or "not supported") .. ")"
-    elseif resolved then
-        text = "Cache: " .. resolved.tool
-    elseif msvc_auto_off then
-        text = "Cache: auto (off for MSVC-style)"
-    elseif policy == "auto" then
-        text = "Cache: auto (none found)"
-    else
-        text = "Cache: " .. policy .. " (not found)"
-    end
-
-    return {
+    local status = {
         policy = policy,
         tool = resolved and resolved.tool or nil,
         path = resolved and resolved.path or nil,
@@ -748,8 +755,9 @@ function Profile:compiler_cache_status(pp)
         not_applied_hint = not_applied_hint,
         project = project,
         configuration = configuration,
-        text = text,
     }
+    status.text = compiler_cache_text(status)
+    return status
 end
 
 -- ---------------------------------------------------------------------------
@@ -1783,4 +1791,4 @@ function Profile:rebuild()
     end)
 end
 
-return { Profile = Profile, ProfileProject = ProfileProject }
+return { Profile = Profile, ProfileProject = ProfileProject, compiler_cache_text = compiler_cache_text }

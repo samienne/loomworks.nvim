@@ -586,11 +586,22 @@ function Server:_authed(conn)
     self.last_request = os.time()
     self:log("%s connected (lw %s, %d client(s))", self:_peer_text(conn), tostring(conn.peer and conn.peer.lw_version),
         self.n_clients)
+    local header = { root = self.root, pid = self.pid, lw_version = self.identity,
+        session_generation = self.generation }
+    -- The always-warm header (§19.13): the model's name, active profile
+    -- and error state, from the service when one is attached. Its fields
+    -- are only ever added: the session fields above are never overwritten.
+    if self.service and self.service.header then
+        local ok, h = pcall(self.service.header, self.service)
+        if ok and type(h) == "table" then
+            for k, v in pairs(h) do
+                if header[k] == nil then header[k] = v end
+            end
+        end
+    end
     self:_send(conn, {
         kind = protocol.KIND.welcome, seq = self.seq, clients = self.n_clients, busy = self.busy,
-        retiring = self.retiring,
-        header = { root = self.root, pid = self.pid, lw_version = self.identity,
-            session_generation = self.generation },
+        retiring = self.retiring, header = header,
     })
     self:_handle_changed()
 end
@@ -696,6 +707,12 @@ function Server:_dispatch_request(conn, msg)
     elseif msg.kind == K.reset and self.service then
         -- `lw reset` (§19.15 "Reset", §19.19 step 5d).
         return self.service:on_reset(conn, msg)
+    elseif msg.kind == K.snapshot and self.service then
+        -- A scope snapshot for the client's projection (§19.13).
+        return self.service:on_snapshot(conn, msg)
+    elseif msg.kind == K.query and self.service then
+        -- A host-probing query in the client's environment (§19.14).
+        return self.service:on_query(conn, msg)
     end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })
 end
