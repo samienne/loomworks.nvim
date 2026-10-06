@@ -115,8 +115,7 @@ describe("transcript lint (§19.20)", function()
             end
             return documents.read(r)
         end)
-        local text = table.concat(check.lint(set, rel), "
-")
+        local text = table.concat(check.lint(set, rel), "\n")
         assert.truthy(text:find("meta/transcript.schema.json", 1, true), text)
         assert.truthy(text:find("names loomworks.Tasks/1 but lives at", 1, true), text)
         assert.truthy(text:find("unknown fixture nope", 1, true), text)
