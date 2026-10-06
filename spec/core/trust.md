@@ -141,6 +141,10 @@ workspace back into the refused state rather than merging the change; an
 unsigned cache change is ignored (the in-memory state is kept, and the next save
 replaces the file).
 
+A refused working copy that becomes valid on disk (restored, or re-signed by
+`lw trust`) loads the workspace again. Likewise, the **trust** action on a
+working copy that is already valid loads a workspace refused for trust.
+
 ### 17.5 Writers
 
 Every writer of a signed file signs it: working-copy saves (every mutation),

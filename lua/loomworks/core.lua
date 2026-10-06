@@ -9,6 +9,7 @@
 --- @class loomworks.Core
 --- @field _deps table injected dependencies
 --- @field _workspace loomworks.Workspace|nil
+--- @field _refused_watch? loomworks.FileTracker watch on a file refused for trust (spec §17.4), reloading once it verifies
 --- @field _setup_error { root: string, message: string, trust?: { kind: "user"|"cache", status: string, path: string }, user_untrusted?: string, cache_untrusted?: boolean, user_version_mismatch?: boolean, newer?: boolean }|nil set when setup fails (`trust`: a refused `.nvim` file, spec §17.4; `newer`: a file with a newer schema, spec §2.7)
 --- @field _state "uninitialized"|"initializing"|"initialized"
 --- @field _pending_root string|nil root passed to setup(), known before async init resolves
@@ -181,6 +182,8 @@ end
 function Core:setup(opts)
     if self._state == "initializing" then return end
 
+    -- A load (of this or another workspace) replaces any refusal.
+    self:_stop_refused_watch()
     self._setup_error = nil
     self._state = "initializing"
     self._deps.events.emit("workspace_initializing")
@@ -326,6 +329,7 @@ function Core:_load_files(root, paths, results)
         end
         self._setup_error = setup_error
         self._state = "uninitialized"
+        if setup_error and setup_error.trust then self:_watch_refused(setup_error) end
         self._deps.events.emit("workspace_changed", nil)
     end
 
@@ -518,6 +522,39 @@ function Core:_trust_error(root, data)
         }
     end
     return nil
+end
+
+--- Watch a file refused for trust (spec §17.4): when it becomes valid on
+--- disk (restored with its signature, or re-signed by `lw trust`), load the
+--- workspace again. A change that still does not verify is ignored, so an
+--- invalid file is never re-refused (and re-notified) in a loop. Only a host
+--- that tracks files itself keeps one (not the CLI, nor the daemon). Stopped
+--- by the next `setup` and by `shutdown`.
+--- @param setup_error table the refusal (`{ root, trust = { kind, path } }`)
+function Core:_watch_refused(setup_error)
+    self:_stop_refused_watch()
+    if self._deps.quiet_trust_errors or self._deps.manual_file_tracking then return end
+    local t, root = setup_error.trust, setup_error.root
+    local tracker
+    tracker = self._deps.FileTracker.new({
+        callback = function(_, content)
+            if self._refused_watch ~= tracker then return end
+            if not content or self._deps.trust.verify(t.kind, content) ~= "valid" then return end
+            self:_stop_refused_watch()
+            self:setup({ root = root })
+        end,
+        schedule = self._deps.schedule,
+        read_file = self._deps.io.read_file,
+    })
+    self._refused_watch = tracker
+    tracker:watch(t.path)
+end
+
+--- Stop the watch on a file refused for trust, if any.
+function Core:_stop_refused_watch()
+    local tracker = self._refused_watch
+    self._refused_watch = nil
+    if tracker then tracker:stop() end
 end
 
 --- Read the working copy for review (spec §17.4 "trust"): its verification
@@ -1021,6 +1058,7 @@ end
 
 --- Detach the active workspace fully. Called on VimLeave-style shutdown.
 function Core:shutdown()
+    self:_stop_refused_watch()
     if self._workspace then
         self._workspace:teardown()
         self._workspace = nil
