@@ -51,6 +51,27 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   range overlaps its own instead of requiring an equal number. A daemon started by an earlier `lw` is restarted
   when idle, or retired when busy, the first time the new `lw` talks to it.
   (#151)
+- Experimental daemon: the workspace daemon offers its first interfaces
+  beyond discovery: the workspace header and a change notification, the
+  running tasks (list them, follow them starting and ending, and cancel one
+  the client started; cancelling another client's task is refused), and a
+  same-version snapshot of the model. `lw daemon run --stdio` serves the
+  daemon protocol on standard input and output, and a conformance runner
+  (`scripts/conformance.lua`) replays the golden transcripts in
+  `spec/protocol/transcripts/` against any daemon binary over it. (#152)
+- Experimental daemon: build, clean, reset, the batch test run, the
+  preparation of `lw run`, the toolchain list and the compiler-cache query
+  are offered as versioned interfaces, and the command line uses them when
+  the daemon supports them (older editors and clients keep the earlier
+  requests). A client is told when the workspace header changes (loaded,
+  failed, another active profile). Entity, task and subscription ids on the
+  wire are opaque strings tied to the daemon session, so an id kept from an
+  earlier session is refused instead of naming another entity; this also
+  changes the ids in the earlier snapshot reply from integers to strings
+  (deliberate: nothing reads them yet), while older clients keep integer
+  task ids. A daemon operation that failed after it may have started is
+  never run a second time without the daemon: the command fails instead. A
+  test run reports each test step's name, exit code and status. (#152)
 - Experimental daemon (`runtime-mode daemon`): the workspace daemon answers
   two read-only requests, a snapshot of its loaded model (from which a client
   builds a read-only copy of the workspace) and host-probing queries (first:

@@ -1,0 +1,99 @@
+{
+  "interface": "loomworks.Tests",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /tests (spec 19.15, 19.20): the batch test run of lw test as a task-streamed method; the protocol-10 test request stays as its v0 alias. Discovery (discover) lands in step 5m.",
+  "methods": {
+    "run": {
+      "description": "Build the profile, then run its registered tests (lw test [<profile>] [--junit <file>] [-- <args>]).",
+      "params": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "description": "The profile (absent: the active one), resolved as the in-process command resolves it.",
+            "$ref": "loomworks.Common/1#/$defs/Ref"
+          },
+          "interactive": {
+            "description": "The client can ask the user (a terminal); without it a missing profile is refused, never onboarded.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "The command name the task's lines quote (lw build, ...).",
+            "type": "string"
+          },
+          "extra": {
+            "description": "Arguments passed to the test runner (after --).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "junit": {
+            "description": "Write JUnit XML to this path.",
+            "type": "string"
+          }
+        }
+      },
+      "result": {
+        "$ref": "loomworks.Common/1#/$defs/Outcome"
+      },
+      "task": {
+        "meta": {
+          "$ref": "loomworks.Common/1#/$defs/TaskMeta"
+        },
+        "result": {
+          "description": "The test run's end and its structured results.",
+          "type": "object",
+          "required": [
+            "exit_code"
+          ],
+          "properties": {
+            "exit_code": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "steps": {
+              "description": "The test steps run, in order (empty: the profile has no tests). Per-case results come later as an optional field.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "exit_code",
+                  "status"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "exit_code": {
+                    "type": "integer"
+                  },
+                  "status": {
+                    "description": "passed (exit code 0) or failed. Clients show an unknown status as failed.",
+                    "enum": [
+                      "passed",
+                      "failed"
+                    ]
+                  }
+                }
+              }
+            },
+            "junit": {
+              "description": "The JUnit files written.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "needs_env": true,
+      "mutates": true
+    }
+  }
+}

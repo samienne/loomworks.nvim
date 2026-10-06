@@ -202,7 +202,9 @@ describe("root object over the socket (§19.20)", function()
         local other = assert(client.session(srv.address))
         local r = assert(client.call_sync(conn, ROOT, RIF, 1, "subscribe",
             { object = "/echo", iface = "lwtest.Echo", v = 1, signals = { "ticked" }, args = { only = 2 } }))
-        assert.is_number(r.sub_id)
+        -- An opaque string carrying the session generation (§19.20).
+        assert.is_string(r.sub_id)
+        assert.truthy(r.sub_id:find(tostring(srv.generation), 1, true), r.sub_id)
         assert.equals(0, r.seq)
         assert.same({ n = 0 }, r.initial)
         local echo = assert(client.call_sync(other, "/echo", "lwtest.Echo", 1, "echo", { text = "hi" }))
@@ -384,6 +386,27 @@ describe("root object over the socket (§19.20)", function()
         _, e = client.call_sync(conn, "/boom", "lwtest.Echo", 1, "echo", { text = "x" })
         assert.equals("internal", e.code)
         assert(client.request(conn, { kind = "ping" }))
+        conn:close()
+    end)
+
+    it("a mutating method's reply that does not match its schema is logged and sent, never an error", function()
+        -- The handler may have started what the reply reports (an accepted
+        -- task): an error would let the client run it a second time.
+        local logged = {}
+        srv.opts.log = function(line) logged[#logged + 1] = line end
+        local impl = echo_impl({ methods = { echo = function() return { text = 42 } end } })
+        impl.doc.methods.echo.mutates = true
+        srv.interfaces.validate_out = true
+        assert(srv.interfaces:mount("/mut", "core", "lwtest.Echo", 1, impl))
+        local conn = assert(client.session(srv.address))
+        local r, e = client.call_sync(conn, "/mut", "lwtest.Echo", 1, "echo", { text = "x" })
+        assert.is_nil(e)
+        assert.equals(42, r.text)
+        local hit = false
+        for _, l in ipairs(logged) do
+            if l:find("does not match its schema", 1, true) then hit = true end
+        end
+        assert.is_true(hit, table.concat(logged, "\n"))
         conn:close()
     end)
 

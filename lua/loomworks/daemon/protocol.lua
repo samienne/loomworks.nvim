@@ -61,6 +61,27 @@ M.KIND = {
     signal = "signal",
 }
 
+--- A session-scoped opaque id (spec §19.12, §19.20): entity ids, task ids
+--- and subscription ids are strings that carry the daemon's session
+--- generation, so an id handed out by an earlier session (a restarted daemon)
+--- never names anything in this one; it is refused as stale. Clients never
+--- parse it: they only compare it and send it back.
+--- @param generation integer|string|nil the session generation
+--- @param n integer the per-session counter
+--- @return string
+function M.session_id(generation, n)
+    local g = type(generation) == "number" and string.format("%d", generation) or tostring(generation or 0)
+    return g .. "." .. string.format("%d", n)
+end
+
+--- Does `conn` take the opaque string ids of transport 11 (§19.20)? A
+--- protocol-10 (v0) connection keeps its integer task ids (§19.15).
+--- @param conn table|nil
+--- @return boolean
+function M.opaque_ids(conn)
+    return type(conn) == "table" and type(conn.transport) == "number" and conn.transport >= 11
+end
+
 --- Encode a message table as a frame.
 --- @param msg table
 --- @return string

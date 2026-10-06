@@ -843,7 +843,16 @@ authentication; it never leaves the process. Its connection starts in the
 authenticated state — the server sends `welcome` over it and nothing before —
 and is then served exactly as an authenticated pipe connection (frame cap,
 requests, replies, task streams, broadcasts, flow control); closing either end
-is end-of-stream to the other.
+is end-of-stream to the other. The standard-I/O transport (`lw daemon run
+--stdio`, §19.16, §19.20) is a private pipe too: its connection is a child of
+the process that spawned it, so the daemon answers that process's `hello`
+directly with `welcome` — no `challenge`, no `auth`, the nonce ignored; the
+versions in `hello` are negotiated as on the socket, and anything other than
+`hello` first closes it. Closing the daemon's standard input ends that
+connection and stops the runtime: as for any disconnect (§19.15), the tasks
+the connection owns are cancelled, and the process exits once they ended
+(the editor's child daemon, step 5p, relies on this: an editor that goes away
+leaves no build running). The socket transport keeps the challenge.
 
 **Frozen control subset.** Framing, `hello`/`challenge`/`auth`/`welcome`,
 `ping`, `status`, `stop` and `retire` (§19.9) never change shape across
@@ -1082,9 +1091,15 @@ The daemon keeps a session-local **opaque-id registry** keyed by object
 identity: an id is assigned once, survives renames (it follows the object, not
 its key) and refreshes (the deserializer reuses a matching object), is never
 reused within a session, and is discarded on restart (a new session
-generation). Snapshots carry a current-key → id index from which a client
-builds its id↔key map, a transport-layer router that domain logic never
-consults.
+generation). An id is an opaque string that carries the session generation,
+so an id cached from an earlier session never names an entity of this one:
+it is a stale reference, refused (§19.20 "Errors and domain results"), never
+resolved to whatever entity the new session numbered alike. Snapshots carry
+a current-key → id index from which a client builds its id↔key map, a
+transport-layer router that domain logic never consults. *(Step 5g.2 part B
+changed the index's ids from integers to these strings, in the protocol-10
+`snapshot` reply too — deliberately: nothing reads them yet, and they share
+the registry with the interfaces' ids.)*
 
 Every model change advances a per-workspace sequence number and broadcasts a
 typed `model_change` stamped with seq and session generation to every
@@ -1094,8 +1109,11 @@ arriving mid-refresh schedules exactly one more re-pull, and a new session
 generation forces a full re-hydrate. Per-object deltas are a future
 optimization.
 
-**Ids on the interfaces.** *(Plan, step 5g.2; records of further interfaces
-with the steps that land them, §19.19.)* Ids are the only entity handles on
+**Ids on the interfaces.** *(Step 5g.2: the `changed` signal (part A) and
+references in requests (part B: the operations' interfaces and
+`Profiles/1.compiler_cache`; ids are opaque strings carrying the session
+generation) are implemented; records
+of further interfaces land with the steps that land them, §19.19.)* Ids are the only entity handles on
 the wire: there are no remote object references, proxies or lifetimes. Every
 entity record in an interface result or signal (§19.20) carries its `id` from
 this registry and its `key` / `label` for display; a request names an entity
@@ -1175,9 +1193,11 @@ none); `error` or `refused` (a trust, newer-schema or journal refusal) with
 the load failure's `error` message; or `unloaded` before the daemon loaded the
 workspace. Sending `welcome` never loads the workspace.
 
-**As interfaces.** *(Plan: `lw.internal.Snapshot/1` and
-`loomworks.Workspace/1.header` step 5g.2; the editor views steps 5j–5n,
-§19.19.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
+**As interfaces.** *(`lw.internal.Snapshot/1` and
+`loomworks.Workspace/1.header`: implemented, step 5g.2 part A
+(`daemon/core_interfaces.lua`); the CLI's read commands call
+`Snapshot/1.get` over transport 11 since part B (`daemon/calls.lua`); the
+editor views steps 5j–5n, §19.19.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
 (§19.20), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
@@ -1223,8 +1243,9 @@ stale, msvc_auto_off, applicable, not_applied_reason?, not_applied_hint? }`
 that the client formats as `lw profile query … cache` prints it; `cache`
 absent when that project's module does not cache C/C++).
 
-**As interfaces.** *(Plan: the query registry step 5g.2; command methods
-step 5o, §19.19.)* Commands are the **mutating methods** of the model
+**As interfaces.** *(The query registry: implemented, step 5g.2 part B
+(`Toolchains/1.list`, `Profiles/1.compiler_cache`; the CLI calls them over
+transport 11); command methods: plan, step 5o, §19.19.)* Commands are the **mutating methods** of the model
 interfaces (`loomworks.Workspace/1`, `Profiles/1`, `Projects/1`,
 `ConfigSets/1`, `Sdks/1`, `Maintenance/1`; §19.20), declared mutating in their
 schemas, with the rules above unchanged: FIFO, the `changed` signal (and the
@@ -1251,9 +1272,11 @@ the plan, lines and wipe shared with the in-process clean in `build_run.lua`,
 the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir`
 with a stop predicate); observed by the editor (§19.16);
 `lw reset [<profile> | --all] [-y]` (§16.30; see
-Reset, step 5d); other operations future. The task frames of interface
-methods, `loomworks.Tasks/1` observation and cancel ("Tasks of interface
-methods" below) are plan, step 5g.2.*
+Reset, step 5d); other operations future. The task-streamed interface
+methods ("Tasks of interface methods" below: `Build/1`, `Tests/1.run`,
+`Launch/1.prepare_run`) are implemented, step 5g.2 part B, and the CLI calls
+them over transport 11; `loomworks.Tasks/1` observation signals, `list` and
+`cancel` are implemented, step 5g.2 part A.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1601,7 +1624,11 @@ group, as Git Bash starts the native program it then signals with `kill
 -INT` — would otherwise never see it, while in-process the build's own
 processes in that console still stop).
 
-**Tasks of interface methods.** *(Plan, step 5g.2.)* The task stream is a
+**Tasks of interface methods.** *(Step 5g.2: `loomworks.Tasks/1` — `list`,
+`cancel`, the `started` / `ended` signals with the `task_id` filter — is
+implemented, part A; the task-streamed methods (`start.meta` naming the
+method, `done.result`), part B; the observation bound to the subscription is
+step 5g.3.)* The task stream is a
 **transport** mechanism (§19.8), not part of any one interface: a method its
 schema declares task-streamed (§19.20) — `Build/1.build`, `Tests/1.run`,
 `Launch/1.prepare_run`, a module's log stream — replies `accepted` with a
@@ -1610,7 +1637,9 @@ control, observer bounds and disconnect-cancellation above. What the
 interface types is the payload: `start.meta` also names `object`, `iface`, `v`
 and `method`, and `done` carries `result`, validated against the method's
 task result schema (for `prepare_run` the launch spec, for a test run its
-structured results). The outcomes of the operations (`accepted`, `refused`,
+structured results: `steps`, one `{ name, exit_code, status }` per test step
+run, and the `junit` files written; per-case results come later as an
+optional field). The outcomes of the operations (`accepted`, `refused`,
 `declined`, `confirm`) are unchanged; they are domain results of the method,
 not errors (§19.20).
 
@@ -2005,14 +2034,20 @@ runtime is deferred until that module is actively developed.
      v0 aliases (no behaviour change); the schema directory with the
      meta-schema, the transport, `loomworks.Root/1` and `loomworks.Common/1`
      documents; the schema validator; the lint and additive-ratchet tests.
-   - **5g.2 — Existing operations as interfaces**: `loomworks.Build/1`,
+   - **5g.2 — Existing operations as interfaces** *(done)*: `loomworks.Build/1`,
      `Tests/1.run`, `Launch/1.prepare_run`, `Toolchains/1.list`,
      `Profiles/1.compiler_cache`, `Workspace/1` (`header`, `changed`),
      `Tasks/1` (`list`, `cancel`, the subscription) and
      `lw.internal.Snapshot/1`. The CLI switches to calls in the same step (it
      is the same artefact); the v0 kinds keep serving older editors. The
      conformance runner over the standard-I/O transport, with transcripts for
-     each.
+     each. *(Done. Part A: `Workspace/1` (`header`, `changed`),
+     `Tasks/1` (`list`, `cancel`, the subscription),
+     `lw.internal.Snapshot/1`, `lw daemon run --stdio`, the conformance runner
+     and the transcripts of these and `Root/1`. Part B: `Build/1`,
+     `Tests/1.run`, `Launch/1.prepare_run`, `Toolchains/1.list`,
+     `Profiles/1.compiler_cache`, `Workspace/1.header_changed`, opaque string
+     ids and the CLI's switch to calls (`daemon/calls.lua`).)*
    - **5g.3 — Policies**: `lw_version` equality as the CLI's policy through
      `describe` (§19.9); busy = owns a task or a command in flight (§19.9); the
      editor's observer subscribes to `/tasks` and `/workspace` when the daemon
@@ -2065,11 +2100,24 @@ documents of the transport, `loomworks.Root/1` and `loomworks.Common/1`
 validator and the lint and ratchet tests (`proto/schema.lua`,
 `proto/schema_check.lua`). Arguments are always validated; results are
 validated in development builds and tests (a violation is an `internal`
-error), signals only logged. No core interface beyond the root exists yet, so
-`not_loaded`, `stopping`, `retiring` and `forbidden` are defined but not yet
-returned, and `frozen/` is empty until a stable release ships an interface
-version. The rest is plan: the first interfaces, their transcripts and the
-conformance runner step 5g.2; the CLI policy, the busy rule and the guard's
+error), signals only logged. `forbidden` is returned by `Tasks/1.cancel`;
+`not_loaded`, `stopping` and `retiring` are defined but not yet returned,
+and `frozen/` is empty until a stable release ships an interface
+version. Step 5g.2 part A is implemented: `loomworks.Workspace/1`
+(`header`, `changed`), `loomworks.Tasks/1` (`list`, `cancel`, `started`,
+`ended`) and `lw.internal.Snapshot/1` (`daemon/core_interfaces.lua`), the
+standard-I/O transport (`lw daemon run --stdio`, `daemon/stdio.lua`), the
+conformance engine and runner (`proto/conformance.lua`,
+`scripts/conformance.lua`) and the golden transcripts
+(`spec/protocol/transcripts/`, `meta/transcript.schema.json`). Step 5g.2
+part B is implemented: `loomworks.Build/1` (`build`, `clean`, `reset`),
+`loomworks.Tests/1.run`, `loomworks.Launch/1.prepare_run` (task-streamed),
+`loomworks.Toolchains/1.list`, `loomworks.Profiles/1.compiler_cache`,
+`loomworks.Workspace/1.header_changed`, references by `{ id }` or `{ key }`
+and the CLI's calls over transport 11 (`daemon/calls.lua`); each of these
+interfaces serves only the methods the catalogue's 5g.2 entries name, the rest
+being added with their steps. The rest is
+plan: the CLI policy, the busy rule and the guard's
 interface ratchet step 5g.3; the editor's interfaces steps 5j–5o; module
 interfaces step 5q; out-of-process providers are reserved and built later
 (§19.19).*
@@ -2165,6 +2213,23 @@ method needs the workspace and loading it failed; `data` carries the header's
 `internal`. An interface declares its own codes in its schema. A stale
 reference (a removed entity, an id of an earlier session generation) is the
 method's `refused` / not-found result, never an error of the transport.
+Once a mutating method's handler ran, its reply is never turned into an
+error: a reply that does not match its schema (checked in development builds
+and tests) is logged and sent as it is, because it may report what already
+started (an accepted task), and an error would let a client run the
+operation a second time. A non-mutating method's invalid reply may be
+`internal` there.
+
+**The CLI's calls.** Over transport 11 the CLI sends its operations and
+reads as interface calls (`daemon/calls.lua`) and acts on a transport error
+by its code: `unknown_object`, `unknown_interface`, `unknown_method`,
+`unsupported_version` — nothing ran, so the protocol-10 request is sent
+instead (a daemon of step 5g.1 speaks transport 11 without these
+interfaces); `invalid_args`, `same_build_required`, `stopping`, `retiring` —
+nothing ran, the command runs in-process (`declined`); `internal` or an
+unknown code — for a mutating method, which may have started, the command
+fails with exit 1 and is never run a second time in-process; for any other
+method it runs in-process.
 
 **References.** A request names an entity by a reference, `{ id }` or
 `{ key }`. The editor sends ids taken from results and views; the CLI sends
@@ -2190,7 +2255,11 @@ task owned by the calling connection, on the transport's task stream
 back-pressure, observer bounds and disconnect-cancellation are shared by every
 such method of every interface. The interface types the task's `meta` and its
 `done.result`. Observers subscribe to `loomworks.Tasks/1`; only the owner may
-cancel (`forbidden` otherwise); a disconnect still cancels.
+cancel (`forbidden` otherwise); a disconnect still cancels. From transport 11
+a `task_id` and a `sub_id` are opaque strings scoped to the session
+generation, like entity ids (`loomworks.Common/1` `TaskId`); a connection of
+protocol 10 keeps its integer task ids in its task frames, its `accepted`
+replies and `status.tasks`, unchanged.
 
 **Interface catalogue.** The first versions of the core interfaces, landed by
 the steps of §19.19. Their schemas, not this table, are the full contract.
@@ -2283,6 +2352,42 @@ own repository. The contract is enforced by:
   the standard-I/O transport — the Lua daemon and any rewrite alike;
 - **client conformance**: the plugin's client against the same transcripts,
   replayed, for every interface version it claims.
+
+**Transcripts.** A transcript file, `transcripts/<namespace>/<Rest>.<v>.json`
+beside the interface's schema and checked by `meta/transcript.schema.json`, is
+`{ transcripts = 1, interface, version, description, cases }`. A case
+(`name`, `description?`, `fixture?`, `hello?`, `handshake?`, `allow?`,
+`steps`) runs on a fresh daemon over one connection, on a workspace the
+runner prepares (`fixture`: `empty`, the default, or `shell`, a shell project
+`app` with configuration `Debug`, the configuration set and trusted profile
+`dev` and a launch configuration `hello`). Unless `handshake` is false the
+runner sends `hello` (the case's `hello` fields over the default) and binds
+the `welcome` as the variable `welcome`; `lw_version`, `env` (the client
+environment to send) and `root` are bound before. A step is `send` (a frame
+template, validated against the transport unless `malformed`), `expect` (the
+earliest unconsumed received frame its selector — `kind` and the literal
+`req_id`, `object`, `iface`, `name`, `sub_id`, `task_id`, `phase` — picks
+must match the pattern, within `timeout_ms`) or `expect_none` (no frame the
+selector picks arrives `within_ms`); frames of other streams interleave
+freely, and at the end every received frame must have been consumed or match
+an `allow` pattern. Patterns are partial (an object names the fields it
+checks, an array has the actual length); an object whose keys all start with
+`$` is a matcher: `$any`, `$type`, `$absent`, `$bind` (bind or compare a
+variable), `$var` (a bound value, with `$with` merged over it in a
+template), `$contains`, `$exact`, `$pattern`, `$len`, combinable. The runner
+validates every received frame: transport frames against the transport
+document, an interface call's `ok` against its result schema and its `error`
+code against the transport's and the method's codes, a signal against its
+schema with a gapless `seq` per object, none for a subscription after its
+`unsubscribe` and its `session_generation` (if any) the `welcome`'s, every
+task's frames in order (`start` first, nothing after `done`; integer ids at
+protocol 10, strings from 11) and the task frames of a task-streamed call
+(the start meta naming the method; `done.result` against its task result
+schema); a protocol-10 reply is checked against its v0 shape
+(`transport.json` `v0.replies`), so the v0 aliases provably stay unchanged;
+other protocol-10 frames are only matched. An explicit `null` is a present
+value (`$absent` fails on it, `$any` accepts it), and an object pattern never
+matches an array nor an array pattern an object.
 
 Clients **must tolerate** unknown fields, unknown enum values and unknown
 alternatives in results and signals (an unknown value is shown as unknown or

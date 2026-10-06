@@ -101,9 +101,9 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         local conn = assert(client.loopback_session(srv))
         local a = assert(snapshot.fetch(conn))
         local b = assert(snapshot.fetch(conn))
-        assert.is_number(a.index.projects.app)
-        assert.is_number(a.index.config_sets.dev)
-        assert.is_number(a.index.profiles.dev)
+        assert.is_string(a.index.projects.app)
+        assert.is_string(a.index.config_sets.dev)
+        assert.is_string(a.index.profiles.dev)
         assert.same(a.index, b.index)
         -- Config units by structured key, not an internal formatted id.
         assert.is_true(#a.index.config_units > 0)
@@ -113,7 +113,7 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         end
         local ids = {}
         local function seen(id)
-            assert.is_number(id)
+            assert.is_string(id)
             assert.is_nil(ids[id], "an id is unique")
             ids[id] = true
         end
@@ -121,6 +121,26 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
             for _, id in pairs(a.index[kind]) do seen(id) end
         end
         for _, row in ipairs(a.index.config_units) do seen(row.id) end
+        conn:close()
+    end)
+
+    it("ids carry the session generation: an earlier session's id never resolves in this one", function()
+        local obj_a, obj_b = {}, {}
+        local old = snapshot.registry(1000)
+        local new = snapshot.registry(2000)
+        local old_id = old:id(obj_a)
+        -- The same counter in both sessions, yet distinct ids.
+        local new_id = new:id(obj_b)
+        assert.are_not.equal(old_id, new_id)
+        assert.equals(obj_b, new:find(new_id, { obj_a, obj_b }))
+        -- A cached id of the earlier session is stale here, whatever entity
+        -- this session numbered alike.
+        assert.is_nil(new:find(old_id, { obj_a, obj_b }))
+        assert.is_nil(new:find(1, { obj_a, obj_b }))
+        -- The live service's ids carry its server's generation.
+        local conn = assert(client.loopback_session(srv))
+        local s = assert(snapshot.fetch(conn))
+        assert.truthy(s.index.profiles.dev:find(string.format("%d", srv.generation), 1, true), s.index.profiles.dev)
         conn:close()
     end)
 
@@ -176,9 +196,16 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
 
     it("refuses an unknown scope as malformed", function()
         local conn = assert(client.loopback_session(srv))
+        -- The protocol-10 request declines it ...
+        local reply = assert(client.request(conn, { kind = "snapshot", scope = "everything",
+            env = envscope.capture() }))
+        assert.equals("declined", reply.outcome)
+        assert.equals("malformed request", reply.reason)
+        -- ... and its interface form (lw.internal.Snapshot/1.get, which
+        -- snapshot.fetch calls over transport 11) refuses it as invalid_args.
         local snap, err = snapshot.fetch(conn, { scope = "everything" })
         assert.is_nil(snap)
-        assert.equals("malformed request", err)
+        assert.truthy(tostring(err):find("invalid_args", 1, true), tostring(err))
         conn:close()
     end)
 

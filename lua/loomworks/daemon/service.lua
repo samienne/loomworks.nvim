@@ -101,12 +101,37 @@ Service.__index = Service
 --- @return loomworks.daemon.BuildService
 function M.attach(server, host)
     local self = setmetatable({ server = server, host = host, runs = {}, queue = {},
-        ids = snapshot.registry() }, Service)
+        ids = snapshot.registry(server.generation) }, Service)
     self.tasks = tasks_mod.new(server)
     self.tasks.on_change = function() self:_update_busy() end
+    -- The task signals of loomworks.Tasks/1 (§19.20), to /tasks subscribers.
+    local core_ifaces = require("loomworks.daemon.core_interfaces")
+    self.tasks.on_started = function(t, info)
+        if server.interfaces then core_ifaces.task_signal(server.interfaces, t, "started", { task = info }) end
+    end
+    self.tasks.on_ended = function(t, exit_code, err)
+        if server.interfaces then
+            core_ifaces.task_signal(server.interfaces, t, "ended",
+                { task_id = t.id, exit_code = exit_code, error = type(err) == "string" and err or nil })
+        end
+    end
     envscope.install()
     server.service = self
+    -- The core interfaces it serves (step 5g.2), once the registry exists.
+    if server.interfaces then core_ifaces.mount(server.interfaces, self) end
+    -- The header `header_changed` compares with (unloaded: never loads).
+    core_ifaces.header_check(self)
     return self
+end
+
+--- The run a task belongs to (nil: none, or it already ended).
+--- @param task loomworks.daemon.Task
+--- @return table|nil
+function Service:run_of_task(task)
+    for run in pairs(self.runs) do
+        if run.task == task then return run end
+    end
+    return nil
 end
 
 --- Is a reset's deletion still running after its task ended (a timeout,
@@ -164,6 +189,9 @@ function Service:_drain()
             ok, err = pcall(envscope.with, item.ctx.env, item.fn)
         end
         self.current = nil
+        -- A segment may have loaded, reloaded or failed to load the
+        -- workspace: Workspace/1's `header_changed` (§19.20).
+        pcall(require("loomworks.daemon.core_interfaces").header_check, self)
         if not ok then
             self.server:log("internal error in a build: %s", tostring(err))
             local c = item.ctx
@@ -334,12 +362,15 @@ end
 --- @param msg table
 --- @param answer fun(ws: table, ctx: table): table
 --- @param bad string|nil a validation failure: declined as malformed
-function Service:_on_model_request(conn, msg, answer, bad)
+--- @param deliver? fun(fields: table) answer an interface call instead of a v0 reply
+function Service:_on_model_request(conn, msg, answer, bad, deliver)
     local srv = self.server
     local env, eerr = envscope.validate(msg.env)
     local ctx = { op = msg.kind, conn = conn, env = env, args = {} }
     function ctx.reply(fields)
         ctx.replied = true
+        -- An interface method's adapter takes the fields as its result.
+        if deliver then return deliver(fields) end
         fields.kind = protocol.KIND.ok
         fields.req_id = msg.req_id
         srv:_send(conn, fields)
@@ -375,12 +406,21 @@ end
 --- @param msg table
 function Service:on_snapshot(conn, msg)
     local bad = not snapshot.valid_scope(msg.scope) and "malformed request" or nil
-    return self:_on_model_request(conn, msg, function(ws)
-        local snap = snapshot.build(ws, msg.scope, self.ids)
+    return self:_on_model_request(conn, msg, self:_snapshot_answer(conn, msg.scope), bad)
+end
+
+--- The model segment's answer to a snapshot of `scope` (the `snapshot`
+--- request and lw.internal.Snapshot/1.get).
+--- @param conn table
+--- @param scope string|nil
+--- @return fun(ws: table): table
+function Service:_snapshot_answer(conn, scope)
+    return function(ws)
+        local snap = snapshot.build(ws, scope, self.ids)
         snap.seq, snap.session_generation = self.server.seq, self.server.generation
         self.server:log("snapshot (scope %s) for %s", tostring(snap.scope), self.server:_peer_text(conn))
         return snap
-    end, bad)
+    end
 end
 
 --- Handle a `query` request (§19.14): a registered host-probing query run
@@ -391,16 +431,28 @@ function Service:on_query(conn, msg)
     local bad = (type(msg.name) ~= "string" or (msg.args ~= nil and type(msg.args) ~= "table"))
         and "malformed request" or nil
     return self:_on_model_request(conn, msg, function(ws)
-        local fn = snapshot.QUERIES[msg.name]
-        if not fn then return { outcome = "refused", message = "unknown query: " .. msg.name, exit_code = 1 } end
-        self.server:log("query %s for %s", msg.name, self.server:_peer_text(conn))
-        local ok, result, err = pcall(fn, ws, msg.args or {})
-        if not ok or result == nil then
-            return { outcome = "refused", message = "query " .. msg.name .. " failed: "
-                .. tostring(ok and err or result), exit_code = 1 }
-        end
-        return { result = result }
+        return self:_query(conn, ws, msg.name, msg.args or {})
     end, bad)
+end
+
+--- Run registered query `name` against the live model (the `query` request
+--- and its interface methods, Toolchains/1.list and Profiles/1.compiler_cache):
+--- `{ result }`, or a refusal.
+--- @param conn table
+--- @param ws table
+--- @param name string
+--- @param args table
+--- @return table
+function Service:_query(conn, ws, name, args)
+    local fn = snapshot.QUERIES[name]
+    if not fn then return { outcome = "refused", message = "unknown query: " .. name, exit_code = 1 } end
+    self.server:log("query %s for %s", name, self.server:_peer_text(conn))
+    local ok, result, err = pcall(fn, ws, args)
+    if not ok or result == nil then
+        return { outcome = "refused", message = "query " .. name .. " failed: "
+            .. tostring(ok and err or result), exit_code = 1 }
+    end
+    return { result = result }
 end
 
 --- Is `a` (a `reset` request's args) well-formed?
@@ -412,7 +464,7 @@ local function reset_args_ok(a)
     end
     if a.plan ~= nil and type(a.plan) ~= "string" then return false end
     -- (`--all` with a profile: cmd_reset refuses it; never sent.)
-    if a.all and a.profile ~= nil then return false end
+    if a.all and (a.profile ~= nil or a.profile_id ~= nil) then return false end
     return true
 end
 
@@ -431,18 +483,24 @@ local function run_args_ok(a)
 end
 
 --- A routed operation's request: validate it, then accept it in a model
---- segment.
+--- segment. The protocol-10 request and the task-streamed interface method
+--- (Build/1, Tests/1.run, Launch/1.prepare_run; daemon/core_interfaces.lua)
+--- are this one implementation: the method passes `deliver` (its reply) and
+--- `call` (the task's interface identity and result, `Task.call`).
 --- @param op "build"|"test"|"run"|"clean"|"reset"
 --- @param conn table
 --- @param msg table
-function Service:_on_operation(op, conn, msg)
+--- @param deliver? fun(fields: table) answer an interface call instead of a v0 reply
+--- @param call? loomworks.daemon.TaskCall
+function Service:_on_operation(op, conn, msg, deliver, call)
     local srv = self.server
     local env, eerr = envscope.validate(msg.env)
     local ctx = { op = op, conn = conn, env = env, args = type(msg.args) == "table" and msg.args or {},
-        interactive = msg.interactive == true,
+        interactive = msg.interactive == true, call = call,
         command = type(msg.command) == "string" and msg.command or ("lw " .. op) }
     function ctx.reply(fields)
         ctx.replied = true
+        if deliver then return deliver(fields) end
         fields.kind = protocol.KIND.ok
         fields.req_id = msg.req_id
         srv:_send(conn, fields)
@@ -462,10 +520,32 @@ function Service:_on_operation(op, conn, msg)
         end
     end
     if (a.profile ~= nil and type(a.profile) ~= "string") or (a.junit ~= nil and type(a.junit) ~= "string")
+        or (a.profile_id ~= nil and (type(a.profile_id) ~= "string" or a.profile ~= nil))
+        or (a.project_id ~= nil and (type(a.project_id) ~= "string" or a.project ~= nil))
         or (op == "run" and not run_args_ok(a)) or (op == "reset" and not reset_args_ok(a)) then
         return ctx.reply({ outcome = "declined", reason = "malformed request" })
     end
     self:with_model(ctx, function() self:_accept(ctx) end)
+end
+
+--- An interface call's references by id (`args.profile_id`,
+--- `args.project_id`; §19.20 "References"): resolved to the entity's key in
+--- `args.profile` / `args.project`, as the CLI's key would be. Returns the
+--- refusal of a stale or unknown id.
+--- @param ws table the live workspace
+--- @param a table the operation's args
+--- @return string|nil refusal
+function Service:_resolve_ids(ws, a)
+    for _, r in ipairs({ { "profile", ws._profiles }, { "project", ws._projects } }) do
+        local name, list = r[1], r[2]
+        local id = a[name .. "_id"]
+        if id ~= nil then
+            local obj = self.ids:find(id, list)
+            if not obj then return "no " .. name .. " with id " .. tostring(id) .. " (a stale reference)" end
+            a[name], a[name .. "_id"] = obj.key, nil
+        end
+    end
+    return nil
 end
 
 --- The model segment that accepts (or refuses / declines) a build, a test
@@ -480,6 +560,8 @@ function Service:_accept(ctx)
     if ctx.refused then
         return ctx.reply({ outcome = "refused", message = ctx.refused, exit_code = 1, notes = ctx.notes })
     end
+    local stale = self:_resolve_ids(ws, ctx.args)
+    if stale then return ctx.reply({ outcome = "refused", message = stale, exit_code = 1, notes = ctx.notes }) end
     if ctx.op == "reset" then return self:_accept_reset(ctx, ws) end
     local a = ctx.args
     local profile, err, action = build_run.resolve_target(ws, a.profile, { interactive = ctx.interactive,
@@ -512,9 +594,10 @@ function Service:_accept(ctx)
         end
     end
     local task = self.tasks:create(ctx.conn)
+    task.call = ctx.call
     ctx.task, ctx.ws, ctx.profile = task, ws, profile
-    ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile.key, pid = self.server.pid,
-        notes = ctx.notes })
+    ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile.key,
+        pid = self.server.pid, notes = ctx.notes })
     local runner = require("loomworks.daemon.runner")
     local extra = (a.extra and #a.extra > 0) and a.extra or nil
     local args
@@ -534,7 +617,7 @@ function Service:_accept(ctx)
         op = ctx.op, task = task, ws = ws, profile = profile, env = ctx.env, command = ctx.command, args = args,
         clean_steps = clean_steps,
     })
-    self.server:log("%s %s (task %d) accepted", ctx.op, profile.key, task.id)
+    self.server:log("%s %s (task %s) accepted", ctx.op, profile.key, task.id)
     if run and not run.finished then
         run.ctx = ctx
         self.runs[run] = true
@@ -581,14 +664,15 @@ function Service:_accept_reset(ctx, ws)
             profile_key = profile_key, notes = ctx.notes })
     end
     local task = self.tasks:create(ctx.conn)
+    task.call = ctx.call
     ctx.task, ctx.ws = task, ws
-    ctx.reply({ outcome = "accepted", task_id = task.id, profile_key = profile_key, pid = self.server.pid,
-        notes = ctx.notes })
+    ctx.reply({ outcome = "accepted", task_id = tasks_mod.wire_id(task, ctx.conn), profile_key = profile_key,
+        pid = self.server.pid, notes = ctx.notes })
     local run = require("loomworks.daemon.runner").reset(self, {
         op = "reset", task = task, ws = ws, plan = plan, env = ctx.env, command = ctx.command,
         listing = a.plan == nil,
     })
-    self.server:log("reset %s (task %d) accepted", profile_key or "--all", task.id)
+    self.server:log("reset %s (task %s) accepted", profile_key or "--all", task.id)
     if run and not run.released then
         run.ctx = ctx
         self.runs[run] = true
@@ -599,7 +683,7 @@ end
 function Service:on_run_done(run)
     self.runs[run] = nil
     if run.task then
-        self.server:log("%s task %d ended%s", run.op or "build", run.task.id,
+        self.server:log("%s task %s ended%s", run.op or "build", run.task.id,
             run.cancelled and (": " .. tostring(run.cancel_reason)) or "")
     end
     -- A reset whose deletion outlived its task kept the server busy.

@@ -118,6 +118,13 @@ describe("schema validator (restricted keyword set)", function()
         assert.is_false((set:validate("transport.json", "/frames/call",
             { kind = "call", req_id = 1, object = "/", iface = "loomworks.Root", v = 1, method = "describe",
               env = { PATH = 1 } })))
+        -- Tests/1.run's task result: one row per test step run.
+        local tr = "/methods/run/task/result"
+        assert.is_true((set:validate("interfaces/loomworks/Tests.1.json", tr, { exit_code = 1, junit = {},
+            steps = { { name = "unit", exit_code = 0, status = "passed" }, { name = "it", exit_code = 2, status = "failed" } } })))
+        assert.is_false((set:validate("interfaces/loomworks/Tests.1.json", tr, { exit_code = 0, steps = 2 })))
+        assert.is_false((set:validate("interfaces/loomworks/Tests.1.json", tr, { exit_code = 0,
+            steps = { { name = "unit", exit_code = 0 } } })))
         local _, err = set:validate("transport.json", "/frames/nope", {})
         assert.truthy(err:find("no schema", 1, true))
     end)

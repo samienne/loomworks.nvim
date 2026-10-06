@@ -44,7 +44,7 @@
         "type": "object",
         "required": ["sub_id"],
         "properties": {
-          "sub_id": { "type": "integer" },
+          "sub_id": { "description": "The subscription: an opaque string scoped to the session generation.", "type": "string" },
           "seq": { "description": "The last seq of this object the connection was sent before subscribing (0: none): seq counts per object and connection only the signals sent, so the next one is seq + 1 and a gap means a lost signal.", "type": "integer", "minimum": 0 },
           "initial": { "description": "The full state, for an interface whose subscribed signals declare it." }
         }
@@ -58,7 +58,7 @@
       "params": {
         "type": "object",
         "required": ["sub_id"],
-        "properties": { "sub_id": { "type": "integer" } }
+        "properties": { "sub_id": { "type": "string" } }
       },
       "result": { "type": "object" },
       "needs_env": false,

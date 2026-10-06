@@ -36,28 +36,49 @@ M.READ_ONLY = "a read-only projection of the workspace daemon's model (spec §19
 --- @class loomworks.daemon.IdRegistry
 --- Session-local opaque ids keyed by object identity (spec §19.12): assigned
 --- once, never reused within the session; weak keys, so a dropped object
---- frees its entry (its id is still never handed out again).
+--- frees its entry (its id is still never handed out again). An id is a
+--- string on the wire (loomworks.Common/1 `Id`): opaque to clients, which
+--- only compare it and send it back. It carries the session generation
+--- (`protocol.session_id`), so an id of an earlier session never resolves
+--- in this one: it is a stale reference, refused (§19.20 "Errors and domain
+--- results").
 --- @field next integer the last id handed out
---- @field by_obj table<table, integer> object → id (weak keys)
+--- @field generation integer|string|nil the session generation ids carry
+--- @field by_obj table<table, string> object → id (weak keys)
 local Registry = {}
 Registry.__index = Registry
 
+--- @param generation? integer|string the session generation the ids carry
 --- @return loomworks.daemon.IdRegistry
-function M.registry()
-    return setmetatable({ next = 0, by_obj = setmetatable({}, { __mode = "k" }) }, Registry)
+function M.registry(generation)
+    return setmetatable({ next = 0, generation = generation, by_obj = setmetatable({}, { __mode = "k" }) },
+        Registry)
 end
 
 --- The object's id, assigned on first sight.
 --- @param obj table
---- @return integer
+--- @return string
 function Registry:id(obj)
     local id = self.by_obj[obj]
     if not id then
         self.next = self.next + 1
-        id = self.next
+        id = require("loomworks.daemon.protocol").session_id(self.generation, self.next)
         self.by_obj[obj] = id
     end
     return id
+end
+
+--- The object an id was issued for, among `candidates` (nil: none of them,
+--- e.g. a stale id of a removed entity or an earlier session).
+--- @param id string
+--- @param candidates table[]|nil
+--- @return table|nil
+function Registry:find(id, candidates)
+    if type(id) ~= "string" then return nil end
+    for _, obj in pairs(candidates or {}) do
+        if not obj._removed and self.by_obj[obj] == id then return obj end
+    end
+    return nil
 end
 
 --- The semantic-key → id index of a workspace's keyed objects (spec §19.13):
@@ -66,7 +87,7 @@ end
 --- `{ project = <project key>, configuration = <configuration key>, id }`.
 --- @param ws table
 --- @param reg loomworks.daemon.IdRegistry
---- @return { projects: table<string, integer>, config_sets: table<string, integer>, profiles: table<string, integer>, config_units: { project: string, configuration: string, id: integer }[] }
+--- @return { projects: table<string, string>, config_sets: table<string, string>, profiles: table<string, string>, config_units: { project: string, configuration: string, id: string }[] }
 function M.index(ws, reg)
     local idx = { projects = {}, config_sets = {}, profiles = {}, config_units = {} }
     for _, p in pairs(ws._projects or {}) do
@@ -227,10 +248,10 @@ M.QUERIES = {
 --- @return table|nil reply, string|nil err
 function M.fetch(conn, opts)
     opts = opts or {}
-    local client = require("loomworks.daemon.client")
-    local reply, err = client.request(conn, { kind = require("loomworks.daemon.protocol").KIND.snapshot,
-        scope = opts.scope or "all", env = opts.env or require("loomworks.daemon.envscope").capture() },
-        opts.timeout_ms)
+    -- (lw.internal.Snapshot/1.get over transport 11, daemon/calls.lua.)
+    local reply, err = require("loomworks.daemon.calls").request_sync(conn,
+        { kind = require("loomworks.daemon.protocol").KIND.snapshot, scope = opts.scope or "all",
+            env = opts.env or require("loomworks.daemon.envscope").capture() }, opts.timeout_ms)
     if not reply then return nil, err end
     if reply.kind == "error" then return nil, reply.error end
     if reply.outcome ~= "ok" then return nil, reply.message or reply.reason or reply.outcome end
@@ -298,10 +319,11 @@ end
 --- @return table|nil result, string|nil err
 function M.query(conn, name, args, opts)
     opts = opts or {}
-    local client = require("loomworks.daemon.client")
-    local reply, err = client.request(conn, { kind = require("loomworks.daemon.protocol").KIND.query,
-        name = name, args = args or {}, env = opts.env or require("loomworks.daemon.envscope").capture() },
-        opts.timeout_ms)
+    -- (Toolchains/1.list, Profiles/1.compiler_cache over transport 11,
+    -- daemon/calls.lua.)
+    local reply, err = require("loomworks.daemon.calls").request_sync(conn,
+        { kind = require("loomworks.daemon.protocol").KIND.query, name = name, args = args or {},
+            env = opts.env or require("loomworks.daemon.envscope").capture() }, opts.timeout_ms)
     if not reply then return nil, err end
     if reply.kind == "error" then return nil, reply.error end
     if reply.outcome ~= "ok" then return nil, reply.message or reply.reason or reply.outcome end

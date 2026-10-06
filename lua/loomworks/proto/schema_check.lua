@@ -2,8 +2,10 @@
 --- schema documents (spec §19.20 "Schemas and conformance"):
 ---
 ---   * `lint(set, rel)` — the document is valid against its meta-schema
----     (`meta/interface.schema.json`, or `meta/transport.schema.json` for
----     `transport.json`), every schema node uses only the allowed keywords,
+---     (`meta/interface.schema.json`, `meta/transport.schema.json` for
+---     `transport.json`, `meta/transcript.schema.json` for a golden transcript
+---     under `transcripts/`, which also names the interface version whose
+---     path it mirrors), every schema node uses only the allowed keywords,
 ---     every `pattern` is in the portable subset, every `$ref` resolves, and
 ---     no document under `frozen/` is a draft;
 ---   * `ratchet(old_set, new_set, rel)` — the current document against its
@@ -39,7 +41,15 @@ end
 --- @return string
 function M.meta_for(rel)
     if rel == "transport.json" then return "meta/transport.schema.json" end
+    if M.is_transcript(rel) then return "meta/transcript.schema.json" end
     return "meta/interface.schema.json"
+end
+
+--- Is `rel` a golden transcript file (`transcripts/...`, data, not a schema)?
+--- @param rel string
+--- @return boolean
+function M.is_transcript(rel)
+    return rel:match("^transcripts/") ~= nil
 end
 
 -- Walk every schema node of a document: calls fn(node, path) for each.
@@ -74,6 +84,8 @@ function M.schema_nodes(doc, rel)
         root(doc, "")
         return out
     end
+    -- A transcript is data: its frames and patterns are not schemas.
+    if M.is_transcript(rel) then return out end
     for _, name in ipairs(sorted_keys(doc.methods)) do
         local m = doc.methods[name]
         if type(m) == "table" then
@@ -117,6 +129,12 @@ function M.lint(set, rel)
     -- A frozen snapshot is what a stable release shipped: never a draft.
     if rel:match("^frozen/") and doc.status == "draft" then
         bad("a draft is never frozen (status draft under frozen/)")
+    end
+    -- A transcript file names the interface version whose path it mirrors
+    -- (`transcripts/<namespace>/<Rest>.<v>.json`), and only known fixtures.
+    if M.is_transcript(rel) then
+        for _, p in ipairs(require("loomworks.proto.conformance").check_file(doc, rel)) do bad("%s", p) end
+        return problems
     end
     -- An interface document's name and version agree with its path.
     if doc.interface ~= nil then
