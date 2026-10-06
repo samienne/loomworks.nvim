@@ -1081,7 +1081,7 @@ on the spot (a confirmation prompt blocks the loop) and every attached
 fallback checks it, so a command that lost R exits 1 rather than continuing
 in-process.
 
-**Interfaces (spec §19.20 — step 5g.1 built; 5g.2, 5g.3 and 5q plan).**
+**Interfaces (spec §19.20 — steps 5g.1 and 5g.2 built; 5g.3 and 5q plan).**
 Three layers, each with one owner:
 
 - **Transport** — `daemon/protocol.lua` (framing, kinds incl. `call` /
@@ -1110,10 +1110,12 @@ Three layers, each with one owner:
   frozen subset, and `call` into the registry) and `v0` rows naming the build
   service handler of each protocol-10 kind, served only with a service
   attached (else "unknown request kind", as before) and answered with v0
-  replies. Step 5g.2 points those rows at interface methods through an
-  argument/result adapter; the service bodies stay shared. Module interfaces
+  replies. The interface methods of step 5g.2 adapt the same service
+  handlers (`daemon/core_interfaces.lua`), so a v0 row and its method share
+  one body. Module interfaces
   (5q) are mounted on `/modules/<id>` with the same method ↔ schema check.
-- **Data** — records carrying the `snapshot.registry` ids.
+- **Data** — records carrying the `snapshot.registry` ids (opaque decimal
+  strings; `find(id, list)` resolves an `{ id }` reference).
 
 `loomworks/proto/` (the guard's `shared` class) holds `envelope.lua`,
 `schema.lua` (the pure-Lua validator of the restricted keyword set; `pattern`
@@ -1160,6 +1162,37 @@ Step 5g.2 part A adds the first core interfaces and conformance:
   `spec/protocol/transcripts/<namespace>/<Rest>.<v>.json`, linted against
   `meta/transcript.schema.json` (`schema_check.meta_for`), not shipped in
   the bundle.
+
+Step 5g.2 part B adds the operations and the CLI's calls:
+
+- `daemon/core_interfaces.lua` also mounts `/build` `loomworks.Build/1`
+  (`build`, `clean`, `reset`), `/tests` `loomworks.Tests/1` (`run`) and
+  `/launch` `loomworks.Launch/1` (`prepare_run`): each handler turns its
+  wire args into the v0 request (`operation_args`: a `{ key }` reference
+  becomes the key, an `{ id }` one `profile_id` / `project_id`, resolved in
+  the model segment by `Service:_resolve_ids`, a stale id refused) and calls
+  `Service:_on_operation(op, conn, msg, deliver, call)`. `call`
+  (`task_call`) becomes the task's `Task.call`: `Task:start` adds `object`,
+  `iface`, `v`, `method` to the start meta and `Task:done` adds `result`,
+  built from the exit code, error and done fields (a run's `launch` /
+  `device`; a test run's `steps` / `failed` / `junit`, passed as
+  `fields.result`, which never reaches a v0 frame), shaped and in
+  development builds validated against the method's task result schema.
+  `/toolchains` `loomworks.Toolchains/1` (`list`) and `/profiles`
+  `loomworks.Profiles/1` (`compiler_cache`) run the registered queries
+  through `Service:_query` in a model segment. `header_check` emits
+  `Workspace.header_changed` when the header's state, name, active profile
+  or error differs from the last seen (after every model segment in
+  `Service:_drain` and every `Server:model_changed`).
+- `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
+  connection whose `conn.transport >= 11`, `request` sends a protocol-10
+  request kind as its interface method (entities as `{ key }`) and maps the
+  `ok` result back to the v0 reply shape (an `error` becomes `declined`);
+  otherwise it sends the kind. `cli._delegate`, `cli._read_projection` and
+  `snapshot.fetch` / `query` send through it; the routed client reads a
+  task's `done.result` when present.
+- `proto/conformance.lua` types the task frames of a task-streamed call
+  (start meta naming the method, `done.result` against the task result).
 
 The
 plugin/binary boundary guard (`tests/split`,
