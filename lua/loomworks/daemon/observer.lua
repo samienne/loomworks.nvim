@@ -22,7 +22,8 @@
 ---     (`Root.describe`, bounded by DESCRIBE_MS, falling back to
 ---     `welcome.objects`) and subscribes to `loomworks.Tasks/1` on `/tasks`
 ---     and `loomworks.Workspace/1` on `/workspace` when offered (§19.16
----     "Interface client", step 5g.3) — such a daemon sends a transport-11
+---     "Interface client", step 5g.3) — one whose describe reports `delivery =
+---     "subscription"` sends a transport-11
 ---     connection only what it subscribed to; a missing interface is one
 ---     per-feature note, never a failed connection; the root's
 ---     `objects_changed` subscribes to an interface that appears later and
@@ -74,7 +75,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field feature_note string|nil the per-feature note of a missing or refused interface (§19.16 "Interface client")
 --- @field _feat table<string, string>|nil per feature, on this connection: "pending", "subscribed", "refused" (retried once), "gave_up" or "missing" (offered at other versions only)
 --- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
---- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `status` has `busy_clients`, step 5g.3)
+--- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
 --- @field generation any session generation of the observed daemon
 --- @field skip table<string, boolean> daemons never connected to again ("pid:start")
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
@@ -433,24 +434,35 @@ function Observer:_connected_note()
     self:_set("connected", note)
 end
 
---- `Root.describe` on `conn` (§19.20), bounded by DESCRIBE_MS: `cb(objects)`
---- on the main loop with its `objects`, or nil when it failed or timed out
---- (the caller then uses `welcome.objects`). Never blocks.
+--- `Root.describe` on `conn` (§19.20), bounded by DESCRIBE_MS: `cb(objects,
+--- delivery)` on the main loop with its `objects` and `delivery`, or nil
+--- when it failed or timed out (the caller then uses `welcome.objects`).
+--- Never blocks.
 --- @param conn loomworks.daemon.Conn
---- @param cb fun(objects: table[]|nil)
+--- @param cb fun(objects: table[]|nil, delivery: string|nil)
 function Observer:_describe(conn, cb)
     local finished = false
     local timer = uv.new_timer()
-    local function finish(objects)
+    local function finish(objects, delivery)
         if finished then return end
         finished = true
         pcall(function() timer:stop(); timer:close() end)
-        vim.schedule(function() cb(objects) end)
+        vim.schedule(function() cb(objects, delivery) end)
     end
     timer:start(self.opts.describe_ms or M.DESCRIBE_MS, 0, function() finish(nil) end)
     conn:call(M.ROOT.object, M.ROOT.iface, M.ROOT.v, "describe", {}, function(result, err)
-        finish((not err and type(result) == "table" and type(result.objects) == "table") and result.objects or nil)
+        if err or type(result) ~= "table" or type(result.objects) ~= "table" then return finish(nil) end
+        finish(result.objects, type(result.delivery) == "string" and result.delivery or nil)
     end)
+end
+
+--- Adopt the describe's `delivery` (§19.20): "subscription" marks a daemon
+--- that sends a transport-11 connection only what it subscribed to, so an
+--- interface it lacks is really missing (the note). Absent — an older daemon,
+--- or a describe that failed — it also sends the protocol-10 broadcasts.
+--- @param delivery string|nil
+function Observer:_set_delivery(delivery)
+    self._sub_only = delivery == "subscription" or nil
 end
 
 --- Subscribe to what the editor shows (§19.16 "Interface client", step
@@ -473,8 +485,9 @@ function Observer:_subscribe(conn, done)
         return done()
     end
     self.mode = "interfaces"
-    self:_describe(conn, function(objects)
+    self:_describe(conn, function(objects, delivery)
         if self.state == "stopped" or self.conn ~= conn then return end
+        if objects then self:_set_delivery(delivery) end
         self:_ensure_subscriptions(conn, objects or welcome_objects, done)
     end)
 end
@@ -546,8 +559,9 @@ function Observer:_on_objects_changed(args)
             if want.object == p then self._feat[want.feature] = nil end
         end
     end
-    self:_describe(conn, function(objects)
+    self:_describe(conn, function(objects, delivery)
         if self.state == "stopped" or self.conn ~= conn or not self._feat then return end
+        if objects then self:_set_delivery(delivery) end
         objects = objects or {}
         self:_ensure_subscriptions(conn, objects, function() self:_connected_note() end)
     end)
@@ -564,13 +578,6 @@ function Observer:_join_late(conn)
     conn:request({ kind = "status" }, function(reply)
         vim.schedule(function()
             if self.state == "stopped" or self.conn ~= conn or type(reply) ~= "table" then return end
-            -- `busy_clients` (step 5g.3) marks a daemon that sends a
-            -- transport-11 connection only what it subscribed to: an
-            -- interface it lacks is then really missing (the note).
-            if self.mode == "interfaces" and reply.busy_clients ~= nil and not self._sub_only then
-                self._sub_only = true
-                if self.state == "connected" then self:_connected_note() end
-            end
             local list = type(reply.tasks) == "table" and reply.tasks or {}
             local clock = self:_clock()
             for _, entry in ipairs(list) do

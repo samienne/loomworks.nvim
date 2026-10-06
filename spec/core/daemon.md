@@ -917,9 +917,10 @@ On a mismatch, after authenticating:
   running task or has a request in flight, "Busy" below) — the client stops
   it (§19.11) and launches its own binary in its place; a connection that
   only observes or subscribes (an editor) never counts as busy.
-- **Busy daemon** — the client sends `retire`: the daemon accepts no new
-  operations from mismatched clients, keeps serving its attached clients, and
-  exits as soon as it is idle; the next command launches the current binary.
+- **Busy daemon** — the client sends `retire`: the retiring daemon accepts no
+  new operations from any client (each is `declined`, and that client runs it
+  in-process), finishes the ones already running, and exits once no
+  connection is busy; the next command launches the current binary.
   The client runs **this** command as a **version-bypass run**: attached, but
   without the runtime lock (§19.2), holding only its operation locks (§19.3),
   and prints one line:
@@ -1813,10 +1814,12 @@ never fails the connection or the other features. The describe is bounded
 uses `welcome.objects`. An interface that appears later (the root's
 `objects_changed`) is subscribed to then, and a refused subscription is
 retried once, on the next `objects_changed` or reconnect. A missing interface
-is noted only when the editor gets nothing for it: a daemon of transport 11
-that offers none of the observed views and still sends the protocol-10
-broadcasts (step 5g.1; its `status` has no `busy_clients`) is observed
-through them without a note. Only a transport mismatch
+is noted only when the editor gets nothing for it: a daemon whose
+`describe` reports `delivery: "subscription"` sends a transport-11
+connection only what it subscribed to, so a missing interface is noted; a
+daemon of transport 11 without it (step 5g.1, or a describe that failed)
+still sends the protocol-10 broadcasts, and one that offers none of the
+observed views is observed through them without a note. Only a transport mismatch
 (no overlap of the ranges, §19.9) makes the daemon incompatible as a whole.
 Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
 through the v0 broadcasts as below and notes interface features as "daemon
@@ -2187,7 +2190,7 @@ and new methods, which a client calls only after seeing them in
 
 | Method | Params | Result |
 |--|--|--|
-| `describe` | `{}` | `binary { lw_version, impl, dev }`, `transport { min, max }`, `session_generation`, `objects` — per object its `path`, `owner` (`core` or the module id) and `interfaces`, each `{ name, versions, deprecated?, internal?, same_build?, schema_digest }` (`schema_digest` maps a version to the sha256 of its schema document) — and `root_methods` |
+| `describe` | `{}` | `binary { lw_version, impl, dev }`, `transport { min, max }`, `session_generation`, `objects` — per object its `path`, `owner` (`core` or the module id) and `interfaces`, each `{ name, versions, deprecated?, internal?, same_build?, schema_digest }` (`schema_digest` maps a version to the sha256 of its schema document) — `root_methods`, and `delivery?`: `"subscription"` when the daemon sends a transport-11 connection task frames and changes only through its subscriptions (step 5g.3); absent (an older daemon) means it also sends the protocol-10 broadcasts |
 | `schema` | `{ iface, v }` | that interface version's schema document |
 | `subscribe` | `{ object, iface, v, signals?, args? }` | `{ sub_id, seq, initial? }` — `seq` is the baseline: the last `seq` of that object sent to this connection (0: none), so the subscription's first signal is `seq + 1` |
 | `unsubscribe` | `{ sub_id }` | `{}` |

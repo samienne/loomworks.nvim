@@ -150,6 +150,7 @@ describe("root object over the socket (§19.20)", function()
         assert.same({ min = 10, max = 11 }, d.transport)
         assert.equals(srv.generation, d.session_generation)
         assert.same({ "describe", "schema", "subscribe", "unsubscribe" }, d.root_methods)
+        assert.equals("subscription", d.delivery)
         local info = d.objects[1].interfaces[1]
         assert.equals(vim.fn.sha256(read_doc("interfaces/loomworks/Root.1.json")), info.schema_digest["1"])
         -- The result is valid against the Root schema.

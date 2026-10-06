@@ -28,6 +28,13 @@
       ]
     },
     {
+      "name": "describe reports subscription delivery",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "describe", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "delivery": "subscription" } } }
+      ]
+    },
+    {
       "name": "describe names the binary, the transport range, the objects with digests and the root methods",
       "steps": [
         { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "describe", "args": {} } },

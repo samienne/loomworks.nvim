@@ -318,8 +318,9 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         assert.equals("interfaces", obs.mode)
-        -- The note follows `status` (`busy_clients`: a daemon that delivers
-        -- by subscription only, so the editor really gets nothing).
+        -- The describe reports `delivery = "subscription"`: the daemon
+        -- delivers by subscription only, so the editor really gets nothing.
+        assert.is_true(obs._sub_only)
         assert.is_true(vim.wait(5000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         assert.equals("tasks: daemon offers no loomworks.Tasks, editor needs /1; "
             .. "model changes: daemon offers no loomworks.Workspace, editor needs /1", obs.feature_note)
@@ -421,17 +422,19 @@ describe("the observer (§19.16)", function()
     it("a transport-11 daemon offering neither view and sending v0 broadcasts (step 5g.1) gets no note", function()
         s = new_server(root, false)
         obs = attach({ connect = connect_with(function(conn)
-            -- A 5g.1 daemon's `status` has no `busy_clients`.
-            local request = conn.request
-            conn.request = function(self, msg, cb)
-                return request(self, msg, function(reply, err)
-                    if type(reply) == "table" then reply.busy_clients = nil end
-                    cb(reply, err)
-                end)
+            -- A 5g.1 daemon's describe has no `delivery` (it also
+            -- broadcasts), even though its `status` may have `busy_clients`.
+            local call = conn.call
+            conn.call = function(self, object, iface, v, method, args, cb, env)
+                return call(self, object, iface, v, method, args, function(result, err)
+                    if method == "describe" and type(result) == "table" then result.delivery = nil end
+                    cb(result, err)
+                end, env)
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         vim.wait(300)
+        assert.is_nil(obs._sub_only)
         assert.is_nil(obs.feature_note)
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
