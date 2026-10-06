@@ -1,0 +1,117 @@
+{
+  "interface": "loomworks.Common",
+  "version": 1,
+  "status": "draft",
+  "types_only": true,
+  "description": "Types shared by every core interface (spec 19.20): references, ids, the domain outcome union, the client environment, the launch and debug specs and the task meta. Referenced as loomworks.Common/1#/$defs/<Name>; mounted on no object.",
+  "methods": {},
+  "$defs": {
+    "Id": {
+      "description": "An opaque entity id (spec 19.12); stale when its session generation is not the daemon's.",
+      "type": "string"
+    },
+    "Ref": {
+      "description": "A reference to an entity: its id (the editor, from results and views) or its key (the CLI, as the user typed it).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": { "id": { "$ref": "#/$defs/Id" } }
+        },
+        {
+          "type": "object",
+          "required": ["key"],
+          "additionalProperties": false,
+          "properties": { "key": { "type": "string" } }
+        }
+      ]
+    },
+    "Environment": {
+      "description": "The client's environment (spec 19.15 Environment), sent as the envelope's env.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "Accepted": {
+      "type": "object",
+      "required": ["outcome"],
+      "properties": {
+        "outcome": { "const": "accepted" },
+        "task_id": { "description": "The task the call runs as, for a task-streamed method.", "type": "integer" }
+      }
+    },
+    "Refused": {
+      "type": "object",
+      "required": ["outcome", "message", "exit_code"],
+      "properties": {
+        "outcome": { "const": "refused" },
+        "message": { "type": "string" },
+        "exit_code": { "type": "integer" },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "Declined": {
+      "description": "The daemon will not run the call; the CLI runs it in-process instead.",
+      "type": "object",
+      "required": ["outcome", "reason"],
+      "properties": {
+        "outcome": { "const": "declined" },
+        "reason": { "type": "string" }
+      }
+    },
+    "Confirm": {
+      "description": "The call needs the user's confirmation of a plan first.",
+      "type": "object",
+      "required": ["outcome", "lines", "plan"],
+      "properties": {
+        "outcome": { "const": "confirm" },
+        "lines": { "type": "array", "items": { "type": "string" } },
+        "plan": { "type": "object" }
+      }
+    },
+    "Outcome": {
+      "description": "The domain result every operation shares (spec 19.20 'Errors and domain results'). Clients tolerate an unknown outcome.",
+      "oneOf": [
+        { "$ref": "#/$defs/Accepted" },
+        { "$ref": "#/$defs/Refused" },
+        { "$ref": "#/$defs/Declined" },
+        { "$ref": "#/$defs/Confirm" }
+      ]
+    },
+    "LaunchSpec": {
+      "description": "A resolved launch (spec 19.15 Run): the program the client runs.",
+      "type": "object",
+      "required": ["cmd", "args", "cwd"],
+      "properties": {
+        "name": { "type": "string" },
+        "cmd": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": "string" },
+        "env": {
+          "description": "The launch's own contribution over the client's environment, never a whole environment.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "DebugSpec": {
+      "description": "A resolved debug launch; its fields are defined with Launch/1.prepare_debug (step 5k).",
+      "type": "object"
+    },
+    "TaskMeta": {
+      "description": "The start meta of a task frame (spec 19.15).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "type": "string" },
+        "profile": { "type": "string" },
+        "units": { "type": "array" },
+        "origin": { "enum": ["cli", "editor"] },
+        "object": { "type": "string" },
+        "iface": { "type": "string" },
+        "v": { "type": "integer" },
+        "method": { "type": "string" }
+      }
+    }
+  }
+}
