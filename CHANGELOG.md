@@ -51,6 +51,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   range overlaps its own instead of requiring an equal number. A daemon started by an earlier `lw` is restarted
   when idle, or retired when busy, the first time the new `lw` talks to it.
   (#151)
+- Experimental daemon: the workspace daemon offers its first interfaces
+  beyond discovery: the workspace header and a change notification, the
+  running tasks (list them, follow them starting and ending, and cancel one
+  the client started; cancelling another client's task is refused), and a
+  same-version snapshot of the model. `lw daemon run --stdio` serves the
+  daemon protocol on standard input and output, and a conformance runner
+  (`scripts/conformance.lua`) replays the golden transcripts in
+  `spec/protocol/transcripts/` against any daemon binary over it. (#TBD)
 - Experimental daemon (`runtime-mode daemon`): the workspace daemon answers
   two read-only requests, a snapshot of its loaded model (from which a client
   builds a read-only copy of the workspace) and host-probing queries (first:

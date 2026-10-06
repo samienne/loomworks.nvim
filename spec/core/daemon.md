@@ -1094,8 +1094,9 @@ arriving mid-refresh schedules exactly one more re-pull, and a new session
 generation forces a full re-hydrate. Per-object deltas are a future
 optimization.
 
-**Ids on the interfaces.** *(Plan, step 5g.2; records of further interfaces
-with the steps that land them, §19.19.)* Ids are the only entity handles on
+**Ids on the interfaces.** *(Step 5g.2: the `changed` signal is implemented
+(part A); references in requests land with the operations' interfaces (part
+B); records of further interfaces with the steps that land them, §19.19.)* Ids are the only entity handles on
 the wire: there are no remote object references, proxies or lifetimes. Every
 entity record in an interface result or signal (§19.20) carries its `id` from
 this registry and its `key` / `label` for display; a request names an entity
@@ -1175,9 +1176,10 @@ none); `error` or `refused` (a trust, newer-schema or journal refusal) with
 the load failure's `error` message; or `unloaded` before the daemon loaded the
 workspace. Sending `welcome` never loads the workspace.
 
-**As interfaces.** *(Plan: `lw.internal.Snapshot/1` and
-`loomworks.Workspace/1.header` step 5g.2; the editor views steps 5j–5n,
-§19.19.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
+**As interfaces.** *(`lw.internal.Snapshot/1` and
+`loomworks.Workspace/1.header`: implemented, step 5g.2 part A
+(`daemon/core_interfaces.lua`); the CLI's read commands switch to them in
+part B; the editor views steps 5j–5n, §19.19.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
 (§19.20), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
@@ -1252,8 +1254,9 @@ the wipe the in-process build-directory deletion `Workspace:clean_wipe_build_dir
 with a stop predicate); observed by the editor (§19.16);
 `lw reset [<profile> | --all] [-y]` (§16.30; see
 Reset, step 5d); other operations future. The task frames of interface
-methods, `loomworks.Tasks/1` observation and cancel ("Tasks of interface
-methods" below) are plan, step 5g.2.*
+methods ("Tasks of interface methods" below) are plan, step 5g.2 part B;
+`loomworks.Tasks/1` observation signals, `list` and `cancel` are implemented,
+step 5g.2 part A.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1601,7 +1604,10 @@ group, as Git Bash starts the native program it then signals with `kill
 -INT` — would otherwise never see it, while in-process the build's own
 processes in that console still stop).
 
-**Tasks of interface methods.** *(Plan, step 5g.2.)* The task stream is a
+**Tasks of interface methods.** *(Step 5g.2: `loomworks.Tasks/1` — `list`,
+`cancel`, the `started` / `ended` signals with the `task_id` filter — is
+implemented, part A; the task-streamed methods and the observation bound to
+the subscription are part B and step 5g.3.)* The task stream is a
 **transport** mechanism (§19.8), not part of any one interface: a method its
 schema declares task-streamed (§19.20) — `Build/1.build`, `Tests/1.run`,
 `Launch/1.prepare_run`, a module's log stream — replies `accepted` with a
@@ -2012,7 +2018,12 @@ runtime is deferred until that module is actively developed.
      `lw.internal.Snapshot/1`. The CLI switches to calls in the same step (it
      is the same artefact); the v0 kinds keep serving older editors. The
      conformance runner over the standard-I/O transport, with transcripts for
-     each.
+     each. *(Part A implemented: `Workspace/1` (`header`, `changed`),
+     `Tasks/1` (`list`, `cancel`, the subscription),
+     `lw.internal.Snapshot/1`, `lw daemon run --stdio`, the conformance runner
+     and the transcripts of these and `Root/1`. Part B: `Build/1`,
+     `Tests/1.run`, `Launch/1.prepare_run`, `Toolchains/1.list`,
+     `Profiles/1.compiler_cache` and the CLI's switch to calls.)*
    - **5g.3 — Policies**: `lw_version` equality as the CLI's policy through
      `describe` (§19.9); busy = owns a task or a command in flight (§19.9); the
      editor's observer subscribes to `/tasks` and `/workspace` when the daemon
@@ -2065,11 +2076,17 @@ documents of the transport, `loomworks.Root/1` and `loomworks.Common/1`
 validator and the lint and ratchet tests (`proto/schema.lua`,
 `proto/schema_check.lua`). Arguments are always validated; results are
 validated in development builds and tests (a violation is an `internal`
-error), signals only logged. No core interface beyond the root exists yet, so
-`not_loaded`, `stopping`, `retiring` and `forbidden` are defined but not yet
-returned, and `frozen/` is empty until a stable release ships an interface
-version. The rest is plan: the first interfaces, their transcripts and the
-conformance runner step 5g.2; the CLI policy, the busy rule and the guard's
+error), signals only logged. `forbidden` is returned by `Tasks/1.cancel`;
+`not_loaded`, `stopping` and `retiring` are defined but not yet returned,
+and `frozen/` is empty until a stable release ships an interface
+version. Step 5g.2 part A is implemented: `loomworks.Workspace/1`
+(`header`, `changed`), `loomworks.Tasks/1` (`list`, `cancel`, `started`,
+`ended`) and `lw.internal.Snapshot/1` (`daemon/core_interfaces.lua`), the
+standard-I/O transport (`lw daemon run --stdio`, `daemon/stdio.lua`), the
+conformance engine and runner (`proto/conformance.lua`,
+`scripts/conformance.lua`) and the golden transcripts
+(`spec/protocol/transcripts/`, `meta/transcript.schema.json`). The rest is
+plan: the operations' interfaces and the CLI's calls step 5g.2 part B; the CLI policy, the busy rule and the guard's
 interface ratchet step 5g.3; the editor's interfaces steps 5j–5o; module
 interfaces step 5q; out-of-process providers are reserved and built later
 (§19.19).*

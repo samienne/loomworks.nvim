@@ -1129,8 +1129,39 @@ references) and `schema_check.lua` (`lint`, `ratchet`). The client stub is
 `Common.1.json`, and `frozen/` (empty until a stable release ships an
 interface version). `tests/protocol_schema_spec.lua` lints every document and
 ratchets every frozen copy; `tests/daemon_interfaces_spec.lua` covers the root
-object over the socket and the loopback and the v0 aliases. Fixture
-transcripts and the conformance runner come with step 5g.2. The
+object over the socket and the loopback and the v0 aliases.
+
+Step 5g.2 part A adds the first core interfaces and conformance:
+
+- `daemon/core_interfaces.lua` — the interfaces the build service serves,
+  mounted by `Server:registry()` (or by `service.attach` once a registry
+  exists): `/workspace` `loomworks.Workspace/1` (`header` = the welcome
+  header's fields, never loading; `changed` emitted by
+  `Server:model_changed` beside the v0 `model_change`), `/tasks`
+  `loomworks.Tasks/1` (`list` from `TaskStream:snapshot()` plus `owned`;
+  `cancel` = the owner's `run.cancel(…, 130)` through
+  `Service:run_of_task`, `forbidden` for another connection; `started` /
+  `ended` from the stream's `on_started` / `on_ended` hooks, filtered by the
+  subscription's `task_id`) and `/internal` `lw.internal.Snapshot/1` (`get`
+  = `Service:_on_model_request` with a `deliver` callback answering the
+  call, the answer shared with `on_snapshot` via `_snapshot_answer`). Task
+  frames and `model_change` still go to every connection (5g.3 binds them
+  to subscriptions).
+- `daemon/stdio.lua` — `lw daemon run --root <root> --stdio`: an attached
+  runtime whose one connection is this process's standard input and output
+  (`Server:adopt_pipe`: the first frame is `hello`, answered by `welcome`
+  without a challenge; stopping when the client closes standard input).
+- `proto/conformance.lua` (shared) — the transcript engine: matching with
+  selectors and `$`-matchers, frame validation against `transport.json`,
+  method results, declared error codes, signal schemas and gapless `seq`.
+  `scripts/conformance.lua` — the runner: fixtures, a fresh daemon per case
+  over standard I/O (`--lw` for any binary) or loopback; also a library for
+  `tests/protocol_conformance_spec.lua`. Transcripts:
+  `spec/protocol/transcripts/<namespace>/<Rest>.<v>.json`, linted against
+  `meta/transcript.schema.json` (`schema_check.meta_for`), not shipped in
+  the bundle.
+
+The
 plugin/binary boundary guard (`tests/split`,
 #149) enforces that the plugin reaches the binary only through the protocol;
 its interface ratchet (step 5g.3) adds that every plugin-side call names an
