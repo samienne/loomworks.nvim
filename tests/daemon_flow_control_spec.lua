@@ -166,6 +166,10 @@ describe("daemon task stream flow control (§19.15)", function()
             on_message = function(m) if m.kind == "task" then seen[#seen + 1] = m end end,
         })
         assert.is_not_nil(obs)
+        -- From transport 11 a connection observes the tasks its `/tasks`
+        -- subscription matches (§19.15 "Observation").
+        assert(client.call_sync(obs, "/", "loomworks.Root", 1, "subscribe",
+            { object = "/tasks", iface = "loomworks.Tasks", v = 1 }))
         local r = build(srv, { profile = "dev" }, { env = { LW_TEST_SPEW_MB = "12" } })
         assert.is_true(r.wait_done(120000))
         assert.equals(0, r.done().exit_code)
@@ -191,6 +195,8 @@ describe("daemon task stream flow control (§19.15)", function()
         local ok, err = pcall(function()
             local obs = client.session(srv.address, { on_message = function() end })
             assert.is_not_nil(obs)
+            assert(client.call_sync(obs, "/", "loomworks.Root", 1, "subscribe",
+                { object = "/tasks", iface = "loomworks.Tasks", v = 1 }))
             obs:pause_reading()
             local r = build(srv, { profile = "dev" }, { env = { LW_TEST_SPEW_MB = "8" } })
             assert.is_true(r.wait_done(120000))

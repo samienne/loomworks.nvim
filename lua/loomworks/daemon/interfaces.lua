@@ -42,6 +42,10 @@ M.ASYNC = setmetatable({}, { __tostring = function() return "interfaces.ASYNC" e
 --- The root's methods, as `describe().root_methods` lists them.
 M.ROOT_METHODS = { "describe", "schema", "subscribe", "unsubscribe" }
 
+--- How this daemon delivers to a transport-11 connection, as
+--- `describe().delivery` reports it (§19.20): only by subscription.
+M.DELIVERY = "subscription"
+
 --- The implementation name `describe().binary.impl` reports.
 M.IMPL = "lua"
 
@@ -493,6 +497,9 @@ function M.root_impl()
             session_generation = server.generation,
             objects = reg:object_list(true),
             root_methods = M.ROOT_METHODS,
+            -- A transport-11 connection gets task frames and changes only
+            -- through its subscriptions (§19.20, step 5g.3).
+            delivery = M.DELIVERY,
         }
     end
 

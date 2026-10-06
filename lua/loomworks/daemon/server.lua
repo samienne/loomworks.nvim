@@ -24,11 +24,18 @@
 ---      touching no workspace file (§19.2).
 ---
 --- Broadcasts (§19.11, §19.12, §19.16): `model_change { seq,
---- session_generation }` to every authenticated client after each committed
---- write of a state file (`model_changed`, called by the build service), and
---- `retiring` to OBSERVER connections (hello `role = "observer"`, the editor)
---- when the daemon is retired — observers then disconnect, and never hold off
---- the retirement (`active_clients` excludes them).
+--- session_generation }` to every authenticated client below transport 11
+--- after each committed write of a state file (`model_changed`, called by
+--- the build service), and `retiring` to OBSERVER connections below 11
+--- (hello `role = "observer"`, the editor) when the daemon is retired —
+--- observers then disconnect. A connection of transport 11 gets their
+--- interface forms instead, only by subscription (`Workspace/1.changed`) or
+--- as the root's `retiring` signal (§19.20, step 5g.3).
+---
+--- Busy (§19.9 "Busy", step 5g.3): only a connection that owns a running
+--- task or has a command in flight (`conn_busy`) holds off a retirement or
+--- counts in `status.busy_clients`; one that only observes or subscribes
+--- never does.
 ---
 --- Every exit (stop request, lost lock, and — §19.11 — idle, root removed)
 --- cancels running work, closes the clients and the endpoint, removes the
@@ -55,6 +62,12 @@ local M = {}
 --- launching client connects to the holder instead of failing).
 M.EXIT_HELD = 3
 
+--- A retiring daemon that became idle waits at most this long for its
+--- connections' queued writes to drain before it exits (`_maybe_retire`),
+--- checking every RETIRE_POLL_MS.
+M.RETIRE_DRAIN_MS = 2000
+M.RETIRE_POLL_MS = 20
+
 --- `stop_reason` of a runtime whose lock was taken over (§19.2), and of one
 --- whose workspace root was removed (§19.11).
 M.LOST_LOCK = "the runtime lock was taken over"
@@ -68,6 +81,10 @@ M.KEEPALIVE_MS = 30000
 M.IDLE_SECONDS = 3600
 --- An unauthenticated connection is closed after this long (§19.8).
 M.AUTH_TIMEOUT_MS = 5000
+--- A request in flight longer than this is logged once as a warning (§19.9
+--- "Busy"): an interface method that answered ASYNC and never replied would
+--- otherwise keep its connection busy silently. Never cleared by force.
+M.STUCK_REQUEST_MS = 10 * 60 * 1000
 
 local function env_ms(name)
     local v = tonumber(os.getenv(name) or "")
@@ -345,6 +362,7 @@ function Server:_tick()
     if not rlock.still_ours(self.R) then
         return self:_lost_lock()
     end
+    self:_warn_stuck_requests()
     -- An attached runtime publishes no handle and never stops for idleness:
     -- it ends with its command (§19.1).
     if self.attached then return end
@@ -401,9 +419,10 @@ function Server:_lost_lock()
     self:log("the runtime lock was taken over; exiting without touching the workspace")
     for conn in pairs(self.conns) do pcall(function() conn.sock:close() end) end
     self.conns = {}
-    for _, h in ipairs({ self.timer, self.sigterm, self.listener }) do
+    for _, h in ipairs({ self.timer, self.sigterm, self.listener, self._retire_timer }) do
         pcall(function() if not h:is_closing() then h:close() end end)
     end
+    self._retire_timer = nil
     if self.R then self.R.released = true; pcall(function() self.R.timer:stop(); self.R.timer:close() end) end
     self.exit(1)
 end
@@ -430,9 +449,10 @@ function Server:stop(reason, code)
         if self.interfaces then self.interfaces:drop_conn(conn) end
     end
     self.conns = {}
-    for _, h in ipairs({ self.timer, self.sigterm, self.listener }) do
+    for _, h in ipairs({ self.timer, self.sigterm, self.listener, self._retire_timer }) do
         pcall(function() if h and not h:is_closing() then h:close() end end)
     end
+    self._retire_timer = nil
     if self.attached then
         -- Nothing published: only R to release.
     elseif rlock.still_ours(self.R) then
@@ -454,11 +474,60 @@ end
 
 function Server:_send(conn, msg, cb)
     if conn.closed or conn.sock:is_closing() then return end
+    -- The answer to a command in flight (§19.9 "Busy"): any frame naming its
+    -- `req_id` but a task frame or a signal (an `ok`, `error`, `accepted`,
+    -- `refused`, `declined` or `confirm` reply) ends it.
+    local inf = conn.in_flight
+    if inf and msg.req_id ~= nil and inf[msg.req_id] and msg.kind ~= protocol.KIND.task then
+        inf[msg.req_id] = nil
+        if self.retiring then self:_maybe_retire() end
+    end
     pcall(function() conn.sock:write(protocol.encode(msg), cb) end)
 end
 
---- Authenticated clients other than observers: the ones that hold off a
---- retirement (§19.11).
+--- Log once (a warning) each request in flight past STUCK_REQUEST_MS: it
+--- keeps its connection busy (§19.9), so a handler that never answers holds
+--- off an idle restart or a retirement — say so in the runtime log. Checked
+--- on the heartbeat; the request is never cleared here.
+function Server:_warn_stuck_requests()
+    local now = uv.now()
+    for conn in pairs(self.conns) do
+        if conn.in_flight and not conn.closed then
+            for req_id, rec in pairs(conn.in_flight) do
+                if type(rec) == "table" and not rec.warned and now - rec.at >= M.STUCK_REQUEST_MS then
+                    rec.warned = true
+                    self:log("warning: %s request %s (%s) in flight for %ds; the connection stays busy",
+                        self:_peer_text(conn), tostring(req_id), tostring(rec.kind), math.floor((now - rec.at) / 1000))
+                end
+            end
+        end
+    end
+end
+
+--- Is `conn` BUSY (spec §19.9 "Busy", step 5g.3): does it own a running task
+--- or have a command in flight (a request other than the frozen control
+--- subset, not yet answered)? A connection that only observes or subscribes
+--- never is — the observer rule applied to every connection.
+--- @param conn table
+--- @return boolean
+function Server:conn_busy(conn)
+    if conn.in_flight and next(conn.in_flight) ~= nil then return true end
+    return (self.service ~= nil and self.service:owns_task(conn)) == true
+end
+
+--- The busy connections (`conn_busy`) other than `except` (the asking one).
+--- @param except? table
+--- @return integer
+function Server:busy_connections(except)
+    local n = 0
+    for conn in pairs(self.conns) do
+        if conn ~= except and conn.authed and not conn.closed and self:conn_busy(conn) then n = n + 1 end
+    end
+    return n
+end
+
+--- Authenticated clients other than observers (tests, the log). What holds
+--- off a retirement is `busy_connections` (§19.9 "Busy").
 --- @return integer
 function Server:active_clients()
     local n = 0
@@ -478,12 +547,41 @@ function Server:observer_count()
     return n
 end
 
---- Retiring and idle (no running build, no client but observers): exit
---- (§19.11).
+--- Retiring and idle: exit (§19.11). Idle from step 5g.3 (§19.9 "Busy"):
+--- no running task and no busy connection — one that owns a task or has a
+--- command in flight; a connection that only observes or subscribes (an
+--- editor, an idle client) never holds a retirement off.
+---
+--- An idle client may still be connected, so the exit first lets what is
+--- already queued reach the clients — the last task's `done`, a reply (a
+--- Windows pipe writes asynchronously, and closing it cancels a pending
+--- write): it waits until every connection's write queue is empty, at most
+--- RETIRE_DRAIN_MS, and gives up the exit if the daemon became busy again.
+function Server:_retire_idle()
+    return self.retiring and not self.stopped and not self.busy and self:busy_connections() == 0
+end
+
 function Server:_maybe_retire()
-    if self.retiring and not self.stopped and not self.busy and self:active_clients() == 0 then
-        self:stop("retired (idle after a version mismatch)", 0)
+    if not self:_retire_idle() or self._retire_timer then return end
+    local t = uv.new_timer()
+    self._retire_timer = t
+    local started = uv.now()
+    local function finish()
+        self._retire_timer = nil
+        pcall(function() t:stop(); if not t:is_closing() then t:close() end end)
     end
+    t:start(M.RETIRE_POLL_MS, M.RETIRE_POLL_MS, vim.schedule_wrap(function()
+        if self._retire_timer ~= t then return end
+        if not self:_retire_idle() then return finish() end
+        local queued = 0
+        for conn in pairs(self.conns) do
+            local ok, n = pcall(function() return conn.sock:get_write_queue_size() end)
+            if ok and type(n) == "number" then queued = queued + n end
+        end
+        if queued > 0 and uv.now() - started < M.RETIRE_DRAIN_MS then return end
+        finish()
+        self:stop("retired (idle after a version mismatch)", 0)
+    end))
 end
 
 --- A committed write of a state file (§19.12): advance the sequence number
@@ -494,7 +592,7 @@ function Server:model_changed()
     self.seq = self.seq + 1
     local msg = { kind = protocol.KIND.model_change, seq = self.seq, session_generation = self.generation }
     for conn in pairs(self.conns) do
-        if conn.authed and not conn.closed then self:_send(conn, msg) end
+        if conn.authed and not conn.closed and M.takes_v0_broadcasts(conn) then self:_send(conn, msg) end
     end
     if self.interfaces then
         local core_ifaces = require("loomworks.daemon.core_interfaces")
@@ -718,6 +816,11 @@ function Server:status(conn)
     r.root = self.root
     r.retiring = self.retiring
     r.observers = self:observer_count()
+    -- The connections besides the asking one that own a running task or
+    -- have a command in flight (§19.9 "Busy", step 5g.3): what a mismatched
+    -- client weighs to tell an idle daemon from a busy one. An addition to
+    -- the frozen shape; an older daemon omits it.
+    r.busy_clients = self:busy_connections(conn)
     -- The running tasks (protocol 7, §19.11): each one's `start` meta, when it
     -- started and its last percent.
     r.tasks = self.service and self.service.tasks and self.service.tasks:snapshot(conn) or {}
@@ -781,18 +884,37 @@ M.DISPATCH = {
     [protocol.KIND.query] = { v0 = "on_query" },
 }
 
---- Mark the daemon retiring (§19.11): observers are told with the v0
---- `retiring` broadcast (they disconnect on it and never hold the retirement
---- off), every connection of transport 11 with the root's `retiring` signal.
+--- The frozen control subset among the request kinds (§19.8): never a
+--- command, so never busy (§19.9 "Busy").
+M.CONTROL = { [protocol.KIND.ping] = true, [protocol.KIND.status] = true, [protocol.KIND.stop] = true,
+    [protocol.KIND.retire] = true }
+
+--- Does `conn` take the protocol-10 broadcasts (`model_change`, `retiring`,
+--- every task's frames)? Every connection below transport 11 does, as
+--- before; one of transport 11 receives only what it subscribed to, plus the
+--- root's signals (§19.20 "Signals and subscriptions", step 5g.3).
+--- @param conn table
+--- @return boolean
+function M.takes_v0_broadcasts(conn)
+    return not (type(conn.transport) == "number" and conn.transport >= 11)
+end
+
+--- Mark the daemon retiring (§19.11): observers below transport 11 are told
+--- with the v0 `retiring` broadcast (they disconnect on it and never hold the
+--- retirement off), every connection of transport 11 with the root's
+--- `retiring` signal. Already idle, it exits at once (after the reply).
 function Server:_retire()
     local first = not self.retiring
     self.retiring = true
     if not first then return end
     self:log("retiring: a client of another version asked; exits when idle")
     for c in pairs(self.conns) do
-        if c.authed and not c.closed and c.observer then self:_send(c, { kind = protocol.KIND.retiring }) end
+        if c.authed and not c.closed and c.observer and M.takes_v0_broadcasts(c) then
+            self:_send(c, { kind = protocol.KIND.retiring })
+        end
     end
     if self.interfaces then self.interfaces:root_signal("retiring", {}) end
+    self:_maybe_retire()
 end
 
 function Server:_dispatch_request(conn, msg)
@@ -805,6 +927,16 @@ function Server:_dispatch_request(conn, msg)
         self:_send(conn, fields, cb)
     end
     local entry = type(msg.kind) == "string" and M.DISPATCH[msg.kind] or nil
+    -- A command in flight until its answer (`_send`): every request but the
+    -- frozen control subset, which never makes a connection busy (§19.9).
+    if entry and msg.req_id ~= nil and not M.CONTROL[msg.kind] then
+        conn.in_flight = conn.in_flight or {}
+        local what = msg.kind
+        if msg.iface and msg.method then
+            what = string.format("%s/%s.%s", tostring(msg.iface), tostring(msg.v), tostring(msg.method))
+        end
+        conn.in_flight[msg.req_id] = { at = uv.now(), kind = what }
+    end
     if entry and entry.control then return entry.control(self, conn, msg, reply) end
     if entry and entry.v0 and self.service then return self.service[entry.v0](self.service, conn, msg) end
     reply({ kind = K.error, error = "unknown request kind: " .. tostring(msg.kind) })

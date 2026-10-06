@@ -226,6 +226,18 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- Experimental daemon mode (`runtime-mode daemon`): `lw` now compares its own
+  version with the one the workspace daemon reports for itself before using
+  it. A daemon counts as busy only while a client runs an operation on it or
+  waits for an answer, so an editor that only watches never keeps an `lw` of
+  another version from restarting an idle daemon; the editor reconnects to
+  the new daemon by itself. A retiring daemon exits as soon as nothing runs.
+  The editor now receives task output and model changes from a current
+  daemon through subscriptions, and still works with older daemons; an
+  interface the daemon does not offer is shown as one note on the status
+  page's Runtime line, and one the daemon starts offering later is picked up
+  without reconnecting. The daemon log notes a request still unanswered
+  after 10 minutes. (#153)
 - Experimental daemon mode (`runtime-mode daemon`): `lw --no-daemon`, CI runs
   (`CI=true`, `LOOMWORKS_NO_DAEMON=1`) and a daemon that could not be started
   now run `lw build`, `lw test`, `lw run`'s preparation, `lw clean` and

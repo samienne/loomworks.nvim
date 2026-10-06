@@ -13,7 +13,12 @@
 ---     (`"loomworks." .. name`, `"boot." .. x`). These are counted per file, since
 ---     the target cannot be known statically;
 ---   * reach-ins (plugin-side only): `core:`, `get_workspace(` and `._workspace`,
----     the ways the editor gets at binary-side domain objects without a require.
+---     the ways the editor gets at binary-side domain objects without a require;
+---   * interface references (plugin-side only, the interface ratchet of step
+---     5g.3): `iface = "<name>", v = <n>` names an interface version; any other
+---     quoted interface name (`"loomworks.<Upper>..."`, `"lw.<...>"`) is
+---     unversioned. The guard checks each version has a schema and
+---     transcripts under spec/protocol/.
 ---
 --- Not caught: an aliased require (`local r = require; r("x")`),
 --- `package.loaded[...]` / `package.preload[...]` lookups, `loadfile`/`dofile`,
@@ -137,12 +142,132 @@ function M.scan_file(rel)
     return targets, dynamic, reach
 end
 
+-- Interface references (the interface ratchet, step 5g.3): a versioned one
+-- is a table constructor holding both `iface = "<name>"` and `v = <n>`, in
+-- either order and across lines (the observer's interface tables); any other
+-- quoted interface name (`"loomworks.Tasks"`, `"lw.internal.Snapshot"`) in
+-- plugin-side code names no version and fails the guard. An interface named
+-- at run time — `iface = <expression>`, or an interface call (`:call(`)
+-- whose interface argument is not a string literal — cannot be checked
+-- statically: such sites are counted per file (`dynamic`) and must match the
+-- `interfaces_dynamic` allowlist exactly, like dynamic requires.
+-- (Blind spot, deferred to step 5j: the methods and signals called on a
+-- versioned interface are not checked against its schema.)
+local IFACE_FIELD = { '()iface%s*=%s*"([%w_.]+)"()', "()iface%s*=%s*'([%w_.]+)'()" }
+local IFACE_NAME = {
+    '"(loomworks%.%u[%w_]*)"', "'(loomworks%.%u[%w_]*)'",
+    '"(lw%.[%w_.]*%u[%w_]*)"', "'(lw%.[%w_.]*%u[%w_]*)'",
+}
+local IFACE_DYNAMIC = {
+    "%f[%w_]iface%s*=%s*[%a_]",                     -- iface = <expression>
+    ":call%s*%(%s*[^,%)]+,%s*[^%s\"']",           -- conn:call(object, <expression>, ...)
+}
+
+--- The code of `rel` as one string, comment lines blanked (line numbers kept).
+local function code_text(rel)
+    local fh = assert(io.open(M.root .. "/" .. rel, "rb"))
+    local text = fh:read("*a")
+    fh:close()
+    local lines = {}
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+        lines[#lines + 1] = line:match("^%s*%-%-") and "" or line
+    end
+    return table.concat(lines, "\n")
+end
+
+--- The span `[open, close]` of the innermost `{ ... }` enclosing `pos`
+--- (quoted strings skipped), or nil.
+local function enclosing_table(text, pos)
+    local stack, i, n = {}, 1, #text
+    local open_at
+    while i <= n do
+        local c = text:sub(i, i)
+        if c == '"' or c == "'" then
+            local j = i + 1
+            while j <= n do
+                local d = text:sub(j, j)
+                if d == "\\" then j = j + 1 elseif d == c or d == "\n" then break end
+                j = j + 1
+            end
+            i = j
+        elseif c == "{" then
+            stack[#stack + 1] = i
+        elseif c == "}" then
+            local o = table.remove(stack)
+            if o and o < pos and i > pos and (not open_at or o > open_at[1]) then open_at = { o, i } end
+        end
+        i = i + 1
+    end
+    return open_at and open_at[1], open_at and open_at[2]
+end
+
+--- `v = <n>` at the top level of the table body text[open+1 .. close-1].
+local function table_version(text, open, close)
+    local depth, i = 0, open + 1
+    while i < close do
+        local c = text:sub(i, i)
+        if c == "{" then depth = depth + 1
+        elseif c == "}" then depth = depth - 1
+        elseif depth == 0 and c == "v" and not text:sub(i - 1, i - 1):match("[%w_.]") then
+            local v = text:sub(i, close):match("^v%s*=%s*(%d+)")
+            if v then return tonumber(v) end
+        end
+        i = i + 1
+    end
+end
+
+local function line_of(text, pos)
+    local _, nl = text:sub(1, pos):gsub("\n", "")
+    return nl + 1
+end
+
+--- The interface versions a file names (`refs`, `{ iface, v, line }`), the
+--- interface names it quotes without a version (`unversioned`), and the
+--- number of sites naming an interface at run time (`dynamic`).
+--- @param rel string
+--- @return table[] refs, string[] unversioned, integer dynamic
+function M.interface_refs(rel)
+    return M.interface_refs_text(code_text(rel))
+end
+
+--- `interface_refs` of a code text (comment lines already blanked).
+--- @param text string
+--- @return table[] refs, string[] unversioned, integer dynamic
+function M.interface_refs_text(text)
+    local refs, unversioned, dynamic = {}, {}, 0
+    local covered = {}
+    for _, pat in ipairs(IFACE_FIELD) do
+        for pos, name, stop in text:gmatch(pat) do
+            local open, close = enclosing_table(text, pos)
+            local v = open and table_version(text, open, close)
+            if v then
+                refs[#refs + 1] = { iface = name, v = v, line = line_of(text, pos) }
+                covered[#covered + 1] = { pos, stop }
+            end
+        end
+    end
+    local function is_covered(at)
+        for _, c in ipairs(covered) do if at >= c[1] and at < c[2] then return true end end
+        return false
+    end
+    for _, pat in ipairs(IFACE_NAME) do
+        for at, name in text:gmatch("()" .. pat) do
+            if not is_covered(at) then unversioned[#unversioned + 1] = name end
+        end
+    end
+    for _, pat in ipairs(IFACE_DYNAMIC) do
+        for _ in text:gmatch(pat) do dynamic = dynamic + 1 end
+    end
+    return refs, unversioned, dynamic
+end
+
 --- Current state of the tree.
---- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts }
+--- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts, interfaces }
+---   `interfaces[rel]` = { refs, unversioned } of each plugin-side file naming one
 function M.current()
     local res = {
         unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {},
-        counts = { plugin = 0, shared = 0, binary = 0 },
+        counts = { plugin = 0, shared = 0, binary = 0 }, interfaces = {}, interfaces_dynamic = {},
     }
     local files = M.files()
     local side_by_mod = {}
@@ -171,6 +296,11 @@ function M.current()
             if #bad > 0 then res.edges[rel] = bad end
             if dynamic > 0 then res.dynamic[rel] = dynamic end
             if side == "plugin" and reach > 0 then res.reach_ins[rel] = reach end
+            if side == "plugin" then
+                local refs, unversioned, idyn = M.interface_refs(rel)
+                if #refs > 0 or #unversioned > 0 then res.interfaces[rel] = { refs = refs, unversioned = unversioned } end
+                if idyn > 0 then res.interfaces_dynamic[rel] = idyn end
+            end
         end
     end
     return res
@@ -195,7 +325,7 @@ function M.render(res)
         out[#out + 1] = "        },"
     end
     out[#out + 1] = "    },"
-    for _, key in ipairs({ "dynamic", "reach_ins" }) do
+    for _, key in ipairs({ "dynamic", "reach_ins", "interfaces_dynamic" }) do
         out[#out + 1] = ("    %s = {"):format(key)
         for _, rel in ipairs(sorted_keys(res[key])) do
             out[#out + 1] = ('        ["%s"] = %d,'):format(rel, res[key][rel])

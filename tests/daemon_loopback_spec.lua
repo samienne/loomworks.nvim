@@ -255,10 +255,10 @@ describe("attached runtime (§19.1, §19.2)", function()
         conn:close()
     end)
 
-    it("delivers broadcasts to a loopback observer", function()
+    it("delivers broadcasts to a loopback observer of protocol 10", function()
         assert(srv:start_attached({ command = "build" }))
         local seen
-        local conn = assert(client.loopback_session(srv, { role = "observer",
+        local conn = assert(client.loopback_session(srv, { role = "observer", protocol = 10,
             on_message = function(m) if m.kind == protocol.KIND.model_change then seen = m end end }))
         assert.equals(1, srv:observer_count())
         assert.equals(0, srv:active_clients())

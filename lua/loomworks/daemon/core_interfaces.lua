@@ -34,15 +34,18 @@
 --- or error changed (checked after every model segment and every write);
 --- `Tasks.started` / `Tasks.ended` as a task starts and ends, to the
 --- subscribers of `/tasks` (filtered by the subscription's `task_id`). The
---- task frames themselves still reach every authenticated connection as in
---- protocol 10 (§19.15) until the observer subscribes (step 5g.3).
+--- task frames themselves reach a connection of transport 11 only for a task
+--- its `/tasks` subscription matches (or that it owns), and every
+--- connection below 11 as in protocol 10 (§19.15 "Observation", step 5g.3;
+--- loomworks.daemon.tasks). Likewise the protocol-10 `model_change` and
+--- `retiring` broadcasts reach only connections below transport 11.
 
 local envelope = require("loomworks.proto.envelope")
 
 local M = {}
 
 M.WORKSPACE = { path = "/workspace", iface = "loomworks.Workspace", v = 1 }
-M.TASKS = { path = "/tasks", iface = "loomworks.Tasks", v = 1 }
+M.TASKS = { path = "/tasks", iface = "loomworks.Tasks", v = 1 } -- (tasks.TASKS_PATH / TASKS_IFACE / TASKS_V)
 M.SNAPSHOT = { path = "/internal", iface = "lw.internal.Snapshot", v = 1 }
 M.BUILD = { path = "/build", iface = "loomworks.Build", v = 1 }
 M.TESTS = { path = "/tests", iface = "loomworks.Tests", v = 1 }

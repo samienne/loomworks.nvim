@@ -149,6 +149,31 @@ describe("lw build routed through an in-process daemon (§19.15)", function()
             err_lines)
     end)
 
+    -- A mismatched CLI may stop an idle daemon (§19.9) while this one sits
+    -- between `ensure` (its describe said "used") and its routed request:
+    -- the request is not routed and the command runs in-process.
+    it("the daemon stopped after ensure() said used: one line, runs in-process (§19.9, §19.15)", function()
+        srv:stop("stopped by a client of another version", 0)
+        local code = cli._delegate_build(root, { "build", "dev" }, "used", { keepalive_ms = 1000, connect_ms = 5000 })
+        assert.is_nil(code)
+        assert.equals(1, #lines_matching("running without it"), table.concat(err_lines, "\n"))
+        assert.equals(0, #lines_matching("building through the workspace daemon"))
+    end)
+
+    it("the daemon stopped between connect and request: one line, runs in-process (§19.9, §19.15)", function()
+        local session = function(ep, o)
+            local conn = client.session(ep, o)
+            srv:stop("stopped by a client of another version", 0)
+            vim.wait(2000, function() return conn == nil or conn.closed end, 10)
+            return conn
+        end
+        local code = cli._delegate_build(root, { "build", "dev" }, "used",
+            { keepalive_ms = 1000, connect_ms = 5000, session = session })
+        assert.is_nil(code)
+        assert.equals(1, #lines_matching("running without it"), table.concat(err_lines, "\n"))
+        assert.equals(0, #lines_matching("building through the workspace daemon"))
+    end)
+
     it("--break-locks prints one line and runs in-process", function()
         require("loomworks.lock_break").requested = "ask"
         assert.is_nil(cli._delegate_build(root, { "build", "dev" }, "used"))

@@ -893,8 +893,9 @@ run is the in-process path, and a daemon with newer schemas is reported in
 one line and not used — the command itself still runs in-process, where the
 file-level checks of §2.7 apply. The transport range under "From protocol
 11" is step 5g.1 (`version.negotiate`; an editor observes a daemon whose range
-overlaps its own); the CLI policy and the generalised busy rule are plan,
-step 5g.3.*
+overlaps its own); the CLI policy (`ensure.policy`, `describe`) and the
+generalised busy rule (`Server:conn_busy`, `status.busy_clients`) are
+implemented, step 5g.3; the editor retirement below is plan.*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -912,12 +913,14 @@ code ships with the plugin, the daemon's with the resolved host binary).
 
 On a mismatch, after authenticating:
 
-- **Idle daemon** (no client other than this one and observers, no running
-  task) — the client stops it (§19.11) and launches its own binary in its
-  place; observers never count as busy.
-- **Busy daemon** — the client sends `retire`: the daemon accepts no new
-  operations from mismatched clients, keeps serving its attached clients, and
-  exits as soon as it is idle; the next command launches the current binary.
+- **Idle daemon** (no connection other than this one is busy — none owns a
+  running task or has a request in flight, "Busy" below) — the client stops
+  it (§19.11) and launches its own binary in its place; a connection that
+  only observes or subscribes (an editor) never counts as busy.
+- **Busy daemon** — the client sends `retire`: the retiring daemon accepts no
+  new operations from any client (each is `declined`, and that client runs it
+  in-process), finishes the ones already running, and exits once no
+  connection is busy; the next command launches the current binary.
   The client runs **this** command as a **version-bypass run**: attached, but
   without the runtime lock (§19.2), holding only its operation locks (§19.3),
   and prints one line:
@@ -930,7 +933,8 @@ A client never stops a busy daemon, and never drives a daemon it does not
 match. A daemon whose schemas are newer than the client's is never stopped by
 it; the client refuses with the update message of §2.7 "Reading a newer file".
 
-**From protocol 11.** *(Transport: step 5g.1; the rest plan, step 5g.3.)* The rules above split
+**From protocol 11.** *(Transport: step 5g.1; the CLI policy and the busy rule: step 5g.3; the
+editor retirement: plan.)* The rules above split
 into a protocol rule and a client policy:
 
 - **Transport.** Client and daemon agree on the highest transport version in
@@ -1019,8 +1023,8 @@ exit, all clients connect to the winner.
 connects for a moment (handshake, `ping`) and leaves; the keepalive rule
 applies to every authenticated connection, except one that owns a running
 operation (§19.15). A running build makes the daemon busy (handle `busy`); a
-`retire`d daemon exits when it has no authenticated client and no running
-build.*
+`retire`d daemon exits when no connection is busy (§19.9 "Busy",
+`Server:_retire_idle`, step 5g.3).*
 
 - **Attached clients keep it alive.** A connection counts while authenticated
   and open. The editor sends a keepalive `ping` (about every 30 s); a
@@ -1028,9 +1032,12 @@ build.*
 - **Observers and retirement.** A `retire`d daemon broadcasts `retiring` to
   every connected observer (§19.16), and `welcome` carries `retiring` for one
   that connects later; an observer then disconnects and does not reconnect to
-  that daemon. Observer connections never hold off retirement: a retiring
-  daemon exits once it has no running build and no authenticated client other
-  than observers. (They still count for the idle timeout and in `clients`.)
+  that daemon. A retiring daemon exits once **no connection is busy** — none
+  owns a running task or has a request in flight (§19.9 "Busy"); a connection
+  that only observes or subscribes, or an idle client still connected, never
+  holds it off. (Every connection still counts for the idle timeout and in
+  `clients`.) A request left in flight for a long time (10 minutes) is noted
+  once in the runtime log, never cleared: it keeps its connection busy.
   `status` reports `observers`, the number of observer connections, and
   `tasks`: one `{ task_id, name, kind, profile, units, origin, started_at,
   percent? }` per running task — its `start` meta (§19.15), the wall-clock
@@ -1627,8 +1634,8 @@ processes in that console still stop).
 **Tasks of interface methods.** *(Step 5g.2: `loomworks.Tasks/1` — `list`,
 `cancel`, the `started` / `ended` signals with the `task_id` filter — is
 implemented, part A; the task-streamed methods (`start.meta` naming the
-method, `done.result`), part B; the observation bound to the subscription is
-step 5g.3.)* The task stream is a
+method, `done.result`), part B; the observation bound to the subscription,
+step 5g.3 (`tasks.lua` `Task:_observes`).)* The task stream is a
 **transport** mechanism (§19.8), not part of any one interface: a method its
 schema declares task-streamed (§19.20) — `Build/1.build`, `Tests/1.run`,
 `Launch/1.prepare_run`, a module's log stream — replies `accepted` with a
@@ -1773,7 +1780,8 @@ the daemon's operations as with any other process:
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
-below) is plan: subscription to `/tasks` and `/workspace` step 5g.3, the views
+below): the subscription to `/tasks` and `/workspace` is implemented, step
+5g.3 (`daemon/observer.lua` `_subscribe`); the views
 and operations steps 5j–5o (§19.19); the editor-owned child daemon step 5p.*
 
 **End state.** The editor uses the **same daemon as the CLI**. It connects,
@@ -1790,7 +1798,10 @@ then the workspace's shared daemon, owned by the editor, and CLI clients
 connect to it instead of being refused as busy. It ends when the editor
 closes the workspace.
 
-**Interface client.** *(Plan, step 5g.3 onward.)* On every connect, including
+**Interface client.** *(Step 5g.3: discovery through `Root.describe` with
+`welcome.objects` as the fallback, the `/tasks` and `/workspace`
+subscriptions, `objects_changed` and the per-feature note; the views and
+operations: plan, steps 5j–5o.)* On every connect, including
 each reconnect, the editor **discovers** the daemon through the root object
 (`welcome.objects`, `Root.describe`; §19.20), picks per interface the highest
 version both sides support, and subscribes to the views and tasks it shows,
@@ -1798,7 +1809,17 @@ taking their full state from each subscription's `initial`. A missing or
 incompatible interface degrades only the feature that needs it, with one
 Runtime-line note naming the interface and both versions (e.g. `lsp
 configuration: daemon offers loomworks.LspConfig/2, editor needs /1`); it
-never fails the connection or the other features. Only a transport mismatch
+never fails the connection or the other features. The describe is bounded
+(about 3 s) and never blocks the editor; when it fails or times out the editor
+uses `welcome.objects`. An interface that appears later (the root's
+`objects_changed`) is subscribed to then, and a refused subscription is
+retried once, on the next `objects_changed` or reconnect. A missing interface
+is noted only when the editor gets nothing for it: a daemon whose
+`describe` reports `delivery: "subscription"` sends a transport-11
+connection only what it subscribed to, so a missing interface is noted; a
+daemon of transport 11 without it (step 5g.1, or a describe that failed)
+still sends the protocol-10 broadcasts, and one that offers none of the
+observed views is observed through them without a note. Only a transport mismatch
 (no overlap of the ranges, §19.9) makes the daemon incompatible as a whole.
 Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
 through the v0 broadcasts as below and notes interface features as "daemon
@@ -1924,7 +1945,7 @@ daemon's handle `exe`, §19.6, whoever started it; an older daemon's handle may
 not name one), and the remedy (update
 the plugin, or pin or install a matching lw), e.g. `Runtime:   daemon (lw
 setting) — lw v0.1.44 (protocol 7) does not match this plugin (protocol 6):
-update the plugin or the pin — running in-process`. *(Plan, step 5g.3.)*
+update the plugin or the pin — running in-process`. *(Step 5g.3.)*
 From protocol 11 this whole-daemon note applies only to a transport mismatch;
 a missing interface version is the per-feature note of "Interface client".
 
@@ -2048,12 +2069,19 @@ runtime is deferred until that module is actively developed.
      `Tests/1.run`, `Launch/1.prepare_run`, `Toolchains/1.list`,
      `Profiles/1.compiler_cache`, `Workspace/1.header_changed`, opaque string
      ids and the CLI's switch to calls (`daemon/calls.lua`).)*
-   - **5g.3 — Policies**: `lw_version` equality as the CLI's policy through
+   - **5g.3 — Policies** *(done)*: `lw_version` equality as the CLI's policy through
      `describe` (§19.9); busy = owns a task or a command in flight (§19.9); the
-     editor's observer subscribes to `/tasks` and `/workspace` when the daemon
-     offers them, otherwise uses the v0 broadcasts; the guard's interface
-     ratchet (every plugin-side call names an interface version that has a
-     schema and client-conformance transcripts).
+     editor's observer re-describes on connect and subscribes to `/tasks` and
+     `/workspace` when the daemon offers them (later too, on
+     `objects_changed`), otherwise uses the v0 broadcasts; the guard's
+     interface ratchet (every plugin-side call names an interface version that
+     has a schema and client-conformance transcripts; a site naming an
+     interface at run time is an allow-listed exception). *(Done:
+     `ensure.policy`, `Server:conn_busy` / `status.busy_clients`,
+     `observer._subscribe`, transport-11 delivery by subscription, the guard's
+     interface ratchet in `tests/split`. Deferred to 5j: checking that the
+     methods and signals the plugin uses on an interface version are covered
+     by its transcripts.)*
    - **5h — Editor-side binary provisioning**: the plugin resolves, downloads
      and verifies a host binary itself; the schemas a binary implements are
      published with each release. Used first only for the observer's binary.
@@ -2116,9 +2144,10 @@ part B is implemented: `loomworks.Build/1` (`build`, `clean`, `reset`),
 `loomworks.Workspace/1.header_changed`, references by `{ id }` or `{ key }`
 and the CLI's calls over transport 11 (`daemon/calls.lua`); each of these
 interfaces serves only the methods the catalogue's 5g.2 entries name, the rest
-being added with their steps. The rest is
-plan: the CLI policy, the busy rule and the guard's
-interface ratchet step 5g.3; the editor's interfaces steps 5j–5o; module
+being added with their steps. Step 5g.3 is implemented: the CLI policy, the
+busy rule, delivery to a transport-11 connection by subscription only and
+the guard's interface ratchet. The rest is
+plan: the editor's interfaces steps 5j–5o; module
 interfaces step 5q; out-of-process providers are reserved and built later
 (§19.19).*
 
@@ -2161,7 +2190,7 @@ and new methods, which a client calls only after seeing them in
 
 | Method | Params | Result |
 |--|--|--|
-| `describe` | `{}` | `binary { lw_version, impl, dev }`, `transport { min, max }`, `session_generation`, `objects` — per object its `path`, `owner` (`core` or the module id) and `interfaces`, each `{ name, versions, deprecated?, internal?, same_build?, schema_digest }` (`schema_digest` maps a version to the sha256 of its schema document) — and `root_methods` |
+| `describe` | `{}` | `binary { lw_version, impl, dev }`, `transport { min, max }`, `session_generation`, `objects` — per object its `path`, `owner` (`core` or the module id) and `interfaces`, each `{ name, versions, deprecated?, internal?, same_build?, schema_digest }` (`schema_digest` maps a version to the sha256 of its schema document) — `root_methods`, and `delivery?`: `"subscription"` when the daemon sends a transport-11 connection task frames and changes only through its subscriptions (step 5g.3); absent (an older daemon) means it also sends the protocol-10 broadcasts |
 | `schema` | `{ iface, v }` | that interface version's schema document |
 | `subscribe` | `{ object, iface, v, signals?, args? }` | `{ sub_id, seq, initial? }` — `seq` is the baseline: the last `seq` of that object sent to this connection (0: none), so the subscription's first signal is `seq + 1` |
 | `unsubscribe` | `{ sub_id }` | `{}` |

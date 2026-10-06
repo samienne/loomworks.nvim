@@ -28,8 +28,10 @@
 --- once the queue drained below `OWNER_LOW`. The daemon's memory per build is
 --- therefore bounded.
 ---
---- Every other authenticated client OBSERVES the task (a CLI build streams
---- into the editor): it gets at most `OBSERVER_CAP_BYTES` of a task's output,
+--- Every other authenticated client below transport 11 OBSERVES the task (a
+--- CLI build streams into the editor), as in protocol 10; a connection of
+--- transport 11 observes only the tasks its `loomworks.Tasks/1` subscription
+--- on `/tasks` matches (§19.15 "Observation", step 5g.3). An observer gets at most `OBSERVER_CAP_BYTES` of a task's output,
 --- then one truncation notice; an observer whose connection queues more than
 --- `OBSERVER_QUEUE_MAX` bytes is dropped (it re-attaches by connecting again)
 --- unless it owns a running task itself — then it only misses what it
@@ -38,6 +40,12 @@
 local protocol = require("loomworks.daemon.protocol")
 
 local M = {}
+
+--- The object and interface whose subscription observes tasks from transport
+--- 11 (loomworks.daemon.core_interfaces TASKS).
+M.TASKS_PATH = "/tasks"
+M.TASKS_IFACE = "loomworks.Tasks"
+M.TASKS_V = 1
 
 --- Owner flow control: pause the step's output above this many queued bytes,
 --- resume below `OWNER_LOW`.
@@ -201,11 +209,35 @@ function Task:_observer_ok(conn)
     return false
 end
 
---- The observers of this task (authenticated, open, not the owner).
+--- Does `conn` observe this task? Below transport 11 every connection does
+--- (protocol 10); from 11 only one subscribed to `loomworks.Tasks/1` on
+--- `/tasks` for every task or for this one (§19.15 "Observation"): the frames
+--- sent are this version's, so a subscription to another version (a later
+--- `/2` beside it) does not take them.
+--- @param conn table
+--- @return boolean
+function Task:_observes(conn)
+    local srv = self.stream.server
+    if type(conn.transport) ~= "number" or conn.transport < 11 then return true end
+    local reg = srv.interfaces
+    if not reg then return false end
+    for _, s in pairs(reg.subs) do
+        if s.conn == conn and s.object == M.TASKS_PATH and s.iface == M.TASKS_IFACE and s.v == M.TASKS_V
+            and (s.args == nil or s.args.task_id == nil or s.args.task_id == self.id) then
+            return true
+        end
+    end
+    return false
+end
+
+--- The observers of this task (authenticated, open, not the owner, observing
+--- it: `_observes`).
 function Task:_observers()
     local list = {}
     for conn in pairs(self.stream.server.conns or {}) do
-        if conn ~= self.owner and conn.authed and not conn.closed then list[#list + 1] = conn end
+        if conn ~= self.owner and conn.authed and not conn.closed and self:_observes(conn) then
+            list[#list + 1] = conn
+        end
     end
     return list
 end

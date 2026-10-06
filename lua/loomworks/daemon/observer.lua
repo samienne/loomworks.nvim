@@ -13,13 +13,25 @@
 ---     no successor — never after any other drop (`lw daemon stop` must stop
 ---     it);
 ---   * watches the handle (WATCH_MS) and connects to a live daemon whose
----     protocol equals ours and whose schemas are not newer (the host
+---     transport range overlaps ours and whose schemas are not newer (the host
 ---     version may differ), as `client = "editor"`, `role = "observer"`, and
 ---     pings it every KEEPALIVE_MS (§19.11);
 ---   * skips a daemon that is `retiring` (broadcast or in `welcome`) or
 ---     incompatible, identified by pid + start time;
----   * on `model_change` applies the workspace files' pending changes at once
----     (the file tracker's `sync`, §19.12);
+---   * on a transport-11 daemon (`welcome.objects`, §19.20) re-describes it
+---     (`Root.describe`, bounded by DESCRIBE_MS, falling back to
+---     `welcome.objects`) and subscribes to `loomworks.Tasks/1` on `/tasks`
+---     and `loomworks.Workspace/1` on `/workspace` when offered (§19.16
+---     "Interface client", step 5g.3) — one whose describe reports `delivery =
+---     "subscription"` sends a transport-11
+---     connection only what it subscribed to; a missing interface is one
+---     per-feature note, never a failed connection; the root's
+---     `objects_changed` subscribes to an interface that appears later and
+---     retries a refused subscription once; against a daemon without
+---     `welcome.objects` it observes through the protocol-10 broadcasts
+---     (`mode` "v0");
+---   * on `model_change` (or `Workspace.changed`) applies the workspace files'
+---     pending changes at once (the file tracker's `sync`, §19.12);
 ---   * turns observed `task` streams into RemoteTasks resolved to the
 ---     workspace's domain objects (loomworks.daemon.remote_task), which put
 ---     the same runtime running state on units and profile as a local
@@ -59,6 +71,11 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field conn loomworks.daemon.Conn|nil
 --- @field daemon { pid: integer, start_time: string|nil, lw_version: string|nil }|nil the observed daemon
 --- @field seq integer last model_change seq
+--- @field mode "v0"|"interfaces"|nil how the connected daemon is observed: protocol-10 broadcasts, or subscriptions (step 5g.3)
+--- @field feature_note string|nil the per-feature note of a missing or refused interface (§19.16 "Interface client")
+--- @field _feat table<string, string>|nil per feature, on this connection: "pending", "subscribed", "refused" (retried once), "gave_up" or "missing" (offered at other versions only)
+--- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
+--- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
 --- @field generation any session generation of the observed daemon
 --- @field skip table<string, boolean> daemons never connected to again ("pid:start")
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
@@ -69,6 +86,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _watch userdata|nil the handle-watch timer
 --- @field _keepalive userdata|nil the keepalive ping timer
 --- @field _dropped boolean|nil the last connection dropped (keeps its note while waiting)
+--- @field _dropped_id string|nil the daemon that last dropped us: a reconnect to it is quiet
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
 --- @field _relaunch boolean|nil the observed daemon retired: launch one successor once it has exited
 --- @field opts table the attach options (test seams, see `attach`)
@@ -79,6 +97,58 @@ local Observer = {}
 Observer.__index = Observer
 
 local function daemon_id(pid, start) return tostring(pid) .. ":" .. tostring(start) end
+
+--- The interface versions the observer uses (spec §19.16 "Interface client",
+--- step 5g.3): each names its object, interface and version (the guard's
+--- interface ratchet, tests/split, checks a schema and transcripts exist).
+M.ROOT = { object = "/", iface = "loomworks.Root", v = 1 }
+M.TASKS = { object = "/tasks", iface = "loomworks.Tasks", v = 1, feature = "tasks" }
+M.WORKSPACE = { object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes" }
+M.FEATURES = { M.TASKS, M.WORKSPACE }
+
+--- How long the connect's `Root.describe` may take before the observer
+--- falls back to `welcome.objects` (§19.16 "Interface client").
+M.DESCRIBE_MS = 3000
+
+--- The versions of `want.iface` the daemon offers on `want.object`, from
+--- `welcome.objects` (§19.20; describe().objects without digests).
+--- @param objects table[]|nil
+--- @param want table
+--- @return integer[]
+function M.offered_versions(objects, want)
+    for _, o in ipairs(type(objects) == "table" and objects or {}) do
+        if type(o) == "table" and o.path == want.object then
+            for _, i in ipairs(type(o.interfaces) == "table" and o.interfaces or {}) do
+                if type(i) == "table" and i.name == want.iface and type(i.versions) == "table" then
+                    return i.versions
+                end
+            end
+        end
+    end
+    return {}
+end
+
+--- The per-feature note of an interface the editor cannot use (§19.16
+--- "Interface client"), e.g. `tasks: daemon offers loomworks.Tasks/2, editor
+--- needs /1`, or of a refused subscription (`why`).
+--- @param want table
+--- @param offered integer[]
+--- @param why? string
+--- @return string
+function M.feature_note(want, offered, why)
+    if why then
+        return string.format("%s: %s/%d refused (%s)", want.feature, want.iface, want.v, tostring(why))
+    end
+    local theirs
+    if #offered == 0 then
+        theirs = "daemon offers no " .. want.iface
+    else
+        local vs = {}
+        for i, v in ipairs(offered) do vs[i] = "/" .. tostring(v) end
+        theirs = "daemon offers " .. want.iface .. table.concat(vs, ",")
+    end
+    return string.format("%s: %s, editor needs /%d", want.feature, theirs, want.v)
+end
 
 --- Attach an observer to a freshly loaded workspace when the runtime mode
 --- selects the daemon (spec §19.1). Returns the observer, or nil (in-process
@@ -266,16 +336,25 @@ end
 --- Connect to the live daemon of `st`.
 function Observer:_connect(st)
     local h = st.handle or {}
+    -- The daemon that just dropped us, still live on disk: `lw daemon stop`
+    -- closes its connections before it removes its handle, so a watch tick
+    -- in between sees the stopping daemon. Try it again quietly — keep the
+    -- "disconnected" note and state while trying, and on failure; only a
+    -- connection that succeeds changes what the editor shows.
+    local quiet = self._dropped and self._dropped_id == daemon_id(h.pid, h.start_time) or nil
     local check = self.opts.check or require("loomworks.daemon.endpoint").check
     local eok, why = check(self.root, h.endpoint)
     if not eok then
         self.skip[daemon_id(h.pid, h.start_time)] = true
+        if quiet then return end
         return self:_set("waiting", tostring(why))
     end
     local connect = self.opts.connect or require("loomworks.daemon.client").connect
-    self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
+    if not quiet then
+        self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
+    end
     -- `exe`: the executable the daemon's handle names (§19.6; display only).
-    local target = { pid = h.pid, start_time = h.start_time,
+    local target = { pid = h.pid, start_time = h.start_time, quiet = quiet,
         exe = type(h.exe) == "string" and h.exe ~= "" and h.exe or nil }
     self._connecting = target
     connect(h.endpoint, {
@@ -297,6 +376,7 @@ function Observer:_on_connected(target, conn, err)
     self._connecting = nil
     if not conn then
         if err == "untrusted" then self.skip[daemon_id(target.pid, target.start_time)] = true end
+        if target.quiet then return end
         return self:_set("waiting", "could not reach the workspace daemon (pid " .. tostring(target.pid)
             .. ", " .. tostring(err) .. ")")
     end
@@ -320,15 +400,183 @@ function Observer:_on_connected(target, conn, err)
     self.conn = conn
     self._child = nil
     self._dropped = nil
+    self._dropped_id = nil
     self._relaunch = nil
     self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version }
     self.generation = ch.session_generation
     self.seq = tonumber(conn.welcome and conn.welcome.seq) or 0
     self:_start_keepalive()
-    self:_set("connected", "observing the workspace daemon (pid " .. tostring(target.pid) .. ")")
-    -- What the daemon wrote before we connected: catch up now.
-    self:_reload()
-    self:_join_late(conn)
+    self.feature_note = nil
+    self:_subscribe(conn, function()
+        self:_connected_note()
+        -- What the daemon wrote before we connected (and subscribed): catch
+        -- up now.
+        self:_reload()
+        self:_join_late(conn)
+    end)
+end
+
+--- Set the Runtime note of a connected observer: the daemon it observes,
+--- and the per-feature note (`feature_note`) when an interface it needs is
+--- missing or refused.
+function Observer:_connected_note()
+    local d = self.daemon
+    if not d then return end
+    local notes = {}
+    -- A missing interface is noted only when the editor really gets nothing
+    -- for it: from a daemon that offers some of them, or (`_sub_only`) one
+    -- that delivers to this connection only by subscription. A daemon of
+    -- transport 11 that offers none of them (step 5g.1) still sends the
+    -- protocol-10 broadcasts, through which the editor observes it.
+    local offers_any = false
+    for _, want in ipairs(M.FEATURES) do
+        if self._feat and self._feat[want.feature] then offers_any = true end
+    end
+    if self.mode == "interfaces" and (offers_any or self._sub_only) then
+        for _, want in ipairs(M.FEATURES) do
+            local st = self._feat[want.feature]
+            if st ~= "subscribed" and st ~= "pending" and self._why[want.feature] then
+                notes[#notes + 1] = self._why[want.feature]
+            end
+        end
+    end
+    self.feature_note = #notes > 0 and table.concat(notes, "; ") or nil
+    local note = "observing the workspace daemon (pid " .. tostring(d.pid) .. ")"
+    if self.feature_note then note = note .. " — " .. self.feature_note end
+    self:_set("connected", note)
+end
+
+--- `Root.describe` on `conn` (§19.20), bounded by DESCRIBE_MS: `cb(objects,
+--- delivery)` on the main loop with its `objects` and `delivery`, or nil
+--- when it failed or timed out (the caller then uses `welcome.objects`).
+--- Never blocks.
+--- @param conn loomworks.daemon.Conn
+--- @param cb fun(objects: table[]|nil, delivery: string|nil)
+function Observer:_describe(conn, cb)
+    local finished = false
+    local timer = uv.new_timer()
+    local function finish(objects, delivery)
+        if finished then return end
+        finished = true
+        pcall(function() timer:stop(); timer:close() end)
+        vim.schedule(function() cb(objects, delivery) end)
+    end
+    timer:start(self.opts.describe_ms or M.DESCRIBE_MS, 0, function() finish(nil) end)
+    conn:call(M.ROOT.object, M.ROOT.iface, M.ROOT.v, "describe", {}, function(result, err)
+        if err or type(result) ~= "table" or type(result.objects) ~= "table" then return finish(nil) end
+        finish(result.objects, type(result.delivery) == "string" and result.delivery or nil)
+    end)
+end
+
+--- Adopt the describe's `delivery` (§19.20): "subscription" marks a daemon
+--- that sends a transport-11 connection only what it subscribed to, so an
+--- interface it lacks is really missing (the note). Absent — an older daemon,
+--- or a describe that failed — it also sends the protocol-10 broadcasts.
+--- @param delivery string|nil
+function Observer:_set_delivery(delivery)
+    self._sub_only = delivery == "subscription" or nil
+end
+
+--- Subscribe to what the editor shows (§19.16 "Interface client", step
+--- 5g.3), then `done()`. A daemon of transport 11 that lists its objects in
+--- `welcome` is re-described (`Root.describe`; `welcome.objects` when that
+--- fails or times out) and gets a subscription to `/tasks`
+--- (loomworks.Tasks/1) and `/workspace` (loomworks.Workspace/1) when it
+--- offers them — it sends such a connection only what it subscribed to; a
+--- missing or refused one is a per-feature note, never a failed connection.
+--- Any other daemon is observed through the protocol-10 broadcasts (`mode`
+--- "v0").
+--- @param conn loomworks.daemon.Conn
+--- @param done fun()
+function Observer:_subscribe(conn, done)
+    self._feat, self._why, self._sub_only = {}, {}, nil
+    local welcome_objects = conn.welcome and conn.welcome.objects
+    if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
+        or type(conn.call) ~= "function" then
+        self.mode = "v0"
+        return done()
+    end
+    self.mode = "interfaces"
+    self:_describe(conn, function(objects, delivery)
+        if self.state == "stopped" or self.conn ~= conn then return end
+        if objects then self:_set_delivery(delivery) end
+        self:_ensure_subscriptions(conn, objects or welcome_objects, done)
+    end)
+end
+
+--- Subscribe to each feature `objects` offers at the editor's version and
+--- not subscribed on `conn` yet (a refused one once more), then `done()`.
+--- @param conn loomworks.daemon.Conn
+--- @param objects table[]
+--- @param done fun()
+function Observer:_ensure_subscriptions(conn, objects, done)
+    local pending = 1
+    local function settle()
+        pending = pending - 1
+        if pending > 0 then return end
+        if self.state == "stopped" or self.conn ~= conn then return end
+        done()
+    end
+    for _, want in ipairs(M.FEATURES) do
+        local f = want.feature
+        local st = self._feat[f]
+        local offered = M.offered_versions(objects, want)
+        if st == "subscribed" or st == "pending" then
+            -- nothing to do
+            local _ = st
+        elseif vim.tbl_contains(offered, want.v) and st ~= "gave_up" then
+            self._feat[f] = "pending"
+            pending = pending + 1
+            conn:call(M.ROOT.object, M.ROOT.iface, M.ROOT.v, "subscribe",
+                { object = want.object, iface = want.iface, v = want.v }, function(_, err)
+                    vim.schedule(function()
+                        if self.conn ~= conn or not self._feat then return settle() end
+                        if err then
+                            -- Refused: retried once, on the next
+                            -- `objects_changed` (a reconnect starts afresh).
+                            self._feat[f] = st == "refused" and "gave_up" or "refused"
+                            self._why[f] = M.feature_note(want, offered,
+                                type(err) == "table" and (err.message or err.code) or err)
+                        else
+                            self._feat[f] = "subscribed"
+                            self._why[f] = nil
+                        end
+                        settle()
+                    end)
+                end)
+        elseif #offered > 0 then
+            -- Offered at other versions only.
+            if st ~= "refused" and st ~= "gave_up" then
+                self._feat[f] = "missing"
+                self._why[f] = M.feature_note(want, offered)
+            end
+        elseif st ~= "refused" and st ~= "gave_up" then
+            self._feat[f] = nil
+            self._why[f] = M.feature_note(want, offered)
+        end
+    end
+    settle()
+end
+
+--- The root's `objects_changed` (§19.20): an interface the editor needs that
+--- appears is subscribed to, a refused subscription retried (once), and the
+--- feature note updated. A removed object's subscription is gone (the
+--- daemon drops it).
+--- @param args table
+function Observer:_on_objects_changed(args)
+    local conn = self.conn
+    if not conn or self.mode ~= "interfaces" or not self._feat then return end
+    for _, p in ipairs(type(args.removed) == "table" and args.removed or {}) do
+        for _, want in ipairs(M.FEATURES) do
+            if want.object == p then self._feat[want.feature] = nil end
+        end
+    end
+    self:_describe(conn, function(objects, delivery)
+        if self.state == "stopped" or self.conn ~= conn or not self._feat then return end
+        if objects then self:_set_delivery(delivery) end
+        objects = objects or {}
+        self:_ensure_subscriptions(conn, objects, function() self:_connected_note() end)
+    end)
 end
 
 --- Joining late (spec §19.16): ask `status` and adopt every task in its
@@ -392,12 +640,17 @@ end
 --- retirement (once, when it has exited), never after a stop (§19.16).
 function Observer:_on_closed(c)
     if c ~= self.conn then return end
+    local d = self.daemon
     self.conn = nil
     self.daemon = nil
+    self.mode = nil
+    self.feature_note = nil
+    self._feat, self._why, self._sub_only = nil, nil, nil
     self:_stop_timer("_keepalive")
     self:_end_tasks("the workspace daemon disconnected")
     if self.state == "stopped" then return end
     self._dropped = true
+    self._dropped_id = d and daemon_id(d.pid, d.start_time) or nil
     if self._retired_note then
         self._retired_note = nil
         self._relaunch = true
@@ -421,16 +674,23 @@ function Observer:_clock() return uv.hrtime() / 1e9 end
 --- @param msg table
 function Observer:_on_message(msg)
     if self.state == "stopped" or type(msg) ~= "table" then return end
-    if msg.kind == "model_change" then
-        if msg.session_generation ~= self.generation then
-            self.generation = msg.session_generation
-            self.seq = tonumber(msg.seq) or 0
-        elseif (tonumber(msg.seq) or 0) <= self.seq then
-            return
-        else
-            self.seq = tonumber(msg.seq) or self.seq
+    if msg.kind == "signal" then
+        -- Interface signals (§19.20): the root's `retiring` and
+        -- `Workspace.changed`, the interface forms of the protocol-10
+        -- broadcasts below. (`Tasks.started` / `ended` follow the task
+        -- frames they announce: nothing to do.)
+        local args = type(msg.args) == "table" and msg.args or {}
+        if msg.object == M.ROOT.object and msg.name == "retiring" then
+            return self:_on_message({ kind = "retiring" })
+        elseif msg.object == M.ROOT.object and msg.name == "objects_changed" then
+            return self:_on_objects_changed(args)
+        elseif msg.object == M.WORKSPACE.object and msg.iface == M.WORKSPACE.iface and msg.name == "changed" then
+            return self:_model_change(args.seq, args.session_generation)
         end
-        return self:_reload()
+        return
+    end
+    if msg.kind == "model_change" then
+        return self:_model_change(msg.seq, msg.session_generation)
     elseif msg.kind == "retiring" then
         local d = self.daemon
         if d then self.skip[daemon_id(d.pid, d.start_time)] = true end
@@ -443,6 +703,23 @@ function Observer:_on_message(msg)
     elseif msg.kind == "task" then
         return self:_on_task(msg)
     end
+end
+
+--- A model change (`model_change`, or `Workspace.changed`, which carries the
+--- same `seq` and `session_generation`): apply the files' pending changes,
+--- once per `seq` (a daemon of step 5g.2 sends both forms).
+--- @param seq any
+--- @param generation any
+function Observer:_model_change(seq, generation)
+    if generation ~= self.generation then
+        self.generation = generation
+        self.seq = tonumber(seq) or 0
+    elseif (tonumber(seq) or 0) <= self.seq then
+        return
+    else
+        self.seq = tonumber(seq) or self.seq
+    end
+    return self:_reload()
 end
 
 --- A task-stream event (spec §19.15).

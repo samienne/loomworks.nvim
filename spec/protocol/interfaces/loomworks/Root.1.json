@@ -106,7 +106,12 @@
         },
         "session_generation": { "type": "integer" },
         "objects": { "type": "array", "items": { "$ref": "#/$defs/Object" } },
-        "root_methods": { "type": "array", "items": { "type": "string" } }
+        "root_methods": { "type": "array", "items": { "type": "string" } },
+        "delivery": {
+          "description": "How the daemon sends a transport-11 connection task frames and changes (step 5g.3): subscription = only through that connection's subscriptions. Absent (an older daemon): it also sends the protocol-10 broadcasts.",
+          "type": "string",
+          "enum": ["subscription"]
+        }
       }
     },
     "Object": {

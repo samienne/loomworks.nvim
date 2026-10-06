@@ -275,6 +275,8 @@ describe("ensure (§19.9 through a workspace command)", function()
     it("a busy daemon of another version: retire + the bypass line", function()
         srv.identity = "0.1.0"
         local other = assert(client.session(srv.address))
+        -- Busy: the other client has a command in flight (§19.9 Busy).
+        for c in pairs(srv.conns) do if c.authed then c.in_flight = { [99] = true } end end
         local out, notes = run()
         assert.equals("bypass", out)
         assert.truthy(notes:find("runs lw v0.1.0 and is busy", 1, true))

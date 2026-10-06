@@ -273,13 +273,39 @@ describe("daemon server (in-process)", function()
         if not H.is_win then assert.is_nil(uv.fs_lstat(addr)) end
     end)
 
-    it("retire: exits once the last client disconnects", function()
+    it("retire: exits once idle -- a command in flight holds it off, an idle client does not (§19.9 Busy)", function()
         local conn = assert(client.session(srv.address))
+        local sc
+        for c in pairs(srv.conns) do if c.authed then sc = c end end
+        sc.in_flight = { [99] = true }
         assert(client.request(conn, { kind = "retire" }))
+        vim.wait(200, function() return false end, 10)
         assert.is_nil(exited)
-        conn:close()
+        -- Its answer ends the command: the daemon is idle and exits, the
+        -- (idle) client still connected.
+        srv:_send(sc, { kind = "ok", req_id = 99 })
         assert.is_true(vim.wait(2000, function() return exited ~= nil end, 10))
         assert.equals(0, exited)
+        conn:close()
+    end)
+
+    it("a request in flight past the threshold is logged once as a warning, never cleared (§19.9 Busy)", function()
+        local lines = {}
+        srv.opts.log = function(l) lines[#lines + 1] = l end
+        local conn = assert(client.session(srv.address))
+        local sc
+        for c in pairs(srv.conns) do if c.authed then sc = c end end
+        sc.in_flight = sc.in_flight or {}
+        sc.in_flight[77] = { at = uv.now() - server_mod.STUCK_REQUEST_MS - 1000, kind = "x.Y/1.slow" }
+        sc.in_flight[78] = { at = uv.now(), kind = "x.Y/1.fresh" }
+        srv:_tick(); srv:_tick()
+        local warned = {}
+        for _, l in ipairs(lines) do if l:find("in flight for", 1, true) then warned[#warned + 1] = l end end
+        assert.equals(1, #warned)
+        assert.truthy(warned[1]:find("x.Y/1.slow", 1, true))
+        assert.truthy(sc.in_flight[77]) -- never cleared by force
+        assert.is_true(srv:conn_busy(sc))
+        conn:close()
     end)
 
     it("a replaced runtime-lock record means lost authority: exit 1, nothing touched", function()
@@ -697,9 +723,55 @@ describe("version handshake (§19.9)", function()
         observer:close()
     end)
 
+    it("an idle client does not make a mismatched daemon busy: stopped and replaced (§19.9 Busy)", function()
+        srv.identity = "0.1.0"
+        local idle = assert(client.session(srv.address))
+        local launched
+        local conn = assert(client.session(srv.address))
+        local out = ensure.reconcile(root, conn, { launch = function(r) launched = r; return true end })
+        assert.equals("restarted", out)
+        assert.equals(0, exited)
+        assert.equals(root, launched)
+        idle:close()
+    end)
+
+    it("the policy compares describe's lw_version over transport 11, the challenge's before", function()
+        local first = assert(client.session(srv.address))
+        local match, v = ensure.policy(first)
+        first:close()
+        assert.is_true(match)
+        assert.equals(srv.identity, v)
+        -- describe() names the daemon's version (the challenge says the same
+        -- here; a daemon whose describe differs is judged by describe).
+        local conn = assert(client.session(srv.address))
+        local reg = srv:registry()
+        local root_e = reg.objects["/"].ifaces["loomworks.Root"][1]
+        local describe = root_e.impl.methods.describe
+        root_e.impl.methods.describe = function(ctx)
+            local d = describe(ctx)
+            d.binary.lw_version = "0.0.1"
+            return d
+        end
+        match, v = ensure.policy(conn)
+        root_e.impl.methods.describe = describe
+        conn:close()
+        assert.is_false(match)
+        assert.equals("0.0.1", v)
+        -- A protocol-10 daemon (no describe): the challenge's versions.
+        local fake = { transport = 10, challenge = { protocol = 10, lw_version = srv.identity,
+            schemas = require("loomworks.daemon.version").schemas() } }
+        match = ensure.policy(fake)
+        assert.is_false(match)
+        -- No transport overlap: a mismatch.
+        match = ensure.policy({ challenge = { protocol = 12, protocol_min = 12, lw_version = srv.identity } })
+        assert.is_false(match)
+    end)
+
     it("a busy mismatched daemon is retired, never stopped; the command bypasses it", function()
         srv.identity = "0.1.0"
         local other = assert(client.session(srv.address))
+        -- The other client has a command in flight (§19.9 Busy).
+        for c in pairs(srv.conns) do if c.authed then c.in_flight = { [99] = true } end end
         local conn = assert(client.session(srv.address))
         local out, line = ensure.reconcile(root, conn, { launch = function() error("must not launch") end })
         assert.equals("bypass", out)

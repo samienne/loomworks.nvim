@@ -139,6 +139,15 @@ function M.identity()
     local okb, base = pcall(function() return require("loomworks.save_guard").version() end)
     base = (okb and type(base) == "string" and base) or "0.0.0"
     base = base:gsub("%+dev$", "")
+    -- Test seam (like the other LW_TEST_* variables): a development build
+    -- that claims another version, e.g. a daemon of "another release" for
+    -- the restart tests of the version policy (§19.9). Checked only after
+    -- the release lookup: a release build never honours it.
+    local forced = os.getenv("LW_TEST_IDENTITY")
+    if type(forced) == "string" and forced ~= "" then
+        _identity = forced
+        return _identity
+    end
     local root = M.lua_root() or M.bundle_dir()
     local fp = root and tree_fingerprint(root .. "/loomworks") or exe_fingerprint()
     _identity = base .. "+dev." .. fp
@@ -177,6 +186,24 @@ function M.matches(peer, opts)
     local s, ps = M.schemas(), peer.schemas
     if type(ps) ~= "table" or ps.user ~= s.user or ps.cache ~= s.cache then return false, "schemas" end
     if not (opts and opts.editor) and peer.lw_version ~= M.identity() then return false, "version" end
+    return true
+end
+
+--- The CLI's policy from protocol 11 (spec §19.9 "From protocol 11", step
+--- 5g.3): a CLI client drives a daemon of an agreed transport (`transport`,
+--- `negotiate`) only when the daemon's `describe().binary.lw_version`
+--- (§19.20) and its schemas (the challenge's) equal its own — pin semantics
+--- and behavioural parity, which no interface version expresses. No agreed
+--- transport is always a mismatch ("protocol").
+--- @param transport integer|nil the transport both sides agreed on
+--- @param lw_version string|nil the daemon's `describe().binary.lw_version`
+--- @param schemas table|nil the daemon's schemas
+--- @return boolean match, string|nil what differs ("protocol"|"version"|"schemas")
+function M.cli_policy_matches(transport, lw_version, schemas)
+    if type(transport) ~= "number" then return false, "protocol" end
+    local s = M.schemas()
+    if type(schemas) ~= "table" or schemas.user ~= s.user or schemas.cache ~= s.cache then return false, "schemas" end
+    if lw_version ~= M.identity() then return false, "version" end
     return true
 end
 

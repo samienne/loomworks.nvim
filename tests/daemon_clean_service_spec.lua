@@ -263,7 +263,7 @@ describe("lw clean in the daemon's build service (§19.15 Clean)", function()
             return require("loomworks.future").create(function() end)
         end
         local seen = {}
-        local obs = assert(client.session(srv.address, { client = "editor", role = "observer",
+        local obs = assert(client.session(srv.address, { client = "editor", role = "observer", protocol = 10,
             on_message = function(m) seen[#seen + 1] = m end }))
         local r = request(srv, "clean")
         assert.is_true(vim.wait(30000, function() return pending ~= nil end, 10), r.lines())
