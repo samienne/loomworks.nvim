@@ -92,7 +92,7 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
                 if other ~= scope then assert.is_nil(one[other], scope .. " carries " .. other) end
             end
         end
-        assert.equals(enc(snap.tools), enc(proj._tools_by_type))
+        assert.equals(enc(snap.tools), enc(snapshot.tool_rows(proj._tools_by_type)))
         assert.equals("dev", proj._active_profile and proj._active_profile.key)
         conn:close()
     end)
@@ -105,13 +105,72 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         assert.is_number(a.index.config_sets.dev)
         assert.is_number(a.index.profiles.dev)
         assert.same(a.index, b.index)
-        local ids = {}
-        for _, kind in pairs(a.index) do
-            for _, id in pairs(kind) do
-                assert.is_nil(ids[id], "an id is unique")
-                ids[id] = true
-            end
+        -- Config units by structured key, not an internal formatted id.
+        assert.is_true(#a.index.config_units > 0)
+        for _, row in ipairs(a.index.config_units) do
+            assert.is_string(row.project)
+            assert.is_string(row.configuration)
         end
+        local ids = {}
+        local function seen(id)
+            assert.is_number(id)
+            assert.is_nil(ids[id], "an id is unique")
+            ids[id] = true
+        end
+        for _, kind in ipairs({ "projects", "config_sets", "profiles" }) do
+            for _, id in pairs(a.index[kind]) do seen(id) end
+        end
+        for _, row in ipairs(a.index.config_units) do seen(row.id) end
+        conn:close()
+    end)
+
+    it("serves a loaded model as it is to another environment, and a query never unloads it", function()
+        local conn = assert(client.loopback_session(srv))
+        local a = assert(snapshot.fetch(conn))
+        local dws = assert(daemon_ws())
+        local user_before = read(root .. "/.nvim/loomworks.user.json")
+        local cache_before = read(root .. "/.nvim/loomworks.cache.json")
+        local other = envscope.capture()
+        other.LW_TEST_ANOTHER_ENV = "1"
+        local b = assert(snapshot.fetch(conn, { env = other }))
+        assert.equals(dws, daemon_ws(), "the model was reloaded for a snapshot")
+        assert.same(a.index, b.index)
+        assert(snapshot.query(conn, "tools", {}, { env = other }))
+        assert.equals(dws, daemon_ws(), "the model was reloaded for a query")
+        local c = assert(snapshot.fetch(conn))
+        assert.same(a.index, c.index)
+        assert.equals(user_before, read(root .. "/.nvim/loomworks.user.json"))
+        assert.equals(cache_before, read(root .. "/.nvim/loomworks.cache.json"))
+        conn:close()
+    end)
+
+    it("a projection's events never reach the process's subscribers", function()
+        local events = require("loomworks.events")
+        local heard = 0
+        local function on() heard = heard + 1 end
+        for _, e in ipairs({ "workspace_changed", "active_set_changed", "workspace_initializing" }) do events.on(e, on) end
+        local conn = assert(client.loopback_session(srv))
+        local snap = assert(snapshot.fetch(conn))
+        conn:close()
+        heard = 0
+        local proj = assert(snapshot.project(root, snap))
+        proj._active_profile:activate()
+        for _, e in ipairs({ "workspace_changed", "active_set_changed", "workspace_initializing" }) do events.off(e, on) end
+        assert.equals(0, heard)
+    end)
+
+    it("profile_cache answers structured fields the CLI formats", function()
+        local conn = assert(client.loopback_session(srv))
+        assert(snapshot.fetch(conn))
+        local pkey
+        for _, pp in ipairs(daemon_ws()._active_profile:projects()) do pkey = pkey or pp:project_key() end
+        local r = assert(snapshot.query(conn, "profile_cache", { profile = "dev", project = pkey }))
+        assert.is_table(r.cache)
+        assert.is_string(r.cache.policy)
+        assert.is_nil(r.cache.text)
+        local text = require("loomworks.profile").compiler_cache_text(r.cache)
+        local st = daemon_ws()._active_profile:compiler_cache_status()
+        assert.equals(st.text, text)
         conn:close()
     end)
 
@@ -170,6 +229,19 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
         assert.equals("dev", h.active_profile)
         assert.is_nil(h.error)
         c2:close()
+    end)
+
+    it("the service header never overwrites the session fields", function()
+        svc.header = function() return { root = "elsewhere", pid = -1, lw_version = "x", session_generation = -1,
+            state = "loaded" } end
+        local c = assert(client.loopback_session(srv))
+        local h = c.welcome.header
+        assert.equals(srv.root, h.root)
+        assert.equals(srv.pid, h.pid)
+        assert.equals(srv.identity, h.lw_version)
+        assert.equals(srv.generation, h.session_generation)
+        assert.equals("loaded", h.state)
+        c:close()
     end)
 
     it("the welcome header reports a refused load", function()

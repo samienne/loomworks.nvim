@@ -589,11 +589,14 @@ function Server:_authed(conn)
     local header = { root = self.root, pid = self.pid, lw_version = self.identity,
         session_generation = self.generation }
     -- The always-warm header (§19.13): the model's name, active profile
-    -- and error state, from the service when one is attached.
+    -- and error state, from the service when one is attached. Its fields
+    -- are only ever added: the session fields above are never overwritten.
     if self.service and self.service.header then
         local ok, h = pcall(self.service.header, self.service)
         if ok and type(h) == "table" then
-            for k, v in pairs(h) do header[k] = v end
+            for k, v in pairs(h) do
+                if header[k] == nil then header[k] = v end
+            end
         end
     end
     self:_send(conn, {

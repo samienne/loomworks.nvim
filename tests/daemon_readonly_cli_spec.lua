@@ -82,9 +82,29 @@ local function snapshots(root)
     return n
 end
 
+--- How many times a root's runtime log records query `name`.
+local function queries(root, name)
+    local log = read(root .. "/.nvim/loomworks.daemon.log") or ""
+    local _, n = log:gsub("query " .. name .. " for", "")
+    return n
+end
+
+local function key(p) return (tostring(p):gsub("\\", "/"):lower()) end
+
 describe("read-only commands on the projection (§19.13, §19.14)", function()
     local env
     local roots = {}
+    local trace
+
+    --- How many reads of `root` built a projection (the CLI's
+    --- LW_TEST_READ_TRACE marker).
+    local function projections(root)
+        local n = 0
+        for line in (read(trace) or ""):gmatch("[^\n]+") do
+            if key((line:gsub("%s+$", ""))) == "projection " .. key(root) then n = n + 1 end
+        end
+        return n
+    end
 
     --- A workspace with two shell projects (`app` described), a set `dev`
     --- and a profile `dev`, authored in-process by lw itself.
@@ -121,7 +141,8 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
     end
 
     before_each(function()
-        env = H.env({ LOOMWORKS_RUNTIME = "daemon" })
+        trace = H.tmp() .. "/read-trace"
+        env = H.env({ LOOMWORKS_RUNTIME = "daemon", LW_TEST_READ_TRACE = trace })
     end)
     after_each(function()
         for _, root in ipairs(roots) do H.track_root(root) end
@@ -129,25 +150,29 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         roots = {}
     end)
 
-    --- Three-way parity of `args` on `roots3`, each runtime's read served by
-    --- a snapshot (the in-process one by none). `launch`: start the daemon
-    --- of the shared root first (`lw status` never launches one).
+    --- Three-way parity of `args` on `roots3`: only the shared daemon's read
+    --- is served by a snapshot and builds a projection; the in-process and
+    --- the attached (`--no-daemon`) reads are in-process (no loopback
+    --- runtime, §19.1). `launch`: start the daemon of the shared root first
+    --- (`lw status` never launches one).
     local function parity(roots3, args, launch)
         if launch then
             local r = lw(roots3[2], { "--no-input", "project", "list" })
             assert.equals(0, r.code, r.stderr)
         end
-        local before = {}
-        for i, root in ipairs(roots3) do before[i] = snapshots(root) end
+        local before, proj = {}, {}
+        for i, root in ipairs(roots3) do before[i], proj[i] = snapshots(root), projections(root) end
         local res = H.three_way({ roots = roots3, args = args, lw = lw, env = env, routed = false,
             norm = norm, state = function(root) return state_of(root, env.data .. "/trust.key") end })
         local what = table.concat(args, " ")
         assert.equals(before[1], snapshots(roots3[1]), what .. ": in-process read a snapshot")
         assert.is_true(snapshots(roots3[2]) > before[2], what .. ": shared read no snapshot")
-        assert.is_true(snapshots(roots3[3]) > before[3], what .. ": attached read no snapshot")
+        assert.equals(before[3], snapshots(roots3[3]), what .. ": attached read a snapshot")
+        assert.equals(proj[1], projections(roots3[1]), what .. ": in-process built a projection")
+        assert.is_true(projections(roots3[2]) > proj[2], what .. ": shared built no projection")
+        assert.equals(proj[3], projections(roots3[3]), what .. ": attached built a projection")
         local log = read(roots3[3] .. "/.nvim/loomworks.daemon.log") or ""
-        assert.truthy(log:find("attached run of " .. args[1] .. (args[2] and args[2]:sub(1, 1) ~= "-" and (" " .. args[2]) or ""), 1, true),
-            what .. ": not attached\n" .. log)
+        assert.falsy(log:find("attached run of", 1, true), what .. ": a loopback runtime ran\n" .. log)
         return res
     end
 
@@ -159,7 +184,10 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         assert.equals(0, r.code, r.stderr)
         r = parity(roots3, { "profile", "query", "dev", "app", "build-dir" })
         assert.truthy(r.stdout:find("app/Debug", 1, true), r.stdout)
-        parity(roots3, { "profile", "query", "dev", "app", "cache" })
+        local nq = queries(roots3[2], "profile_cache")
+        r = parity(roots3, { "profile", "query", "dev", "app", "cache" })
+        assert.truthy(vim.trim(r.stdout) ~= "", "an empty cache row")
+        assert.equals(nq + 1, queries(roots3[2], "profile_cache"), "the daemon ran no profile_cache query")
         r = parity(roots3, { "project", "list" })
         assert.truthy(r.stdout:find("The application.", 1, true), r.stdout)
         parity(roots3, { "project", "show", "app" })
@@ -174,6 +202,22 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         -- A refusal is the same line on every runtime.
         r = parity(roots3, { "project", "show", "nope" })
         assert.equals(1, r.code)
+    end)
+
+    it("a daemon that does not answer in time: the read falls back in-process with a note", function()
+        local root = workspace()
+        local r = lw(root, { "--no-input", "project", "list" })
+        assert.equals(0, r.code, r.stderr)
+        local inproc = lw(root, { "status" }, { LOOMWORKS_RUNTIME = "in-process" })
+        local n = projections(root)
+        local st = lw(root, { "status" }, { LW_TEST_READ_DEADLINE_MS = "500", LW_TEST_MODEL_DELAY_MS = "20000" })
+        assert.equals(0, st.code, st.stderr)
+        assert.truthy(st.stderr:find("did not answer in time", 1, true), st.stderr)
+        assert.equals(n, projections(root))
+        assert.equals(norm(inproc.stdout, root), norm(st.stdout, root))
+        -- The daemon was left running (a read never stops one).
+        assert.equals("live", require("loomworks.daemon.inspect").state(root).kind)
+        H.stop_daemon(root, env)
     end)
 
     it("lw status over the projection shows the daemon's running task", function()
@@ -195,6 +239,7 @@ describe("read-only commands on the projection (§19.13, §19.14)", function()
         assert.equals(0, st.code, st.stderr)
         assert.truthy(st.stdout:find("build  dev", 1, true), st.stdout)
         assert.is_true(snapshots(root) > n, "no snapshot served")
+        assert.is_true(projections(root) > 0, "no projection built")
         H.stop_daemon(root, env)
     end)
 end)

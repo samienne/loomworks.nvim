@@ -61,11 +61,16 @@
 --- **Request** `{ kind = "snapshot", scope?, env }` (§19.13) → reply `ok`
 --- with `outcome = "ok"`, the scope's tables, `tools`, `shared_ignored`,
 --- `index`, `seq` and `session_generation` (loomworks.daemon.snapshot); or
---- "refused" / "declined" as for `build`. No task, no lock, nothing written.
+--- "refused" / "declined" as for `build`. No task, no lock. A loaded model is
+--- served as it is (`live` with `as_is`: no reload for another environment,
+--- no file check, no tool wait); with none loaded, it is loaded in the
+--- request's environment without waiting for tool detection.
 ---
 --- **Request** `{ kind = "query", name, args?, env }` (§19.14) → reply `ok`
 --- with `outcome = "ok"` and `result`; "refused" (`message`) for an unknown
---- query or a failed one; "declined" as for `build`. Read-only.
+--- query or a failed one; "declined" as for `build`. Read-only: it runs in
+--- the request's environment (its model segment) against the model as it is,
+--- loaded as for `snapshot`, and never unloads it.
 
 local build_run = require("loomworks.build_run")
 local envscope = require("loomworks.daemon.envscope")
@@ -80,7 +85,7 @@ M.LOAD_WAIT_MS = 45000
 
 --- @class loomworks.daemon.BuildService
 --- @field server loomworks.daemon.Server
---- @field host table { load(root, handlers) → ws|nil, err; unload(); current() → the loaded
+--- @field host table { load(root, handlers, opts?: { wait_tools?: boolean }) → ws|nil, err; unload(); current() → the loaded
 ---   workspace (nil while it (re)loads); settle(ms); setup_error() → refusal; unknown_target_hint?;
 ---   error_state?() → { message, refused? }|nil, the failed load the welcome header reports }
 --- @field ws table|nil the live workspace
@@ -215,15 +220,27 @@ end
 
 --- The live workspace for request `ctx`, re-validated (see the header).
 --- Returns ws; or nil + refusal message; or nil, nil, decline reason.
+--- `as_is` (the read-only `snapshot` and `query` requests): a loaded model is
+--- returned as it is — never reloaded for another environment, no commit
+--- journal or file check (they may write), no wait for tool detection — and
+--- with none loaded, the load does not wait for tool detection either.
 --- @param ctx table
+--- @param as_is? boolean
 --- @return table|nil ws, string|nil refusal, string|nil decline
-function Service:live(ctx)
+function Service:live(ctx, as_is)
     local root = self.server.root
     local sig = envscope.signature(ctx.env)
     if self.ws and self.host.current() ~= self.ws then
         -- Unloaded under us (a refusal during an earlier sync).
         self.ws, self.env_sig = nil, nil
         self:_stop_stale_runs("the workspace was unloaded (refused or reloaded .nvim files)")
+    end
+    if as_is then
+        if self.ws then return self.ws end
+        local ws, err = self.host.load(root, self:handlers(), { wait_tools = false })
+        if not ws then return nil, err or "failed to load workspace" end
+        self.ws, self.env_sig = ws, sig
+        return ws
     end
     if self.ws and self.env_sig ~= sig then
         if next(self.runs) then
@@ -334,7 +351,10 @@ function Service:_on_model_request(conn, msg, answer, bad)
     end
     self:with_model(ctx, function()
         if ctx.conn.closed then return end
-        local ws, refusal, decline = self:live(ctx)
+        -- Tests: a slow model segment (the client's read deadline, §19.1).
+        local delay = tonumber(env.LW_TEST_MODEL_DELAY_MS or "")
+        if delay then vim.wait(delay, function() return ctx.conn.closed end, 10) end
+        local ws, refusal, decline = self:live(ctx, true)
         if not ws then
             if decline then return ctx.reply({ outcome = "declined", reason = decline }) end
             return ctx.reply({ outcome = "refused", message = refusal, exit_code = 1, notes = ctx.notes })
@@ -373,6 +393,7 @@ function Service:on_query(conn, msg)
     return self:_on_model_request(conn, msg, function(ws)
         local fn = snapshot.QUERIES[msg.name]
         if not fn then return { outcome = "refused", message = "unknown query: " .. msg.name, exit_code = 1 } end
+        self.server:log("query %s for %s", msg.name, self.server:_peer_text(conn))
         local ok, result, err = pcall(fn, ws, msg.args or {})
         if not ok or result == nil then
             return { outcome = "refused", message = "query " .. msg.name .. " failed: "

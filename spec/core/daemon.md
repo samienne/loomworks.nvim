@@ -88,8 +88,13 @@ service in its own process, holds the runtime lock in `attached` mode for the
 command (§19.2), and sends the same request over the loopback transport. The
 read-only commands (`lw status`, `lw profile show` / `query`, the read form of
 `describe`, `project` / `config` / `configset` / `launch` list and show,
-`config get`, `lw tools`; §19.13, §19.14) read the projection the same
-selection serves: the shared daemon's, or the loopback runtime's. The
+`config get`, `lw tools`; §19.13, §19.14) read the projection of a live
+shared daemon when one is compatible (it authenticates and runs this lw's
+version), and otherwise read in-process; never through the loopback. A read
+never launches, stops or restarts a daemon and never takes the runtime lock;
+a daemon that does not answer in time (a bounded wait, unanswered keepalive
+pings) is left alone and the command reads in-process after a one-line note.
+The
 operations not yet routed (profile and project mutations, publish / import /
 pull, devices — they need the command machinery of §19.14) and every
 operation in `in-process` mode (still the default) run on the in-process path
@@ -819,6 +824,8 @@ address from the handle.
    sending anything else and reports the endpoint as untrusted. Otherwise →
    `auth { client_proof = HMAC(K, "client\n" .. E .. "\n" .. Ns .. "\n" .. Nc) }`
 4. daemon verifies → `welcome { header, seq, clients, busy, retiring }` (§19.13).
+   Welcome fields are only ever added, inside `header`: a later field never
+   replaces `root`, `pid`, `lw_version` or `session_generation`.
 
 Nonces are 32 random bytes (hex); proofs are compared in constant time. Before
 `welcome` the daemon accepts only `hello` and `auth`, caps a frame at 64 KiB
@@ -1047,8 +1054,11 @@ discard).
 
 **`snapshot` request.** `snapshot { scope, env }`: `scope` is `all` (the
 default), `config`, `user` or `cache`; `env` is the requesting client's
-environment, as for a routed operation (§19.15), in which the daemon loads
-or re-validates its workspace before answering. The reply is `ok` with
+environment, as for a routed operation (§19.15). A loaded model is served as
+it is, whatever the requester's environment: a snapshot never reloads it,
+runs no file check and waits for no tool detection. With no model loaded the
+daemon loads it in the requester's environment, without waiting for tool
+detection (it goes on in the background). The reply is `ok` with
 `outcome = "ok"` and:
 
 - `config` (scope `config`): the published baseline as the daemon loaded it
@@ -1057,17 +1067,23 @@ or re-validates its workspace before answering. The reply is `ok` with
   `loomworks.user.json`, with its schema `_meta`;
 - `cache` (scope `cache`): the cache as the model serializes it for
   `loomworks.cache.json`, with its schema `_meta`;
-- always: `tools` (the resolved toolchain detection the model holds),
-  `shared_ignored` (the stripped program-bearing fields, §17.6), `index`
-  (the current-key → id index of §19.12: `projects`, `config_sets`,
-  `profiles` and `config_units`, each key → id), `seq` and
-  `session_generation`.
+- always: `tools` (the toolchain detection the model holds, as tool rows:
+  module type → list of `{ key, label, tool_data }`, `key` absent for a
+  module whose single toolchain has none; the same shape as the `tools`
+  query, §19.14), `shared_ignored` (the stripped program-bearing fields,
+  §17.6), `index` (the semantic-key → id index of §19.12: `projects`
+  project key → id, `config_sets` name → id, `profiles` profile key → id,
+  and `config_units` a list of `{ project, configuration, id }` by project
+  and configuration key; an unchanged model keeps its ids across
+  snapshots), `seq` and `session_generation`.
 
 A scope the request does not name is absent. A workspace the daemon cannot
 load is answered `outcome = "refused"` (`message`), and a request it does not
 carry (stopping, malformed, another environment while a build runs)
 `outcome = "declined"` (`reason`), as for a routed operation. A snapshot takes
-no lock, starts no task and writes nothing. A client builds its projection
+no lock, starts no task and writes nothing to a loaded model; the load it
+triggers when none is loaded is the ordinary workspace load (it may complete
+a commit journal, §19.4). A client builds its projection
 from a snapshot of scope `all` through the deserializer of the on-disk load,
 fed these tables instead of the files' bytes (their signatures are not
 re-verified: the wire is authenticated). A projection is read-only: it never
@@ -1104,11 +1120,16 @@ segment, §19.15). The reply is `ok` with `outcome = "ok"` and `result` (the
 query's JSON object); `outcome = "refused"` (`message`) for an unknown name, a
 failed query or a workspace the daemon cannot load; `outcome = "declined"`
 (`reason`) as for `snapshot`. A query is read-only: it changes neither the
-model nor any file. The registry starts with `tools` (the toolchains each
-module type detects in the client's environment: `result.tools`, module type
-→ list of `{ key, label, tool_data }`) and `profile_cache` (`args.profile`
-and `args.project`, keys: `result.cache`, the compiler cache that profile
-resolves for that project as `lw profile query … cache` prints it).
+model nor any file, and it runs against the model as it is (loaded as for
+`snapshot` when none is), never unloading it for another environment. The
+registry starts with `tools` (the toolchains each module type detects in the
+client's environment, detected once per query: `result.tools`, tool rows as
+in a snapshot's `tools`, §19.13) and `profile_cache` (`args.profile` and
+`args.project`, keys: `result.cache`, the compiler cache that profile
+resolves for that project, as fields `{ policy, tool?, path?, present,
+stale, msvc_auto_off, applicable, not_applied_reason?, not_applied_hint? }`
+that the client formats as `lw profile query … cache` prints it; `cache`
+absent when that project's module does not cache C/C++).
 
 ### 19.15 Task stream and delegated operations
 

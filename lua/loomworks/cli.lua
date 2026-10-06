@@ -712,7 +712,10 @@ function M._load_workspace_soft(root, wait_tools, opts)
   -- Serve tools from the machine-level cache. A load that won't wait for tools
   -- never probes — serve cache only (never spend seconds for a command that
   -- doesn't need live tools). Install the wrapper before setup triggers a scan.
-  if wait_tools == false and tool_cache_mode == "auto" then
+  -- Not in the daemon (`handlers`): the latch would outlive this load and
+  -- keep every later request from probing (a snapshot's load does not wait
+  -- for tools, spec §19.13; its detection still runs in the background).
+  if wait_tools == false and tool_cache_mode == "auto" and not handlers then
     tool_cache_mode = "cached"
   end
   if core._deps.detect_tools_async ~= cached_detect_tools_async then
@@ -750,10 +753,11 @@ end
 -- Test seam: load a real workspace the way dispatch does (build/clean/reset).
 M._load_workspace = load_workspace
 
---- The workspace a read-only command reads (spec §19.13, §19.14): in
---- `runtime-mode daemon`, the read-only projection of the runtime's model
---- (`M._read_projection`); otherwise — `in-process` mode, or a runtime that
---- cannot serve it — the in-process load, exactly as before. A projection
+--- The workspace a read-only command reads (spec §19.1, §19.13): in
+--- `runtime-mode daemon`, the read-only projection of a live, compatible
+--- shared daemon's model (`M._read_projection`); otherwise — `in-process`
+--- mode, an attached selection, no such daemon, or one that cannot serve it
+--- in time — the in-process load, exactly as before. A projection
 --- never saves (`_no_write`): only commands that write nothing read through
 --- this.
 --- @param root string
@@ -6526,7 +6530,12 @@ function M.cmd_profile_query(root, args)
     value = t and t.key or ""
   elseif field == "cache" then
     local q = ws._projection and M._read_query("profile_cache", { profile = profile.key, project = project_key })
-    value = q and q.cache or M._profile_query_cache(profile, pp)
+    if q then
+      value = type(q.cache) == "table"
+        and (require("loomworks.profile").compiler_cache_text(q.cache):gsub("^Cache: ", "")) or ""
+    else
+      value = M._profile_query_cache(profile, pp)
+    end
   elseif field == "variables" then
     -- Deterministic, machine-parseable: sorted `name=value` lines.
     local resolved = resolved_variables()
@@ -8310,33 +8319,33 @@ end
 --- @field keep? boolean keep the session open until the command ends, for
 --- `M._read_query` (`lw profile query … cache`)
 
---- What the dispatch's ensure step returned for this command
---- (`_ensure_daemon`), and whether it ran: `lw status` has none (it never
---- launches a daemon, §19.6), so `_read_projection` selects for it itself.
---- @type string|nil
-M._read_ensured = nil
---- @type boolean
-M._read_ensure_ran = false
---- The command an attached read names in the runtime log ("attached run of …").
---- @type string|nil
-M._read_label = nil
+--- How long a read waits for the daemon's answer to one request (spec
+--- §19.1): a snapshot, and a host-probing query (a fresh tool detection takes
+--- longer). Past it, or after `READ_MISSED_PINGS` keepalive pings in a row went
+--- unanswered (one each `READ_PING_MS`), the command reads in-process with a
+--- one-line note. `LW_TEST_READ_DEADLINE_MS` (tests) replaces both deadlines.
+M.READ_DEADLINE_MS = 15000
+M.READ_QUERY_DEADLINE_MS = 60000
+M.READ_PING_MS = 1000
+M.READ_MISSED_PINGS = 3
+
 --- The open session a `keep` read leaves for `M._read_query` (nil otherwise).
 --- @type { ask: fun(msg: table): table|nil, string|nil }|nil
 M._read_session = nil
 
---- The read-only projection of the runtime's model for a read-only command
---- (spec §19.13), or nil to load the workspace in-process. Only in
---- `runtime-mode daemon`, with the routed commands' selection (§19.1): a
---- shared daemon this command's ensure step used or launched is connected to;
---- an attached selection (`--no-daemon`, CI, the setting, a failed launch)
---- starts the runtime in this process for the read and sends the same
---- requests over the loopback transport (released as soon as the projection
---- is built). `lw status` launches nothing: it uses a live daemon, else (no
---- runtime at all) the loopback. Any other runtime state, a workspace this
---- machine refuses, a connection that fails or a declined request: nil (the
---- in-process path, which reports a refusal itself). A refused snapshot ends
---- the command with the runtime's message — the same line the in-process
---- load prints.
+--- The read-only projection of the workspace daemon's model for a read-only
+--- command (spec §19.1, §19.13), or nil to load the workspace in-process.
+--- Only in `runtime-mode daemon` with a shared selection, and only from a
+--- daemon that is already live, authenticates as this machine's and runs this
+--- lw's version: a read never launches, stops or restarts a daemon, never
+--- starts an attached (loopback) runtime and never takes the runtime lock.
+--- Anything else — no daemon, another version, an attached selection
+--- (`--no-daemon`, CI, the setting), a workspace this machine refuses, a
+--- connection that fails, a declined request or no answer in time
+--- (`READ_DEADLINE_MS`, missed pings: a one-line note) — is nil: the
+--- in-process path, which reports a refusal itself. A refused snapshot ends
+--- the command with the daemon's message — the same line the in-process load
+--- prints.
 --- @param root string
 --- @param opts? loomworks.cli.ReadOpts
 --- @return table|nil ws the projection (`_projection`, `_no_write`)
@@ -8345,75 +8354,53 @@ function M._read_projection(root, opts)
   if completion_mode or not root then return nil end
   local rt = require("loomworks.daemon.runtime")
   local sel = rt.select(read_config()[rt.SETTING], { flag = M._no_daemon })
-  if sel.mode ~= rt.DAEMON or not M._daemon_workspace_trusted(root) then return nil end
-  local inspect = require("loomworks.daemon.inspect")
-  local shared
-  if M._read_ensure_ran then
-    local e = M._read_ensured
-    if e == "used" or e == "launched" or e == "restarted" then shared = true
-    elseif M._attached_selected(e) then shared = false
-    else return nil end
-  elseif not sel.daemon then
-    shared = false
-  else
-    local st = inspect.state(root)
-    if st.kind == "live" then
-      local met = M._meet_live(root, st, {})
-      if met == "used" then shared = true
-      elseif met == "stopped" then shared = false
-      else return nil end
-    elseif st.kind == "none" then
-      shared = false
-    else
-      return nil
-    end
+  if sel.mode ~= rt.DAEMON or not sel.daemon or not M._daemon_workspace_trusted(root) then return nil end
+  local st = require("loomworks.daemon.inspect").state(root)
+  if st.kind ~= "live" or not require("loomworks.daemon.endpoint").check(root, st.handle.endpoint) then
+    return nil
   end
   local client = require("loomworks.daemon.client")
-  local conn, release
-  if shared then
-    local st = inspect.state(root)
-    if st.kind ~= "live" or not require("loomworks.daemon.endpoint").check(root, st.handle.endpoint) then
-      return nil
-    end
-    conn = client.session(st.handle.endpoint, { timeout_ms = 5000 })
-    if not conn then return nil end
-    release = function() pcall(conn.close, conn) end
-  else
-    local srv = require("loomworks.daemon.command").start_attached(root, M._daemon_host(), M._read_label or "status")
-    if not srv then return nil end
-    local released = false
-    release = function()
-      if released then return end
-      released = true
-      pcall(srv.stop, srv, "the command ended", 0)
-      -- The service loaded the workspace into this process's core: unload
-      -- it, so an in-process load after it starts clean.
-      if srv.service and srv.service._unload then pcall(srv.service._unload, srv.service) end
-    end
-    conn = client.loopback_sessioner(srv)(nil, { timeout_ms = 5000 })
-    if not conn then release(); return nil end
+  local conn = client.session(st.handle.endpoint, { timeout_ms = 5000 })
+  if not conn then return nil end
+  -- Another version is never reconciled here (no stop, no restart).
+  if not require("loomworks.daemon.version").matches(conn.challenge or {}) then
+    pcall(conn.close, conn)
+    return nil
   end
+  local function release() pcall(conn.close, conn) end
   on_exit(release)
-  -- No timeout (loading the workspace takes as long as it takes); kept alive
-  -- with pings, as a routed operation.
-  local keepalive = tonumber(os.getenv("LW_TEST_DAEMON_KEEPALIVE_MS") or "")
-    or require("loomworks.daemon.server").KEEPALIVE_MS
-  local function ask(msg)
+  local test_deadline = tonumber(os.getenv("LW_TEST_READ_DEADLINE_MS") or "")
+  local timed_out = false
+  -- One request, bounded (see READ_DEADLINE_MS): nil, err on no answer.
+  local function ask(msg, deadline_ms)
+    if timed_out or conn.closed then return nil, "the connection closed" end
     local res
     conn:request(msg, function(r, e) res = { r, e } end)
-    local last = uv.now()
+    local deadline = uv.now() + (test_deadline or deadline_ms or M.READ_DEADLINE_MS)
+    local pong, missed, last = true, 0, uv.now()
     while not res and not conn.closed do
-      vim.wait(keepalive, function() return res ~= nil or conn.closed end, 10)
-      if not res and not conn.closed and uv.now() - last >= keepalive then
-        last = uv.now()
-        conn:request({ kind = "ping" }, function() end)
+      vim.wait(math.max(1, math.min(M.READ_PING_MS, deadline - uv.now())),
+        function() return res ~= nil or conn.closed end, 10)
+      if res or conn.closed then break end
+      if uv.now() >= deadline then timed_out = true; break end
+      if uv.now() - last >= M.READ_PING_MS then
+        missed = pong and 0 or (missed + 1)
+        if missed >= M.READ_MISSED_PINGS then timed_out = true; break end
+        pong, last = false, uv.now()
+        conn:request({ kind = "ping" }, function() pong = true end)
       end
+    end
+    if timed_out then
+      note("lw: the workspace daemon did not answer in time; reading without it")
+      release()
+      return nil, "timed out"
     end
     if not res then return nil, "the connection closed" end
     return res[1], res[2]
   end
   local env = require("loomworks.daemon.envscope").capture()
   local KIND = require("loomworks.daemon.protocol").KIND
+  local snapshot = require("loomworks.daemon.snapshot")
   -- The reply, or nil (the in-process path); a refusal ends the command.
   local function answered(r)
     if not r or r.kind == "error" or r.outcome == "declined" then return nil end
@@ -8428,18 +8415,11 @@ function M._read_projection(root, opts)
   if not snap then release(); return nil end
   local tools = type(opts.tools) == "table" and opts.tools or nil
   if opts.tools == "query" then
-    local q = answered((ask({ kind = KIND.query, name = "tools", args = {}, env = env })))
+    local q = answered((ask({ kind = KIND.query, name = "tools", args = {}, env = env }, M.READ_QUERY_DEADLINE_MS)))
     if not (q and type(q.result) == "table") then release(); return nil end
-    tools = {}
-    for mod_type, rows in pairs(q.result.tools or {}) do
-      local list = {}
-      for _, t in ipairs(rows) do
-        list[#list + 1] = { tool_key = t.key, tool_label = t.label, tool_data = t.tool_data }
-      end
-      tools[mod_type] = list
-    end
+    tools = snapshot.tools_from_rows(q.result.tools)
   end
-  local ws = require("loomworks.daemon.snapshot").project(root, snap, {
+  local ws = snapshot.project(root, snap, {
     tools = tools,
     -- As the in-process load: warnings and errors on stderr.
     notify = function(msg, level)
@@ -8447,10 +8427,16 @@ function M._read_projection(root, opts)
     end,
   })
   if not ws then release(); return nil end
+  -- Tests: a marker that this command read the daemon's projection.
+  local trace = os.getenv("LW_TEST_READ_TRACE")
+  if trace and trace ~= "" then
+    local f = io.open(trace, "a")
+    if f then f:write("projection " .. root .. "\n"); f:close() end
+  end
   if opts.keep then
     M._read_session = { ask = function(msg)
       msg.env = msg.env or env
-      return ask(msg)
+      return ask(msg, M.READ_QUERY_DEADLINE_MS)
     end }
   else
     release()
@@ -8495,8 +8481,11 @@ end
 function M._daemon_build_host()
   local function core() return require("loomworks")._core() end
   return {
-    load = function(root, handlers)
-      local ws, _, fail = M._load_workspace_soft(root, true, { handlers = handlers })
+    -- `opts.wait_tools = false`: a snapshot's or query's load (§19.13), which
+    -- does not wait for tool detection.
+    load = function(root, handlers, opts)
+      local wait = not (opts and opts.wait_tools == false)
+      local ws, _, fail = M._load_workspace_soft(root, wait, { handlers = handlers })
       if ws then return ws end
       return nil, fail and fail.message
     end,
@@ -12864,11 +12853,7 @@ local function main()
   local ensured
   if not M.NO_DAEMON_COMMANDS[command] then
     ensured = M._ensure_daemon(root, M._routed_command(a))
-    -- The read-only commands read the runtime's projection with this
-    -- selection (§19.13, `_read_projection`).
-    M._read_ensured, M._read_ensure_ran = ensured, true
   end
-  M._read_label = table.concat({ command, a[2] and a[2]:sub(1, 1) ~= "-" and a[2] or nil }, " ")
 
   -- `trust` / `nuke` resolve a refused `.nvim` file (spec §17.10); they never
   -- load the workspace (it would be refused).

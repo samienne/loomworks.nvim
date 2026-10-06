@@ -7,14 +7,17 @@
 --- (`Workspace._shared_baseline`, parsed and stripped), `user` the working copy
 --- (`Workspace:_serialize_user`), `cache` the cache (`Workspace:_serialize_cache`),
 --- each stamped with its schema `_meta` exactly as a save stamps it — plus the
---- resolved toolchain detection (`tools`), the stripped program-bearing fields
---- (`shared_ignored`) and the current-key → opaque-id index (§19.12).
+--- resolved toolchain detection (`tools`, tool rows: `tool_rows`), the
+--- stripped program-bearing fields (`shared_ignored`) and the semantic-key →
+--- opaque-id index (§19.12). It is served from the model as loaded, whatever
+--- the requester's environment (service.lua `live` with `as_is`).
 ---
 --- **Projection** (client side, `project`): the same deserializer the on-disk
 --- load uses (`workspace.assemble_snapshot` → `Workspace.new` → `remerge`),
---- fed the snapshot's tables instead of files, on a private core. It is
---- read-only: `_no_write` is set before the first remerge, so it never saves
---- the working copy or the cache, and it tracks no files.
+--- fed the snapshot's tables instead of files, on a private core whose
+--- events bus is a no-op (its events never reach the process's subscribers).
+--- It is read-only: `_no_write` is set before the first remerge, so it never
+--- saves the working copy or the cache, and it tracks no files.
 ---
 --- **Queries** (`QUERIES`): read-only requests that probe the host, run by
 --- the daemon in the requesting client's environment. A query gets the live
@@ -57,10 +60,13 @@ function Registry:id(obj)
     return id
 end
 
---- The current-key → id index of a workspace's keyed objects.
+--- The semantic-key → id index of a workspace's keyed objects (spec §19.13):
+--- `projects` (project key → id), `config_sets` (name → id), `profiles`
+--- (profile key → id), and `config_units`, a list of
+--- `{ project = <project key>, configuration = <configuration key>, id }`.
 --- @param ws table
 --- @param reg loomworks.daemon.IdRegistry
---- @return table { projects, config_sets, profiles, config_units } each key → id
+--- @return { projects: table<string, integer>, config_sets: table<string, integer>, profiles: table<string, integer>, config_units: { project: string, configuration: string, id: integer }[] }
 function M.index(ws, reg)
     local idx = { projects = {}, config_sets = {}, profiles = {}, config_units = {} }
     for _, p in pairs(ws._projects or {}) do
@@ -73,8 +79,16 @@ function M.index(ws, reg)
         if not pr._removed and pr.key then idx.profiles[pr.key] = reg:id(pr) end
     end
     for _, u in pairs(ws._config_units or {}) do
-        if not u._removed and u.id then idx.config_units[u.id] = reg:id(u) end
+        local pk = u._project and not u._project._removed and u._project.key or nil
+        local ck = u.config_key and u:config_key() or nil
+        if not u._removed and pk and ck then
+            idx.config_units[#idx.config_units + 1] = { project = pk, configuration = ck, id = reg:id(u) }
+        end
     end
+    table.sort(idx.config_units, function(a, b)
+        if a.project ~= b.project then return a.project < b.project end
+        return a.configuration < b.configuration
+    end)
     return idx
 end
 
@@ -86,6 +100,40 @@ end
 function M.valid_scope(scope)
     if scope == nil or scope == "all" then return true end
     return vim.tbl_contains(M.SCOPES, scope)
+end
+
+--- The tool rows of the wire (spec §19.13, §19.14), one shape for the
+--- snapshot's `tools` and the `tools` query: module type → list of
+--- `{ key, label, tool_data }` (`key` absent for a module whose single tool
+--- has none), from a detection (`tools_by_type`: module type → list of
+--- `{ tool_key, tool_label, tool_data }`).
+--- @param tools_by_type table|nil
+--- @return table<string, { key: string|nil, label: string|nil, tool_data: table|nil }[]>
+function M.tool_rows(tools_by_type)
+    local out = {}
+    for mod_type, list in pairs(tools_by_type or {}) do
+        local rows = {}
+        for _, t in ipairs(list) do
+            rows[#rows + 1] = { key = t.tool_key, label = t.tool_label, tool_data = vim.deepcopy(t.tool_data) }
+        end
+        out[mod_type] = rows
+    end
+    return out
+end
+
+--- The inverse of `tool_rows`: wire tool rows → a detection (`tools_by_type`).
+--- @param rows table|nil
+--- @return table
+function M.tools_from_rows(rows)
+    local out = {}
+    for mod_type, list in pairs(type(rows) == "table" and rows or {}) do
+        local entries = {}
+        for _, t in ipairs(type(list) == "table" and list or {}) do
+            entries[#entries + 1] = { tool_key = t.key, tool_label = t.label, tool_data = vim.deepcopy(t.tool_data) }
+        end
+        out[mod_type] = entries
+    end
+    return out
 end
 
 --- The snapshot of `ws` for `scope` (see the header). Pure: reads the model
@@ -111,7 +159,7 @@ function M.build(ws, scope, reg)
         cache._meta = { version = require("loomworks.cache").CURRENT_VERSION }
         snap.cache = cache
     end
-    snap.tools = vim.deepcopy(ws._tools_by_type or {})
+    snap.tools = M.tool_rows(ws._tools_by_type)
     snap.shared_ignored = vim.deepcopy(ws._shared_ignored or {})
     snap.index = M.index(ws, reg)
     return snap
@@ -142,20 +190,15 @@ M.QUERIES = {
     tools = function(ws, _)
         local deps = ws._core._deps
         local detected = deps.merge.detect_tools(ws:_config_from_objects(), ws:_serialize_cache())
-        local out = {}
-        for mod_type, list in pairs(detected or {}) do
-            local rows = {}
-            for _, t in ipairs(list) do
-                rows[#rows + 1] = { key = t.tool_key, label = t.tool_label, tool_data = t.tool_data }
-            end
-            out[mod_type] = rows
-        end
-        return { tools = out }
+        return { tools = M.tool_rows(detected) }
     end,
-    --- The compiler cache a profile resolves for one of its projects, as the
-    --- `Cache` row shows it (`lw profile query <profile> <project> cache`):
-    --- `args.profile` (key), `args.project` (key) → `{ cache = text }` ("" for
-    --- a module that does not cache C/C++). Probes the client's PATH.
+    --- The compiler cache a profile resolves for one of its projects
+    --- (`lw profile query <profile> <project> cache`, which formats it with
+    --- profile.lua `compiler_cache_text`): `args.profile` (key), `args.project`
+    --- (key) → `{ cache = { policy, tool?, path?, present, stale,
+    --- msvc_auto_off, applicable, not_applied_reason?, not_applied_hint? } }`;
+    --- `cache` absent for a module that does not cache C/C++. Probes the
+    --- client's PATH.
     profile_cache = function(ws, args)
         -- (Wire keys are resolved to objects here, at the boundary, §19.14.)
         local profile
@@ -165,8 +208,11 @@ M.QUERIES = {
         if not profile then return nil, "no profile '" .. tostring(args.profile) .. "'" end
         for _, pp in ipairs(profile:projects()) do
             if pp:project_key() == args.project then
-                local status = profile:compiler_cache_status(pp)
-                return { cache = status and (status.text:gsub("^Cache: ", "")) or "" }
+                local st = profile:compiler_cache_status(pp)
+                if not st then return {} end
+                return { cache = { policy = st.policy, tool = st.tool, path = st.path, present = st.present,
+                    stale = st.stale, msvc_auto_off = st.msvc_auto_off, applicable = st.applicable,
+                    not_applied_reason = st.not_applied_reason, not_applied_hint = st.not_applied_hint } }
             end
         end
         return nil, "project '" .. tostring(args.project) .. "' is not mapped in profile '" .. profile.key .. "'"
@@ -194,8 +240,9 @@ end
 --- Build the read-only projection of a full snapshot (see the header).
 --- @param root string the workspace root
 --- @param snap table a reply to a `snapshot` of scope "all"
---- `opts.tools` replaces the snapshot's toolchain detection (tools_by_type:
---- a fresh `tools` query, or the machine-level tool cache).
+--- `opts.tools` replaces the snapshot's toolchain detection (a detection,
+--- tools_by_type: a fresh `tools` query through `tools_from_rows`, or the
+--- machine-level tool cache).
 --- @param opts? { notify?: function, tools?: table }
 --- @return table|nil ws, string|nil err
 function M.project(root, snap, opts)
@@ -204,8 +251,12 @@ function M.project(root, snap, opts)
         return nil, "a projection needs a snapshot of every scope"
     end
     local ws_mod = require("loomworks.workspace")
-    local tools = vim.deepcopy(opts.tools or snap.tools or {})
+    local tools = opts.tools and vim.deepcopy(opts.tools) or M.tools_from_rows(snap.tools)
+    local noop = function() end
     local core = require("loomworks.core").new({
+        -- A private, silent events bus: the projection's events never reach
+        -- the subscribers of this process (an editor's UI, its integrations).
+        events = { on = noop, off = noop, emit = noop },
         notify = opts.notify or function() end,
         on_written = false,
         on_save_refused = function() end,
