@@ -176,9 +176,16 @@ describe("daemon snapshot and projection (§19.13, §19.14)", function()
 
     it("refuses an unknown scope as malformed", function()
         local conn = assert(client.loopback_session(srv))
+        -- The protocol-10 request declines it ...
+        local reply = assert(client.request(conn, { kind = "snapshot", scope = "everything",
+            env = envscope.capture() }))
+        assert.equals("declined", reply.outcome)
+        assert.equals("malformed request", reply.reason)
+        -- ... and its interface form (lw.internal.Snapshot/1.get, which
+        -- snapshot.fetch calls over transport 11) refuses it as invalid_args.
         local snap, err = snapshot.fetch(conn, { scope = "everything" })
         assert.is_nil(snap)
-        assert.equals("malformed request", err)
+        assert.truthy(tostring(err):find("invalid_args", 1, true), tostring(err))
         conn:close()
     end)
 

@@ -241,10 +241,10 @@ M.QUERIES = {
 --- @return table|nil reply, string|nil err
 function M.fetch(conn, opts)
     opts = opts or {}
-    local client = require("loomworks.daemon.client")
-    local reply, err = client.request(conn, { kind = require("loomworks.daemon.protocol").KIND.snapshot,
-        scope = opts.scope or "all", env = opts.env or require("loomworks.daemon.envscope").capture() },
-        opts.timeout_ms)
+    -- (lw.internal.Snapshot/1.get over transport 11, daemon/calls.lua.)
+    local reply, err = require("loomworks.daemon.calls").request_sync(conn,
+        { kind = require("loomworks.daemon.protocol").KIND.snapshot, scope = opts.scope or "all",
+            env = opts.env or require("loomworks.daemon.envscope").capture() }, opts.timeout_ms)
     if not reply then return nil, err end
     if reply.kind == "error" then return nil, reply.error end
     if reply.outcome ~= "ok" then return nil, reply.message or reply.reason or reply.outcome end
@@ -312,10 +312,11 @@ end
 --- @return table|nil result, string|nil err
 function M.query(conn, name, args, opts)
     opts = opts or {}
-    local client = require("loomworks.daemon.client")
-    local reply, err = client.request(conn, { kind = require("loomworks.daemon.protocol").KIND.query,
-        name = name, args = args or {}, env = opts.env or require("loomworks.daemon.envscope").capture() },
-        opts.timeout_ms)
+    -- (Toolchains/1.list, Profiles/1.compiler_cache over transport 11,
+    -- daemon/calls.lua.)
+    local reply, err = require("loomworks.daemon.calls").request_sync(conn,
+        { kind = require("loomworks.daemon.protocol").KIND.query, name = name, args = args or {},
+            env = opts.env or require("loomworks.daemon.envscope").capture() }, opts.timeout_ms)
     if not reply then return nil, err end
     if reply.kind == "error" then return nil, reply.error end
     if reply.outcome ~= "ok" then return nil, reply.message or reply.reason or reply.outcome end

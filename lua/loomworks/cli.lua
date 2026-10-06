@@ -8025,8 +8025,11 @@ function M._delegate(op, root, args, ensured, opts)
       -- into CR CR LF on Windows).
       M._raw_write((m.stream == "stderr" or quiet) and 2 or 1, tostring(m.text or ""))
     elseif m.phase == "done" then
-      done = { code = tonumber(m.exit_code) or 1, error = m.error, launch = m.launch, device = m.device == true,
-        profile_key = profile_key }
+      -- An interface method's task carries its task result (§19.20); a
+      -- protocol-10 task the same fields on the frame itself.
+      local res = type(m.result) == "table" and m.result or m
+      done = { code = tonumber(res.exit_code) or 1, error = res.error, launch = res.launch,
+        device = res.device == true, profile_key = profile_key }
     end
   end
   local session = opts.session or client.session
@@ -8047,8 +8050,11 @@ function M._delegate(op, root, args, ensured, opts)
   on_exit(function() pcall(conn.close, conn) end)
   local ctrl_c_enabled = M._enable_console_ctrl_c()
   local reply, rerr
-  conn:request({ kind = op == "run" and "prepare_run" or op, args = req, interactive = interactive(),
-    command = "lw " .. op, env = require("loomworks.daemon.envscope").capture() }, function(r, e)
+  -- Over transport 11 the interface method (Build/1, Tests/1.run,
+  -- Launch/1.prepare_run), else the protocol-10 request (daemon/calls.lua).
+  local msg = { kind = op == "run" and "prepare_run" or op, args = req, interactive = interactive(),
+    command = "lw " .. op, env = require("loomworks.daemon.envscope").capture() }
+  require("loomworks.daemon.calls").request(conn, msg, function(r, e)
     reply, rerr = r, e
     if not r then return end
     -- Printed here, before any task event of it is dispatched (they can
@@ -8419,7 +8425,9 @@ function M._read_projection(root, opts)
   local function ask(msg, deadline_ms)
     if timed_out or conn.closed then return nil, "the connection closed" end
     local res
-    conn:request(msg, function(r, e) res = { r, e } end)
+    -- (Over transport 11: lw.internal.Snapshot/1.get, Toolchains/1.list,
+    -- Profiles/1.compiler_cache; daemon/calls.lua.)
+    require("loomworks.daemon.calls").request(conn, msg, function(r, e) res = { r, e } end)
     local deadline = uv.now() + (test_deadline or deadline_ms or M.READ_DEADLINE_MS)
     local pong, missed, last = true, 0, uv.now()
     while not res and not conn.closed do
