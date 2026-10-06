@@ -92,7 +92,7 @@
         }
       },
       "needs_env": true,
-      "mutates": false
+      "mutates": true
     }
   }
 }
