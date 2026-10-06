@@ -1097,9 +1097,13 @@ Three layers, each with one owner:
   (`mount` refuses a version whose schema methods and handlers disagree;
   `unmount`), `call` (route → `args` validated against the method's
   parameters → handler → `ok`, the result validated in development builds and
-  tests, `validate_out`), the subscriptions (`Root.subscribe` /
-  `unsubscribe`, `emit` stamps `sub_id` and a per-object `seq`, dropped with
-  the connection) and the root signals (`root_signal`: `objects_changed` on a
+  tests, `validate_out`; a result or signal is first brought to its
+  schema's shape, `schema.shape`, so an empty table goes out as `{}` only
+  where the schema types an object), the subscriptions (`Root.subscribe` /
+  `unsubscribe`, `args` checked against the interface's `subscribe_args` —
+  none without one —, `emit` stamps `sub_id` and a `seq` counted per
+  connection and object over the signals actually sent, `subscribe` returning
+  the baseline; dropped with the connection and on `stop`) and the root signals (`root_signal`: `objects_changed` on a
   new or vanished object, `retiring` from `Server:_retire`) sent to
   transport-11 connections only. `M.root_impl()` is `loomworks.Root/1`.
   `server.lua`'s `M.DISPATCH` is the one dispatch table: `control` rows (the

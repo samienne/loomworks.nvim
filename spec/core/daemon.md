@@ -928,7 +928,10 @@ into a protocol rule and a client policy:
   the overlap of their `[protocol_min, protocol]` ranges (§19.8); with no
   overlap the daemon is incompatible. Interfaces are not negotiated here:
   the client chooses a version per interface and stamps it on each call
-  (§19.20).
+  (§19.20). Shipped editors of protocol 10 observe only a daemon whose
+  protocol equals their own (§19.16), so in practice "11 accepts 10" serves
+  clients of the 11 era that still send the v0 request kinds, until step
+  5g.3.
 - **`lw_version` equality is the CLI's policy** for routed operations — pin
   semantics and behavioural parity, which no interface version expresses. Before
   routing, the CLI compares `describe().binary.lw_version` (§19.20) with its own
@@ -2243,7 +2246,9 @@ is specified until they are built.
 JSON Schema (2020-12) for parameters, results, signal payloads and shared
 definitions, in an envelope naming the interface, version and status and, per
 method, its parameters, result, optional task meta and result, errors, whether
-it needs the client environment and whether it mutates. Documents use only a
+it needs the client environment and whether it mutates, and per interface the
+schema of a subscription's `args` (`subscribe_args`; without one a
+subscription takes no `args`). Documents use only a
 restricted keyword set (`type`, `properties`, `required`,
 `additionalProperties`, `items`, `enum`, `const`, `oneOf`, `$ref`, `$defs`,
 `minimum`, `maximum`, `pattern`, `description`) that every validator
