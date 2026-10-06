@@ -410,16 +410,25 @@ describe("root object over the socket (§19.20)", function()
         conn:close()
     end)
 
-    it("retire sends the root's retiring signal to transport-11 connections, v0 retiring to observers", function()
-        local box, obox = inbox(), inbox()
+    it("retire sends the root's retiring signal to transport-11 connections, v0 retiring to observers below 11", function()
+        local box, obox, o11 = inbox(), inbox(), inbox()
         local conn = assert(client.session(srv.address, { on_message = box.on_message }))
-        local obs = assert(client.session(srv.address, { on_message = obox.on_message, role = "observer" }))
+        -- (Busy, so the daemon outlives the retirement during the test.)
+        for c in pairs(srv.conns) do if c.authed then c.in_flight = { [99] = true } end end
+        local obs = assert(client.session(srv.address, { on_message = obox.on_message, role = "observer",
+            protocol = 10 }))
+        local obs11 = assert(client.session(srv.address, { on_message = o11.on_message, role = "observer" }))
         assert(client.request(conn, { kind = "retire" }))
         assert.is_true(vim.wait(5000, function() return #box.signals("retiring") == 1 end, 10))
+        assert.is_true(vim.wait(5000, function() return #o11.signals("retiring") == 1 end, 10))
         assert.is_true(vim.wait(5000, function()
             for _, m in ipairs(obox.msgs) do if m.kind == "retiring" then return true end end
             return false
         end, 10))
+        -- Each connection gets only its form.
+        for _, m in ipairs(o11.msgs) do assert.not_equals("retiring", m.kind) end
+        for _, m in ipairs(obox.msgs) do assert.not_equals("signal", m.kind) end
+        obs11:close()
         obs:close()
         conn:close()
     end)

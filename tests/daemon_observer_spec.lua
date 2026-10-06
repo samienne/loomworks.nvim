@@ -24,11 +24,36 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
-local function new_server(root)
+--- `/tasks` (loomworks.Tasks/1) and `/workspace` (loomworks.Workspace/1)
+--- with stub handlers: what a daemon with a build service offers, so the
+--- observer subscribes (step 5g.3) and a transport-11 connection is sent
+--- only what it subscribed to.
+local function mount_views(srv)
+    local reg = srv:registry()
+    assert(reg:mount("/tasks", "core", "loomworks.Tasks", 1, { methods = {
+        list = function() return { tasks = {} } end,
+        cancel = function() return { outcome = "ok" } end,
+    } }))
+    assert(reg:mount("/workspace", "core", "loomworks.Workspace", 1, { methods = {
+        header = function() return { root = srv.root, pid = srv.pid, lw_version = srv.identity,
+            session_generation = srv.generation, state = "unloaded" } end,
+    } }))
+end
+
+--- An in-process server; `views == false`: without `/tasks` and `/workspace`.
+local function new_server(root, views)
     local s = { exited = nil }
     s.srv = server_mod.new(root, { exit = function(c) s.exited = c end, tick_ms = 100, auth_timeout_ms = 30000 })
     assert(s.srv:start())
+    if views ~= false then mount_views(s.srv) end
     return s
+end
+
+--- The server side of the connection that is not `except` and matches `pred`.
+local function server_conn(srv, pred)
+    for c in pairs(srv.conns) do
+        if c.authed and not c.closed and pred(c) then return c end
+    end
 end
 
 describe("server: observers, retirement and model_change (§19.11, §19.12)", function()
@@ -42,36 +67,91 @@ describe("server: observers, retirement and model_change (§19.11, §19.12)", fu
     end)
 
     it("an observer never holds off a retirement and is told it retires", function()
-        local got = {}
+        local got, got10 = {}, {}
         local obs = assert(client.session(s.srv.address, { client = "editor", role = "observer",
             on_message = function(m) got[#got + 1] = m end }))
+        -- An editor of protocol 10 (v0 broadcasts).
+        local obs10 = assert(client.session(s.srv.address, { client = "editor", role = "observer", protocol = 10,
+            on_message = function(m) got10[#got10 + 1] = m end }))
         local cli = assert(client.session(s.srv.address))
         local st = assert(client.request(cli, { kind = "status" }))
-        assert.equals(2, st.clients)
-        assert.equals(1, st.observers)
+        assert.equals(3, st.clients)
+        assert.equals(2, st.observers)
+        assert.equals(0, st.busy_clients)
+        -- The client has a command in flight: busy (§19.9 "Busy").
+        local sc = server_conn(s.srv, function(c) return not c.observer end)
+        sc.in_flight = { [999] = true }
         assert(client.request(cli, { kind = "retire" }))
-        assert.is_true(vim.wait(5000, function() return #got > 0 end, 10))
-        assert.equals("retiring", got[1].kind)
+        assert.is_true(vim.wait(5000, function() return #got > 0 and #got10 > 0 end, 10))
+        -- Transport 11: the root's `retiring` signal; protocol 10: the v0 broadcast.
+        assert.equals("signal", got[1].kind)
+        assert.equals("retiring", got[1].name)
+        assert.equals("/", got[1].object)
+        assert.equals("retiring", got10[1].kind)
+        vim.wait(200)
         assert.is_nil(s.exited)
         cli:close()
-        -- Only the observer is left: the daemon exits.
+        -- Only the observers are left: the daemon exits.
         assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
         assert.equals(0, s.exited)
-        obs:close()
+        obs:close(); obs10:close()
     end)
 
-    it("welcome says a daemon retires; model_change reaches every client with an advancing seq", function()
-        local a, b = {}, {}
-        local c1 = assert(client.session(s.srv.address, { on_message = function(m) a[#a + 1] = m end }))
-        local c2 = assert(client.session(s.srv.address, { client = "editor", role = "observer",
+    it("busy is a running task or a command in flight; an idle client never holds off a retirement (§19.9)", function()
+        -- An interface client that is no observer (an editor of a later step).
+        local idle = assert(client.session(s.srv.address, { client = "editor" }))
+        local cli = assert(client.session(s.srv.address))
+        local isc = server_conn(s.srv, function(c) return c.peer and c.peer.client == "editor" end)
+        -- An answered call is no longer in flight.
+        assert(client.call_sync(idle, "/", "loomworks.Root", 1, "describe", {}))
+        local st = assert(client.request(cli, { kind = "status" }))
+        assert.equals(2, st.clients)
+        assert.equals(0, st.observers)
+        assert.equals(0, st.busy_clients)
+        -- A command in flight: busy until its answer.
+        isc.in_flight = { [7] = true }
+        st = assert(client.request(cli, { kind = "status" }))
+        assert.equals(1, st.busy_clients)
+        s.srv:_send(isc, { kind = "ok", req_id = 7 })
+        st = assert(client.request(cli, { kind = "status" }))
+        assert.equals(0, st.busy_clients)
+        -- Owning a running task: busy.
+        local fake = { owns_task = function(_, c) return c == isc end }
+        s.srv.service = fake
+        st = assert(client.request(cli, { kind = "status" }))
+        assert.equals(1, st.busy_clients)
+        s.srv.service = nil
+        -- Retired with only idle clients connected: it exits at once.
+        assert(client.request(cli, { kind = "retire" }))
+        assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
+        assert.equals(0, s.exited)
+        idle:close(); cli:close()
+    end)
+
+    it("welcome says a daemon retires; model_change reaches every client below transport 11 with an advancing seq", function()
+        local a, b, c = {}, {}, {}
+        local c1 = assert(client.session(s.srv.address, { protocol = 10, on_message = function(m) a[#a + 1] = m end }))
+        local c2 = assert(client.session(s.srv.address, { client = "editor", role = "observer", protocol = 10,
             on_message = function(m) b[#b + 1] = m end }))
+        -- Transport 11: only what it subscribed to (Workspace.changed).
+        local c4 = assert(client.session(s.srv.address, { on_message = function(m) c[#c + 1] = m end }))
         assert.is_false(c2.welcome.retiring)
         s.srv:model_changed()
+        assert(client.call_sync(c4, "/", "loomworks.Root", 1, "subscribe",
+            { object = "/workspace", iface = "loomworks.Workspace", v = 1, signals = { "changed" } }))
         s.srv:model_changed()
-        assert.is_true(vim.wait(5000, function() return #a == 2 and #b == 2 end, 10))
+        assert.is_true(vim.wait(5000, function() return #a == 2 and #b == 2 and #c == 1 end, 10))
         assert.equals("model_change", b[2].kind)
         assert.equals(2, b[2].seq)
         assert.equals(s.srv.generation, b[2].session_generation)
+        vim.wait(100)
+        assert.equals(1, #c)
+        assert.equals("signal", c[1].kind)
+        assert.equals("changed", c[1].name)
+        assert.equals(2, c[1].args.seq)
+        c4:close()
+        -- (c1 busy: a retiring daemon with only idle clients exits at once.)
+        server_conn(s.srv, function(c) return not c.observer end).in_flight = { [999] = true }
         assert(client.request(c1, { kind = "retire" }))
         local c3 = assert(client.session(s.srv.address, { client = "editor", role = "observer" }))
         assert.is_true(c3.welcome.retiring)
@@ -158,6 +238,69 @@ describe("the observer (§19.16)", function()
         assert.is_nil(observer.attach(ws, { getenv = function() return nil end }))
         assert.is_nil(ws._daemon_observer)
         assert.same({}, ws:get_daemon_tasks())
+    end)
+
+    it("subscribes to /tasks and /workspace when offered (step 5g.3) and observes through them", function()
+        s = new_server(root)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals("interfaces", obs.mode)
+        assert.is_nil(obs.feature_note)
+        local sc = server_conn(s.srv, function(c) return c.observer end)
+        local subs = {}
+        for _, sub in ipairs(s.srv.interfaces:subscriptions_of(sc)) do subs[#subs + 1] = sub.object .. " " .. sub.iface end
+        table.sort(subs)
+        assert.same({ "/tasks loomworks.Tasks", "/workspace loomworks.Workspace" }, subs)
+        -- A task another client owns reaches it through the subscription,
+        -- with the opaque string id of transport 11.
+        local owner_client = assert(client.session(s.srv.address))
+        local owner = server_conn(s.srv, function(c) return not c.observer end)
+        local task = tasks_mod.new(s.srv):create(owner)
+        task:start({ name = "dev", kind = "build" })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        assert.equals(task.id, ws:get_daemon_tasks()[1].id)
+        task:done(0)
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 0 end, 10))
+        -- A client that never subscribed sees no frame of it.
+        local quiet = {}
+        local other = assert(client.session(s.srv.address, { on_message = function(m) quiet[#quiet + 1] = m end }))
+        local t2 = tasks_mod.new(s.srv):create(owner)
+        t2:start({ name = "dev", kind = "build" })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        t2:done(0)
+        vim.wait(200)
+        assert.same({}, quiet)
+        other:close(); owner_client:close()
+    end)
+
+    it("against a daemon of protocol 10 it observes the v0 broadcasts", function()
+        s = new_server(root)
+        obs = attach({ connect = function(ep, o, cb)
+            o.protocol = 10
+            return client.connect(ep, o, cb)
+        end })
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals("v0", obs.mode)
+        local sc = server_conn(s.srv, function(c) return c.observer end)
+        assert.same({}, s.srv.interfaces:subscriptions_of(sc))
+        local owner_client = assert(client.session(s.srv.address))
+        local owner = server_conn(s.srv, function(c) return not c.observer end)
+        tasks_mod.new(s.srv):create(owner):start({ name = "dev", kind = "build" })
+        assert.is_true(vim.wait(5000, function() return #ws:get_daemon_tasks() == 1 end, 10))
+        owner_client:close()
+    end)
+
+    it("a missing interface is one per-feature note; the connection stays (§19.16 Interface client)", function()
+        s = new_server(root, false)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals("interfaces", obs.mode)
+        assert.equals("tasks: daemon offers no loomworks.Tasks, editor needs /1; "
+            .. "model changes: daemon offers no loomworks.Workspace, editor needs /1", obs.feature_note)
+        assert.truthy(obs:runtime_line():find("observing the workspace daemon", 1, true))
+        assert.truthy(obs:runtime_line():find("editor needs /1", 1, true))
+        assert.equals("tasks: daemon offers loomworks.Tasks/2,/3, editor needs /1",
+            observer.feature_note(observer.TASKS, { 2, 3 }))
     end)
 
     it("with no daemon and no host binary: one note, nothing launched, then observes a daemon that appears", function()
@@ -558,6 +701,9 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         local cli = assert(client.session(s.srv.address))
+        -- The client is busy (a command in flight), so the daemon outlives
+        -- the retirement for a while (§19.9 "Busy").
+        server_conn(s.srv, function(c) return not c.observer end).in_flight = { [999] = true }
         assert(client.request(cli, { kind = "retire" }))
         assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
         assert.truthy(obs:runtime_line():find("retiring", 1, true))

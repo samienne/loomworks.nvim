@@ -119,6 +119,58 @@ describe("the editor observes the workspace daemon (§19.16)", function()
         assert.equals(1, launched)
     end)
 
+    -- The exit criterion of step 5g.3 (§19.9 "Busy", §19.16 "Interface
+    -- client"): a CLI of another version meets the idle daemon the editor
+    -- observes. The editor (an observer, subscribed) never makes it busy, so
+    -- the CLI stops it and launches its own; the editor reconnects to the
+    -- new daemon, re-subscribes and shows the CLI's build from it.
+    it("survives a CLI-driven restart of an idle daemon (step 5g.3)", function()
+        local ws = core:get_workspace()
+        local launched = 0
+        obs = observer.attach(ws, {
+            getenv = daemon_mode,
+            resolve = function() return "lw" end,
+            spawn = function(r)
+                launched = launched + 1
+                -- The editor's daemon claims another release.
+                vim.env.LW_TEST_IDENTITY = "0.0.1+test.old"
+                local child, err = launch.spawn(r, { argv = { vim.v.progpath, "--headless", "-u", "NONE", "--cmd",
+                    "lua vim.opt.rtp:prepend(" .. string.format("%q", H.REPO) .. ")", "-l", H.CLI } })
+                vim.env.LW_TEST_IDENTITY = nil
+                return child, err
+            end,
+            watch_ms = 100, keepalive_ms = 500,
+        })
+        assert.is_not_nil(obs)
+        assert.is_true(vim.wait(60000, function() return obs.state == "connected" end, 20), obs:runtime_line())
+        H.track_root(root)
+        assert.equals("interfaces", obs.mode)
+        assert.equals("0.0.1+test.old", obs.daemon.lw_version)
+        local old_pid = obs.daemon.pid
+
+        -- `lw build` from a terminal: its version differs, the daemon is idle
+        -- (only the editor observes it) -> stopped and replaced, then the
+        -- build is routed to the new daemon.
+        local b = H.lw_start({ "build", "dev" }, { env = env, cwd = root })
+        assert.is_true(vim.wait(60000, function() return seen.started == 1 end, 20), b.stderr())
+        assert.is_true(b.wait(120000))
+        assert.equals(0, b.code, b.stderr())
+        assert.falsy(b.stderr():find("is busy", 1, true), b.stderr())
+        assert.truthy(b.stderr():find("building through the workspace daemon", 1, true), b.stderr())
+        assert.is_true(vim.wait(30000, function() return seen.stopped == 1 end, 20))
+        assert.equals(0, seen.last.exit_code)
+        -- The editor is connected to the new daemon, subscribed again; it
+        -- never launched one itself.
+        assert.equals("connected", obs.state)
+        assert.equals("interfaces", obs.mode)
+        assert.not_equals(old_pid, obs.daemon.pid)
+        assert.not_equals("0.0.1+test.old", obs.daemon.lw_version)
+        assert.equals(1, launched)
+        assert.equals(seen.task, seen.last)
+        local unit = ws:get_profiles()[1]:projects()[1]._config_unit
+        assert.is_true(vim.wait(30000, function() return unit:state() == "built" end, 20), unit:state())
+    end)
+
     it("leaves no daemon running", function()
         assert.equals(0, H.survivors)
     end)

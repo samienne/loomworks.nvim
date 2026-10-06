@@ -148,7 +148,7 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
         built()
         assert.equals("built", cached_state(root, "app"))
         local seen = {}
-        local obs = assert(client.session(srv.address, { client = "editor", role = "observer",
+        local obs = assert(client.session(srv.address, { client = "editor", role = "observer", protocol = 10,
             on_message = function(m) seen[#seen + 1] = m end }))
         local r = request(srv, "reset", { profile = "dev", yes = true })
         assert.is_true(r.wait_reply())
@@ -365,7 +365,7 @@ describe("lw reset in the daemon's build service (§19.15 Reset)", function()
             return require("loomworks.future").create(function() end)
         end
         local seen = {}
-        local obs = assert(client.session(srv.address, { client = "editor", role = "observer",
+        local obs = assert(client.session(srv.address, { client = "editor", role = "observer", protocol = 10,
             on_message = function(m) seen[#seen + 1] = m end }))
         local r = request(srv, "reset", { profile = "dev", yes = true })
         assert.is_true(vim.wait(30000, function() return #pending > 0 end, 10), r.lines())

@@ -184,10 +184,29 @@ local function handshake_guard(conn, opts, cb)
     return finish, function() return done end
 end
 
+--- The transport agreed with a daemon's challenge (§19.9 "From protocol
+--- 11"), within the range this client announced (`opts.protocol`, a test's
+--- older client; default ours).
+--- @param ch table the challenge
+--- @param opts table
+--- @return integer|nil
+function M._agreed(ch, opts)
+    local t = version.negotiate(ch.protocol, ch.protocol_min)
+    local max = opts and opts.protocol
+    if t and type(max) == "number" and t > max then
+        local lo = math.max(type(ch.protocol_min) == "number" and ch.protocol_min or ch.protocol,
+            opts.protocol_min or max)
+        t = (max >= lo) and max or nil
+    end
+    return t
+end
+
 --- Connect to `endpoint` and authenticate. `cb(conn|nil, err, detail)`.
 --- opts: { client = "cli"|"editor", role = "observer"|nil (§19.16), timeout_ms,
 ---         key (tests: K override), on_message = fun(msg) for broadcasts,
----         on_close = fun(conn) once an established connection closes }
+---         on_close = fun(conn) once an established connection closes,
+---         protocol / protocol_min = the range to announce (tests: an older
+---         client; default ours) }
 --- @param endpoint string
 --- @param opts table|nil
 --- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil)
@@ -200,9 +219,9 @@ function M.connect(endpoint, opts, cb)
     if not nc then return cb(nil, M.ERR_CONNECT, "no random source") end
     -- Built before going asynchronous: the editor host forbids vim.fn (the
     -- version fingerprint's sha256) inside libuv callbacks.
-    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = protocol.VERSION,
-        protocol_min = protocol.VERSION_MIN, lw_version = version.identity(), schemas = version.schemas(),
-        client = opts.client or "cli", role = opts.role, nonce = nc })
+    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = opts.protocol or protocol.VERSION,
+        protocol_min = opts.protocol_min or protocol.VERSION_MIN, lw_version = version.identity(),
+        schemas = version.schemas(), client = opts.client or "cli", role = opts.role, nonce = nc })
     local pipe = uv.new_pipe(false)
     local conn = setmetatable({ pipe = pipe, _pending = {}, endpoint = endpoint }, Conn)
     local finish, is_done = handshake_guard(conn, opts, cb)
@@ -213,7 +232,7 @@ function M.connect(endpoint, opts, cb)
             return false
         end
         conn.challenge = msg
-        conn.transport = version.negotiate(msg.protocol, msg.protocol_min)
+        conn.transport = M._agreed(msg, opts)
         pcall(function()
             pipe:write(protocol.encode({ kind = protocol.KIND.auth,
                 client_proof = auth.client_proof(key, endpoint, nc, msg.server_nonce) }))
@@ -246,11 +265,12 @@ function M.loopback_connect(server, opts, cb)
     local conn = setmetatable({ pipe = mine, _pending = {}, loopback = true }, Conn)
     conn.challenge = { kind = protocol.KIND.challenge, protocol = protocol.VERSION,
         protocol_min = protocol.VERSION_MIN, lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
-    conn.transport = version.negotiate(conn.challenge.protocol, conn.challenge.protocol_min)
+    conn.transport = M._agreed(conn.challenge, opts)
     local finish, is_done = handshake_guard(conn, opts, cb)
     conn._reader = frame_reader(conn, opts, "auth", finish, is_done)
     mine:read_start(conn._reader)
-    local ok, err = server:adopt(theirs, { protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+    local ok, err = server:adopt(theirs, { protocol = opts.protocol or protocol.VERSION,
+        protocol_min = opts.protocol_min or protocol.VERSION_MIN,
         lw_version = version.identity(),
         schemas = version.schemas(), client = opts.client or "cli", role = opts.role })
     if not ok then

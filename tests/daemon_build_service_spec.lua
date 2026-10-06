@@ -95,10 +95,12 @@ describe("daemon build service (§19.15)", function()
 
     it("sends the cache write-back's model_change before the task's done, to the owner and an observer (§19.16 End)", function()
         local seen = {}
-        local obs = assert(client.session(srv.address, { client = "editor", role = "observer",
+        local obs = assert(client.session(srv.address, { client = "editor", role = "observer", protocol = 10,
             on_message = function(m) seen[#seen + 1] = m end }))
         local all = {}
-        local conn = assert(client.session(srv.address, {
+        -- (Protocol-10 clients: the v0 `model_change` broadcast; a transport-11
+        -- connection gets `Workspace/1.changed` by subscription instead.)
+        local conn = assert(client.session(srv.address, { protocol = 10,
             on_message = function(m) all[#all + 1] = m end }))
         local done
         conn:request({ kind = "build", args = { profile = "dev" }, interactive = false,

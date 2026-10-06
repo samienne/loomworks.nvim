@@ -1,9 +1,14 @@
 --- loomworks/daemon/ensure.lua — a client meets the workspace daemon: the
 --- version handshake (spec §19.9).
 ---
---- After authenticating, a CLI client compares protocol, host version and
---- schemas (loomworks.daemon.version.matches). On a mismatch:
----   * idle daemon (no other client, no running task) — the client stops it
+--- After authenticating, a CLI client applies its version policy (`policy`,
+--- step 5g.3): an agreed transport, and over transport 11 the daemon's
+--- `describe().binary.lw_version` and schemas equal to its own (before 11:
+--- protocol, host version and schemas of the challenge,
+--- loomworks.daemon.version.matches). On a mismatch:
+---   * idle daemon (no running task, no other connection that owns a task or
+---     has a command in flight — observers and subscribers never count,
+---     §19.9 "Busy") — the client stops it
 ---     (`stop`, frozen) and launches its own binary in its place;
 ---   * busy daemon — the client sends `retire` (frozen): the daemon keeps
 ---     serving its clients and exits once idle; this command runs as a
@@ -66,6 +71,30 @@ function M.newer_line(info)
         tostring(info.lw_version), tostring(s.user), tostring(s.cache), own.user, own.cache)
 end
 
+--- The CLI's version policy against an authenticated connection (spec §19.9
+--- "From protocol 11", step 5g.3): with no agreed transport a mismatch; over
+--- transport 11 or later the daemon's `describe().binary.lw_version`
+--- (§19.20) and the challenge's schemas must equal ours
+--- (version.cli_policy_matches); over transport 10 (a daemon before protocol
+--- 11) — or when `describe` gets no answer — the challenge's versions as
+--- before (version.matches). Returns match, the daemon's version.
+--- @param conn loomworks.daemon.Conn
+--- @param step? integer
+--- @return boolean match, string|nil daemon_version
+function M.policy(conn, step)
+    local info = conn.challenge or {}
+    local t = conn.transport
+    if type(t) ~= "number" then return false, info.lw_version end
+    if t >= 11 and type(conn.call) == "function" then
+        local d = client.call_sync(conn, "/", "loomworks.Root", 1, "describe", {}, { timeout_ms = step })
+        local lw = type(d) == "table" and type(d.binary) == "table" and d.binary.lw_version or nil
+        if type(lw) == "string" then
+            return (version.cli_policy_matches(t, lw, info.schemas)), lw
+        end
+    end
+    return (version.matches(info)), info.lw_version
+end
+
 --- Reconcile versions with an authenticated connection `conn` to the daemon
 --- of `root` (live state `st`). Closes `conn`. Returns one of:
 ---   "match"      versions match (the caller may keep using the daemon)
@@ -86,7 +115,8 @@ function M.reconcile(root, conn, opts)
     opts = opts or {}
     local step = opts.step_ms
     local info = conn.challenge or {}
-    if version.matches(info) then return "match" end
+    local match, daemon_version = M.policy(conn, step)
+    if match then return "match" end
     if version.peer_schemas_newer(info) then
         conn:close()
         return "newer", M.newer_line(info)
@@ -94,12 +124,25 @@ function M.reconcile(root, conn, opts)
     local st = client.request(conn, { kind = "status" }, step)
     -- Clients besides this one; observers (an editor watching) never hold
     -- off a restart (§19.11).
-    local others = st and ((tonumber(st.clients) or 1) - 1 - (tonumber(st.observers) or 0)) or 1
+    -- Busy (§19.9 "Busy", step 5g.3): a running task, or another
+    -- connection that owns a task or has a command in flight
+    -- (`busy_clients`). A connection that only observes or subscribes — an
+    -- editor — never holds off a restart. A daemon before 5g.3 reports no
+    -- `busy_clients`: every client but this one and the observers counts.
+    local others
+    if st and type(st.busy_clients) == "number" then
+        others = st.busy_clients
+    else
+        others = st and ((tonumber(st.clients) or 1) - 1 - (tonumber(st.observers) or 0)) or 1
+    end
     local busy = (st == nil) or st.busy == true or others > 0
     if busy then
+        -- `retire` is in the frozen control subset (§19.8): sent whatever
+        -- the transports, so also to a busy daemon whose range does not
+        -- overlap ours.
         client.request(conn, { kind = "retire" }, step)
         conn:close()
-        return "bypass", M.bypass_line(info.lw_version)
+        return "bypass", M.bypass_line(daemon_version)
     end
     local lk = rlock.read(root)
     client.request(conn, { kind = "stop" }, step)
