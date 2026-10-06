@@ -2068,13 +2068,17 @@ runtime is deferred until that module is actively developed.
      ids and the CLI's switch to calls (`daemon/calls.lua`).)*
    - **5g.3 — Policies** *(done)*: `lw_version` equality as the CLI's policy through
      `describe` (§19.9); busy = owns a task or a command in flight (§19.9); the
-     editor's observer subscribes to `/tasks` and `/workspace` when the daemon
-     offers them, otherwise uses the v0 broadcasts; the guard's interface
-     ratchet (every plugin-side call names an interface version that has a
-     schema and client-conformance transcripts). *(Done: `ensure.policy`,
-     `Server:conn_busy` / `status.busy_clients`, `observer._subscribe`,
-     transport-11 delivery by subscription, the guard's interface ratchet in
-     `tests/split`.)*
+     editor's observer re-describes on connect and subscribes to `/tasks` and
+     `/workspace` when the daemon offers them (later too, on
+     `objects_changed`), otherwise uses the v0 broadcasts; the guard's
+     interface ratchet (every plugin-side call names an interface version that
+     has a schema and client-conformance transcripts; a site naming an
+     interface at run time is an allow-listed exception). *(Done:
+     `ensure.policy`, `Server:conn_busy` / `status.busy_clients`,
+     `observer._subscribe`, transport-11 delivery by subscription, the guard's
+     interface ratchet in `tests/split`. Deferred to 5j: checking that the
+     methods and signals the plugin uses on an interface version are covered
+     by its transcripts.)*
    - **5h — Editor-side binary provisioning**: the plugin resolves, downloads
      and verifies a host binary itself; the schemas a binary implements are
      published with each release. Used first only for the observer's binary.

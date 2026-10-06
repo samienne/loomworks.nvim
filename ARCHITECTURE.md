@@ -1221,21 +1221,34 @@ Step 5g.3 adds the policies:
   connections besides the asker (the CLI uses it, falling back to the old
   `clients - 1 - observers` for an older daemon); `_maybe_retire` exits a
   retiring daemon when nothing is busy, after its connections' write queues
-  drained (at most `RETIRE_DRAIN_MS`).
-- `daemon/observer.lua` `_subscribe` — on a transport-11 daemon whose
-  `welcome.objects` offers them, subscribes to `/tasks` `loomworks.Tasks/1`
-  and `/workspace` `loomworks.Workspace/1` (mode `interfaces`), handling
-  `Workspace.changed` and the root `retiring` signal like their v0 forms; a
-  missing or refused interface is a per-feature note on the Runtime line;
-  otherwise mode `v0`. It reports `connected` once the subscriptions settled.
+  drained (at most `RETIRE_DRAIN_MS`). Each in-flight entry records when it
+  started; the heartbeat (`_warn_stuck_requests`) logs one warning for a
+  request in flight past `STUCK_REQUEST_MS` (10 min) and never clears it.
+- `daemon/observer.lua` `_subscribe` — on a transport-11 daemon (one with
+  `welcome.objects`) calls `Root.describe` (`_describe`, bounded by
+  `DESCRIBE_MS`, `welcome.objects` as the fallback) and subscribes to
+  `/tasks` `loomworks.Tasks/1` and `/workspace` `loomworks.Workspace/1` when
+  offered (mode `interfaces`, `_ensure_subscriptions`, per-feature state in
+  `_feat`), handling `Workspace.changed` and the root `retiring` signal like
+  their v0 forms; the root `objects_changed` (`_on_objects_changed`)
+  re-describes, subscribes to a newly offered one and retries a refused one
+  once. A missing or refused interface is a per-feature note on the Runtime
+  line (`_connected_note`) only when the editor gets nothing for it — a
+  daemon offering none of them is noted only once its `status` shows
+  `busy_clients` (step 5g.3+: delivery by subscription only); a step-5g.1
+  daemon keeps sending the v0 broadcasts. Otherwise mode `v0`. It reports
+  `connected` once the subscriptions settled.
 
 The
 plugin/binary boundary guard (`tests/split`,
 #149) enforces that the plugin reaches the binary only through the protocol;
 its interface ratchet (step 5g.3, `scan.interface_refs`) adds that every
-plugin-side interface reference is written `iface = "<name>", v = <n>` and
-names an interface version with a schema under `spec/protocol/interfaces/`
-and transcripts under `spec/protocol/transcripts/`. The two are complementary: the guard says *only through the
+plugin-side interface reference is a table holding `iface = "<name>"` and
+`v = <n>` (either order, across lines) and names an interface version with a
+schema under `spec/protocol/interfaces/` and transcripts under
+`spec/protocol/transcripts/`; a site naming an interface at run time
+(`iface = <expression>`, `:call(obj, <expression>, …)`) is counted and must
+match `interfaces_dynamic` in `tests/split/allowlist.lua`. The two are complementary: the guard says *only through the
 protocol*, the schemas say *what the protocol is*.
 
 ### Workspace trust (spec §17)

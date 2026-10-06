@@ -124,6 +124,50 @@ describe("plugin/binary boundary", function()
         assert.is_true(n >= 3)
     end)
 
+    it("names interfaces at run time only at the allow-listed sites (interface ratchet)", function()
+        local diff, keys, seen = {}, {}, {}
+        local rec_all = allow.interfaces_dynamic or {}
+        for _, t in ipairs({ current.interfaces_dynamic, rec_all }) do
+            for rel in pairs(t) do
+                if not seen[rel] then seen[rel] = true; keys[#keys + 1] = rel end
+            end
+        end
+        table.sort(keys)
+        for _, rel in ipairs(keys) do
+            local now, rec = current.interfaces_dynamic[rel] or 0, rec_all[rel] or 0
+            if now ~= rec then diff[#diff + 1] = ("%s: %d now, %d recorded"):format(rel, now, rec) end
+        end
+        if #diff > 0 then
+            fail("Sites naming a daemon interface at run time changed (not statically checkable):", diff,
+                "A new one must be shown to resolve to a versioned `{ iface = ..., v = <n> }` table, then "
+                .. "recorded in `interfaces_dynamic` in tests/split/allowlist.lua; a removed one is deleted. " .. SEE)
+        end
+    end)
+
+    it("the interface scanner: either field order, tables across lines, runtime names counted", function()
+        local function refs(text)
+            local r, u, d = scan.interface_refs_text(text)
+            local out = {}
+            for _, x in ipairs(r) do out[#out + 1] = x.iface .. "/" .. x.v .. "@" .. x.line end
+            return out, u, d
+        end
+        local r, u, d = refs('local A = { v = 2, object = "/x", iface = "loomworks.Foo" }')
+        assert.same({ "loomworks.Foo/2@1" }, r); assert.same({}, u); assert.equals(0, d)
+        r, u = refs(table.concat({ "local A = {", '    iface = "loomworks.Foo",', '    object = "/x",',
+            "    v = 3,", "}" }, "\n"))
+        assert.same({ "loomworks.Foo/3@2" }, r); assert.same({}, u)
+        -- A `v` of a nested table or another field (`dev = 1`) is not the version.
+        r, u = refs('local A = { iface = "loomworks.Foo", opts = { v = 1 }, dev = 1 }')
+        assert.same({}, r); assert.same({ "loomworks.Foo" }, u)
+        -- A bare quoted name names no version.
+        r, u = refs('conn:call("/x", "loomworks.Foo", 1, "m", {}, cb)')
+        assert.same({}, r); assert.same({ "loomworks.Foo" }, u)
+        -- Runtime names: `iface = <expression>` and a call through a variable.
+        local _, _, n = refs(table.concat({ "local a = { iface = want.iface, v = want.v }",
+            'conn:call(o, name, 1, "m", {}, cb)' }, "\n"))
+        assert.equals(2, n)
+    end)
+
     it("does not raise domain reach-ins per plugin file (ratchet 2)", function()
         local rose, dropped = {}, {}
         local ceil = allow.reach_ins or {}

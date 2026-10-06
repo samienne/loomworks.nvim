@@ -235,7 +235,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   The editor now receives task output and model changes from a current
   daemon through subscriptions, and still works with older daemons; an
   interface the daemon does not offer is shown as one note on the status
-  page's Runtime line. (#TBD)
+  page's Runtime line, and one the daemon starts offering later is picked up
+  without reconnecting. The daemon log notes a request still unanswered
+  after 10 minutes. (#TBD)
 - Experimental daemon mode (`runtime-mode daemon`): `lw --no-daemon`, CI runs
   (`CI=true`, `LOOMWORKS_NO_DAEMON=1`) and a daemon that could not be started
   now run `lw build`, `lw test`, `lw run`'s preparation, `lw clean` and

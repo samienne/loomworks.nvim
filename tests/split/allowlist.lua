@@ -8,6 +8,11 @@
 ---              (`require(name)`, `"loomworks." .. id`). Must match exactly.
 ---   reach_ins  per plugin-side file, the ceiling on `core:` / `get_workspace(` /
 ---              `._workspace` sites. Rising fails; when it drops, lower the number.
+---   interfaces_dynamic  per plugin-side file, sites naming a daemon interface at
+---              run time (`iface = <expression>`, `:call(obj, <expression>, ...)`),
+---              which the interface ratchet cannot check. Must match exactly;
+---              each is reviewed to resolve to a versioned table the ratchet
+---              does check (spec §19.20).
 ---
 --- To regenerate after removing coupling: `nvim -l tests/split/scan.lua` prints
 --- today's state in this format. Never use it to add entries without review.
@@ -158,5 +163,11 @@ return {
         ["lua/loomworks/ui/tree.lua"] = 4,
         ["lua/loomworks/workspace_view.lua"] = 3,
         ["plugin/loomworks.lua"] = 1,
+    },
+    -- observer.lua: conn:call(M.ROOT.object, M.ROOT.iface, ...) for describe
+    -- and subscribe, and the subscribe args `iface = want.iface` (want is
+    -- one of M.TASKS / M.WORKSPACE): all resolve to its versioned tables.
+    interfaces_dynamic = {
+        ["lua/loomworks/daemon/observer.lua"] = 3,
     },
 }
