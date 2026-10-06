@@ -195,7 +195,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   workspace, its running build steps are stopped, no workspace file is
   written after that, and it exits 1 (also after a `lw reset` confirmation).
   `--break-locks` given with one of these selections runs the same way. The
-  default `in-process` mode is unchanged. (#TBD)
+  default `in-process` mode is unchanged. (#148)
 - Experimental daemon in the editor: the plugin now also follows `lw`'s own
   setting (`lw settings set runtime-mode daemon`), after `LOOMWORKS_RUNTIME`
   (and `LOOMWORKS_NO_DAEMON` / `CI`) and the setup option `runtime.mode`; it
