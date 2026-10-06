@@ -306,7 +306,8 @@ describe("lw run through the workspace daemon (real processes)", function()
             d.stderr)
         -- Found foreign only by probing the built artifact: the daemon built,
         -- the client continues (no second build) and refuses as in-process.
-        local ra = lw(root, { "--no-daemon", "run", "armprog" })
+        -- (In-process: an attached selection would use the live daemon.)
+        local ra = lw(root, { "run", "armprog" }, { LOOMWORKS_RUNTIME = "in-process" })
         local rb = lw(root, { "run", "armprog" })
         assert.equals(ra.code, rb.code, rb.stderr)
         assert.truthy(rb.stderr:find(NOTICE, 1, true), rb.stderr)
@@ -362,6 +363,12 @@ describe("lw run through the workspace daemon (real processes)", function()
             assert.equals(4 + i, s.code, s.stderr())
             assert.truthy(s.stdout():find("prog ARGS=cmd,n" .. i, 1, true), s.stdout())
         end
+    end)
+
+    it("three-way parity: in-process, through a live daemon, attached (§19.1)", function()
+        H.three_way({ roots = { workspace(), workspace(), workspace() }, args = { "run", "cmd" },
+            lw = function(root, args, extra) return lw(root, args, extra) end, norm = norm, env = env,
+            state = function(root) return cache_of(root, env.data .. "/trust.key") end })
     end)
 end)
 

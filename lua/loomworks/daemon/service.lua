@@ -74,6 +74,7 @@ M.LOAD_WAIT_MS = 45000
 ---   workspace (nil while it (re)loads); settle(ms); setup_error() → refusal; unknown_target_hint? }
 --- @field ws table|nil the live workspace
 --- @field env_sig string|nil the environment signature `ws` was loaded in
+--- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
 local Service = {}
 Service.__index = Service
 
@@ -133,7 +134,17 @@ function Service:_drain()
     while #self.queue > 0 do
         local item = table.remove(self.queue, 1)
         self.current = item.ctx
-        local ok, err = pcall(envscope.with, item.ctx.env, item.fn)
+        local ok, err = true, nil
+        if self.stopping and not item.ctx.run then
+            -- Stopping: a request not yet accepted is declined, never started
+            -- (onboarding would write the working copy, steps would spawn).
+            -- An accepted run's segment still runs: it finishes the run.
+            if item.ctx.reply and not item.ctx.replied then
+                pcall(item.ctx.reply, { outcome = "declined", reason = "the workspace runtime is stopping" })
+            end
+        else
+            ok, err = pcall(envscope.with, item.ctx.env, item.fn)
+        end
         self.current = nil
         if not ok then
             self.server:log("internal error in a build: %s", tostring(err))
@@ -320,6 +331,9 @@ function Service:_on_operation(op, conn, msg)
         srv:_send(conn, fields)
     end
     if not env then return ctx.reply({ outcome = "declined", reason = eerr }) end
+    if self.stopping or srv.stopped then
+        return ctx.reply({ outcome = "declined", reason = "the workspace runtime is stopping" })
+    end
     if srv.retiring then return ctx.reply({ outcome = "declined", reason = "the daemon is retiring" }) end
     local a = ctx.args
     for _, list in ipairs({ "targets", "extra" }) do
@@ -498,10 +512,23 @@ function Service:on_conn_closed(conn)
     end)
 end
 
+--- The runtime lost its authority (§19.2): the workspace — and the one of
+--- every run still settling — writes no file again (`_no_write`, honoured by
+--- its cache and working-copy saves).
+function Service:freeze_writes()
+    local why = "the workspace runtime lost its lock"
+    if self.ws then self.ws._no_write = why end
+    for run in pairs(self.runs) do
+        if run.ctx and run.ctx.ws then run.ctx.ws._no_write = why end
+    end
+end
+
 --- The daemon is stopping: cancel every build, synchronously (kill the step,
---- release the locks), before the process ends.
+--- release the locks), before the process ends. From here on no new request
+--- starts (`stopping`: `_drain` declines those not yet accepted).
 --- @param reason string
 function Service:on_stopping(reason)
+    self.stopping = true
     for run in pairs(self.runs) do
         if not run.finished then
             run.cancel("the workspace daemon stopped (" .. tostring(reason) .. ")", 1)

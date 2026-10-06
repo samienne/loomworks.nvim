@@ -565,6 +565,7 @@ end
 --- @field _tool_state "not_scanned"|"scanning"|"scanned"
 --- @field _tool_waiters function[]
 --- @field _lsp_ready boolean active profile's owned LSP databases are generated/settled (§9.7)
+--- @field _no_write string|nil set (the reason) when the runtime holding this workspace lost its lock (§19.2): the cache and the working copy are never saved again
 --- @field _delete_waiters function[]
 --- @field _build_dir_refs table<string, loomworks.ConfigUnit[]> normalized_build_dir -> units
 --- @field _artifact_refs table<string, loomworks.ConfigUnit[]> normalized_artifact_path -> units (§5.9)
@@ -994,7 +995,7 @@ end
 --- the in-memory state is then reconciled to the merged cache.
 --- @return boolean ok
 function Workspace:_save_cache()
-    if self._torn_down then return false end
+    if self._torn_down or self._no_write then return false end
     local deps = self._core._deps
     local cache = self:_serialize_cache()
     -- Compute loomworks_hash from serialized config content
@@ -7245,6 +7246,7 @@ M.STALE_USER_MESSAGE = "the working copy (.nvim/loomworks.user.json) changed on 
 --- @return boolean ok, string|nil err
 function Workspace:_save_user()
     if self._torn_down then return false, "the workspace was unloaded" end
+    if self._no_write then return false, self._no_write end
     local deps = self._core._deps
     local path = user_mod.filepath(self.root)
     -- A refused working copy loaded as absent for an import (spec §16.39) is

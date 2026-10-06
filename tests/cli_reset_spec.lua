@@ -195,7 +195,7 @@ describe("lw reset (on-disk)", function()
 
     -- A token that differs (the directories changed since the listing).
     local bad = capture(function()
-      return cli.cmd_reset(ws, { "reset", profile.key }, { plan = "0" .. token:sub(2) })
+      return cli.cmd_reset(ws, { "reset", profile.key }, { plan = (token:sub(1, 1) == "0" and "1" or "0") .. token:sub(2) })
     end)
     assert.equals(1, bad.exit_code)
     assert.is_truthy(bad.stderr:find("the build directories to reset changed since they were listed", 1, true),

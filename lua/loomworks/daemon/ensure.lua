@@ -72,11 +72,15 @@ end
 ---   "restarted"  the idle daemon was stopped and `launch()` started ours
 ---   "bypass"     the busy daemon was asked to retire; run without it
 ---   "newer"      the daemon's schemas are newer; run without it
+---   "stopped"    (`opts.no_launch`) the idle daemon was stopped; nothing
+---                was launched in its place
 ---   "failed"     replacing the idle daemon failed (reason in second value)
 --- `opts.launch(root)` → ok, state|reason (default loomworks.daemon.launch).
+--- `opts.no_launch`: an attached selection (§19.1) stops an idle mismatched
+--- daemon but launches none — it then runs attached itself.
 --- @param root string
 --- @param conn loomworks.daemon.Conn
---- @param opts? { launch?: fun(root: string): boolean, any }
+--- @param opts? { launch?: fun(root: string): boolean, any, no_launch?: boolean, step_ms?: integer }
 --- @return string outcome, string|nil detail
 function M.reconcile(root, conn, opts)
     opts = opts or {}
@@ -105,6 +109,7 @@ function M.reconcile(root, conn, opts)
         return cur == nil or (lk ~= nil and cur.lock_nonce ~= lk.lock_nonce)
     end, 25)
     if not released then return "failed", "the old daemon did not stop" end
+    if opts.no_launch then return "stopped" end
     local launch = opts.launch or require("loomworks.daemon.launch").launch
     local ok, res = launch(root)
     if not ok then return "failed", tostring(res) end
@@ -116,6 +121,66 @@ end
 --- @return string
 function M.launch_failed_line(reason)
     return "lw: could not start the workspace daemon (" .. tostring(reason) .. "); running without it"
+end
+
+--- Meet the live workspace daemon `st` (loomworks.daemon.inspect, kind
+--- "live"; spec §19.9): the endpoint check, connect + handshake, the version
+--- reconcile, `ping`. The one path both a shared selection (`ensure`) and an
+--- attached selection that finds a live daemon (§19.2; cli._delegate_attached,
+--- `no_launch`) take. Returns "used" | "restarted" | "stopped" | "bypass" |
+--- "newer" | "failed"; every outcome but "used", "restarted" and "stopped"
+--- has printed its one line.
+--- opts: note, log, launch, step_ms (as for `ensure`), no_launch (as for
+--- `reconcile`).
+--- @param root string
+--- @param st table
+--- @param opts table
+--- @return string
+function M.meet(root, st, opts)
+    local note = opts.note or function() end
+    local log = opts.log or function() end
+    local launch = opts.launch
+    local step = opts.step_ms or M.step_ms(true)
+    local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
+    if not eok then
+        note("lw: " .. ewhy)
+        log(ewhy)
+        return "failed"
+    end
+    local conn, err = client.session(st.handle.endpoint, { timeout_ms = step })
+    if not conn then
+        if err == client.ERR_UNTRUSTED then
+            note("lw: the workspace daemon's endpoint " .. tostring(st.handle.endpoint)
+                .. " did not authenticate as this machine's daemon — not using it")
+            log("refused an untrusted endpoint " .. tostring(st.handle.endpoint))
+        else
+            note("lw: could not reach the workspace daemon (pid " .. tostring(st.lock.pid) .. ", "
+                .. tostring(err) .. "); running without it")
+        end
+        return "failed"
+    end
+    local outcome, detail = M.reconcile(root, conn, { launch = launch, step_ms = step, no_launch = opts.no_launch })
+    if outcome == "match" then
+        client.request(conn, { kind = "ping" }, step)
+        conn:close()
+        return "used"
+    end
+    if outcome == "stopped" then
+        log("stopped a workspace daemon of another version (lw " .. tostring(conn.challenge.lw_version)
+            .. ") for an attached run")
+        return "stopped"
+    end
+    if outcome == "restarted" then
+        log("replaced a workspace daemon of another version (lw " .. tostring(conn.challenge.lw_version) .. ")")
+        return "restarted"
+    end
+    if outcome == "failed" then
+        note(M.launch_failed_line(detail))
+        log("could not replace the workspace daemon: " .. tostring(detail))
+        return "failed"
+    end
+    note(detail)
+    return outcome
 end
 
 --- In `runtime-mode daemon`, make sure the workspace daemon runs before a
@@ -182,43 +247,7 @@ function M.ensure(root, opts)
         st = inspect.state(root)
     end
     if st.kind == "foreign" or st.kind == "attached" or st.kind == "starting" then return "elsewhere" end
-    if st.kind == "live" then
-        local eok, ewhy = require("loomworks.daemon.endpoint").check(root, st.handle.endpoint)
-        if not eok then
-            note("lw: " .. ewhy)
-            log(ewhy)
-            return "failed"
-        end
-        local conn, err = client.session(st.handle.endpoint, { timeout_ms = step })
-        if not conn then
-            if err == client.ERR_UNTRUSTED then
-                note("lw: the workspace daemon's endpoint " .. tostring(st.handle.endpoint)
-                    .. " did not authenticate as this machine's daemon — not using it")
-                log("refused an untrusted endpoint " .. tostring(st.handle.endpoint))
-            else
-                note("lw: could not reach the workspace daemon (pid " .. tostring(st.lock.pid) .. ", "
-                    .. tostring(err) .. "); running without it")
-            end
-            return "failed"
-        end
-        local outcome, detail = M.reconcile(root, conn, { launch = launch, step_ms = step })
-        if outcome == "match" then
-            client.request(conn, { kind = "ping" }, step)
-            conn:close()
-            return "used"
-        end
-        if outcome == "restarted" then
-            log("replaced a workspace daemon of another version (lw " .. tostring(conn.challenge.lw_version) .. ")")
-            return "restarted"
-        end
-        if outcome == "failed" then
-            note(M.launch_failed_line(detail))
-            log("could not replace the workspace daemon: " .. tostring(detail))
-            return "failed"
-        end
-        note(detail)
-        return outcome
-    end
+    if st.kind == "live" then return M.meet(root, st, { note = note, log = log, launch = launch, step_ms = step }) end
     -- none, stale or unreadable: launch (a dead holder's lock is reclaimed by
     -- the new daemon itself).
     local ok, res = launch(root)

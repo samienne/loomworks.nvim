@@ -7,8 +7,10 @@
 --- the client then closes and reports the endpoint as untrusted — answers
 --- with its own proof, and waits for `welcome`.
 ---
---- Transport is a libuv pipe on both hosts. `connect` is asynchronous; the
---- `session` / `call` wrappers pump the event loop with `vim.wait` (the CLI).
+--- Transport is a libuv pipe on both hosts, or the in-memory loopback of an
+--- attached run (`loopback_connect` / `loopback_session`, §19.1) through the
+--- same frame reader. `connect` is asynchronous; the `session` / `call`
+--- wrappers pump the event loop with `vim.wait` (the CLI).
 
 local uv = vim.uv or vim.loop
 local protocol = require("loomworks.daemon.protocol")
@@ -27,7 +29,8 @@ M.ERR_TIMEOUT = "timeout"       -- no answer in time
 M.ERR_CLOSED = "closed"         -- the daemon closed the connection
 
 --- @class loomworks.daemon.Conn
---- @field pipe userdata
+--- @field pipe userdata the libuv pipe, or a loomworks.daemon.LoopbackEnd
+--- @field loopback boolean|nil an attached run's in-memory connection (§19.1)
 --- @field challenge table the daemon's announced versions (protocol, lw_version, schemas, session_generation)
 --- @field welcome table
 --- @field closed boolean|nil
@@ -71,6 +74,77 @@ function Conn:close()
     if self.on_close then pcall(self.on_close, self) end
 end
 
+--- The frame reader of a connection being established or established (both
+--- transports): `state` "hello" expects the daemon's challenge (verified by
+--- `on_challenge(msg)` → true to go on), "auth" its welcome; after the
+--- welcome, replies go to their pending callbacks and broadcasts to
+--- `opts.on_message`. `finish(conn|nil, err, detail)` ends the handshake.
+--- @param conn loomworks.daemon.Conn
+--- @param opts table
+--- @param state "hello"|"auth"
+--- @param finish fun(c: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil)
+--- @param is_done fun(): boolean has the handshake ended?
+--- @param on_challenge? fun(msg: table): boolean
+--- @return fun(rerr: string|nil, chunk: string|nil)
+local function frame_reader(conn, opts, state, finish, is_done, on_challenge)
+    local decoder = protocol.new_decoder(protocol.MAX_FRAME)
+    return function(rerr, chunk)
+        if rerr or not chunk then
+            if not is_done() then return finish(nil, M.ERR_CLOSED) end
+            return conn:close()
+        end
+        local msgs, derr = decoder:push(chunk)
+        if not msgs then
+            if not is_done() then return finish(nil, M.ERR_CLOSED, derr) end
+            return conn:close()
+        end
+        for _, msg in ipairs(msgs) do
+            if state == "hello" then
+                if msg.kind ~= protocol.KIND.challenge or not on_challenge or not on_challenge(msg) then
+                    -- Close without sending anything else (§19.8).
+                    return finish(nil, M.ERR_UNTRUSTED)
+                end
+                state = "auth"
+            elseif state == "auth" then
+                if msg.kind ~= protocol.KIND.welcome then return finish(nil, M.ERR_CLOSED) end
+                conn.welcome = msg
+                conn.on_close = opts.on_close
+                state = "ready"
+                finish(conn)
+            else
+                local p = msg.req_id and conn._pending[msg.req_id]
+                if p then
+                    conn._pending[msg.req_id] = nil
+                    if msg.kind == protocol.KIND.error then p(nil, tostring(msg.error)) else p(msg) end
+                elseif opts.on_message then
+                    pcall(opts.on_message, msg)
+                end
+            end
+        end
+    end
+end
+
+--- The handshake bookkeeping both transports share: a timeout, and a
+--- `finish` that calls `cb` once (closing the conn on failure).
+--- @param conn loomworks.daemon.Conn
+--- @param opts table
+--- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil)
+--- @return fun(c: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil) finish
+--- @return fun(): boolean is_done
+local function handshake_guard(conn, opts, cb)
+    local done = false
+    local timer = uv.new_timer()
+    local function finish(c, err, detail)
+        if done then return end
+        done = true
+        pcall(function() timer:stop(); timer:close() end)
+        if not c then conn:close() end
+        cb(c, err, detail)
+    end
+    timer:start(opts.timeout_ms or M.TIMEOUT_MS, 0, function() finish(nil, M.ERR_TIMEOUT) end)
+    return finish, function() return done end
+end
+
 --- Connect to `endpoint` and authenticate. `cb(conn|nil, err, detail)`.
 --- opts: { client = "cli"|"editor", role = "observer"|nil (§19.16), timeout_ms,
 ---         key (tests: K override), on_message = fun(msg) for broadcasts,
@@ -92,67 +166,77 @@ function M.connect(endpoint, opts, cb)
         client = opts.client or "cli", role = opts.role, nonce = nc })
     local pipe = uv.new_pipe(false)
     local conn = setmetatable({ pipe = pipe, _pending = {}, endpoint = endpoint }, Conn)
-    local done = false
-    local timer = uv.new_timer()
-    local function finish(c, err, detail)
-        if done then return end
-        done = true
-        pcall(function() timer:stop(); timer:close() end)
-        if not c then conn:close() end
-        cb(c, err, detail)
+    local finish, is_done = handshake_guard(conn, opts, cb)
+    -- The daemon's proof is verified BEFORE anything else is sent (§19.8).
+    local function on_challenge(msg)
+        if not auth.valid_nonce(msg.server_nonce)
+            or not auth.equal(msg.server_proof, auth.server_proof(key, endpoint, nc, msg.server_nonce)) then
+            return false
+        end
+        conn.challenge = msg
+        pcall(function()
+            pipe:write(protocol.encode({ kind = protocol.KIND.auth,
+                client_proof = auth.client_proof(key, endpoint, nc, msg.server_nonce) }))
+        end)
+        return true
     end
-    timer:start(opts.timeout_ms or M.TIMEOUT_MS, 0, function() finish(nil, M.ERR_TIMEOUT) end)
-    local decoder = protocol.new_decoder(protocol.MAX_FRAME)
-    local state = "hello"
     local ok_c = pcall(function()
         pipe:connect(endpoint, function(cerr)
             if cerr then return finish(nil, M.ERR_CONNECT, tostring(cerr)) end
-            conn._reader = function(rerr, chunk)
-                if rerr or not chunk then
-                    if not done then return finish(nil, M.ERR_CLOSED) end
-                    return conn:close()
-                end
-                local msgs, derr = decoder:push(chunk)
-                if not msgs then
-                    if not done then return finish(nil, M.ERR_CLOSED, derr) end
-                    return conn:close()
-                end
-                for _, msg in ipairs(msgs) do
-                    if state == "hello" then
-                        if msg.kind ~= protocol.KIND.challenge or not auth.valid_nonce(msg.server_nonce)
-                            or not auth.equal(msg.server_proof,
-                                auth.server_proof(key, endpoint, nc, msg.server_nonce)) then
-                            -- Close without sending anything else (§19.8).
-                            return finish(nil, M.ERR_UNTRUSTED)
-                        end
-                        conn.challenge = msg
-                        state = "auth"
-                        pcall(function()
-                            pipe:write(protocol.encode({ kind = protocol.KIND.auth,
-                                client_proof = auth.client_proof(key, endpoint, nc, msg.server_nonce) }))
-                        end)
-                    elseif state == "auth" then
-                        if msg.kind ~= protocol.KIND.welcome then return finish(nil, M.ERR_CLOSED) end
-                        conn.welcome = msg
-                        conn.on_close = opts.on_close
-                        state = "ready"
-                        finish(conn)
-                    else
-                        local p = msg.req_id and conn._pending[msg.req_id]
-                        if p then
-                            conn._pending[msg.req_id] = nil
-                            if msg.kind == protocol.KIND.error then p(nil, tostring(msg.error)) else p(msg) end
-                        elseif opts.on_message then
-                            pcall(opts.on_message, msg)
-                        end
-                    end
-                end
-            end
+            conn._reader = frame_reader(conn, opts, "hello", finish, is_done, on_challenge)
             pipe:read_start(conn._reader)
             pcall(function() pipe:write(hello) end)
         end)
     end)
     if not ok_c then finish(nil, M.ERR_CONNECT, "bad endpoint") end
+end
+
+--- Connect to an attached runtime in this process over the loopback
+--- transport (spec §19.1 "Loopback"): no endpoint and no authentication.
+--- The server adopts its end as an authenticated connection and welcomes it
+--- over the loopback; `challenge` is synthesized from the server's versions.
+--- The conn has the pipe session's shape. `cb(conn|nil, err, detail)`.
+--- opts: as for `connect` (client, role, timeout_ms, on_message, on_close).
+--- @param server loomworks.daemon.Server a server started with `start_attached`
+--- @param opts table|nil
+--- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil)
+function M.loopback_connect(server, opts, cb)
+    opts = opts or {}
+    local mine, theirs = require("loomworks.daemon.loopback").pair()
+    local conn = setmetatable({ pipe = mine, _pending = {}, loopback = true }, Conn)
+    conn.challenge = { kind = protocol.KIND.challenge, protocol = protocol.VERSION,
+        lw_version = server.identity, schemas = server.schemas, session_generation = server.generation }
+    local finish, is_done = handshake_guard(conn, opts, cb)
+    conn._reader = frame_reader(conn, opts, "auth", finish, is_done)
+    mine:read_start(conn._reader)
+    local ok, err = server:adopt(theirs, { protocol = protocol.VERSION, lw_version = version.identity(),
+        schemas = version.schemas(), client = opts.client or "cli", role = opts.role })
+    if not ok then
+        pcall(function() theirs:close() end)
+        finish(nil, M.ERR_CONNECT, err)
+    end
+end
+
+--- `loopback_connect` synchronously (pumping the event loop): the conn, or
+--- nil + error + detail. A drop-in for `session`.
+--- @param server loomworks.daemon.Server
+--- @param opts? table
+--- @return loomworks.daemon.Conn|nil, string|nil, string|nil
+function M.loopback_session(server, opts)
+    local res
+    M.loopback_connect(server, opts, function(c, e, d) res = { c, e, d } end)
+    vim.wait((opts and opts.timeout_ms or M.TIMEOUT_MS) + 200, function() return res ~= nil end, 5)
+    if not res then return nil, M.ERR_TIMEOUT end
+    return res[1], res[2], res[3]
+end
+
+--- A `session(endpoint, opts)` function bound to an attached server: the
+--- shape of the `opts.session` hook the CLI's routed operations take (the
+--- endpoint is ignored).
+--- @param server loomworks.daemon.Server
+--- @return fun(endpoint: string|nil, opts: table|nil): loomworks.daemon.Conn|nil, string|nil, string|nil
+function M.loopback_sessioner(server)
+    return function(_, opts) return M.loopback_session(server, opts) end
 end
 
 --- Connect synchronously (pumping the event loop). Returns the conn, or nil

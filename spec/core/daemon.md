@@ -37,7 +37,11 @@ and commit multi-file changes the same way (§19.4). §19.19 lists the order.
 attached by `--no-daemon`, `LOOMWORKS_NO_DAEMON` and `CI`
 (`daemon/runtime.lua`), and the editor's selection with lw's `runtime-mode`
 setting and the source on its Runtime line (`runtime.editor_select`,
-`observer.runtime_line`); the end-state values future.*
+`observer.runtime_line`); the loopback transport and the attached server
+(`daemon/loopback.lua`, `Server:start_attached` / `Server:adopt`,
+`client.loopback_session`, `command.start_attached`) and the CLI's attached
+routing of step 5e (`cli._attached_selected`, `cli._delegate_attached`)
+implemented; the end-state values future.*
 
 A command runs its operation in one of two ways:
 
@@ -53,7 +57,7 @@ Attached is selected, in this precedence: the `--no-daemon` flag; the
 environment variable `LOOMWORKS_NO_DAEMON` (`1` selects attached, `0` selects
 shared even in CI); `CI=true` in the environment; the host setting
 `runtime-mode` (`no-daemon`); and, at run time, a failed background launch
-(§19.10). Otherwise the command runs shared. An invalid configured value is
+(§19.10) — also the launch step itself failing with an error. Otherwise the command runs shared. An invalid configured value is
 reported and ignored (falls through to the next source).
 
 The editor selects its mode in this precedence: the environment
@@ -72,17 +76,44 @@ default) or `daemon`, with `LOOMWORKS_RUNTIME` as the environment override. In
 `in-process` mode no daemon is launched or used. In `daemon` mode every
 workspace command ensures the daemon is running (launching it if absent)
 and routes the operations that have moved (§19.19); all other operations run
-on the in-process path. `--no-daemon` during the transition means "launch and
-use no daemon" — the in-process path — until the loopback transport exists
-(§19.19 step 5). When the default flips, `in-process` is accepted as a synonym
-of `no-daemon`.
+on the in-process path. When the default flips, `in-process` is accepted as a
+synonym of `no-daemon`.
+
+**Loopback during the transition (§19.19 step 5e).** In `daemon` mode, an
+attached selection — `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI=true`, the
+`no-daemon` setting, or a failed background launch — runs the routed
+operations (`lw build`, `lw test`, the preparation of `lw run`, `lw clean`,
+`lw reset`; §19.15) attached: the client starts the daemon's server and build
+service in its own process, holds the runtime lock in `attached` mode for the
+command (§19.2), and sends the same request over the loopback transport. The
+operations not yet routed (profile and project mutations, publish / import /
+pull, devices — they need the command machinery of §19.14) and every
+operation in `in-process` mode (still the default) run on the in-process path
+and take no runtime lock. Three rules differ from a shared run:
+
+- An attached `lw run` releases the runtime lock when its preparation task
+  ends, not while the program runs (the program is the client's, §19.15 Run).
+- `--break-locks` given with an attached selection runs attached too: its
+  ask-and-kill recovery stays with the client process, which is the runtime.
+  (When a live daemon holds the runtime lock, no attached runtime starts: the
+  operation keeps its in-process path and its one `--break-locks` line,
+  §19.15. In a shared selection `--break-locks` keeps its in-process path
+  beside the daemon, as before step 5e.)
+- An attached operation prints no `… through the workspace daemon (pid N)`
+  line (§19.15): no daemon is involved.
+
+The editor runs no loopback runtime during the transition (§19.16); its
+attached mode arrives with the thin-client step (§19.19 step 5).
 
 ### 19.2 One runtime per workspace: the runtime lock
 
 *Status: master for daemons (`daemon/rlock.lua`, the §19.5 record plus
 `mode`, `command`, `host_version`; held by `daemon/server.lua` for its
 lifetime, a held lock makes `lw daemon run` exit with status 3, a replaced
-record makes the daemon exit 1); attached runs future.*
+record makes the daemon exit 1); the attached runtime's side
+(`Server:start_attached`: R in `attached` mode with the command, released on
+stop without ending the process), its use by the CLI and the busy wait
+(`cli._delegate_attached`, setting `runtime-busy-wait`) implemented.*
 
 The **runtime lock** `<root>/.nvim/loomworks.daemon.lock` designates the one
 runtime of a workspace. It uses the build-directory lock primitive (§16.6): an
@@ -97,19 +128,41 @@ version.
 - An **attached** run acquires it for the duration of its command. If a live
   daemon holds it, the attached run does not start a runtime of its own: it
   connects to that daemon as a shared client (§19.1 decides only that nothing
-  is *launched*). If another attached run holds it, the client waits briefly
-  (setting `runtime-busy-wait`, default about 5 s) and then fails cleanly:
+  is *launched*), after the same version handshake as any client (§19.9): a
+  busy daemon of another version makes the command a version-bypass run, and
+  an idle one is stopped, but nothing is launched in its place — the command
+  then runs attached. If another attached run holds it, the client waits briefly
+  (setting `runtime-busy-wait`: `0`, seconds, or a number with `ms`, `s` or
+  `m`; default 5 s) and then fails cleanly:
 
   ```
   lw: workspace busy: lw build (pid 4242 on HOST) is running here without a daemon — retry when it finishes
   ```
 
   Exit status 1. Never a second writer. Parallel jobs that must not wait for
-  each other use separate checkouts. A hung holder is reported as hung, not
-  busy (§19.5).
+  each other use separate checkouts. A hung daemon holder is reported as hung,
+  not busy (§19.5). An attached holder whose process exists is reported busy
+  even when its heartbeat is stale: a confirmation prompt (`lw reset`) blocks
+  its event loop. Like any hung holder it is never reclaimed automatically,
+  and `lw daemon stop` refuses it (no daemon).
+- A **shared** selection (a routed operation in `daemon` mode) that finds the
+  lock held by an attached run waits for it the same `runtime-busy-wait`, then
+  fails with the same `workspace busy` line, exit status 1; when the attached
+  run ends in time, the client launches or uses the daemon as usual. It never
+  runs the operation beside the attached runtime.
 - A holder that finds its lock record replaced (its lock was reclaimed while it
   was suspended) has lost authority: it stops at once, writes no workspace
-  file, and exits nonzero.
+  file, and exits nonzero. From the moment it notices, its workspace saves
+  neither the cache nor the working copy — also a clean's wipe or a reset's
+  deletion still stopping between entries (what such a deletion wrote before
+  it started, its entries `unknown`, stays for the next runtime) — and no
+  request not yet accepted starts. An attached run first cancels its running
+  operation as Ctrl-C does (its steps' process trees killed), then ends the
+  command with exit status 1 (`lw: the workspace runtime lock was taken over
+  during the <op> — stopped`; for a root removed meanwhile, §19.11, `lw: the
+  workspace root was removed during the <op> — stopped`). It never falls back
+  to the in-process path — also not after a `lw reset` confirmation it was
+  waiting on: nothing is reset.
 - A holder on another host (shared or network drive) is respected while its
   heartbeat is fresh; it cannot be connected to or stopped from here (§19.11).
 
@@ -768,7 +821,11 @@ closes a connection that has not authenticated within about 5 s, and sends no
 broadcast to it. A failed proof closes the connection with no detail. Because
 the server proves knowledge of *K* first, a process squatting the endpoint
 cannot impersonate the daemon to a client. The loopback transport (§19.1) skips
-authentication; it never leaves the process.
+authentication; it never leaves the process. Its connection starts in the
+authenticated state — the server sends `welcome` over it and nothing before —
+and is then served exactly as an authenticated pipe connection (frame cap,
+requests, replies, task streams, broadcasts, flow control); closing either end
+is end-of-stream to the other.
 
 **Frozen control subset.** Framing, `hello`/`challenge`/`auth`/`welcome`,
 `ping`, `status`, `stop` and `retire` (§19.9) never change shape across
@@ -1371,13 +1428,22 @@ says why, and the build runs in-process. The version handshake's and the
 launch's lines (§19.9, §19.10) are that line for a version bypass, a newer
 daemon, and a daemon that is hung, still starting or could not be started; a
 declined request prints `lw: the workspace daemon declined the build
-(<reason>); running without it`; every other case — a runtime held by another
-lw command or another host, `--break-locks`, a daemon that cannot be reached
+(<reason>); running without it`; a runtime held by an attached lw command is
+waited for, or the build fails "workspace busy" (§19.2); every other case — a
+runtime held by another host, `--break-locks`, a daemon that cannot be reached
 or fails before accepting, a failed endpoint check — prints `lw: the
 workspace daemon could not take the build (<reason>); running without it`.
 While the daemon is opt-in, an accepted build prints one dim line on standard
 error before its output — `lw: building through the workspace daemon (pid N)`
 — which is removed when the default flips; a refusal prints neither.
+
+*(Step 5e:)* in `runtime-mode daemon`, the attached selections
+above (`--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`, the `no-daemon` setting, a
+failed background launch) — `--break-locks` given with one of them included —
+no longer run the routed operations in-process: they run them attached, over
+the loopback transport (§19.1 "Loopback during the transition"), with the same arguments, refusals
+and output. An attached operation prints no `… through the workspace daemon
+(pid N)` line and no "running without it" line for its attached selection.
 
 `lw test` (step 5) is routed by the same rules, an argument `cmd_test` refuses
 taking the place of one `cmd_build` refuses (device options without
@@ -1498,7 +1564,8 @@ in-process path. In `in-process` mode nothing below happens.
 
   With none, the status page shows one inline note (no host binary: running
   in-process). The editor never launches a daemon from its own plugin source,
-  and runs no loopback runtime until §19.19 step 5. It still watches for a
+  and runs no loopback runtime until the thin-client part of §19.19 step 5
+  (the CLI's attached runs of step 5e do not include the editor). It still watches for a
   daemon another client starts and observes that one.
 - **Launch.** The observer launches `<binary> daemon run --root <root>`
   (§19.10: detached, no inherited handles, the state directory as working
@@ -1678,5 +1745,15 @@ runtime is deferred until that module is actively developed.
      through the same deletion as in-process; its confirmation asked by the
      client from the daemon's listing, the answer carrying a token of the
      listed plan.
+   - **5e — Loopback for the routed operations** (§19.1 "Loopback during the
+     transition"): in `daemon` mode an attached selection runs `lw build`,
+     `lw test`, the preparation of `lw run`, `lw clean` and `lw reset` through
+     the daemon's own server and service in the client process, over the
+     loopback transport, holding the runtime lock in `attached` mode; the
+     `in-process` default is unchanged. The transport and the attached
+     server are in place, and the CLI uses them (done). Profile and
+     project mutations, publish / import / pull and devices are routed —
+     shared and attached — later, with the command machinery of §19.14. The
+     editor's loopback runtime comes with the thin-client part of this step.
 6. **Default flips** to shared daemon mode, after the criteria in DAEMON.md; the
    in-process path remains only as attached (`--no-daemon`) mode.

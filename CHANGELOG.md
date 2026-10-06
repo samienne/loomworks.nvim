@@ -181,6 +181,21 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- Experimental daemon mode (`runtime-mode daemon`): `lw --no-daemon`, CI runs
+  (`CI=true`, `LOOMWORKS_NO_DAEMON=1`) and a daemon that could not be started
+  now run `lw build`, `lw test`, `lw run`'s preparation, `lw clean` and
+  `lw reset` with the workspace daemon's own code inside the lw process,
+  holding the workspace for the command (spec 19.1, 19.19 step 5e). A running
+  daemon is used instead. A second such command in the same workspace waits
+  `runtime-busy-wait` (new setting, default 5s) and then fails with
+  "workspace busy" (exit 1); so does a normal daemon-mode command that finds
+  such a command running. A running daemon of another lw version is stopped
+  when idle (the command then runs inside lw, nothing is started in its
+  place) and bypassed when busy. If the command loses its hold on the
+  workspace, its running build steps are stopped, no workspace file is
+  written after that, and it exits 1 (also after a `lw reset` confirmation).
+  `--break-locks` given with one of these selections runs the same way. The
+  default `in-process` mode is unchanged. (#148)
 - Experimental daemon in the editor: the plugin now also follows `lw`'s own
   setting (`lw settings set runtime-mode daemon`), after `LOOMWORKS_RUNTIME`
   (and `LOOMWORKS_NO_DAEMON` / `CI`) and the setup option `runtime.mode`; it
