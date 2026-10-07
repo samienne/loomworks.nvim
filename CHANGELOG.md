@@ -45,11 +45,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   daemon transport range, the working-copy and cache schema versions and every
   interface a daemon of it serves, with versions and schema digests. Each
   release publishes the same document as `lw-<version>-descriptor.json`,
-  listed in its signed `SHA256SUMS`. Plain `lw version` is unchanged. (#PRNUM)
+  listed in its signed `SHA256SUMS`. Plain `lw version` is unchanged. (#155)
 - `LOOMWORKS_INSTALL_DIR=<absolute path>` moves what lw downloads and installs
   (releases, pinned releases) to another folder, for an lw another program
   runs; settings, the machine key, modules and the daemons' sockets, identity
-  and logs stay in the data directory. (#PRNUM)
+  and logs stay in the data directory. (#155)
 - Experimental daemon (`runtime-mode daemon`): the daemon protocol is now
   version 11 and describes itself. A client can ask the daemon which objects
   and interfaces it offers, at which versions, fetch each interface's schema,
@@ -239,7 +239,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw daemon run` and `lw daemon restart` as the pinned release, so the
   workspace daemon is the pinned release whoever starts it (the editor
   included); the other commands a global lw runs itself there no longer start
-  or replace that daemon. (#PRNUM)
+  or replace that daemon. (#155)
 - Experimental daemon mode (`runtime-mode daemon`): `lw` now compares its own
   version with the one the workspace daemon reports for itself before using
   it. A daemon counts as busy only while a client runs an operation on it or
