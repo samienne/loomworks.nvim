@@ -970,8 +970,10 @@ and starts the daemon from it; a failed download is one note and is retried by
 off; `binary = { release_url = "/path/to/mirror" }` (or `LOOMWORKS_RELEASE_URL`)
 fetches from a mirror instead. Everything the plugin installs stays under
 Neovim's data directory, and older managed binaries that no editor has used
-for 14 days are removed after a new one is installed. (Until the plugin ships its own pin, no managed `lw` is
-wanted, so nothing is downloaded yet.) `binary = { prefer = "managed" }` tries the plugin's own
+for 14 days are removed after a new one is installed. The plugin pins one
+`lw` release (the latest published one when the plugin was released; a
+platform without a published binary, i.e. other than Linux x86_64, macOS
+arm64 and Windows x86_64, gets none). `binary = { prefer = "managed" }` tries the plugin's own
 `lw` before `PATH`; the daemon's version can then depend on whether the editor
 or a terminal started it. A repository's `lw.pin` is followed by `lw` itself,
 not by the editor. `binary = { source = "/path/to/lua" }` (or `true` for this
@@ -1241,10 +1243,12 @@ a small fused bootstrap); it needs no Neovim and no Lua install.
   your local checkout). `lw settings set default-source dev` makes `--dev` the
   default, or use `LOOMWORKS_LUA=<dir>` for a one-off override.
 
-Releases are cut from `master`; CI builds the host binary for Linux, macOS,
-and Windows and publishes the signed bundle. See
+Releases are cut from `master` (betas from `staging/daemon`); CI builds the
+host binary for Linux, macOS, and Windows and the signed bundle into a draft
+release, the plugin is pinned to that draft's binaries, and the tag on the pin
+commit publishes it. See
 [ARCHITECTURE.md](ARCHITECTURE.md#standalone-runner--distribution) for the
-release layout and update flow.
+release layout, the procedure and the update flow.
 
 **Update channels** (spec §16.29). `lw self-update` follows an update
 **channel** — which release to track, not how it is trusted:

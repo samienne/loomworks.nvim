@@ -9,9 +9,10 @@
 --- `<sha256>` is the binary's lowercase hex SHA-256: a versioned path, so a
 --- binary is never replaced in place (a running daemon keeps its file). The
 --- wanted binary (release version, asset, SHA-256) comes from the plugin's
---- own pin (step 5h.4) or a channel upgrade (step 5h.5); until then nothing
---- is wanted and the slot is empty. A wanted binary that is not installed is
---- downloaded by loomworks.provision.fetch (step 5h.3, daemon mode only).
+--- own pin, loomworks.provision.pinned (spec §19.16 "Plugin pin", written
+--- only by scripts/release/pin.sh from a verified release) — a channel
+--- upgrade (step 5h.5) comes later. A wanted binary that is not installed is
+--- downloaded by loomworks.provision.fetch (daemon mode only).
 
 local uv = vim.uv or vim.loop
 
@@ -19,9 +20,58 @@ local M = {}
 
 local function is_win() return package.config:sub(1, 1) == "\\" end
 
---- The reason shown while no managed binary is wanted (before step 5h.4's
---- plugin pin).
-M.NOT_YET = "none wanted (the plugin carries no pin yet)"
+--- @class loomworks.provision.Pin  the plugin pin (loomworks.provision.pinned, generated)
+--- @field version string the pinned release version
+--- @field assets table<string, string> host asset name -> lowercase hex SHA-256
+
+--- The reason shown when the plugin's pin names no binary at all.
+M.NOT_YET = "none wanted (the plugin carries no pin)"
+
+--- The published host-binary assets, keyed by "<os>/<arch>": the plugin's
+--- own copy of lw's table (boot.pin.HOST_ASSETS is binary-side; a test keeps
+--- the two equal). A platform absent here has no plugin-managed lw.
+M.HOST_ASSETS = {
+    ["linux/x86_64"] = "lw-linux-x86_64",
+    ["macos/arm64"] = "lw-macos-arm64",
+    ["windows/x86_64"] = "lw-windows-x86_64.exe",
+}
+
+local function norm_os(sysname)
+    local s = type(sysname) == "string" and sysname:lower() or ""
+    if s:find("linux", 1, true) then return "linux" end
+    if s:find("darwin", 1, true) or s:find("mac", 1, true) then return "macos" end
+    if s:find("windows", 1, true) or s:find("mingw", 1, true) or s:find("msys", 1, true)
+        or s:find("cygwin", 1, true) then
+        return "windows"
+    end
+    return nil
+end
+
+local function norm_arch(machine)
+    local m = type(machine) == "string" and machine:lower() or nil
+    if m == "x86_64" or m == "amd64" or m == "x64" then return "x86_64" end
+    if m == "arm64" or m == "aarch64" then return "arm64" end
+    return m
+end
+
+--- The host asset for (sysname, machine) (uname values; this host's when
+--- both are nil), or nil + why for a platform with no published binary.
+--- @param sysname? string
+--- @param machine? string
+--- @return string|nil asset, string|nil why
+function M.host_asset(sysname, machine)
+    if sysname == nil and machine == nil then
+        local ok, u = pcall(uv.os_uname)
+        if ok and type(u) == "table" then sysname, machine = u.sysname, u.machine end
+        if sysname == nil and is_win() then sysname = "Windows" end
+    end
+    local os_, arch = norm_os(sysname), norm_arch(machine)
+    local asset = os_ and M.HOST_ASSETS[os_ .. "/" .. tostring(arch)]
+    if not asset then
+        return nil, "none wanted (no published lw for " .. tostring(os_ or sysname) .. "/" .. tostring(arch) .. ")"
+    end
+    return asset
+end
 
 --- The editor's data directory for loomworks (`<stdpath("data")>/loomworks`).
 --- @param data? string the editor's data directory (tests inject)
@@ -55,11 +105,27 @@ function M.path(sha256, opts)
     return M.dir(opts.data) .. "/" .. sha256:lower() .. "/" .. M.exe_name(opts.win)
 end
 
---- The managed binary the plugin wants, or nil + why. Nothing yet (step
---- 5h.4 brings the plugin pin).
+--- The managed binary the plugin wants: this host's asset of the plugin pin
+--- (loomworks.provision.pinned), or nil + why (an unsupported platform, a pin
+--- without this host's asset, an invalid pin). Tests inject `pinned`,
+--- `sysname` and `machine`.
+--- @param opts? { pinned?: loomworks.provision.Pin, sysname?: string, machine?: string }
 --- @return loomworks.provision.Wanted|nil wanted, string|nil why
-function M.wanted()
-    return nil, M.NOT_YET
+function M.wanted(opts)
+    opts = opts or {}
+    local pin = opts.pinned
+    if pin == nil then
+        local ok, p = pcall(require, "loomworks.provision.pinned")
+        pin = ok and p or nil
+    end
+    if type(pin) ~= "table" or type(pin.assets) ~= "table" then return nil, M.NOT_YET end
+    local asset, why = M.host_asset(opts.sysname, opts.machine)
+    if not asset then return nil, why end
+    local sha = pin.assets[asset]
+    if sha == nil then return nil, "none wanted (the plugin pin has no " .. asset .. ")" end
+    local w, bad = require("loomworks.provision.fetch").check_wanted({ sha256 = sha, version = pin.version, asset = asset })
+    if not w then return nil, "none wanted (invalid plugin pin: " .. tostring(bad) .. ")" end
+    return w
 end
 
 --- A regular file, not a link (lstat): a link in a slot is never launched

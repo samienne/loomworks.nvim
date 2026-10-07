@@ -1,9 +1,23 @@
 name: release
 
-# Cut a release from a tag on master: build the lw host binary for each
-# platform (luvi + fused bootstrap), build the signed system-Lua bundle, and
-# publish them all to a GitHub Release. See ARCHITECTURE.md "Standalone Runner
-# & Distribution" and keys/README.md.
+# Cut a release in two stages, so the plugin can pin the very binaries it
+# publishes (spec 19.16 "Plugin pin"; the procedure is in ARCHITECTURE.md, "Cutting a release or beta"):
+#
+#   build    (workflow_dispatch, stage=build, on the build commit C): build the
+#            lw host binary for each platform (luvi + fused bootstrap), the
+#            signed system-Lua bundle, the descriptor, signed SHA256SUMS and
+#            provenance, and stage them all as an UNPUBLISHED DRAFT release vX
+#            targeting C (no tag yet). Nothing is published.
+#   publish  (push of tag vX; or workflow_dispatch stage=publish to re-run the
+#            gate): never rebuilds. scripts/release/pin.sh wrote
+#            lua/loomworks/provision/pinned.lua from the draft and the cutter
+#            committed it as C+1 and tagged it vX; this stage verifies the pin
+#            (scripts/release/pin.lua verify: signature, pinned hashes ==
+#            SHA256SUMS, descriptor offers the plugin's interfaces, C..vX
+#            changes only pinned.lua) and only then publishes the draft. No
+#            draft, or any failed check: the job fails, nothing is published.
+#
+# See ARCHITECTURE.md "Standalone Runner & Distribution" and keys/README.md.
 
 on:
   push:
@@ -11,8 +25,13 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build (no leading v), e.g. 1.2.3'
+        description: 'Version (no leading v), e.g. 1.2.3 or 1.2.3-beta.1'
         required: true
+      stage:
+        description: 'build: stage a draft release from this commit; publish: re-run the tag gate for an existing tag'
+        type: choice
+        options: [build, publish]
+        default: build
 
 permissions:
   contents: write
@@ -26,6 +45,7 @@ jobs:
   # spelled out, before anything is built or published. A prerelease only warns.
   # Also renders the release page's description from the same text.
   notes:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'build'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -37,11 +57,10 @@ jobs:
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          if [ -n "$INPUT_VERSION" ]; then
-            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::version '$INPUT_VERSION' is not <n>.<n>.<n>[-pre]"; exit 1
           fi
+          echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check the release notes
         shell: bash
@@ -67,6 +86,7 @@ jobs:
   # One host binary per platform. `luvi --output` fuses the *running* luvi, so
   # each leg must run on its own OS/arch (no cross-fusing).
   hosts:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'build'
     strategy:
       fail-fast: false
       matrix:
@@ -162,6 +182,7 @@ jobs:
   # The platform-independent, signed system-Lua bundle + manifest (it carries
   # CHANGELOG.md, so it waits for the notes gate).
   bundle:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'build'
     needs: [notes]
     runs-on: ubuntu-latest
     steps:
@@ -214,6 +235,7 @@ jobs:
   # (spec §16.14) — an old host that `lw self-update`s runs it with its own,
   # older boot modules. See scripts/ci/old-host-compat.sh.
   old-host-compat:
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'build'
     strategy:
       fail-fast: false
       matrix:
@@ -228,11 +250,13 @@ jobs:
           REPO_SLUG: ${{ github.repository }}
         run: bash scripts/ci/old-host-compat.sh
 
-  publish:
+  # Build stage: stage every asset as a draft release (nothing published).
+  draft:
     needs: [notes, hosts, bundle, old-host-compat]
+    if: github.event_name == 'workflow_dispatch' && inputs.stage == 'build'
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # create the release
+      contents: write       # create the draft release
       id-token: write       # mint the Sigstore token for attestation
       attestations: write   # record build provenance
     steps:
@@ -320,25 +344,118 @@ jobs:
           esac
 
       # Immutable releases: a published release is frozen, so assets cannot be
-      # attached after it goes live. Create it as a DRAFT (still mutable),
-      # upload every asset to the draft, then un-draft it in the next step so it
-      # publishes atomically with its assets already attached.
-      - name: Stage GitHub Release (draft, with assets)
-        uses: softprops/action-gh-release@v2
+      # attached after it goes live. The build stage creates the release as a
+      # DRAFT with every asset attached and no tag yet (it targets the build
+      # commit, recorded as the draft's target_commitish); the publish stage
+      # un-drafts it once the pin commit's tag verifies.
+      - name: Stage the draft release (assets, no tag)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ github.event.inputs.version }}
+          PRERELEASE: ${{ steps.rel.outputs.prerelease }}
+        run: |
+          tag="v$VER"
+          # A tag name burns once a release used it; never stage over an
+          # existing release (draft or published, found by listing: a draft
+          # has no tag to look up) or tag. A stale draft: delete it first
+          # (gh api -X DELETE repos/<repo>/releases/<id>).
+          n="$(bash repo/scripts/release/draft.sh count "$GITHUB_REPOSITORY" "$tag")"
+          if [ "$n" != 0 ]; then
+            echo "::error::$n release(s) named $tag already exist; delete a stale draft first, or bump the version"; exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag already exists; the tag goes on the pin commit, after this stage"; exit 1
+          fi
+          pre=()
+          if [ "$PRERELEASE" = true ]; then pre=(--prerelease); fi
+          gh release create "$tag" release/* -R "$GITHUB_REPOSITORY" --draft \
+            --target "$GITHUB_SHA" --title "$tag" --notes-file release-body.md ${pre[@]+"${pre[@]}"}
+          echo "staged draft $tag from $GITHUB_SHA; next: scripts/release/pin.sh $VER (ARCHITECTURE.md, Cutting a release or beta)"
+
+  # Tag push: verify the pin commit against the draft built from its parent,
+  # then publish that draft. Never builds anything.
+  publish:
+    if: github.event_name == 'push' || inputs.stage == 'publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # publish the draft
+    steps:
+      - name: Resolve version
+        id: v
+        shell: bash
+        # Untrusted input goes through env, never interpolated into the script.
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          ver="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::version '$ver' is not <n>.<n>.<n>[-pre]"; exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+
+      # Full history: the gate diffs the build commit against the tag.
+      - uses: actions/checkout@v5
         with:
-          files: release/*
-          fail_on_unmatched_files: true
-          body_path: release-body.md
-          prerelease: ${{ steps.rel.outputs.prerelease }}
-          draft: true
+          ref: refs/tags/${{ steps.v.outputs.tag }}
+          fetch-depth: 0
+
+      # scripts/release/pin.lua runs under `nvim -l`.
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+
+      - name: Find the draft
+        id: draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        # Exactly one draft with tag_name $TAG (listed, not looked up by tag:
+        # zero or several fail); its id drives the download and the publish.
+        run: |
+          info="$(bash scripts/release/draft.sh find "$GITHUB_REPOSITORY" "$TAG")" || {
+            echo "::error::no unique draft release $TAG: dispatch release.yml with stage=build on the build commit, then pin it (ARCHITECTURE.md, Cutting a release or beta)"; exit 1; }
+          id="$(printf '%s' "$info" | cut -f1)"
+          build="$(printf '%s' "$info" | cut -f2)"
+          printf '%s' "$build" | grep -Eq '^[0-9a-f]{40}$' \
+            || { echo "::error::the draft $TAG records no build commit (target '$build')"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "draft $TAG (release $id) built from $build"
+
+      - name: Download the draft's signed hashes, descriptor and host binaries
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ steps.draft.outputs.id }}
+          VER: ${{ steps.v.outputs.version }}
+        run: |
+          bash scripts/release/draft.sh download "$GITHUB_REPOSITORY" "$ID" pin \
+            SHA256SUMS SHA256SUMS.sig "lw-$VER-descriptor.json" \
+            lw-linux-x86_64 lw-macos-arm64 lw-windows-x86_64.exe
+          ls -la pin
+
+      # The gate: the signature (committed release key), pinned.lua == this
+      # version and the signed host hashes, the descriptor offers what the
+      # plugin needs, every host binary (HOST_ASSETS) is here and matches
+      # SHA256SUMS (a missing one fails), and the
+      # tagged commit changes nothing but pinned.lua on top of the build commit.
+      - name: Verify the pin
+        shell: bash
+        env:
+          VER: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          BUILD: ${{ steps.draft.outputs.build }}
+        run: |
+          head="$(git rev-parse "$TAG^{commit}")"
+          nvim -l scripts/release/pin.lua verify "$VER" pin --base "$BUILD" --head "$head"
 
       - name: Publish the draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-        run: |
-          # The publish job has no git checkout, so gh cannot infer the repo —
-          # pass it explicitly with -R.
-          tag="$TAG"
-          gh release edit "$tag" --draft=false -R "$GITHUB_REPOSITORY"
+          ID: ${{ steps.draft.outputs.id }}
+        run: bash scripts/release/draft.sh publish "$GITHUB_REPOSITORY" "$ID"

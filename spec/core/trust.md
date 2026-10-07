@@ -275,7 +275,8 @@ or a file was viewed — run only what trusted state names:
   executed passively.
 - **The editor's host binary** (§19.16): opening a workspace in daemon mode
   may download and run **official releases only** (the plugin-managed `lw`,
-  verified against the hash the plugin carries); never a binary or a URL
+  verified against the hash the plugin pin carries, §19.16 "Plugin pin");
+  never a binary or a URL
   that a workspace file names.
 - **Version-control queries** (§16.25–§16.27, status hints, the `lw health`
   submodule report §16.31) disable

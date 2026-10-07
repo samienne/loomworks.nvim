@@ -851,7 +851,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   cwd — `vim.fn.exepath` searches it before Neovim 0.12 on Windows — and
   `lw.exe` per entry on Windows; `loomworks.exe.editor_exepath` is binary-side)
   > `provision/managed.lua` (`<stdpath data>/loomworks/lw/<sha256>/lw[.exe]`;
-  nothing wanted until the plugin pin, step 5h.4; a wanted one not installed
+  the wanted one is this host's asset of the plugin pin, `managed.wanted()`;
+  a wanted one not installed
   yet decides the search as `Selection.download`); `binary.prefer = "managed"` swaps the
   last two; `binary.source` adds `LOOMWORKS_LUA` to the spawn's environment
   (`launch.spawn` `opts.env`). Returns a `Selection` with every candidate's
@@ -877,6 +878,17 @@ re-cut onto master step by step; this section is expanded as each step lands.
   observed and the live daemon's handle `exe`). `provision/sha256.lua`:
   `vim.fn.sha256` after a known-answer check on a NUL/high-byte string, else
   a pure-Lua (bit) SHA-256.
+- `provision/pinned.lua` (step 5h.4, spec §19.16 "Plugin pin") — GENERATED
+  data, `{ version, assets = { [<asset>] = <sha256> } }`, written only by
+  `scripts/release/pin.sh`; excluded from the lw bundle (`build_bundle.sh`
+  `EXCLUDE`) so the pin commit changes no release asset. `managed.wanted(opts)`
+  maps uname to an asset with the plugin's own `managed.HOST_ASSETS` (equal to
+  `boot.pin.HOST_ASSETS`, which is binary-side; a test keeps them equal) and
+  returns `fetch.check_wanted` of the pin's entry, or nil + why.
+  `provision/needs.lua` — `check(descriptor)`: transport overlap and schemas
+  via `daemon/version.observer_compatible`, and observer `ROOT` + `FEATURES`
+  via `observer.offered_versions`; the one interface check used by
+  `scripts/release/pin.lua` (hard gate) and CI's `pin-check` job (warning).
 - Server: hello `role` → `conn.observer`; `active_clients()` (non-observers)
   gates retirement (`_maybe_retire`, also from `service`'s `tasks.on_change`);
   `retire` broadcasts `retiring` to observers; `welcome.retiring`;
@@ -2672,10 +2684,53 @@ implementation of the same grammar (`tests/release_notes_spec.lua` validates the
 real `CHANGELOG.md`).
 The release pipeline is `scripts/release/build_bundle.sh` (bundle + signed
 manifest) and `scripts/release/fuse_host.sh` (inject the production key + release version + fuse
-one host), driven by `.github/workflows/release.yml` on a `v*` tag: a matrix
-builds a host per platform (each fetching the matching luvi), a job builds the
-signed bundle, and a publish job generates and signs `SHA256SUMS`, attests build
-provenance for the host binaries, and attaches everything to a GitHub Release. The maintainer supplies the signing key (see `keys/README.md`).
+one host), driven by `.github/workflows/release.yml` in two stages (spec §19.16
+"Plugin pin"). The **build** stage (`workflow_dispatch`, `stage=build`, on the
+build commit C): a matrix builds a host per platform (each fetching the
+matching luvi), a job builds the signed bundle, and a `draft` job generates the
+descriptor, generates and signs `SHA256SUMS`, attests build provenance and
+creates an unpublished DRAFT release `vX` targeting C with every asset (no tag;
+it refuses an existing release or tag). The **publish** stage (push of tag
+`vX`, or `stage=publish` to re-run it) never rebuilds: it finds the draft
+by listing the releases (`scripts/release/draft.sh find`: exactly one draft
+with tag name `vX`, none or several fail — never `gh release view <tag>`),
+downloads its `SHA256SUMS(.sig)`, descriptor and host binaries by release id
+and runs `nvim -l scripts/release/pin.lua verify X pin --base C --head vX` —
+signature with `keys/loomworks-release.pub.pem`, `pinned.lua` == X and the
+signed host hashes, every host binary present and matching, the descriptor passes
+`provision/needs.lua`, `git diff C vX` is exactly `pinned.lua` — then
+un-drafts it. The maintainer supplies the signing key (see `keys/README.md`).
+
+**Cutting a release or beta.** (1) On the build commit C (CHANGELOG entry
+done; betas on `staging/daemon`): `gh workflow run release.yml --ref <branch>
+-f version=X -f stage=build` (the run builds the branch head, so C must be
+that head). (2) `git checkout C`, then `scripts/release/pin.sh X` (gh, nvim and
+openssl on PATH): downloads the draft's signed hashes and descriptor,
+verifies them and writes `lua/loomworks/provision/pinned.lua`; it refuses a
+published release, a HEAD other than C, or a release whose descriptor lacks
+the plugin's interfaces. (3) Commit only that file ("Pin lw X") as C+1 and
+`git tag -a vX` on it. (4) Push ONLY THE TAG, to github only (the release
+runs there): `git push github vX`. Its run publishes the draft. (5) Only
+after that run succeeded, push the branch (`git push github HEAD:<branch>`,
+e.g. `staging/daemon`), push branch and tag to gitcode, and for a beta
+fast-forward `unstable` on github and gitcode. Never push the branch first:
+a failed gate must not leave a branch whose pin names an unpublished draft
+(spec §19.16: a plugin checkout always pins a published release).
+**Recovery after a failed gate** (the draft stays unpublished): delete the
+pushed tag (`git push github :refs/tags/vX`, also on gitcode if it was pushed
+there; `git tag -d vX`). If C+1 was wrong, fix it and re-tag: the unpublished
+draft and its tag name are reused. If the build is wrong, delete the draft
+(`gh api -X DELETE repos/<repo>/releases/<id>`), fix on the branch and cut
+again from step 1 — the build stage refuses a version whose release (draft
+or published) or tag already exists (release.yml, "Stage the draft
+release"). Once a release is published its tag name is burnt (immutable
+releases): a broken published release needs a version bump.
+`pin.sh X --published [--no-interface-check]` re-pins an already
+published release; it seeded the first pin (0.1.43-beta.15, published before
+descriptors existed) and is never part of a release. CI's `pin-check` job runs
+`pin.lua verify --warn --no-binaries` on every push: warnings only, also when
+Neovim, openssl or the script itself fails (`continue-on-error` + a
+`::warning::`); the release gate stays hard.
 `make dist` is a local dry-run. Installation is the transparent
 download-verify-`lw install` one-liner (spec §16.15), so no hosted installer
 script is needed.
