@@ -698,7 +698,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
 - `ensure.lua` — `reconcile(root, conn)`: the §19.9 decision after the
   handshake (match / stop + relaunch an idle mismatched daemon / retire a
   busy one and bypass it / leave one with newer schemas alone; busy per
-  `protocol.status_busy(st)`, shared with the editor's retirement); `ensure(root,
+  `protocol.status_busy(st)`, shared with the editor's retirement, which
+  passes `{ asker_observer = true }` so a daemon without `busy_clients` does
+  not subtract the observing editor twice); `ensure(root,
   opts)`: `runtime.select` (mode, `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`),
   then connect + reconcile + `ping` (`meet(root, st, opts)`, also used by
   `cli._delegate_attached` for a live daemon an attached selection finds,
@@ -888,22 +890,33 @@ re-cut onto master step by step; this section is expanded as each step lands.
   challenge (and, on a transport-11 connection whose welcome lists objects,
   `welcome.objects`) through `needs.problems(d, { exact_schemas = true,
   interfaces = ... })` (no transport overlap, other schemas, no
-  `loomworks.Root/1`; `newer` = refused, never retired); `selected(sel)`
+  `loomworks.Root/1`; `newer` = refused, never retired; `observable` = only
+  older schemas, transports overlapping, root present); `selected(sel)`
   weighs the selection (managed lw: `managed.wanted().version`; PATH /
   explicit: the cached probe verdict must be `compatible` with a version; a
   pending probe is named); the session guard (`record` / `was_retired`, key
   `<normalized realpath of the root>\n<lw_version>`, module state so it survives a workspace
   reload); `busy(st)` = `protocol.status_busy` (shared with the CLI's
   `ensure.reconcile`; `protocol` is on the shared side of the plugin/binary
-  boundary, so the plugin-side module needs no binary module). `Observer:_on_connected` hands an incompatible daemon (not
-  newer) to `_weigh_retire`, which holds the connection (`_retire`, never
-  observed through; it blocks `start`/`_on_watch` single-flight), probes a
-  pending selected binary once, refuses with a note (selected binary not
-  compatible, same version, guard tripped), else `_check_retire` asks
-  `status` every `retire_check_ms` (30 s; `LW_TEST_DAEMON_RETIRE_CHECK_MS`)
-  until idle, and `_retire_now` records the guard, sends `retire`, skips the
-  daemon, sets `_relaunch` (the existing launch-once-after-exit path) and
-  `retired_note`, and notifies once. `stop` drops the held connection.
+  boundary, so the plugin-side module needs no binary module). `Observer:_on_connected` observes an
+  `observable` daemon as usual and, once subscribed, hands it to
+  `_weigh_retire` on the observed connection (`_retire.observed`; notes go to
+  `incompat_note` on the connected Runtime line; a decline just forgets
+  `_retire` and keeps observing); any other incompatible daemon (not newer)
+  goes to `_weigh_retire` on a held connection (`_retire`, never observed
+  through — `on_message` drops frames from any connection but `self.conn`;
+  it blocks `start`/`_on_watch` single-flight; closed on a decline). It
+  probes a pending selected binary once, declines with a note (selected
+  binary not compatible, same version, guard tripped), else `_check_retire`
+  asks `status` every `retire_check_ms` (30 s;
+  `LW_TEST_DAEMON_RETIRE_CHECK_MS`; a tick while one is unanswered,
+  `asking`, sends none) until idle, and `_retire_now` (at most once,
+  `retiring`) records the guard and sends `retire`. An error reply is a
+  failure (note, no relaunch; observed stays observed, held is closed); a
+  reply or a closed connection skips the daemon, sets `retired_note`,
+  notifies once and relaunches through the existing launch-once-after-exit
+  path (`_relaunch`; an observed connection is closed as a `retiring` drop,
+  so `_on_closed` ends its tasks). `stop` drops the held connection.
 - `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
   download of a `Wanted` record (`{ sha256, version, asset }`) into
   `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local

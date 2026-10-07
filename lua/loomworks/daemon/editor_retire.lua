@@ -8,7 +8,9 @@
 --- * `incompatibility` — is a connected daemon incompatible with the editor?
 ---   No transport overlap, schemas that differ from ours (older: it cannot
 ---   read the editor's files; newer: refused, never retired), or, on a
----   transport-11 connection, no `loomworks.Root/1`. The same problem sort as
+---   transport-11 connection, no `loomworks.Root/1` (a protocol-10 daemon
+---   offers no interfaces and is judged by version and schemas only); older
+---   schemas alone leave it observable. The same problem sort as
 ---   the pre-launch probe (loomworks.provision.needs `problems`, with
 ---   `exact_schemas`). A missing feature interface only degrades that
 ---   feature and is never a reason to retire.
@@ -24,6 +26,7 @@ local M = {}
 --- @class loomworks.daemon.Incompatibility  why a connected daemon is incompatible with the editor
 --- @field reasons string[] one line each (transport, schemas, root interface)
 --- @field newer boolean its schemas are newer than ours: refused, never retired (§19.9)
+--- @field observable boolean only its schemas are older (transports overlap, root interface present): observed while it is weighed for a retirement, and when the editor declines to retire it (§19.16)
 
 --- Is the daemon behind `conn` incompatible with the editor (spec §19.16
 --- "Retiring an incompatible daemon")? nil when it is compatible. The root
@@ -48,7 +51,15 @@ function M.incompatibility(ch, conn)
         for _, line in ipairs(list) do reasons[#reasons + 1] = line end
     end
     if #reasons == 0 then return nil end
-    return { reasons = reasons, newer = require("loomworks.daemon.version").peer_schemas_newer(ch) }
+    local version = require("loomworks.daemon.version")
+    -- Observable: the transports overlap and the only problem is older
+    -- schemas (no missing root interface) — the editor observes it while
+    -- it waits to retire it, and for good when it declines to.
+    local without_root = interfaces
+        and require("loomworks.provision.needs").problems(d, { exact_schemas = true, interfaces = false }) or p
+    local root_ok = #without_root.structure + #without_root.fatal == #reasons
+    return { reasons = reasons, newer = version.peer_schemas_newer(ch),
+        observable = root_ok and (version.observer_compatible(ch)) == true }
 end
 
 --- @class loomworks.daemon.SelectedBinary  the editor's selected binary, weighed for a retirement
@@ -146,10 +157,11 @@ function M.record(root, lw_version) retired[M.key(root, lw_version)] = true end
 function M.reset() retired = {} end
 
 --- Is a daemon whose `status` reply is `st` busy (§19.9 "Busy")? No reply
---- counts as busy.
+--- counts as busy. The editor asks over its observer connection, so a daemon
+--- without `busy_clients` counts it among the observers, not twice.
 --- @param st table|nil
 --- @return boolean
-function M.busy(st) return require("loomworks.daemon.protocol").status_busy(st) end
+function M.busy(st) return require("loomworks.daemon.protocol").status_busy(st, { asker_observer = true }) end
 
 --- The Runtime note for an incompatible daemon: what the daemon runs, why,
 --- and the tail (what the editor does about it).

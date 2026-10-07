@@ -79,6 +79,34 @@ describe("editor_retire (pure decisions, §19.16)", function()
         assert.equals("3.0.0", R.selected({ download = { version = "3.0.0" }, candidates = {} }).version)
     end)
 
+    it("busy without busy_clients: the editor (an observer) asking is not subtracted twice", function()
+        local P = require("loomworks.daemon.protocol")
+        -- The editor plus one CLI client, from a daemon before 5g.3.
+        local st = { busy = false, clients = 2, observers = 1 }
+        assert.is_true(R.busy(st))
+        assert.is_true(P.status_busy(st, { asker_observer = true }))
+        -- The editor alone is idle.
+        assert.is_false(R.busy({ busy = false, clients = 1, observers = 1 }))
+        -- The CLI's reconcile (asking as a client) keeps its rule: itself and
+        -- the observing editor leave nobody.
+        assert.is_false(P.status_busy(st))
+        assert.is_true(P.status_busy({ busy = false, clients = 3, observers = 1 }))
+        -- busy_clients, when reported, decides.
+        assert.is_false(R.busy({ busy = false, busy_clients = 0, clients = 2, observers = 1 }))
+    end)
+
+    it("observable: only older schemas (transports overlap, root present)", function()
+        local s = version.schemas()
+        local older = { user = s.user - 1, cache = s.cache }
+        assert.is_true(assert(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10, schemas = older },
+            { transport = 10, welcome = {} })).observable)
+        assert.is_false(assert(R.incompatibility({ protocol = 99, protocol_min = 99, schemas = older }, {})).observable)
+        assert.is_false(assert(R.incompatibility({ protocol = version.PROTOCOL, protocol_min = 10, schemas = older },
+            { transport = 11, welcome = { objects = {} } })).observable)
+        assert.is_false(assert(R.incompatibility({ protocol = version.PROTOCOL,
+            schemas = { user = s.user + 1, cache = s.cache } }, {})).observable)
+    end)
+
     it("the guard is per workspace and lw_version; a leading v is the same version", function()
         R.reset()
         R.record("/w/a", "v1.0.0")
@@ -134,6 +162,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
             connect = function(ep, copts, cb)
                 f.connects = f.connects + 1
                 local conn = { challenge = f.daemons[ep], welcome = { seq = 0 }, ep = ep }
+                f.conn, f.copts = conn, copts
                 function conn.close(c)
                     if c.closed then return end
                     c.closed = true
@@ -141,6 +170,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
                 end
                 function conn.request(c, msg, rcb)
                     f.sent[#f.sent + 1] = c.ep .. ":" .. msg.kind
+                    if f.on_request and f.on_request(c, msg, rcb) then return end
                     if msg.kind == "status" then
                         rcb({ busy = f.busy, busy_clients = 0, clients = 1, observers = 1 })
                     elseif msg.kind == "retire" then
@@ -160,6 +190,28 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
     local function sent(f, what)
         for _, x in ipairs(f.sent) do if x == what then return true end end
         return false
+    end
+
+    local function count(f, what)
+        local n = 0
+        for _, x in ipairs(f.sent) do if x == what then n = n + 1 end end
+        return n
+    end
+
+    --- A remote task's `start` frame, delivered on the fake's connection.
+    local function start_task(f, id)
+        local profile = ws:get_profiles()[1]
+        local pp = profile:projects()[1]
+        f.copts.on_message({ kind = "task", phase = "start", task_id = id, meta = { name = "dev", kind = "build",
+            profile = profile.key, origin = "cli",
+            units = { { project = pp:project_key(), configuration = pp:config_key() } } } })
+    end
+
+    --- The fake's daemon presents older schemas only: observable.
+    local function observable(f)
+        f.daemons.old = { protocol = version.PROTOCOL, protocol_min = 10, lw_version = "0.0.1",
+            schemas = older_schemas() }
+        return f
     end
 
     it("(a) a real idle incompatible daemon is retired once; the selected binary then launches", function()
@@ -381,5 +433,148 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_nil(obs._retire)
         assert.is_nil(obs._retire_timer)
         obs = nil
+    end)
+
+    it("an older-schema busy daemon is observed while its retirement is pending", function()
+        local f = observable(fake())
+        f.busy = true
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.equals("connected", obs.state)
+        assert.equals(f.conn, obs.conn)
+        assert.is_not_nil(obs._retire)
+        -- Observed: its task frames count, and end when it is retired.
+        start_task(f, 1)
+        assert.is_true(vim.wait(2000, function() return #obs:tasks() == 1 end, 10))
+        f.busy = false
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        assert.same({}, obs:tasks())
+        assert.is_nil(obs._retire)
+        assert.equals(1, #f.notes)
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+    end)
+
+    it("an older-schema daemon the editor declines to retire stays observed", function()
+        local f = observable(fake())
+        f.daemons.old.lw_version = "9.9.9" -- the selected binary's own version
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("observing it without retiring it", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.equals("connected", obs.state)
+        assert.is_nil(obs._retire)
+        vim.wait(300)
+        assert.is_false(sent(f, "old:retire"))
+        assert.equals("connected", obs.state)
+        assert.equals(1, f.connects)
+    end)
+
+    it("an observed daemon dropping mid-task while its retirement is pending leaves no running task", function()
+        local f = observable(fake())
+        f.busy = true
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs._retire ~= nil and obs.state == "connected" end, 10))
+        start_task(f, 1)
+        assert.is_true(vim.wait(2000, function() return #obs:tasks() == 1 end, 10))
+        f.conn:close()
+        assert.is_true(vim.wait(2000, function() return obs.conn == nil end, 10))
+        assert.same({}, obs:tasks())
+        assert.is_nil(obs._retire)
+        assert.is_nil(obs._retire_timer)
+    end)
+
+    it("a held (unobserved) connection's task frames are ignored", function()
+        local f = fake()
+        f.busy = true
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs._retire ~= nil and sent(f, "old:status") end, 10))
+        start_task(f, 1)
+        vim.wait(200)
+        assert.same({}, obs:tasks())
+        assert.is_nil(obs.conn)
+    end)
+
+    it("no new status while one is unanswered; retire is sent, noticed and relaunched once", function()
+        local f = fake()
+        local held
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "status" and not f.answer then held = rcb; return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return held ~= nil end, 10))
+        vim.wait(450) -- several re-check ticks
+        assert.equals(1, count(f, "old:status"))
+        f.answer = true
+        local wait = obs._retire
+        held({ busy = false, busy_clients = 0, clients = 1, observers = 1 })
+        assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
+        -- Asked again (a late tick, a second idle reply): nothing more.
+        obs._retire = wait
+        obs:_retire_now()
+        obs:_check_retire()
+        obs._retire = nil
+        vim.wait(200)
+        assert.equals(1, count(f, "old:retire"))
+        f.st = { kind = "none" }
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        vim.wait(300)
+        assert.equals(1, f.spawned)
+        assert.equals(1, #f.notes)
+    end)
+
+    it("an error reply to retire is a failure: noted, no notice, no relaunch", function()
+        local f = fake()
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then rcb(nil, "retire refused: test"); return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("retiring it failed (retire refused: test)", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.is_true(f.conn.closed)
+        assert.is_nil(obs._retire)
+        f.st = { kind = "none" }
+        vim.wait(300)
+        assert.equals(0, f.spawned)
+        assert.same({}, f.notes)
+        assert.equals(1, count(f, "old:retire"))
+        -- The guard still applies.
+        assert.is_true(R.was_retired(ws.root, "0.0.1"))
+    end)
+
+    it("an error reply to retire leaves an observed daemon observed", function()
+        local f = observable(fake())
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then rcb(nil, "nope"); return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("retiring it failed (nope)", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.equals("connected", obs.state)
+        assert.is_nil(obs._retire)
+        vim.wait(300)
+        assert.equals(1, count(f, "old:retire"))
+        assert.same({}, f.notes)
+    end)
+
+    it("a connection closed before the retire reply counts as retired (relaunched once)", function()
+        local f = fake()
+        f.on_request = function(c, msg, rcb)
+            if msg.kind == "retire" then
+                f.st = { kind = "none" }
+                c:close()
+                rcb(nil, client.ERR_CLOSED)
+                return true
+            end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
+        assert.equals(1, #f.notes)
+        assert.truthy(obs:runtime_line():find("retired the workspace daemon", 1, true), obs:runtime_line())
     end)
 end)

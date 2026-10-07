@@ -975,7 +975,9 @@ and is another version: the editor asks it to finish and exit, then starts
 its own, and tells you once. A busy one is retired once it is idle; one
 with newer file formats, or one already retired in this Neovim session for
 the same version (say, a repository pin keeps starting it), is left alone
-with a note. When the plugin wants
+with a note. One whose only problem is older file formats stays observed
+(its tasks show as usual) until it is retired, and for the session when the
+editor will not retire it. When the plugin wants
 its own `lw` and it is not there yet, the editor downloads the official
 release binary in the background (it keeps working in-process meanwhile; the
 status page says so), checks its SHA-256 against the one the plugin carries,

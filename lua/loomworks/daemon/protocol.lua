@@ -142,18 +142,22 @@ M.Decoder = Decoder
 --- owns a task or has a command in flight (`busy_clients`). A connection that
 --- only observes or subscribes — an editor — never holds off a restart or a
 --- retirement. A daemon before 5g.3 reports no `busy_clients`: every client
---- but the asking one and the observers counts. No reply counts as busy.
+--- but the asking one and the observers counts — `opts.asker_observer`: the
+--- asking connection is itself an observer (the editor), so it is counted in
+--- `observers` and not subtracted again. No reply counts as busy.
 --- Shared by the CLI's reconcile (loomworks.daemon.ensure) and the editor's
 --- retirement (loomworks.daemon.editor_retire).
 --- @param st table|nil
+--- @param opts? { asker_observer?: boolean }
 --- @return boolean
-function M.status_busy(st)
+function M.status_busy(st, opts)
     if type(st) ~= "table" then return true end
     local others
     if type(st.busy_clients) == "number" then
         others = st.busy_clients
     else
-        others = (tonumber(st.clients) or 1) - 1 - (tonumber(st.observers) or 0)
+        local asker = (opts and opts.asker_observer) and 0 or 1
+        others = (tonumber(st.clients) or 1) - asker - (tonumber(st.observers) or 0)
     end
     return st.busy == true or others > 0
 end
