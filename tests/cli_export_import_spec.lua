@@ -584,3 +584,139 @@ describe("lw import over a working copy not signed by this machine", function()
     assert.equals(UNSIGNED, read(user.filepath(root)))
   end)
 end)
+
+describe("an unsigned build cache (spec §17.4)", function()
+  -- Written by an earlier lw: no signature member. Its build state is never
+  -- read; it is replaced only when a command actually writes the cache.
+  local UNSIGNED_CACHE = '{ "_meta": { "version": 8 }, "build_dirs": { "build/app/x": '
+    .. '{ "project_key": "app", "config_key": "Debug", "variant": "default", "type": "typescript",'
+    .. ' "state": "built", "build_dir": "/nowhere/build/app/x" } } }'
+
+  local function cache_path(root) return root .. "/.nvim/loomworks.cache.json" end
+
+  local function target_with_unsigned_cache()
+    local src = make_source()
+    ok_run(src, "profile", "select", "dev")
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(file, ok_run(src, "export").json)
+    -- The source itself becomes the target: a signed working copy, an
+    -- active profile, and an unsigned cache from an earlier lw.
+    write(cache_path(src), UNSIGNED_CACHE)
+    return src, file
+  end
+
+  it("read-only commands and dry runs leave it byte-identical", function()
+    local root, file = target_with_unsigned_cache()
+    local user_before = read(user.filepath(root))
+    for _, argv in ipairs({
+      { "status" },
+      { "profile", "list" },
+      { "profile", "show" },
+      { "export" },
+      { "export", "--published" },
+      { "import", file, "--dry-run" },
+      { "help" },
+      { "health" },
+      { "project", "list" },
+      { "configset", "list" },
+    }) do
+      local r = run(root, unpack(argv))
+      assert.equals(0, r.exit_code, table.concat(argv, " ") .. "\n" .. r.stdout .. r.stderr)
+      assert.equals(UNSIGNED_CACHE, read(cache_path(root)), "`lw " .. table.concat(argv, " ") .. "` rewrote the cache")
+      assert.equals(user_before, read(user.filepath(root)), "`lw " .. table.concat(argv, " ") .. "` rewrote the working copy")
+    end
+  end)
+
+  it("the notice still says it is ignored, and no build state is read from it", function()
+    local root = target_with_unsigned_cache()
+    local r = ok_run(root, "status")
+    assert.truthy((r.stdout .. r.stderr):find("unsigned build cache", 1, true), r.stdout .. r.stderr)
+    assert.falsy(r.stdout:find("built", 1, true), r.stdout)
+  end)
+
+  it("the first command that writes the cache replaces it with a signed one", function()
+    local root, file = target_with_unsigned_cache()
+    ok_run(root, "import", file, "--yes")
+    -- The import itself writes only the working copy; a cache writer follows
+    -- (a build records unit state through the same save). The disk baseline
+    -- is the unsigned file's bytes: no merge, no stale-save refusal.
+    local ws = cli._load_workspace(root, false)
+    assert.equals(UNSIGNED_CACHE, read(cache_path(root)))
+    assert.is_true((ws:_save_cache()))
+    if ws._stop_tracking then ws:_stop_tracking() end
+    local status = trust.verify("cache", read(cache_path(root)))
+    assert.equals("valid", status)
+  end)
+end)
+
+describe("lw import and the workspace name (spec §16.39)", function()
+  local function squash(s) return (s:gsub(" +", " ")) end
+
+  local function name_of(root)
+    local ws = cli._load_workspace(root, false)
+    local n = ws.name
+    if ws._stop_tracking then ws:_stop_tracking() end
+    return n
+  end
+
+  --- An export named `exported`, and a target with no name of its own (its
+  --- directory's) and no loomworks.json.
+  local function setup()
+    local src = make_source()
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    local data = vim.json.decode(ok_run(src, "export").json)
+    data.name = "exported"
+    write(file, vim.json.encode(data))
+    local root = tmp_root()
+    assert(user.save(root, { _meta = { version = 2 } }))
+    return root, file, root:match("([^/]+)$")
+  end
+
+  it("keeps the target's name by default and says what the export would have set", function()
+    local root, file, dir = setup()
+    local dry = ok_run(root, "import", file, "--dry-run")
+    assert.truthy(squash(dry.stdout):find("name " .. dir
+      .. " (kept; export says exported — --take-name to use it)", 1, true), dry.stdout)
+    ok_run(root, "import", file, "--yes")
+    assert.equals(dir, name_of(root))
+    assert.is_nil(user_data(root).name) -- still the directory's, not pinned
+  end)
+
+  it("--take-name adopts the exported name", function()
+    local root, file, dir = setup()
+    local dry = ok_run(root, "import", file, "--dry-run", "--take-name")
+    assert.truthy(squash(dry.stdout):find("name " .. dir .. " → exported", 1, true), dry.stdout)
+    ok_run(root, "import", file, "--yes", "--take-name")
+    assert.equals("exported", name_of(root))
+    assert.equals("exported", user_data(root).name)
+  end)
+
+  it("says unchanged when the names are equal", function()
+    local root, file = setup()
+    ok_run(root, "workspace", "rename", "exported")
+    local dry = ok_run(root, "import", file, "--dry-run")
+    assert.truthy(squash(dry.stdout):find("name exported (unchanged)", 1, true), dry.stdout)
+  end)
+
+  it("keeps a name that comes from the target's loomworks.json", function()
+    local root, file, dir = setup()
+    write(root .. "/loomworks.json", vim.json.encode({ name = "shared-name", projects = {} }))
+    assert.equals("shared-name", name_of(root))
+    local dry = ok_run(root, "import", file, "--dry-run")
+    assert.truthy(dry.stdout:find("shared-name (kept; export says exported", 1, true), dry.stdout)
+    ok_run(root, "import", file, "--yes")
+    assert.equals("shared-name", name_of(root))
+    assert.is_not.equals(dir, name_of(root))
+  end)
+
+  it("the dry-run summary names the active profile once", function()
+    local src = make_source()
+    ok_run(src, "profile", "select", "dev")
+    local file = vim.fn.tempname():gsub("\\", "/") .. ".json"
+    write(file, ok_run(src, "export").json)
+    local dry = ok_run(src, "import", file, "--dry-run")
+    local n = select(2, dry.stdout:gsub("active profile", ""))
+    assert.equals(1, n, dry.stdout)
+    assert.truthy(dry.stdout:find("active profile: dev (kept)", 1, true), dry.stdout)
+  end)
+end)

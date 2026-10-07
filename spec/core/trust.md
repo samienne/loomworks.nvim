@@ -82,7 +82,7 @@ A file is, on read:
 | File | valid | unsigned | invalid |
 |--|--|--|--|
 | working copy | used | **refused** — review & trust, or discard | **refused** — review & trust, or discard |
-| build cache | used | **discarded** — treated as absent, replaced by a signed cache | **refused** — reset offered |
+| build cache | used | **ignored** — treated as absent; the next cache write replaces it | **refused** — reset offered |
 | health cache | used | ignored (treated as absent), replaced by the next health run | ignored, replaced by the next health run |
 
 - **Working copy refused.** The workspace does not load (the same posture as a
@@ -100,9 +100,15 @@ A file is, on read:
   requires re-trust. A non-interactive host never trusts implicitly: trusting
   requires an explicit confirmation flag.
 - **Build cache unsigned (migration).** A cache written by a loomworks version
-  before this section carries no signature. It is **discarded**: not read,
-  and replaced by a freshly written, signed cache as soon as the workspace
-  loads, with a one-line notice. Nothing is lost that a build cannot recreate —
+  before this section carries no signature. It is **ignored**: not read, and
+  the loaded workspace holds no build state from it (it is treated as empty in
+  memory), with a one-line notice on each load that finds it. Loading never
+  writes: the file is **replaced** by a freshly written, signed cache only when
+  a command actually writes the build cache (a build, a configure, a clean,
+  ...). Read-only commands (status, listing and showing items, export, health,
+  help) and every preview or dry run leave it byte for byte. Its exact bytes
+  are the disk baseline of the stale-save guard (§2.7), so that first write
+  neither merges with it nor is refused. Nothing is lost that a build cannot recreate —
   units read as unconfigured and reconfigure into their existing build
   directories on the next build. Discarding is always safe (nothing in the
   file is used), so an attacker gains nothing by omitting the signature.
@@ -116,8 +122,9 @@ A file is, on read:
   ignored and replaced when next computed (§16.31).
 
 **Migration decision.** On the first run after upgrading, every existing
-workspace has an unsigned working copy and cache. The cache is discarded
-silently (above) — it is regenerable, and reading it cannot be made safe. The
+workspace has an unsigned working copy and cache. The cache is ignored
+(above) until the first cache write replaces it — it is regenerable, and
+reading it cannot be made safe. The
 working copy is the user's own configuration and cannot be regenerated, but it
 also cannot be distinguished from a planted one; it is therefore refused with
 the **trust** action, once per workspace. The review summary makes the one-time

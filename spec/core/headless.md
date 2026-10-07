@@ -247,7 +247,17 @@ install a global bundle. Answering help never fetches anything.
 option and points at `lw help <command>`, and nothing runs — a mistyped option
 never falls through to a build or a launch. The global options (non-interactive
 control, create intent, source selection, pin bypass) are known to every
-command. The check stops at `--`: what follows belongs to a program or native
+command, and are recognised before the command and among its own arguments,
+up to the first `--` — never after it. After a launch configuration's command
+(or `--from-target <target>`) when one is added, every token is the program's,
+verbatim, a global option or a `--` included; only a `--` before the command
+ends lw's options there. When a launch configuration's arguments are edited and
+on the set-value commands (a configuration parameter, a project variable's
+default, a profile fill, a setting), a global option before `--` is lw's own
+and `--` is the escape: every token after it is an argument or the value,
+verbatim. When a global option taken that way selects a development source that
+is not configured, the error adds a hint to put the token after `--`. A
+`--help` / `-h` is help only within the same bound. The check stops at `--`: what follows belongs to a program or native
 tool and is passed through untouched. It also stops where a command's grammar
 hands the rest of the line to someone else or takes a value that may itself
 start with `-`: the program arguments after a launch configuration's command
@@ -3488,7 +3498,7 @@ build.
 
 **What is replaced and what is kept.** The working copy's projects,
 configuration sets (with their descriptions), profiles (with their default
-targets) and the workspace name become exactly the imported ones. An item absent
+targets) become exactly the imported ones. An item absent
 from the import leaves the working copy. Import does not merge (contrast pull,
 §16.25). The machine-local state that an export never carries is **kept**,
 because the file cannot carry it back:
@@ -3498,6 +3508,15 @@ because the file cannot carry it back:
 - the active-profile selection, device selections and profile fill values stay
   for every profile whose key the import still contains;
 - they are dropped for profiles that the import removes.
+
+**The workspace name** is kept: the workspace's current name, wherever it comes
+from (the working copy, the published snapshot, or the directory), stays as
+it is, and an import that keeps it does not pin a name that was the
+directory's into the working copy. A **take-name** flag adopts the export's
+name instead (an export without a name leaves the current one). The summary
+names the outcome: when the names are equal, that the name is unchanged; when
+they differ and the name is kept, the kept name, the export's name, and the
+flag that would adopt it; with the flag, the old and new name.
 
 When the active profile is dropped, the workspace has no active profile
 afterwards, and the report says so.
@@ -3565,13 +3584,15 @@ review that trusting a working copy uses (§17.4). Before writing, import prints
   unmentioned:
   - per item kind, the count before and after with the names added, removed
     and changed;
-  - the workspace name when it changes;
+  - the workspace name: unchanged, kept while the export names another (with
+    the flag that would adopt it), or changed by the take-name flag;
   - every **intent change** of an item the workspace already has, with its
     kind, name, and old and new intent (for example under the private option,
     or a reference-only item that becomes `local+shared`);
-  - the **active profile**: kept, cleared and why (the import does not
+  - the **active profile**, once: kept, cleared and why (the import does not
     contain it, or the working copy is replaced unread), or — when none was
-    active before — that it stays none. After an import with no active profile,
+    active before — that it stays none. The program-settings review below
+    does not repeat it. After an import with no active profile,
     the hint to select one does not suggest that one was lost unless the import
     cleared it;
   - the device selections and fill values dropped with the profiles that the
@@ -3587,8 +3608,9 @@ review that trusting a working copy uses (§17.4). Before writing, import prints
   same value are marked as new.
 
 Import then asks for confirmation. A confirmation flag skips the prompt. A
-**preview** flag prints the same summary and review, writes nothing, and exits
-0. Without the confirmation flag, import refuses in three cases: in a
+**preview** flag prints the same summary and review, writes nothing — no
+`.nvim` file, the build cache included (an unsigned one is left as it is,
+§17.4) — and exits 0. Without the confirmation flag, import refuses in three cases: in a
 non-interactive host (§16.3), when its input is standard input (there is no
 terminal left to answer on), and when the answer is not yes. A refusal changes
 nothing, names the flag, and exits 1.

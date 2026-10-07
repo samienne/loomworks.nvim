@@ -2912,7 +2912,15 @@ function M.cmd_launch_add(root, args)
   local i = 5
   while args[i] do
     local v = args[i]
-    if v == "--description" then
+    if v == "--" then
+      -- Before the command (or the target), `--` ends lw's options: the rest
+      -- is the command and its arguments. After it the `--` is itself a
+      -- program argument (`npm run dev -- --port 3000`). Either way every
+      -- token after it is the program's, verbatim (spec §16.7).
+      local from = (#positionals == 0 and not from_target) and i + 1 or i
+      for k = from, #args do positionals[#positionals + 1] = args[k] end
+      break
+    elseif v == "--description" then
       if args[i + 1] == nil then die("--description needs a paragraph") end
       paras[#paras + 1] = args[i + 1]; i = i + 2
     elseif v:sub(1, 14) == "--description=" then
@@ -3045,7 +3053,12 @@ function M.cmd_launch_set(root, args)
   local i = next_i
   while args[i] do
     local v = args[i]
-    if v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
+    if v == "--" then
+      -- Everything after `--` is the new argument list, verbatim (spec §16.7).
+      new_args = new_args or {}
+      for k = i + 1, #args do new_args[#new_args + 1] = args[k] end
+      break
+    elseif v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
     elseif v == "--clear-working-dir" then new.working_dir = nil; touched = true; i = i + 1
     elseif v == "--env" then
       local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
@@ -3803,6 +3816,9 @@ function M._print_import_plan(plan, label)
   end
   if plan.name_before ~= plan.name_after then
     out(string.format("  %-20s  %s → %s", "name", tostring(plan.name_before), tostring(plan.name_after)))
+  elseif plan.name_exported and plan.name_exported ~= plan.name_after then
+    out(string.format("  %-20s  %s (kept; export says %s — --take-name to use it)", "name",
+      tostring(plan.name_after), plan.name_exported))
   else
     out(string.format("  %-20s  %s (unchanged)", "name", tostring(plan.name_after)))
   end
@@ -3854,15 +3870,16 @@ function M._print_import_plan(plan, label)
   out("")
 end
 
-local IMPORT_USAGE = "usage: lw import <file>|- [--dry-run] [-y]  (see `lw help import`)"
+local IMPORT_USAGE = "usage: lw import <file>|- [--dry-run] [-y] [--take-name]  (see `lw help import`)"
 
 --- `lw import` — replace the working configuration with an export (spec §16.39).
 function M.cmd_import(root, args)
-  local yes, dry, src = false, false, nil
+  local yes, dry, take_name, src = false, false, false, nil
   for i = 2, #args do
     local v = args[i]
     if v == "-y" or v == "--yes" then yes = true
     elseif v == "-n" or v == "--dry-run" then dry = true
+    elseif v == "--take-name" then take_name = true
     elseif v == "-" or v:sub(1, 1) ~= "-" then
       if src then die("import takes one file — " .. IMPORT_USAGE, 2) end
       src = v
@@ -3885,7 +3902,7 @@ function M.cmd_import(root, args)
   -- A working copy not signed by this machine is replaced unread (spec
   -- §16.39): load as if it were absent; the plan says so.
   local ws = load_workspace(root, false, { replace_untrusted_user = true })
-  local plan, err, kind = ws:prepare_import(content, { intent = create_intent })
+  local plan, err, kind = ws:prepare_import(content, { intent = create_intent, take_name = take_name })
   if not plan then
     if kind == "working_copy" then
       die(label .. " is a working copy (.nvim/loomworks.user.json), not an export — on this machine "
@@ -4338,7 +4355,11 @@ local function parse_project_set_args(argv)
   while i <= #argv do
     local w = argv[i]
     local inline = w:match("^%-%-type=(.*)$")
-    if w == "--type" then
+    if w == "--" then
+      -- The escape for a default that spells an option (spec §16.7).
+      for k = i + 1, #argv do pos[#pos + 1] = argv[k] end
+      break
+    elseif w == "--type" then
       var_type = argv[i + 1]
       if not var_type then die("--type needs a value — use 'string' or 'path'") end
       i = i + 2
@@ -5004,7 +5025,13 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   end
   if sub == "show" then return M.cmd_configuration_show(root, a3, a4) end
   if sub == "get" then return M.cmd_configuration_get(root, a3, a4, a5) end
-  if sub == "set" then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
+  if sub == "set" then
+    -- `--` only escapes a value that spells an option (spec §16.7). Direct
+    -- callers pass the positionals without argv; use them as-is.
+    if not argv then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
+    local s = require("loomworks.cli_options").drop_escape(argv, 3)
+    return M.cmd_configuration_set(root, s[3], s[4], s[5], s[6])
+  end
   if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end
   if sub == "rename" or sub == "mv" then return M.cmd_configuration_rename(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
@@ -6517,9 +6544,11 @@ end
 --- Profile defaults to the active one. Written to user.json only; never
 --- published to loomworks.json.
 function M.cmd_profile_set(root, args)
-  -- args: { "profile", "set", [profile], project, variable, value }
+  -- args: { "profile", "set", [profile], project, variable, value }; a `--`
+  -- only escapes a value that spells an option (spec §16.7).
   local rest = {}
-  for i = 3, #args do rest[#rest + 1] = args[i] end
+  local unescaped = require("loomworks.cli_options").drop_escape(args, 3)
+  for i = 3, #unescaped do rest[#rest + 1] = unescaped[i] end
   local profile_name, project_key, var_name, value
   if #rest == 4 then
     profile_name, project_key, var_name, value = rest[1], rest[2], rest[3], rest[4]
@@ -9193,7 +9222,7 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "import" then
     if n == 1 then out("__files__") end
-    if n >= 2 then emit({ "--dry-run", "--yes" }) end
+    if n >= 2 then emit({ "--dry-run", "--yes", "--take-name" }) end
     return 0
   elseif cmd == "worktree" then
     if n == 1 then emit({ "list", "add" }) end
@@ -9665,7 +9694,8 @@ it may run by where a setting comes from:
       (<data dir>/trust.key, never in a repository). A file written by hand,
       by an earlier lw, or copied from elsewhere is REFUSED until you review it.
   .nvim/loomworks.cache.json            build state; used only when signed here.
-      An unsigned one (earlier lw) is discarded and rebuilt automatically; one
+      An unsigned one (earlier lw) is ignored unread and replaced by the next
+      command that writes the cache (read-only commands leave it); one
       signed elsewhere refuses the load until `lw nuke`.
   Tool paths                            always from detection on this machine,
       never from the cache.
@@ -9880,7 +9910,10 @@ args/env/working-dir layered on top — no hand-written path.
         --cwd is an alias of --working-dir (here and on `set`).
         --description (repeatable, one paragraph each; the first is the
         summary) describes it. There is no -m here: everything after the
-        command is the program's own args (python -m http.server).
+        command is the program's own args (python -m http.server);
+        after a `--` every token is, even one lw itself knows (--env,
+        --dev). A `--` after the command is kept (npm run dev -- --port 1);
+        one before the command only ends lw's options.
         e.g. lw launch add app serve node server.js --env PORT=8080
   add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
         Declare a target-backed launch config from a build target (by name).
@@ -9891,6 +9924,8 @@ args/env/working-dir layered on top — no hand-written path.
           --env K=V (add/update, repeat) | --unset-env K (remove, repeat)
           --command C | --from-target T   (switch kind)
           trailing args replace the arg list | --clear-args
+          (after `--` every token is an arg, even --env or --dev;
+           before it --dev/--no-input/... are lw's own options)
         e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
   show <project> <name> [--json]
         Detail one config: description, target/command, args, working dir,
@@ -10353,14 +10388,16 @@ you review them — a loomworks.json copied there ignores them.
 
   lw export > app.json             then, on the other machine: lw import app.json
   lw export | ssh build-box 'cd src/app && lw import - --yes']],
-  import = [[lw import <file> [--dry-run] [-y | --yes]       (`-` reads stdin)
+  import = [[lw import <file> [--dry-run] [-y | --yes] [--take-name]   (`-` reads stdin)
 
 Replace this workspace's working configuration (.nvim/loomworks.user.json)
 with one made by `lw export` (any loomworks.json works). Projects,
-configurations, configuration sets, profiles and the workspace name become
-exactly the imported ones. What an export cannot carry stays: SDK
-declarations, language-server options, debug adapters, and — for profiles
-that still exist — the active profile, device selection and variable fills.
+configurations, configuration sets and profiles become exactly the imported
+ones. The workspace keeps its own name (the summary shows the export's when it
+differs); --take-name adopts the exported name instead. What an export cannot
+carry stays: SDK declarations, language-server options, debug adapters, and —
+for profiles that still exist — the active profile, device selection and
+variable fills.
 
 Nothing is published: loomworks.json is untouched. An imported item your
 working copy already has keeps its intent (local / local+shared), so exporting
@@ -10380,6 +10417,7 @@ does not block an import: it is replaced unread — none of its settings is kept
 — after the usual backup.
   -n, --dry-run   show the summary and review, write nothing
   -y, --yes       don't ask (required with --no-input, and when reading stdin)
+  --take-name     use the exported workspace name instead of keeping this one
 
 The previous working copy is saved as .nvim/loomworks.user.json.<time>.bak;
 copy it back over .nvim/loomworks.user.json to undo. A working copy
@@ -11061,11 +11099,13 @@ local function main()
   end
 
   -- Non-interactive control (CI-safe): strip the global `--no-input` /
-  -- `--non-interactive` flags from anywhere in the args, and honor the
-  -- LW_NO_INPUT and conventional CI environment variables. Any of these makes
-  -- prompts error with an explicit-argument hint instead of blocking.
-  local a = {}
-  for _, v in ipairs(raw) do
+  -- `--non-interactive` flags, and honor the LW_NO_INPUT and conventional CI
+  -- environment variables. Any of these makes prompts error with an
+  -- explicit-argument hint instead of blocking. Global options are taken only
+  -- where they are lw's own — before the command and among its own arguments,
+  -- never after `--` or from a program's arguments (spec §16.7, cli_options).
+  local a, globals = require("loomworks.cli_options").split_globals(raw)
+  for _, v in ipairs(globals) do
     if v == "--no-input" or v == "--non-interactive" then
       force_noninteractive = true
     elseif v == "--shared" then
@@ -11076,8 +11116,6 @@ local function main()
       -- Source selection and pin redirect are resolved by the host bootstrap
       -- (main.lua) before we run; ignore these here so the nvim-hosted path
       -- doesn't choke on them.
-    else
-      a[#a + 1] = v
     end
   end
   if env_truthy("LW_NO_INPUT") or env_truthy("CI") then
@@ -11090,15 +11128,16 @@ local function main()
   if command == "help" or command == "-h" or command == "--help" then
     finish(M.cmd_help(a[2], a[3]))
   end
-  -- `lw <command> … --help` / `-h` (before any `--`, whose tail belongs to a
-  -- build tool / program) is `lw help <command>` for every command, checked
+  -- `lw <command> … --help` / `-h` (among its own arguments; never after `--` or in a
+  -- program's arguments) is `lw help <command>` for every command, checked
   -- before any handler can read the flag as an operand (`lw build --help`
   -- used to look for a profile named "--help"). A command without a topic of
   -- its own gets the general usage. A sub-command (`lw profile query --help`)
   -- gets its own section of the parent topic when it has one. Exit 0 either way.
   if command then
-    for i = 2, #a do
-      if a[i] == "--" then break end
+    -- Only among lw's own arguments — the host's bound too (main.lua), so a
+    -- program's `--help` (`lw launch add app x node --help`) is an argument.
+    for i = 2, require("loomworks.cli_options").own_end(a) - 1 do
       if a[i] == "--help" or a[i] == "-h" then
         local sub = (i > 2) and a[2] or nil
         M.cmd_help(M.has_help_topic(command) and command or nil, sub)
@@ -11129,7 +11168,9 @@ local function main()
   -- is a global command (no workspace needed). NOTE: `config` no longer routes
   -- here — it is now the project-configuration command (see below).
   if command == "settings" then
-    finish(M.cmd_settings(a[2], a[3], a[4]))
+    -- `--` only escapes a value that spells an option (spec §16.7).
+    local s = require("loomworks.cli_options").drop_escape(a, 3)
+    finish(M.cmd_settings(s[2], s[3], s[4]))
   end
   if command == "init" then
     finish(M.cmd_init(a))

@@ -393,7 +393,8 @@ plugin/loomworks.lua
           → ws:_cleanup_orphaned_skeletons()
           → ws:remerge()                               ← merge + sync all registries
           → state = "initialized", emit "workspace_changed"
-          → unsigned (pre-trust) cache → notice + ws:_save_cache() (signed)
+          → unsigned (pre-trust) cache → notice only; held as empty in memory,
+            replaced by the next cache write (loading never writes)
           → ws:_start_tracking(paths)                  ← file watcher owned by Workspace
           → ws:_scan_tools_async()
             → tool_state = "scanning", emit "tools_scanning"
@@ -1447,10 +1448,12 @@ are valid.
   GitHub already resolves to the newest *non-prerelease* — so stable is a
   no-op change.
 - **unstable** queries the GitHub **releases API**
-  (`https://api.github.com/repos/samienne/loomworks.nvim/releases`, newest-first)
-  via `download.fetch` (which now takes an `Accept` + `User-Agent` header),
-  parses it with `boot.json`, and takes the newest **non-draft** entry
-  (pre-releases *included*). Its `tag_name` (leading `v` stripped) is validated
+  (`https://api.github.com/repos/samienne/loomworks.nvim/releases`, listed in
+  publish order) via `download.fetch` (which now takes an `Accept` +
+  `User-Agent` header), parses it with `boot.json`, and takes the
+  highest-versioned **non-draft** entry by `paths.version_gt` (pre-releases
+  *included*, ranking below their release) - never the first listed, since a
+  stable release cut after a newer pre-release is listed first. Its `tag_name` (leading `v` stripped) is validated
   with `pin.valid_version` **before** it is interpolated into any URL — a
   network-derived tag is never trusted into a path (defense in depth, same trust
   boundary as `lw.pin`). The bundle is then fetched from
