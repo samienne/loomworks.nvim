@@ -243,8 +243,14 @@ end
 ---            each step, and the one wait for a starting daemon, use
 ---            ROUTED_STEP_MS instead of STEP_MS
 ---   step_ms  (tests) replaces the step bound
+---   foreign_pin  the version the workspace's lw.pin names when this lw is
+---            not it (boot.pin.foreign_pin; main.lua sets it for a command
+---            the invoked host runs itself, spec §16.23): the workspace daemon
+---            is the pinned lw's, so this one neither launches, stops nor
+---            retires one — "pinned", and the command runs without it
 --- Returns what happened: "off" | "used" | "launched" | "restarted" |
---- "bypass" | "newer" | "hung" | "starting" | "elsewhere" | "failed".
+--- "bypass" | "newer" | "hung" | "starting" | "elsewhere" | "pinned" |
+--- "failed".
 --- @param root string
 --- @param opts table
 --- @return string
@@ -255,6 +261,11 @@ function M.ensure(root, opts)
     local sel = runtime.select((opts.config or {})[runtime.SETTING], { flag = opts.flag, getenv = opts.getenv })
     if sel.warning then note("lw: " .. sel.warning) end
     if not sel.daemon then return "off" end
+    if opts.foreign_pin then
+        log("lw.pin names lw " .. tostring(opts.foreign_pin) .. ": the workspace daemon is the pinned lw's;"
+            .. " this command runs without it")
+        return "pinned"
+    end
     local launch = opts.launch or require("loomworks.daemon.launch").launch
     local step = opts.step_ms or M.step_ms(opts.routed)
     local st = inspect.state(root)

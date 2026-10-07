@@ -272,6 +272,22 @@ describe("ensure (§19.9 through a workspace command)", function()
         assert.equals("off", (run({ config = {} })))
         assert.equals("off", (run({ flag = true })))
     end)
+    -- A command a global lw runs itself in a repo whose lw.pin names another
+    -- version (spec §16.23): the daemon is the pinned lw's — an idle daemon
+    -- of another version is neither stopped nor replaced, none is launched.
+    it("a repo that pins another lw: leaves the daemon alone (\"pinned\")", function()
+        srv.identity = "0.1.0"
+        local before = srv.last_request
+        local out, notes, logs = run({ foreign_pin = "9.9.9" })
+        assert.equals("pinned", out)
+        assert.equals("", notes)
+        assert.truthy(logs:find("lw.pin names lw 9.9.9", 1, true))
+        assert.is_false(srv.stopped == true)
+        assert.equals(before, srv.last_request)
+        assert.is_nil(exited)
+        -- In in-process mode the selection still wins.
+        assert.equals("off", (run({ config = {}, foreign_pin = "9.9.9" })))
+    end)
     it("a busy daemon of another version: retire + the bypass line", function()
         srv.identity = "0.1.0"
         local other = assert(client.session(srv.address))

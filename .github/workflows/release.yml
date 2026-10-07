@@ -254,6 +254,17 @@ jobs:
           find incoming -type f -exec cp {} release/ \;
           ls -la release
 
+      # The binary descriptor (spec §16.41): what this release implements
+      # (protocol range, interface versions + schema digests, working-copy
+      # schemas), printed by the released Linux host running this release's
+      # bundle — the same `lw version --json` a user runs. Published as
+      # lw-<version>-descriptor.json and covered by SHA256SUMS below.
+      - name: Generate the binary descriptor
+        shell: bash
+        env:
+          VER: ${{ github.event.inputs.version || github.ref_name }}
+        run: bash repo/scripts/release/descriptor.sh "${VER#v}" release
+
       - name: Generate SHA256SUMS
         shell: bash
         working-directory: release

@@ -258,9 +258,10 @@ function M.ensure_host_binary(version, asset, sha256, dest, opts)
 end
 
 --- The machine-local directory for everything a pinned run provisions:
---- `<data>/loomworks/pinned` (spec §16.22). Never inside a repository — a
+--- `<install>/pinned` — the install folder, `<data>` unless
+--- LOOMWORKS_INSTALL_DIR moves it (spec §16.22). Never inside a repository — a
 --- clone can ship any file under its own tree, so nothing there is trusted.
-function M.pinned_root() return paths.data_dir() .. "/pinned" end
+function M.pinned_root() return paths.install_dir() .. "/pinned" end
 
 --- Where the pinned bundle for (`version`, pinned bundle `sha256`) lives:
 --- `<data>/pinned/<sha256>/lua-<version>`. Keyed by the pinned hash, so a pin
@@ -528,23 +529,25 @@ function M.self_update(opts)
   end
 
   local version = manifest.version
-  local dest_dir = paths.data_dir() .. "/lua-" .. version
+  -- Release bundles go to the install folder (spec §16.22 "Install folder").
+  local install = paths.install_dir()
+  local dest_dir = install .. "/lua-" .. version
   if uv.fs_stat(dest_dir) and not opts.force then
     return { version = version, updated = false, dir = dest_dir,
       channel_overridden = channel_overridden }
   end
 
-  local ok, err = paths.mkdirp(paths.data_dir())
+  local ok, err = paths.mkdirp(install)
   if not ok then return nil, "prepare data dir: " .. tostring(err) end
 
-  local tmpzip = paths.data_dir() .. "/.dl-" .. version .. ".zip"
+  local tmpzip = install .. "/.dl-" .. version .. ".zip"
   local okd, ed = download.fetch_to_file(base .. "/" .. bundle_name, tmpzip)
   if not okd then return nil, "fetch bundle: " .. ed end
 
   local okv, ev = verify.verify_artifact_file(tmpzip, bundle_name, manifest)
   if not okv then paths.rm_rf(tmpzip); return nil, "bundle verify: " .. ev end
 
-  local stage = paths.data_dir() .. "/.stage-" .. version
+  local stage = install .. "/.stage-" .. version
   paths.rm_rf(stage)
   local okx, ex = M.extract_zip(tmpzip, stage)
   paths.rm_rf(tmpzip)

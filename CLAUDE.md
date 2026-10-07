@@ -467,7 +467,7 @@ These are implementation-specific details not covered by the spec or architectur
   (bundle → machine-local `<data>/pinned/<sha256>/lua-<ver>/`, never a
   repo-local dir — a clone can ship one; the redirect also refuses when a
   legacy `.nvim/cache/lua-<ver>/` differs from the verified bundle). `main.lua` provisions on the
-  `LOOMWORKS_PINNED` sentinel and redirects workspace ops (build/run/test/clean/
+  `LOOMWORKS_PINNED` sentinel and redirects workspace ops (build/run/test/clean/reset/`daemon run`/`daemon restart`/
   configure) to the pinned release. Invariants: fixed origin (user-overridable
   only via `LOOMWORKS_RELEASE_URL`), version+hash pin never a URL, mandatory
   hash even under `--insecure`, global host never execs the repo scripts.

@@ -7588,6 +7588,8 @@ function M._ensure_daemon(root, routed)
     return require("loomworks.daemon.ensure").ensure(root, {
       config = read_config(), flag = M._no_daemon, note = note, routed = routed == true,
       log = require("loomworks.daemon.rlog").writer(root),
+      -- A repo that pins another lw: its daemon is the pinned lw's (§16.23).
+      foreign_pin = rawget(_G, "__loomworks_foreign_pin"),
     })
   end)
   if not ok then

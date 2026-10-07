@@ -34,7 +34,7 @@ function M.norm(p)
   return (p:gsub("\\", "/"):gsub("/+$", ""))
 end
 
---- Per-user data dir that holds release bundles + the host binary.
+--- Per-user data dir: shared state, and release bundles unless install_dir() moves them.
 --- %LOCALAPPDATA%\loomworks (win) | $XDG_DATA_HOME/loomworks | ~/.local/share/loomworks
 function M.data_dir()
   local override = getenv("LOOMWORKS_DATA_DIR")
@@ -47,6 +47,38 @@ function M.data_dir()
   if xdg then return (xdg:gsub("\\", "/")) .. "/loomworks" end
   local home = getenv("HOME") or getenv("USERPROFILE") or "."
   return (home:gsub("\\", "/")) .. "/.local/share/loomworks"
+end
+
+--- Is `p` an absolute path (`/x`, `C:/x`, `//server/x`; forward slashes)?
+local function is_absolute(p)
+  return p:sub(1, 1) == "/" or p:match("^%a:/") ~= nil
+end
+
+--- The install-folder override (spec §16.22 "Install folder"):
+--- `LOOMWORKS_INSTALL_DIR`, normalized, or nil when unset. A relative value is
+--- not honoured (it would resolve against whatever directory lw runs in): nil
+--- plus the reason, which main.lua prints once.
+--- @return string|nil dir, string|nil ignored_reason
+function M.install_dir_override()
+  local v = M.norm(getenv("LOOMWORKS_INSTALL_DIR"))
+  if not v then return nil end
+  if not is_absolute(v) then
+    return nil, "LOOMWORKS_INSTALL_DIR='" .. v .. "' is not an absolute path - ignored"
+  end
+  return v
+end
+
+--- Where lw INSTALLS what it downloads (spec §16.22 "Install folder"): the
+--- release bundles (`<install>/lua-<ver>`, self-update) and the pinned cache
+--- (`<install>/pinned`: the pin redirect's host binaries and pinned bundles),
+--- with the release-notes record that describes those bundles. Equal to
+--- `data_dir()` unless `LOOMWORKS_INSTALL_DIR` names another folder — the
+--- editor plugin sets it for an lw it runs, so that lw's downloads stay in the
+--- plugin's own data. Shared runtime state (trust store, daemon sockets,
+--- identity and logs, device locks, acquired modules, settings) never moves:
+--- it stays in `data_dir()` / the config file for every lw on the machine.
+function M.install_dir()
+  return M.install_dir_override() or M.data_dir()
 end
 
 --- Host config file (%APPDATA%\loomworks | $XDG_CONFIG_HOME | ~/.config).
@@ -159,8 +191,9 @@ function M.version_gt(a, b)
 end
 
 --- List installed release versions as { {ver=, dir=}, ... }, newest first.
+--- Release bundles live in the install folder (`install_dir()`).
 function M.installed_releases()
-  local base = M.data_dir()
+  local base = M.install_dir()
   local scan = uv.fs_scandir(base)
   local out = {}
   if scan then

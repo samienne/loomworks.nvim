@@ -1146,11 +1146,148 @@ do
     "status not redirected")
   eq(act({ command = "build", pin = nil, self_version = "1.0.0" }), "no-pin",
     "no pin -> no redirect")
-  for _, c in ipairs({ "build", "run", "test", "clean", "configure" }) do
+  for _, c in ipairs({ "build", "run", "test", "clean", "configure", "reset" }) do
     ok(pin.is_redirect_command(c), c .. " is a redirect command")
   end
   ok(not pin.is_redirect_command("publish"), "publish is not a redirect command")
   ok(not pin.is_redirect_command("bootstrap"), "bootstrap is not a redirect command")
+  -- `lw daemon`: the sub-commands that start a workspace daemon follow the pin
+  -- (what the editor launches, `daemon run [--stdio]`, and `restart`); the
+  -- control sub-commands stay with the invoked host (spec §16.23).
+  ok(pin.is_redirect_command("daemon", "run"), "daemon run is a redirect command")
+  ok(pin.is_redirect_command("daemon", "restart"), "daemon restart is a redirect command")
+  for _, s in ipairs({ "status", "list", "stop", "kill" }) do
+    ok(not pin.is_redirect_command("daemon", s), "daemon " .. s .. " is not a redirect command")
+  end
+  ok(not pin.is_redirect_command("daemon", nil), "bare `daemon` (status) is not a redirect command")
+  ok(not pin.is_redirect_command("profile", "run"), "a sub-command word alone never redirects")
+  eq(act({ command = "daemon", sub = "run", pin = P, self_version = "1.0.0" }), "redirect",
+    "daemon run in a pinned repo -> redirect")
+  eq(act({ command = "daemon", sub = "stop", pin = P, self_version = "1.0.0" }), "in-process",
+    "daemon stop -> in-process")
+  eq(act({ command = "daemon", sub = "run", pin = P, self_version = "1.0.0", pinned_sentinel = "2.0.0" }),
+    "in-process", "daemon run as the pinned host -> never redirect again")
+  eq(act({ command = "daemon", sub = "run", pin = P, self_version = "2.0.0" }), "in-process",
+    "daemon run, pin == self -> in-process")
+  -- The command words: global flags and `--root <dir>` are not words.
+  local c1, s1 = pin.command_words({ "daemon", "run", "--root", "/w", "--stdio" })
+  ok(c1 == "daemon" and s1 == "run", "command_words: daemon run --root /w --stdio")
+  local c2, s2 = pin.command_words({ "--no-input", "daemon", "--root", "/w", "restart" })
+  ok(c2 == "daemon" and s2 == "restart", "command_words skips a global flag and --root's value")
+  local c3, s3 = pin.command_words({ "--root=/w", "daemon", "run" })
+  ok(c3 == "daemon" and s3 == "run", "command_words: --root=<dir>")
+  local c4, s4 = pin.command_words({})
+  ok(c4 == nil and s4 == nil, "command_words of nothing")
+  eq(pin.root_option({ "daemon", "run", "--root", "/w" }), "/w", "root_option: --root <dir>")
+  eq(pin.root_option({ "daemon", "run", "--root=C:/w" }), "C:/w", "root_option: --root=<dir>")
+  eq(pin.root_option({ "build" }), nil, "root_option: none")
+  -- foreign_pin: the pinned version when this host is not it and nothing
+  -- bypasses the pin (its own commands then leave the daemon alone).
+  eq(pin.foreign_pin({ pin = P, self_version = "1.0.0" }), "2.0.0", "foreign_pin: another version")
+  eq(pin.foreign_pin({ pin = P }), "2.0.0", "foreign_pin: a host of unknown version")
+  eq(pin.foreign_pin({ pin = P, self_version = "2.0.0" }), nil, "foreign_pin: the pinned version itself")
+  eq(pin.foreign_pin({ self_version = "1.0.0" }), nil, "foreign_pin: no pin")
+  for _, k in ipairs({ "pinned_sentinel", "dev", "lw_override", "no_pin" }) do
+    eq(pin.foreign_pin({ pin = P, self_version = "1.0.0", [k] = k == "pinned_sentinel" and "2.0.0" or true }),
+      nil, "foreign_pin: none under " .. k)
+  end
+end
+
+print("boot.paths — install folder (LOOMWORKS_INSTALL_DIR)")
+do
+  local function with_env(name, value, fn)
+    local old = uv.os_getenv(name)
+    if value then uv.os_setenv(name, value) else uv.os_unsetenv(name) end
+    local okf, err = pcall(fn)
+    if old then uv.os_setenv(name, old) else uv.os_unsetenv(name) end
+    if not okf then error(err, 0) end
+  end
+  local data = paths.norm(root .. "/tests/.tmp-install/data")
+  local inst = paths.norm(root .. "/tests/.tmp-install/inst")
+  paths.rm_rf(root .. "/tests/.tmp-install")
+  paths.mkdirp(data .. "/lua-1.0.0"); paths.mkdirp(inst .. "/lua-2.0.0")
+  with_env("LOOMWORKS_DATA_DIR", data, function()
+    with_env("LOOMWORKS_INSTALL_DIR", nil, function()
+      eq(paths.install_dir(), data, "unset: the install folder is the data dir")
+      eq(update.pinned_root(), data .. "/pinned", "unset: pinned cache under the data dir")
+      eq(paths.newest_release_root(), data .. "/lua-1.0.0", "unset: releases from the data dir")
+    end)
+    with_env("LOOMWORKS_INSTALL_DIR", inst .. "/", function()
+      eq(paths.install_dir(), inst, "set: the install folder (normalized)")
+      eq(paths.data_dir(), data, "set: the data dir (shared state) does not move")
+      eq(update.pinned_root(), inst .. "/pinned", "set: pinned host binaries + bundles under it")
+      eq(update.pinned_binary_path("2.0.0", "lw-linux-x86_64"), inst .. "/pinned/lw-2.0.0-lw-linux-x86_64",
+        "set: the redirect's pinned host binary under it")
+      eq(paths.newest_release_root(), inst .. "/lua-2.0.0", "set: release bundles from it")
+      eq(paths.modules_dir(), data .. "/modules", "set: acquired modules stay in the data dir")
+    end)
+    with_env("LOOMWORKS_INSTALL_DIR", "relative/dir", function()
+      local d, why = paths.install_dir_override()
+      ok(d == nil and type(why) == "string" and why:find("not an absolute path", 1, true),
+        "a relative LOOMWORKS_INSTALL_DIR is not honoured, with a reason")
+      eq(paths.install_dir(), data, "relative: the data dir is used")
+    end)
+  end)
+  paths.rm_rf(root .. "/tests/.tmp-install")
+end
+
+print("lw version --json — the binary descriptor (spec §16.41)")
+do
+  local sb = paths.norm(root .. "/tests/.tmp-descriptor")
+  paths.rm_rf(sb); paths.mkdirp(sb .. "/home")
+  local override = { LOOMWORKS_DATA_DIR = sb .. "/home", LOCALAPPDATA = sb .. "/home", APPDATA = sb .. "/home",
+    XDG_DATA_HOME = sb .. "/home", XDG_CONFIG_HOME = sb .. "/home", LOOMWORKS_LUA = paths.norm(root .. "/lua"),
+    LOOMWORKS_NO_HOUSEKEEPING = "1" }
+  local env = {}
+  for k, v in pairs(uv.os_environ()) do
+    if override[k] == nil and k ~= "LOOMWORKS_PINNED" and k ~= "LOOMWORKS_LW" and k ~= "LW_ROOT"
+        and k ~= "LOOMWORKS_INSTALL_DIR" then
+      env[#env + 1] = k .. "=" .. v
+    end
+  end
+  for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+  local function run(args)
+    local logf, errf = sb .. "/out.txt", sb .. "/err.txt"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local fe = assert(uv.fs_open(errf, "w", 420))
+    local done, code = false, nil
+    local argv = { "lua", "--" }
+    for _, a2 in ipairs(args) do argv[#argv + 1] = a2 end
+    local h = uv.spawn(uv.exepath(), { args = argv, cwd = root, env = env, stdio = { nil, fd, fe } },
+      function(c) code = c; done = true end)
+    if h then
+      local t = uv.new_timer()
+      t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+    end
+    uv.fs_close(fd); uv.fs_close(fe)
+    return code, slurp(logf) or "", slurp(errf) or ""
+  end
+  local code, out, err = run({ "version", "--json" })
+  eq(code, 0, "lw version --json exits 0  (" .. err:sub(1, 200) .. ")")
+  local doc = json.decode(out)
+  ok(type(doc) == "table", "it prints one JSON document")
+  doc = type(doc) == "table" and doc or {}
+  eq(doc.descriptor, 1, "descriptor format 1")
+  ok(type(doc.transport) == "table" and type(doc.transport.max) == "number"
+    and doc.transport.min <= doc.transport.max, "a transport range")
+  ok(type(doc.schemas) == "table" and type(doc.schemas.user) == "number", "the working-copy schemas")
+  ok(type(doc.binary) == "table" and doc.binary.dev == true and doc.binary.impl == "lua",
+    "a development source is described as a dev build")
+  local names = {}
+  for _, o in ipairs(doc.objects or {}) do
+    for _, i in ipairs(o.interfaces or {}) do names[i.name] = i end
+  end
+  ok(names["loomworks.Root"] and names["loomworks.Build"] and names["lw.internal.Snapshot"],
+    "the root and the core interfaces are listed")
+  ok(names["loomworks.Build"] and type(names["loomworks.Build"].schema_digest) == "table"
+    and #(names["loomworks.Build"].schema_digest["1"] or "") == 64, "with each version's schema digest")
+  ok(out:find('^{%s*"binary"') ~= nil, "canonical key order")
+  local tcode, tout = run({ "version" })
+  eq(tcode, 0, "plain lw version still exits 0")
+  ok(tout:find("^lw %- host: ") ~= nil and not tout:find("{", 1, true), "plain lw version is unchanged text")
+  paths.rm_rf(sb)
 end
 
 print("boot.update — versioned_base URL shapes")

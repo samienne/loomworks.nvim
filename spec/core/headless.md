@@ -1051,7 +1051,8 @@ launcher, or re-exec'd by the redirect (§16.23) — MUST **provision** the pinn
 release's bundle before it resolves system Lua (a command that resolves none —
 pin management, §16.24 — provisions nothing): acquire the bundle for the pinned
 version, verify it against the pinned bundle hash, and extract it to a
-**pinned-release cache in the per-user data directory**, keyed by the pinned
+**pinned-release cache in the install folder** (below; the per-user data
+directory unless overridden), keyed by the pinned
 version **and** the pinned bundle hash, then resolve system Lua from there rather
 than from the newest machine-global install. Provisioning is idempotent: a bundle
 the host itself extracted there after verification is reused without
@@ -1081,6 +1082,25 @@ launcher's form (§16.24 "Invoked form"). The host removes the value from its ow
 environment once read, so nothing it starts inherits it. A launcher that does not
 set it (an earlier generation) is still honoured, with the `./lw.sh` form.
 
+**Install folder.** What the host installs — the release bundles of an
+acquisition or self-update (§16.13), and the pinned-release cache above (the
+redirect's pinned host binaries, §16.23, and the pinned bundles), together with
+the record of which release's notes were last shown (§16.37), which describes
+those bundles — lives in the **install folder**: the per-user data directory,
+unless the environment value `LOOMWORKS_INSTALL_DIR` names another one (an
+absolute path; a relative value is not honoured and the host says so, once, on
+standard error). It exists for an lw that another program runs and provisions —
+the editor plugin runs its own lw with the install folder inside the editor's
+data, so everything that lw downloads stays there. The value is inherited, so a
+pinned host a redirect re-execs, and a daemon the host starts, install into the
+same folder. It moves only installations: the **shared runtime state** — the
+trust store (§17), the daemons' runtime directory, sockets, identity and logs
+(§19), device locks (§18), acquired modules (§16.20), host settings — stays in
+the per-user data and configuration directories for every lw on the machine,
+whoever runs it, so a plugin-run lw and a user's own lw see one trust store and
+meet one workspace daemon. Housekeeping (§16.40) prunes only the per-user data
+directory; an install folder is its owner's to prune.
+
 A launcher never downloads or extracts the bundle itself — it fetches and execs
 only the host binary, and the exec'd host self-provisions the bundle as above,
 so the launcher depends on nothing beyond a system downloader and a hash tool.
@@ -1092,7 +1112,10 @@ Unix-style shell environment) cannot change its behavior.
 ### 16.23 Global pin-aware redirect
 
 A globally-installed host, invoked for a **workspace operation** (build, run,
-test, configure, clean) inside a repository that carries a pin, MUST honor the
+test, configure, clean, reset — every command the CLI routes to the workspace
+daemon, §19.15 — and the `daemon` sub-commands that **start a workspace
+daemon**: `daemon run`, in every form including the editor's `--stdio` one, and
+`daemon restart`) inside a repository that carries a pin, MUST honor the
 pin. It resolves the pinned version from the workspace root — the same root
 discovery that locates the workspace files (§2). When the pinned version equals
 the running host's own release version it runs the operation **in-process**: no
@@ -1108,10 +1131,25 @@ cleans up, and the redirecting host neither dies nor exits before the pinned
 host has finished; an interrupt addressed to the redirecting host alone (a
 POSIX signal sent to its process only) is forwarded to the pinned host.
 
+**One daemon per pinned workspace.** Whoever starts it — the editor, which
+launches `lw daemon run` with the binary it selected (§19.16), a CLI command, a
+`daemon restart` — the daemon of a pinned workspace is the pinned release. For
+`daemon run` the workspace is the one its `--root` names (the daemon runs from
+the per-user state directory, §19.10), and the redirect carries that root
+across the exec; its one-line notice goes to standard error, since a daemon's
+standard output may be its protocol stream. A command the invoked host runs
+itself in such a repository (a configuration edit, a profile selection) leaves
+the workspace daemon to the pinned release: in daemon mode its ensure step
+(§19.10) neither launches, stops nor retires one — the command runs without the
+daemon, silently (a line in the runtime log) — so a global lw and the pinned
+lw never replace each other's daemon in turn (§19.9). The daemon's control
+sub-commands — `daemon status`, `list`, `stop`, `kill` — speak the frozen
+control subset to a daemon of any version (§19.8) and run as the invoked host.
+
 Redirection applies only to workspace operations. **Host and management
-operations** — reporting the host version, self-update, install, and pin
-management (§16.24: the status page, `install` and `upgrade`) — MUST NOT
-redirect; they always run as the invoked (global)
+operations** — reporting the host version (also its descriptor, §16.41),
+self-update, install, and pin management (§16.24: the status page, `install`
+and `upgrade`) — MUST NOT redirect; they always run as the invoked (global)
 host, so that, for example, updating the pin is never carried out by the old
 pinned version. Redirection MUST be guarded against recursion: once a host is
 running as the pinned version with the pinned bundle loaded, it never redirects
@@ -1146,7 +1184,7 @@ The following invariants are normative:
   repo-provided script would be an arbitrary-code-execution vector.
 - **Nothing executed from the repository tree.** The host binary a redirect runs
   and the bundle it loads are the artifacts the host fetched and verified into
-  the per-user pinned cache (§16.22) — never a same-named file shipped inside
+  the pinned cache of its install folder (§16.22) — never a same-named file shipped inside
   the repository, whatever its hash.
 - **Bounded residual risk.** A malicious pin can at worst force acquisition of an
   authentic but **older / downgraded** official release; it cannot introduce
@@ -3833,6 +3871,10 @@ except where the last column says so.
 | `<data>/.housekeeping` | one empty stamp file | never |
 | `<exe>` | the binary | the user |
 
+With an install folder (`LOOMWORKS_INSTALL_DIR`, §16.22) the release bundles,
+`release-notes-seen` and `pinned/` are in that folder instead of `<data>`;
+neither housekeeping nor `lw cleanup` looks there — its owner prunes it.
+
 **Transient.** These exist only while an operation runs. One that is still
 there afterwards was left by an interrupted process: a **leftover**. A
 leftover is removed once it is older than the age given, by modification time
@@ -4022,3 +4064,40 @@ Every removal by housekeeping and `lw cleanup` follows these rules:
    never unlinked. Pinned releases follow the rules above.
 6. **Never anything else.** The kept items, `.leftover` files, the
    `<data>/daemon/` directory, and anything not listed here are never removed.
+
+### 16.41 Binary descriptor
+
+`lw version --json` prints the **binary descriptor**: what this lw implements,
+for a program that has to decide whether it can use a binary before starting a
+daemon with it (the editor's quick pre-check, §19.16; authoritative is
+`Root.describe` after connecting, §19.20). It is a host command (§16.23: it
+never redirects), needs no workspace and starts no daemon. It describes the
+system Lua this invocation resolved (§16.11) — the release bundle, the pinned
+bundle in pinned context, a development source — so a host with no system Lua
+at all (a release host before its first `lw self-update`) has none to describe
+and exits non-zero. Plain `lw version` is unchanged: one line of text.
+
+The descriptor is the binary half of `Root.describe`, with the same field
+shapes and without a session:
+
+| Field | Content |
+|---|---|
+| `descriptor` | the descriptor format version (1); fields are only ever added |
+| `binary` | `lw_version` (the release version, or a development build's fingerprint, §19.9), `impl`, `dev` |
+| `transport` | the transport range, `min` (`protocol_min`) .. `max` (`protocol`) (§19.8) |
+| `schemas` | the working-copy (`user`) and `cache` schema versions it reads and writes (§19.9) |
+| `objects` | the core objects a daemon of this binary mounts, each interface with its versions, its `same_build` / `internal` / `deprecated` flags, and per version the sha256 of its schema document (`schema_digest`) — computed from the same registry a daemon mounts, never listed by hand |
+| `root_methods` | the methods of `loomworks.Root/1` |
+
+Interfaces a module mounts depend on the workspace and are not part of it. The
+document's schema is `spec/protocol/meta/descriptor.schema.json`. The output is
+canonical — keys sorted, two-space indent — so equal descriptors are equal
+bytes.
+
+**Published with each release.** The release publishes the descriptor of the
+release as the asset `lw-<version>-descriptor.json`, listed in the signed
+`SHA256SUMS` (§16.15) like every other asset. It is produced by the release
+itself — the released host running the released bundle as `lw version --json`
+— and the release fails unless it names that release (not a development
+build). A program that pins a release can so learn what it implements before
+downloading its binary.

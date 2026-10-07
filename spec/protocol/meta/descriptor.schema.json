@@ -1,0 +1,25 @@
+{
+  "description": "Schema of the binary descriptor (spec 16.41): what an lw binary implements, as `lw version --json` prints it and each release publishes it (lw-<version>-descriptor.json, listed in the signed SHA256SUMS). The binary half of Root.describe (19.20): the same binary, transport and objects shapes, without a session. Fields are only ever added; a reader ignores a field it does not know.",
+  "type": "object",
+  "required": ["descriptor", "binary", "transport", "schemas", "objects", "root_methods"],
+  "properties": {
+    "descriptor": { "description": "The descriptor format version.", "type": "integer", "minimum": 1 },
+    "binary": { "$ref": "../interfaces/loomworks/Root.1.json#/$defs/Description/properties/binary" },
+    "transport": { "$ref": "../interfaces/loomworks/Root.1.json#/$defs/Description/properties/transport" },
+    "schemas": {
+      "description": "The working-copy (user) and cache schema versions this binary reads and writes (19.9).",
+      "type": "object",
+      "required": ["user", "cache"],
+      "properties": {
+        "user": { "type": "integer", "minimum": 1 },
+        "cache": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "objects": {
+      "description": "The core objects a daemon of this binary mounts, each interface with its versions and the sha256 of each version's schema document. Interfaces a module mounts depend on the workspace and are not listed.",
+      "type": "array",
+      "items": { "$ref": "../interfaces/loomworks/Root.1.json#/$defs/Object" }
+    },
+    "root_methods": { "type": "array", "items": { "type": "string" } }
+  }
+}

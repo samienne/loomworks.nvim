@@ -94,14 +94,6 @@ end
 --- Env read via libuv's view (sees in-process uv.os_setenv; used for tests).
 local function getenv(name) return paths.getenv(name) end
 
---- First non-flag token — the subcommand — ignoring leading global flags.
-local function subcommand(args)
-  for _, v in ipairs(args) do
-    if type(v) == "string" and v:sub(1, 1) ~= "-" then return v end
-  end
-  return nil
-end
-
 -- ---- args: peel off the bootstrap-level `--dev[=PATH]` / `--no-pin` flags ---
 local forwarded = {}
 local dev_flag, dev_flag_path, no_pin = false, nil, false
@@ -147,16 +139,28 @@ end
 -- ---- pin: sentinel, override, and workspace root ----------------------------
 local pinned_sentinel = getenv("LOOMWORKS_PINNED")
 local lw_override = getenv("LOOMWORKS_LW") ~= nil
+-- The command and its sub-command (`daemon run`), tolerant of a leading
+-- global flag (e.g. `lw --no-input self-update`), the same way the redirect
+-- classifies it — otherwise a flag-prefixed host command would fall through
+-- to the nvim-hosted CLI.
+local command, command_sub = pin.command_words(forwarded)
 -- The workspace root the pin (and the repo-local cache) live at — the same
 -- upward walk the CLI uses to bind a workspace, seeded from LW_ROOT when a
--- launcher passes the user's cwd.
-local pin_root = pin.find_pin_root(paths.norm(getenv("LW_ROOT")) or uv.cwd())
+-- launcher passes the user's cwd. A daemon started for a workspace (`lw
+-- daemon run --root <dir>`, which runs from the per-user state directory)
+-- names its workspace with --root (spec §16.23).
+local pin_start = paths.norm(getenv("LW_ROOT"))
+if not pin_start and command == "daemon" then pin_start = paths.norm(pin.root_option(forwarded)) end
+local pin_root = pin.find_pin_root(pin_start or uv.cwd())
+
+-- The install folder (spec §16.22): a relative LOOMWORKS_INSTALL_DIR is not
+-- honoured; say so once (stderr — stdout may be a protocol stream).
+do
+  local _, ignored = paths.install_dir_override()
+  if ignored then io.stderr:write("lw: " .. ignored .. "\n") end
+end
 
 -- ---- host commands: version / self-update (work without a bundle) -----------
--- Detect the subcommand tolerant of a leading global flag (e.g.
--- `lw --no-input self-update`), the same way the redirect classifies it — otherwise a
--- flag-prefixed host command would fall through to the nvim-hosted CLI.
-local command = subcommand(forwarded)
 -- `--version` / `-v` are the conventional spellings; accept them as aliases so
 -- they don't fall through to workspace resolution and error about a missing
 -- loomworks.json.
@@ -281,7 +285,17 @@ if pinned_sentinel and not dev_opt_in then
   end
 end
 
+-- `lw version --json` (spec §16.41, the binary descriptor) describes what this
+-- binary implements — protocol range, interfaces, schemas — which lives in
+-- system Lua, so it runs after the system-Lua searcher is installed (below).
+local version_json = false
 if host_command == "version" then
+  for _, v in ipairs(forwarded) do
+    if v == "--json" then version_json = true end
+  end
+end
+
+if host_command == "version" and not version_json then
   local upd = require("boot.update")
   -- Same dev-build predicate self-update uses (§16.32), so the label never
   -- calls a host a dev build that self-update would replace, or vice versa.
@@ -428,7 +442,7 @@ elseif host_command == "self-update" then
         silenced = wn.silenced(getenv, cfg),
       })
       for _, l in ipairs(lines) do io.write(l .. "\n") end
-      if #lines > 0 then wn.record_seen(paths.data_dir(), res.version) end
+      if #lines > 0 then wn.record_seen(paths.install_dir(), res.version) end
     end)
   end
   end
@@ -496,15 +510,21 @@ do
   local self_version = (source_kind == "release" and luaroot)
     and luaroot:match("lua%-(.+)$") or nil
   local p = pin_root and pin.read(pin_root)
-  local action = pin.decide({
+  local decision = {
     command = command,
+    sub = command_sub,
     pin = p,
     self_version = self_version,
     pinned_sentinel = pinned_sentinel,
     no_pin = no_pin,
     lw_override = lw_override,
     dev = dev_opt_in,
-  })
+  }
+  local action = pin.decide(decision)
+  -- A command this host runs itself in a repository that pins another lw
+  -- leaves the workspace daemon to the pinned lw (spec §16.23): the CLI's
+  -- ensure step neither starts nor replaces one (loomworks.daemon.ensure).
+  if action ~= "redirect" then _G.__loomworks_foreign_pin = pin.foreign_pin(decision) end
   if action == "redirect" then
     local asset, aerr = pin.detect_asset()
     if not asset then
@@ -514,8 +534,11 @@ do
     -- Machine-local (never the repo's .nvim/cache): a clone could ship a
     -- binary there together with a pin naming its hash (spec §16.22/§16.23).
     local bin = require("boot.update").pinned_binary_path(p.version, asset)
-    io.write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
-    io.stdout:flush()
+    -- A daemon's stdout may be its protocol stream (`daemon run --stdio`):
+    -- the notice goes to stderr there.
+    local notice = command == "daemon" and io.stderr or io.stdout
+    notice:write("lw: this repo pins lw " .. p.version .. "; fetching and running it...\n")
+    notice:flush()
     local ok, err = require("boot.update").ensure_host_binary(
       p.version, asset, p.hashes[asset], bin)
     if not ok then
@@ -550,7 +573,8 @@ do
     -- Carry the sentinel + workspace root across the exec; the child inherits
     -- our environment (uv.os_setenv is visible to spawned children).
     uv.os_setenv("LOOMWORKS_PINNED", p.version)
-    uv.os_setenv("LW_ROOT", getenv("LW_ROOT") or uv.cwd())
+    -- (A daemon's root is its --root: it runs from the per-user state dir.)
+    uv.os_setenv("LW_ROOT", pin_start or uv.cwd())
     local code = require("boot.exe").run_in_place(bin, forwarded)
     if not code then
       io.stderr:write("lw: cannot exec pinned lw at " .. bin .. "\n")
@@ -638,6 +662,20 @@ end
 
 if not _G.vim then
   _G.vim = require("loomworks.shim")
+end
+
+-- `lw version --json`: the binary descriptor (spec §16.41), from the system
+-- Lua this invocation resolved — never a workspace, never a daemon.
+if version_json then
+  local ok, doc = pcall(function()
+    return require("loomworks.daemon.descriptor").describe()
+  end)
+  if not ok then
+    io.stderr:write("lw: cannot describe this binary: " .. tostring(doc) .. "\n")
+    exit(1)
+  end
+  io.write(require("loomworks.daemon.descriptor").encode(doc) .. "\n")
+  exit(0)
 end
 
 _G.arg = forwarded
