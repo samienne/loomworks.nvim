@@ -339,7 +339,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw.pin` or starts lw's provisioned pinned binary itself. The status page,
   `:LoomworksDaemon status` and the new `:checkhealth loomworks` say which
   `lw` was chosen and why, or why none. `binary.source` (development only)
-  runs it with a Lua source tree. (#PR)
+  runs it with a Lua source tree. (#154)
 
 ### Fixed
 - The editor and `lw` no longer restart or retire each other's workspace
