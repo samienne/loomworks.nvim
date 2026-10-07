@@ -279,7 +279,8 @@ function M.resolve(root, opts)
             elseif missing then
                 local mp = require("loomworks.provision.managed").path(missing.sha256, { data = opts.data, win = win })
                 add(source, "download", mp, "lw v" .. tostring(missing.version) .. " (" .. tostring(missing.asset)
-                    .. ") is not installed yet: downloaded in daemon mode")
+                    .. (missing.corrupt and ") is corrupt (" .. tostring(why) .. "): downloaded again in daemon mode"
+                        or ") is not installed yet: downloaded in daemon mode"))
                 sel.download = missing
                 sel.source, sel.label = source, M.LABELS[source]
             else
@@ -310,7 +311,7 @@ function M.none_note(sel)
     if sel.download then
         local d = sel.download
         return "the plugin-managed lw v" .. tostring(d.version) .. " (" .. tostring(d.asset)
-            .. ") is not installed yet — running in-process"
+            .. (d.corrupt and ") is corrupt — running in-process" or ") is not installed yet — running in-process")
     end
     local parts = {}
     for _, c in ipairs(sel.candidates or {}) do

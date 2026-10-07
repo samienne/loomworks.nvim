@@ -969,8 +969,8 @@ and starts the daemon from it; a failed download is one note and is retried by
 `:LoomworksDaemon connect`. `binary = { download = false }` turns downloads
 off; `binary = { release_url = "/path/to/mirror" }` (or `LOOMWORKS_RELEASE_URL`)
 fetches from a mirror instead. Everything the plugin installs stays under
-Neovim's data directory, and older managed binaries are removed after a new
-one is installed. (Until the plugin ships its own pin, no managed `lw` is
+Neovim's data directory, and older managed binaries that no editor has used
+for 14 days are removed after a new one is installed. (Until the plugin ships its own pin, no managed `lw` is
 wanted, so nothing is downloaded yet.) `binary = { prefer = "managed" }` tries the plugin's own
 `lw` before `PATH`; the daemon's version can then depend on whether the editor
 or a terminal started it. A repository's `lw.pin` is followed by `lw` itself,

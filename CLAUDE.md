@@ -235,9 +235,15 @@ directory safety before merging:
    directories (lstat; links/junctions skipped, never followed) whose realpath
    is a direct child of that dir's realpath (separator-bounded), holding only
    the regular file `lw`/`lw.exe`: unlink it, then `rmdir` (no rm_rf). Never
-   the wanted hash nor a binary in use (launched, observed, live handle `exe`,
-   by path or realpath). `fetch.ensure` removes only its own
-   `<sha256>.<pid>.dl` regular file; prune removes another pid's after 24 h.
+   the wanted hash, a binary in use (launched, observed, live handle `exe`,
+   by path or realpath), nor a slot whose directory mtime (its last use:
+   creation/install, every selection via `managed.touch`, every connect to a
+   daemon running it) is younger than `cache.UNUSED_S` (14 days) — this is
+   what protects other editors' daemons, other plugin versions' binaries and
+   an install in progress. `fetch.ensure` only unlinks its own
+   `<sha256>.<pid>.<n>.dl` path (a file or link, never a directory; never
+   written through) and renames over a slot binary whose hash mismatches;
+   prune removes another pid's regular `.dl` file after 24 h.
 
 ## Implementation Notes
 

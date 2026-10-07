@@ -1900,30 +1900,54 @@ in-process path. In `in-process` mode nothing below happens.
   installed, that decides the search: in daemon mode the observer downloads it
   — asynchronously, the editor stays in-process meanwhile and the Runtime note
   says it is downloading, from where — then launches from it (or connects to a
-  daemon that appeared meanwhile). The download goes into a temporary file
-  `<sha256>.<pid>.dl` next to the slots; its SHA-256 must equal the wanted
-  one, then it is made executable (POSIX) and renamed into its slot. A
-  failure (network, missing asset, hash mismatch) removes the temporary file,
-  installs nothing and is one note naming the binary and why (running
-  in-process); it is not retried until `:LoomworksDaemon connect`. Requests
-  for one hash share one download; a slot another editor filled meanwhile is
-  kept. The source is `<base>/<asset>` for a release-source override (the
+  daemon that appeared meanwhile). The editor's data directory and
+  `loomworks/` under it may be links (followed); `loomworks/lw/` and the slots
+  are created as, and must be, real directories. The download goes into a
+  temporary file `<sha256>.<pid>.<n>.dl` next to the slots (unique per
+  process and attempt); whatever is at that path first (a stale file, a link)
+  is unlinked, never written through. Its SHA-256 must equal the wanted one,
+  then it is made executable (POSIX) and renamed into its slot (on Windows
+  the rename is retried briefly while the new file is held, e.g. by an
+  antivirus scan). A failure (network, missing asset, hash mismatch) removes
+  the temporary file, installs nothing and is one note naming the binary and
+  why (running in-process); it is not retried until `:LoomworksDaemon
+  connect`. Requests for one hash share one download; a slot another editor
+  filled meanwhile is kept. `:LoomworksDaemon connect` while a download runs
+  aborts it (curl is stopped, the temporary file removed) and starts over;
+  unloading the workspace aborts it. A transfer is bounded: a connection
+  must come up within 20 s, one slower than 1 KiB/s for 30 s is dropped, none
+  runs past 300 s (three attempts, lw's retry rule).
+  A managed binary is present only as a regular file (lstat: a link in a slot
+  is never launched) whose SHA-256 matches its slot's name; the editor hashes
+  it once per process before first using it. One that does not match is
+  corrupt: never launched, one note, and in daemon mode downloaded again and
+  renamed over it. The source is `<base>/<asset>` for a release-source override (the
   setup option `binary.release_url`, else `LOOMWORKS_RELEASE_URL`: a local
   directory, `file://` or a flat mirror, as for `lw`, §16.29), else `lw`'s
   fixed origin's `releases/download/v<version>/<asset>`; http(s) goes through
-  `curl` from the search path's absolute entries. The hash, not the transport,
-  is the trust anchor. `binary.download = false` turns downloads off (the
+  `curl` from the search path's absolute entries; from an https source a
+  redirect may lead only to https (`--proto-redir =https`; a configured http
+  mirror is used as given). The hash, not the transport, is the trust anchor. `binary.download = false` turns downloads off (the
   managed source is then absent, with why); `:checkhealth` never downloads,
   it reports what would be downloaded and the state of a download.
+  Each slot's directory mtime is its last use: set when the slot is created
+  or installed into, and whenever an editor selects the binary (marked at
+  most once an hour) or connects to a daemon whose handle names it.
   After a successful download the observer prunes the other slots (only when
   no download runs, never without a wanted hash): only entries named exactly
   64 lowercase hex digits that are real directories (a link or junction is
   skipped, never followed) whose realpath is a direct child of the realpath of
   `<editor data>/loomworks/lw`, itself a real directory, and that hold only the
   regular file `lw`/`lw.exe`; never the binary of a daemon the editor launched
-  or observes, or the live daemon's; the file is unlinked, then the empty
-  directory removed (a failure — on Windows a running binary — skips it). A
-  temporary file another process left is removed once a day old. No
+  or observes, or the live daemon's, and never a slot used within the last 14
+  days. The last rule protects what one editor cannot see — another editor's
+  daemon (another workspace, another plugin version with another pin) and an
+  install in progress — since POSIX lets a running binary be unlinked; a
+  daemon left running more than 14 days with no editor connecting may lose
+  its file (it keeps running; a later launch downloads it again). The file is
+  unlinked, then the empty directory removed (a failure — on Windows a
+  running binary — skips it). A temporary file another process left is
+  removed once a day old. No
   compatibility probe runs before the launch (step 5h.5).
 
   **Install location.** Everything the plugin installs (host binaries,

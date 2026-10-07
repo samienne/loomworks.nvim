@@ -860,10 +860,17 @@ re-cut onto master step by step; this section is expanded as each step lands.
   lw's data directory.
 - `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
   download of a `Wanted` record (`{ sha256, version, asset }`) into
-  `<dir>/<sha256>.<pid>.dl` (`uv.fs_copyfile` for a local mirror, `vim.system`
-  curl with lw's retry rule for http(s)), `provision/sha256.lua` check,
-  chmod 755 (POSIX), rename into the slot; single flight per hash through
-  `M.states` (also what the observer's note and checkhealth show). The
+  `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local
+  mirror, `vim.system` curl — `curl_args`: connect timeout, low-speed limit,
+  `--proto-redir =https` from https — with lw's retry rule for http(s)),
+  `provision/sha256.lua` check, chmod 755 (POSIX), rename into the slot
+  (retried on Windows); single flight per hash through `M.states` (also what
+  the observer's note and checkhealth show); `cancel(sha256)` kills the
+  transfer (the observer's `_cancel_download` on an explicit connect or
+  stop). `provision/managed.lua` `verify` hashes a present binary once per
+  process (`find` reports a mismatch as corrupt + the wanted record, so it is
+  downloaded again) and `touch` sets a slot's directory mtime = last use
+  (on selection and on connect), which `prune` honours (`UNUSED_S`). The
   observer's `_download` calls it when the selection carries `download`, then
   restarts (connect or `_launch`), and `_prune` runs `provision/cache.lua`
   `prune` (deletion safety rule 11) with the in-use binaries (`_binary`, the

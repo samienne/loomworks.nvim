@@ -45,7 +45,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Neovim's data directory when it has none (from the official release, or a
   mirror set with `binary.release_url` or `LOOMWORKS_RELEASE_URL`), checks the
   file against the SHA-256 the plugin carries, starts the daemon from it and
-  removes older copies it installed. The status page and `:checkhealth
+  removes older copies no editor has used for 14 days. A stuck download is
+  restarted by `:LoomworksDaemon connect`; a damaged copy is never started
+  and is downloaded again. The status page and `:checkhealth
   loomworks` show the download; a failure is one note and the editor stays
   in-process. `binary = { download = false }` turns this off. Nothing is
   downloaded until the plugin ships its own pin (a later release). (#157)

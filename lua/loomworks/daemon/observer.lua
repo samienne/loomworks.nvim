@@ -83,6 +83,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _child table|nil the daemon this observer launched (until it is live or exited): `{ pid, code }`
 --- @field _binary string|nil the host binary it was launched from
 --- @field _downloading string|nil the hash of the plugin-managed lw being downloaded (step 5h.3)
+--- @field _dl_token table|nil identifies that download's callback (a cancelled one's is ignored)
 --- @field _download_failed string|nil the hash whose download failed: not retried until an explicit connect
 --- @field _download_note string|nil that failure's note
 --- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
@@ -165,6 +166,8 @@ end
 ---   resolve     fun(root, opts) → binary|nil, source, selection (loomworks.provision.binsel.resolve)
 ---   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
 ---   fetch       fun(wanted, opts, cb(path|nil, err)) (loomworks.provision.fetch.ensure)
+---   cancel_fetch fun(sha256, why) (loomworks.provision.fetch.cancel)
+---   touch       fun(path) (loomworks.provision.managed.touch)
 ---   prune       fun(opts) (loomworks.provision.cache.prune)
 ---   inspect     fun(root) → state (loomworks.daemon.inspect.state)
 ---   connect     fun(endpoint, opts, cb) (loomworks.daemon.client.connect)
@@ -225,7 +228,12 @@ end
 --- @param explicit boolean
 function Observer:start(explicit)
     if self.state == "stopped" then return end
-    if explicit then self.skip = {}; self._download_failed = nil end
+    if explicit then
+        self.skip = {}; self._download_failed = nil
+        -- An explicit connect aborts a download in flight (it may hang) and
+        -- starts over.
+        if self._downloading then self:_cancel_download("restarted by :LoomworksDaemon connect") end
+    end
     self:_start_watch()
     -- Single-flight: one connection, one attempt, one launch at a time.
     if self.conn or self._connecting then return end
@@ -318,8 +326,12 @@ function Observer:_download(sel)
     local fetch = require("loomworks.provision.fetch")
     local setting = self.opts.binary or {}
     self._downloading = want.sha256
+    local token = {}
+    self._dl_token = token
     local fopts = { release_url = setting.release_url, getenv = self.opts.getenv }
     local st = (self.opts.fetch or fetch.ensure)(want, fopts, function(path, err)
+        if self._dl_token ~= token then return end -- cancelled: a newer download or a stop owns the state
+        self._dl_token = nil
         self._downloading = nil
         if self.state == "stopped" then return end
         if not path then
@@ -338,6 +350,15 @@ function Observer:_download(sel)
     if self._downloading then
         self:_set("downloading", "downloading " .. what .. " from " .. tostring(url) .. " — running in-process meanwhile")
     end
+end
+
+--- Abort the download in flight (loomworks.provision.fetch.cancel: curl is
+--- killed, its partial file removed); its callback is ignored.
+--- @param why string
+function Observer:_cancel_download(why)
+    local sha = self._downloading
+    self._downloading, self._dl_token = nil, nil
+    if sha then pcall(self.opts.cancel_fetch or require("loomworks.provision.fetch").cancel, sha, why) end
 end
 
 --- Remove the plugin-managed binaries other than `want`, never one in use:
@@ -469,6 +490,9 @@ function Observer:_on_connected(target, conn, err)
     self._dropped_id = nil
     self._relaunch = nil
     self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version, exe = target.exe }
+    -- A daemon running a plugin-managed binary marks it used, so no editor
+    -- prunes it (loomworks.provision.cache; a no-op for any other binary).
+    if target.exe then pcall(self.opts.touch or require("loomworks.provision.managed").touch, target.exe) end
     self.generation = ch.session_generation
     self.seq = tonumber(conn.welcome and conn.welcome.seq) or 0
     self:_start_keepalive()
@@ -881,6 +905,7 @@ end
 function Observer:stop()
     if self.state == "stopped" then return end
     self.state = "stopped"
+    if self._downloading then self:_cancel_download("the workspace was unloaded") end
     self:_stop_timer("_watch")
     self:_stop_timer("_keepalive")
     local c = self.conn

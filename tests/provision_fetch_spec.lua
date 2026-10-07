@@ -160,7 +160,7 @@ describe("provision.fetch", function()
             cb(false, "connection reset")
         end })
         assert.is_nil(got); assert.truthy(err:find("connection reset", 1, true))
-        assert.truthy(seen:match("/" .. good .. "%.%d+%.dl$"), seen)
+        assert.truthy(seen:match("/" .. good .. "%.%d+%.%d+%.dl$"), seen)
         assert.is_false(exists(seen))
         assert.same({}, listdir(managed.dir(data)))
         -- A missing source.
@@ -183,6 +183,105 @@ describe("provision.fetch", function()
         finish()
         assert.is_true(vim.wait(5000, function() return #results == 3 end, 10))
         for i = 1, 3 do assert.equals(managed.path(good, { data = data }), results[i][1]) end
+    end)
+
+    it("follows a linked data directory (dotfile setups) but never a linked lw/ or slot", function()
+        local real = tmpdir()
+        vim.fn.delete(data, "rf")
+        local ok = uv.fs_symlink(real, data, { dir = true, junction = true })
+        if not ok then pending("cannot create a directory link here"); return end
+        local got, err = ensure(want())
+        assert.is_nil(err)
+        assert.equals(payload, read(got))
+        assert.equals(payload, read(real .. "/loomworks/lw/" .. good .. "/" .. managed.exe_name()))
+        uv.fs_unlink(data); if exists(data) then uv.fs_rmdir(data) end
+        vim.fn.delete(real, "rf")
+        vim.fn.mkdir(data, "p")
+    end)
+
+    it("unlinks a link at its partial-download path, never writing through it", function()
+        local outside = tmpdir()
+        write(outside .. "/victim", "victim")
+        local tmp = fetch.partial_path(managed.dir(data), good, fetch._seq + 1)
+        vim.fn.mkdir(managed.dir(data), "p")
+        -- A file link, else (Windows without the privilege) a junction.
+        if not uv.fs_symlink(outside .. "/victim", tmp)
+            and not uv.fs_symlink(outside, tmp, { dir = true, junction = true }) then
+            pending("cannot create a link here"); return
+        end
+        local made
+        local got, err = ensure(want(), { transfer = function(url, dest, cb, o)
+            made = dest
+            return fetch.transfer(url, dest, cb, o)
+        end })
+        assert.equals(tmp, made)
+        assert.is_nil(err)
+        assert.equals(payload, read(got))
+        assert.equals("victim", read(outside .. "/victim"))
+        assert.is_false(exists(made))
+        vim.fn.delete(outside, "rf")
+    end)
+
+    it("retries the rename on Windows while the new binary is held (Defender)", function()
+        local calls = 0
+        local got, err = ensure(want(), { win = true, rename = function(a, b)
+            calls = calls + 1
+            if calls < 3 then return nil, "EACCES: permission denied", "EACCES" end
+            return uv.fs_rename(a, b)
+        end })
+        assert.is_nil(err); assert.equals(3, calls)
+        assert.equals(payload, read(got))
+        calls = 0
+        fetch.states = {}
+        vim.fn.delete(managed.dir(data), "rf")
+        got, err = ensure(want(), { win = false, rename = function()
+            calls = calls + 1; return nil, "EACCES: permission denied", "EACCES"
+        end })
+        assert.is_nil(got); assert.equals(1, calls)
+        assert.same({ good }, listdir(managed.dir(data))) -- the empty slot, no partial file
+    end)
+
+    it("re-hashes a present binary once per process; a corrupt one is downloaded again over it", function()
+        local slot = managed.path(good, { data = data })
+        write(slot, "corrupt")
+        managed._verified = {}
+        local got, err = ensure(want())
+        assert.is_nil(err)
+        assert.equals(payload, read(got))
+        local hashes = 0
+        local function counting(p) hashes = hashes + 1; return sha256.file(p) end
+        managed._verified = {}
+        assert.is_true(managed.verify(slot, good, { hash = counting }))
+        assert.is_true(managed.verify(slot, good, { hash = counting }))
+        assert.equals(1, hashes)
+    end)
+
+    it("cancels an in-flight download: the transfer is stopped, its partial file removed, waiters told", function()
+        local killed, tmp, late = false, nil, nil
+        local got, err, done
+        fetch.ensure(want(), { data = data, release_url = mirror, transfer = function(_, dest, cb)
+            tmp = dest; write(dest, "part"); late = cb
+            return { cancel = function() killed = true end }
+        end }, function(p, e) got, err, done = p, e, true end)
+        assert.equals("downloading", fetch.states[good].state)
+        assert.is_true(fetch.cancel(good, "restarted"))
+        assert.is_true(vim.wait(1000, function() return done end, 10))
+        assert.is_true(killed); assert.is_nil(got)
+        assert.truthy(err:find("restarted", 1, true))
+        assert.is_false(exists(tmp))
+        late(true) -- the killed transfer reporting late changes nothing
+        vim.wait(50)
+        assert.same({}, listdir(managed.dir(data)))
+        assert.is_false(fetch.cancel(good))
+    end)
+
+    it("bounds curl: connect timeout, low-speed limit, https-only redirects from an https origin", function()
+        local a = table.concat(fetch.curl_args("curl", "https://x/lw", "/t/dl", {}), " ")
+        assert.truthy(a:find("--connect-timeout " .. fetch.CONNECT_TIMEOUT, 1, true))
+        assert.truthy(a:find("--speed-limit " .. fetch.LOW_SPEED_BPS .. " --speed-time " .. fetch.LOW_SPEED_S, 1, true))
+        assert.truthy(a:find("--proto-redir =https", 1, true))
+        local h = table.concat(fetch.curl_args("curl", "http://mirror/lw", "/t/dl", {}), " ")
+        assert.is_nil(h:find("--proto-redir", 1, true))
     end)
 
     it("classifies curl failures like lw: 4xx final (but 408/429), the rest transient", function()
@@ -239,7 +338,15 @@ describe("provision.cache.prune (deletion safety rule 11)", function()
     local A, B, C = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64)
     local exe = is_win and "lw.exe" or "lw"
     local function slot(sha) return dir .. "/" .. sha end
-    local function install(sha) write(slot(sha) .. "/" .. exe, "bin") end
+    local function age(p, s)
+        local t = os.time() - (s or (cache.UNUSED_S + 3600))
+        uv.fs_utime(p, t, t)
+    end
+    -- An installed slot, last used long ago (unless `fresh`).
+    local function install(sha, fresh)
+        write(slot(sha) .. "/" .. exe, "bin")
+        if not fresh then age(slot(sha)) end
+    end
 
     before_each(function()
         fetch.states = {}
@@ -289,6 +396,7 @@ describe("provision.cache.prune (deletion safety rule 11)", function()
         local upper, short = string.rep("D", 64), string.rep("d", 63)
         install(upper); install(short); install(B)
         write(slot(B) .. "/extra", "keep me")
+        age(slot(B))
         write(dir .. "/" .. C, "a file, not a slot")
         write(dir .. "/notes.txt", "x")
         local r = prune()
@@ -332,10 +440,53 @@ describe("provision.cache.prune (deletion safety rule 11)", function()
         vim.fn.delete(real, "rf")
     end)
 
+    it("keeps a slot used recently (another editor's daemon, another plugin version, an install in progress)", function()
+        install(B, true); install(C)
+        local r = prune()
+        assert.equals("recently used", r.skipped[B])
+        assert.same({ slot(C) }, r.removed)
+        assert.same({ B }, listdir(dir))
+    end)
+
+    it("selecting or connecting to a managed binary marks its slot used; nothing else is touched", function()
+        install(B)
+        local bin = slot(B) .. "/" .. exe
+        assert.is_true(managed.touch(bin, { data = data }))
+        local st = uv.fs_lstat(slot(B))
+        assert.is_true(os.time() - st.mtime.sec < 60)
+        assert.equals("recently used", prune().skipped[B])
+        -- Not a managed slot: no-op.
+        local other = tmpdir()
+        write(other .. "/lw", "x"); age(other)
+        assert.is_false(managed.touch(other .. "/lw", { data = data }))
+        assert.is_true(os.time() - uv.fs_lstat(other).mtime.sec > 3600)
+        assert.is_false(managed.touch(slot(B) .. "/../" .. B .. "/" .. exe .. "x", { data = data }))
+        vim.fn.delete(other, "rf")
+    end)
+
+    it("find: a link in the slot is never launched; a corrupt binary is missing (downloaded again)", function()
+        local w = { sha256 = B, version = "0.1.50", asset = "lw-linux-x86_64" }
+        local outside = tmpdir()
+        write(outside .. "/lw", "bin")
+        vim.fn.mkdir(slot(B), "p")
+        local linked = uv.fs_symlink(outside .. "/lw", slot(B) .. "/" .. exe)
+        if linked then
+            local p, why = managed.find({ data = data, wanted = function() return w end })
+            assert.is_nil(p); assert.truthy(why:find("not installed", 1, true), why)
+            uv.fs_unlink(slot(B) .. "/" .. exe)
+        end
+        write(slot(B) .. "/" .. exe, "corrupt")
+        managed._verified = {}
+        local p, why, missing = managed.find({ data = data, wanted = function() return w end })
+        assert.is_nil(p); assert.truthy(why:find("SHA-256", 1, true), why)
+        assert.equals(B, missing.sha256); assert.is_true(missing.corrupt)
+        vim.fn.delete(outside, "rf")
+    end)
+
     it("removes another process's stale partial download only", function()
-        local mine, recent, stale = A .. ".111.dl", B .. ".222.dl", C .. ".333.dl"
+        local mine, recent, stale = A .. ".111.1.dl", B .. ".222.1.dl", C .. ".333.4.dl"
         for _, n in ipairs({ mine, recent, stale }) do write(dir .. "/" .. n, "part") end
-        write(dir .. "/x.333.dl", "not a hash")
+        write(dir .. "/x.333.1.dl", "not a hash")
         local old = os.time() - cache.STALE_DL_S - 60
         uv.fs_utime(dir .. "/" .. stale, old, old)
         uv.fs_utime(dir .. "/" .. mine, old, old)
@@ -343,6 +494,6 @@ describe("provision.cache.prune (deletion safety rule 11)", function()
         assert.same({ dir .. "/" .. stale }, r.removed)
         assert.equals("this editor's download", r.skipped[mine])
         assert.equals("recent", r.skipped[recent])
-        assert.truthy(exists(dir .. "/x.333.dl"))
+        assert.truthy(exists(dir .. "/x.333.1.dl"))
     end)
 end)

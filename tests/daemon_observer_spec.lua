@@ -906,14 +906,37 @@ describe("the observer (§19.16)", function()
         assert.equals("downloading", obs.state)
         assert.truthy(obs:runtime_line():find("downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from "
             .. "/mirror/lw-linux-x86_64", 1, true), obs:runtime_line())
-        -- A second start while downloading does not start a second download.
-        obs:start(true)
+        -- A watch tick or plain start while downloading starts no second download.
+        obs:start(false)
         assert.equals(1, fetches)
         installed = true
         pending("/m/lw")
         assert.equals("launching", obs.state)
         assert.same({ "/m/lw" }, spawned.argv)
         assert.same({ want.sha256 }, pruned.keep)
+    end)
+
+    it("connect aborts a download in flight and starts over; a stop aborts it; a late callback is ignored", function()
+        local want = { sha256 = string.rep("ef", 32), version = "0.1.50", asset = "lw-linux-x86_64" }
+        local cbs, cancelled = {}, {}
+        obs = attach({ inspect = function() return { kind = "none" } end,
+            resolve = function()
+                return nil, nil, { source = "managed", label = "plugin-managed lw", download = want, candidates = {} }
+            end,
+            fetch = function(_, _, cb) cbs[#cbs + 1] = cb; return { url = "u" } end,
+            cancel_fetch = function(sha, why) cancelled[#cancelled + 1] = { sha, why } end,
+            spawn = function() error("must not launch") end })
+        assert.equals("downloading", obs.state)
+        obs:start(true)
+        assert.equals(2, #cbs)
+        assert.same({ { want.sha256, "restarted by :LoomworksDaemon connect" } }, cancelled)
+        assert.equals("downloading", obs.state)
+        cbs[1](nil, "cancelled") -- the aborted download reports: ignored
+        assert.equals("downloading", obs.state)
+        assert.equals(want.sha256, obs._downloading)
+        obs:stop()
+        assert.equals(2, #cancelled)
+        assert.equals(want.sha256, cancelled[2][1])
     end)
 
     it("a failed download is one note, leaves the editor in-process and is retried only on connect", function()
@@ -975,6 +998,16 @@ describe("the observer (§19.16)", function()
             end }
         return f
     end
+
+    it("connecting to a daemon marks its binary used (a managed slot is not pruned while used)", function()
+        local f = fake_daemon()
+        f.st.handle.exe = "/d/loomworks/lw/x/lw"
+        local touched
+        f.opts.touch = function(p) touched = p end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals("/d/loomworks/lw/x/lw", touched)
+    end)
 
     it("after a retired daemon exits, launches one successor (once) and connects to it", function()
         local f = fake_daemon()

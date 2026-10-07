@@ -15,9 +15,17 @@
 ---   * whose only content is the regular file `lw` or `lw.exe` — anything else
 ---     and the entry is left alone;
 ---   * never the binary of a daemon this editor launched or observes, nor one
----     a caller names as in use (a failed unlink — Windows: running — skips).
---- A partial download a crashed editor left (`<sha256>.<pid>.dl`, a regular
---- file) is removed once it is a day old and not this process's.
+---     a caller names as in use (a failed unlink — Windows: running — skips);
+---   * never a slot used within UNUSED_S: its directory's mtime is its last
+---     use, set when it is created or installed into and whenever an editor
+---     selects the binary or connects to a daemon running it
+---     (loomworks.provision.managed.touch). That protects what this editor
+---     cannot see — another editor's daemon (another root, another plugin
+---     version) and an install in progress — and keeps two plugin versions
+---     from deleting each other's binary after each download. (POSIX lets a
+---     running binary be unlinked, so "in use" alone cannot.)
+--- A partial download a crashed editor left (`<sha256>.<pid>.<n>.dl`, a
+--- regular file) is removed once it is a day old and not this process's.
 
 local uv = vim.uv or vim.loop
 
@@ -25,6 +33,9 @@ local M = {}
 
 --- Age (seconds) after which another process's partial download is stale.
 M.STALE_DL_S = 24 * 3600
+
+--- A managed binary not used for this long (seconds: 14 days) may be pruned.
+M.UNUSED_S = 14 * 24 * 3600
 
 local function is_win() return package.config:sub(1, 1) == "\\" end
 
@@ -48,11 +59,11 @@ function M.is_slot_name(name)
     return type(name) == "string" and #name == 64 and name:match("^[0-9a-f]+$") ~= nil
 end
 
---- The pid of a partial download's name (`<sha256>.<pid>.dl`), or nil.
+--- The pid of a partial download's name (`<sha256>.<pid>.<n>.dl`), or nil.
 --- @param name string
 --- @return integer|nil
 function M.partial_pid(name)
-    local sha, pid = name:match("^(%x+)%.(%d+)%.dl$")
+    local sha, pid = name:match("^(%x+)%.(%d+)%.%d+%.dl$")
     if not sha or not M.is_slot_name(sha) then return nil end
     return tonumber(pid)
 end
@@ -154,6 +165,8 @@ function M.prune(opts)
                 report.skipped[name] = "resolves outside " .. dir
             elseif in_use({ norm(child, win), nreal }) then
                 report.skipped[name] = "in use"
+            elseif now - ((uv.fs_lstat(child) or {}).mtime or { sec = now }).sec < M.UNUSED_S then
+                report.skipped[name] = "recently used"
             else
                 local entries = scandir(child) or { "?" }
                 local exe = entries[1]
