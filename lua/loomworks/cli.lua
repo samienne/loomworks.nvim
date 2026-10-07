@@ -5108,8 +5108,10 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   if sub == "show" then return M.cmd_configuration_show(root, a3, a4) end
   if sub == "get" then return M.cmd_configuration_get(root, a3, a4, a5) end
   if sub == "set" then
-    -- `--` only escapes a value that spells an option (spec §16.7).
-    local s = require("loomworks.cli_options").drop_escape(argv or {}, 3)
+    -- `--` only escapes a value that spells an option (spec §16.7). Direct
+    -- callers pass the positionals without argv; use them as-is.
+    if not argv then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
+    local s = require("loomworks.cli_options").drop_escape(argv, 3)
     return M.cmd_configuration_set(root, s[3], s[4], s[5], s[6])
   end
   if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end

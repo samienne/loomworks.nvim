@@ -62,7 +62,19 @@
       "WebFetch(domain:www.lazyvim.org)",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); attrs=d.get\\('contributes',{}\\).get\\('debuggers',[{}]\\)[0].get\\('configurationAttributes',{}\\).get\\('launch',{}\\).get\\('properties',{}\\); [print\\(k,v.get\\('description',''\\)[:80]\\) for k,v in sorted\\(attrs.items\\(\\)\\) if 'console' in k.lower\\(\\) or 'terminal' in k.lower\\(\\)]\")",
       "Bash(where ohpm *)",
-      "Read(//c/Program Files/Huawei/DevEco Studio/**)"
+      "Read(//c/Program Files/Huawei/DevEco Studio/**)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh workflow run:*)",
+      "Bash(gh run watch:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh release:*)",
+      "Bash(git tag:*)",
+      "Bash(git push github:*)",
+      "Bash(git push gitcode:*)",
+      "Bash(sh scripts/release/*)",
+      "Bash(bash scripts/release/*)",
+      "Bash(scripts/release/*)"
     ]
   }
 }
