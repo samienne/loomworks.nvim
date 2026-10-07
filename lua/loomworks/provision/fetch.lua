@@ -32,6 +32,7 @@ local M = {}
 --- @field sha256 string lowercase hex SHA-256 of the asset (the trust anchor)
 --- @field version string the release version (`0.1.44`)
 --- @field asset string the release asset name (`lw-linux-x86_64`, `lw-windows-x86_64.exe`)
+--- @field channel? string the `binary.channel` it was accepted from (loomworks.provision.channel); nil: the plugin pin
 
 --- @class loomworks.provision.FetchState  the download of one hash (status page, checkhealth)
 --- @field state "downloading"|"ready"|"failed"

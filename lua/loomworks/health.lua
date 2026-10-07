@@ -1,7 +1,8 @@
 --- loomworks/health.lua — `:checkhealth loomworks`: the runtime mode and the
 --- `lw` host binary the editor would launch the workspace daemon from, with
 --- every source it tried and why each was not chosen (spec §19.16 "Host
---- binary"), and the state of a download of the plugin-managed lw. Read-only:
+--- binary"), the state of a download of the plugin-managed lw and the last
+--- `binary.channel` check (step 5h.5). Read-only:
 --- it launches and downloads nothing.
 
 local M = {}
@@ -58,6 +59,10 @@ function M.check(h, lw)
         h.info(what)
     end
     if sel.warning then h.warn(sel.warning) end
+    -- binary.channel (step 5h.5): the last check, from channel.json; never queries.
+    local chan = require("loomworks.provision.channel").describe(lw._binary_config)
+    for _, l in ipairs(chan or {}) do h.info(l) end
+    if sel.channel_note then h.info(sel.channel_note) end
 end
 
 return M

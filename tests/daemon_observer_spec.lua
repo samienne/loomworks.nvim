@@ -990,7 +990,7 @@ describe("the observer (§19.16)", function()
         pending("/m/lw")
         assert.equals("launching", obs.state)
         assert.same({ "/m/lw" }, spawned.argv)
-        assert.same({ want.sha256 }, pruned.keep)
+        assert.equals(want.sha256, pruned.keep[1]) -- (and the pin's hash: both wanted ones are kept)
     end)
 
     it("connect aborts a download in flight and starts over; a stop aborts it; a late callback is ignored", function()

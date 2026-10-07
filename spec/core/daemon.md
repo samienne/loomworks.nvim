@@ -2117,11 +2117,13 @@ in-process path. In `in-process` mode nothing below happens.
   removed once a day old. A search-path or explicit `lw` is probed before
   the launch ("Pre-launch probe" above, step 5h.5); the managed `lw` is not.
 
-  **Channel upgrades** (step 5h.5). The setup option `binary.channel`
+  **Channel upgrades** (step 5h.5; *implemented*,
+  `provision/channel.lua`). The setup option `binary.channel`
   (`"stable"` or `"unstable"`; default unset = the plugin pin only, no
   channel lookups) lets the managed `lw` move ahead of the pin. It applies
   only when the selection reaches the managed source, `binary.download` is
-  not `false` and the runtime mode is daemon. In the background, at most
+  not `false`, `binary.source` is not set (a development binary is never
+  channel-resolved) and the runtime mode is daemon. In the background, at most
   once a day and on `:LoomworksDaemon connect`:
   1. The **pinned** managed `lw` is made present and verified first (the
      download above). Only that binary resolves a channel — never an `lw`
@@ -2132,11 +2134,16 @@ in-process path. In `in-process` mode nothing below happens.
      editor's data directory as working directory, and bounded fetch limits.
      The output must name a valid release version, this host's asset and a
      64-hex hash, and carry the release's descriptor; that descriptor must
-     pass the interface check of "Plugin pin".
+     pass the interface check of "Plugin pin", with the pre-launch probe's
+     schema rule (schemas **equal** to the plugin's: the managed `lw` is what
+     the search falls through to, and a daemon with older schemas would be
+     weighed for a retirement).
   3. A result that passes and names a version newer than the current wanted
      one (§16.29 ordering: a pre-release ranks below its release) is
      **accepted**: it becomes the wanted binary and is downloaded as above,
-     hash-checked against the hash from the query. A running daemon is not
+     hash-checked against the hash from the query. It is recorded as accepted
+     only once that download succeeded; a failed download is one note and
+     the current wanted binary stays. A running daemon is not
      switched — a compatible daemon is never retired for being older; the
      next launch uses the new binary, and the Runtime note says so.
   4. A result that fails the check is one note ("<channel> offers lw <v>,
@@ -2495,8 +2502,7 @@ runtime is deferred until that module is actively developed.
        (§19.16 "Retiring an incompatible daemon"). In parts: the spec; the
        binary's `release query` *(done)*; the probe in the selection
        *(done)*; the retirement *(done)*;
-       `binary.channel` (usable once the plugin pin names a release with
-       `release query`).
+       `binary.channel` *(done)*.
    - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task
      ownership", §19.16 End state): `lw daemon run --root <root> --stdio`
      becomes a connect-or-start relay — discovery, launch, authentication and

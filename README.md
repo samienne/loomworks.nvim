@@ -989,7 +989,20 @@ Neovim's data directory, and older managed binaries that no editor has used
 for 14 days are removed after a new one is installed. The plugin pins one
 `lw` release (the latest published one when the plugin was released; a
 platform without a published binary, i.e. other than Linux x86_64, macOS
-arm64 and Windows x86_64, gets none). `binary = { prefer = "managed" }` tries the plugin's own
+arm64 and Windows x86_64, gets none). `binary = { channel = "stable" }` (or
+`"unstable"`; default unset = the pinned release only) lets the plugin's own
+`lw` move ahead of the pin: in daemon mode, at most once a day and on
+`:LoomworksDaemon connect`, the pinned `lw` asks the channel for its newest
+release (`lw release query`, verified against the release's signed hashes);
+a newer release that this plugin can use is downloaded in the background and
+used from the next daemon launch on (a running daemon is not switched). It
+never goes below the pin; moving from `unstable` to `stable` keeps an
+installed newer pre-release until stable overtakes it; removing the option
+returns to the pin. A release the plugin cannot use, no network, or a pinned
+`lw` too old to ask is one note on the `Runtime:` line, and the current
+binary stays. The channel only moves the plugin's own `lw`: an `lw` on `PATH`,
+`binary.path` / `LOOMWORKS_LW` and `binary.source` are never changed (the
+note says when the option has no effect). `binary = { prefer = "managed" }` tries the plugin's own
 `lw` before `PATH`; the daemon's version can then depend on whether the editor
 or a terminal started it. A repository's `lw.pin` is followed by `lw` itself,
 not by the editor. `binary = { source = "/path/to/lua" }` (or `true` for this

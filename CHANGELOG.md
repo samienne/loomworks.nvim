@@ -41,6 +41,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon mode: `setup({ binary = { channel = "stable" } })` (or
+  `"unstable"`) lets the plugin's own `lw` move ahead of its pinned release.
+  At most once a day and on `:LoomworksDaemon connect`, the pinned `lw` asks
+  the channel for its newest release (`lw release query`, signed and
+  hash-verified); a newer release this plugin can use (common protocol, same
+  file formats, the root interface) is downloaded, checked against the
+  release's hash and used from the next daemon launch on - a running daemon is
+  not switched. The option is off by default; it never goes below the pin,
+  moving from unstable to stable keeps an installed newer pre-release, and
+  only the plugin's own `lw` follows it (never an `lw` on PATH, `binary.path`,
+  `LOOMWORKS_LW` or `binary.source`). An unusable release, no network, or a
+  pinned `lw` too old to ask is one note on the Runtime line and the current
+  binary stays; `:checkhealth loomworks` shows the last check. (#PR)
 - Experimental daemon mode: the editor retires a running workspace daemon it
   cannot use - no common protocol, older file formats, or no root interface -
   when that daemon is idle and the `lw` the editor selected is known to be
