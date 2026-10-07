@@ -53,7 +53,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   only the plugin's own `lw` follows it (never an `lw` on PATH, `binary.path`,
   `LOOMWORKS_LW` or `binary.source`). An unusable release, no network, or a
   pinned `lw` too old to ask is one note on the Runtime line and the current
-  binary stays; `:checkhealth loomworks` shows the last check. (#PR)
+  binary stays; `:checkhealth loomworks` shows the last check. (#169)
 - Experimental daemon mode: the editor retires a running workspace daemon it
   cannot use - no common protocol, older file formats, or no root interface -
   when that daemon is idle and the `lw` the editor selected is known to be
