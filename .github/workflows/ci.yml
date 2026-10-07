@@ -174,3 +174,36 @@ jobs:
         env:
           REPO_SLUG: ${{ github.repository }}
         run: bash scripts/ci/old-host-compat.sh
+
+  # The plugin pin (spec 19.16 "Plugin pin"): lua/loomworks/provision/pinned.lua
+  # names the last published release; check its signed hashes and that its
+  # descriptor offers the interfaces this checkout's editor client needs. A
+  # WARNING only: a development checkout may need interfaces newer than any
+  # release (the editor then degrades with feature notes; developers point
+  # binary.path / LOOMWORKS_LW at a newer lw). The release workflow's publish
+  # stage runs the same check as a hard gate.
+  pin-check:
+    name: Plugin pin (warning only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Neovim (stable)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Check the pinned release
+        shell: bash
+        env:
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          ver="$(sed -n 's/^ *version = "\([^"]*\)",$/\1/p' lua/loomworks/provision/pinned.lua)"
+          echo "pinned lw: $ver"
+          mkdir -p pin
+          base="https://github.com/$REPO_SLUG/releases/download/v$ver"
+          for f in SHA256SUMS SHA256SUMS.sig "lw-$ver-descriptor.json"; do
+            curl -fsSL -o "pin/$f" "$base/$f" || { echo "::warning title=lw pin::v$ver publishes no $f"; rm -f "pin/$f"; }
+          done
+          nvim -l scripts/release/pin.lua verify "$ver" pin --warn

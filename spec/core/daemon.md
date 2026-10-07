@@ -1857,8 +1857,9 @@ the daemon's operations as with any other process:
 `daemon/remote_task.lua`); the host-binary order of step 5h.1
 (`provision/select.lua`, `provision/managed.lua`) and the download, check and
 pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
-`provision/sha256.lua`, `provision/cache.lua`; the plugin pin that names the
-wanted binary and compatibility probes are steps 5h.4-5h.5); remote tasks shown as
+`provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
+(`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
+two-stage `release.yml`; compatibility probes are step 5h.5); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1960,18 +1961,45 @@ in-process path. In `in-process` mode nothing below happens.
   decided after connecting, by the handshake and `Root.describe` (§19.9,
   §19.20); a pre-launch `lw version --json` probe (step 5h.5) is only a quick
   pre-check. Only what the plugin itself downloads is hash-checked (against
-  the hash the plugin release carries, steps 5h.3-5h.4); binaries the user
+  the hash the plugin release carries, "Plugin pin" below); binaries the user
   installed (search path, explicit) get compatibility checks only. In daemon
   mode the plugin may download its managed `lw` automatically (step 5h.3;
   `binary.download = false` turns that off): official releases only (§17.8).
+
+  **Plugin pin** (step 5h.4). The plugin carries the release it downloads:
+  `lua/loomworks/provision/pinned.lua`, `{ version, assets = { [<host asset>]
+  = <sha256> } }` with one hash per published host asset (`lw-linux-x86_64`,
+  `lw-macos-arm64`, `lw-windows-x86_64.exe`; the plugin keeps its own copy of
+  that table). It is never edited by hand: `scripts/release/pin.sh` writes it
+  from a release's `SHA256SUMS` after verifying `SHA256SUMS.sig` with the
+  committed release key, and only when the release's descriptor (§16.41)
+  offers what the editor client needs — a transport range overlapping the
+  plugin's, schemas no newer than the plugin's, and `/` `loomworks.Root/1`,
+  `/tasks` `loomworks.Tasks/1`, `/workspace` `loomworks.Workspace/1` (one
+  check, `provision/needs.lua`). The pin is not part of the lw bundle, so the
+  pin commit changes no release asset. Releases are cut in two stages: the
+  build stage builds every asset of `vX` from a build commit C into an
+  unpublished draft release (no tag, C recorded as its target); the cutter
+  pins the draft, commits only `pinned.lua` on top of C and tags that commit
+  `vX`; the tag push never rebuilds — it publishes the draft only when the
+  tagged commit changes nothing but `pinned.lua` since C, the pin names `X`
+  and equals the draft's signed hash for every host asset, the signature
+  verifies, every host binary of the draft matches `SHA256SUMS`, and the
+  descriptor passes the interface check. Any failure, or no draft, publishes
+  nothing. Hence a plugin checkout always pins a published release, never one
+  newer than every release. Ordinary CI runs the same check on the pinned
+  release as a warning only: a development checkout may need interfaces newer
+  than the last release (the editor then degrades with feature notes;
+  developers point `binary.path` / `LOOMWORKS_LW` at a newer `lw`).
 
   **The plugin-managed `lw`** (step 5h.3) lives at
   `<editor data>/loomworks/lw/<sha256>/lw` (`lw.exe` on Windows),
   content-addressed by the binary's SHA-256, so a binary is never replaced in
   place (a running daemon keeps its file). The binary the plugin wants is a
-  release version, a host asset name and that asset's SHA-256 (from the
-  plugin's own pin, step 5h.4; until then none is wanted and the slot is only
-  looked at). When the selection reaches a wanted managed `lw` that is not
+  release version, a host asset name and that asset's SHA-256: this host's
+  asset of the plugin pin ("Plugin pin" below; a platform with no published
+  asset, or a pin without this host's asset, wants none and the slot only says
+  why). When the selection reaches a wanted managed `lw` that is not
   installed, that decides the search: in daemon mode the observer downloads it
   — asynchronously, the editor stays in-process meanwhile and the Runtime note
   says it is downloading, from where — then launches from it (or connects to a
@@ -2293,7 +2321,8 @@ runtime is deferred until that module is actively developed.
        `binary.release_url`; pruning of other managed binaries. *(Done.)*
      - **5h.4** — the plugin's own pin (a hash per host asset, outside the
        bundle), the release sequencing that commits it, the CI interface
-       check.
+       check. *(Done: §19.16 "Plugin pin"; first seeded with
+       0.1.43-beta.15, which predates the descriptor.)*
      - **5h.5** — channel upgrades through the verified `lw`
        (`binary.channel`), compatibility-driven selection, the editor's
        retirement of an incompatible idle daemon.

@@ -49,8 +49,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   restarted by `:LoomworksDaemon connect`; a damaged copy is never started
   and is downloaded again. The status page and `:checkhealth
   loomworks` show the download; a failure is one note and the editor stays
-  in-process. `binary = { download = false }` turns this off. Nothing is
-  downloaded until the plugin ships its own pin (a later release). (#157)
+  in-process. `binary = { download = false }` turns this off. (#157)
+- The plugin now pins an `lw` release: in daemon mode, an editor with no
+  `lw` on `PATH` (and no `LOOMWORKS_LW` or `binary.path`) downloads the pinned
+  release's binary for Linux x86_64, macOS arm64 or Windows x86_64 and starts
+  the daemon from it. Releases are now built into a draft first and published
+  only once the plugin is pinned to exactly those binaries and the release
+  offers the interfaces the editor needs. (#159)
 - `lw version --json` prints what the binary implements: its release, the
   daemon transport range, the working-copy and cache schema versions and every
   interface a daemon of it serves, with versions and schema digests. Each

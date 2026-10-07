@@ -218,7 +218,7 @@ describe("the plugin-managed lw (§19.16)", function()
         got, why = managed.find({ data = "/d", win = false, wanted = function() return sha end,
             exists = function() return false end })
         assert.is_nil(got); assert.truthy(why:find("not installed", 1, true))
-        got, why = managed.find({ data = "/d" })
+        got, why = managed.find({ data = "/d", wanted = function() return nil, managed.NOT_YET end })
         assert.is_nil(got); assert.equals(managed.NOT_YET, why)
         got, why = managed.find({ data = "/d", wanted = function() return "zz" end })
         assert.is_nil(got); assert.truthy(why:find("invalid hash", 1, true))
