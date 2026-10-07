@@ -247,7 +247,17 @@ install a global bundle. Answering help never fetches anything.
 option and points at `lw help <command>`, and nothing runs — a mistyped option
 never falls through to a build or a launch. The global options (non-interactive
 control, create intent, source selection, pin bypass) are known to every
-command. The check stops at `--`: what follows belongs to a program or native
+command, and are recognised before the command and among its own arguments,
+up to the first `--` — never after it. After a launch configuration's command
+(or `--from-target <target>`) when one is added, every token is the program's,
+verbatim, a global option or a `--` included; only a `--` before the command
+ends lw's options there. When a launch configuration's arguments are edited and
+on the set-value commands (a configuration parameter, a project variable's
+default, a profile fill, a setting), a global option before `--` is lw's own
+and `--` is the escape: every token after it is an argument or the value,
+verbatim. When a global option taken that way selects a development source that
+is not configured, the error adds a hint to put the token after `--`. A
+`--help` / `-h` is help only within the same bound. The check stops at `--`: what follows belongs to a program or native
 tool and is passed through untouched. It also stops where a command's grammar
 hands the rest of the line to someone else or takes a value that may itself
 start with `-`: the program arguments after a launch configuration's command
