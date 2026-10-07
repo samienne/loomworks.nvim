@@ -894,7 +894,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   older schemas, transports overlapping, root present); `selected(sel)`
   weighs the selection (managed lw: `managed.wanted().version`; PATH /
   explicit: the cached probe verdict must be `compatible` with a version; a
-  pending probe is named); the session guard (`record` / `was_retired`, key
+  pending probe is named); the session guard (`record` / `was_retired`,
+  `record_failed` / `retire_failed` for a retirement that failed, key
   `<normalized realpath of the root>\n<lw_version>`, module state so it survives a workspace
   reload); `busy(st)` = `protocol.status_busy` (shared with the CLI's
   `ensure.reconcile`; `protocol` is on the shared side of the plugin/binary
@@ -907,12 +908,15 @@ re-cut onto master step by step; this section is expanded as each step lands.
   through — `on_message` drops frames from any connection but `self.conn`;
   it blocks `start`/`_on_watch` single-flight; closed on a decline). It
   probes a pending selected binary once, declines with a note (selected
-  binary not compatible, same version, guard tripped), else `_check_retire`
-  asks `status` every `retire_check_ms` (30 s;
-  `LW_TEST_DAEMON_RETIRE_CHECK_MS`; a tick while one is unanswered,
-  `asking`, sends none) until idle, and `_retire_now` (at most once,
-  `retiring`) records the guard and sends `retire`. An error reply is a
-  failure (note, no relaunch; observed stays observed, held is closed); a
+  binary not compatible, same version, guard tripped, guard recorded as
+  failed), else `_check_retire` asks `status` every `retire_check_ms` (30 s;
+  `LW_TEST_DAEMON_RETIRE_CHECK_MS`; a tick while one is still unanswered,
+  `asking`, ends the wait through `_retire_unanswered`: held is closed,
+  observed stays observed, nothing retired or relaunched) until idle, and
+  `_retire_now` (at most once, `retiring`) records the guard and sends
+  `retire`. An error reply, or no reply within `retire_check_ms` (`settled`
+  makes the first outcome win), is a failure (`record_failed`; note, no
+  relaunch; observed stays observed, held is closed); a
   reply or a closed connection skips the daemon, sets `retired_note`,
   notifies once and relaunches through the existing launch-once-after-exit
   path (`_relaunch`; an observed connection is closed as a `retiring` drop,

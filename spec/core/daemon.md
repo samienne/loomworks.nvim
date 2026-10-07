@@ -2167,8 +2167,9 @@ in-process path. In `in-process` mode nothing below happens.
   editor can still authenticate and retire it), when it does not offer
   `loomworks.Root/1`, or when its schemas are older than the editor's (it
   cannot read the editor's files). The `loomworks.Root/1` requirement applies
-  only to a transport (protocol) 11 connection; a protocol-10 daemon offers
-  no interfaces and is judged by its version and schemas only. A missing
+  only to a transport (protocol) 11 connection whose welcome lists the
+  daemon's interfaces (`welcome.objects`); a protocol-10 daemon offers no
+  interfaces and is judged by its version and schemas only. A missing
   feature interface only degrades that feature ("Interface client") and is
   never a reason to retire. The
   editor sends `retire` (never `stop`) only when all of these hold:
@@ -2186,7 +2187,9 @@ in-process path. In `in-process` mode nothing below happens.
   rule stops a retirement — the successor runs the same version again,
   typically because a repository pin redirects to it — the note says so
   (the daemon runs lw <v> again, likely a repository pin; update the pin or
-  the plugin). A compatible daemon is never retired by the editor, whatever
+  the plugin); when that earlier retirement failed (below), the note says
+  instead that retiring a daemon of that version failed earlier this
+  session, and it is not tried again. A compatible daemon is never retired by the editor, whatever
   its version.
 
   A daemon whose only incompatibility is older schemas (transports overlap,
@@ -2196,10 +2199,15 @@ in-process path. In `in-process` mode nothing below happens.
   retire it; the Runtime line says why. Any other incompatible daemon is not
   observed: the editor holds its connection only to ask `status` and send
   `retire`, ignores anything else it sends, and closes it when it declines.
-  While a `status` is unanswered no other is sent; `retire` is sent at most
-  once. An error reply to `retire` is a failure: the Runtime line says so,
-  nothing is relaunched, an observed daemon stays observed, and the
-  once-per-version rule still counts the attempt. The connection closing
+  While a `status` is unanswered no other is sent; a `status` still
+  unanswered at the next re-check ends the wait: the daemon is neither
+  retired nor relaunched, the Runtime line says it stopped answering, a held
+  connection is closed and an observed daemon stays observed (its keepalive
+  notices one that is gone). `retire` is sent at most once. An error reply
+  to `retire`, or none within one re-check interval, is a failure: the
+  Runtime line says so, nothing is relaunched, an observed daemon stays
+  observed, and the once-per-version rule still counts the attempt (as a
+  failed one). The connection closing
   instead of a reply counts as retired. Tasks of an observed daemon end when
   its connection closes, as for any drop. While the editor asks a daemon
   that reports no `busy_clients` (§19.9 "Busy"), its own observer connection

@@ -121,8 +121,10 @@ local function bare(v) return (tostring(v or ""):gsub("^v", "")) end
 --- @return boolean
 function M.same_version(a, b) return bare(a) == bare(b) end
 
--- The session guard: workspace root -> lw_version -> true. Module state, so
--- it outlives a workspace reload (a new observer) for this editor session.
+-- The session guard: workspace root -> lw_version -> { failed? }. Module
+-- state, so it outlives a workspace reload (a new observer) for this editor
+-- session. `failed`: the retirement was attempted and did not happen (an
+-- error reply, or no reply); it is still never retried.
 local retired = {}
 
 local function root_key(root)
@@ -141,17 +143,33 @@ end
 --- @return string
 function M.key(root, lw_version) return root_key(root) .. "\n" .. bare(lw_version) end
 
---- Has the editor already retired a daemon of `lw_version` for `root` in
---- this session?
+--- Has the editor already retired (or tried to retire) a daemon of
+--- `lw_version` for `root` in this session?
 --- @param root string
 --- @param lw_version string|nil
 --- @return boolean
-function M.was_retired(root, lw_version) return retired[M.key(root, lw_version)] == true end
+function M.was_retired(root, lw_version) return retired[M.key(root, lw_version)] ~= nil end
+
+--- Did the recorded retirement of a daemon of `lw_version` for `root` fail
+--- (an error reply to `retire`, or none)?
+--- @param root string
+--- @param lw_version string|nil
+--- @return boolean
+function M.retire_failed(root, lw_version)
+    local e = retired[M.key(root, lw_version)]
+    return e ~= nil and e.failed == true
+end
 
 --- Record a retirement (before `retire` is sent).
 --- @param root string
 --- @param lw_version string|nil
-function M.record(root, lw_version) retired[M.key(root, lw_version)] = true end
+function M.record(root, lw_version) retired[M.key(root, lw_version)] = {} end
+
+--- Record that the retirement recorded for `root` and `lw_version` failed.
+--- It stays recorded: the editor does not try again this session.
+--- @param root string
+--- @param lw_version string|nil
+function M.record_failed(root, lw_version) retired[M.key(root, lw_version)] = { failed = true } end
 
 --- Forget every recorded retirement (tests).
 function M.reset() retired = {} end

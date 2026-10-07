@@ -50,11 +50,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   checked again about every 30 s; a daemon whose only problem is older file
   formats stays observed meanwhile, and for the session when the editor does
   not retire it; a daemon with newer file formats, a compatible daemon of any
-  version, and one of the same version are never retired; a refused retire
-  request is noted and starts nothing; and a daemon of a given version is
-  retired at most once per workspace per Neovim session, so a repository pin
-  that keeps launching the same release cannot cause a loop (the note then
-  suggests updating the pin or the plugin). (#168)
+  version, and one of the same version are never retired; a refused or
+  unanswered retire request is noted and starts nothing; a daemon that stops
+  answering while the editor waits for it to become idle is noted and left
+  alone; and a daemon of a given version is retired at most once per
+  workspace per Neovim session, so a repository pin that keeps launching the
+  same release cannot cause a loop (the note then suggests updating the pin
+  or the plugin, or says that retiring that version failed earlier). (#168)
 - Experimental daemon mode: before starting the daemon from an `lw` on `PATH`,
   `LOOMWORKS_LW` or `binary.path`, the editor checks it with `lw version
   --json` in the background (bounded to about 3 s, cached per binary for the

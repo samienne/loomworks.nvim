@@ -500,13 +500,14 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
 
     it("no new status while one is unanswered; retire is sent, noticed and relaunched once", function()
         local f = fake()
+        f.opts.retire_check_ms = 2000 -- answered within the tick
         local held
         f.on_request = function(_, msg, rcb)
             if msg.kind == "status" and not f.answer then held = rcb; return true end
         end
         obs = attach(f.opts)
         assert.is_true(vim.wait(5000, function() return held ~= nil end, 10))
-        vim.wait(450) -- several re-check ticks
+        vim.wait(300)
         assert.equals(1, count(f, "old:status"))
         f.answer = true
         local wait = obs._retire
@@ -544,6 +545,91 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.equals(1, count(f, "old:retire"))
         -- The guard still applies.
         assert.is_true(R.was_retired(ws.root, "0.0.1"))
+    end)
+
+    it("a status unanswered for a whole tick ends the wait on a held connection (no retire, no relaunch)", function()
+        local f = fake()
+        f.on_request = function(_, msg) return msg.kind == "status" end -- never answered
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("not observing it (it stopped answering (no reply to status", 1, true)
+                ~= nil
+        end, 10), obs:runtime_line())
+        assert.equals("waiting", obs.state)
+        assert.is_true(f.conn.closed)
+        assert.is_nil(obs._retire)
+        assert.is_nil(obs._retire_timer)
+        vim.wait(300) -- no loop: not asked again, not reconnected
+        assert.equals(1, count(f, "old:status"))
+        assert.is_false(sent(f, "old:retire"))
+        assert.equals(1, f.connects)
+        assert.equals(0, f.spawned)
+        assert.same({}, f.notes)
+        assert.is_false(R.was_retired(ws.root, "0.0.1"))
+    end)
+
+    it("a status unanswered for a whole tick ends the wait on an observed connection, which stays observed", function()
+        local f = observable(fake())
+        f.on_request = function(_, msg) return msg.kind == "status" end -- never answered
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("observing it without retiring it (it stopped answering", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.equals("connected", obs.state)
+        assert.equals(f.conn, obs.conn)
+        assert.is_false(f.conn.closed == true)
+        assert.is_nil(obs._retire)
+        vim.wait(300)
+        assert.equals(2, count(f, "old:status")) -- joining late, and the one retire check
+        assert.is_false(sent(f, "old:retire"))
+        assert.equals(1, f.connects)
+        assert.same({}, f.notes)
+    end)
+
+    it("no reply to retire within a tick is a failure: noted, closed, no relaunch; a late reply is ignored", function()
+        local f = fake()
+        local late
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then late = rcb; return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("retiring it failed (no reply to retire", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.is_true(f.conn.closed)
+        assert.is_nil(obs._retire)
+        assert.is_true(R.retire_failed(ws.root, "0.0.1"))
+        late({ ok = true })
+        f.st = { kind = "none" }
+        vim.wait(300)
+        assert.equals(0, f.spawned)
+        assert.same({}, f.notes)
+        assert.equals(1, count(f, "old:retire"))
+    end)
+
+    it("after a failed retire, the same version again is declined as failed earlier (not as a pin)", function()
+        local f = fake()
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then rcb(nil, "retire refused: test"); return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("retiring it failed (retire refused: test)", 1, true) ~= nil
+        end, 10), obs:runtime_line())
+        assert.is_true(R.retire_failed(ws.root, "0.0.1"))
+        -- A new observer (a workspace reload) meets the same daemon again.
+        obs:stop(); obs = nil
+        local g = fake()
+        obs = attach(g.opts)
+        assert.is_true(vim.wait(5000, function()
+            return obs:runtime_line():find("retiring a daemon of lw v0.0.1 failed earlier this session", 1, true)
+                ~= nil
+        end, 10), obs:runtime_line())
+        assert.is_nil(obs:runtime_line():find("likely a repository pin", 1, true))
+        vim.wait(200)
+        assert.is_false(sent(g, "old:status"))
+        assert.is_false(sent(g, "old:retire"))
+        assert.equals(0, g.spawned)
     end)
 
     it("an error reply to retire leaves an observed daemon observed", function()
