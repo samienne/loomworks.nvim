@@ -912,7 +912,8 @@ file-level checks of §2.7 apply. The transport range under "From protocol
 11" is step 5g.1 (`version.negotiate`; an editor observes a daemon whose range
 overlaps its own); the CLI policy (`ensure.policy`, `describe`) and the
 generalised busy rule (`Server:conn_busy`, `status.busy_clients`) are
-implemented, step 5g.3; the editor retirement below is plan (step 5h.5).*
+implemented, step 5g.3; the editor retirement below is implemented, step 5h.5
+(`daemon/editor_retire.lua`, `Observer:_weigh_retire`).*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -951,7 +952,7 @@ match. A daemon whose schemas are newer than the client's is never stopped by
 it; the client refuses with the update message of §2.7 "Reading a newer file".
 
 **From protocol 11.** *(Transport: step 5g.1; the CLI policy and the busy rule: step 5g.3; the
-editor retirement: plan, step 5h.5.)* The rules above split
+editor retirement: step 5h.5.)* The rules above split
 into a protocol rule and a client policy:
 
 - **Transport.** Client and daemon agree on the highest transport version in
@@ -985,7 +986,9 @@ into a protocol rule and a client policy:
   the editor retires a daemon of a given `lw_version` at most once per
   workspace per editor session. Retiring for "older" would make the editor
   and the CLI, which requires an equal `lw_version`, restart each other's
-  daemon in turn.
+  daemon in turn. A daemon whose only incompatibility is older schemas stays
+  observed while the editor waits for it to go idle, and for the whole
+  session when the editor declines to retire it.
 
 ### 19.10 Launch
 
@@ -1866,8 +1869,9 @@ pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
 `provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
 (`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
 two-stage `release.yml`), the pre-launch probe of step 5h.5
-(`provision/probe.lua`, `provision/needs.lua` `problems`; channel upgrades and
-the editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
+(`provision/probe.lua`, `provision/needs.lua` `problems`), the editor's
+retirement of an incompatible daemon of step 5h.5 (`daemon/editor_retire.lua`,
+`Observer:_weigh_retire`; channel upgrades are step 5h.5, plan); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1967,9 +1971,9 @@ in-process path. In `in-process` mode nothing below happens.
   the plugin's format, a newer one writes a format the editor will not
   observe, and the managed `lw` the search falls through to matches the
   plugin exactly. (An already running daemon is weighed separately at
-  connect: newer schemas are refused, older ones lead to retirement under
-  "Retiring an incompatible daemon" below; the pin check refuses only newer
-  schemas.) The verdict is cached per process by the binary's path, size
+  connect: newer schemas are refused, older ones are observed and weighed
+  for a retirement under "Retiring an incompatible daemon" below; the pin
+  check refuses only newer schemas.) The verdict is cached per process by the binary's path, size
   and modification time; the selection itself stays synchronous over cached
   verdicts, and while a probe runs the Runtime note says so; should the
   probe's own answer never arrive, the observer stops waiting shortly after
@@ -2162,8 +2166,12 @@ in-process path. In `in-process` mode nothing below happens.
   handshake; `ping`, `status` and `retire` are version-stable, §19.8, so the
   editor can still authenticate and retire it), when it does not offer
   `loomworks.Root/1`, or when its schemas are older than the editor's (it
-  cannot read the editor's files). A missing feature interface only degrades
-  that feature ("Interface client") and is never a reason to retire. The
+  cannot read the editor's files). The `loomworks.Root/1` requirement applies
+  only to a transport (protocol) 11 connection whose welcome lists the
+  daemon's interfaces (`welcome.objects`); a protocol-10 daemon offers no
+  interfaces and is judged by its version and schemas only. A missing
+  feature interface only degrades that feature ("Interface client") and is
+  never a reason to retire. The
   editor sends `retire` (never `stop`) only when all of these hold:
   - the daemon is idle (no busy client, §19.9 "Busy");
   - its schemas are not newer than the editor's;
@@ -2179,8 +2187,31 @@ in-process path. In `in-process` mode nothing below happens.
   rule stops a retirement — the successor runs the same version again,
   typically because a repository pin redirects to it — the note says so
   (the daemon runs lw <v> again, likely a repository pin; update the pin or
-  the plugin) and the editor does not connect to it. A compatible daemon is
-  never retired by the editor, whatever its version.
+  the plugin); when that earlier retirement failed (below), the note says
+  instead that retiring a daemon of that version failed earlier this
+  session, and it is not tried again. A compatible daemon is never retired by the editor, whatever
+  its version.
+
+  A daemon whose only incompatibility is older schemas (transports overlap,
+  root interface present) is observed as usual ("Connect" below) while the
+  editor weighs it — while the selected binary is probed, while the daemon
+  is busy — and for the rest of the session when the editor declines to
+  retire it; the Runtime line says why. Any other incompatible daemon is not
+  observed: the editor holds its connection only to ask `status` and send
+  `retire`, ignores anything else it sends, and closes it when it declines.
+  While a `status` is unanswered no other is sent; a `status` still
+  unanswered at the next re-check ends the wait: the daemon is neither
+  retired nor relaunched, the Runtime line says it stopped answering, a held
+  connection is closed and an observed daemon stays observed (its keepalive
+  notices one that is gone). `retire` is sent at most once. An error reply
+  to `retire`, or none within one re-check interval, is a failure: the
+  Runtime line says so, nothing is relaunched, an observed daemon stays
+  observed, and the once-per-version rule still counts the attempt (as a
+  failed one). The connection closing
+  instead of a reply counts as retired. Tasks of an observed daemon end when
+  its connection closes, as for any drop. While the editor asks a daemon
+  that reports no `busy_clients` (§19.9 "Busy"), its own observer connection
+  is counted among the observers, not subtracted again.
 
   **Install location.** Everything the plugin installs (host binaries,
   release bundles, and what an `lw` the plugin runs downloads for it: its
@@ -2215,11 +2246,13 @@ in-process path. In `in-process` mode nothing below happens.
   `role = "observer"`. It observes a daemon whose transport range overlaps
   its own and whose schemas are not newer (§19.9; the host version may
   differ; editors of protocol 10 required an equal protocol).
-  - **Incompatible daemon.** The observer notes it (transport, schemas or a
-    missing root interface) and closes, and does not connect to it again. It
-    never restarts that daemon; it retires it only under "Retiring an
-    incompatible daemon" above *(step 5h.5; until then it never retires
-    one)*.
+  - **Incompatible daemon.** A daemon with older schemas (and nothing else
+    wrong) is observed; any other incompatible daemon (no transport overlap,
+    newer schemas, or, over transport 11, a missing root interface) the
+    observer notes and does not observe, and does not connect to it again.
+    It never restarts an incompatible daemon; it retires it only under
+    "Retiring an incompatible daemon" above *(step 5h.5)*, which also says
+    how long an older-schema daemon stays observed.
   - **Keepalive.** While connected it sends `ping` about every 30 s.
 - **No relaunch after a stop.** When the connection drops because the daemon
   stopped (`lw daemon stop`), crashed or dropped this observer, the observer
@@ -2461,7 +2494,7 @@ runtime is deferred until that module is actively developed.
        probe"), the editor's retirement of an incompatible idle daemon
        (§19.16 "Retiring an incompatible daemon"). In parts: the spec; the
        binary's `release query` *(done)*; the probe in the selection
-       *(done)*; the retirement;
+       *(done)*; the retirement *(done)*;
        `binary.channel` (usable once the plugin pin names a release with
        `release query`).
    - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task

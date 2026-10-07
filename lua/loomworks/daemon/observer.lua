@@ -63,6 +63,9 @@ M.KEEPALIVE_MS = env_ms("LW_TEST_DAEMON_KEEPALIVE_MS") or 30000
 M.WATCH_MS = env_ms("LW_TEST_OBSERVER_WATCH_MS") or 2000
 --- Handshake timeout.
 M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
+--- How often a busy incompatible daemon is re-checked (spec §19.16
+--- "Retiring an incompatible daemon": about every 30 s).
+M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 
 --- @class loomworks.daemon.Observer
 --- @field ws loomworks.Workspace
@@ -95,10 +98,15 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _connecting table|nil the one connection attempt in flight (single-flight token)
 --- @field _watch userdata|nil the handle-watch timer
 --- @field _keepalive userdata|nil the keepalive ping timer
+--- @field _retire_timer userdata|nil the busy incompatible daemon's re-check timer
 --- @field _dropped boolean|nil the last connection dropped (keeps its note while waiting)
 --- @field _dropped_id string|nil the daemon that last dropped us: a reconnect to it is quiet
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
 --- @field _relaunch boolean|nil the observed daemon retired: launch one successor once it has exited
+--- @field _retire loomworks.daemon.RetireWait|nil an incompatible daemon weighed for a retirement (step 5h.5): its connection is the observed one (older schemas only) or held, unobserved, while the selected binary is probed or while the daemon is busy
+--- @field incompat_note string|nil the observed daemon is incompatible (older schemas): what the editor does about it, on the Runtime line
+--- @field retire_check_ms integer how often a busy incompatible daemon is re-checked through `status` (spec §19.16: about every 30 s)
+--- @field retired_note string|nil the last retirement this observer made (why), shown on the Runtime line until it observes the successor
 --- @field opts table the attach options (test seams, see `attach`)
 --- @field watch_ms integer handle-watch interval
 --- @field keepalive_ms integer keepalive ping interval
@@ -180,7 +188,9 @@ end
 ---   inspect     fun(root) → state (loomworks.daemon.inspect.state)
 ---   connect     fun(endpoint, opts, cb) (loomworks.daemon.client.connect)
 ---   check       fun(root, endpoint) → ok, why (loomworks.daemon.endpoint.check)
----   watch_ms, keepalive_ms
+---   wanted      fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.wanted: the managed lw's version, for a retirement)
+---   notify      fun(msg, level) (vim.notify: the one notice of a retirement)
+---   watch_ms, keepalive_ms, retire_check_ms
 --- @param ws loomworks.Workspace
 --- @param opts? table
 --- @return loomworks.daemon.Observer|nil
@@ -200,6 +210,7 @@ function M.attach(ws, opts)
         _tasks = {}, _order = {},
         watch_ms = opts.watch_ms or M.WATCH_MS,
         keepalive_ms = opts.keepalive_ms or M.KEEPALIVE_MS,
+        retire_check_ms = opts.retire_check_ms or M.RETIRE_CHECK_MS,
     }, Observer)
     ws._daemon_observer = self
     if sel.warning then self.warning = sel.warning end
@@ -243,8 +254,9 @@ function Observer:start(explicit)
         if self._downloading then self:_cancel_download("restarted by :LoomworksDaemon connect") end
     end
     self:_start_watch()
-    -- Single-flight: one connection, one attempt, one launch at a time.
-    if self.conn or self._connecting then return end
+    -- Single-flight: one connection, one attempt, one launch at a time (a
+    -- connection held to retire an incompatible daemon included).
+    if self.conn or self._connecting or self._retire then return end
     if self._child and self._child.code == nil then return end
     if self._downloading or self._probing then return end
     local st = self:_inspect()
@@ -439,7 +451,7 @@ end
 --- One watch tick: a launched daemon that exited early is a note; a live
 --- daemon we are not connected to is connected to (unless skipped).
 function Observer:_on_watch()
-    if self.conn or self._connecting then return end
+    if self.conn or self._connecting or self._retire then return end
     local st = self:_inspect()
     local child = self._child
     -- The launched daemon exited without becoming the live one. EXIT_HELD
@@ -497,9 +509,19 @@ function Observer:_connect(st)
     self._connecting = target
     connect(h.endpoint, {
         client = "editor", role = "observer", timeout_ms = M.CONNECT_MS,
-        on_message = function(msg) vim.schedule(function() self:_on_message(msg) end) end,
+        on_message = function(msg)
+            vim.schedule(function()
+                -- Only the observed connection's messages count: one held
+                -- to retire an incompatible daemon it cannot observe is not
+                -- observed through (its task frames would start tasks that
+                -- nothing ends).
+                if target.conn and target.conn ~= self.conn then return end
+                self:_on_message(msg)
+            end)
+        end,
         on_close = function(c) vim.schedule(function() self:_on_closed(c) end) end,
     }, function(conn, err)
+        target.conn = conn
         vim.schedule(function() self:_on_connected(target, conn, err) end)
     end)
 end
@@ -521,11 +543,19 @@ function Observer:_on_connected(target, conn, err)
     local ch = conn.challenge or {}
     local version = require("loomworks.daemon.version")
     local ok, what = version.observer_compatible(ch)
-    if not ok then
+    -- Incompatible (§19.16 "Retiring an incompatible daemon", step 5h.5): no
+    -- transport overlap, schemas other than ours, or no loomworks.Root/1. A
+    -- daemon with newer schemas is only refused. One whose only problem is
+    -- older schemas is observed as usual and weighed for a retirement on the
+    -- observed connection; any other is weighed on a held connection it is
+    -- not observed through.
+    local inc = require("loomworks.daemon.editor_retire").incompatibility(ch, conn)
+    if (not ok or inc) and not (inc and inc.observable) then
         self.skip[daemon_id(target.pid, target.start_time)] = true
+        if inc and not inc.newer then return self:_weigh_retire(target, conn, ch, inc) end
         conn.on_close = nil
         conn:close()
-        return self:_set("waiting", M.mismatch_note(ch, what, target.exe or self._binary))
+        return self:_set("waiting", M.mismatch_note(ch, what or "schemas", target.exe or self._binary))
     end
     if conn.welcome and conn.welcome.retiring then
         self.skip[daemon_id(target.pid, target.start_time)] = true
@@ -537,6 +567,7 @@ function Observer:_on_connected(target, conn, err)
     end
     self.conn = conn
     self._child = nil
+    self.retired_note = nil
     self._dropped = nil
     self._dropped_id = nil
     self._relaunch = nil
@@ -548,13 +579,318 @@ function Observer:_on_connected(target, conn, err)
     self.seq = tonumber(conn.welcome and conn.welcome.seq) or 0
     self:_start_keepalive()
     self.feature_note = nil
+    self.incompat_note = nil
     self:_subscribe(conn, function()
         self:_connected_note()
         -- What the daemon wrote before we connected (and subscribed): catch
         -- up now.
         self:_reload()
         self:_join_late(conn)
+        -- Older schemas only: observed, and weighed for a retirement.
+        if inc then self:_weigh_retire(target, conn, ch, inc) end
     end)
+end
+
+--- @class loomworks.daemon.RetireWait  an incompatible daemon being weighed for a retirement (step 5h.5)
+--- @field conn loomworks.daemon.Conn the connection to it: the observed one (`observed`), or held and not observed through
+--- @field observed boolean|nil only its schemas are older: it is observed meanwhile (spec §19.16 "Connect")
+--- @field target table the daemon { pid, start_time, exe }
+--- @field ch table its challenge
+--- @field inc loomworks.daemon.Incompatibility why it is incompatible
+--- @field probed boolean|nil the selected binary was probed for this weighing (never twice)
+--- @field version string|nil the selected binary's lw_version (once weighed eligible)
+--- @field asking boolean|nil a `status` is in flight (still unanswered at the next re-check tick, it ends the wait)
+--- @field retiring boolean|nil `retire` was sent (at most once)
+--- @field settled boolean|nil the `retire` outcome was handled (its reply, or no reply within a re-check tick)
+
+--- Weigh an incompatible daemon for a retirement (spec §19.16 "Retiring an
+--- incompatible daemon", §19.9 "Editor retirement", step 5h.5). The editor
+--- sends `retire` (never `stop`) only when the daemon is idle, its schemas
+--- are not newer (the caller refused those), the binary the editor selected
+--- passed the interface check, that binary's `lw_version` differs from the
+--- daemon's, and no daemon of that `lw_version` was retired for this
+--- workspace in this editor session. A daemon whose only problem is older
+--- schemas is observed meanwhile, and for the whole session when the editor
+--- declines to retire it (a note on the Runtime line); any other is noted
+--- and not observed — its connection is held while the selected binary is
+--- probed and while the daemon is busy, then closed. A busy daemon is
+--- re-checked through `status` every `retire_check_ms`; nothing else
+--- connects meanwhile.
+--- @param target table
+--- @param conn loomworks.daemon.Conn
+--- @param ch table
+--- @param inc loomworks.daemon.Incompatibility
+--- @param probed? boolean
+function Observer:_weigh_retire(target, conn, ch, inc, probed)
+    local R = require("loomworks.daemon.editor_retire")
+    local binary = target.exe or self._binary
+    local wait = self._retire
+    if not wait then
+        wait = { conn = conn, target = target, ch = ch, inc = inc, observed = self.conn == conn or nil }
+        self._retire = wait
+        if not wait.observed then
+            -- The daemon goes away (stops, exits, drops us): forget it; the
+            -- watch goes on (it is skipped by pid and start time). (The
+            -- observed connection's close is `_on_closed`.)
+            conn.on_close = function(c)
+                vim.schedule(function()
+                    if self._retire and self._retire.conn == c then
+                        self:_drop_retire()
+                        if self.state ~= "stopped" then
+                            self:_set("waiting", R.note(ch, inc, binary, "it went away; waiting for a daemon"))
+                        end
+                    end
+                end)
+            end
+        end
+    end
+    wait.probed = wait.probed or probed
+    -- Declined: an observed daemon stays observed (the note says why it is
+    -- not retired); a held one is closed and noted.
+    local function decline(why, advice)
+        if wait.observed then
+            self._retire = nil
+            self:_stop_timer("_retire_timer")
+            return self:_note_incompatible(wait, "observing it without retiring it (" .. why .. "); " .. advice)
+        end
+        self:_drop_retire()
+        return self:_set("waiting", R.note(ch, inc, binary, "not observing it (" .. why .. "); " .. advice
+            .. " — running in-process"))
+    end
+    -- The selection: the same as a launch would make (over cached verdicts).
+    local binsel = require("loomworks.provision.select")
+    local resolve = self.opts.resolve or binsel.resolve
+    local _, _, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary,
+        probe = self.opts.probe_cached })
+    local b = R.selected(sel, { wanted = self.opts.wanted })
+    if b.pending and not wait.probed then
+        -- A PATH or explicit lw with no verdict yet: probe it first
+        -- (bounded, asynchronous), then weigh again over the cached verdict.
+        wait.probed = true
+        local what = "checking " .. b.pending .. " (lw version --json) before retiring an incompatible "
+            .. "workspace daemon"
+        if wait.observed then
+            self:_note_incompatible(wait, what)
+        else
+            self:_set("probing", what)
+        end
+        local probe = require("loomworks.provision.probe")
+        local run = self.opts.run_probe or probe.run
+        local done = false
+        local t = uv.new_timer()
+        local function again()
+            if done then return end
+            done = true
+            pcall(function() t:stop(); if not t:is_closing() then t:close() end end)
+            if self.state == "stopped" or self._retire ~= wait or wait.conn.closed then return end
+            self:_weigh_retire(target, conn, ch, inc, true)
+        end
+        t:start(self.opts.probe_backstop_ms or (probe.TIMEOUT_MS + 2000), 0, vim.schedule_wrap(again))
+        run(b.pending, {}, function() vim.schedule(again) end)
+        return
+    end
+    if not b.ok then
+        return decline("the selected lw cannot replace it: " .. tostring(b.why or "not probed"),
+            "update the plugin, or pin or install a matching lw")
+    end
+    if R.same_version(b.version, ch.lw_version) then
+        return decline("the selected lw is the same version", "update the plugin, or pin or install a matching lw")
+    end
+    if R.retire_failed(self.root, ch.lw_version) then
+        -- Tried once this session and it failed (an error reply, or none):
+        -- never tried again.
+        return decline("retiring a daemon of lw v" .. tostring(ch.lw_version) .. " failed earlier this session",
+            "stop it (lw daemon stop) or update the plugin, or pin or install a matching lw")
+    end
+    if R.was_retired(self.root, ch.lw_version) then
+        return decline("the daemon runs lw v" .. tostring(ch.lw_version)
+            .. " again after it was retired, likely a repository pin", "update the pin or the plugin")
+    end
+    if conn.welcome and conn.welcome.retiring then
+        -- Already retiring (another client asked): wait for its successor.
+        self:_drop_retire()
+        self._relaunch = true
+        return self:_set("waiting", R.note(ch, inc, binary, "it is retiring; waiting for its successor"))
+    end
+    wait.version = b.version
+    self:_check_retire()
+end
+
+--- Note an observed incompatible daemon (older schemas) on the connected
+--- Runtime line: why it is incompatible and `tail`, what the editor does.
+--- @param wait loomworks.daemon.RetireWait
+--- @param tail string
+function Observer:_note_incompatible(wait, tail)
+    if self.conn ~= wait.conn then return end
+    self.incompat_note = require("loomworks.daemon.editor_retire").note(wait.ch, wait.inc, nil, tail)
+    self:_connected_note()
+end
+
+--- Ask the incompatible daemon's `status`: retire it when idle, else note
+--- it and ask again in `retire_check_ms` (spec §19.16: "incompatible daemon
+--- is busy; retiring when idle"). A `status` still unanswered at the next
+--- tick ends the wait (`_retire_unanswered`): no second one is sent.
+function Observer:_check_retire()
+    local wait = self._retire
+    if not wait or wait.retiring or self.state == "stopped" then return end
+    local R = require("loomworks.daemon.editor_retire")
+    local binary = wait.target.exe or self._binary
+    if wait.asking then return self:_retire_unanswered(wait, "status") end
+    -- Asked again in `retire_check_ms`; a status unanswered by then ends the
+    -- wait (the tick lands on the `asking` check above).
+    self:_stop_timer("_retire_timer")
+    local t = uv.new_timer()
+    self._retire_timer = t
+    t:start(self.retire_check_ms, 0, vim.schedule_wrap(function()
+        if self._retire_timer ~= t then return end
+        self:_stop_timer("_retire_timer")
+        if self._retire == wait then self:_check_retire() end
+    end))
+    wait.asking = true
+    wait.conn:request({ kind = "status" }, function(st)
+        vim.schedule(function()
+            wait.asking = nil
+            if self._retire ~= wait or wait.retiring or self.state == "stopped" then return end
+            if type(st) == "table" and st.retiring then
+                self:_drop_retire()
+                if wait.observed then
+                    -- Closed as the "Retiring" path of `_on_closed`.
+                    local d = wait.target
+                    self.skip[daemon_id(d.pid, d.start_time)] = true
+                    self._retired_note = true
+                    return wait.conn:close()
+                end
+                self._relaunch = true
+                return self:_set("waiting", R.note(wait.ch, wait.inc, binary,
+                    "it is retiring; waiting for its successor"))
+            end
+            if R.busy(st) then
+                local tail = "incompatible daemon is busy; retiring when idle"
+                if wait.observed then return self:_note_incompatible(wait, tail) end
+                return self:_set("waiting", R.note(wait.ch, wait.inc, binary, tail))
+            end
+            self:_retire_now()
+        end)
+    end)
+end
+
+--- The incompatible daemon left its `status` unanswered for a whole
+--- re-check tick (spec §19.16): stop waiting to retire it — neither retired
+--- nor relaunched. A held connection is closed; an observed one stays
+--- observed (its keepalive notices a daemon that is gone).
+--- @param wait loomworks.daemon.RetireWait
+--- @param what string the unanswered request
+function Observer:_retire_unanswered(wait, what)
+    local tail = "it stopped answering (no reply to " .. what .. " within " .. tostring(self.retire_check_ms)
+        .. " ms)"
+    if wait.observed then
+        self._retire = nil
+        self:_stop_timer("_retire_timer")
+        return self:_note_incompatible(wait, "observing it without retiring it (" .. tail .. ")")
+    end
+    self:_drop_retire()
+    return self:_set("waiting", require("loomworks.daemon.editor_retire").note(wait.ch, wait.inc,
+        wait.target.exe or self._binary, "not observing it (" .. tail .. ") — running in-process"))
+end
+
+--- Retire the idle incompatible daemon: record the guard, send `retire`
+--- (once), then — when the daemon accepted it or closed the connection —
+--- disconnect and relaunch once when it has exited (the "Retiring" path,
+--- §19.16), with one notice. An error reply, or no reply within
+--- `retire_check_ms`, is a failure: noted on the Runtime line, no relaunch;
+--- an observed daemon stays observed, a held one is closed. The guard stays
+--- recorded either way, as failed (no loop; a later connection to that
+--- version says retiring it failed).
+function Observer:_retire_now()
+    local wait = self._retire
+    if not wait or wait.retiring then return end
+    wait.retiring = true
+    self:_stop_timer("_retire_timer")
+    local R = require("loomworks.daemon.editor_retire")
+    local ch, target = wait.ch, wait.target
+    local binary = target.exe or self._binary
+    R.record(self.root, ch.lw_version)
+    local msg = string.format("retired the workspace daemon (lw v%s, pid %s), incompatible with this plugin (%s); "
+        .. "starting lw v%s", tostring(ch.lw_version), tostring(target.pid), table.concat(wait.inc.reasons, "; "),
+        tostring(wait.version))
+    local closed_err = require("loomworks.daemon.client").ERR_CLOSED
+    -- Not retired: no relaunch, no notice.
+    local function failed(why)
+        R.record_failed(self.root, ch.lw_version)
+        local tail = "retiring it failed (" .. why .. ")"
+        if wait.observed and self.conn == wait.conn then
+            return self:_note_incompatible(wait, "observing it; " .. tail)
+        end
+        if not wait.conn.closed then
+            wait.conn.on_close = nil
+            pcall(wait.conn.close, wait.conn)
+        end
+        return self:_set("waiting", R.note(ch, wait.inc, binary, "not observing it; " .. tail
+            .. " — running in-process"))
+    end
+    -- No reply within a re-check tick: a failure (a late reply is ignored).
+    local t = uv.new_timer()
+    self._retire_timer = t
+    t:start(self.retire_check_ms, 0, vim.schedule_wrap(function()
+        if self._retire_timer ~= t then return end
+        self:_stop_timer("_retire_timer")
+        if self._retire ~= wait or wait.settled then return end
+        wait.settled = true
+        self._retire = nil
+        if self.state == "stopped" then return end
+        failed("no reply to retire within " .. tostring(self.retire_check_ms) .. " ms")
+    end))
+    wait.conn:request({ kind = "retire" }, function(reply, err)
+        vim.schedule(function()
+            if wait.settled then return end
+            wait.settled = true
+            if self._retire == wait then
+                self._retire = nil
+                self:_stop_timer("_retire_timer")
+            end
+            if self.state == "stopped" then return end
+            if reply == nil and err ~= nil and err ~= closed_err then
+                -- Refused: not retired.
+                return failed(tostring(err))
+            end
+            -- Retired (it accepted, or closed the connection on its way out).
+            self.skip[daemon_id(target.pid, target.start_time)] = true
+            self.retired_note = msg
+            pcall(self.opts.notify or vim.notify, "loomworks: " .. msg, vim.log.levels.INFO)
+            if wait.observed then
+                -- Its close (ours here, or the daemon's) is the "Retiring"
+                -- path of `_on_closed`, which also ends its tasks.
+                if self.conn == wait.conn then
+                    self._retired_note = true
+                    wait.conn:close()
+                elseif self.conn == nil and not self._connecting then
+                    -- Already closed, without the daemon's `retiring`.
+                    self._relaunch = true
+                    self:_set("waiting", "the workspace daemon is retiring — waiting for its successor")
+                end
+                return
+            end
+            if not wait.conn.closed then
+                wait.conn.on_close = nil
+                pcall(wait.conn.close, wait.conn)
+            end
+            self._relaunch = true
+            self:_set("waiting", "the workspace daemon is retiring — waiting for its successor")
+        end)
+    end)
+end
+
+--- Forget the incompatible daemon being weighed: stop its re-check and
+--- close a held connection (an observed one stays: it is `self.conn`, closed
+--- only through the usual paths).
+function Observer:_drop_retire()
+    local wait = self._retire
+    self._retire = nil
+    self:_stop_timer("_retire_timer")
+    if wait and not wait.observed and wait.conn and not wait.conn.closed then
+        wait.conn.on_close = nil
+        pcall(wait.conn.close, wait.conn)
+    end
 end
 
 --- Set the Runtime note of a connected observer: the daemon it observes,
@@ -584,6 +920,7 @@ function Observer:_connected_note()
     self.feature_note = #notes > 0 and table.concat(notes, "; ") or nil
     local note = "observing the workspace daemon (pid " .. tostring(d.pid) .. ")"
     if self.feature_note then note = note .. " — " .. self.feature_note end
+    if self.incompat_note then note = note .. " — " .. self.incompat_note end
     self:_set("connected", note)
 end
 
@@ -786,8 +1123,12 @@ function Observer:_on_closed(c)
     self.daemon = nil
     self.mode = nil
     self.feature_note = nil
+    self.incompat_note = nil
     self._feat, self._why, self._sub_only = nil, nil, nil
     self:_stop_timer("_keepalive")
+    -- An observed incompatible daemon weighed for a retirement: forget it
+    -- (a retirement in flight still reports through its reply).
+    if self._retire and self._retire.conn == c then self:_drop_retire() end
     self:_end_tasks("the workspace daemon disconnected")
     if self.state == "stopped" then return end
     self._dropped = true
@@ -926,6 +1267,7 @@ function Observer:runtime_line()
     -- The pre-launch probe's lasting note (step 5h.5: a skipped lw on PATH,
     -- an incompatible explicit one); a no-binary note already names it.
     if self.probe_note and self.state ~= "no-binary" then t = t .. " — " .. self.probe_note end
+    if self.retired_note and self.state ~= "connected" then t = t .. " (" .. self.retired_note .. ")" end
     if self.warning then t = t .. " (" .. self.warning .. ")" end
     return t
 end
@@ -964,6 +1306,7 @@ function Observer:stop()
     if self._downloading then self:_cancel_download("the workspace was unloaded") end
     self:_stop_timer("_watch")
     self:_stop_timer("_keepalive")
+    self:_drop_retire()
     local c = self.conn
     self.conn = nil
     if c then c.on_close = nil; c:close() end
