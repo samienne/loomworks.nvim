@@ -130,6 +130,16 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- A program argument that looks like a global option (`--dev`, `--no-pin`,
+  `--no-input`, `--local`, ...) is passed to the program again instead of
+  being taken by lw: after `--`, and after `lw launch add`'s command (or
+  `--from-target <t>`). Before, e.g. `lw launch set App demo -- --dev` failed
+  with "development source requested but no directory is configured" (that
+  error now hints to put such a flag after `--`). On `lw launch set` and the
+  set-value commands (`lw config|project|profile|settings set`) `--` is the
+  escape: every token after it is an argument or the value, verbatim. A
+  program's `--help` (`lw launch add app x node --help`) is stored, not
+  answered. (#164)
 - On macOS and Linux, a workspace daemon started from one environment (a
   desktop terminal) is now usable from another (ssh, cron, `sudo -u`, a
   container shell) whose `TMPDIR` / `XDG_RUNTIME_DIR` differ, instead of being
