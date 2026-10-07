@@ -26,6 +26,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 
 ## Unreleased
 
+## 0.1.43 - 2026-10-07
+
+`lw export` and `lw import` carry a workspace configuration to another
+machine, `lw` and the editor no longer overwrite each other's saves, and the
+CLI's help, hints and exit codes are complete and consistent. `lw update` is
+gone (use `lw bootstrap upgrade` or `lw self-update`), and an unknown command
+now exits 2.
+
 ### Upgrade notes
 - Scripts or CI that run `lw update` must switch to `lw bootstrap upgrade`
   (move a repository's pin) or `lw self-update` (update lw itself); `lw update`
