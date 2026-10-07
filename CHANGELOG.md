@@ -48,7 +48,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   removes older copies it installed. The status page and `:checkhealth
   loomworks` show the download; a failure is one note and the editor stays
   in-process. `binary = { download = false }` turns this off. Nothing is
-  downloaded until the plugin ships its own pin (a later release).
+  downloaded until the plugin ships its own pin (a later release). (#157)
 - `lw version --json` prints what the binary implements: its release, the
   daemon transport range, the working-copy and cache schema versions and every
   interface a daemon of it serves, with versions and schema digests. Each
