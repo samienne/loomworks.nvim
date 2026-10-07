@@ -1193,7 +1193,7 @@ control subset to a daemon of any version (§19.8) and run as the invoked host.
 
 Redirection applies only to workspace operations. **Host and management
 operations** — reporting the host version (also its descriptor, §16.41),
-self-update, install, and pin management (§16.24: the status page, `install`
+the release query (§16.42), self-update, install, and pin management (§16.24: the status page, `install`
 and `upgrade`) — MUST NOT redirect; they always run as the invoked (global)
 host, so that, for example, updating the pin is never carried out by the old
 pinned version. Redirection MUST be guarded against recursion: once a host is
@@ -4122,6 +4122,11 @@ bundle in pinned context, a development source — so a host with no system Lua
 at all (a release host before its first `lw self-update`) has none to describe
 and exits non-zero. Plain `lw version` is unchanged: one line of text.
 
+The descriptor describes the binary invoked, never what a redirect command
+(§16.23) would run in a pinned repository: a caller that launches `daemon run`
+in a repository pinned to another release learns that release's capabilities
+only from the handshake after the launch (§19.9, §19.16).
+
 The descriptor is the binary half of `Root.describe`, with the same field
 shapes and without a session:
 
@@ -4146,3 +4151,58 @@ itself — the released host running the released bundle as `lw version --json`
 — and the release fails unless it names that release (not a development
 build). A program that pins a release can so learn what it implements before
 downloading its binary.
+
+### 16.42 Release query
+
+`lw release query [--channel stable|unstable] [--json]` resolves an update
+channel (§16.29) to a **verified** release: its version, the SHA-256 of every
+host asset and its descriptor (§16.41). It is how a program that runs a
+verified `lw` (the editor's managed `lw`, §19.16 "Channel upgrades") learns
+which release a channel offers and what that release implements before it
+downloads anything. It is a host command (§16.23): it never redirects, needs
+no workspace, starts no daemon and writes nothing to disk — it neither saves
+the channel (unlike self-update, §16.29) nor installs, caches or provisions
+anything.
+
+Steps:
+1. Resolve the channel by the §16.29 precedence (`--channel`, then
+   `LOOMWORKS_CHANNEL`, then the host configuration, then stable).
+2. Resolve the newest release on that channel, with the §16.29 ordering (a
+   pre-release ranks below its release).
+3. Fetch the release's `SHA256SUMS` and its signature and verify the
+   signature with the key embedded in the host (§16.15).
+4. Fetch the release's `lw-<version>-descriptor.json` (§16.41) and verify its
+   SHA-256 against the signed sums.
+
+The release source follows §16.29: the fixed origin, or the user-set
+release-source override (environment or host configuration; a local
+directory, `file://` or a mirror). An override supersedes the channel; the
+result then says so (`channel_ignored`), and the plain output warns as
+self-update does. The install-folder override (§16.22) is honoured for
+anything the host itself needs; the query adds nothing to it. Every fetch is
+bounded (`--timeout <seconds>` overrides the overall limit).
+
+**Output.** With `--json`, one canonical JSON document (keys sorted,
+two-space indent):
+
+| Field | Content |
+|---|---|
+| `query` | the output format version (1); fields are only ever added |
+| `channel` | the channel resolved in step 1 |
+| `channel_ignored` | `true` when a release-source override superseded it |
+| `source` | `origin` or `override` |
+| `version` | the release version resolved in step 2 |
+| `prerelease` | whether that version is a pre-release |
+| `assets` | the published host assets, each mapped to its SHA-256 from the verified sums |
+| `descriptor` | the release's descriptor document (§16.41), hash-verified |
+
+Without `--json` it prints the channel, the version and whether it is a
+pre-release, one line each.
+
+**Failures.** No network or no release on the channel, a signature that does
+not verify, a descriptor or sums whose hash does not match, a release with no
+descriptor asset (a release older than §16.41: "release predates the
+descriptor") and a version that is not a valid release version each exit
+non-zero with one line on standard error, and print nothing on standard
+output. Verification is never relaxed: the transport relaxation of §16.22 does
+not waive the signature or a hash.
