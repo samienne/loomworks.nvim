@@ -372,7 +372,6 @@ function Observer:_probe(path)
     local function finish()
         if self._probe_token ~= token then return end -- a stop or the backstop owns the state
         self._probe_token, self._probing = nil, nil
-    self._channel_token = nil
         self:_stop_timer("_probe_backstop")
         if self.state == "stopped" then return end
         if self.conn or self._connecting or (self._child and self._child.code == nil) then return end
@@ -460,7 +459,8 @@ function Observer:_prune(want)
     if pok then add(pin) end
     local wok, cur = pcall(managed.wanted, { setting = self.opts.binary, data = self.opts.data })
     if wok then add(cur) end
-    pcall(self.opts.prune or require("loomworks.provision.cache").prune, { keep = keep, in_use = list })
+    pcall(self.opts.prune or require("loomworks.provision.cache").prune,
+        { keep = keep, in_use = list, data = self.opts.data })
 end
 
 --- How long (s) before the observer weighs again a channel check it could
@@ -530,6 +530,9 @@ function Observer:_channel_check(explicit)
             pinned_version = pin.version }
     end
     local function save(out)
+        -- Every completion ends here. This check satisfies an explicit
+        -- connect that arrived while it ran: no second query next tick.
+        self._channel_force = nil
         local nrec = chan.record(rec, out, (self.opts.now or os.time)())
         pcall(self.opts.channel_save or chan.save, nrec, { data = data })
         self._channel_next = nrec.checked + chan.INTERVAL_S

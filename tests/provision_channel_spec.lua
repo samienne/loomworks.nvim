@@ -264,9 +264,38 @@ describe("binary.channel: the observer's background check", function()
         assert.truthy(obs:runtime_line():find("is installed", 1, true))
         assert.truthy(vim.tbl_contains(pruned.keep, sha("9")) and vim.tbl_contains(pruned.keep, pin.sha256),
             vim.inspect(pruned.keep))
+        -- Prunes the same data dir its keep-list was built from (never the real stdpath).
+        assert.equals(data, pruned.data)
         -- Not due again for a day; an explicit connect checks again.
         obs:start(false)
         assert.equals(1, #queries)
+        obs:start(true)
+        assert.equals(2, #queries)
+    end)
+
+    it("a probe finishing while a check is in flight keeps the check: no second query, its result is recorded", function()
+        obs = attach({ run_probe = function(_, _, cb) cb({ ok = true }) end })
+        assert.equals(1, #queries)
+        obs:_probe("/other/lw")
+        assert.is_nil(obs._probing)
+        -- A watch tick while the check is still in flight starts no second query.
+        obs:start(false)
+        assert.equals(1, #queries)
+        Q(query_res("9.9.9-beta.1", sha("9")))
+        assert.equals("9.9.9-beta.1", channel.load({ data = data }).accepted.version)
+        assert.truthy(obs.channel_note:find("is installed", 1, true), tostring(obs.channel_note))
+    end)
+
+    it("an explicit connect during a check is satisfied by it: the next tick runs no second query", function()
+        obs = attach()
+        assert.equals(1, #queries)
+        obs:start(true) -- in flight: remembered, not run
+        assert.equals(1, #queries)
+        Q(query_res("9.9.9-beta.1", sha("9")))
+        assert.equals("9.9.9-beta.1", channel.load({ data = data }).accepted.version)
+        obs:start(false)
+        assert.equals(1, #queries)
+        -- A later explicit connect still checks again.
         obs:start(true)
         assert.equals(2, #queries)
     end)
