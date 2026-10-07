@@ -63,8 +63,8 @@ function M.parse_args(args)
       o.channel = v:sub(11)
     elseif v:sub(1, 10) == "--timeout=" then
       o.timeout = v:sub(11)
-    elseif v == "--no-input" then
-      -- a global flag; the query never prompts
+    elseif pin.GLOBAL_FLAGS[v] then
+      -- a global flag, tolerated as `lw bootstrap` does; the query never prompts
     elseif v:sub(1, 1) == "-" then
       return nil, "unknown option '" .. v .. "' for `lw release query`"
     else
@@ -78,6 +78,11 @@ function M.parse_args(args)
     i = i + 1
   end
   if words < 2 then return nil, "`lw release` needs a sub-command: query" end
+  -- A bad `--channel` value is a usage error, like `lw self-update --channel`;
+  -- one from LOOMWORKS_CHANNEL or the settings fails the query instead (exit 1).
+  if o.channel ~= nil and not update.CHANNELS[o.channel] then
+    return nil, "unknown update channel '" .. o.channel .. "' (expected 'stable' or 'unstable')"
+  end
   if o.timeout ~= nil then
     local n = tonumber(o.timeout)
     if not n or n < 1 or n % 1 ~= 0 then
@@ -147,8 +152,20 @@ function M.query(opts)
     return nil, dname .. ": SHA-256 does not match the signed SHA256SUMS"
   end
   local descriptor, jerr = json.decode(bytes)
-  if type(descriptor) ~= "table" or descriptor == json.null or descriptor[1] ~= nil then
+  -- An object only: a top-level array (json.lua marks even an empty `[]` via
+  -- the __jsonarray metatable) is not a descriptor.
+  local mt = type(descriptor) == "table" and getmetatable(descriptor)
+  if type(descriptor) ~= "table" or descriptor == json.null or descriptor[1] ~= nil
+      or (mt and mt.__jsonarray) then
     return nil, dname .. ": not a JSON object" .. (jerr and (" (" .. jerr .. ")") or "")
+  end
+  -- The descriptor must describe the release it was fetched for: a signed but
+  -- mismatched one fails verification like a hash mismatch.
+  local dver = type(descriptor.binary) == "table" and descriptor.binary.lw_version or nil
+  local function norm(x) return type(x) == "string" and (x:gsub("^[vV]", "")) or nil end
+  if norm(dver) ~= norm(version) then
+    return nil, dname .. ": binary.lw_version '" .. tostring(dver) ..
+      "' does not match the release version " .. version
   end
 
   local assets = {}

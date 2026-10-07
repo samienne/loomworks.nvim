@@ -2271,6 +2271,7 @@ do
     local list = { "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe", pin.bundle_asset(version) }
     local desc = '{\n  "binary": {\n    "lw_version": "' .. version .. '"\n  },\n  "descriptor": 1,\n' ..
       '  "objects": [],\n  "transport": {\n    "max": 3,\n    "min": 1\n  }\n}\n'
+    if o.desc then desc = o.desc end
     if not o.no_descriptor then
       list[#list + 1] = rq.descriptor_asset(version)
       put(mirror .. "/" .. rq.descriptor_asset(version), desc)
@@ -2361,6 +2362,21 @@ do
   local dres, derr = rq.query({})
   ok(dres == nil and derr:find("does not match the signed SHA256SUMS", 1, true), "a descriptor hash mismatch fails")
 
+  -- a signed descriptor that is a JSON array, not an object (also an empty one)
+  for _, arr in ipairs({ "[]", '[{"binary":{"lw_version":"' .. V .. '"}}]' }) do
+    stage(V, { desc = arr })
+    local ares, aerr = rq.query({})
+    ok(ares == nil and aerr and aerr:find("not a JSON object", 1, true), "a top-level array descriptor fails: " .. arr)
+  end
+
+  -- a signed descriptor describing another version
+  stage(V, { desc = '{"binary":{"lw_version":"9.9.9"},"descriptor":1}' })
+  local wres, werr = rq.query({})
+  ok(wres == nil and werr and werr:find("does not match the release version", 1, true),
+    "a descriptor whose binary.lw_version differs from the release fails  (" .. tostring(werr) .. ")")
+  stage(V, { desc = '{"descriptor":1}' })
+  ok(rq.query({}) == nil, "a descriptor without binary.lw_version fails")
+
   -- a sums file tampered after signing
   stage(V)
   put(mirror .. "/SHA256SUMS", readfile(mirror .. "/SHA256SUMS") .. string.rep("0", 64) .. "  extra\n")
@@ -2393,6 +2409,12 @@ do
   eq(select(1, rq.run({ "release", "query", "--bogus" })), 2, "an unknown option is a usage error")
   eq(select(1, rq.run({ "release", "query", "--timeout", "0" })), 2, "--timeout must be a positive whole number")
   eq(select(1, rq.run({ "release", "query", "--channel" })), 2, "--channel needs a value")
+  local bc, bo, be = rq.run({ "release", "query", "--channel", "bogus" })
+  ok(bc == 2 and bo == nil and be and be:find("unknown update channel 'bogus'", 1, true),
+    "an unknown --channel flag is a usage error (exit 2)")
+  eq(select(1, rq.run({ "release", "query", "--channel=" })), 2, "an empty --channel= is a usage error")
+  local go = rq.parse_args({ "--insecure", "--verbose", "release", "query", "--non-interactive", "--verify" })
+  ok(go ~= nil, "the global flags `lw bootstrap` tolerates parse")
   local po = rq.parse_args({ "--no-input", "release", "query", "--channel=unstable", "--timeout=7", "--json" })
   ok(po and po.channel == "unstable" and po.timeout == 7 and po.json, "the = forms and a leading global flag parse")
 
