@@ -1877,7 +1877,9 @@ in-process path. In `in-process` mode nothing below happens.
   The editor **reads no `lw.pin`**. A global or managed `lw` follows the
   repository's pin itself: the daemon commands the editor launches (`daemon
   run`, its `--stdio` form, and step 5i's `attach`) are redirect commands
-  (§16.23, step 5h.2), so they run the pinned version. Compatibility is
+  (§16.23, step 5h.2), so they run the pinned version — unless the pinned
+  release predates the command (§16.23 "A pin older than the command"): then
+  the launch is refused and the editor works without a daemon. Compatibility is
   decided after connecting, by the handshake and `Root.describe` (§19.9,
   §19.20); a pre-launch `lw version --json` probe (step 5h.5) is only a quick
   pre-check. Only what the plugin itself downloads is hash-checked (against
@@ -1894,8 +1896,10 @@ in-process path. In `in-process` mode nothing below happens.
   **Install location.** Everything the plugin installs (host binaries,
   release bundles, and what an `lw` the plugin runs downloads for it: its
   own provisioning and the pin redirect's, through that `lw`'s install-folder
-  override, step 5h.2) stays under the editor's data directory
-  (`<editor data>/loomworks/`). The plugin never installs a system-wide `lw`
+  override `LOOMWORKS_INSTALL_DIR`, §16.22, step 5h.2) stays under the
+  editor's data directory (`<editor data>/loomworks/`) — except the bundle
+  copy a pinned release older than the install folder provisions for itself,
+  which lands in `lw`'s per-user data directory (§16.22). The plugin never installs a system-wide `lw`
   and never writes configuration into the user's home. Shared runtime state
   stays where `lw` keeps it, for every `lw` on the machine: daemon sockets and
   identity, the trust store (§17.2), daemon logs. The plugin reads `lw`'s
@@ -2150,6 +2154,7 @@ runtime is deferred until that module is actively developed.
      - **5h.2** — binary side: `lw version --json` (also a release asset
        listed in `SHA256SUMS`), the daemon commands as pin-redirect commands
        (§16.23), the install-folder override for an `lw` the plugin runs.
+       *(Done.)*
      - **5h.3** — download, verify (against the plugin's hash) and cache the
        managed `lw` under the editor's data directory; `binary.download`.
      - **5h.4** — the plugin's own pin (a hash per host asset, outside the
