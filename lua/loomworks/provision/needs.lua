@@ -40,8 +40,11 @@ end
 --- Schemas: by default (the pin gate, `check`) only schemas newer than ours
 --- are fatal, the observer's connect rule (version.observer_compatible);
 --- with `opts.exact_schemas` (the pre-launch probe) any difference is.
+--- `opts.interfaces == false` skips the interface checks: a daemon observed
+--- over transport 10 offers no interfaces at all (it is observed through the
+--- protocol-10 broadcasts), so it lacks none (loomworks.daemon.editor_retire).
 --- @param d any a decoded binary descriptor
---- @param opts? { exact_schemas?: boolean }
+--- @param opts? { exact_schemas?: boolean, interfaces?: boolean }
 --- @return loomworks.provision.NeedsProblems
 function M.problems(d, opts)
     local out = { structure = {}, fatal = {}, degraded = {} }
@@ -74,6 +77,7 @@ function M.problems(d, opts)
         out.fatal[#out.fatal + 1] = string.format("schemas user %d / cache %d are newer than ours (user %d / cache %d)",
             ps.user, ps.cache, s.user, s.cache)
     end
+    if opts and opts.interfaces == false then return out end
     local offered = require("loomworks.daemon.observer").offered_versions
     for _, want in ipairs(M.needed()) do
         local found = false

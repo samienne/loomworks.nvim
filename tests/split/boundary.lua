@@ -33,6 +33,7 @@ M.plugin = {
     "^loomworks%.overseer$",         -- adapter part stays; planning half moves out later
     "^loomworks%.workspace_view$",   -- view-model part stays; orchestration moves out later
     "^loomworks%.daemon%.observer$", -- becomes loomworks.client.session
+    "^loomworks%.daemon%.editor_retire$", -- the observer's retirement decisions (spec §19.16)
     "^loomworks%.daemon%.remote_task$",
     "^loomworks%.provision%.",       -- the host binary the editor launches (spec §19.16)
     "^loomworks%.health$",           -- :checkhealth loomworks

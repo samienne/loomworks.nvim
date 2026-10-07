@@ -912,7 +912,8 @@ file-level checks of §2.7 apply. The transport range under "From protocol
 11" is step 5g.1 (`version.negotiate`; an editor observes a daemon whose range
 overlaps its own); the CLI policy (`ensure.policy`, `describe`) and the
 generalised busy rule (`Server:conn_busy`, `status.busy_clients`) are
-implemented, step 5g.3; the editor retirement below is plan (step 5h.5).*
+implemented, step 5g.3; the editor retirement below is implemented, step 5h.5
+(`daemon/editor_retire.lua`, `Observer:_weigh_retire`).*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -951,7 +952,7 @@ match. A daemon whose schemas are newer than the client's is never stopped by
 it; the client refuses with the update message of §2.7 "Reading a newer file".
 
 **From protocol 11.** *(Transport: step 5g.1; the CLI policy and the busy rule: step 5g.3; the
-editor retirement: plan, step 5h.5.)* The rules above split
+editor retirement: step 5h.5.)* The rules above split
 into a protocol rule and a client policy:
 
 - **Transport.** Client and daemon agree on the highest transport version in
@@ -1866,8 +1867,9 @@ pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
 `provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
 (`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
 two-stage `release.yml`), the pre-launch probe of step 5h.5
-(`provision/probe.lua`, `provision/needs.lua` `problems`; channel upgrades and
-the editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
+(`provision/probe.lua`, `provision/needs.lua` `problems`), the editor's
+retirement of an incompatible daemon of step 5h.5 (`daemon/editor_retire.lua`,
+`Observer:_weigh_retire`; channel upgrades are step 5h.5, plan); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -2218,8 +2220,7 @@ in-process path. In `in-process` mode nothing below happens.
   - **Incompatible daemon.** The observer notes it (transport, schemas or a
     missing root interface) and closes, and does not connect to it again. It
     never restarts that daemon; it retires it only under "Retiring an
-    incompatible daemon" above *(step 5h.5; until then it never retires
-    one)*.
+    incompatible daemon" above *(step 5h.5)*.
   - **Keepalive.** While connected it sends `ping` about every 30 s.
 - **No relaunch after a stop.** When the connection drops because the daemon
   stopped (`lw daemon stop`), crashed or dropped this observer, the observer
@@ -2461,7 +2462,7 @@ runtime is deferred until that module is actively developed.
        probe"), the editor's retirement of an incompatible idle daemon
        (§19.16 "Retiring an incompatible daemon"). In parts: the spec; the
        binary's `release query` *(done)*; the probe in the selection
-       *(done)*; the retirement;
+       *(done)*; the retirement *(done)*;
        `binary.channel` (usable once the plugin pin names a release with
        `release query`).
    - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task

@@ -5,6 +5,26 @@ they don't get lost.
 
 ---
 
+## Stable channel: resolve by highest version, not `/releases/latest`
+
+The stable update channel (lw self-update, `lw release query --channel
+stable`, and through it the editor's `binary.channel = "stable"`) resolves via
+GitHub's `/releases/latest`, which is the most recently *published* full
+release, not the highest version. A hotfix backported to an older release line
+and published after a newer stable release would become "latest", so the
+channel would offer a downgrade (or skip the newer stable). Resolve stable by
+listing releases and taking the highest non-prerelease version (spec 16.29
+ordering), as the unstable channel already does since #166.
+
+## `lw launch add` for build-target launches (LumeEditor request)
+
+`lw launch add` can only create command launch configs. LumeEditor asked for
+a target-kind form that creates a build-target launch (the executable of a
+project target, like the editor's launch editor does), e.g. `lw launch add
+<name> --target <project>:<target>`. Needs: the CLI surface, validation that
+the target exists in the active profile's configuration, and the same
+publish/intent defaults as the other CLI-created launch configs.
+
 ## Daemon step 5d: route `lw reset`
 
 Decided 2026-10-05: `lw reset` shares build directories with build and clean,

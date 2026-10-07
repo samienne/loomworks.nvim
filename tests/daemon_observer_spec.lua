@@ -320,8 +320,10 @@ describe("the observer (§19.16)", function()
     it("re-describes on connect and subscribes from describe's objects (§19.16 Interface client)", function()
         s = new_server(root)
         -- welcome.objects without the views: only Root.describe offers them.
+        -- (The root itself stays: a daemon without loomworks.Root/1 is
+        -- incompatible, §19.16 "Retiring an incompatible daemon".)
         obs = attach({ connect = connect_with(function(conn)
-            conn.welcome.objects = { { path = "/", interfaces = {} } }
+            conn.welcome.objects = { { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } }
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))

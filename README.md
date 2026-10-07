@@ -968,7 +968,14 @@ the status page says "checking ..." meanwhile). An `lw` on `PATH` that is too
 old or otherwise incompatible with the plugin is skipped with a note naming
 why, and the plugin's own `lw` is used instead; one you named is still used,
 with the note. An `lw` that does not answer (one older than `version --json`)
-is used, and the connection decides. When the plugin wants
+is used, and the connection decides. A daemon that is already running but
+that the plugin cannot use (no common protocol, older file formats) is
+retired when it is idle and the `lw` the editor selected is known to work
+and is another version: the editor asks it to finish and exit, then starts
+its own, and tells you once. A busy one is retired once it is idle; one
+with newer file formats, or one already retired in this Neovim session for
+the same version (say, a repository pin keeps starting it), is left alone
+with a note. When the plugin wants
 its own `lw` and it is not there yet, the editor downloads the official
 release binary in the background (it keeps working in-process meanwhile; the
 status page says so), checks its SHA-256 against the one the plugin carries,

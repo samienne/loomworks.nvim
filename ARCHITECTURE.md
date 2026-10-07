@@ -697,7 +697,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   detection; `server.EXIT_HELD` = another runtime won).
 - `ensure.lua` — `reconcile(root, conn)`: the §19.9 decision after the
   handshake (match / stop + relaunch an idle mismatched daemon / retire a
-  busy one and bypass it / leave one with newer schemas alone); `ensure(root,
+  busy one and bypass it / leave one with newer schemas alone; busy per
+  `protocol.status_busy(st)`, shared with the editor's retirement); `ensure(root,
   opts)`: `runtime.select` (mode, `--no-daemon`, `LOOMWORKS_NO_DAEMON`, `CI`),
   then connect + reconcile + `ping` (`meet(root, st, opts)`, also used by
   `cli._delegate_attached` for a live daemon an attached selection finds,
@@ -876,14 +877,33 @@ re-cut onto master step by step; this section is expanded as each step lands.
   so an uncacheable verdict never loops. The observer shows `probe_note` on
   the Runtime line; checkhealth shows the chosen candidate's cached verdict
   and never probes. The managed lw is never probed.
-  *Planned, step 5h.5 (spec §19.16 "Channel upgrades",
-  "Retiring an incompatible daemon"):* `managed.wanted` = the newer of the pin and the accepted
+  *Planned, step 5h.5 (spec §19.16 "Channel upgrades"):* `managed.wanted` =
+  the newer of the pin and the accepted
   `binary.channel` result persisted in `<stdpath data>/loomworks/channel.json`
   (obtained by running the pinned managed lw's `release query --channel <c>
-  --json`, spec §16.42, then `needs.check` on its descriptor); the observer
-  retires an idle incompatible daemon (no transport overlap, no
-  `loomworks.Root/1`, older schemas) once per `lw_version` per workspace per
-  session.
+  --json`, spec §16.42, then `needs.check` on its descriptor).
+  Retirement of an incompatible daemon (step 5h.5, spec §19.16 "Retiring an
+  incompatible daemon"): the pure decisions live in
+  `daemon/editor_retire.lua` — `incompatibility(ch, conn)` sorts the
+  challenge (and, on a transport-11 connection whose welcome lists objects,
+  `welcome.objects`) through `needs.problems(d, { exact_schemas = true,
+  interfaces = ... })` (no transport overlap, other schemas, no
+  `loomworks.Root/1`; `newer` = refused, never retired); `selected(sel)`
+  weighs the selection (managed lw: `managed.wanted().version`; PATH /
+  explicit: the cached probe verdict must be `compatible` with a version; a
+  pending probe is named); the session guard (`record` / `was_retired`, key
+  `<normalized root>\n<lw_version>`, module state so it survives a workspace
+  reload); `busy(st)` = `protocol.status_busy` (shared with the CLI's
+  `ensure.reconcile`; `protocol` is on the shared side of the plugin/binary
+  boundary, so the plugin-side module needs no binary module). `Observer:_on_connected` hands an incompatible daemon (not
+  newer) to `_weigh_retire`, which holds the connection (`_retire`, never
+  observed through; it blocks `start`/`_on_watch` single-flight), probes a
+  pending selected binary once, refuses with a note (selected binary not
+  compatible, same version, guard tripped), else `_check_retire` asks
+  `status` every `retire_check_ms` (30 s; `LW_TEST_DAEMON_RETIRE_CHECK_MS`)
+  until idle, and `_retire_now` records the guard, sends `retire`, skips the
+  daemon, sets `_relaunch` (the existing launch-once-after-exit path) and
+  `retired_note`, and notifies once. `stop` drops the held connection.
 - `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
   download of a `Wanted` record (`{ sha256, version, asset }`) into
   `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local

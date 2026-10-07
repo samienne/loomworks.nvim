@@ -122,21 +122,9 @@ function M.reconcile(root, conn, opts)
         return "newer", M.newer_line(info)
     end
     local st = client.request(conn, { kind = "status" }, step)
-    -- Clients besides this one; observers (an editor watching) never hold
-    -- off a restart (§19.11).
-    -- Busy (§19.9 "Busy", step 5g.3): a running task, or another
-    -- connection that owns a task or has a command in flight
-    -- (`busy_clients`). A connection that only observes or subscribes — an
-    -- editor — never holds off a restart. A daemon before 5g.3 reports no
-    -- `busy_clients`: every client but this one and the observers counts.
-    local others
-    if st and type(st.busy_clients) == "number" then
-        others = st.busy_clients
-    else
-        others = st and ((tonumber(st.clients) or 1) - 1 - (tonumber(st.observers) or 0)) or 1
-    end
-    local busy = (st == nil) or st.busy == true or others > 0
-    if busy then
+    -- Busy (§19.9 "Busy"): protocol.status_busy, the rule the editor's
+    -- retirement shares.
+    if require("loomworks.daemon.protocol").status_busy(st) then
         -- `retire` is in the frozen control subset (§19.8): sent whatever
         -- the transports, so also to a busy daemon whose range does not
         -- overlap ours.
