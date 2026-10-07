@@ -3494,8 +3494,26 @@ do
   local saved = update.RELEASES_API_URL
   update.RELEASES_API_URL = api  -- bare path -> download.fetch reads it locally
   local ver, e = update.resolve_unstable_version()
-  eq(ver, "0.2.0-beta.1",
-    "newest NON-draft (pre-release included, draft skipped)" .. (e and (" — " .. e) or ""))
+  eq(ver, "0.2.0",
+    "highest NON-draft version (draft skipped; a pre-release orders below its release)"
+    .. (e and (" — " .. e) or ""))
+
+  -- Publish order is NOT version order: a stable v0.1.43 cut after the
+  -- v0.1.44-beta.1 pre-release sits first in the API list, yet unstable must
+  -- still pick the highest version (§16.29) — never move users DOWN. A higher
+  -- draft is still ignored.
+  put(api, '[{"draft":false,"prerelease":false,"tag_name":"v0.1.43"},'
+    .. '{"draft":true,"prerelease":true,"tag_name":"v0.1.45-beta.1"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.44-beta.1"},'
+    .. '{"draft":false,"prerelease":true,"tag_name":"v0.1.43-beta.16"}]')
+  local hv, he = update.resolve_unstable_version()
+  eq(hv, "0.1.44-beta.1",
+    "unstable picks the highest version, not the first listed" .. (he and (" — " .. he) or ""))
+  -- An unsafe tag anywhere in the list still fails the whole query.
+  put(api, '[{"draft":false,"tag_name":"v0.1.44"},{"draft":false,"tag_name":"v../../evil"}]')
+  local uv, ue = update.resolve_unstable_version()
+  ok(uv == nil and type(ue) == "string" and ue:find("unsafe", 1, true) ~= nil,
+    "an unsafe tag later in the list still fails the query")
 
   put(api, '[{"draft":false,"tag_name":"v../../evil"}]')
   local bad, be = update.resolve_unstable_version()
