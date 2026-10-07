@@ -6,6 +6,8 @@
 -- lists every source.
 
 local binsel = require("loomworks.provision.select")
+local uv = vim.uv or vim.loop
+local function slash(p) return (p:gsub("\\", "/")) end
 local managed = require("loomworks.provision.managed")
 
 local function env(t) return function(n) return t[n] end end
@@ -16,6 +18,8 @@ local function run(o)
     return binsel.resolve("/r", {
         getenv = env(o.env or {}),
         setting = o.setting,
+        win = o.win or false,
+        cwd = o.cwd or "/cwd",
         exists = files(o.files or {}),
         on_path = function() if o.path then return o.path end return nil, "no lw on the search path" end,
         managed = function() if o.managed then return o.managed end return nil, managed.NOT_YET end,
@@ -108,18 +112,89 @@ describe("host binary order (§19.16)", function()
     end)
 end)
 
+describe("explicit paths (§19.16)", function()
+    it("a relative value is made absolute against the editor's cwd at resolution time", function()
+        -- The daemon is spawned from lw's state directory: a relative path
+        -- checked against the cwd must not be run from somewhere else.
+        local bin, src = run({ env = { LOOMWORKS_LW = "bin/lw" }, cwd = "/w", files = { ["/w/bin/lw"] = true } })
+        assert.equals("/w/bin/lw", bin); assert.equals("LOOMWORKS_LW", src)
+        bin = run({ setting = { path = "./tools/../bin/lw" }, cwd = "/w", files = { ["/w/bin/lw"] = true } })
+        assert.equals("/w/bin/lw", bin)
+        bin = run({ env = { LOOMWORKS_LW = [[C:\w\lw.exe]] }, win = true, cwd = "D:/x",
+            files = { ["C:/w/lw.exe"] = true } })
+        assert.equals("C:/w/lw.exe", bin)
+        bin = run({ env = { LOOMWORKS_LW = [[bin\lw.exe]] }, win = true, cwd = [[D:\x]],
+            files = { ["D:/x/bin/lw.exe"] = true } })
+        assert.equals("D:/x/bin/lw.exe", bin)
+    end)
+
+    it("on Windows must be an .exe, like the PATH step: a script is refused and stops the search", function()
+        local bin, _, sel = run({ env = { LOOMWORKS_LW = "C:/t/lw.cmd" }, win = true,
+            files = { ["C:/t/lw.cmd"] = true }, path = "C:/p/lw.exe" })
+        assert.is_nil(bin)
+        assert.equals("LOOMWORKS_LW=refused setting=not tried PATH=not tried managed=not tried", verdicts(sel))
+        assert.truthy(sel.note:find("C:/t/lw.cmd, which is not an .exe", 1, true), sel.note)
+        bin = run({ setting = { path = "C:/t/lw.EXE" }, win = true, files = { ["C:/t/lw.EXE"] = true } })
+        assert.equals("C:/t/lw.EXE", bin)
+    end)
+end)
+
 describe("lw on PATH (§19.16)", function()
-    it("is the resolved binary; on Windows only an .exe", function()
-        local p = binsel.on_path({ exepath = function() return "C:\\bin\\lw.EXE" end,
-            realpath = function() return "C:\\opt\\lw.exe" end, win = true })
-        assert.equals("C:/opt/lw.exe", p)
-        local none, why = binsel.on_path({ exepath = function() return "C:\\bin\\lw.cmd" end,
-            realpath = function(x) return x end, win = true })
-        assert.is_nil(none); assert.truthy(why:find("not an .exe", 1, true))
-        assert.equals("/usr/bin/lw", binsel.on_path({ exepath = function() return "/usr/bin/lw" end,
-            realpath = function() return nil end, win = false }))
-        none, why = binsel.on_path({ exepath = function() return "" end })
-        assert.is_nil(none); assert.equals("no lw on the search path", why)
+    local function mkfile(p)
+        vim.fn.mkdir(vim.fs.dirname(p), "p")
+        local f = assert(io.open(p, "w")); f:write("x"); f:close()
+        uv.fs_chmod(p, tonumber("755", 8))
+    end
+    local win = package.config:sub(1, 1) == "\\"
+    local sep = win and ";" or ":"
+    local exe = win and "lw.exe" or "lw"
+    local saved_cwd, tmp
+
+    before_each(function()
+        saved_cwd = uv.cwd()
+        tmp = (vim.fn.tempname():gsub("\\", "/"))
+        vim.fn.mkdir(tmp .. "/repo", "p")
+    end)
+    after_each(function()
+        uv.chdir(saved_cwd)
+        vim.fn.delete(tmp, "rf")
+    end)
+
+    it("never runs an lw from the cwd or a relative / empty PATH entry", function()
+        -- A repository the editor opened ships lw(.exe) at its top and in rel/.
+        mkfile(tmp .. "/repo/" .. exe)
+        mkfile(tmp .. "/repo/rel/" .. exe)
+        uv.chdir(tmp .. "/repo")
+        local p, why = binsel.on_path({ path = table.concat({ "", ".", "rel", "" }, sep) })
+        assert.is_nil(p, p); assert.equals("no lw on the search path", why)
+        -- An absolute entry later in PATH is found past them.
+        mkfile(tmp .. "/sys/" .. exe)
+        p = binsel.on_path({ path = table.concat({ ".", "rel", "", tmp .. "/sys" }, sep) })
+        assert.equals(slash(uv.fs_realpath(tmp .. "/sys/" .. exe)), p)
+    end)
+
+    it("is the first absolute entry holding a regular executable file, resolved", function()
+        mkfile(tmp .. "/b/" .. exe)
+        vim.fn.mkdir(tmp .. "/a/" .. exe, "p") -- a directory named lw(.exe)
+        local p = binsel.on_path({ path = tmp .. "/a" .. sep .. tmp .. "/b" })
+        assert.equals(slash(uv.fs_realpath(tmp .. "/b/" .. exe)), p)
+        assert.equals("/opt/lw", binsel.on_path({ path = "/usr/bin:/x", win = false,
+            is_exec = function(x) return x == "/x/lw" end, realpath = function() return "/opt/lw" end }))
+    end)
+
+    it("on Windows looks for lw.exe in every absolute entry, past an extensionless lw or a script", function()
+        local seen = {}
+        local p = binsel.on_path({ win = true, path = [[C:\a;"C:\b";\\srv\share\c;rel;\d]],
+            is_exec = function(x) seen[#seen + 1] = x; return x == "//srv/share/c/lw.exe" end,
+            realpath = function(x) return x end })
+        assert.equals("//srv/share/c/lw.exe", p)
+        assert.same({ "C:/a/lw.exe", "C:/b/lw.exe", "//srv/share/c/lw.exe" }, seen)
+        if not win then return end
+        mkfile(tmp .. "/c/lw")
+        mkfile(tmp .. "/c/lw.cmd")
+        mkfile(tmp .. "/d/lw.exe")
+        p = binsel.on_path({ path = tmp .. "/c;" .. tmp .. "/d" })
+        assert.equals(slash(uv.fs_realpath(tmp .. "/d/lw.exe")), p)
     end)
 end)
 

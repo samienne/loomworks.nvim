@@ -842,8 +842,12 @@ re-cut onto master step by step; this section is expanded as each step lands.
   does. `origin_label()` is the `lw` / `editor` marker of the Tasks rows,
   the profile row and the fidget entry; remote tasks never enter overseer.
 - `provision/select.lua` — the host binary (spec §19.16): `LOOMWORKS_LW` >
-  setup `binary.path` (an explicit value naming no file stops the search) >
-  `lw` on `PATH` (`.exe` on Windows) > `provision/managed.lua` (an already
+  setup `binary.path` (absolutized against the editor cwd once, at
+  resolution; one naming no file, or no `.exe` on Windows, stops the search) >
+  `lw` on `PATH` (its own lookup, `on_path`: absolute entries only, never the
+  cwd — `vim.fn.exepath` searches it before Neovim 0.12 on Windows — and
+  `lw.exe` per entry on Windows; `loomworks.exe.editor_exepath` is binary-side)
+  > `provision/managed.lua` (an already
   present `<stdpath data>/loomworks/lw/<sha256>/lw[.exe]`; nothing wanted
   until the plugin pin, step 5h.4); `binary.prefer = "managed"` swaps the
   last two; `binary.source` adds `LOOMWORKS_LUA` to the spawn's environment

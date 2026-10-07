@@ -334,8 +334,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Editor (daemon mode): the `lw` the editor starts the workspace daemon from
   is now `LOOMWORKS_LW`, then the new setup option `binary.path`, then `lw` on
   `PATH`, then an `lw` the plugin manages under Neovim's data directory
-  (`binary.prefer = "managed"` tries that one before `PATH`). An explicit path
-  that names no file stops there with a note. The editor no longer reads
+  (`binary.prefer = "managed"` tries that one before `PATH`). Only absolute
+  `PATH` entries are searched, never the current directory, so an `lw` shipped
+  in an opened repository is never started; on Windows each entry is checked
+  for `lw.exe`. An explicit path is taken against the editor's current
+  directory once, when chosen; one that names no file (on Windows, no `.exe`)
+  stops there with a note. The editor no longer reads
   `lw.pin` or starts lw's provisioned pinned binary itself. The status page,
   `:LoomworksDaemon status` and the new `:checkhealth loomworks` say which
   `lw` was chosen and why, or why none. `binary.source` (development only)

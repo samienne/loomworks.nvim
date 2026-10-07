@@ -2,11 +2,15 @@
 --- launches the workspace daemon from (spec §19.16 "Host binary").
 ---
 --- First match wins:
----   1. explicit: `LOOMWORKS_LW`, then the setup option `binary.path`. A value
----      naming no file is a note and stops the search (explicit means
----      explicit: the editor never runs another lw instead);
----   2. `lw` on the search path (on Windows only an `.exe`: a `.cmd` shim
----      cannot be started detached without a console);
+---   1. explicit: `LOOMWORKS_LW`, then the setup option `binary.path`, a
+---      relative value taken against the editor's current directory. A value
+---      naming no file (or, on Windows, no `.exe`) is a note and stops the
+---      search (explicit means explicit: the editor never runs another lw
+---      instead);
+---   2. `lw` on the search path: absolute PATH entries only, never the
+---      current directory (a repository the editor opened); on Windows
+---      `lw.exe` (a `.cmd` shim cannot be started detached without a
+---      console);
 ---   3. the plugin-managed lw under the editor's data directory
 ---      (loomworks.provision.managed).
 --- `binary.prefer = "managed"` puts 3 before 2. The editor reads no `lw.pin`:
@@ -69,24 +73,82 @@ end
 
 local function slash(p) return (p:gsub("\\", "/")) end
 
---- `lw` on the search path, or nil + why.
---- @param opts? { exepath?: fun(name: string): string, realpath?: fun(p: string): string|nil, win?: boolean }
+--- Whether `p` is absolute on its own, independent of the current directory
+--- (Windows: a drive path or UNC; a bare `\x` is relative to the current
+--- drive and does not count).
+--- @param p string
+--- @param win boolean
+--- @return boolean
+function M.is_absolute(p, win)
+    if type(p) ~= "string" or p == "" then return false end
+    if win then return p:match("^%a:[/\\]") ~= nil or p:match("^[/\\][/\\][^/\\]") ~= nil end
+    return p:sub(1, 1) == "/"
+end
+
+--- The absolute entries of a PATH value, in order. Relative and empty
+--- entries are dropped: they name the current directory, which for the editor
+--- is a repository it opened, possibly untrusted (spec §19.16).
+--- @param path string|nil
+--- @param win boolean
+--- @return string[]
+function M.path_dirs(path, win)
+    local sep = win and ";" or ":"
+    local out = {}
+    for entry in ((path or "") .. sep):gmatch("([^" .. sep .. "]*)" .. sep) do
+        if win then entry = entry:gsub('^"(.*)"$', "%1") end
+        if M.is_absolute(entry, win) then out[#out + 1] = (slash(entry):gsub("/+$", "")) end
+    end
+    return out
+end
+
+local function is_exec_file(p)
+    local st = p and uv.fs_stat(p)
+    if not st or st.type ~= "file" then return false end
+    if is_win() then return true end
+    return uv.fs_access(p, "X") == true
+end
+
+--- `lw` on the search path, or nil + why. Only absolute PATH entries are
+--- searched, in order, never the current directory (unlike `vim.fn.exepath`,
+--- which before Neovim 0.12 looks there first on Windows and on any version
+--- follows relative entries). On Windows it is `lw.exe` in each entry (a
+--- `.cmd` shim or an extensionless file cannot start the daemon detached, and
+--- does not hide a later `lw.exe`); elsewhere an executable regular file `lw`.
+--- @param opts? { path?: string, win?: boolean, is_exec?: fun(p: string): boolean, realpath?: fun(p: string): string|nil }
 --- @return string|nil path, string|nil why
 function M.on_path(opts)
     opts = opts or {}
-    local ok, exe = pcall(opts.exepath or vim.fn.exepath, "lw")
-    if not ok or type(exe) ~= "string" or exe == "" then return nil, "no lw on the search path" end
-    -- The binary itself, not PATH's spelling of it (`lw.EXE` via PATHEXT, a
-    -- link): the daemon it starts then reports the executable the CLI does.
-    local real = (opts.realpath or uv.fs_realpath)(exe)
-    if type(real) == "string" and real ~= "" then exe = real end
-    exe = slash(exe)
     local win = opts.win
     if win == nil then win = is_win() end
-    if win and not exe:lower():match("%.exe$") then
-        return nil, exe .. " is not an .exe (a script cannot start the daemon detached)"
+    local path = opts.path
+    if path == nil then path = os.getenv("PATH") end
+    local is_exec = opts.is_exec or is_exec_file
+    local name = win and "lw.exe" or "lw"
+    for _, dir in ipairs(M.path_dirs(path, win)) do
+        local p = dir .. "/" .. name
+        if is_exec(p) then
+            -- The binary itself, not PATH's spelling of it (a link): the
+            -- daemon it starts then reports the executable the CLI does.
+            local real = (opts.realpath or uv.fs_realpath)(p)
+            if type(real) == "string" and real ~= "" then p = real end
+            return slash(p)
+        end
     end
-    return exe
+    return nil, "no lw on the search path"
+end
+
+--- An explicit value made absolute against the editor's current directory,
+--- forward slashes, `.`/`..` resolved. Done once, at resolution time: the
+--- daemon is spawned from lw's state directory, so the path checked must be
+--- the path run.
+--- @param v string
+--- @param cwd string
+--- @param win boolean
+--- @return string
+function M.absolute(v, cwd, win)
+    local p = slash(v)
+    if not M.is_absolute(p, win) then p = slash(cwd):gsub("/+$", "") .. "/" .. p end
+    return slash(vim.fs.normalize(p))
 end
 
 --- Check the setup option `binary`. Returns the cleaned setting and a
@@ -133,6 +195,8 @@ end
 ---   setting   loomworks.provision.BinarySetting (the setup option `binary`)
 ---   getenv    replaces os.getenv
 ---   exists    fun(path) → boolean (a regular file)
+---   win       boolean: Windows rules (default: the host's)
+---   cwd       the directory a relative explicit value is taken against (default: the editor's)
 ---   on_path   fun() → path|nil, why
 ---   managed   fun() → path|nil, why (loomworks.provision.managed.find)
 ---   is_dir, plugin_lua  for `binary.source`
@@ -145,7 +209,10 @@ function M.resolve(root, opts)
     local setting, warning = M.check_setting(opts.setting)
     local getenv = opts.getenv or os.getenv
     local exists = opts.exists or is_file
-    local sel = { candidates = {}, warning = warning }
+    local win = opts.win
+    if win == nil then win = is_win() end
+    local cwd = opts.cwd or uv.cwd()
+    local sel ={ candidates = {}, warning = warning }
     local function add(source, verdict, path, reason)
         sel.candidates[#sel.candidates + 1] = { source = source, label = M.LABELS[source],
             verdict = verdict, path = path, reason = reason }
@@ -168,13 +235,15 @@ function M.resolve(root, opts)
         if sel.path or sel.note then
             add(source, "not tried", (v and v ~= "") and slash(v) or nil, "a source above decided")
         elseif v and v ~= "" then
-            local p = slash(vim.fs.normalize(v))
-            if exists(p) then
+            local p = M.absolute(v, cwd, win)
+            local bad = (win and not p:lower():match("%.exe$")) and "not an .exe"
+                or (not exists(p) and "not a file") or nil
+            if not bad then
                 choose(source, p)
             else
-                add(source, "refused", p, "not a file")
-                sel.note = string.format("%s names %s, which is not a file — no lw host binary "
-                    .. "(an explicit lw is never replaced by another); running in-process", M.LABELS[source], p)
+                add(source, "refused", p, bad)
+                sel.note = string.format("%s names %s, which is %s — no lw host binary "
+                    .. "(an explicit lw is never replaced by another); running in-process", M.LABELS[source], p, bad)
             end
         else
             add(source, "absent", nil, "not set")

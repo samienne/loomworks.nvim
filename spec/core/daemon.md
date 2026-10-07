@@ -1846,12 +1846,19 @@ in-process path. In `in-process` mode nothing below happens.
 - **Host binary.** The observer selects the host binary it launches the
   daemon from; first match wins:
   1. **Explicit**: `LOOMWORKS_LW`, then the setup option `binary.path`. Used as
-     is (no hash check: the user chose it). A value naming no file is a note
-     and **stops the search**: the editor never runs another `lw` instead of
-     the one the user named.
-  2. **`lw` on the search path** (on Windows only an `.exe`: a script shim
-     cannot start the daemon detached), when it offers the interfaces the
-     plugin needs.
+     is (no hash check: the user chose it); a relative value is made absolute
+     against the editor's current directory when it is selected, so the file
+     checked is the file run. A value naming no file — on Windows, no `.exe`,
+     the rule of step 2 — is a note and **stops the search**: the editor never
+     runs another `lw` instead of the one the user named.
+  2. **`lw` on the search path**: only the search path's **absolute** entries,
+     in order — never the current directory, which for the editor is a
+     repository it opened, possibly untrusted (§17); relative and empty
+     entries are skipped (an absolute entry naming that directory still
+     counts). On Windows the file looked for in each entry is `lw.exe` (a
+     script shim cannot start the daemon detached), so an extensionless `lw`
+     or an `lw.cmd` in an earlier entry neither is chosen nor hides a later
+     `lw.exe`. Used when it offers the interfaces the plugin needs.
   3. **The plugin-managed `lw`** under the editor's data directory: used when
      there is no system `lw`, or when it is too old (a status note says so).
 

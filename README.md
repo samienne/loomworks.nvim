@@ -956,8 +956,11 @@ editor connects are picked up too. Its own builds still run in the
 editor. It starts the daemon from the `lw` it finds when you open the
 workspace or run `:LoomworksDaemon connect`, and never restarts one you
 stopped with `lw daemon stop`. It looks, in this order, at `LOOMWORKS_LW`,
-`setup({ binary = { path = "/path/to/lw" } })` (a path that names no file
-stops the search with a note), `lw` on `PATH` (on Windows the `.exe`), and an
+`setup({ binary = { path = "/path/to/lw" } })` (a relative path is taken
+against Neovim's current directory; a path that names no file, or on Windows
+no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry
+(never the current directory, so an `lw` inside an opened repository is never
+started; on Windows `lw.exe`), and an
 `lw` the plugin manages under Neovim's data directory (the plugin does not
 install one yet). `binary = { prefer = "managed" }` tries the plugin's own
 `lw` before `PATH`; the daemon's version can then depend on whether the editor
