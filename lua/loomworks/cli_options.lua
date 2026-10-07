@@ -21,11 +21,14 @@
 ---              (`launch add --from-target <t> <program args…>`);
 ---   permissive true: this command/sub-command is not checked (its grammar
 ---              passes unknown tokens through by design);
----   passthrough true (with permissive): every token after the command words
----              may be a program argument, so not even a global option is
----              recognised there (`launch set`'s argument list).
+---   verbatim   true: what `free_after` / `frees` leaves unchecked is a
+---              program's argument list, so not even a global option is
+---              recognised there (`launch add`'s program arguments). Without
+---              it the unchecked rest is a value operand: global options are
+---              still lw's own up to `--` (`lw config set A D opt -O2 --no-input`).
 --- Checking always stops at `--`: what follows belongs to a program or a
---- native tool.
+--- native tool (and on a set-value command or `launch set` it is the escape
+--- for a value / argument that spells a global option).
 
 local M = {}
 
@@ -43,7 +46,7 @@ local function spec(t)
     free_after = t.free_after,
     frees = set(t.frees),
     permissive = t.permissive,
-    passthrough = t.passthrough,
+    verbatim = t.verbatim,
   }
 end
 
@@ -202,11 +205,12 @@ M.COMMANDS = {
       -- `<project> <name> <command> [args…]` / `--from-target <t> [args…]`:
       -- everything after the command (or the target) is the program's.
       add = spec({ valued = { "--working-dir", "--cwd", "--env", "--from-target", "--description" },
-        eq = { "--description=" }, frees = { "--from-target" }, free_after = 3 }),
+        eq = { "--description=" }, frees = { "--from-target" }, free_after = 3, verbatim = true }),
       -- Every token `set` does not know becomes a program argument (its
-      -- documented grammar), so there is nothing to refuse — and a global
-      -- option there is a program argument too (`--dev`).
-      set = spec({ permissive = true, passthrough = true }),
+      -- documented grammar), so there is nothing to refuse. A global option
+      -- there is lw's own up to `--`; after `--` every token is an argument
+      -- (`lw launch set App demo -- --dev`).
+      set = PERMISSIVE,
       show = spec({ flags = { "--json" }, valued = { "--project", "--launch" } }),
       remove = LAUNCH_ADDR,
       rename = NONE,
@@ -283,6 +287,7 @@ local function walk(argv)
     return n
   end
   local command = argv[1]
+  if command == "--" then return nil, nil, 1 end
   if type(command) ~= "string" then return nil, nil, n end
   local cmd = M.ALIASES[command] or command
   local entry = M.COMMANDS[cmd]
@@ -304,18 +309,19 @@ local function walk(argv)
     end
   end
   if not s then return nil, nil, to_dashdash(start) end
-  if s.passthrough then return nil, nil, start end
   if s.permissive then return nil, nil, to_dashdash(start) end
   local npos, i = 0, start
   while argv[i] ~= nil do
     local v = argv[i]
     if v == "--" then return nil, nil, i end
-    if s.free_after and npos >= s.free_after then return nil, nil, i end
+    if s.free_after and npos >= s.free_after then
+      return nil, nil, s.verbatim and i or to_dashdash(i)
+    end
     if #v > 1 and v:sub(1, 1) == "-" then
       if M.is_global(v) then
         i = i + 1
       elseif s.valued[v] then
-        if s.frees[v] then return nil, nil, math.min(i + 2, n) end
+        if s.frees[v] then return nil, nil, s.verbatim and math.min(i + 2, n) or to_dashdash(i + 2) end
         i = i + 2
       elseif s.flags[v] then
         i = i + 1
@@ -337,10 +343,11 @@ end
 
 --- Where lw's own arguments end in `argv` (argv[1] is the command, leading
 --- global options already removed): the index of the first token that
---- belongs to a program, a native tool or a value operand — the `--`, the
---- program arguments after `launch add`'s command (or target), everything
---- after `launch set`'s command words, a set-value operand — or #argv + 1.
---- Global options are recognised only before it (spec §16.7).
+--- belongs to a program or a native tool — the first `--`, or the program
+--- arguments after `launch add`'s command (or target) — or #argv + 1. Global
+--- options are recognised only before it (spec §16.7); on `launch set` and the
+--- set-value commands that is up to `--`, which escapes an argument or value
+--- spelling a global option.
 --- @param argv string[]
 --- @return integer
 function M.own_end(argv)
@@ -371,6 +378,24 @@ function M.split_globals(raw)
     end
   end
   return rest, globals
+end
+
+--- `list` without its first `--` at or after index `from` (default 1): on a
+--- set-value command the `--` only escapes a value that spells a global
+--- option (`lw config set App Debug opt -- --dev`), it is not itself a value.
+--- @param list string[]
+--- @param from integer|nil
+--- @return string[]
+function M.drop_escape(list, from)
+  local out, dropped = {}, false
+  for j, v in ipairs(list) do
+    if not dropped and v == "--" and j >= (from or 1) then
+      dropped = true
+    else
+      out[#out + 1] = v
+    end
+  end
+  return out
 end
 
 --- Find the first unknown option in `argv` (argv[1] is the command, global

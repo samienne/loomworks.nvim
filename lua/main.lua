@@ -111,10 +111,7 @@ if dev_opt_in then
   luaroot = env_lua or paths.norm(dev_flag_path) or paths.norm(cfg["dev-lua"])
   source_kind = "dev"
   if not luaroot then
-    io.stderr:write(
-      "lw: development source requested but no directory is configured.\n" ..
-      "    Set one with `lw settings set dev-lua <path>`, pass `--dev=<path>`,\n" ..
-      "    or export LOOMWORKS_LUA=<path>.\n")
+    io.stderr:write(pin.dev_unconfigured_message(host_flags.dev_in_args and not env_lua))
     os.exit(1)
   end
   if not uv.fs_stat(luaroot .. "/loomworks") then

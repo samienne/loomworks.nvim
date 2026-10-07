@@ -1,10 +1,10 @@
 -- Global options (spec §16.7) are lw's own options: recognised before the
 -- command and among the command's own arguments — never after `--` and never
 -- inside a program's arguments (a launch configuration's args after its
--- command / target, `lw launch set`'s argument list). Regression for a report
--- where `lw --no-input launch set App demo --dev --x` (and the `-- --dev` and
--- `launch add … Editor.exe -- --dev` forms) were read as the global `--dev`
--- (development source) instead of being stored as program arguments.
+-- command / target). On `lw launch set` and the set-value commands `--` is the
+-- escape. Regression for a report where `lw launch set App demo -- --dev`,
+-- `launch add … Editor.exe -- --dev` and `run demo -- --dev` were read as the
+-- global `--dev` (development source) instead of being program arguments.
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local cli = require("loomworks.cli")
@@ -31,7 +31,8 @@ local function make_root()
   return root
 end
 
-local HANDLERS = { "cmd_run", "cmd_build", "cmd_test", "cmd_launch", "cmd_configuration" }
+local HANDLERS = { "cmd_run", "cmd_build", "cmd_test", "cmd_launch", "cmd_configuration",
+  "cmd_project" }
 
 --- Drive the real dispatcher with the handlers stubbed; return the argv the
 --- handler received (the args table is the handler's last argument).
@@ -64,12 +65,31 @@ end
 describe("global options stop at the command's program arguments", function()
   local root = make_root()
 
-  it("launch set: a trailing --dev is a program argument", function()
+  it("launch set: a --dev before -- is lw's own (the host hints to use --)", function()
     local r = dispatch(root, "--no-input", "launch", "set", "App", "demo",
       "--dev", "--use-scene-json-schema", "D:\\src\\x")
     assert.equals(0, r.exit_code, r.stderr)
     assert.equals("cmd_launch", r.called)
-    assert.is_true(has(r.args, "--dev"), vim.inspect(r.args))
+    assert.is_false(has(r.args, "--dev"), vim.inspect(r.args))
+    local pin = require("boot.pin")
+    local _, f = pin.peel_host_flags({ "launch", "set", "App", "demo", "--dev" })
+    assert.is_true(f.dev and f.dev_in_args)
+    assert.truthy(pin.dev_unconfigured_message(f.dev_in_args):find("put it after `--`", 1, true))
+  end)
+
+  it("launch set / set-value commands: a trailing global option is lw's own", function()
+    local r = dispatch(root, "launch", "set", "app", "run", "--env", "K=V", "--no-input")
+    assert.equals("cmd_launch", r.called, r.stderr)
+    assert.same({ "launch", "set", "app", "run", "--env", "K=V" }, r.args)
+    r = dispatch(root, "project", "set", "App", "V", "x", "--no-input")
+    assert.equals("cmd_project", r.called, r.stderr)
+    assert.same({ "project", "set", "App", "V", "x" }, r.args)
+  end)
+
+  it("a program's --help is an argument, not a help request", function()
+    local r = dispatch(root, "launch", "add", "app", "x", "node", "--help")
+    assert.equals("cmd_launch", r.called, r.stdout)
+    assert.is_true(has(r.args, "--help"), vim.inspect(r.args))
   end)
 
   it("launch set: --dev after -- is a program argument", function()
@@ -105,10 +125,13 @@ describe("global options stop at the command's program arguments", function()
     assert.is_true(has(r.args, "--dev=x"), vim.inspect(r.args))
   end)
 
-  it("a set-value operand that spells a global option is the value", function()
-    local r = dispatch(root, "config", "set", "App", "Debug", "options.X", "--local")
+  it("a set-value operand that spells a global option is the value after --", function()
+    local r = dispatch(root, "config", "set", "App", "Debug", "options.X", "--", "--local")
     assert.equals("cmd_configuration", r.called, r.stderr)
     assert.is_true(has(r.args, "--local"), vim.inspect(r.args))
+    r = dispatch(root, "config", "set", "App", "Debug", "options.X", "-O2", "--local")
+    assert.equals("cmd_configuration", r.called, r.stderr)
+    assert.same({ "config", "set", "App", "Debug", "options.X", "-O2" }, r.args)
   end)
 
   it("global options among a command's own arguments are still recognised", function()
@@ -142,13 +165,39 @@ describe("launch add / set take the args after --", function()
     end
   end
 
-  it("launch add <cmd> -- args stores the args without the --", function()
+  it("launch add <cmd> -- args keeps the -- and every token after it", function()
     local root = make_ws()
     local r = launch(root, "add", "App", "editor-dev", "Editor.exe", "--", "--dev", "--env", "X")
     assert.is_nil(r.exit_code, r.stderr)
     local c = cfg(root, "editor-dev")
     assert.equals("Editor.exe", c.command)
+    assert.same({ "--", "--dev", "--env", "X" }, c.args)
+    r = launch(root, "add", "App", "dev", "npm", "run", "dev", "--", "--port", "3000")
+    assert.is_nil(r.exit_code, r.stderr)
+    assert.same({ "run", "dev", "--", "--port", "3000" }, cfg(root, "dev").args)
+  end)
+
+  it("launch add -- <cmd> args: a -- before the command only ends lw's options", function()
+    local root = make_ws()
+    local r = launch(root, "add", "App", "n", "--", "node", "--dev", "--env", "X")
+    assert.is_nil(r.exit_code, r.stderr)
+    local c = cfg(root, "n")
+    assert.equals("node", c.command)
     assert.same({ "--dev", "--env", "X" }, c.args)
+  end)
+
+  it("set-value commands: -- escapes a value that spells an option", function()
+    local root = make_ws()
+    local r = capture(function()
+      return cli.cmd_project_set(root, { "project", "set", "App", "V", "--", "--type" })
+    end)
+    assert.is_nil(r.exit_code, r.stderr)
+    local ws = assert(cli._load_workspace(root, false))
+    local found
+    for _, p in pairs(ws._projects) do
+      if p.key == "App" then found = p.variables and p.variables.V end
+    end
+    assert.equals("--type", found and found.default)
   end)
 
   it("launch set -- args replaces the args verbatim", function()
@@ -163,4 +212,56 @@ describe("launch add / set take the args after --", function()
     assert.same({ "--dev" }, c.args)
     assert.equals("w", c.working_dir)
   end)
+end)
+
+describe("host and bundle walkers agree", function()
+  local pin = require("boot.pin")
+  local opts = require("loomworks.cli_options")
+  -- Where lw's own arguments end on the whole line, per the bundle: its
+  -- leading global options, then `own_end` of the rest.
+  local function bundle_end(raw)
+    local k = 0
+    while raw[k + 1] ~= nil and opts.is_global(raw[k + 1]) do k = k + 1 end
+    local tail = {}
+    for j = k + 1, #raw do tail[#tail + 1] = raw[j] end
+    return k + opts.own_end(tail)
+  end
+  local CASES = {
+    { "run", "demo", "--", "--dev" },
+    { "--no-input", "run", "demo", "--dev", "--", "x" },
+    { "build", "--dev", "Dev", "--no-pin" },
+    { "launch", "add", "app", "dev", "npm", "run", "dev", "--", "--port", "3000" },
+    { "launch", "add", "App", "x", "Editor.exe", "--", "--dev" },
+    { "launch", "add", "App", "x", "Editor.exe", "--dev", "--no-input" },
+    { "launch", "add", "App", "x", "--no-input", "node", "--help" },
+    { "launch", "add", "App", "x", "--env", "K=V", "--cwd", "w", "node", "-x" },
+    { "launch", "add", "App", "x", "--", "node", "--dev" },
+    { "launch", "add", "App", "x", "--from-target", "t", "--dev" },
+    { "launch", "create", "App", "x", "--description", "d", "node", "--dev" },
+    { "launch", "set", "App", "demo", "--dev", "--x" },
+    { "launch", "set", "App", "demo", "--", "--dev" },
+    { "launch", "edit", "app", "run", "--env", "K=V", "--no-input" },
+    { "config", "set", "App", "Debug", "options.X", "-O2", "--no-pin" },
+    { "config", "set", "App", "Debug", "options.X", "--", "--dev" },
+    { "project", "set", "App", "--type", "string", "V", "--", "--no-pin" },
+    { "profile", "set", "P", "App", "V", "--dev" },
+    { "settings", "set", "dev-lua", "--", "--x" },
+    { "--dev", "status", "--help" },
+    { "--", "--dev" },
+    { "frobnicate", "--dev", "--", "--dev" },
+  }
+  for _, raw in ipairs(CASES) do
+    it(table.concat(raw, " "), function()
+      assert.equals(pin.own_end(raw), bundle_end(raw))
+      -- The same host flags are taken on both sides.
+      local fwd = pin.peel_host_flags(raw)
+      local rest, globals = opts.split_globals(raw)
+      local host = 0
+      for _, v in ipairs(globals) do
+        if v == "--dev" or v:sub(1, 6) == "--dev=" or v == "--no-pin" then host = host + 1 end
+      end
+      assert.equals(#raw - #fwd, host)
+      assert.equals(#raw, #rest + #globals)
+    end)
+  end
 end)

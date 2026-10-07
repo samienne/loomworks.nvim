@@ -229,32 +229,29 @@ function M.command_words(args)
   return words[1], words[2]
 end
 
--- `lw launch add|create` / `set|edit` hand (part of) the line to a program:
--- after `add`'s command operand (or `--from-target <t>`), and after `set`'s
--- command words, every token is a program argument.
-local LAUNCH_TAIL = { add = "add", create = "add", set = "set", edit = "set" }
+-- `lw launch add|create` hands the line to a program after its command
+-- operand (or `--from-target <t>`): every token there is a program argument.
+local LAUNCH_ADD = { add = true, create = true }
 local LAUNCH_ADD_VALUED = { ["--working-dir"] = true, ["--cwd"] = true, ["--env"] = true,
   ["--description"] = true }
--- `<cmd> set`: the number of operands before a value operand, which may itself
--- start with '-' (`lw config set App Debug options.X -O2`).
-local SET_VALUE = { config = 3, configuration = 3, cfg = 3, profile = 2, project = 2, settings = 1 }
 
 --- Where lw's own arguments end in `args` (the whole command line, leading
 --- global flags included): the index of the first token that belongs to a
---- program or native tool — the first `--`, a `launch add` program's arguments,
---- everything after `launch set`, a `config|profile|project|settings set` value
---- operand — or #args + 1. The host's flags (`--dev`,
---- `--no-pin`) are recognised only before it (spec §16.7). The host mirror of
---- the bundle's `loomworks.cli_options.own_end` (which knows every command's
---- grammar): the host cannot load the bundle before it has chosen the source.
+--- program or native tool — the first `--`, or a `launch add` program's
+--- arguments — or #args + 1. The host's flags (`--dev`, `--no-pin`) are
+--- recognised only before it (spec §16.7); on `launch set` and the set-value
+--- commands that is up to `--`, the escape for an argument or value spelling
+--- one. The host mirror of the bundle's `loomworks.cli_options.own_end` (which
+--- knows every command's grammar): the host cannot load the bundle before it
+--- has chosen the source. Also returns the command word's index (or nil).
 --- @param args string[]
---- @return integer
+--- @return integer own_end, integer|nil command_index
 function M.own_end(args)
   local n = #args + 1
   local i, c = 1, nil
   while i <= #args do
     local v = args[i]
-    if v == "--" then return i end
+    if v == "--" then return i, nil end
     if v == "--root" then
       i = i + 1
     elseif type(v) == "string" and v:sub(1, 1) ~= "-" then
@@ -262,32 +259,19 @@ function M.own_end(args)
     end
     i = i + 1
   end
-  if not c then return n end
+  if not c then return n, nil end
   local function to_dashdash(from)
     for k = from, #args do if args[k] == "--" then return k end end
     return n
   end
-  local value_after = (SET_VALUE[args[c]] and args[c + 1] == "set") and SET_VALUE[args[c]] or nil
-  if value_after then
-    -- `<cmd> set <operands…> <value>`: the value may itself start with '-'.
-    local npos, k = 0, c + 2
-    while k <= #args do
-      local v = args[k]
-      if v == "--" or npos >= value_after then return k end
-      if v == "--type" then k = k + 1 elseif v:sub(1, 1) ~= "-" then npos = npos + 1 end
-      k = k + 1
-    end
-    return n
+  if not (args[c] == "launch" and LAUNCH_ADD[args[c + 1] or ""]) then
+    return to_dashdash(c + 1), c
   end
-  if args[c] ~= "launch" then return to_dashdash(c + 1) end
-  local kind = LAUNCH_TAIL[args[c + 1] or ""]
-  if kind == "set" then return math.min(c + 2, n) end
-  if kind ~= "add" then return to_dashdash(c + 1) end
   local npos, k = 0, c + 2
   while k <= #args do
     local v = args[k]
-    if v == "--" or npos >= 3 then return k end
-    if v == "--from-target" then return math.min(k + 2, n) end
+    if v == "--" or npos >= 3 then return k, c end
+    if v == "--from-target" then return math.min(k + 2, n), c end
     if LAUNCH_ADD_VALUED[v] then
       k = k + 2
     else
@@ -295,22 +279,25 @@ function M.own_end(args)
       k = k + 1
     end
   end
-  return n
+  return n, c
 end
 
 --- Peel the host-level flags (`--dev`, `--dev=<path>`, `--no-pin`) off the
 --- command line — only where they are lw's own (`own_end`): after `--` or in
 --- a program's arguments they are left in place for the program.
 --- @param args string[]
---- @return string[] forwarded, { dev: boolean, dev_path: string|nil, no_pin: boolean } flags
+--- `dev_in_args` is set when a `--dev` came after the command word (a program
+--- argument the user forgot to put after `--`, for the error hint).
+--- @return string[] forwarded, { dev: boolean, dev_path: string|nil, no_pin: boolean, dev_in_args: boolean } flags
 function M.peel_host_flags(args)
-  local stop = M.own_end(args)
-  local forwarded, f = {}, { dev = false, dev_path = nil, no_pin = false }
+  local stop, c = M.own_end(args)
+  local forwarded, f = {}, { dev = false, dev_path = nil, no_pin = false, dev_in_args = false }
   for i, v in ipairs(args) do
     if i < stop and v == "--dev" then
-      f.dev = true
+      f.dev, f.dev_in_args = true, f.dev_in_args or (c ~= nil and i > c)
     elseif i < stop and type(v) == "string" and v:sub(1, 6) == "--dev=" then
       f.dev, f.dev_path = true, v:sub(7)
+      f.dev_in_args = f.dev_in_args or (c ~= nil and i > c)
     elseif i < stop and v == "--no-pin" then
       f.no_pin = true
     else
@@ -318,6 +305,22 @@ function M.peel_host_flags(args)
     end
   end
   return forwarded, f
+end
+
+--- The error for a development source with no directory configured. With
+--- `in_args` (a `--dev` after the command word, `peel_host_flags`) it adds a
+--- hint: the user may have meant it for the program (spec §16.7).
+--- @param in_args boolean|nil
+--- @return string
+function M.dev_unconfigured_message(in_args)
+  local msg = "lw: development source requested but no directory is configured.\n" ..
+    "    Set one with `lw settings set dev-lua <path>`, pass `--dev=<path>`,\n" ..
+    "    or export LOOMWORKS_LUA=<path>.\n"
+  if in_args then
+    msg = msg .. "    (`--dev` there is lw's own option; to pass it to the program,\n" ..
+      "    put it after `--`, e.g. `lw launch set <project> <name> -- --dev`.)\n"
+  end
+  return msg
 end
 
 --- The value of `--root <dir>` / `--root=<dir>` in `args`, or nil.

@@ -2972,8 +2972,12 @@ function M.cmd_launch_add(root, args)
   while args[i] do
     local v = args[i]
     if v == "--" then
-      -- Everything after `--` is the program's, verbatim (spec §16.7).
-      for k = i + 1, #args do positionals[#positionals + 1] = args[k] end
+      -- Before the command (or the target), `--` ends lw's options: the rest
+      -- is the command and its arguments. After it the `--` is itself a
+      -- program argument (`npm run dev -- --port 3000`). Either way every
+      -- token after it is the program's, verbatim (spec §16.7).
+      local from = (#positionals == 0 and not from_target) and i + 1 or i
+      for k = from, #args do positionals[#positionals + 1] = args[k] end
       break
     elseif v == "--description" then
       if args[i + 1] == nil then die("--description needs a paragraph") end
@@ -4433,7 +4437,11 @@ local function parse_project_set_args(argv)
   while i <= #argv do
     local w = argv[i]
     local inline = w:match("^%-%-type=(.*)$")
-    if w == "--type" then
+    if w == "--" then
+      -- The escape for a default that spells an option (spec §16.7).
+      for k = i + 1, #argv do pos[#pos + 1] = argv[k] end
+      break
+    elseif w == "--type" then
       var_type = argv[i + 1]
       if not var_type then die("--type needs a value — use 'string' or 'path'") end
       i = i + 2
@@ -5099,7 +5107,11 @@ function M.cmd_configuration(sub, root, a3, a4, a5, a6, argv)
   end
   if sub == "show" then return M.cmd_configuration_show(root, a3, a4) end
   if sub == "get" then return M.cmd_configuration_get(root, a3, a4, a5) end
-  if sub == "set" then return M.cmd_configuration_set(root, a3, a4, a5, a6) end
+  if sub == "set" then
+    -- `--` only escapes a value that spells an option (spec §16.7).
+    local s = require("loomworks.cli_options").drop_escape(argv or {}, 3)
+    return M.cmd_configuration_set(root, s[3], s[4], s[5], s[6])
+  end
   if sub == "unset" then return M.cmd_configuration_unset(root, a3, a4, a5) end
   if sub == "rename" or sub == "mv" then return M.cmd_configuration_rename(root, a3, a4, a5) end
   if sub == "remove" or sub == "rm" then return M.cmd_configuration_remove(root, a3, a4) end
@@ -6612,9 +6624,11 @@ end
 --- Profile defaults to the active one. Written to user.json only; never
 --- published to loomworks.json.
 function M.cmd_profile_set(root, args)
-  -- args: { "profile", "set", [profile], project, variable, value }
+  -- args: { "profile", "set", [profile], project, variable, value }; a `--`
+  -- only escapes a value that spells an option (spec §16.7).
   local rest = {}
-  for i = 3, #args do rest[#rest + 1] = args[i] end
+  local unescaped = require("loomworks.cli_options").drop_escape(args, 3)
+  for i = 3, #unescaped do rest[#rest + 1] = unescaped[i] end
   local profile_name, project_key, var_name, value
   if #rest == 4 then
     profile_name, project_key, var_name, value = rest[1], rest[2], rest[3], rest[4]
@@ -11446,7 +11460,9 @@ args/env/working-dir layered on top — no hand-written path.
         --description (repeatable, one paragraph each; the first is the
         summary) describes it. There is no -m here: everything after the
         command is the program's own args (python -m http.server);
-        after `--` every token is, even one lw itself knows (--env, --dev).
+        after a `--` every token is, even one lw itself knows (--env,
+        --dev). A `--` after the command is kept (npm run dev -- --port 1);
+        one before the command only ends lw's options.
         e.g. lw launch add app serve node server.js --env PORT=8080
   add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
         Declare a target-backed launch config from a build target (by name).
@@ -11457,7 +11473,8 @@ args/env/working-dir layered on top — no hand-written path.
           --env K=V (add/update, repeat) | --unset-env K (remove, repeat)
           --command C | --from-target T   (switch kind)
           trailing args replace the arg list | --clear-args
-          (after `--` every token is an arg, even --env or --dev)
+          (after `--` every token is an arg, even --env or --dev;
+           before it --dev/--no-input/... are lw's own options)
         e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
   show <project> <name> [--json]
         Detail one config: description, target/command, args, working dir,
@@ -12744,15 +12761,16 @@ local function main()
   if command == "help" or command == "-h" or command == "--help" then
     finish(M.cmd_help(a[2], a[3]))
   end
-  -- `lw <command> … --help` / `-h` (before any `--`, whose tail belongs to a
-  -- build tool / program) is `lw help <command>` for every command, checked
+  -- `lw <command> … --help` / `-h` (among its own arguments; never after `--` or in a
+  -- program's arguments) is `lw help <command>` for every command, checked
   -- before any handler can read the flag as an operand (`lw build --help`
   -- used to look for a profile named "--help"). A command without a topic of
   -- its own gets the general usage. A sub-command (`lw profile query --help`)
   -- gets its own section of the parent topic when it has one. Exit 0 either way.
   if command then
-    for i = 2, #a do
-      if a[i] == "--" then break end
+    -- Only among lw's own arguments — the host's bound too (main.lua), so a
+    -- program's `--help` (`lw launch add app x node --help`) is an argument.
+    for i = 2, require("loomworks.cli_options").own_end(a) - 1 do
       if a[i] == "--help" or a[i] == "-h" then
         local sub = (i > 2) and a[2] or nil
         M.cmd_help(M.has_help_topic(command) and command or nil, sub)
@@ -12788,7 +12806,9 @@ local function main()
   -- is a global command (no workspace needed). NOTE: `config` no longer routes
   -- here — it is now the project-configuration command (see below).
   if command == "settings" then
-    finish(M.cmd_settings(a[2], a[3], a[4]))
+    -- `--` only escapes a value that spells an option (spec §16.7).
+    local s = require("loomworks.cli_options").drop_escape(a, 3)
+    finish(M.cmd_settings(s[2], s[3], s[4]))
   end
   if command == "init" then
     finish(M.cmd_init(a))
