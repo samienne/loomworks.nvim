@@ -1865,8 +1865,9 @@ the daemon's operations as with any other process:
 pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
 `provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
 (`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
-two-stage `release.yml`; the pre-launch probe, channel upgrades and the
-editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
+two-stage `release.yml`), the pre-launch probe of step 5h.5
+(`provision/probe.lua`, `provision/needs.lua` `problems`; channel upgrades and
+the editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1948,8 +1949,7 @@ in-process path. In `in-process` mode nothing below happens.
      script shim cannot start the daemon detached), so an extensionless `lw`
      or an `lw.cmd` in an earlier entry neither is chosen nor hides a later
      `lw.exe`. Used when it offers the interfaces the plugin needs, as the
-     pre-launch probe below decides *(step 5h.5; until then the first `lw`
-     found is used unchecked)*.
+     pre-launch probe below decides *(step 5h.5, `provision/probe.lua`)*.
   3. **The plugin-managed `lw`** under the editor's data directory: used when
      there is no system `lw`, or when it is too old (a status note says so).
      "Too old" is a **definite** failure of the probe; an unknown result is
@@ -2451,7 +2451,8 @@ runtime is deferred until that module is actively developed.
        upgrades"), compatibility-driven selection (§19.16 "Pre-launch
        probe"), the editor's retirement of an incompatible idle daemon
        (§19.16 "Retiring an incompatible daemon"). In parts: the spec; the
-       binary's `release query`; the probe in the selection; the retirement;
+       binary's `release query` *(done)*; the probe in the selection
+       *(done)*; the retirement;
        `binary.channel` (usable once the plugin pin names a release with
        `release query`).
    - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task

@@ -51,6 +51,10 @@ function M.check(h, lw)
         local what = c.label .. ": " .. c.verdict
         if c.path then what = what .. " — " .. c.path end
         if c.reason then what = what .. " (" .. c.reason .. ")" end
+        -- The cached pre-launch probe verdict (step 5h.5); checkhealth never probes.
+        if c.probe and c.verdict == "chosen" then
+            what = what .. " [probe: " .. require("loomworks.provision.probe").describe(c.probe) .. "]"
+        end
         h.info(what)
     end
     if sel.warning then h.warn(sel.warning) end

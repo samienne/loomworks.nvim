@@ -41,6 +41,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- Experimental daemon mode: before starting the daemon from an `lw` on `PATH`,
+  `LOOMWORKS_LW` or `binary.path`, the editor checks it with `lw version
+  --json` in the background (bounded to about 3 s, cached per binary for the
+  session). An incompatible `lw` on `PATH` (no common protocol, newer file
+  formats, no root interface) is skipped with a note and the plugin's own
+  `lw` is used; an explicitly named one is only noted, never replaced. An
+  `lw` that gives no answer is used and the connection decides; a missing
+  feature interface only degrades that feature. `:checkhealth loomworks`
+  shows the cached verdict. (#PR)
 - `lw release query [--channel stable|unstable] [--json]` names the newest
   release on an update channel without downloading or installing it: its
   version, whether it is a prerelease and, with `--json`, the SHA-256 of each
