@@ -195,7 +195,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.truthy(notes[1]:find("retired the workspace daemon (lw v0.0.1", 1, true), notes[1])
         assert.truthy(notes[1]:find("starting lw v9.9.9", 1, true), notes[1])
         assert.truthy(obs:runtime_line():find("retired the workspace daemon", 1, true), obs:runtime_line())
-        assert.is_true(R.was_retired(root, "0.0.1"))
+        assert.is_true(R.was_retired(ws.root, "0.0.1"))
         vim.wait(300)
         assert.equals(1, spawned)
     end)

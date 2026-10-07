@@ -892,7 +892,7 @@ re-cut onto master step by step; this section is expanded as each step lands.
   weighs the selection (managed lw: `managed.wanted().version`; PATH /
   explicit: the cached probe verdict must be `compatible` with a version; a
   pending probe is named); the session guard (`record` / `was_retired`, key
-  `<normalized root>\n<lw_version>`, module state so it survives a workspace
+  `<normalized realpath of the root>\n<lw_version>`, module state so it survives a workspace
   reload); `busy(st)` = `protocol.status_busy` (shared with the CLI's
   `ensure.reconcile`; `protocol` is on the shared side of the plugin/binary
   boundary, so the plugin-side module needs no binary module). `Observer:_on_connected` hands an incompatible daemon (not

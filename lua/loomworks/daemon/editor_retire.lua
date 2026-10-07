@@ -115,12 +115,16 @@ function M.same_version(a, b) return bare(a) == bare(b) end
 local retired = {}
 
 local function root_key(root)
-    local r = vim.fs.normalize(tostring(root or ""))
+    -- Every spelling of one workspace is one key (a link, a Windows 8.3 short
+    -- name, a different case).
+    local r = tostring(root or "")
+    local real = r ~= "" and (vim.uv or vim.loop).fs_realpath(r) or nil
+    r = vim.fs.normalize(real or r)
     if vim.fn.has("win32") == 1 then r = r:lower() end
     return r
 end
 
---- The guard's key for `root` and `lw_version`: "<normalized root>\n<version>".
+--- The guard's key for `root` and `lw_version`: "<normalized realpath of the root>\n<version>".
 --- @param root string
 --- @param lw_version string|nil
 --- @return string
