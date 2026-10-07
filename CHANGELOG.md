@@ -368,6 +368,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   runs it with a Lua source tree. (#154)
 
 ### Fixed
+- `lw self-update --force` no longer deletes the release it is running from
+  when that is the version it would reinstall: it now refuses with a message
+  (run it from another lw version to repair that release). (#156)
 - The editor and `lw` no longer restart or retire each other's workspace
   daemon over and over when the same `lw` binary is reached through
   different spellings of its path (`lw.exe` and `lw.EXE` on Windows, or a

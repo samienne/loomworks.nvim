@@ -222,7 +222,10 @@ directory safety before merging:
    `gc` re-checks before `rm_rf`, requires the realpath to be a direct child
    of the install folder's realpath (separator-bounded), never removes
    `except` nor the running luaroot. `self_update` refuses (never removes) a
-   `lua-<ver>` there that is not such a bundle; temp names
+   `lua-<ver>` there that is not such a bundle, and refuses a `--force`
+   reinstall whose `lua-<ver>` is the running bundle (`running_root`/luaroot,
+   same `canon_path` identity as gc: realpath, Windows case/8.3) before any
+   fetch - never rm_rf'd or swapped; temp names
    (`.dl-<ver>.zip`, `.stage-<ver>`) only from a version that passed
    `is_release_version`.
 
