@@ -96,19 +96,10 @@ end
 local function getenv(name) return paths.getenv(name) end
 
 -- ---- args: peel off the bootstrap-level `--dev[=PATH]` / `--no-pin` flags ---
-local forwarded = {}
-local dev_flag, dev_flag_path, no_pin = false, nil, false
-for _, v in ipairs({ ... }) do
-  if v == "--dev" then
-    dev_flag = true
-  elseif type(v) == "string" and v:sub(1, 6) == "--dev=" then
-    dev_flag, dev_flag_path = true, v:sub(7)
-  elseif v == "--no-pin" then
-    no_pin = true
-  else
-    forwarded[#forwarded + 1] = v
-  end
-end
+-- Only where they are lw's own: never after `--` or from a program's
+-- arguments (`lw launch add … -- --dev`, spec §16.7).
+local forwarded, host_flags = pin.peel_host_flags({ ... })
+local dev_flag, dev_flag_path, no_pin = host_flags.dev, host_flags.dev_path, host_flags.no_pin
 
 -- ---- resolve the system-Lua source -----------------------------------------
 local cfg = paths.read_config()
@@ -120,10 +111,7 @@ if dev_opt_in then
   luaroot = env_lua or paths.norm(dev_flag_path) or paths.norm(cfg["dev-lua"])
   source_kind = "dev"
   if not luaroot then
-    io.stderr:write(
-      "lw: development source requested but no directory is configured.\n" ..
-      "    Set one with `lw settings set dev-lua <path>`, pass `--dev=<path>`,\n" ..
-      "    or export LOOMWORKS_LUA=<path>.\n")
+    io.stderr:write(pin.dev_unconfigured_message(host_flags.dev_in_args and not env_lua))
     os.exit(1)
   end
   if not uv.fs_stat(luaroot .. "/loomworks") then
@@ -182,7 +170,8 @@ local function fused_system_lua() return bundle.readfile("loomworks/cli.lua") ~=
 -- Lua to run it, to the host's own help (boot.help, before the "no release"
 -- error).
 local help_requested = false
-for _, v in ipairs(forwarded) do
+for i = 1, pin.own_end(forwarded) - 1 do -- never a program's `--help`
+  local v = forwarded[i]
   if v == "--help" or v == "-h" then help_requested = true; break end
 end
 
@@ -527,7 +516,7 @@ do
     and luaroot:match("lua%-(.+)$") or nil
   local p = pin_root and pin.read(pin_root)
   local stdio = false
-  for _, v in ipairs(forwarded) do if v == "--stdio" then stdio = true end end
+  for i = 1, pin.own_end(forwarded) - 1 do if forwarded[i] == "--stdio" then stdio = true end end
   local decision = {
     command = command,
     sub = command_sub,

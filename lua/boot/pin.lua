@@ -218,6 +218,7 @@ function M.command_words(args)
   local words, i = {}, 1
   while i <= #args and #words < 2 do
     local v = args[i]
+    if v == "--" then break end -- the rest is a program's
     if v == "--root" then
       i = i + 1
     elseif type(v) == "string" and v:sub(1, 1) ~= "-" then
@@ -226,6 +227,100 @@ function M.command_words(args)
     i = i + 1
   end
   return words[1], words[2]
+end
+
+-- `lw launch add|create` hands the line to a program after its command
+-- operand (or `--from-target <t>`): every token there is a program argument.
+local LAUNCH_ADD = { add = true, create = true }
+local LAUNCH_ADD_VALUED = { ["--working-dir"] = true, ["--cwd"] = true, ["--env"] = true,
+  ["--description"] = true }
+
+--- Where lw's own arguments end in `args` (the whole command line, leading
+--- global flags included): the index of the first token that belongs to a
+--- program or native tool — the first `--`, or a `launch add` program's
+--- arguments — or #args + 1. The host's flags (`--dev`, `--no-pin`) are
+--- recognised only before it (spec §16.7); on `launch set` and the set-value
+--- commands that is up to `--`, the escape for an argument or value spelling
+--- one. The host mirror of the bundle's `loomworks.cli_options.own_end` (which
+--- knows every command's grammar): the host cannot load the bundle before it
+--- has chosen the source. Also returns the command word's index (or nil).
+--- @param args string[]
+--- @return integer own_end, integer|nil command_index
+function M.own_end(args)
+  local n = #args + 1
+  local i, c = 1, nil
+  while i <= #args do
+    local v = args[i]
+    if v == "--" then return i, nil end
+    if v == "--root" then
+      i = i + 1
+    elseif type(v) == "string" and v:sub(1, 1) ~= "-" then
+      c = i; break
+    end
+    i = i + 1
+  end
+  if not c then return n, nil end
+  local function to_dashdash(from)
+    for k = from, #args do if args[k] == "--" then return k end end
+    return n
+  end
+  if not (args[c] == "launch" and LAUNCH_ADD[args[c + 1] or ""]) then
+    return to_dashdash(c + 1), c
+  end
+  local npos, k = 0, c + 2
+  while k <= #args do
+    local v = args[k]
+    if v == "--" or npos >= 3 then return k, c end
+    if v == "--from-target" then return math.min(k + 2, n), c end
+    if LAUNCH_ADD_VALUED[v] then
+      k = k + 2
+    else
+      if v:sub(1, 1) ~= "-" then npos = npos + 1 end
+      k = k + 1
+    end
+  end
+  return n, c
+end
+
+--- Peel the host-level flags (`--dev`, `--dev=<path>`, `--no-pin`) off the
+--- command line — only where they are lw's own (`own_end`): after `--` or in
+--- a program's arguments they are left in place for the program.
+--- @param args string[]
+--- `dev_in_args` is set when a `--dev` came after the command word (a program
+--- argument the user forgot to put after `--`, for the error hint).
+--- @return string[] forwarded, { dev: boolean, dev_path: string|nil, no_pin: boolean, dev_in_args: boolean } flags
+function M.peel_host_flags(args)
+  local stop, c = M.own_end(args)
+  local forwarded, f = {}, { dev = false, dev_path = nil, no_pin = false, dev_in_args = false }
+  for i, v in ipairs(args) do
+    if i < stop and v == "--dev" then
+      f.dev, f.dev_in_args = true, f.dev_in_args or (c ~= nil and i > c)
+    elseif i < stop and type(v) == "string" and v:sub(1, 6) == "--dev=" then
+      f.dev, f.dev_path = true, v:sub(7)
+      f.dev_in_args = f.dev_in_args or (c ~= nil and i > c)
+    elseif i < stop and v == "--no-pin" then
+      f.no_pin = true
+    else
+      forwarded[#forwarded + 1] = v
+    end
+  end
+  return forwarded, f
+end
+
+--- The error for a development source with no directory configured. With
+--- `in_args` (a `--dev` after the command word, `peel_host_flags`) it adds a
+--- hint: the user may have meant it for the program (spec §16.7).
+--- @param in_args boolean|nil
+--- @return string
+function M.dev_unconfigured_message(in_args)
+  local msg = "lw: development source requested but no directory is configured.\n" ..
+    "    Set one with `lw settings set dev-lua <path>`, pass `--dev=<path>`,\n" ..
+    "    or export LOOMWORKS_LUA=<path>.\n"
+  if in_args then
+    msg = msg .. "    (`--dev` there is lw's own option; to pass it to the program,\n" ..
+      "    put it after `--`, e.g. `lw launch set <project> <name> -- --dev`.)\n"
+  end
+  return msg
 end
 
 --- The value of `--root <dir>` / `--root=<dir>` in `args`, or nil.
@@ -281,7 +376,8 @@ end
 -- Pin management argument grammar (spec §16.24). Pure.
 -- ---------------------------------------------------------------------------
 
---- Global flags the CLI accepts anywhere; tolerated (and ignored) here.
+--- Global flags the CLI accepts among a command's own arguments; tolerated
+--- (and ignored) here.
 M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
   ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true }
 
