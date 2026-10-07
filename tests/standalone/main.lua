@@ -2244,6 +2244,209 @@ do
   paths.rm_rf(sb)
 end
 
+print("boot.release_query — lw release query (§16.42, signed local mirror)")
+do
+  local rq = require("boot.release_query")
+  local pin = require("boot.pin")
+  local ossl = require("openssl")
+  local priv = ossl.pkey.read(readfile(FX .. "test_ec_priv.pem"), true, "pem")
+  local function sign(data) return priv:sign(data, "sha256") end
+  local function put(p, bytes)
+    paths.mkdirp(p:match("^(.*)/[^/]*$"))
+    local f = assert(io.open(p, "wb")); f:write(bytes); f:close()
+  end
+
+  local sb = root .. "/tests/.tmp-release-query"; paths.rm_rf(sb); paths.mkdirp(sb)
+  local mirror = sb .. "/mirror"
+
+  -- A flat mirror of `version`: manifest.json naming it, the host binaries,
+  -- the bundle, the descriptor, and the signed SHA256SUMS over them.
+  -- o.no_descriptor leaves the descriptor out of the release; o.sums_extra
+  -- adds lines to the signed list.
+  local function stage(version, o)
+    o = o or {}
+    paths.rm_rf(mirror); paths.mkdirp(mirror)
+    put(mirror .. "/manifest.json", json.encode({ version = version }))
+    local exp, lines = {}, {}
+    local list = { "lw-linux-x86_64", "lw-macos-arm64", "lw-windows-x86_64.exe", pin.bundle_asset(version) }
+    local desc = '{\n  "binary": {\n    "lw_version": "' .. version .. '"\n  },\n  "descriptor": 1,\n' ..
+      '  "objects": [],\n  "transport": {\n    "max": 3,\n    "min": 1\n  }\n}\n'
+    if not o.no_descriptor then
+      list[#list + 1] = rq.descriptor_asset(version)
+      put(mirror .. "/" .. rq.descriptor_asset(version), desc)
+    end
+    for _, a in ipairs(list) do
+      local bytes = a == rq.descriptor_asset(version) and desc or (a .. ":" .. version .. "\n")
+      if a ~= rq.descriptor_asset(version) then put(mirror .. "/" .. a, bytes) end
+      exp[a] = verify.sha256_hex(bytes)
+      lines[#lines + 1] = exp[a] .. "  " .. a
+    end
+    local sums = table.concat(lines, "\n") .. "\n"
+    put(mirror .. "/SHA256SUMS", sums)
+    put(mirror .. "/SHA256SUMS.sig", sign(sums))
+    return exp, desc
+  end
+
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+  uv.os_unsetenv("LOOMWORKS_CHANNEL")
+
+  -- success: the verified release, its host-asset hashes and the descriptor
+  local V = "4.5.6-beta.2"
+  local exp = stage(V)
+  local before = {}
+  for name in uv.fs_scandir_next, uv.fs_scandir(mirror) do before[#before + 1] = name end
+  local res, err = rq.query({ channel = "unstable" })
+  ok(res ~= nil, "query resolves the mirror's release" .. (err and (" - " .. err) or ""))
+  if res then
+    eq(res.query, 1, "query format 1")
+    eq(res.version, V, "version from the mirror's manifest")
+    eq(res.prerelease, true, "a -beta version is a prerelease")
+    eq(res.channel, "unstable", "the requested channel is reported")
+    eq(res.channel_ignored, true, "a release-url override supersedes the channel")
+    eq(res.source, "override", "source is the override")
+    eq(res.assets["lw-windows-x86_64.exe"], exp["lw-windows-x86_64.exe"], "asset hash from the signed sums")
+    local n = 0; for _ in pairs(res.assets) do n = n + 1 end
+    eq(n, 3, "assets are the three host binaries (no bundle, no descriptor)")
+    eq(res.descriptor.binary and res.descriptor.binary.lw_version, V, "the descriptor document is carried")
+  end
+  local after = 0
+  for _ in uv.fs_scandir_next, uv.fs_scandir(mirror) do after = after + 1 end
+  eq(after, #before, "the query writes nothing next to the release")
+
+  -- run(): canonical JSON on stdout, nothing on stderr; it round-trips
+  local code, out, eout = rq.run({ "release", "query", "--channel", "unstable", "--json" })
+  eq(code, 0, "run --json exits 0")
+  ok(eout == nil, "run --json prints nothing on stderr")
+  ok(out and out:sub(1, 14) == '{\n  "assets": ', "JSON is canonical (sorted keys, two-space indent)")
+  ok(out and out:find('"objects": []', 1, true) ~= nil, "an empty descriptor array stays []")
+  local back = out and json.decode(out)
+  eq(back and back.version, V, "the JSON round-trips")
+  eq(back and back.channel_ignored, true, "channel_ignored in the JSON")
+
+  -- plain output: three lines; the superseded non-default channel is warned about
+  local pcode, pout, perr = rq.run({ "release", "query", "--channel", "unstable" })
+  eq(pcode, 0, "plain run exits 0")
+  eq(pout, "channel: unstable\nversion: " .. V .. "\nprerelease: yes\n", "plain output: channel, version, prerelease")
+  ok(perr and perr:find("channel unstable is ignored", 1, true) ~= nil, "plain output warns of the override")
+  local _, _, serr = rq.run({ "release", "query", "--channel", "stable" })
+  ok(serr == nil, "no warning for stable (the override's own behavior)")
+
+  -- a stable release (no prerelease suffix), channel from LOOMWORKS_CHANNEL
+  stage("4.6.0")
+  uv.os_setenv("LOOMWORKS_CHANNEL", "stable")
+  local sres = rq.query({})
+  eq(sres and sres.prerelease, false, "a plain version is not a prerelease")
+  eq(sres and sres.channel, "stable", "channel from LOOMWORKS_CHANNEL")
+  uv.os_unsetenv("LOOMWORKS_CHANNEL")
+
+  -- unknown channel (flag or environment)
+  local ures, uerr = rq.query({ channel = "nightly" })
+  ok(ures == nil and uerr:find("unknown update channel", 1, true), "an unknown --channel fails")
+  uv.os_setenv("LOOMWORKS_CHANNEL", "beta")
+  local ucode, uout, uerr2 = rq.run({ "release", "query", "--json" })
+  ok(ucode == 1 and uout == nil and uerr2:find("unknown update channel 'beta'", 1, true),
+    "an unknown LOOMWORKS_CHANNEL fails, nothing on stdout")
+  uv.os_unsetenv("LOOMWORKS_CHANNEL")
+
+  -- a bad signature: nothing is trusted
+  stage(V)
+  put(mirror .. "/SHA256SUMS.sig", readfile(FX .. "manifest.json.sig"))
+  local bcode, bout, berr = rq.run({ "release", "query", "--json" })
+  ok(bcode == 1 and bout == nil and berr:find("signature", 1, true), "a bad SHA256SUMS signature fails  (" .. tostring(berr) .. ")")
+  eq(select(2, berr:gsub("\n", "")), 1, "the failure is one stderr line")
+
+  -- a descriptor whose bytes do not match the signed sums
+  stage(V)
+  put(mirror .. "/" .. rq.descriptor_asset(V), '{"descriptor":1,"forged":true}')
+  local dres, derr = rq.query({})
+  ok(dres == nil and derr:find("does not match the signed SHA256SUMS", 1, true), "a descriptor hash mismatch fails")
+
+  -- a sums file tampered after signing
+  stage(V)
+  put(mirror .. "/SHA256SUMS", readfile(mirror .. "/SHA256SUMS") .. string.rep("0", 64) .. "  extra\n")
+  ok(rq.query({}) == nil, "SHA256SUMS changed after signing fails")
+
+  -- a release older than the descriptor
+  stage(V, { no_descriptor = true })
+  local ores, oerr = rq.query({})
+  ok(ores == nil and oerr:find("predates the descriptor", 1, true), "a release without a descriptor fails")
+
+  -- a manifest naming an unsafe version
+  stage(V)
+  put(mirror .. "/manifest.json", json.encode({ version = "../../evil" }))
+  local vres, verr = rq.query({})
+  ok(vres == nil and verr:find("unsafe version", 1, true), "an invalid release version fails")
+
+  -- offline / unreachable: a missing mirror, an unreachable server
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", sb .. "/no-such-mirror")
+  local mres, merr = rq.query({})
+  ok(mres == nil and merr:find("manifest", 1, true), "a missing mirror fails  (" .. tostring(merr) .. ")")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", "http://127.0.0.1:9/releases")
+  local t0 = os.time()
+  local nres = rq.query({ timeout = 5 })
+  ok(nres == nil and os.time() - t0 <= 15, "an unreachable server fails within the time limit")
+  uv.os_setenv("LOOMWORKS_RELEASE_URL", mirror)
+
+  -- argument parsing: usage errors exit 2
+  eq(select(1, rq.run({ "release" })), 2, "`lw release` without a sub-command is a usage error")
+  eq(select(1, rq.run({ "release", "list" })), 2, "an unknown sub-command is a usage error")
+  eq(select(1, rq.run({ "release", "query", "--bogus" })), 2, "an unknown option is a usage error")
+  eq(select(1, rq.run({ "release", "query", "--timeout", "0" })), 2, "--timeout must be a positive whole number")
+  eq(select(1, rq.run({ "release", "query", "--channel" })), 2, "--channel needs a value")
+  local po = rq.parse_args({ "--no-input", "release", "query", "--channel=unstable", "--timeout=7", "--json" })
+  ok(po and po.channel == "unstable" and po.timeout == 7 and po.json, "the = forms and a leading global flag parse")
+
+  -- the host never redirects it, in a pinned repository (spec §16.23): the
+  -- spawned source host embeds the production key, so the test mirror's
+  -- signature fails - with one stderr line, nothing on stdout, nothing
+  -- provisioned and nothing written to the data or config directories.
+  do
+    stage(V)
+    local repo = sb .. "/repo"; paths.mkdirp(repo)
+    local hashes = {}
+    for _, a in pairs(pin.HOST_ASSETS) do hashes[a] = string.rep("a", 64) end
+    hashes[pin.bundle_asset("1.0.0")] = string.rep("b", 64)
+    put(repo .. "/lw.pin", pin.serialize("1.0.0", hashes))
+    local home = sb .. "/home"; paths.mkdirp(home)
+    local override = { LOCALAPPDATA = home, XDG_DATA_HOME = home, APPDATA = home, XDG_CONFIG_HOME = home,
+      HOME = home, LW_ROOT = repo, LOOMWORKS_RELEASE_URL = mirror }
+    local env = {}
+    for k, v in pairs(uv.os_environ()) do
+      if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" and k ~= "LOOMWORKS_PINNED"
+          and k ~= "LOOMWORKS_CHANNEL" then
+        env[#env + 1] = k .. "=" .. v
+      end
+    end
+    for k, v in pairs(override) do env[#env + 1] = k .. "=" .. v end
+    local outf, errf = sb .. "/stdout.txt", sb .. "/stderr.txt"
+    local fo = assert(uv.fs_open(outf, "w", 420))
+    local fe = assert(uv.fs_open(errf, "w", 420))
+    local done, rc = false, nil
+    local h = uv.spawn(uv.exepath(), { args = { "../../../lua", "--", "release", "query", "--json" },
+      cwd = repo, env = env, stdio = { nil, fo, fe } }, function(c) rc = c; done = true end)
+    if h then
+      local t = uv.new_timer()
+      t:start(60000, 0, function() if not done then pcall(uv.process_kill, h, "sigterm") end end)
+      while not done do uv.run("once") end
+      t:stop(); t:close(); h:close()
+    end
+    uv.fs_close(fo); uv.fs_close(fe)
+    local sout, serr2 = slurp(outf) or "", slurp(errf) or ""
+    ok(h ~= nil, "spawned a source-run host in a pinned repo")
+    eq(rc, 1, "the failed query exits 1  (" .. serr2 .. ")")
+    eq(sout, "", "nothing on stdout")
+    ok(serr2:find("^lw: release query failed: ") and serr2:find("signature", 1, true)
+      and select(2, serr2:gsub("\n", "")) == 1, "one stderr line naming the signature")
+    ok(not serr2:find("pin", 1, true), "no redirect or provisioning of the pinned lw")
+    local entries = 0
+    for _ in uv.fs_scandir_next, uv.fs_scandir(home) do entries = entries + 1 end
+    eq(entries, 0, "nothing written to the data or config directories")
+  end
+
+  uv.os_unsetenv("LOOMWORKS_RELEASE_URL")
+  paths.rm_rf(sb)
+end
+
 print("boot.bootstrap — beta.2 fixes: committed attribution, uncommitted state, --check, prerelease pins (§16.24)")
 do
   local bootstrap = require("boot.bootstrap")

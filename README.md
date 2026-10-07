@@ -1285,6 +1285,26 @@ used as-is. If you pass a non-default `--channel` while a `release-url` override
 `lw self-update` warns that the channel was ignored — the override wins by
 design, so unset it to follow a channel. `lw version` shows the active channel.
 
+**Querying a channel** (spec §16.42). `lw release query` tells you which release
+a channel offers without downloading or installing anything — what the editor's
+managed `lw` uses to look for a newer compatible release:
+
+```
+lw release query --channel unstable          # channel, version, prerelease
+lw release query --channel unstable --json   # + host-binary hashes and descriptor
+```
+
+It verifies the release's signed `SHA256SUMS` and checks the release's
+descriptor (`lw-<version>-descriptor.json`, what `lw version --json` prints)
+against it; `--json` prints `query`, `channel`, `channel_ignored`, `source`,
+`version`, `prerelease`, `assets` (host binary → SHA-256) and `descriptor`.
+`--channel` applies to the query only (it is never saved), a `release-url`
+override supersedes it (`channel_ignored: true`), and `--timeout <seconds>`
+bounds the whole query (default 60). It always runs as the `lw` you invoked,
+never a repository's pinned one, and writes nothing. Any failure — offline, a
+signature or hash that does not verify, a release older than the descriptor —
+exits non-zero with one line on stderr and nothing on stdout.
+
 **Updating the `lw` binary itself** (spec §16.32). `lw self-update` updates the
 release bundle *and then the `lw` executable*, from the same release, so fixes
 to the binary's own argument handling and update logic reach you too. The new

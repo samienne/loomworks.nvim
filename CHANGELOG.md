@@ -41,6 +41,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw release query [--channel stable|unstable] [--json]` names the newest
+  release on an update channel without downloading or installing it: its
+  version, whether it is a prerelease and, with `--json`, the SHA-256 of each
+  host binary and the release's descriptor, all checked against the signed
+  `SHA256SUMS`. It never runs a repository's pinned `lw` and writes nothing;
+  the editor uses it to look for a newer compatible `lw`. (#161)
 - Experimental daemon mode: the editor can download its own `lw` into
   Neovim's data directory when it has none (from the official release, or a
   mirror set with `binary.release_url` or `LOOMWORKS_RELEASE_URL`), checks the

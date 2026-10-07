@@ -47,15 +47,17 @@ end
 
 --- Fetch + verify a release's SHA256SUMS for `version`, returning { name -> hex }.
 --- Verifies SHA256SUMS.sig against the embedded release key before trusting any
---- hash (spec §16.24). Returns map or nil, err.
+--- hash (spec §16.24). `opts.fetch` (curl limits, see `download.fetch`) bounds
+--- both fetches (the release query, §16.42). Returns map or nil, err.
 function M.fetch_hashes(version, opts)
   if not pin.valid_version(version) then
     return nil, "unsafe release version '" .. tostring(version) .. "'"
   end
   local base = update.versioned_base(version, opts)
-  local sums, e1 = download.fetch(base .. "/SHA256SUMS")
+  local limits = opts and opts.fetch
+  local sums, e1 = download.fetch(base .. "/SHA256SUMS", limits)
   if not sums then return nil, "fetch SHA256SUMS: " .. e1 end
-  local sig, e2 = download.fetch(base .. "/SHA256SUMS.sig")
+  local sig, e2 = download.fetch(base .. "/SHA256SUMS.sig", limits)
   if not sig then return nil, "fetch SHA256SUMS.sig: " .. e2 end
   local ok, verr = verify.verify_detached(sums, sig)
   if not ok then return nil, "SHA256SUMS signature: " .. verr end

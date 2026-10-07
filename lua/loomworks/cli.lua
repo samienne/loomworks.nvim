@@ -10391,7 +10391,7 @@ local COMP_COMMANDS = {
   "profile", "tools", "build", "clean", "reset", "test", "run", "target", "launch", "publish",
   "export", "import", "pull", "worktree", "unlock", "settings", "completion", "version", "install", "self-update", "help",
   "sdk", "migrate", "health", "module", "bootstrap", "trust", "nuke", "device", "release-notes", "daemon",
-  "cleanup",
+  "cleanup", "release",
   "--no-input",
 }
 
@@ -10447,6 +10447,11 @@ function M.cmd_complete(cword, words)
     return 0
   elseif cmd == "release-notes" then
     emit(M._release_notes_completions(a, n))
+    return 0
+  elseif cmd == "release" then
+    if n == 1 then emit({ "query" }); return 0 end
+    if a[n] == "--channel" then emit({ "stable", "unstable" }); return 0 end
+    emit({ "--channel", "--json", "--timeout" })
     return 0
   elseif cmd == "bootstrap" then
     if n == 1 then emit({ "install", "upgrade", "--json", "--check" }); return 0 end
@@ -12461,7 +12466,7 @@ both fetched sources and compiled objects.]],
 ;(function()
   local ok, bh = pcall(require, "boot.help")
   local topics = ok and type(bh) == "table" and type(bh.TOPICS) == "table" and bh.TOPICS or {}
-  for _, k in ipairs({ "version", "install", "self-update", "bootstrap" }) do
+  for _, k in ipairs({ "version", "install", "self-update", "bootstrap", "release" }) do
     HELP[k] = topics[k]
       or ("lw " .. k .. ": this lw binary (host) is too old to document this command.\n"
         .. "Install the current lw binary as in the README's \"Installing lw\"; "
@@ -12597,6 +12602,7 @@ Usage: lw [command] [args]
   install           install the lw binary on PATH + fetch the first bundle
   self-update       download + verify the latest release (bundle + lw binary)
   release-notes     what changed in each release (--since <version>, --all)
+  release query     the newest verified release on a channel (--channel, --json)
   bootstrap [install|upgrade]  repo-local launcher + version pin: status / write / bump
   help  [command]   this help, or details for a command
 

@@ -3,7 +3,8 @@
 -- The only Lua fused into the host binary. It carries no behavioral logic; it
 -- (1) resolves where *system Lua* (the loomworks implementation) comes from,
 -- (2) handles the host-level commands `version`, `self-update`, `install`,
--- and `bootstrap` (which must work even with no bundle installed) —
+-- `bootstrap` and `release query` (which must work even with no bundle
+-- installed) —
 -- and, when there is no system Lua at all, their help (boot.help) — and
 -- (3) runs the CLI from the resolved source.
 --
@@ -259,6 +260,18 @@ if host_command == "bootstrap" then
     exit(1)
   end
   exit(0)
+end
+
+-- ---- release query (spec §16.42) -------------------------------------------
+-- `lw release query` resolves a channel to a verified release for a caller
+-- that runs a verified lw (the editor's managed lw). A host command: handled
+-- here, BEFORE pinned-bundle provisioning and pin redirection, so it never
+-- runs a repo's pinned lw, needs no bundle or workspace and writes nothing.
+if host_command == "release" then
+  local code, out, err = require("boot.release_query").run(forwarded)
+  if err then io.stderr:write(err) end
+  if out then io.write(out) end
+  exit(code)
 end
 
 -- ---- pinned context: provision the pinned bundle ----------------------------
