@@ -88,7 +88,8 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _download_failed string|nil the hash whose download failed: not retried until an explicit connect
 --- @field _download_note string|nil that failure's note
 --- @field _probing string|nil the binary whose pre-launch probe is in flight (step 5h.5)
---- @field _probe_token table|nil identifies that probe's callback (one after a stop is ignored)
+--- @field _probe_token table|nil identifies that probe's callback (one after a stop or the backstop is ignored)
+--- @field _probe_backstop uv.uv_timer_t|nil ends `probing` as unknown if the probe never calls back
 --- @field probe_note string|nil the last selection's lasting probe note (a skipped lw on PATH, an incompatible explicit lw), shown on the Runtime line
 --- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
 --- @field _connecting table|nil the one connection attempt in flight (single-flight token)
@@ -171,6 +172,7 @@ end
 ---   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
 ---   probe_cached fun(path) → verdict|nil, or false (loomworks.provision.probe.cached; passed to resolve)
 ---   run_probe   fun(path, opts, cb(verdict)) (loomworks.provision.probe.run)
+---   probe_backstop_ms  how long to wait for run_probe's callback before going on as unknown (default probe.TIMEOUT_MS + 2 s)
 ---   fetch       fun(wanted, opts, cb(path|nil, err)) (loomworks.provision.fetch.ensure)
 ---   cancel_fetch fun(sha256, why) (loomworks.provision.fetch.cancel)
 ---   touch       fun(path) (loomworks.provision.managed.touch)
@@ -337,17 +339,26 @@ function Observer:_probe(path)
     local token = {}
     self._probe_token = token
     self:_set("probing", "checking " .. path .. " (lw version --json) before launching the workspace daemon")
-    local run = self.opts.run_probe or require("loomworks.provision.probe").run
-    run(path, nil, function()
-        if self._probe_token ~= token then return end -- a stop owns the state
+    local probe = require("loomworks.provision.probe")
+    local run = self.opts.run_probe or probe.run
+    -- Belt and braces: the probe is bounded (TIMEOUT_MS), but a callback
+    -- that never arrives must not leave the observer `probing` for good.
+    -- After the backstop the binary counts as unknown (used; the handshake
+    -- decides) and a late callback is ignored (the token is gone).
+    local function finish()
+        if self._probe_token ~= token then return end -- a stop or the backstop owns the state
         self._probe_token, self._probing = nil, nil
+        self:_stop_timer("_probe_backstop")
         if self.state == "stopped" then return end
         if self.conn or self._connecting or (self._child and self._child.code == nil) then return end
         local now = self:_inspect()
         if now.kind == "live" then return self:_connect(now) end
         if now.kind == "none" or now.kind == "stale" or now.kind == "unreadable" then return self:_launch(true) end
         self:_set("waiting", M.state_note(now))
-    end)
+    end
+    self._probe_backstop = uv.new_timer()
+    self._probe_backstop:start(self.opts.probe_backstop_ms or (probe.TIMEOUT_MS + 2000), 0, vim.schedule_wrap(finish))
+    run(path, nil, finish)
 end
 
 --- Download the plugin-managed lw the selection wants (spec §19.16, step
@@ -949,6 +960,7 @@ function Observer:stop()
     if self.state == "stopped" then return end
     self.state = "stopped"
     self._probe_token, self._probing = nil, nil
+    self:_stop_timer("_probe_backstop")
     if self._downloading then self:_cancel_download("the workspace was unloaded") end
     self:_stop_timer("_watch")
     self:_stop_timer("_keepalive")

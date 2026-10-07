@@ -59,6 +59,29 @@ describe("probe verdicts (§19.16 Pre-launch probe)", function()
         assert.truthy(v.problems[1]:find("schemas", 1, true), v.problems[1])
     end)
 
+    it("older schemas are incompatible too (the probe needs them equal); the pin gate only refuses newer", function()
+        local s = version.schemas()
+        for _, older in ipairs({ { user = s.user - 1, cache = s.cache }, { user = s.user, cache = s.cache - 1 } }) do
+            local d = descriptor()
+            d.schemas = older
+            local v = probe.classify(ok_res(d))
+            assert.equals("incompatible", v.verdict, probe.describe(v))
+            assert.truthy(v.problems[1]:find("differ from ours", 1, true), v.problems[1])
+            assert.is_true((needs.check(d)))
+        end
+    end)
+
+    it("a descriptor with no schemas is unknown, not incompatible", function()
+        local d = descriptor()
+        d.schemas = nil
+        local v = probe.classify(ok_res(d))
+        assert.equals("unknown", v.verdict, probe.describe(v))
+        assert.truthy(v.problems[1]:find("no schemas", 1, true), v.problems[1])
+        d.schemas = { user = "x" }
+        assert.equals("unknown", probe.classify(ok_res(d)).verdict)
+        assert.is_false((needs.check(d)))
+    end)
+
     it("a missing root interface is incompatible, a missing feature interface only degrades", function()
         local d = without(descriptor(), observer.ROOT)
         local p = needs.problems(d)

@@ -1960,21 +1960,30 @@ in-process path. In `in-process` mode nothing below happens.
   --json` (§16.41) — asynchronously, bounded by a short timeout (about 3 s),
   with the editor's data directory as working directory (never the
   workspace) and no workspace-sourced environment — and checks the
-  descriptor with the one interface check of "Plugin pin" below (transport
-  overlap, schemas no newer than the plugin's, and the root and feature
-  interfaces the editor uses). The verdict is cached per process by the
-  binary's path, size and modification time; the selection itself stays
-  synchronous over cached verdicts, and while a probe runs the Runtime note
-  says so. Verdicts:
+  descriptor with the interface check of "Plugin pin" below (transport
+  overlap, and the root and feature interfaces the editor uses), except that
+  its schemas must **equal** the plugin's: a difference in either direction
+  is a definite failure — an older `lw` cannot read the workspace files at
+  the plugin's format, a newer one writes a format the editor will not
+  observe, and the managed `lw` the search falls through to matches the
+  plugin exactly. (An already running daemon is weighed separately at
+  connect: newer schemas are refused, older ones lead to retirement under
+  "Retiring an incompatible daemon" below; the pin check refuses only newer
+  schemas.) The verdict is cached per process by the binary's path, size
+  and modification time; the selection itself stays synchronous over cached
+  verdicts, and while a probe runs the Runtime note says so; should the
+  probe's own answer never arrive, the observer stops waiting shortly after
+  the probe's timeout and goes on as for *unknown*. Verdicts:
   - **compatible** — the binary is used;
-  - **incompatible** (a definite failure: no transport overlap, newer
-    schemas, a missing root interface) — a search-path `lw` is skipped with
+  - **incompatible** (a definite failure: no transport overlap, schemas
+    older or newer than the plugin's, a missing root interface) — a
+    search-path `lw` is skipped with
     a status note naming the problems ("too old/incompatible: …") and the
     search goes on to the managed `lw`; an explicit binary is never
     replaced (rule 1), the verdict is only noted;
   - **unknown** (no descriptor — an `lw` older than §16.41, or one with no
-    system Lua — or a timeout) — the binary is used and the handshake
-    decides.
+    system Lua — a descriptor with no `schemas`, or a timeout) — the binary
+    is used and the handshake decides.
 
   A missing feature interface is not a failure: that feature degrades with a
   note ("Interface client" above). The managed `lw` is not probed at run

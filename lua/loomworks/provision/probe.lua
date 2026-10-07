@@ -10,11 +10,12 @@
 ---
 ---   compatible    no structural or fatal problem (a missing feature
 ---                 interface only degrades that feature: listed in `degraded`)
----   incompatible  a definite failure: no transport overlap, schemas ours
----                 cannot use, the root interface not offered
+---   incompatible  a definite failure: no transport overlap, schemas that
+---                 differ from ours (older or newer), the root interface not
+---                 offered
 ---   unknown       no descriptor (an lw older than §16.41, one with no system
----                 Lua, output that is not a descriptor) or a timeout: the
----                 binary is used and the handshake decides
+---                 Lua, output that is not a descriptor, no `schemas`) or a
+---                 timeout: the binary is used and the handshake decides
 ---
 --- The verdict is cached for the editor session by the binary's realpath,
 --- size and modification time, so the host-binary selection
@@ -90,7 +91,7 @@ function M.classify(res)
     end
     local ok, d = pcall(vim.json.decode, res.stdout or "")
     if not ok or type(d) ~= "table" then return unknown("lw version --json printed no descriptor") end
-    local p = require("loomworks.provision.needs").problems(d)
+    local p = require("loomworks.provision.needs").problems(d, { exact_schemas = true })
     if #p.structure > 0 then return unknown(table.concat(p.structure, "; ")) end
     local version = type(d.binary) == "table" and d.binary.lw_version or nil
     return {

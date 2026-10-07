@@ -889,9 +889,10 @@ describe("the observer (§19.16)", function()
 
         --- An observer over the real selection with PATH /p/lw, managed /m/lw
         --- (and LOOMWORKS_LW when `explicit`); probes complete on `finish()`.
-        local function probing(verdict, explicit)
+        local function probing(verdict, explicit, backstop_ms)
             local cache, t = {}, { probes = {}, spawned = {} }
             obs = attach({ inspect = function() return { kind = "none" } end,
+                probe_backstop_ms = backstop_ms,
                 probe_cached = function(p) return cache[p] end,
                 run_probe = function(p, _, cb)
                     t.probes[#t.probes + 1] = p
@@ -943,6 +944,17 @@ describe("the observer (§19.16)", function()
             t.finish()
             assert.same({}, t.spawned)
             assert.equals("stopped", obs.state)
+        end)
+
+        it("a probe that never calls back ends as unknown after the backstop; a late callback is ignored", function()
+            local t = probing(bad, false, 50)
+            assert.equals("probing", obs.state)
+            assert.is_true(vim.wait(2000, function() return obs.state ~= "probing" end, 10))
+            assert.is_nil(obs._probing); assert.is_nil(obs._probe_backstop)
+            assert.same({ "/p/lw" }, t.spawned) -- launched as unknown: the handshake decides
+            t.finish() -- the late (incompatible) callback changes nothing
+            assert.same({ "/p/lw" }, t.spawned)
+            assert.equals(1, #t.probes)
         end)
     end)
 
