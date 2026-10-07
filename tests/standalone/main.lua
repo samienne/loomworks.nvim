@@ -1202,6 +1202,41 @@ do
   ok(c3 == "daemon" and s3 == "run", "command_words: --root=<dir>")
   local c4, s4 = pin.command_words({})
   ok(c4 == nil and s4 == nil, "command_words of nothing")
+  local c5, s5 = pin.command_words({ "run", "--", "daemon" })
+  ok(c5 == "run" and s5 == nil, "command_words stops at --")
+  -- Host flags are lw's own only before `--` and outside a program's args
+  -- (spec §16.7): `lw launch set App x --dev` stores `--dev` as an argument.
+  local function peel(...)
+    local fwd, f = pin.peel_host_flags({ ... })
+    return table.concat(fwd, " "), f
+  end
+  local p1, f1 = peel("--no-input", "launch", "set", "App", "demo", "--dev", "--x", "D:\\src\\x")
+  ok(not f1.dev and p1 == "--no-input launch set App demo --dev --x D:\\src\\x",
+    "peel: launch set's trailing --dev is a program arg  (" .. p1 .. ")")
+  local p2, f2 = peel("--no-input", "launch", "set", "App", "demo", "--", "--dev")
+  ok(not f2.dev and p2:find("-- --dev", 1, true) ~= nil, "peel: launch set -- --dev kept")
+  local p3, f3 = peel("--no-input", "launch", "add", "App", "ed", "Editor.exe", "--", "--dev")
+  ok(not f3.dev and p3:find("-- --dev", 1, true) ~= nil, "peel: launch add … -- --dev kept")
+  local p4, f4 = peel("launch", "add", "App", "ed", "Editor.exe", "--dev=x", "--no-pin")
+  ok(not f4.dev and not f4.no_pin and p4:find("--dev=x --no-pin", 1, true) ~= nil,
+    "peel: launch add's program args after the command are kept")
+  local _, f4b = peel("launch", "add", "App", "ed", "--from-target", "t", "--dev")
+  ok(not f4b.dev, "peel: launch add --from-target <t> args are kept")
+  local p5, f5 = peel("run", "demo", "--", "--dev", "--no-pin")
+  ok(not f5.dev and not f5.no_pin and p5 == "run demo -- --dev --no-pin", "peel: run -- --dev kept")
+  local p6, f6 = peel("--dev", "build", "--no-pin", "Dev", "--dev=/src/lua", "--", "-j4")
+  ok(f6.dev and f6.dev_path == "/src/lua" and f6.no_pin and p6 == "build Dev -- -j4",
+    "peel: host flags among a command's own args still apply  (" .. p6 .. ")")
+  local p7, f7 = peel("launch", "add", "App", "ed", "--no-pin", "node", "-x")
+  ok(f7.no_pin and p7 == "launch add App ed node -x", "peel: before launch add's command it is lw's")
+  eq(pin.own_end({ "--no-input", "run", "x", "--", "y" }), 4, "own_end: at --")
+  eq(pin.own_end({ "build", "Dev" }), 3, "own_end: none")
+  local p8, f8 = peel("config", "set", "App", "Debug", "options.X", "--dev")
+  ok(not f8.dev and p8 == "config set App Debug options.X --dev", "peel: a set-value operand is kept")
+  local _, f9 = peel("config", "set", "--dev", "App", "Debug", "options.X", "v")
+  ok(f9.dev, "peel: before the value operand it is lw's")
+  local _, f10 = peel("project", "set", "App", "--type", "string", "V", "--no-pin")
+  ok(not f10.no_pin, "peel: project set --type <t> <name> <value>")
   eq(pin.root_option({ "daemon", "run", "--root", "/w" }), "/w", "root_option: --root <dir>")
   eq(pin.root_option({ "daemon", "run", "--root=C:/w" }), "C:/w", "root_option: --root=<dir>")
   eq(pin.root_option({ "build" }), nil, "root_option: none")

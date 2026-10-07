@@ -4,9 +4,11 @@
 ---
 --- The tables mirror the command parsers in cli.lua; keep them in step when a
 --- parser gains an option (tests/cli_unknown_options_spec.lua pins the rules).
---- The global options (`--no-input`, `--non-interactive`, `--shared`,
---- `--local`, `--dev[=…]`, `--no-pin`, `--no-daemon`) are stripped by the dispatcher before
---- this check, and `--help` / `-h` are answered before it.
+--- The global options (`M.GLOBAL`: `--no-input`, `--non-interactive`,
+--- `--shared`, `--local`, `--dev[=…]`, `--no-pin`, `--no-daemon`) are stripped
+--- by the dispatcher (`split_globals`) before this check — only where they are
+--- lw's own (`own_end`), never from a program's arguments — and `--help` /
+--- `-h` are answered before it.
 ---
 --- A spec is:
 ---   flags      options that take no value;
@@ -18,7 +20,10 @@
 ---   frees      valued options after which (and their value) the rest is free
 ---              (`launch add --from-target <t> <program args…>`);
 ---   permissive true: this command/sub-command is not checked (its grammar
----              passes unknown tokens through by design).
+---              passes unknown tokens through by design);
+---   passthrough true (with permissive): every token after the command words
+---              may be a program argument, so not even a global option is
+---              recognised there (`launch set`'s argument list).
 --- Checking always stops at `--`: what follows belongs to a program or a
 --- native tool.
 
@@ -38,6 +43,7 @@ local function spec(t)
     free_after = t.free_after,
     frees = set(t.frees),
     permissive = t.permissive,
+    passthrough = t.passthrough,
   }
 end
 
@@ -198,8 +204,9 @@ M.COMMANDS = {
       add = spec({ valued = { "--working-dir", "--cwd", "--env", "--from-target", "--description" },
         eq = { "--description=" }, frees = { "--from-target" }, free_after = 3 }),
       -- Every token `set` does not know becomes a program argument (its
-      -- documented grammar), so there is nothing to refuse.
-      set = PERMISSIVE,
+      -- documented grammar), so there is nothing to refuse — and a global
+      -- option there is a program argument too (`--dev`).
+      set = spec({ permissive = true, passthrough = true }),
       show = spec({ flags = { "--json" }, valued = { "--project", "--launch" } }),
       remove = LAUNCH_ADDR,
       rename = NONE,
@@ -250,18 +257,36 @@ function M.is_command(name)
   return M.COMMANDS[M.ALIASES[name] or name] ~= nil
 end
 
---- Find the first unknown option in `argv` (argv[1] is the command, global
---- options already stripped). Returns nil when every option is known (or the
---- command is not checked), else the option and the command label for the
---- message (`run`, `launch add`).
+--- The global options (spec §16.7): known to every command, recognised
+--- before the command and among its own arguments, never after `--` nor in a
+--- program's arguments (see `own_end`). None takes a separate value.
+M.GLOBAL = set({ "--no-input", "--non-interactive", "--shared", "--local",
+  "--dev", "--no-pin", "--no-daemon" })
+
+--- Is `v` a global option (including `--dev=<path>`)?
+--- @param v any
+--- @return boolean
+function M.is_global(v)
+  return type(v) == "string" and (M.GLOBAL[v] == true or v:sub(1, 6) == "--dev=")
+end
+
+--- Walk `argv` (argv[1] is the command) with its command's spec; global
+--- options count as known flags. Returns the first unknown option and the
+--- command label (or nil), and the index where lw's own arguments end (see
+--- `own_end`).
 --- @param argv string[]
---- @return string|nil option, string|nil label
-function M.find_unknown(argv)
+--- @return string|nil option, string|nil label, integer own_end
+local function walk(argv)
+  local n = #argv + 1
+  local function to_dashdash(from)
+    for k = from, #argv do if argv[k] == "--" then return k end end
+    return n
+  end
   local command = argv[1]
-  if type(command) ~= "string" then return nil end
+  if type(command) ~= "string" then return nil, nil, n end
   local cmd = M.ALIASES[command] or command
   local entry = M.COMMANDS[cmd]
-  if not entry then return nil end
+  if not entry then return nil, nil, to_dashdash(2) end
   local s, start, label = entry, 2, cmd
   if entry.subs then
     local sub = argv[2]
@@ -274,19 +299,23 @@ function M.find_unknown(argv)
       elseif entry.operand_default then
         s = entry.operand_default
       else
-        return nil -- the handler reports the unknown sub-command
+        return nil, nil, to_dashdash(2) -- the handler reports the unknown sub-command
       end
     end
   end
-  if not s or s.permissive then return nil end
+  if not s then return nil, nil, to_dashdash(start) end
+  if s.passthrough then return nil, nil, start end
+  if s.permissive then return nil, nil, to_dashdash(start) end
   local npos, i = 0, start
   while argv[i] ~= nil do
     local v = argv[i]
-    if v == "--" then return nil end
-    if s.free_after and npos >= s.free_after then return nil end
+    if v == "--" then return nil, nil, i end
+    if s.free_after and npos >= s.free_after then return nil, nil, i end
     if #v > 1 and v:sub(1, 1) == "-" then
-      if s.valued[v] then
-        if s.frees[v] then return nil end
+      if M.is_global(v) then
+        i = i + 1
+      elseif s.valued[v] then
+        if s.frees[v] then return nil, nil, math.min(i + 2, n) end
         i = i + 2
       elseif s.flags[v] then
         i = i + 1
@@ -295,7 +324,7 @@ function M.find_unknown(argv)
         for _, p in ipairs(s.eq) do
           if v:sub(1, #p) == p then ok = true; break end
         end
-        if not ok then return v, label end
+        if not ok then return v, label, to_dashdash(i) end
         i = i + 1
       end
     else
@@ -303,7 +332,56 @@ function M.find_unknown(argv)
       i = i + 1
     end
   end
-  return nil
+  return nil, nil, n
+end
+
+--- Where lw's own arguments end in `argv` (argv[1] is the command, leading
+--- global options already removed): the index of the first token that
+--- belongs to a program, a native tool or a value operand — the `--`, the
+--- program arguments after `launch add`'s command (or target), everything
+--- after `launch set`'s command words, a set-value operand — or #argv + 1.
+--- Global options are recognised only before it (spec §16.7).
+--- @param argv string[]
+--- @return integer
+function M.own_end(argv)
+  local _, _, e = walk(argv)
+  return e
+end
+
+--- Split the raw command line into the global options and the rest: global
+--- options before the command and among the command's own arguments
+--- (`own_end`) are taken out; everything after — a program's arguments, the
+--- tail after `--` — is left untouched (spec §16.7).
+--- @param raw string[]
+--- @return string[] rest, string[] globals (in order)
+function M.split_globals(raw)
+  local globals, k = {}, 1
+  while raw[k] ~= nil and M.is_global(raw[k]) do
+    globals[#globals + 1] = raw[k]; k = k + 1
+  end
+  local tail = {}
+  for j = k, #raw do tail[#tail + 1] = raw[j] end
+  local stop = M.own_end(tail)
+  local rest = {}
+  for j, v in ipairs(tail) do
+    if j > 1 and j < stop and M.is_global(v) then
+      globals[#globals + 1] = v
+    else
+      rest[#rest + 1] = v
+    end
+  end
+  return rest, globals
+end
+
+--- Find the first unknown option in `argv` (argv[1] is the command, global
+--- options already stripped). Returns nil when every option is known (or the
+--- command is not checked), else the option and the command label for the
+--- message (`run`, `launch add`).
+--- @param argv string[]
+--- @return string|nil option, string|nil label
+function M.find_unknown(argv)
+  local bad, label = walk(argv)
+  return bad, label
 end
 
 return M

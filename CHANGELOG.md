@@ -389,6 +389,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   runs it with a Lua source tree. (#154)
 
 ### Fixed
+- A program argument that looks like a global option (`--dev`, `--no-pin`,
+  `--no-input`, `--local`, ...) is passed to the program again instead of
+  being taken by lw: after `--`, after `lw launch add`'s command (or
+  `--from-target <t>`), and in `lw launch set`'s argument list. Before, e.g.
+  `lw launch set App demo -- --dev` failed with "development source requested
+  but no directory is configured". `lw launch add` / `set` now also take
+  everything after `--` as the program's arguments, verbatim. (#163)
 - `lw self-update --force` no longer deletes the release it is running from
   when that is the version it would reinstall: it now refuses with a message
   (run it from another lw version to repair that release). (#156)

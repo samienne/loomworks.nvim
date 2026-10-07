@@ -308,7 +308,9 @@ install a global bundle. Answering help never fetches anything.
 option and points at `lw help <command>`, and nothing runs — a mistyped option
 never falls through to a build or a launch. The global options (non-interactive
 control, create intent, source selection, pin bypass) are known to every
-command. The check stops at `--`: what follows belongs to a program or native
+command — before the command and among its own arguments, never where the
+check below stops: a token after `--` or among a program's arguments that
+spells a global option is passed to the program untouched. The check stops at `--`: what follows belongs to a program or native
 tool and is passed through untouched. It also stops where a command's grammar
 hands the rest of the line to someone else or takes a value that may itself
 start with `-`: the program arguments after a launch configuration's command

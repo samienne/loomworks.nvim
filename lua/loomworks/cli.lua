@@ -2971,7 +2971,11 @@ function M.cmd_launch_add(root, args)
   local i = 5
   while args[i] do
     local v = args[i]
-    if v == "--description" then
+    if v == "--" then
+      -- Everything after `--` is the program's, verbatim (spec §16.7).
+      for k = i + 1, #args do positionals[#positionals + 1] = args[k] end
+      break
+    elseif v == "--description" then
       if args[i + 1] == nil then die("--description needs a paragraph") end
       paras[#paras + 1] = args[i + 1]; i = i + 2
     elseif v:sub(1, 14) == "--description=" then
@@ -3104,7 +3108,12 @@ function M.cmd_launch_set(root, args)
   local i = next_i
   while args[i] do
     local v = args[i]
-    if v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
+    if v == "--" then
+      -- Everything after `--` is the new argument list, verbatim (spec §16.7).
+      new_args = new_args or {}
+      for k = i + 1, #args do new_args[#new_args + 1] = args[k] end
+      break
+    elseif v == "--working-dir" or v == "--cwd" then new.working_dir = args[i + 1]; touched = true; i = i + 2
     elseif v == "--clear-working-dir" then new.working_dir = nil; touched = true; i = i + 1
     elseif v == "--env" then
       local k, val = (args[i + 1] or ""):match("^([^=]+)=(.*)$")
@@ -11436,7 +11445,8 @@ args/env/working-dir layered on top — no hand-written path.
         --cwd is an alias of --working-dir (here and on `set`).
         --description (repeatable, one paragraph each; the first is the
         summary) describes it. There is no -m here: everything after the
-        command is the program's own args (python -m http.server).
+        command is the program's own args (python -m http.server);
+        after `--` every token is, even one lw itself knows (--env, --dev).
         e.g. lw launch add app serve node server.js --env PORT=8080
   add <project> <name> --from-target <target> [args…] [--working-dir D] [--env K=V]
         Declare a target-backed launch config from a build target (by name).
@@ -11447,6 +11457,7 @@ args/env/working-dir layered on top — no hand-written path.
           --env K=V (add/update, repeat) | --unset-env K (remove, repeat)
           --command C | --from-target T   (switch kind)
           trailing args replace the arg list | --clear-args
+          (after `--` every token is an arg, even --env or --dev)
         e.g. lw launch set app run --env PORT=9090 --unset-env FOO --working-dir .
   show <project> <name> [--json]
         Detail one config: description, target/command, args, working dir,
@@ -12701,11 +12712,13 @@ local function main()
   end
 
   -- Non-interactive control (CI-safe): strip the global `--no-input` /
-  -- `--non-interactive` flags from anywhere in the args, and honor the
-  -- LW_NO_INPUT and conventional CI environment variables. Any of these makes
-  -- prompts error with an explicit-argument hint instead of blocking.
-  local a = {}
-  for _, v in ipairs(raw) do
+  -- `--non-interactive` flags, and honor the LW_NO_INPUT and conventional CI
+  -- environment variables. Any of these makes prompts error with an
+  -- explicit-argument hint instead of blocking. Global options are taken only
+  -- where they are lw's own — before the command and among its own arguments,
+  -- never after `--` or from a program's arguments (spec §16.7, cli_options).
+  local a, globals = require("loomworks.cli_options").split_globals(raw)
+  for _, v in ipairs(globals) do
     if v == "--no-input" or v == "--non-interactive" then
       force_noninteractive = true
     elseif v == "--shared" then
@@ -12719,8 +12732,6 @@ local function main()
       -- Source selection and pin redirect are resolved by the host bootstrap
       -- (main.lua) before we run; ignore these here so the nvim-hosted path
       -- doesn't choke on them.
-    else
-      a[#a + 1] = v
     end
   end
   if env_truthy("LW_NO_INPUT") or env_truthy("CI") then

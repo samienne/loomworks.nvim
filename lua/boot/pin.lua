@@ -218,6 +218,7 @@ function M.command_words(args)
   local words, i = {}, 1
   while i <= #args and #words < 2 do
     local v = args[i]
+    if v == "--" then break end -- the rest is a program's
     if v == "--root" then
       i = i + 1
     elseif type(v) == "string" and v:sub(1, 1) ~= "-" then
@@ -226,6 +227,97 @@ function M.command_words(args)
     i = i + 1
   end
   return words[1], words[2]
+end
+
+-- `lw launch add|create` / `set|edit` hand (part of) the line to a program:
+-- after `add`'s command operand (or `--from-target <t>`), and after `set`'s
+-- command words, every token is a program argument.
+local LAUNCH_TAIL = { add = "add", create = "add", set = "set", edit = "set" }
+local LAUNCH_ADD_VALUED = { ["--working-dir"] = true, ["--cwd"] = true, ["--env"] = true,
+  ["--description"] = true }
+-- `<cmd> set`: the number of operands before a value operand, which may itself
+-- start with '-' (`lw config set App Debug options.X -O2`).
+local SET_VALUE = { config = 3, configuration = 3, cfg = 3, profile = 2, project = 2, settings = 1 }
+
+--- Where lw's own arguments end in `args` (the whole command line, leading
+--- global flags included): the index of the first token that belongs to a
+--- program or native tool — the first `--`, a `launch add` program's arguments,
+--- everything after `launch set`, a `config|profile|project|settings set` value
+--- operand — or #args + 1. The host's flags (`--dev`,
+--- `--no-pin`) are recognised only before it (spec §16.7). The host mirror of
+--- the bundle's `loomworks.cli_options.own_end` (which knows every command's
+--- grammar): the host cannot load the bundle before it has chosen the source.
+--- @param args string[]
+--- @return integer
+function M.own_end(args)
+  local n = #args + 1
+  local i, c = 1, nil
+  while i <= #args do
+    local v = args[i]
+    if v == "--" then return i end
+    if v == "--root" then
+      i = i + 1
+    elseif type(v) == "string" and v:sub(1, 1) ~= "-" then
+      c = i; break
+    end
+    i = i + 1
+  end
+  if not c then return n end
+  local function to_dashdash(from)
+    for k = from, #args do if args[k] == "--" then return k end end
+    return n
+  end
+  local value_after = (SET_VALUE[args[c]] and args[c + 1] == "set") and SET_VALUE[args[c]] or nil
+  if value_after then
+    -- `<cmd> set <operands…> <value>`: the value may itself start with '-'.
+    local npos, k = 0, c + 2
+    while k <= #args do
+      local v = args[k]
+      if v == "--" or npos >= value_after then return k end
+      if v == "--type" then k = k + 1 elseif v:sub(1, 1) ~= "-" then npos = npos + 1 end
+      k = k + 1
+    end
+    return n
+  end
+  if args[c] ~= "launch" then return to_dashdash(c + 1) end
+  local kind = LAUNCH_TAIL[args[c + 1] or ""]
+  if kind == "set" then return math.min(c + 2, n) end
+  if kind ~= "add" then return to_dashdash(c + 1) end
+  local npos, k = 0, c + 2
+  while k <= #args do
+    local v = args[k]
+    if v == "--" or npos >= 3 then return k end
+    if v == "--from-target" then return math.min(k + 2, n) end
+    if LAUNCH_ADD_VALUED[v] then
+      k = k + 2
+    else
+      if v:sub(1, 1) ~= "-" then npos = npos + 1 end
+      k = k + 1
+    end
+  end
+  return n
+end
+
+--- Peel the host-level flags (`--dev`, `--dev=<path>`, `--no-pin`) off the
+--- command line — only where they are lw's own (`own_end`): after `--` or in
+--- a program's arguments they are left in place for the program.
+--- @param args string[]
+--- @return string[] forwarded, { dev: boolean, dev_path: string|nil, no_pin: boolean } flags
+function M.peel_host_flags(args)
+  local stop = M.own_end(args)
+  local forwarded, f = {}, { dev = false, dev_path = nil, no_pin = false }
+  for i, v in ipairs(args) do
+    if i < stop and v == "--dev" then
+      f.dev = true
+    elseif i < stop and type(v) == "string" and v:sub(1, 6) == "--dev=" then
+      f.dev, f.dev_path = true, v:sub(7)
+    elseif i < stop and v == "--no-pin" then
+      f.no_pin = true
+    else
+      forwarded[#forwarded + 1] = v
+    end
+  end
+  return forwarded, f
 end
 
 --- The value of `--root <dir>` / `--root=<dir>` in `args`, or nil.
@@ -281,7 +373,8 @@ end
 -- Pin management argument grammar (spec §16.24). Pure.
 -- ---------------------------------------------------------------------------
 
---- Global flags the CLI accepts anywhere; tolerated (and ignored) here.
+--- Global flags the CLI accepts among a command's own arguments; tolerated
+--- (and ignored) here.
 M.GLOBAL_FLAGS = { ["--no-input"] = true, ["--non-interactive"] = true,
   ["--insecure"] = true, ["--verify"] = true, ["--verbose"] = true }
 
