@@ -2680,11 +2680,15 @@ per-sub-command sections for `bootstrap`), `whats_new.lua` self-update's
 "what's new" lines rendered from the new bundle's notes (sandboxed load) + the
 last-seen record, `modules.lua` module acquisition, `pin.lua` pin parse / asset
 selection / redirect decision, `bootstrap.lua` `lw bootstrap` status page +
-`install`/`upgrade` (+ the removed `update`'s pointer), `launcher.lua` the launcher
+`install`/`upgrade` (+ the removed `update`'s pointer), `release_query.lua`
+`lw release query` (spec §16.42: the channel's newest release via
+`update.resolve_newest_version`, its signed sums via `bootstrap.fetch_hashes`,
+the descriptor checked against them; one overall deadline split over the
+fetches; printed with `json.encode_canonical`; writes nothing), `launcher.lua` the launcher
 templates, `launcher_check.lua` the shared launcher/pin checks), `lua/loomworks/shim/`, `modules.json` (the curated
 module index), `bin/lw`, `bin/lw.cmd` exist. The bootstrap intercepts the host
-commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap`
-(and answers the removed `lw update` with a pointer), and redirects workspace ops to a repo's pinned `lw`; with no
+commands `lw version` / `lw install` / `lw self-update` / `lw bootstrap` /
+`lw release query` (and answers the removed `lw update` with a pointer), and redirects workspace ops to a repo's pinned `lw`; with no
 system Lua at all (release host, no bundle yet) it answers help requests from
 `boot.help` instead of failing with "no loomworks release is installed"; `lw module` is
 a CLI command (system Lua) that calls into `boot.modules`.

@@ -1,5 +1,5 @@
 -- Host-level help: the help of the HOST's own commands (version, self-update,
--- install, bootstrap) — the single source of that text (spec §16.7):
+-- install, bootstrap, release) — the single source of that text (spec §16.7):
 -- the bundle's CLI reuses these topics for `lw help <host command>`, so the
 -- answer is the same with or without a bundle. Also what `lw help` / `-h` /
 -- `--help` / `lw <cmd> --help` print when no loomworks system Lua is available
@@ -76,6 +76,30 @@ needs no install at all - see `lw help bootstrap`.
 
 A host command (handled by lw itself).]],
 
+  release = [[lw release query [--channel <stable|unstable>] [--json] [--timeout <seconds>]
+
+Resolve an update channel to a verified release without downloading or
+installing it. Finds the newest release on the channel (the same resolution
+as self-update; --channel is used for this query only and never saved),
+fetches its SHA256SUMS and checks the signature against the key built into
+lw, then fetches lw-<version>-descriptor.json and checks it against the
+signed hashes. Writes nothing to disk and never runs a repository's pinned lw.
+
+  query    print the channel, the release version and whether it is a
+           prerelease, one per line
+
+  --channel <c>   stable or unstable (default: LOOMWORKS_CHANNEL, the saved
+                  channel, then stable)
+  --json          one canonical JSON document instead (format 1): query,
+                  channel, channel_ignored, source, version, prerelease,
+                  assets (host binary -> SHA-256) and descriptor
+  --timeout <s>   the overall time limit in seconds (default 60)
+
+A release-url override (LOOMWORKS_RELEASE_URL or the `release-url` setting; a
+local directory works as an offline mirror) supersedes the channel:
+channel_ignored is then true. Any failure - offline, no release, a signature
+or hash that does not verify, a release older than the descriptor - exits
+non-zero with one line on stderr and prints nothing on stdout.]],
   ["self-update"] = [[lw self-update [--force] [--channel <stable|unstable>] [--no-host]
 
 Download the current release, verify its signature and hashes, and activate
@@ -232,6 +256,8 @@ are available:
                  pin this repo to an lw release (lw.pin, lw.sh, lw.cmd)
   bootstrap upgrade
                  move the pin to the newest release
+  release query [--channel <stable|unstable>] [--json]
+                 the newest verified release on a channel (nothing installed)
 
 `lw <command> --help` shows details for one of these.]]
 

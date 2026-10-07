@@ -78,7 +78,8 @@ end
 
 local function parse_array(str, pos)
   local arr, i = {}, skip_ws(str, pos + 1)
-  if str:sub(i, i) == "]" then return arr, i + 1 end
+  -- An empty array is marked (M.array) so it re-encodes as `[]`, not `{}`.
+  if str:sub(i, i) == "]" then return M.array(arr), i + 1 end
   while true do
     local val, np = parse_value(str, i)
     if type(np) == "string" then return nil, np end
@@ -196,6 +197,34 @@ local function encode_value(v)
     return "{" .. table.concat(parts, ",") .. "}"
   end
   error("json.encode: cannot encode a " .. ty)
+end
+
+--- Canonical, readable JSON: object keys sorted, two-space indent, `": "`
+--- after a key — the shape of `lw version --json` (§16.41), so a document
+--- printed by the release query (§16.42) reads like the descriptor it carries.
+local function encode_canonical(v, indent)
+  if type(v) ~= "table" or v == M.null then return encode_value(v) end
+  local pad, inner = string.rep("  ", indent), string.rep("  ", indent + 1)
+  local parts = {}
+  if is_array(v) then
+    for i = 1, #v do parts[i] = inner .. encode_canonical(v[i], indent + 1) end
+    return "[\n" .. table.concat(parts, ",\n") .. "\n" .. pad .. "]"
+  end
+  if next(v) == nil then return encode_value(v) end   -- `{}`, or `[]` when marked
+  local keys = {}
+  for k in pairs(v) do keys[#keys + 1] = tostring(k) end
+  table.sort(keys)
+  for _, k in ipairs(keys) do
+    parts[#parts + 1] = inner .. encode_string(k) .. ": " .. encode_canonical(v[k], indent + 1)
+  end
+  return "{\n" .. table.concat(parts, ",\n") .. "\n" .. pad .. "}"
+end
+
+--- Encode `v` as canonical JSON (keys sorted, two-space indent).
+--- @param v any
+--- @return string
+function M.encode_canonical(v)
+  return encode_canonical(v, 0)
 end
 
 --- Encode a Lua value to a compact JSON string. Handles nil-free tables of
