@@ -300,11 +300,14 @@ end
 --- @param to string
 --- @param win boolean
 --- @param rename fun(a: string, b: string): any, string|nil, string|nil
+--- @param before fun(): boolean, string|nil runs right before each attempt (nil, err: give up)
 --- @param cb fun(ok: boolean, err: string|nil)
-local function rename_retry(from, to, win, rename, cb)
+local function rename_retry(from, to, win, rename, before, cb)
     local attempt = 0
     local function try()
         attempt = attempt + 1
+        local okb, berr = before()
+        if not okb then return cb(false, berr) end
         local ok, err, code = rename(from, to)
         if ok then return cb(true) end
         if win and attempt < M.RENAME_ATTEMPTS and (code == "EACCES" or code == "EPERM" or code == "EBUSY") then
@@ -359,11 +362,17 @@ function M.ensure(wanted, opts, cb)
         return st
     end
     local vopts = { hash = opts.hash }
-    if lstat_type(dest) == "file" and managed.verify(dest, w.sha256, vopts) then
-        M.states[w.sha256] = { state = "ready", url = M.url(w, opts), version = w.version,
-            asset = w.asset, path = dest }
-        vim.schedule(function() cb(dest) end)
-        return M.states[w.sha256]
+    if lstat_type(dest) == "file" then
+        if managed.verify(dest, w.sha256, vopts) then
+            M.states[w.sha256] = { state = "ready", url = M.url(w, opts), version = w.version,
+                asset = w.asset, path = dest }
+            vim.schedule(function() cb(dest) end)
+            return M.states[w.sha256]
+        end
+        -- Corrupt (or unreadable): mark the slot used for the length of the
+        -- download, so another editor's prune leaves it (its "recently used"
+        -- rule; this editor's prune waits for the download).
+        pcall(managed.touch, dest, { data = opts.data, win = win })
     end
     local url = M.url(w, opts)
     st = { state = "downloading", url = url, version = w.version, asset = w.asset, path = dest, waiters = { cb } }
@@ -411,24 +420,25 @@ function M.ensure(wanted, opts, cb)
         end
         if not win then pcall(uv.fs_chmod, tmp, 493) end -- 0755
         local slot = vim.fs.dirname(dest)
-        local okd, derr = mkdir(slot, false)
-        if not okd then return fail(derr) end
         if lstat_type(dest) == "file" and managed.verify(dest, w.sha256, vopts) then
             -- Another editor installed it meanwhile: content-addressed, keep it.
             clear(tmp)
             return finish(st, true, dest)
         end
         -- Absent, or corrupt: rename over it.
-        rename_retry(tmp, dest, win, opts.rename or uv.fs_rename, step(function(okr, rerr)
-            if not okr then
-                if lstat_type(dest) == "file" and managed.verify(dest, w.sha256, vopts) then
-                    clear(tmp); return finish(st, true, dest)
+        -- The slot is (re)created right before each rename attempt: a prune
+        -- may have removed a corrupt slot in between.
+        rename_retry(tmp, dest, win, opts.rename or uv.fs_rename, function() return mkdir(slot, false) end,
+            step(function(okr, rerr)
+                if not okr then
+                    if lstat_type(dest) == "file" and managed.verify(dest, w.sha256, vopts) then
+                        clear(tmp); return finish(st, true, dest)
+                    end
+                    return fail("cannot install " .. dest .. ": " .. tostring(rerr))
                 end
-                return fail("cannot install " .. dest .. ": " .. tostring(rerr))
-            end
-            managed.verified(dest, w.sha256)
-            finish(st, true, dest)
-        end))
+                managed.verified(dest, w.sha256)
+                finish(st, true, dest)
+            end))
     end)), opts)
     st.ctl = type(ctl) == "table" and ctl or nil
     return st

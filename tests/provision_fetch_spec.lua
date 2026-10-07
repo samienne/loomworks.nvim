@@ -256,6 +256,41 @@ describe("provision.fetch", function()
         assert.equals(1, hashes)
     end)
 
+    it("keeps a corrupt slot through its re-download: marked used at the start, recreated before the rename", function()
+        local slot = managed.path(good, { data = data })
+        local sdir = vim.fs.dirname(slot)
+        write(slot, "corrupt")
+        local old = os.time() - cache.UNUSED_S - 3600
+        uv.fs_utime(sdir, old, old)
+        managed._verified = {}
+        -- Another editor prunes while the download runs: the slot was just marked used.
+        local pruned
+        local got, err = ensure(want(), { transfer = function(url, dest, cb)
+            pruned = cache.prune({ data = data, keep = { string.rep("a", 64) }, busy = false })
+            return fetch.transfer(url, dest, cb)
+        end })
+        assert.is_nil(err); assert.equals(payload, read(got))
+        assert.equals("recently used", pruned.skipped[good])
+        -- The slot vanishes right before a rename attempt (a prune that raced
+        -- the mark): it is created again before each attempt.
+        local wslot = managed.path(good, { data = data, win = true }) -- the retry is Windows-only
+        vim.fn.delete(sdir, "rf")
+        write(wslot, "corrupt")
+        managed._verified = {}
+        fetch.states = {}
+        local calls = 0
+        got, err = ensure(want(), { win = true, rename = function(a, b)
+            calls = calls + 1
+            if calls == 1 then
+                uv.fs_unlink(wslot); uv.fs_rmdir(sdir)
+                return nil, "EBUSY: resource busy", "EBUSY"
+            end
+            return uv.fs_rename(a, b)
+        end })
+        assert.is_nil(err); assert.equals(2, calls)
+        assert.equals(payload, read(got))
+    end)
+
     it("cancels an in-flight download: the transfer is stopped, its partial file removed, waiters told", function()
         local killed, tmp, late = false, nil, nil
         local got, err, done
@@ -462,6 +497,45 @@ describe("provision.cache.prune (deletion safety rule 11)", function()
         assert.is_true(os.time() - uv.fs_lstat(other).mtime.sec > 3600)
         assert.is_false(managed.touch(slot(B) .. "/../" .. B .. "/" .. exe .. "x", { data = data }))
         vim.fn.delete(other, "rf")
+    end)
+
+    it("connecting through a linked data directory marks the slot the daemon reports by its realpath", function()
+        local real = tmpdir()
+        local link = vim.fn.tempname():gsub("\\", "/")
+        if not uv.fs_symlink(real, link, { dir = true, junction = true }) then
+            vim.fn.delete(real, "rf"); pending("cannot create a directory link here"); return
+        end
+        local rslot = managed.dir(real) .. "/" .. B
+        write(rslot .. "/" .. exe, "bin"); age(rslot)
+        -- The daemon reports uv.exepath(): the resolved path.
+        assert.is_true(managed.touch(rslot .. "/" .. exe, { data = link }))
+        assert.is_true(os.time() - uv.fs_lstat(rslot).mtime.sec < 60)
+        -- The link's own spelling still works; a sibling of the real dir does not.
+        age(rslot)
+        assert.is_true(managed.touch(link .. "/loomworks/lw/" .. B .. "/" .. exe, { data = link }))
+        local sib = real .. "x"
+        local sslot = managed.dir(sib) .. "/" .. B
+        write(sslot .. "/" .. exe, "bin"); age(sslot)
+        assert.is_false(managed.touch(sslot .. "/" .. exe, { data = link }))
+        assert.is_true(os.time() - uv.fs_lstat(sslot).mtime.sec > 3600)
+        uv.fs_unlink(link); if exists(link) then uv.fs_rmdir(link) end
+        vim.fn.delete(real, "rf"); vim.fn.delete(sib, "rf")
+    end)
+
+    it("find: a binary that cannot be read is not launched, noted as unreadable (not a mismatch)", function()
+        local w = { sha256 = B, version = "0.1.50", asset = "lw-linux-x86_64" }
+        write(slot(B) .. "/" .. exe, "bin")
+        managed._verified = {}
+        local p, why, missing = managed.find({ data = data, wanted = function() return w end,
+            verify = function(path, sha)
+                return managed.verify(path, sha, { hash = function() return nil, "EBUSY: resource busy or locked" end })
+            end })
+        assert.is_nil(p)
+        assert.truthy(why:find("could not be read", 1, true), why)
+        assert.is_nil(why:find("corrupt", 1, true), why)
+        assert.truthy(why:find("EBUSY", 1, true), why)
+        -- Still downloaded again, never launched.
+        assert.is_true(missing.corrupt); assert.is_true(missing.unreadable)
     end)
 
     it("find: a link in the slot is never launched; a corrupt binary is missing (downloaded again)", function()

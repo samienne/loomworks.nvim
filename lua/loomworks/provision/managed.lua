@@ -94,16 +94,16 @@ end
 --- @param path string
 --- @param sha256 string
 --- @param opts? { hash?: fun(p: string): string|nil, string|nil }
---- @return boolean ok, string|nil why
+--- @return boolean ok, string|nil why, "unreadable"|"mismatch"|nil kind
 function M.verify(path, sha256, opts)
     opts = opts or {}
     local key = stamp(path, sha256)
     if not key then return false, path .. " is not a regular file" end
     if M._verified[path] == key then return true end
     local got, err = (opts.hash or require("loomworks.provision.sha256").file)(path)
-    if not got then return false, tostring(err) end
+    if not got then return false, tostring(err), "unreadable" end
     if got:lower() ~= sha256:lower() then
-        return false, path .. " has SHA-256 " .. got:lower() .. ", expected " .. sha256:lower()
+        return false, path .. " has SHA-256 " .. got:lower() .. ", expected " .. sha256:lower(), "mismatch"
     end
     M._verified[path] = key
     return true
@@ -116,7 +116,8 @@ M.TOUCH_EVERY_S = 3600
 --- Mark the managed binary at `path` used now: its slot directory's mtime is
 --- its last use, which pruning (loomworks.provision.cache) honours. A no-op
 --- (false) for any path that is not `<dir>/<64 hex>/lw[.exe]` of this
---- editor's managed directory.
+--- editor's managed directory, as spelled or as resolved (realpath: a
+--- linked data directory).
 --- @param path string|nil
 --- @param opts? { data?: string, win?: boolean, now?: integer }
 --- @return boolean marked
@@ -126,10 +127,23 @@ function M.touch(path, opts)
     local p = path:gsub("\\", "/")
     local slot, sha, name = p:match("^(.*/(%x+))/([^/]+)$")
     if not slot or name ~= M.exe_name(opts.win) or #sha ~= 64 or sha ~= sha:lower() then return false end
-    local want = M.dir(opts.data) .. "/" .. sha
     local win = opts.win
     if win == nil then win = is_win() end
-    if (win and slot:lower() or slot) ~= (win and want:lower() or want) then return false end
+    local function norm(s)
+        s = s:gsub("\\", "/"):gsub("/+$", "")
+        return win and s:lower() or s
+    end
+    -- The slot must be a direct child of the managed directory as spelled
+    -- or as resolved: a daemon reports uv.exepath(), which follows a linked
+    -- data directory (separator-bounded, exactly one segment below).
+    local function under(prefix)
+        prefix = norm(prefix)
+        local s = norm(slot)
+        return s:sub(1, #prefix + 1) == prefix .. "/" and s:sub(#prefix + 2) == sha
+    end
+    local dir = M.dir(opts.data)
+    local real = uv.fs_realpath(dir)
+    if not under(dir) and not (real and under(real)) then return false end
     local st = uv.fs_lstat(slot)
     if not st or st.type ~= "directory" then return false end
     local now = opts.now or os.time()
@@ -139,7 +153,8 @@ end
 
 --- The managed host binary when it is already present, or nil + why (+ the
 --- wanted record when it is only not installed yet, or corrupt — `corrupt =
---- true`: it can be downloaded). Present means a regular file (lstat) whose
+--- true`: it can be downloaded; `unreadable = true` too when hashing it failed
+--- to read it rather than found another hash). Present means a regular file (lstat) whose
 --- SHA-256 matches (`verify`, once per process); one that is found is marked
 --- used (`touch`). `opts.wanted` returns a `loomworks.provision.Wanted`
 --- record or a bare hash. Tests inject `exists` (a fake file system: no
@@ -159,10 +174,14 @@ function M.find(opts)
     end
     local verify = opts.verify or (opts.exists == nil and M.verify) or nil
     if verify then
-        local ok, vwhy = verify(p, sha)
+        local ok, vwhy, kind = verify(p, sha)
         if not ok then
-            local again = record and vim.tbl_extend("force", record, { corrupt = true }) or nil
-            return nil, "corrupt, not launched (" .. tostring(vwhy) .. ")", again
+            -- A read error (e.g. the file is locked) is not a mismatch, but
+            -- neither can be launched unhashed: both are downloaded again.
+            local unreadable = kind == "unreadable" or nil
+            local again = record and vim.tbl_extend("force", record, { corrupt = true, unreadable = unreadable }) or nil
+            return nil, (unreadable and "could not be read, not launched (" or "corrupt, not launched (")
+                .. tostring(vwhy) .. ")", again
         end
     end
     local touch = opts.touch or (opts.exists == nil and M.touch) or nil
