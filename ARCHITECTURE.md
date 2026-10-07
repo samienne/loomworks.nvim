@@ -2692,10 +2692,12 @@ descriptor, generates and signs `SHA256SUMS`, attests build provenance and
 creates an unpublished DRAFT release `vX` targeting C with every asset (no tag;
 it refuses an existing release or tag). The **publish** stage (push of tag
 `vX`, or `stage=publish` to re-run it) never rebuilds: it finds the draft
-(none: fail), downloads its `SHA256SUMS(.sig)`, descriptor and host binaries
+by listing the releases (`scripts/release/draft.sh find`: exactly one draft
+with tag name `vX`, none or several fail — never `gh release view <tag>`),
+downloads its `SHA256SUMS(.sig)`, descriptor and host binaries by release id
 and runs `nvim -l scripts/release/pin.lua verify X pin --base C --head vX` —
 signature with `keys/loomworks-release.pub.pem`, `pinned.lua` == X and the
-signed host hashes, the binaries match, the descriptor passes
+signed host hashes, every host binary present and matching, the descriptor passes
 `provision/needs.lua`, `git diff C vX` is exactly `pinned.lua` — then
 un-drafts it. The maintainer supplies the signing key (see `keys/README.md`).
 
@@ -2706,15 +2708,29 @@ that head). (2) `git checkout C`, then `scripts/release/pin.sh X` (gh, nvim and
 openssl on PATH): downloads the draft's signed hashes and descriptor,
 verifies them and writes `lua/loomworks/provision/pinned.lua`; it refuses a
 published release, a HEAD other than C, or a release whose descriptor lacks
-the plugin's interfaces. (3) Commit only that file ("Pin lw X") as C+1,
-`git tag -a vX` on it, push the branch and the tag to github and gitcode
-(release is GitHub-only), and for a beta fast-forward `unstable` to it. The
-tag push publishes the draft; a failed gate leaves it unpublished — fix
-forward (delete the draft, cut again; a tag name burns once a release used
-it). `pin.sh X --published [--no-interface-check]` re-pins an already
+the plugin's interfaces. (3) Commit only that file ("Pin lw X") as C+1 and
+`git tag -a vX` on it. (4) Push ONLY THE TAG, to github only (the release
+runs there): `git push github vX`. Its run publishes the draft. (5) Only
+after that run succeeded, push the branch (`git push github HEAD:<branch>`,
+e.g. `staging/daemon`), push branch and tag to gitcode, and for a beta
+fast-forward `unstable` on github and gitcode. Never push the branch first:
+a failed gate must not leave a branch whose pin names an unpublished draft
+(spec §19.16: a plugin checkout always pins a published release).
+**Recovery after a failed gate** (the draft stays unpublished): delete the
+pushed tag (`git push github :refs/tags/vX`, also on gitcode if it was pushed
+there; `git tag -d vX`). If C+1 was wrong, fix it and re-tag: the unpublished
+draft and its tag name are reused. If the build is wrong, delete the draft
+(`gh api -X DELETE repos/<repo>/releases/<id>`), fix on the branch and cut
+again from step 1 — the build stage refuses a version whose release (draft
+or published) or tag already exists (release.yml, "Stage the draft
+release"). Once a release is published its tag name is burnt (immutable
+releases): a broken published release needs a version bump.
+`pin.sh X --published [--no-interface-check]` re-pins an already
 published release; it seeded the first pin (0.1.43-beta.15, published before
 descriptors existed) and is never part of a release. CI's `pin-check` job runs
-`pin.lua verify --warn` on every push: warnings only.
+`pin.lua verify --warn --no-binaries` on every push: warnings only, also when
+Neovim, openssl or the script itself fails (`continue-on-error` + a
+`::warning::`); the release gate stays hard.
 `make dist` is a local dry-run. Installation is the transparent
 download-verify-`lw install` one-liner (spec §16.15), so no hosted installer
 script is needed.

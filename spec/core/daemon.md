@@ -1981,13 +1981,17 @@ in-process path. In `in-process` mode nothing below happens.
   build stage builds every asset of `vX` from a build commit C into an
   unpublished draft release (no tag, C recorded as its target); the cutter
   pins the draft, commits only `pinned.lua` on top of C and tags that commit
-  `vX`; the tag push never rebuilds — it publishes the draft only when the
+  `vX`; the tag push never rebuilds — it publishes the draft (the one draft
+  named `vX`; none or several fail) only when the
   tagged commit changes nothing but `pinned.lua` since C, the pin names `X`
   and equals the draft's signed hash for every host asset, the signature
-  verifies, every host binary of the draft matches `SHA256SUMS`, and the
+  verifies, every host binary of the draft is present and matches
+  `SHA256SUMS`, and the
   descriptor passes the interface check. Any failure, or no draft, publishes
-  nothing. Hence a plugin checkout always pins a published release, never one
-  newer than every release. Ordinary CI runs the same check on the pinned
+  nothing. The cutter pushes only the tag first and pushes the pin commit to
+  a branch only after the publish succeeded, so a failed gate leaves no
+  branch pinning an unpublished draft. Hence a plugin checkout always pins a
+  published release, never one newer than every release. Ordinary CI runs the same check on the pinned
   release as a warning only: a development checkout may need interfaces newer
   than the last release (the editor then degrades with feature notes;
   developers point `binary.path` / `LOOMWORKS_LW` at a newer `lw`).

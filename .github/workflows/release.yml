@@ -357,9 +357,12 @@ jobs:
         run: |
           tag="v$VER"
           # A tag name burns once a release used it; never stage over an
-          # existing release (a stale draft: gh release delete it first) or tag.
-          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::release $tag already exists (delete a stale draft with: gh release delete $tag)"; exit 1
+          # existing release (draft or published, found by listing: a draft
+          # has no tag to look up) or tag. A stale draft: delete it first
+          # (gh api -X DELETE repos/<repo>/releases/<id>).
+          n="$(bash repo/scripts/release/draft.sh count "$GITHUB_REPOSITORY" "$tag")"
+          if [ "$n" != 0 ]; then
+            echo "::error::$n release(s) named $tag already exist; delete a stale draft first, or bump the version"; exit 1
           fi
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
             echo "::error::tag $tag already exists; the tag goes on the pin commit, after this stage"; exit 1
@@ -410,33 +413,35 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.v.outputs.tag }}
+        # Exactly one draft with tag_name $TAG (listed, not looked up by tag:
+        # zero or several fail); its id drives the download and the publish.
         run: |
-          info="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft,targetCommitish \
-            -q '[.isDraft, .targetCommitish] | @tsv')" || {
-            echo "::error::no draft release $TAG: dispatch release.yml with stage=build on the build commit, then pin it (ARCHITECTURE.md, Cutting a release or beta)"; exit 1; }
-          draft="$(printf '%s' "$info" | cut -f1)"
+          info="$(bash scripts/release/draft.sh find "$GITHUB_REPOSITORY" "$TAG")" || {
+            echo "::error::no unique draft release $TAG: dispatch release.yml with stage=build on the build commit, then pin it (ARCHITECTURE.md, Cutting a release or beta)"; exit 1; }
+          id="$(printf '%s' "$info" | cut -f1)"
           build="$(printf '%s' "$info" | cut -f2)"
-          [ "$draft" = true ] || { echo "::error::$TAG is already published"; exit 1; }
           printf '%s' "$build" | grep -Eq '^[0-9a-f]{40}$' \
             || { echo "::error::the draft $TAG records no build commit (target '$build')"; exit 1; }
+          echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
-          echo "draft $TAG built from $build"
+          echo "draft $TAG (release $id) built from $build"
 
       - name: Download the draft's signed hashes, descriptor and host binaries
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.v.outputs.tag }}
+          ID: ${{ steps.draft.outputs.id }}
           VER: ${{ steps.v.outputs.version }}
         run: |
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D pin \
-            -p SHA256SUMS -p SHA256SUMS.sig -p "lw-$VER-descriptor.json" \
-            -p lw-linux-x86_64 -p lw-macos-arm64 -p lw-windows-x86_64.exe
+          bash scripts/release/draft.sh download "$GITHUB_REPOSITORY" "$ID" pin \
+            SHA256SUMS SHA256SUMS.sig "lw-$VER-descriptor.json" \
+            lw-linux-x86_64 lw-macos-arm64 lw-windows-x86_64.exe
           ls -la pin
 
       # The gate: the signature (committed release key), pinned.lua == this
       # version and the signed host hashes, the descriptor offers what the
-      # plugin needs, every downloaded binary matches SHA256SUMS, and the
+      # plugin needs, every host binary (HOST_ASSETS) is here and matches
+      # SHA256SUMS (a missing one fails), and the
       # tagged commit changes nothing but pinned.lua on top of the build commit.
       - name: Verify the pin
         shell: bash
@@ -452,5 +457,5 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.v.outputs.tag }}
-        run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
+          ID: ${{ steps.draft.outputs.id }}
+        run: bash scripts/release/draft.sh publish "$GITHUB_REPOSITORY" "$ID"

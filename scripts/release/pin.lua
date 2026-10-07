@@ -3,12 +3,12 @@
 --
 --   nvim -l scripts/release/pin.lua write  <version> <dir> [--pub PEM] [--out FILE] [--no-interface-check]
 --   nvim -l scripts/release/pin.lua verify <version> <dir> [--pub PEM] [--pinned FILE]
---                                          [--base SHA --head REF] [--warn]
+--                                          [--base SHA --head REF] [--warn] [--no-binaries]
 --
 -- <dir> holds the release's SHA256SUMS, SHA256SUMS.sig and
 -- lw-<version>-descriptor.json (scripts/release/pin.sh downloads them from the
 -- draft release; the release workflow from the draft it is about to publish)
--- and optionally host binaries (lw-*), which are then hashed too.
+-- and, for verify, every host binary (lw-*), which is then hashed too.
 --
 -- write   verifies SHA256SUMS.sig with the release key (keys/
 --         loomworks-release.pub.pem unless --pub), checks the descriptor
@@ -18,7 +18,9 @@
 -- verify  the release gate (.github/workflows/release.yml, stage publish):
 --         the signature, pinned.lua == <version> + the signed hashes, the
 --         descriptor names release <version> and offers the plugin's
---         interfaces, any host binary in <dir> matches SHA256SUMS, and with
+--         interfaces, every host binary (HOST_ASSETS) is in <dir> and
+--         matches SHA256SUMS (a missing one fails; --no-binaries skips this
+--         for the warning-only CI check, which downloads none), and with
 --         --base/--head the pin commit changes nothing but pinned.lua on top
 --         of the build commit. --warn (ordinary CI): report problems as
 --         GitHub warnings and exit 0.
@@ -218,14 +220,17 @@ function M.load(version, dir, opts)
     return { sums = sums, descriptor = d }, problems
 end
 
---- Host binaries present in <dir> whose hash differs from SHA256SUMS.
+--- Every host binary (HOST_ASSETS) must be in <dir> and match SHA256SUMS:
+--- the gate publishes nothing it has not hashed. A missing one is a problem.
 --- @return string[]
 function M.check_assets(dir, sums, assets)
     local p = {}
     local sha = require("loomworks.provision.sha256")
     for _, a in ipairs(sorted_assets(assets or host_assets())) do
         local path = dir .. "/" .. a
-        if read(path) then
+        if not read(path) then
+            p[#p + 1] = a .. " is missing from " .. dir
+        else
             local got = sha.file(path)
             if got ~= sums[a] then p[#p + 1] = a .. " has SHA-256 " .. tostring(got) .. ", SHA256SUMS says " .. tostring(sums[a]) end
         end
@@ -253,7 +258,7 @@ function M.write(version, dir, opts)
 end
 
 --- `verify`: problems (empty = the pin may be published).
---- @param opts? { pub?: string, pinned?: string, base?: string, head?: string, run?: function }
+--- @param opts? { pub?: string, pinned?: string, base?: string, head?: string, no_binaries?: boolean, run?: function }
 --- @return string[]
 function M.verify(version, dir, opts)
     opts = opts or {}
@@ -266,7 +271,7 @@ function M.verify(version, dir, opts)
         vim.list_extend(problems, M.check_pinned(pin, version, rel.sums))
     end
     vim.list_extend(problems, M.check_descriptor(rel.descriptor, version))
-    vim.list_extend(problems, M.check_assets(dir, rel.sums))
+    if not opts.no_binaries then vim.list_extend(problems, M.check_assets(dir, rel.sums)) end
     if opts.base then
         local head = opts.head or "HEAD"
         local code = run({ "git", "-C", M.REPO, "merge-base", "--is-ancestor", opts.base, head }, opts)
@@ -303,6 +308,7 @@ function M.main(args)
             i = i + 2
         elseif a == "--no-interface-check" then opts.no_interface_check = true; i = i + 1
         elseif a == "--warn" then opts.warn = true; i = i + 1
+        elseif a == "--no-binaries" then opts.no_binaries = true; i = i + 1
         else
             io.stderr:write("pin.lua: unknown option " .. a .. "\n")
             return 2

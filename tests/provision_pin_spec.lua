@@ -246,6 +246,23 @@ describe("scripts/release/pin.lua", function()
             assert.same({}, pin.write("0.1.51", dir, { pub = pub, out = out .. "2", no_interface_check = true }))
         end)
 
+        it("requires every host binary in the gate, unless told the dir holds none", function()
+            release("0.1.50", release_descriptor("0.1.50"))
+            assert.same({}, pin.write("0.1.50", dir, { pub = pub, out = out }))
+            os.remove(dir .. "/lw-macos-arm64")
+            local p = table.concat(pin.verify("0.1.50", dir, { pub = pub, pinned = out }), "\n")
+            assert.truthy(p:find("lw-macos-arm64 is missing", 1, true), p)
+            assert.same({}, pin.verify("0.1.50", dir, { pub = pub, pinned = out, no_binaries = true }))
+            -- --no-binaries on the command line (the warning-only CI check).
+            local said = {}
+            local say = pin.say
+            pin.say = function(s) said[#said + 1] = s end
+            local code = pin.main({ "verify", "0.1.50", dir, "--pub", pub, "--pinned", out, "--no-binaries" })
+            pin.say = say
+            assert.equals(0, code, table.concat(said, "\n"))
+            assert.equals(1, pin.main({ "verify", "0.1.50", dir, "--pub", pub, "--pinned", out }))
+        end)
+
         it("checks the pin commit on top of the build commit", function()
             release("0.1.50", release_descriptor("0.1.50"))
             assert.same({}, pin.write("0.1.50", dir, { pub = pub, out = out }))

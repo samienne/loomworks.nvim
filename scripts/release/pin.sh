@@ -35,23 +35,31 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 slug="${REPO_SLUG:-samienne/loomworks.nvim}"
 tag="v$version"
 
-info="$(gh release view "$tag" -R "$slug" --json isDraft,targetCommitish -q '[.isDraft, .targetCommitish] | @tsv')" \
-  || { echo "pin.sh: no release $tag on $slug (dispatch the release workflow with stage=build first)" >&2; exit 1; }
-draft="$(printf '%s' "$info" | cut -f1)"
-build="$(printf '%s' "$info" | cut -f2)"
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
+  || { echo "pin.sh: version '$version' is not <n>.<n>.<n>[-pre]" >&2; exit 2; }
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+desc="lw-$version-descriptor.json"
 if [ "$published" = 0 ]; then
-  [ "$draft" = "true" ] || { echo "pin.sh: $tag is already published; pin a draft (or --published to seed)" >&2; exit 1; }
+  # Exactly one draft with tag_name $tag, found by listing the releases
+  # (scripts/release/draft.sh; zero or several fail). Its id drives the download.
+  info="$(bash "$repo/scripts/release/draft.sh" find "$slug" "$tag")" || exit 1
+  id="$(printf '%s' "$info" | cut -f1)"
+  build="$(printf '%s' "$info" | cut -f2)"
   head="$(git -C "$repo" rev-parse HEAD)"
   [ "$head" = "$build" ] || {
     echo "pin.sh: HEAD is $head but the draft $tag was built from $build; check out $build first" >&2; exit 1; }
   [ -z "$(git -C "$repo" status --porcelain)" ] || { echo "pin.sh: the working tree is not clean" >&2; exit 1; }
+  bash "$repo/scripts/release/draft.sh" download "$slug" "$id" "$T" SHA256SUMS SHA256SUMS.sig
+  bash "$repo/scripts/release/draft.sh" download "$slug" "$id" "$T" "$desc" 2>/dev/null \
+    || echo "pin.sh: $tag publishes no $desc" >&2
+else
+  gh release download "$tag" -R "$slug" -D "$T" -p SHA256SUMS -p SHA256SUMS.sig \
+    || { echo "pin.sh: no published release $tag on $slug" >&2; exit 1; }
+  gh release download "$tag" -R "$slug" -D "$T" -p "$desc" 2>/dev/null \
+    || echo "pin.sh: $tag publishes no $desc" >&2
 fi
-
-T="$(mktemp -d)"
-trap 'rm -rf "$T"' EXIT
-gh release download "$tag" -R "$slug" -D "$T" -p SHA256SUMS -p SHA256SUMS.sig
-gh release download "$tag" -R "$slug" -D "$T" -p "lw-$version-descriptor.json" 2>/dev/null \
-  || echo "pin.sh: $tag publishes no lw-$version-descriptor.json" >&2
 
 nvim -l "$repo/scripts/release/pin.lua" write "$version" "$T" ${extra[@]+"${extra[@]}"}
 
@@ -61,7 +69,10 @@ if [ "$published" = 0 ]; then
 Next (see ARCHITECTURE.md "Cutting a release or beta"):
   git commit -m "Pin lw $version" -- lua/loomworks/provision/pinned.lua
   git tag -a $tag -m "$tag"
-  git push github HEAD:<branch> $tag && git push gitcode HEAD:<branch> $tag
+  git push github $tag              # ONLY the tag first
 The tag push publishes the draft once the pin verifies (release.yml, stage publish).
+Only after that run succeeded: push the branch to github, branch and tag to
+gitcode, and (beta) fast-forward unstable on both. A failed gate: delete the
+tag (git push github :refs/tags/$tag; git tag -d $tag), fix, re-tag.
 EOF
 fi
