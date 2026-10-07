@@ -850,14 +850,33 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `lw` on `PATH` (its own lookup, `on_path`: absolute entries only, never the
   cwd — `vim.fn.exepath` searches it before Neovim 0.12 on Windows — and
   `lw.exe` per entry on Windows; `loomworks.exe.editor_exepath` is binary-side)
-  > `provision/managed.lua` (an already
-  present `<stdpath data>/loomworks/lw/<sha256>/lw[.exe]`; nothing wanted
-  until the plugin pin, step 5h.4); `binary.prefer = "managed"` swaps the
+  > `provision/managed.lua` (`<stdpath data>/loomworks/lw/<sha256>/lw[.exe]`;
+  nothing wanted until the plugin pin, step 5h.4; a wanted one not installed
+  yet decides the search as `Selection.download`); `binary.prefer = "managed"` swaps the
   last two; `binary.source` adds `LOOMWORKS_LUA` to the spawn's environment
   (`launch.spawn` `opts.env`). Returns a `Selection` with every candidate's
   verdict, shown by the observer's note, `:LoomworksDaemon status` and
   `health.lua` (`:checkhealth loomworks`). Reads no `lw.pin` and nothing of
   lw's data directory.
+- `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
+  download of a `Wanted` record (`{ sha256, version, asset }`) into
+  `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local
+  mirror, `vim.system` curl — `curl_args`: connect timeout, low-speed limit,
+  `--proto-redir =https` from https — with lw's retry rule for http(s)),
+  `provision/sha256.lua` check, chmod 755 (POSIX), rename into the slot
+  (retried on Windows); single flight per hash through `M.states` (also what
+  the observer's note and checkhealth show); `cancel(sha256)` kills the
+  transfer (the observer's `_cancel_download` on an explicit connect or
+  stop). `provision/managed.lua` `verify` hashes a present binary once per
+  process (`find` reports a mismatch as corrupt + the wanted record, so it is
+  downloaded again) and `touch` sets a slot's directory mtime = last use
+  (on selection and on connect), which `prune` honours (`UNUSED_S`). The
+  observer's `_download` calls it when the selection carries `download`, then
+  restarts (connect or `_launch`), and `_prune` runs `provision/cache.lua`
+  `prune` (deletion safety rule 11) with the in-use binaries (`_binary`, the
+  observed and the live daemon's handle `exe`). `provision/sha256.lua`:
+  `vim.fn.sha256` after a known-answer check on a NUL/high-byte string, else
+  a pure-Lua (bit) SHA-256.
 - Server: hello `role` → `conn.observer`; `active_clients()` (non-observers)
   gates retirement (`_maybe_retire`, also from `service`'s `tasks.on_change`);
   `retire` broadcasts `retiring` to observers; `welcome.retiring`;

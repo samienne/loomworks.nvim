@@ -961,8 +961,17 @@ against Neovim's current directory; a path that names no file, or on Windows
 no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry
 (never the current directory, so an `lw` inside an opened repository is never
 started; on Windows `lw.exe`), and an
-`lw` the plugin manages under Neovim's data directory (the plugin does not
-install one yet). `binary = { prefer = "managed" }` tries the plugin's own
+`lw` the plugin manages under Neovim's data directory. When the plugin wants
+its own `lw` and it is not there yet, the editor downloads the official
+release binary in the background (it keeps working in-process meanwhile; the
+status page says so), checks its SHA-256 against the one the plugin carries,
+and starts the daemon from it; a failed download is one note and is retried by
+`:LoomworksDaemon connect`. `binary = { download = false }` turns downloads
+off; `binary = { release_url = "/path/to/mirror" }` (or `LOOMWORKS_RELEASE_URL`)
+fetches from a mirror instead. Everything the plugin installs stays under
+Neovim's data directory, and older managed binaries that no editor has used
+for 14 days are removed after a new one is installed. (Until the plugin ships its own pin, no managed `lw` is
+wanted, so nothing is downloaded yet.) `binary = { prefer = "managed" }` tries the plugin's own
 `lw` before `PATH`; the daemon's version can then depend on whether the editor
 or a terminal started it. A repository's `lw.pin` is followed by `lw` itself,
 not by the editor. `binary = { source = "/path/to/lua" }` (or `true` for this

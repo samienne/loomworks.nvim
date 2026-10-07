@@ -22,11 +22,14 @@ directly to `Snacks.win`. The page contains these sections in order:
    observer's current state or note (core §19.16), e.g. `Runtime:   daemon
    (lw setting) — observing daemon pid 4242`, `Runtime:   daemon (setup) —
    no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set;
-   lw on PATH: no lw on the search path; plugin-managed lw: none installed
-   (the plugin does not install one yet)) — running in-process`, `Runtime:   daemon (env) — the workspace daemon
+   lw on PATH: no lw on the search path; plugin-managed lw: none wanted
+   (the plugin carries no pin yet)) — running in-process`, `Runtime:   daemon
+   (setup) — downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from
+   https://… — running in-process meanwhile`, `Runtime:   daemon (env) — the workspace daemon
    disconnected — waiting for it`, `Runtime:   in-process (lw setting)`. A
    note that leaves the editor running in-process although `daemon` was
-   selected (a version mismatch, no host binary) uses the warning highlight.
+   selected (a version mismatch, no host binary, a failed download) uses the
+   warning highlight.
    Absent only when `in-process` was selected by the default.
 2. **Diagnostics** — aggregated structural diagnostics (hidden when empty)
 3. **Suggestions** — a single compact line, `N suggestion(s) — run \`lw
