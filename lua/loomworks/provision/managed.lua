@@ -7,11 +7,11 @@
 ---     <stdpath("data")>/loomworks/lw/<sha256>/lw        (lw.exe on Windows)
 ---
 --- `<sha256>` is the binary's lowercase hex SHA-256: a versioned path, so a
---- binary is never replaced in place (a running daemon keeps its file). Step
---- 5h.1 only LOOKS for an already-present binary of the wanted hash: no
---- download, no hashing, no pin is read. Which hash is wanted comes from the
---- plugin's own pin (step 5h.4) or a channel upgrade (step 5h.5); until then
---- nothing is wanted and the slot is empty.
+--- binary is never replaced in place (a running daemon keeps its file). The
+--- wanted binary (release version, asset, SHA-256) comes from the plugin's
+--- own pin (step 5h.4) or a channel upgrade (step 5h.5); until then nothing
+--- is wanted and the slot is empty. A wanted binary that is not installed is
+--- downloaded by loomworks.provision.fetch (step 5h.3, daemon mode only).
 
 local uv = vim.uv or vim.loop
 
@@ -19,8 +19,9 @@ local M = {}
 
 local function is_win() return package.config:sub(1, 1) == "\\" end
 
---- The reason shown while no managed binary is wanted (before step 5h.4).
-M.NOT_YET = "none installed (the plugin does not install one yet)"
+--- The reason shown while no managed binary is wanted (before step 5h.4's
+--- plugin pin).
+M.NOT_YET = "none wanted (the plugin carries no pin yet)"
 
 --- The editor's data directory for loomworks (`<stdpath("data")>/loomworks`).
 --- @param data? string the editor's data directory (tests inject)
@@ -54,9 +55,9 @@ function M.path(sha256, opts)
     return M.dir(opts.data) .. "/" .. sha256:lower() .. "/" .. M.exe_name(opts.win)
 end
 
---- The hash of the managed binary the plugin wants, or nil + why. Nothing
---- yet (step 5h.4 brings the plugin pin).
---- @return string|nil sha256, string|nil why
+--- The managed binary the plugin wants, or nil + why. Nothing yet (step
+--- 5h.4 brings the plugin pin).
+--- @return loomworks.provision.Wanted|nil wanted, string|nil why
 function M.wanted()
     return nil, M.NOT_YET
 end
@@ -66,16 +67,21 @@ local function is_file(p)
     return st ~= nil and st.type == "file"
 end
 
---- The managed host binary when it is already present, or nil + why.
---- @param opts? { data?: string, win?: boolean, wanted?: fun(): string|nil, string|nil, exists?: fun(path: string): boolean }
---- @return string|nil path, string|nil why
+--- The managed host binary when it is already present, or nil + why (+ the
+--- wanted record when it is only not installed yet: it can be downloaded).
+--- `opts.wanted` returns a `loomworks.provision.Wanted` record or a bare hash.
+--- @param opts? { data?: string, win?: boolean, wanted?: fun(): (loomworks.provision.Wanted|string|nil), string|nil, exists?: fun(path: string): boolean }
+--- @return string|nil path, string|nil why, loomworks.provision.Wanted|nil missing
 function M.find(opts)
     opts = opts or {}
-    local sha, why = (opts.wanted or M.wanted)()
-    if not sha then return nil, why or M.NOT_YET end
+    local want, why = (opts.wanted or M.wanted)()
+    if not want then return nil, why or M.NOT_YET end
+    local sha = type(want) == "table" and want.sha256 or want
     local p = M.path(sha, opts)
     if not p then return nil, "invalid hash " .. tostring(sha) end
-    if not (opts.exists or is_file)(p) then return nil, "not installed (" .. p .. ")" end
+    if not (opts.exists or is_file)(p) then
+        return nil, "not installed (" .. p .. ")", type(want) == "table" and want or nil
+    end
     return p
 end
 

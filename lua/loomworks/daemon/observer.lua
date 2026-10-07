@@ -66,10 +66,10 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @class loomworks.daemon.Observer
 --- @field ws loomworks.Workspace
 --- @field root string
---- @field state "idle"|"no-binary"|"launching"|"connecting"|"connected"|"waiting"|"stopped"
+--- @field state "idle"|"no-binary"|"downloading"|"launching"|"connecting"|"connected"|"waiting"|"stopped"
 --- @field note string|nil the current Runtime note
 --- @field conn loomworks.daemon.Conn|nil
---- @field daemon { pid: integer, start_time: string|nil, lw_version: string|nil }|nil the observed daemon
+--- @field daemon { pid: integer, start_time: string|nil, lw_version: string|nil, exe: string|nil }|nil the observed daemon (`exe`: the binary its handle names)
 --- @field seq integer last model_change seq
 --- @field mode "v0"|"interfaces"|nil how the connected daemon is observed: protocol-10 broadcasts, or subscriptions (step 5g.3)
 --- @field feature_note string|nil the per-feature note of a missing or refused interface (§19.16 "Interface client")
@@ -82,6 +82,9 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _order integer[] task ids in start order
 --- @field _child table|nil the daemon this observer launched (until it is live or exited): `{ pid, code }`
 --- @field _binary string|nil the host binary it was launched from
+--- @field _downloading string|nil the hash of the plugin-managed lw being downloaded (step 5h.3)
+--- @field _download_failed string|nil the hash whose download failed: not retried until an explicit connect
+--- @field _download_note string|nil that failure's note
 --- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
 --- @field _connecting table|nil the one connection attempt in flight (single-flight token)
 --- @field _watch userdata|nil the handle-watch timer
@@ -161,6 +164,8 @@ end
 ---   binary      the setup option `binary` (loomworks.provision.BinarySetting)
 ---   resolve     fun(root, opts) → binary|nil, source, selection (loomworks.provision.binsel.resolve)
 ---   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
+---   fetch       fun(wanted, opts, cb(path|nil, err)) (loomworks.provision.fetch.ensure)
+---   prune       fun(opts) (loomworks.provision.cache.prune)
 ---   inspect     fun(root) → state (loomworks.daemon.inspect.state)
 ---   connect     fun(endpoint, opts, cb) (loomworks.daemon.client.connect)
 ---   check       fun(root, endpoint) → ok, why (loomworks.daemon.endpoint.check)
@@ -220,11 +225,12 @@ end
 --- @param explicit boolean
 function Observer:start(explicit)
     if self.state == "stopped" then return end
-    if explicit then self.skip = {} end
+    if explicit then self.skip = {}; self._download_failed = nil end
     self:_start_watch()
     -- Single-flight: one connection, one attempt, one launch at a time.
     if self.conn or self._connecting then return end
     if self._child and self._child.code == nil then return end
+    if self._downloading then return end
     local st = self:_inspect()
     if st.kind == "live" then return self:_connect(st) end
     if st.kind == "none" or st.kind == "stale" or st.kind == "unreadable" then
@@ -283,6 +289,7 @@ function Observer:_launch()
     end
     self.selection = sel
     if not bin then
+        if sel.download then return self:_download(sel) end
         return self:_set("no-binary", binsel.none_note(sel))
     end
     local spawn = self.opts.spawn or require("loomworks.daemon.launch").spawn
@@ -294,6 +301,57 @@ function Observer:_launch()
     self._child = child
     self._binary = bin
     self:_set("launching", "starting the workspace daemon (" .. (sel.label and binsel.describe(sel) or bin) .. ")")
+end
+
+--- Download the plugin-managed lw the selection wants (spec §19.16, step
+--- 5h.3), then start over: connect to a daemon that appeared meanwhile, or
+--- launch. A failure is one note and leaves the editor in-process; it is not
+--- retried until `:LoomworksDaemon connect`.
+--- @param sel loomworks.provision.Selection
+function Observer:_download(sel)
+    local want = sel.download
+    local what = "the plugin-managed lw v" .. tostring(want.version) .. " (" .. tostring(want.asset) .. ")"
+    if self._downloading then return end
+    if self._download_failed == want.sha256 then
+        return self:_set("no-binary", self._download_note)
+    end
+    local fetch = require("loomworks.provision.fetch")
+    local setting = self.opts.binary or {}
+    self._downloading = want.sha256
+    local fopts = { release_url = setting.release_url, getenv = self.opts.getenv }
+    local st = (self.opts.fetch or fetch.ensure)(want, fopts, function(path, err)
+        self._downloading = nil
+        if self.state == "stopped" then return end
+        if not path then
+            self._download_failed = want.sha256
+            self._download_note = "could not install " .. what .. ": " .. tostring(err) .. " — running in-process"
+            return self:_set("no-binary", self._download_note)
+        end
+        self:_prune(want)
+        if self.conn or self._connecting or (self._child and self._child.code == nil) then return end
+        local now = self:_inspect()
+        if now.kind == "live" then return self:_connect(now) end
+        if now.kind == "none" or now.kind == "stale" or now.kind == "unreadable" then return self:_launch() end
+        self:_set("waiting", M.state_note(now))
+    end)
+    local url = type(st) == "table" and st.url or fetch.url(want, fopts)
+    if self._downloading then
+        self:_set("downloading", "downloading " .. what .. " from " .. tostring(url) .. " — running in-process meanwhile")
+    end
+end
+
+--- Remove the plugin-managed binaries other than `want`, never one in use:
+--- the binary this observer launched, the observed daemon's, the live
+--- daemon's (loomworks.provision.cache, deletion-safety rule 11). Best effort.
+--- @param want loomworks.provision.Wanted
+function Observer:_prune(want)
+    local list = {}
+    local function use(p) if type(p) == "string" and p ~= "" then list[#list + 1] = p end end
+    use(self._binary)
+    use(self.daemon and self.daemon.exe)
+    local ok, st = pcall(self._inspect, self)
+    if ok and type(st) == "table" and type(st.handle) == "table" then use(st.handle.exe) end
+    pcall(self.opts.prune or require("loomworks.provision.cache").prune, { keep = { want.sha256 }, in_use = list })
 end
 
 function Observer:_start_watch()
@@ -335,7 +393,7 @@ function Observer:_on_watch()
         self._relaunch = nil
         return self:_launch()
     end
-    if self.state ~= "launching" and self.state ~= "no-binary" then
+    if self.state ~= "launching" and self.state ~= "no-binary" and self.state ~= "downloading" then
         local note = M.state_note(st)
         if self.state ~= "waiting" or not self._dropped then self:_set("waiting", note) end
     end
@@ -410,7 +468,7 @@ function Observer:_on_connected(target, conn, err)
     self._dropped = nil
     self._dropped_id = nil
     self._relaunch = nil
-    self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version }
+    self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version, exe = target.exe }
     self.generation = ch.session_generation
     self.seq = tonumber(conn.welcome and conn.welcome.seq) or 0
     self:_start_keepalive()

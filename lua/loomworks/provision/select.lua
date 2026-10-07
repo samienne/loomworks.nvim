@@ -12,7 +12,10 @@
 ---      `lw.exe` (a `.cmd` shim cannot be started detached without a
 ---      console);
 ---   3. the plugin-managed lw under the editor's data directory
----      (loomworks.provision.managed).
+---      (loomworks.provision.managed). A wanted one that is not installed yet
+---      decides the search too: the selection carries it as `download`, and
+---      the observer downloads it (loomworks.provision.fetch) unless
+---      `binary.download = false`.
 --- `binary.prefer = "managed"` puts 3 before 2. The editor reads no `lw.pin`:
 --- a global or managed lw follows the repository's pin itself (§16.23).
 --- `binary.source` (development only, never automatic) runs the selected
@@ -31,12 +34,14 @@ local M = {}
 --- @field path? string an lw host binary to use as is
 --- @field prefer? "system"|"managed" which of `lw` on PATH and the plugin-managed lw comes first (default "system")
 --- @field source? string|boolean development only: run the binary with this Lua tree (`true`: this plugin's)
+--- @field download? boolean false: never download the plugin-managed lw (default true; daemon mode only)
+--- @field release_url? string release-source override for that download (else LOOMWORKS_RELEASE_URL, else lw's origin)
 
 --- @class loomworks.provision.Candidate  one step of the search
 --- @field source loomworks.provision.Source
 --- @field label string how the status page and checkhealth name it
 --- @field path? string the binary it found
---- @field verdict "chosen"|"absent"|"refused"|"not tried"
+--- @field verdict "chosen"|"download"|"absent"|"refused"|"not tried"
 --- @field reason? string why it was not chosen
 
 --- @class loomworks.provision.Selection  the result of `resolve`
@@ -45,6 +50,7 @@ local M = {}
 --- @field label? string
 --- @field candidates loomworks.provision.Candidate[] every step, in search order
 --- @field env? table<string, string> extra environment for the daemon (`binary.source`)
+--- @field download? loomworks.provision.Wanted the plugin-managed lw to download first (it decided the search)
 --- @field note? string why there is none (the Runtime line)
 --- @field warning? string an ignored setup value
 
@@ -171,6 +177,14 @@ function M.check_setting(v)
         if v.source == true or (type(v.source) == "string" and v.source ~= "") then out.source = v.source
         else warns[#warns + 1] = "binary.source: expected a directory or true, ignored" end
     end
+    if v.download ~= nil then
+        if type(v.download) == "boolean" then out.download = v.download
+        else warns[#warns + 1] = "binary.download: expected true or false, ignored" end
+    end
+    if v.release_url ~= nil then
+        if type(v.release_url) == "string" and v.release_url ~= "" then out.release_url = v.release_url
+        else warns[#warns + 1] = "binary.release_url: expected a URL or directory, ignored" end
+    end
     return out, (#warns > 0 and table.concat(warns, "; ") or nil)
 end
 
@@ -252,13 +266,25 @@ function M.resolve(root, opts)
 
     -- 2-3. The search path and the plugin-managed lw.
     for _, source in ipairs(order) do
-        if sel.path or sel.note then
+        if sel.path or sel.note or sel.download then
             add(source, "not tried", nil, "a source above decided")
         else
-            local p, why
+            local p, why, missing
             if source == "PATH" then p, why = (opts.on_path or M.on_path)()
-            else p, why = (opts.managed or require("loomworks.provision.managed").find)() end
-            if p then choose(source, p) else add(source, "absent", nil, why) end
+            else p, why, missing = (opts.managed or require("loomworks.provision.managed").find)() end
+            if p then
+                choose(source, p)
+            elseif missing and setting.download == false then
+                add(source, "absent", nil, tostring(why) .. "; downloads are off (binary.download = false)")
+            elseif missing then
+                local mp = require("loomworks.provision.managed").path(missing.sha256, { data = opts.data, win = win })
+                add(source, "download", mp, "lw v" .. tostring(missing.version) .. " (" .. tostring(missing.asset)
+                    .. ") is not installed yet: downloaded in daemon mode")
+                sel.download = missing
+                sel.source, sel.label = source, M.LABELS[source]
+            else
+                add(source, "absent", nil, why)
+            end
         end
     end
 
@@ -270,7 +296,7 @@ function M.resolve(root, opts)
             sel.warning = sel.warning and (sel.warning .. "; " .. why) or why
         end
     end
-    if not sel.path and not sel.note then sel.note = M.none_note(sel) end
+    if not sel.path and not sel.note and not sel.download then sel.note = M.none_note(sel) end
     return sel.path, sel.source, sel
 end
 
@@ -281,6 +307,11 @@ end
 function M.none_note(sel)
     if not sel then return M.NONE_NOTE end
     if sel.note then return sel.note end
+    if sel.download then
+        local d = sel.download
+        return "the plugin-managed lw v" .. tostring(d.version) .. " (" .. tostring(d.asset)
+            .. ") is not installed yet — running in-process"
+    end
     local parts = {}
     for _, c in ipairs(sel.candidates or {}) do
         parts[#parts + 1] = c.label .. ": " .. tostring(c.reason or c.verdict)
@@ -294,7 +325,14 @@ end
 --- @param sel loomworks.provision.Selection
 --- @return string
 function M.describe(sel)
-    if not sel.path then return M.none_note(sel) end
+    if not sel.path then
+        if sel.download then
+            local d = sel.download
+            return "lw v" .. tostring(d.version) .. " (" .. tostring(d.asset) .. "), downloaded first ("
+                .. tostring(sel.label) .. ")"
+        end
+        return M.none_note(sel)
+    end
     local s = sel.path .. " (" .. sel.label .. ")"
     if sel.env and sel.env.LOOMWORKS_LUA then s = s .. " with the Lua source " .. sel.env.LOOMWORKS_LUA end
     return s

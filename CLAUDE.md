@@ -160,8 +160,9 @@ pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
 pruning by `lw bootstrap install` / `upgrade`), `loomworks/housekeeping.lua`
 (the startup housekeeping pass and `lw cleanup`), `boot.update.gc` (release
-pruning by self-update) and the install-folder temp removals (`.dl-<ver>.zip`,
-`.stage-<ver>`)) **must** be reviewed for
+pruning by self-update), the install-folder temp removals (`.dl-<ver>.zip`,
+`.stage-<ver>`) and the plugin-managed `lw` (`provision/cache.prune`, the
+`.dl` temp file of `provision/fetch.ensure`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -228,6 +229,15 @@ directory safety before merging:
    fetch - never rm_rf'd or swapped; temp names
    (`.dl-<ver>.zip`, `.stage-<ver>`) only from a version that passed
    `is_release_version`.
+11. **Plugin-managed lw** (spec §19.16): `provision/cache.prune` runs only with
+   a wanted hash and no download in flight; removes only `<64 lowercase hex>`
+   entries of `<stdpath data>/loomworks/lw` (itself lstat-real) that are real
+   directories (lstat; links/junctions skipped, never followed) whose realpath
+   is a direct child of that dir's realpath (separator-bounded), holding only
+   the regular file `lw`/`lw.exe`: unlink it, then `rmdir` (no rm_rf). Never
+   the wanted hash nor a binary in use (launched, observed, live handle `exe`,
+   by path or realpath). `fetch.ensure` removes only its own
+   `<sha256>.<pid>.dl` regular file; prune removes another pid's after 24 h.
 
 ## Implementation Notes
 

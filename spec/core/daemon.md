@@ -1781,8 +1781,10 @@ the daemon's operations as with any other process:
 
 *Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
 `daemon/remote_task.lua`); the host-binary order of step 5h.1
-(`provision/select.lua`, `provision/managed.lua`; downloads, the plugin pin
-and compatibility probes are steps 5h.3-5h.5); remote tasks shown as
+(`provision/select.lua`, `provision/managed.lua`) and the download, check and
+pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
+`provision/sha256.lua`, `provision/cache.lua`; the plugin pin that names the
+wanted binary and compatibility probes are steps 5h.4-5h.5); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1887,11 +1889,42 @@ in-process path. In `in-process` mode nothing below happens.
   installed (search path, explicit) get compatibility checks only. In daemon
   mode the plugin may download its managed `lw` automatically (step 5h.3;
   `binary.download = false` turns that off): official releases only (§17.8).
-  *(Step 5h.1: the managed slot only looks for a binary already present at
+
+  **The plugin-managed `lw`** (step 5h.3) lives at
   `<editor data>/loomworks/lw/<sha256>/lw` (`lw.exe` on Windows),
-  content-addressed by the binary's SHA-256 so that a binary is never
-  replaced in place; nothing installs one yet, and no compatibility probe
-  runs before the launch.)*
+  content-addressed by the binary's SHA-256, so a binary is never replaced in
+  place (a running daemon keeps its file). The binary the plugin wants is a
+  release version, a host asset name and that asset's SHA-256 (from the
+  plugin's own pin, step 5h.4; until then none is wanted and the slot is only
+  looked at). When the selection reaches a wanted managed `lw` that is not
+  installed, that decides the search: in daemon mode the observer downloads it
+  — asynchronously, the editor stays in-process meanwhile and the Runtime note
+  says it is downloading, from where — then launches from it (or connects to a
+  daemon that appeared meanwhile). The download goes into a temporary file
+  `<sha256>.<pid>.dl` next to the slots; its SHA-256 must equal the wanted
+  one, then it is made executable (POSIX) and renamed into its slot. A
+  failure (network, missing asset, hash mismatch) removes the temporary file,
+  installs nothing and is one note naming the binary and why (running
+  in-process); it is not retried until `:LoomworksDaemon connect`. Requests
+  for one hash share one download; a slot another editor filled meanwhile is
+  kept. The source is `<base>/<asset>` for a release-source override (the
+  setup option `binary.release_url`, else `LOOMWORKS_RELEASE_URL`: a local
+  directory, `file://` or a flat mirror, as for `lw`, §16.29), else `lw`'s
+  fixed origin's `releases/download/v<version>/<asset>`; http(s) goes through
+  `curl` from the search path's absolute entries. The hash, not the transport,
+  is the trust anchor. `binary.download = false` turns downloads off (the
+  managed source is then absent, with why); `:checkhealth` never downloads,
+  it reports what would be downloaded and the state of a download.
+  After a successful download the observer prunes the other slots (only when
+  no download runs, never without a wanted hash): only entries named exactly
+  64 lowercase hex digits that are real directories (a link or junction is
+  skipped, never followed) whose realpath is a direct child of the realpath of
+  `<editor data>/loomworks/lw`, itself a real directory, and that hold only the
+  regular file `lw`/`lw.exe`; never the binary of a daemon the editor launched
+  or observes, or the live daemon's; the file is unlinked, then the empty
+  directory removed (a failure — on Windows a running binary — skips it). A
+  temporary file another process left is removed once a day old. No
+  compatibility probe runs before the launch (step 5h.5).
 
   **Install location.** Everything the plugin installs (host binaries,
   release bundles, and what an `lw` the plugin runs downloads for it: its
@@ -2156,7 +2189,8 @@ runtime is deferred until that module is actively developed.
        (§16.23), the install-folder override for an `lw` the plugin runs.
        *(Done.)*
      - **5h.3** — download, verify (against the plugin's hash) and cache the
-       managed `lw` under the editor's data directory; `binary.download`.
+       managed `lw` under the editor's data directory; `binary.download`,
+       `binary.release_url`; pruning of other managed binaries. *(Done.)*
      - **5h.4** — the plugin's own pin (a hash per host asset, outside the
        bundle), the release sequencing that commits it, the CI interface
        check.
