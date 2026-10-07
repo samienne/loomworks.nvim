@@ -41,6 +41,19 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw version --json` prints what the binary implements: its release, the
+  daemon transport range, the working-copy and cache schema versions and every
+  interface a daemon of it serves, with versions and schema digests. Each
+  release publishes the same document as `lw-<version>-descriptor.json`,
+  listed in its signed `SHA256SUMS`. Plain `lw version` is unchanged. (#155)
+- `LOOMWORKS_INSTALL_DIR=<absolute path>` moves what lw downloads and installs
+  (releases, pinned releases) to another folder, for an lw another program
+  runs; settings, the machine key, modules and the daemons' sockets, identity
+  and logs stay in the data directory. lw only ever lists, runs or removes the
+  `lua-<version>` release folders it installed there, so the folder may be
+  shared with other files. A pinned release older than this one ignores the
+  setting and keeps its own copy of the pinned release in the data
+  directory. (#155)
 - Experimental daemon (`runtime-mode daemon`): the daemon protocol is now
   version 11 and describes itself. A client can ask the daemon which objects
   and interfaces it offers, at which versions, fetch each interface's schema,
@@ -226,6 +239,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- In a repository with `lw.pin`, a global lw now also runs `lw reset`,
+  `lw daemon run` and `lw daemon restart` as the pinned release, so the
+  workspace daemon is the pinned release whoever starts it (the editor
+  included); the other commands a global lw runs itself there no longer start
+  or replace that daemon. A pin naming a release that predates one of those
+  commands is not followed for it: `lw reset` then runs as the global lw, and
+  `lw daemon run` / `restart` refuse rather than start a daemon of the wrong
+  release. For a daemon command its `--root` decides which `lw.pin` applies,
+  also under `./lw.sh`. (#155)
 - Experimental daemon mode (`runtime-mode daemon`): `lw` now compares its own
   version with the one the workspace daemon reports for itself before using
   it. A daemon counts as busy only while a client runs an operation on it or

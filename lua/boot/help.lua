@@ -21,7 +21,7 @@ M.PINNED_HINT = "This repository pins lw: run it through the launcher for full h
   "  .\\lw.cmd help <command>    (cmd, PowerShell)"
 
 M.TOPICS = {
-  version = [[lw version
+  version = [[lw version [--json]
 
 Print the host's release version (with its capability version in
 parentheses; `dev build` for a host built from a source tree, `unknown
@@ -35,6 +35,12 @@ system-Lua source is active - one of:
            `lw self-update`)`; a downloaded release binary starts this way
 Run through a repo launcher (./lw.sh, .\lw.cmd) it also names the lw.pin it
 runs under.
+
+lw version --json prints the binary's descriptor instead: its release, the
+daemon transport range, the working-copy and cache schema versions, and every
+interface a daemon of it serves with versions and schema digests (each release
+publishes the same document as lw-<version>-descriptor.json). It needs the
+system Lua it describes: with none installed it fails.
 
 A host command, handled by the lw binary itself.]],
 

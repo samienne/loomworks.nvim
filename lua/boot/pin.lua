@@ -23,12 +23,51 @@ M.HOST_ASSETS = {
   ["windows/x86_64"] = "lw-windows-x86_64.exe",
 }
 
--- Workspace operations that honor a pin (redirect to the pinned release).
--- Everything else — status, host/management commands, config edits — runs as
--- the invoked host.
+-- Workspace operations that honor a pin (redirect to the pinned release):
+-- every command the CLI routes to the workspace daemon (build, run, test,
+-- clean, reset) plus configure. Everything else — status, host/management
+-- commands, config edits — runs as the invoked host.
 M.REDIRECT_COMMANDS = {
-  build = true, run = true, test = true, clean = true, configure = true,
+  build = true, run = true, test = true, clean = true, configure = true, reset = true,
 }
+
+-- Commands whose SUB-command decides (spec §16.23): of `lw daemon`, the ones
+-- that start a workspace daemon — `run` (in every form, `--stdio` included:
+-- what the editor launches) and `restart` — so the daemon of a pinned
+-- workspace is the pinned lw whoever starts it. `status`, `list`, `stop` and
+-- `kill` speak the frozen control subset to a daemon of any version and stay
+-- with the invoked host.
+M.REDIRECT_SUBCOMMANDS = {
+  daemon = { run = true, restart = true },
+}
+
+-- The first release that has each redirected command a pinned lw may lack
+-- (spec §16.23 "A pin older than the command"). A pin naming an older release
+-- is never redirected to for it: that host would only fail with "unknown
+-- command". Keys: the command, `<command> <sub>`, and `daemon run --stdio`
+-- for the editor's form. Every other redirect command predates version pins.
+M.REDIRECT_SINCE = {
+  reset = "0.1.27",                           -- `lw reset` (#48)
+  ["daemon run"] = "0.1.43-beta.5",           -- lw daemon run|stop|kill|restart (#106)
+  ["daemon restart"] = "0.1.43-beta.5",       -- (#106)
+  ["daemon run --stdio"] = "0.1.43-beta.15",  -- the stdio transport (#152)
+}
+
+--- The first release that has the redirected command (`cmd`, `sub`, with
+--- `--stdio` when `stdio`), or nil when every pinnable release has it.
+--- @param cmd string|nil
+--- @param sub string|nil
+--- @param stdio boolean|nil
+--- @return string|nil
+function M.redirect_since(cmd, sub, stdio)
+  if cmd == nil then return nil end
+  if M.REDIRECT_SUBCOMMANDS[cmd] then
+    if sub == nil then return nil end
+    local key = cmd .. " " .. sub
+    return (stdio and M.REDIRECT_SINCE[key .. " --stdio"]) or M.REDIRECT_SINCE[key]
+  end
+  return M.REDIRECT_SINCE[cmd]
+end
 
 --- Is `v` a safe release version? THE TRUST BOUNDARY: a version flows into
 --- download URLs and into rm_rf'd cache paths, so it must not carry path
@@ -158,27 +197,84 @@ end
 -- pinned bundle) live in the per-user data dir, never under the pin root — see
 -- boot.update.pinned_binary_path / pinned_bundle_dir (spec §16.22).
 
---- Is `cmd` a workspace operation that honors a pin?
-function M.is_redirect_command(cmd)
-  return cmd ~= nil and M.REDIRECT_COMMANDS[cmd] == true
+--- Is `cmd` (with its sub-command `sub`, the next word) a workspace operation
+--- that honors a pin?
+--- @param cmd string|nil
+--- @param sub string|nil
+--- @return boolean
+function M.is_redirect_command(cmd, sub)
+  if cmd == nil then return false end
+  if M.REDIRECT_COMMANDS[cmd] == true then return true end
+  local subs = M.REDIRECT_SUBCOMMANDS[cmd]
+  return subs ~= nil and sub ~= nil and subs[sub] == true
+end
+
+--- The first two non-flag words of `args` — the command and its sub-command
+--- — skipping leading global flags, and `--root <dir>` / `--root=<dir>` (the
+--- option `lw daemon run --root <dir>` carries; its value is not a word).
+--- @param args string[]
+--- @return string|nil command, string|nil sub
+function M.command_words(args)
+  local words, i = {}, 1
+  while i <= #args and #words < 2 do
+    local v = args[i]
+    if v == "--root" then
+      i = i + 1
+    elseif type(v) == "string" and v:sub(1, 1) ~= "-" then
+      words[#words + 1] = v
+    end
+    i = i + 1
+  end
+  return words[1], words[2]
+end
+
+--- The value of `--root <dir>` / `--root=<dir>` in `args`, or nil.
+--- @param args string[]
+--- @return string|nil
+function M.root_option(args)
+  for i, v in ipairs(args) do
+    if v == "--root" then return args[i + 1] end
+    if type(v) == "string" and v:sub(1, 7) == "--root=" then return v:sub(8) end
+  end
+  return nil
 end
 
 --- Decide what a global host should do about a pin. Pure — all inputs explicit.
---- @param o { command?, pin?, self_version?, pinned_sentinel?, no_pin?, lw_override?, dev? }
---- @return "in-process"|"redirect"|"bypass"|"no-pin" action, string reason
+--- "unsupported": the pinned release predates the command (REDIRECT_SINCE);
+--- the third value is the release that introduced it. The caller does not
+--- redirect, and leaves the workspace daemon to the pinned lw (spec §16.23).
+--- @param o { command?, sub?, stdio?, pin?, self_version?, pinned_sentinel?, no_pin?, lw_override?, dev? }
+--- @return "in-process"|"redirect"|"bypass"|"no-pin"|"unsupported" action, string reason, string|nil since
 function M.decide(o)
   if o.pinned_sentinel then return "in-process", "already running as the pinned host" end
   if o.dev then return "bypass", "development source" end
   if o.lw_override then return "bypass", "LOOMWORKS_LW override" end
   if o.no_pin then return "bypass", "--no-pin" end
-  if not M.is_redirect_command(o.command) then
+  if not M.is_redirect_command(o.command, o.sub) then
     return "in-process", "not a workspace operation"
   end
   if not o.pin then return "no-pin", "no pin in this workspace" end
   if o.self_version and o.pin.version == o.self_version then
     return "in-process", "pinned version == self"
   end
+  local since = M.redirect_since(o.command, o.sub, o.stdio)
+  if since and require("boot.paths").compare_versions(o.pin.version, since) < 0 then
+    return "unsupported", "pinned version " .. tostring(o.pin.version) .. " predates it", since
+  end
   return "redirect", "pinned version " .. tostring(o.pin.version)
+end
+
+--- The version a pin asks for when the invoked host is not it and nothing
+--- bypasses the pin — what `decide` would redirect a workspace operation to
+--- — or nil. A command such a host runs itself (a config edit, `lw profile
+--- select`) must not start or replace the workspace daemon: that is the
+--- pinned lw's (spec §16.23, §19.9). Pure — the same inputs as `decide`.
+--- @param o { pin?, self_version?, pinned_sentinel?, no_pin?, lw_override?, dev? }
+--- @return string|nil
+function M.foreign_pin(o)
+  if o.pinned_sentinel or o.dev or o.lw_override or o.no_pin or not o.pin then return nil end
+  if o.self_version and o.pin.version == o.self_version then return nil end
+  return o.pin.version
 end
 
 -- ---------------------------------------------------------------------------

@@ -76,7 +76,34 @@ function M.scan()
             end
         end
     end
+    if #found > 1 then found = M.drop_redirect_wrappers(found, proc.parents()) end
     return found, (uv().hrtime() - t0) / 1e6
+end
+
+--- Leave out the pin redirect's wrappers (spec §16.23): a global lw that
+--- redirects `daemon run --root R` to the pinned lw stays alive as that
+--- daemon's parent, with the same command line. It is not a daemon — the
+--- pinned lw under it is — so it must never be listed (as a stray) nor killed
+--- as one (killing its tree would kill the live daemon). A found process is a
+--- wrapper when another found process with the same root is its child and
+--- started no earlier than it (a parent id is never updated on Windows).
+--- @param found table[] from the scan
+--- @param parent_of table<integer, integer> pid -> parent pid
+--- @return table[]
+function M.drop_redirect_wrappers(found, parent_of)
+    local by_pid = {}
+    for _, d in ipairs(found) do by_pid[d.pid] = d end
+    local wrapper = {}
+    for _, d in ipairs(found) do
+        local w = by_pid[parent_of[d.pid] or -1]
+        if w and w ~= d and w.root ~= nil and w.root == d.root then
+            local tw, td = proc.start_epoch(w.start_time), proc.start_epoch(d.start_time)
+            if not (tw and td) or tw <= td then wrapper[w.pid] = true end
+        end
+    end
+    local out = {}
+    for _, d in ipairs(found) do if not wrapper[d.pid] then out[#out + 1] = d end end
+    return out
 end
 
 --- Classify one found daemon from its workspace's files (§19.6.1).

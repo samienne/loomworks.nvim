@@ -1287,7 +1287,13 @@ for a binary built from a checkout, which never replaces itself; `unknown
 release` for a release binary without an embedded version, which
 `lw self-update` does replace). A release binary that has not fetched a bundle
 yet says so — ``bundle: none installed (run `lw self-update`)`` — rather than
-naming one.
+naming one. `lw version --json` prints the binary's **descriptor** instead
+(spec §16.41): its release (`binary.lw_version`), the daemon transport range it
+speaks (`transport.min`..`max`), the working-copy and cache schema versions, and
+every interface a daemon of it serves with its versions and schema digests —
+for a program (the editor plugin) deciding whether it can use this `lw`. Each
+release publishes the same document as `lw-<version>-descriptor.json`, listed in
+its signed `SHA256SUMS`.
 
 - `lw self-update --no-host` updates only the bundle.
 - `--force` reinstalls the *bundle* only; it never forces a reinstall (or
@@ -1564,12 +1570,17 @@ the exact pinned release, and the machine-global install is left untouched.
   a failure) when `gh` is absent.
 
 **A globally-installed `lw` also honors the pin.** Run inside a pinned repo, a
-global `lw` resolves the pin for `build` / `run` / `test` / `clean`: if the pin
+global `lw` resolves the pin for `build` / `run` / `test` / `clean` / `reset` /
+`configure`, and for `lw daemon run` / `lw daemon restart`: if the pin
 matches its own version it runs in-process (no download); otherwise it fetches +
 verifies the pinned release and re-execs it, so you always get the pinned
 behavior. Bypass with `--no-pin` (run the global as-is) or `LOOMWORKS_LW=<path>`.
-Management commands (`version`, `self-update`, `install`, `bootstrap`) never
-redirect. The global host never executes the repo's `lw.sh`/`lw.cmd` — it
+The workspace daemon of a pinned repo is therefore always the pinned release,
+whether the editor, a command or `lw daemon restart` starts it; the other
+commands a global `lw` runs itself there (a profile selection, a config edit)
+never start or replace that daemon. `lw daemon status` / `list` / `stop` /
+`kill` work with a daemon of any version and do not redirect, nor do the
+management commands (`version`, `self-update`, `install`, `bootstrap`). The global host never executes the repo's `lw.sh`/`lw.cmd` — it
 resolves the pin declaratively and runs the official binary it fetched itself.
 
 **Pin only.** `lw bootstrap install --pin-only` commits just `lw.pin` (and its
@@ -1578,7 +1589,8 @@ installed `lw`, which runs the pinned release for `build` / `run` / `test` /
 `configure` / `clean` as above, so everyone (CI included) needs `lw` installed.
 `lw bootstrap` and `lw health` treat the missing launchers as intended; launchers
 already present are left alone by `--pin-only`; a later plain `lw bootstrap
-install` adds them, keeping the pin. The pin does not govern the editor plugin.
+install` adds them, keeping the pin. The pin reaches the editor plugin only
+through the workspace daemon it starts (above).
 
 Move the pin forward with `upgrade` — through the launcher, so no global `lw` is
 needed (it runs as the currently pinned release):
@@ -2167,6 +2179,17 @@ it, `lw` keeps only per-user state (spec §16.40): its settings
 releases repositories use, and an empty daemon working directory, in the data
 directory (`%LOCALAPPDATA%\loomworks`, `$XDG_DATA_HOME/loomworks` or
 `~/.local/share/loomworks`; `LOOMWORKS_DATA_DIR` overrides it).
+`LOOMWORKS_INSTALL_DIR=<absolute path>` moves only what `lw` downloads and
+installs — the releases, the pinned releases and the release-notes record — to
+another folder (the editor plugin sets it for an `lw` it runs, so that one's
+downloads stay in the editor's data); settings, the machine key, installed
+modules, the daemons' sockets, identity and logs stay in the data directory for
+every `lw`, and housekeeping and `lw cleanup` never look in the install folder.
+`lw` only lists, runs or removes the `lua-<version>` release folders it
+installed there (a real folder holding `loomworks/cli.lua`), never a link or
+anything else, so the install folder may be shared with other files. A pinned
+release older than `LOOMWORKS_INSTALL_DIR` ignores it: run by a redirect, it
+keeps its own copy of the pinned release in the data directory.
 
 A `lw` that is killed or loses power mid-operation can leave a partial
 download, a staging directory or a temporary file behind. The next `lw`

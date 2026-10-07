@@ -639,7 +639,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   root's R and handle (live / starting / hung / stray / unknown_root; a
   daemon with no R yet that started under `STARTING_GRACE_S` ago is
   starting), plus `same_key` from the handle's `key_id` against
-  `auth.own_key_id()` (read-only; never creates the machine key).
+  `auth.own_key_id()` (read-only; never creates the machine key). A pin
+  redirect's wrapper (the global lw waiting on the pinned `daemon run`, same
+  `--root`, its parent) is dropped by `drop_redirect_wrappers(found,
+  proc.parents())`, so it is never listed or killed as a stray.
   `command.lua` renders it (`lw daemon list [--json]`; table rows and the
   summary come from one list via `command.rows` / `discover.counts`) and drives
   `stop --all` / `kill --all` through the per-workspace `M.stop` with a host
@@ -1148,6 +1151,16 @@ ratchets every frozen copy; `tests/daemon_interfaces_spec.lua` covers the root
 object over the socket and the loopback and the v0 aliases.
 
 Step 5g.2 part A adds the first core interfaces and conformance:
+
+(Step 5h.2: `daemon/descriptor.lua` builds the **binary descriptor**, spec
+§16.41 — `describe()` mounts the core interfaces on a registry with no server
+and no service (handlers built, never called) and returns `binary` /
+`transport` / `schemas` / `object_list(true)` / `root_methods`; `encode` is a
+canonical sorted-key JSON. main.lua prints it for `lw version --json` after the
+system-Lua searcher is installed; `scripts/release/descriptor.sh` runs the
+released Linux host on the released bundle to write the
+`lw-<ver>-descriptor.json` release asset; schema
+`spec/protocol/meta/descriptor.schema.json`.)
 
 - `daemon/core_interfaces.lua` — the interfaces the build service serves,
   mounted by `Server:registry()` (or by `service.attach` once a registry
@@ -2404,7 +2417,18 @@ with no prior install (spec §16.21–16.24). Layers:
   JSON), select the host-binary asset for the platform (`HOST_ASSETS` keyed by
   `<os>/<arch>` → the real release asset names), walk up for the pin root, and
   `decide{…}` the redirect action (`in-process` | `redirect` | `bypass` |
-  `no-pin`). No I/O beyond stat, so it is unit-tested exhaustively.
+  `no-pin` | `unsupported` — the pin predates the command per
+  `REDIRECT_SINCE`/`redirect_since(cmd, sub, stdio)`: main.lua refuses a
+  `daemon run`/`restart` (exit 1) and runs anything else itself, with
+  `foreign_pin` set). The redirect set is `REDIRECT_COMMANDS` (every routed command +
+  `configure`) plus `REDIRECT_SUBCOMMANDS` (`daemon run` / `daemon restart`,
+  the forms that start a workspace daemon); `command_words(args)` yields the
+  command and its sub-command (skipping global flags and `--root <dir>`), and
+  `foreign_pin{…}` the pinned version when the invoked host is not it — main.lua
+  stores it in `_G.__loomworks_foreign_pin` for a command it runs itself, and
+  `daemon/ensure.ensure` (opt `foreign_pin`) then returns `"pinned"` without
+  launching, stopping or retiring the daemon. No I/O beyond stat, so it is
+  unit-tested exhaustively.
 - **`boot/launcher.lua`** — pure, dependency-free (no openssl,
   no vim shim): the `lw.sh` / `lw.cmd` templates (single source of truth, moved
   out of `bootstrap.lua`) plus the **generation catalogue** — the SHA-256 of the
@@ -2485,10 +2509,22 @@ with no prior install (spec §16.21–16.24). Layers:
   unaffected. `version_line` marks a prerelease release bundle.
 - **`boot/update.lua`** — `ensure_host_binary` (fetch + pinned-hash-verify a
   host binary; the redirect caches it at `pinned_binary_path` =
-  `<data>/pinned/lw-<ver>-<asset>`, re-verified on every use) and
+  `<install>/pinned/lw-<ver>-<asset>`, re-verified on every use) and
   `ensure_version` (fetch + verify + extract the bundle into the **machine-local**
-  `pinned_bundle_dir` = `<data>/pinned/<sha256>/lua-<ver>/`, keyed by the pinned
-  bundle hash). Nothing the host executes is read from the repository: a clone
+  `pinned_bundle_dir` = `<install>/pinned/<sha256>/lua-<ver>/`, keyed by the pinned
+  bundle hash). `<install>` = `boot/paths.install_dir()`: `LOOMWORKS_INSTALL_DIR`
+  (absolute only; `install_dir_override` returns the reason it ignored a relative
+  one) else `data_dir()`; release bundles (`installed_releases`, `self_update`,
+  `gc`) and the release-notes record use it too, while modules, trust, daemon
+  state and housekeeping stay on `data_dir()` (spec §16.22 "Install folder").
+  Since the install folder may be any directory, `installed_releases` lists only
+  `lua-<ver>` entries with `paths.is_release_version(ver)` (strict
+  `<n>.<n>.<n>[-pre]` + `pin.valid_version`) that `paths.is_release_bundle_dir`
+  accepts (lstat: real dirs `lua-<ver>/` and `loomworks/`, regular
+  `loomworks/cli.lua`); `gc(keep, except, running_root)` re-checks each before
+  `rm_rf`, requires its realpath to be a direct child of the install folder's,
+  and never removes `except` or the running bundle; `self_update` refuses a
+  `lua-<ver>` there that is not such a bundle. Nothing the host executes is read from the repository: a clone
   can ship files under its own `.nvim/cache/`, so a repo-local "already
   extracted" bundle or cached binary is never trusted by presence. Both reuse
   `download` + `verify.verify_file_sha256` + `extract_zip` + `rename_with_retry`;
