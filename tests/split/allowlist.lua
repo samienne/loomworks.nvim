@@ -24,10 +24,6 @@ return {
         ["lua/loomworks/auto_load.lua"] = {
             "loomworks.root_finder",
         },
-        ["lua/loomworks/daemon/host_binary.lua"] = {
-            "boot.paths",
-            "boot.pin",
-        },
         ["lua/loomworks/daemon/observer.lua"] = {
             "loomworks.daemon.client",
             "loomworks.daemon.endpoint",

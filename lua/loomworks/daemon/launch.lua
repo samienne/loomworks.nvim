@@ -61,10 +61,12 @@ function M.self_argv()
         "-l", root .. "/loomworks/cli.lua" }
 end
 
---- The daemon's environment as a "K=V" list.
+--- The daemon's environment as a "K=V" list. `extra` (the editor's
+--- `binary.source`, §19.16) is set last.
 --- @param root string
+--- @param extra? table<string, string>
 --- @return string[]
-function M.env(root)
+function M.env(root, extra)
     local env = uv.os_environ()
     local out, by_key = {}, {}
     for k, v in pairs(env) do
@@ -87,6 +89,7 @@ function M.env(root)
     -- one, a dev checkout): the daemon must run the same one, whatever host
     -- binary re-executes it (an old host resolves its own otherwise).
     if src and rawget(vim, "_loomworks_shim") then set("LOOMWORKS_LUA", src) end
+    for k, v in pairs(extra or {}) do set(k, v) end
     for _, kv in pairs(by_key) do out[#out + 1] = kv[1] .. "=" .. kv[2] end
     table.sort(out)
     return out
@@ -138,9 +141,10 @@ end
 --- Spawn the daemon (no wait). Returns { pid, exited = fun(): integer|nil }
 --- or nil + reason.
 --- `opts.argv` replaces the own-executable prefix: the editor launches the
---- host binary it resolved (spec §19.16), never its own plugin source.
+--- host binary it resolved (spec §19.16), never its own plugin source;
+--- `opts.env` adds variables (the opt-in `binary.source`).
 --- @param root string
---- @param opts? { args?: string[], argv?: string[] } extra `daemon run` arguments; the executable prefix
+--- @param opts? { args?: string[], argv?: string[], env?: table<string, string> } extra `daemon run` arguments; the executable prefix; extra environment
 --- @return table|nil child, string|nil err
 function M.spawn(root, opts)
     local argv, aerr
@@ -153,7 +157,7 @@ function M.spawn(root, opts)
     pcall(vim.fn.mkdir, cwd, "p")
     if not uv.fs_stat(cwd) then return nil, "cannot create " .. cwd end
     local child = { code = nil }
-    local env = M.env(root)
+    local env = M.env(root, opts and opts.env)
     local restore = M._no_inherit_std()
     -- Whatever happens in the spawn, the std handles' inherit flags are
     -- restored.

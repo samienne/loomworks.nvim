@@ -953,10 +953,22 @@ normal rows in the status page's Tasks section ending in a dim `lw` (or
 `editor`) marker, whose Enter shows the output (it cannot cancel them: they
 belong to the terminal that started them). Builds already running when the
 editor connects are picked up too. Its own builds still run in the
-editor. It starts the daemon from the `lw` it finds (`LOOMWORKS_LW`, the
-repository's pinned `lw`, or `lw` on `PATH`) when you open the workspace or
-run `:LoomworksDaemon connect`, and never restarts one you stopped with
-`lw daemon stop`. The status page's `Runtime:` line (the header's last line)
+editor. It starts the daemon from the `lw` it finds when you open the
+workspace or run `:LoomworksDaemon connect`, and never restarts one you
+stopped with `lw daemon stop`. It looks, in this order, at `LOOMWORKS_LW`,
+`setup({ binary = { path = "/path/to/lw" } })` (a relative path is taken
+against Neovim's current directory; a path that names no file, or on Windows
+no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry
+(never the current directory, so an `lw` inside an opened repository is never
+started; on Windows `lw.exe`), and an
+`lw` the plugin manages under Neovim's data directory (the plugin does not
+install one yet). `binary = { prefer = "managed" }` tries the plugin's own
+`lw` before `PATH`; the daemon's version can then depend on whether the editor
+or a terminal started it. A repository's `lw.pin` is followed by `lw` itself,
+not by the editor. `binary = { source = "/path/to/lua" }` (or `true` for this
+plugin's tree) is for plugin development only: it runs the chosen `lw` with
+that Lua source. `:LoomworksDaemon status` and `:checkhealth loomworks` list
+every place it looked and why each was or was not used. The status page's `Runtime:` line (the header's last line)
 names the mode and what chose it (`env`, `setup`, `lw setting`, `default`) and
 says what it is doing; a daemon of another version it cannot follow is named
 there in the warning colour, with the fix.

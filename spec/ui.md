@@ -21,8 +21,9 @@ directly to `Snacks.win`. The page contains these sections in order:
    §19.1: `env`, `setup`, `lw setting`, `default`), and in `daemon` mode the
    observer's current state or note (core §19.16), e.g. `Runtime:   daemon
    (lw setting) — observing daemon pid 4242`, `Runtime:   daemon (setup) —
-   no lw host binary found (LOOMWORKS_LW, lw.pin, PATH) — running
-   in-process`, `Runtime:   daemon (env) — the workspace daemon
+   no lw host binary (LOOMWORKS_LW: not set; binary.path setting: not set;
+   lw on PATH: no lw on the search path; plugin-managed lw: none installed
+   (the plugin does not install one yet)) — running in-process`, `Runtime:   daemon (env) — the workspace daemon
    disconnected — waiting for it`, `Runtime:   in-process (lw setting)`. A
    note that leaves the editor running in-process although `daemon` was
    selected (a version mismatch, no host binary) uses the warning highlight.

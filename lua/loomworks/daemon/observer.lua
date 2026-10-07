@@ -6,7 +6,7 @@
 --- `Workspace:teardown`). It never runs an operation: the editor's own
 --- operations stay on the in-process path. It
 ---
----   * resolves a host binary (loomworks.daemon.host_binary) and launches
+---   * resolves a host binary (loomworks.provision.select) and launches
 ---     `<binary> daemon run --root <root>` only when no daemon is live on
 ---     workspace load or on an explicit `:LoomworksDaemon connect`, and once
 ---     after the observed daemon retired (a version change) and exited with
@@ -82,6 +82,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _order integer[] task ids in start order
 --- @field _child table|nil the daemon this observer launched (until it is live or exited): `{ pid, code }`
 --- @field _binary string|nil the host binary it was launched from
+--- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
 --- @field _connecting table|nil the one connection attempt in flight (single-flight token)
 --- @field _watch userdata|nil the handle-watch timer
 --- @field _keepalive userdata|nil the keepalive ping timer
@@ -157,7 +158,8 @@ end
 ---   configured  the setup option `runtime.mode`
 ---   getenv      replaces os.getenv for the selection and LOOMWORKS_LW
 ---   settings_file / read_setting  lw's settings file (loomworks.daemon.runtime.read_setting)
----   resolve     fun(root) → binary|nil, source (loomworks.daemon.host_binary.resolve)
+---   binary      the setup option `binary` (loomworks.provision.BinarySetting)
+---   resolve     fun(root, opts) → binary|nil, source, selection (loomworks.provision.binsel.resolve)
 ---   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
 ---   inspect     fun(root) → state (loomworks.daemon.inspect.state)
 ---   connect     fun(endpoint, opts, cb) (loomworks.daemon.client.connect)
@@ -273,19 +275,25 @@ function M.mismatch_note(ch, what, binary)
 end
 
 function Observer:_launch()
-    local resolve = self.opts.resolve or require("loomworks.daemon.host_binary").resolve
-    local bin = resolve(self.root, { getenv = self.opts.getenv })
+    local binsel = require("loomworks.provision.select")
+    local resolve = self.opts.resolve or binsel.resolve
+    local bin, source, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary })
+    if type(sel) ~= "table" then
+        sel = { path = bin, source = source, label = binsel.LABELS[source] or source, candidates = {} }
+    end
+    self.selection = sel
     if not bin then
-        return self:_set("no-binary", require("loomworks.daemon.host_binary").NONE_NOTE)
+        return self:_set("no-binary", binsel.none_note(sel))
     end
     local spawn = self.opts.spawn or require("loomworks.daemon.launch").spawn
-    local child, err = spawn(self.root, { argv = { bin } })
+    local child, err = spawn(self.root, { argv = { bin }, env = sel.env })
     if not child then
-        return self:_set("waiting", "could not start the workspace daemon (" .. tostring(err) .. ")")
+        return self:_set("waiting", "could not start the workspace daemon from " .. bin .. " ("
+            .. tostring(err) .. ")")
     end
     self._child = child
     self._binary = bin
-    self:_set("launching", "starting the workspace daemon (" .. bin .. ")")
+    self:_set("launching", "starting the workspace daemon (" .. (sel.label and binsel.describe(sel) or bin) .. ")")
 end
 
 function Observer:_start_watch()

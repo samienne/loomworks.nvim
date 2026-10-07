@@ -841,9 +841,20 @@ re-cut onto master step by step; this section is expanded as each step lands.
   stay local-only: they gate cancel and blocking, which a remote task never
   does. `origin_label()` is the `lw` / `editor` marker of the Tasks rows,
   the profile row and the fidget entry; remote tasks never enter overseer.
-- `daemon/host_binary.lua` — `LOOMWORKS_LW` > provisioned pinned binary
-  (`boot.pin` + `boot.paths.data_dir()/pinned/lw-<ver>-<asset>`) > `lw` on
-  `PATH` (`.exe` on Windows).
+- `provision/select.lua` — the host binary (spec §19.16): `LOOMWORKS_LW` >
+  setup `binary.path` (absolutized against the editor cwd once, at
+  resolution; one naming no file, or no `.exe` on Windows, stops the search) >
+  `lw` on `PATH` (its own lookup, `on_path`: absolute entries only, never the
+  cwd — `vim.fn.exepath` searches it before Neovim 0.12 on Windows — and
+  `lw.exe` per entry on Windows; `loomworks.exe.editor_exepath` is binary-side)
+  > `provision/managed.lua` (an already
+  present `<stdpath data>/loomworks/lw/<sha256>/lw[.exe]`; nothing wanted
+  until the plugin pin, step 5h.4); `binary.prefer = "managed"` swaps the
+  last two; `binary.source` adds `LOOMWORKS_LUA` to the spawn's environment
+  (`launch.spawn` `opts.env`). Returns a `Selection` with every candidate's
+  verdict, shown by the observer's note, `:LoomworksDaemon status` and
+  `health.lua` (`:checkhealth loomworks`). Reads no `lw.pin` and nothing of
+  lw's data directory.
 - Server: hello `role` → `conn.observer`; `active_clients()` (non-observers)
   gates retirement (`_maybe_retire`, also from `service`'s `tasks.on_change`);
   `retire` broadcasts `retiring` to observers; `welcome.retiring`;
@@ -1697,7 +1708,7 @@ to exactly one side by name pattern (`plugin/*.lua` is always plugin-side):
   `loomtest.*`, the neotest/loomtest adapters, `debug`, `session_tracker`,
   `lsp` + `integrations/lsp/*`, `fidget`, `reload`, `auto_load`, `device_log`,
   `overseer`, `workspace_view`, `daemon/observer`, `daemon/remote_task`,
-  `daemon/host_binary`.
+  `provision/*`, `health`.
 - **shared** — host-neutral protocol client code both sides may load (pure
   Lua, no `vim.*` beyond `vim.json`): the future `loomworks.proto.*` and
   today's `daemon/protocol` and `daemon/version`.

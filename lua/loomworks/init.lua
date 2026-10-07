@@ -103,6 +103,12 @@ function M.setup(opts)
             { what = "runtime.mode" })
         if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
     end
+    if opts and opts.binary ~= nil then
+        -- The host binary the editor launches the daemon from (spec §19.16).
+        local setting, warning = require("loomworks.provision.select").check_setting(opts.binary)
+        M._binary_config = setting
+        if warning then vim.notify("loomworks: " .. warning, vim.log.levels.WARN) end
+    end
     -- In `daemon` runtime mode every loaded workspace observes the workspace
     -- daemon (spec §19.16). Only the editor attaches (the CLI never calls
     -- setup); in `in-process` mode `attach` does nothing.
@@ -110,7 +116,8 @@ function M.setup(opts)
         M._observer_hooked = true
         events.on("workspace_changed", function(ws)
             if ws then
-                require("loomworks.daemon.observer").attach(ws, { configured = M._runtime_mode_config })
+                require("loomworks.daemon.observer").attach(ws, { configured = M._runtime_mode_config,
+                    binary = M._binary_config })
             end
         end)
     end
@@ -171,6 +178,22 @@ end
 --- @type string|nil
 M._runtime_mode_config = nil
 
+--- The setup option `binary` (spec §19.16 "Host binary"), checked.
+--- @type loomworks.provision.BinarySetting|nil
+M._binary_config = nil
+
+--- The host binary the editor would launch the workspace daemon from, with
+--- every source tried (spec §19.16): `:LoomworksDaemon status` and
+--- `:checkhealth loomworks`. Resolved afresh; launches nothing.
+--- @return loomworks.provision.Selection
+function M.host_binary_selection()
+    -- (The selection does not depend on the workspace: the editor reads no
+    -- lw.pin, a global or managed lw follows it itself.)
+    local _, _, sel = require("loomworks.provision.select").resolve(vim.fn.getcwd(),
+        { setting = M._binary_config })
+    return sel
+end
+
 --- The effective runtime mode (spec §19.1): the environment
 --- (`LOOMWORKS_RUNTIME`, then `LOOMWORKS_NO_DAEMON` and `CI`) > the setup
 --- option `runtime.mode` > lw's `runtime-mode` setting > `in-process`, and the
@@ -206,7 +229,8 @@ function M.daemon_connect()
     local ws = core:get_workspace()
     if not ws then return false, "no workspace loaded" end
     local observer = require("loomworks.daemon.observer")
-    local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config })
+    local obs = observer.of(ws) or observer.attach(ws, { configured = M._runtime_mode_config,
+        binary = M._binary_config })
     if not obs then return false, "the runtime mode is in-process (LOOMWORKS_RUNTIME, runtime.mode, lw settings runtime-mode)" end
     obs:start(true)
     return true
