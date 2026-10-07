@@ -1202,6 +1202,14 @@ released Linux host on the released bundle to write the
   runtime whose one connection is this process's standard input and output
   (`Server:adopt_pipe`: the first frame is `hello`, answered by `welcome`
   without a challenge; stopping when the client closes standard input).
+  This is the **current** behaviour. *Planned (spec §19.10 "Connections",
+  step 5i):* `--stdio` becomes a connect-or-start **relay** — it connects to
+  the workspace's shared daemon over the socket (launching the detached
+  daemon first if none runs), authenticates there and forwards frames
+  opaquely; it takes no runtime lock, writes no handle, and closing it closes
+  only its connection (its tasks are cancelled, the daemon keeps running).
+  The private-pipe server stays only for the conformance runner's isolated
+  daemon (per-case temporary root or a hidden test-only flag).
 - `proto/conformance.lua` (shared) — the transcript engine: matching with
   selectors and `$`-matchers, frame validation against `transport.json`,
   method results, declared error codes, signal schemas and gapless `seq`.

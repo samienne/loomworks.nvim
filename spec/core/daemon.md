@@ -673,6 +673,10 @@ stale. It never launches, connects to or signals a daemon, and writes nothing.
    wrapper (§16.23: the invoked lw waiting on the pinned `daemon run`), not a
    daemon, and is dropped — it is never listed, and never stopped or killed
    as a stray (killing its tree would kill the live daemon).
+   *(Planned, step 5i.)* Likewise a `lw … daemon run --stdio` process (and its
+   pin-redirect wrapper) is a **relay** (§19.10 "Connections"), never a daemon:
+   it is listed as a connection under the daemon of its `--root`, never as a
+   daemon row, and never stopped or killed as a stray.
 4. The daemon's workspace is its `--root <dir>` (or `--root=<dir>`) argument —
    every launched daemon has one (§19.10). One run by hand without it is
    listed with **root unknown**.
@@ -855,8 +859,17 @@ versions in `hello` are negotiated as on the socket, and anything other than
 `hello` first closes it. Closing the daemon's standard input ends that
 connection and stops the runtime: as for any disconnect (§19.15), the tasks
 the connection owns are cancelled, and the process exits once they ended
-(the editor's child daemon, step 5p, relies on this: an editor that goes away
-leaves no build running). The socket transport keeps the challenge.
+(a process that spawned it and goes away leaves no build running). The socket transport keeps the challenge.
+*(Planned, step 5i: `lw daemon run --stdio` becomes a **connection**, never a
+daemon — §19.10 "Connections". It connects to the workspace's shared daemon
+over the socket (starting it first if none runs), authenticates there with the
+challenge as any client, and then relays frames opaquely between its standard
+input/output and that connection; its own client still sends `hello` first
+and gets `welcome`. Closing its standard input closes only that connection:
+the tasks it owns are cancelled (§19.15), the daemon keeps running. The
+private-pipe server described above then remains only for the conformance
+runner's fresh, isolated daemon, through a hidden test-only flag or a
+per-case temporary workspace root — never a user-facing attached mode.)*
 
 **Frozen control subset.** Framing, `hello`/`challenge`/`auth`/`welcome`,
 `ping`, `status`, `stop` and `retire` (§19.9) never change shape across
@@ -1021,6 +1034,36 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
 Concurrent launches resolve on the runtime lock: one daemon wins, the others
 exit, all clients connect to the winner.
 
+**Connections.** *(Planned, step 5i. Today `lw daemon run --stdio` is an
+attached runtime of its own, §19.8.)* Every client process is a
+**connection** to the one shared daemon of its workspace, never a daemon:
+
+- **Connect or start.** Every CLI command that uses the daemon, and
+  `lw daemon run --root <root> --stdio`, connects to the workspace's daemon
+  over its endpoint, or first launches the normal detached daemon above when
+  none runs, then connects. `--stdio` then **relays** frames opaquely between
+  its standard input/output and that connection (it authenticates on the
+  socket like any client; it interprets no interface, so it never changes for
+  a new one). It replaces the separate `lw daemon attach --stdio` bridge
+  planned earlier.
+- **Closing a connection** — killing the `--stdio` process, closing its
+  standard input, a CLI command ending or interrupted — closes only that
+  connection: the tasks it owns are cancelled (§19.15 "Task ownership"), the
+  daemon keeps running under §19.11.
+- **Only the daemon owns the workspace runtime**: the runtime lock, the handle,
+  the endpoint and the identity are the daemon's. A relay takes no lock,
+  writes no handle and registers nothing; `lw daemon list` and
+  `kill --all --strays` show it as a connection of its daemon (§19.6.1).
+- **Tests.** The conformance runner (§19.20) needs a fresh, isolated daemon
+  per case. It gets one through a per-case temporary workspace root or a
+  hidden test-only flag of `lw daemon run`; neither is a user-facing attached
+  mode.
+- **Compatibility.** A repository pinned to a release from 0.1.43-beta.15 up
+  to the one that ships this step still gets that release's attached `--stdio`
+  (it works, but is not shared with the CLI); a pin older than 0.1.43-beta.15
+  is already refused for the daemon commands (§16.23 "A pin older than the
+  command", `pin.REDIRECT_SINCE`).
+
 ### 19.11 Lifetime
 
 *Status: master (`daemon/server.lua`, `daemon/command.lua`). A `lw` command
@@ -1051,6 +1094,23 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
 - **Idle exit.** With no connection, no running task and no request for the
   idle timeout — setting `daemon-idle-timeout`, default 1 hour — the daemon
   exits.
+- *(Planned, step 5i.)* **Idle** becomes: **no connections and no background
+  work**. **Background work** is work the daemon owns with no connection as
+  owner — tool detection, scans, the `compile_commands.json` refresh,
+  housekeeping. It keeps the daemon alive while it runs and has a maximum
+  duration, after which it is stopped. The daemon's lifetime never depends on
+  any client's lifetime: a client keeps it alive only through an open
+  connection.
+- *(Planned, step 5r.)* **Short idle grace.** An idle daemon exits after a
+  short grace — a named constant of about 30-60 s, overridable by the
+  `daemon-idle-timeout` setting — instead of the 1-hour timeout, so a script
+  running several `lw` commands in a row does not pay a cold start for each.
+  **Persisted background results.** Each background result is written to the
+  cache atomically with a timestamp and the fingerprint of its inputs (the
+  search path, compiler modification times, the project files — extending
+  the CLI's existing tool-scan freshness); a part interrupted (stop, idle
+  exit, maximum duration) is simply not written. On the next start the daemon
+  reuses each cached result whose inputs are unchanged and reruns the rest.
 - **Root removed.** On each heartbeat the daemon checks its workspace root; if
   it is gone, it cancels running tasks and exits.
 - **Lost lock** — §19.2.
@@ -1635,6 +1695,20 @@ group, as Git Bash starts the native program it then signals with `kill
 -INT` — would otherwise never see it, while in-process the build's own
 processes in that console still stop).
 
+**Task ownership.** *(Planned, step 5i; today the first Ctrl-C drops the
+connection.)* Every task a connection starts — build, test, run preparation,
+configure, clean, reset — is owned by that connection. When the connection
+closes for any reason (a CLI's Ctrl-C, the editor quitting or crashing, `lw`
+killed, a `--stdio` relay ending), the daemon cancels its tasks as above.
+Other connections only observe: closing an observer never stops a task. In
+the CLI the **first Ctrl-C** sends a graceful cancel (the same as
+`loomworks.Tasks/1.cancel`) and keeps waiting for the task to end; a **second
+Ctrl-C** closes the connection and the daemon force-stops the task. On Windows
+the daemon kills the step's whole process tree: the daemon runs in its own
+console, so a build never receives the console's Ctrl-C. *(Future, not
+planned in a step: `lw build --detach` hands a task over to the daemon, which
+then owns it with no connection.)*
+
 **Tasks of interface methods.** *(Step 5g.2: `loomworks.Tasks/1` — `list`,
 `cancel`, the `started` / `ended` signals with the `task_id` filter — is
 implemented, part A; the task-streamed methods (`start.meta` naming the
@@ -1790,21 +1864,22 @@ and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
 below): the subscription to `/tasks` and `/workspace` is implemented, step
 5g.3 (`daemon/observer.lua` `_subscribe`); the views
-and operations steps 5j–5o (§19.19); the editor-owned child daemon step 5p.*
+and operations steps 5j–5o (§19.19); the connection through the `--stdio`
+relay, step 5i. The editor-owned child daemon of the earlier plan (step 5p) is
+dropped.*
 
-**End state.** The editor uses the **same daemon as the CLI**. It connects,
-authenticates and holds a keepalive (§19.11). Operations move from the editor
-to commands in the order of §19.19. When the shared daemon cannot be used (no
-daemon selected, `CI`, a failed launch), the editor runs **its own child
-daemon**, `lw daemon run --root <root> --stdio`, which takes the runtime lock
-as an attached run (§19.2) for as long as its workspace is loaded and speaks
-the protocol over its standard input and output without authentication (the
-pipe is private to the editor, as the loopback transport is; step 5p). The
-editor never runs the daemon code inside its own process (the earlier design
-D8, superseded). *(Future:)* such a child also serves the endpoint. It is
-then the workspace's shared daemon, owned by the editor, and CLI clients
-connect to it instead of being refused as busy. It ends when the editor
-closes the workspace.
+**End state.** *(Planned, step 5i.)* The editor is a **pure `lw` client**
+of the **same daemon as the CLI**. It spawns `lw daemon run --root <root>
+--stdio`, which connects to the workspace's shared daemon or starts it first
+(§19.10 "Connections"), and speaks the protocol through that relay; it reads
+none of lw's internal files, and holds a keepalive (§19.11). Its tasks are
+owned by its connection, so an editor that quits or crashes leaves no task
+running; the daemon itself outlives it under §19.11. Operations move from the
+editor to commands in the order of §19.19. When the shared daemon cannot be
+started, the editor reports it and runs degraded (step 6b); there is no
+private-daemon fallback. The editor never runs the daemon code inside its own
+process (the earlier design D8, superseded), nor a child daemon of its own
+(the earlier step 5p, dropped).
 
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`
@@ -1878,7 +1953,7 @@ in-process path. In `in-process` mode nothing below happens.
 
   The editor **reads no `lw.pin`**. A global or managed `lw` follows the
   repository's pin itself: the daemon commands the editor launches (`daemon
-  run`, its `--stdio` form, and step 5i's `attach`) are redirect commands
+  run` and its `--stdio` relay form, step 5i) are redirect commands
   (§16.23, step 5h.2), so they run the pinned version — unless the pinned
   release predates the command (§16.23 "A pin older than the command"): then
   the launch is refused and the editor works without a daemon. Compatibility is
@@ -2161,8 +2236,9 @@ runtime is deferred until that module is actively developed.
      server are in place, and the CLI uses them (done). Profile and
      project mutations, publish / import / pull and devices are routed —
      shared and attached — later, with the command machinery of §19.14. The
-     editor gets no loopback runtime (D8 is superseded): its fallback is the
-     child daemon of step 5p.
+     editor gets no loopback runtime (D8 is superseded) and no private
+     daemon: when the shared daemon cannot be started it runs degraded
+     (steps 5i, 6b).
    - **5f — Plugin/binary boundary**: the classification manifest and the
      ratcheting guard test (`tests/split`), no behaviour change. *(In review,
      #149.)*
@@ -2221,10 +2297,25 @@ runtime is deferred until that module is actively developed.
      - **5h.5** — channel upgrades through the verified `lw`
        (`binary.channel`), compatibility-driven selection, the editor's
        retirement of an incompatible idle daemon.
-   - **5i — Standard-I/O bridge**: `lw daemon attach --root <root> --stdio`
-     does discovery, launch, authentication and the handshake for the editor,
-     which then reads none of lw's internal files; it forwards frames
-     opaquely, so it never changes for a new interface.
+   - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task
+     ownership", §19.16 End state): `lw daemon run --root <root> --stdio`
+     becomes a connect-or-start relay — discovery, launch, authentication and
+     the handshake for the editor, which then reads none of lw's internal
+     files; it forwards frames opaquely, so it never changes for a new
+     interface (this replaces the separate `lw daemon attach --stdio` bridge
+     planned earlier). Every CLI command connects or starts likewise. Relays
+     register nothing; `lw daemon list` and `kill --all --strays` show them as
+     connections of their daemon. Each task is owned by the connection that
+     started it and cancelled when that connection closes; the CLI's two-stage
+     Ctrl-C; the process-tree kill on Windows. The idle rule becomes "no
+     connections and no background work", background work bounded by a
+     maximum duration. The conformance runner gets its isolated daemon per
+     case through a temporary root or a hidden test-only flag.
+   - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
+     the short idle grace (a named constant of about 30-60 s, overridable);
+     background results written atomically to the cache with a timestamp and
+     their inputs' fingerprint, an interrupted part not written, and reused
+     on the next start when their inputs are unchanged.
    - **5j–5o — Editor consumers move to interfaces**, each step landing its
      interfaces with their schemas and transcripts: `view.Header/1` and
      `view.ProjectsIndex/1` (5j); the editor's operations as calls,
@@ -2233,8 +2324,10 @@ runtime is deferred until that module is actively developed.
      `view.Tests/1` (5m); `view.Workspace/1` and `Devices/1` (5n); the
      command methods of `Workspace`, `Profiles`, `Projects`, `ConfigSets`,
      `Sdks` and `Maintenance` (5o).
-   - **5p — Editor-owned child daemon** (§19.16 End state), replacing D8; in
-     daemon mode the editor no longer loads the workspace itself.
+   - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
+     through the `--stdio` relay of 5i instead. The editor no longer loading
+     the workspace itself in daemon mode is reached once 5j–5o have moved
+     every consumer.
    - **5q — Module interfaces** (§19.20): `M.interfaces` registration, the
      `/modules/<id>` objects, a first module interface with its schemas and
      transcripts in the module's repository. Any time after 5g.2.
@@ -2243,7 +2336,7 @@ runtime is deferred until that module is actively developed.
      and the deprecation window (§19.20) has passed since the first stable
      release containing 5g.3.
 6. **Default flips** to the binary path for the CLI and the editor (the shared
-   daemon, the child daemon as fallback), after the criteria in DAEMON.md; the
+   daemon; degraded when it cannot be started), after the criteria in DAEMON.md; the
    in-process editor stays one beta cycle behind `runtime.mode =
    "in-process"`, with a deprecation note.
    - **6b** — the in-process editor is removed; with no host binary the editor
