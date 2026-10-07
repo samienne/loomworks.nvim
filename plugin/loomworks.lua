@@ -86,7 +86,8 @@ end, {
 })
 
 -- `:LoomworksDaemon [connect|status]` (spec §19.16): connect to the workspace
--- daemon (launching it when none is live), or show the Runtime line.
+-- daemon (launching it when none is live), or show the Runtime line and the
+-- host binary a launch would use.
 vim.api.nvim_create_user_command("LoomworksDaemon", function(cmd)
   local lw = require("loomworks")
   local sub = cmd.fargs[1] or "status"
@@ -94,7 +95,11 @@ vim.api.nvim_create_user_command("LoomworksDaemon", function(cmd)
     local ok, why = lw.daemon_connect()
     if not ok then vim.notify("loomworks: " .. tostring(why), vim.log.levels.WARN) end
   elseif sub == "status" then
-    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "in-process (default)"), vim.log.levels.INFO)
+    -- With the host binary a launch would use, and why (spec §19.16).
+    local sel = lw.host_binary_selection()
+    vim.notify("loomworks runtime: " .. (lw.daemon_runtime_line() or "in-process (default)")
+      .. "
+host lw: " .. require("loomworks.provision.select").describe(sel), vim.log.levels.INFO)
   else
     vim.notify("loomworks: unknown :LoomworksDaemon subcommand '" .. sub .. "' (connect, status)",
       vim.log.levels.WARN)

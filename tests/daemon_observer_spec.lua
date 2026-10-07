@@ -2,14 +2,15 @@
 -- §19.16) against an in-process server: the observer role and retirement,
 -- `model_change`, the task stream resolved to domain objects (unresolved keys
 -- by name only), keepalive, drop without relaunch, reconnect, incompatible
--- and retiring daemons, the host-binary order, and in-process mode.
+-- and retiring daemons, and in-process mode (the host-binary order:
+-- tests/provision_select_spec.lua).
 
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local server_mod = require("loomworks.daemon.server")
 local client = require("loomworks.daemon.client")
 local tasks_mod = require("loomworks.daemon.tasks")
 local observer = require("loomworks.daemon.observer")
-local host_binary = require("loomworks.daemon.host_binary")
+local binary_select = require("loomworks.provision.select")
 local remote_task = require("loomworks.daemon.remote_task")
 local version = require("loomworks.daemon.version")
 local events = require("loomworks.events")
@@ -193,38 +194,6 @@ describe("version.observer_compatible (§19.9)", function()
         assert.is_false(ok); assert.equals("protocol", what)
         ok, what = version.observer_compatible({ protocol = version.PROTOCOL, schemas = { user = me.user + 1, cache = me.cache } })
         assert.is_false(ok); assert.equals("schemas", what)
-    end)
-end)
-
-describe("host binary (§19.16)", function()
-    it("LOOMWORKS_LW, then the provisioned pin, then PATH; none is nil", function()
-        local f = H.tmp() .. "/my-lw"
-        local h = assert(io.open(f, "w")); h:write("x"); h:close()
-        local function env(v) return function(n) if n == "LOOMWORKS_LW" then return v end end end
-        local bin, src = host_binary.resolve("/r", { getenv = env(f), pinned = function() return "/p" end,
-            on_path = function() return "/path/lw" end })
-        assert.equals(f, bin); assert.equals("LOOMWORKS_LW", src)
-        bin, src = host_binary.resolve("/r", { getenv = env(H.tmp() .. "/missing"), pinned = function() return "/p" end,
-            on_path = function() return "/path/lw" end })
-        assert.equals("/p", bin); assert.equals("pin", src)
-        bin, src = host_binary.resolve("/r", { getenv = env(nil), pinned = function() end,
-            on_path = function() return "/path/lw" end })
-        assert.equals("/path/lw", bin); assert.equals("PATH", src)
-        assert.is_nil(host_binary.resolve("/r", { getenv = env(nil), pinned = function() end, on_path = function() end }))
-    end)
-
-    it("the pin resolves only to a binary already provisioned in the per-user pinned cache", function()
-        local root = H.tmp()
-        local asset = require("boot.pin").detect_asset()
-        if not asset then return end
-        local f = assert(io.open(root .. "/lw.pin", "w")); f:write("version = 0.0.7\n"); f:close()
-        assert.is_nil(host_binary.pinned(root))
-        local dir = require("boot.paths").data_dir() .. "/pinned"
-        vim.fn.mkdir(dir, "p")
-        local bin = dir .. "/lw-0.0.7-" .. asset
-        f = assert(io.open(bin, "w")); f:write("x"); f:close()
-        assert.equals(bin, host_binary.pinned(root))
-        os.remove(bin)
     end)
 end)
 
@@ -443,7 +412,7 @@ describe("the observer (§19.16)", function()
         local spawned = 0
         obs = attach({ spawn = function() spawned = spawned + 1 end })
         assert.equals("no-binary", obs.state)
-        assert.equals(host_binary.NONE_NOTE, obs:runtime_line())
+        assert.equals(binary_select.NONE_NOTE, obs:runtime_line())
         assert.equals(0, spawned)
         s = new_server(root)
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
@@ -894,6 +863,24 @@ describe("the observer (§19.16)", function()
         assert.equals("launching", obs.state)
         obs:start(true)
         assert.equals(1, spawned)
+    end)
+
+    it("launches from the selected binary, names it and why, and passes binary.source's environment (§19.16)", function()
+        local got, seen_opts
+        obs = attach({ inspect = function() return { kind = "none" } end, binary = { prefer = "managed" },
+            resolve = function(_, o)
+                seen_opts = o
+                return "/m/lw", "managed", { path = "/m/lw", source = "managed", label = "plugin-managed lw",
+                    candidates = {}, env = { LOOMWORKS_LUA = "/src/lua" } }
+            end,
+            spawn = function(_, o) got = o; return { pid = 1 } end })
+        assert.equals("launching", obs.state)
+        assert.same({ prefer = "managed" }, seen_opts.setting)
+        assert.same({ "/m/lw" }, got.argv)
+        assert.same({ LOOMWORKS_LUA = "/src/lua" }, got.env)
+        assert.equals("starting the workspace daemon (/m/lw (plugin-managed lw) with the Lua source /src/lua)",
+            obs:runtime_line())
+        assert.equals("managed", obs.selection.source)
     end)
 
     it("a launched daemon that exits because an lw command holds the runtime is a note, not 'starting'", function()

@@ -273,6 +273,10 @@ or a file was viewed — run only what trusted state names:
   configured on this machine; a build directory that merely exists on disk (it
   came with the copy) is never introspected and its binaries are never
   executed passively.
+- **The editor's host binary** (§19.16): opening a workspace in daemon mode
+  may download and run **official releases only** (the plugin-managed `lw`,
+  verified against the hash the plugin carries); never a binary or a URL
+  that a workspace file names.
 - **Version-control queries** (§16.25–§16.27, status hints, the `lw health`
   submodule report §16.31) disable
   repository-configured command hooks (file-system monitor, hooks path) on

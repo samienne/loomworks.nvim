@@ -7,7 +7,7 @@
 _G.LOOMWORKS_CLI_NO_AUTORUN = true
 local runtime = require("loomworks.daemon.runtime")
 local observer = require("loomworks.daemon.observer")
-local host_binary = require("loomworks.daemon.host_binary")
+local binary_select = require("loomworks.provision.select")
 local version = require("loomworks.daemon.version")
 local H = require("tests.daemon_helpers")
 
@@ -193,7 +193,7 @@ describe("the Runtime line (spec/ui.md §1.1)", function()
         assert.equals("no-binary", obs.state)
         local lines, i, hl = header()
         assert.is_not_nil(i, table.concat(lines, "\n"))
-        assert.truthy(lines[i]:find("Runtime:   daemon (lw setting) — " .. host_binary.NONE_NOTE, 1, true), lines[i])
+        assert.truthy(lines[i]:find("Runtime:   daemon (lw setting) — " .. binary_select.NONE_NOTE, 1, true), lines[i])
         assert.equals("DiagnosticWarn", hl)
         assert.truthy(lines[i - 1]:find("[?] help", 1, true), lines[i - 1])
         assert.equals("", vim.trim(lines[i + 1]))

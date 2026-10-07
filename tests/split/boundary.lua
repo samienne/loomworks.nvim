@@ -34,7 +34,8 @@ M.plugin = {
     "^loomworks%.workspace_view$",   -- view-model part stays; orchestration moves out later
     "^loomworks%.daemon%.observer$", -- becomes loomworks.client.session
     "^loomworks%.daemon%.remote_task$",
-    "^loomworks%.daemon%.host_binary$", -- becomes loomworks.provision.*
+    "^loomworks%.provision%.",       -- the host binary the editor launches (spec §19.16)
+    "^loomworks%.health$",           -- :checkhealth loomworks
     "^loomtest$",
     "^loomtest%.",
     "^lualine%.",

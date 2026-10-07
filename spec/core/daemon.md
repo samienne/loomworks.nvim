@@ -1776,7 +1776,9 @@ the daemon's operations as with any other process:
 ### 19.16 The editor as a client
 
 *Status: master for the observer (§19.19 step 4: `daemon/observer.lua`,
-`daemon/host_binary.lua`, `daemon/remote_task.lua`); remote tasks shown as
+`daemon/remote_task.lua`); the host-binary order of step 5h.1
+(`provision/select.lua`, `provision/managed.lua`; downloads, the plugin pin
+and compatibility probes are steps 5h.3-5h.5); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1841,18 +1843,63 @@ and model changes of operations started elsewhere (a `lw build` in a
 terminal). It runs none of the editor's own operations, which stay on the
 in-process path. In `in-process` mode nothing below happens.
 
-- **Host binary.** The observer resolves a host binary in this order:
-  - `LOOMWORKS_LW` (an existing file);
-  - the repository pin (§16.21): the pinned version's host binary already
-    provisioned in the per-user pinned cache (§16.22) — the editor never
-    downloads one, and does not re-hash a file the provisioning host verified;
-  - `lw` on the search path (on Windows an `.exe`).
+- **Host binary.** The observer selects the host binary it launches the
+  daemon from; first match wins:
+  1. **Explicit**: `LOOMWORKS_LW`, then the setup option `binary.path`. Used as
+     is (no hash check: the user chose it). A value naming no file is a note
+     and **stops the search**: the editor never runs another `lw` instead of
+     the one the user named.
+  2. **`lw` on the search path** (on Windows only an `.exe`: a script shim
+     cannot start the daemon detached), when it offers the interfaces the
+     plugin needs.
+  3. **The plugin-managed `lw`** under the editor's data directory: used when
+     there is no system `lw`, or when it is too old (a status note says so).
 
-  With none, the status page shows one inline note (no host binary: running
-  in-process). The editor never launches a daemon from its own plugin source,
-  and runs no loopback runtime until the thin-client part of §19.19 step 5
-  (the CLI's attached runs of step 5e do not include the editor). It still watches for a
-  daemon another client starts and observes that one.
+  The setup option `binary.prefer = "managed"` (default `"system"`) puts 3
+  before 2. Its consequence: the daemon's version can then depend on who
+  launched it (the CLI starts the daemon from its own `lw`, the editor from
+  the managed one; §19.9 decides what each does with the other's). Running a
+  host binary with the plugin's or another Lua source tree (`binary.source`,
+  `LOOMWORKS_LUA`, §16.11) is a development opt-in only, never automatic: it
+  sets the source of the binary selected above and never selects one.
+
+  The editor **reads no `lw.pin`**. A global or managed `lw` follows the
+  repository's pin itself: the daemon commands the editor launches (`daemon
+  run`, its `--stdio` form, and step 5i's `attach`) are redirect commands
+  (§16.23, step 5h.2), so they run the pinned version. Compatibility is
+  decided after connecting, by the handshake and `Root.describe` (§19.9,
+  §19.20); a pre-launch `lw version --json` probe (step 5h.5) is only a quick
+  pre-check. Only what the plugin itself downloads is hash-checked (against
+  the hash the plugin release carries, steps 5h.3-5h.4); binaries the user
+  installed (search path, explicit) get compatibility checks only. In daemon
+  mode the plugin may download its managed `lw` automatically (step 5h.3;
+  `binary.download = false` turns that off): official releases only (§17.8).
+  *(Step 5h.1: the managed slot only looks for a binary already present at
+  `<editor data>/loomworks/lw/<sha256>/lw` (`lw.exe` on Windows),
+  content-addressed by the binary's SHA-256 so that a binary is never
+  replaced in place; nothing installs one yet, and no compatibility probe
+  runs before the launch.)*
+
+  **Install location.** Everything the plugin installs (host binaries,
+  release bundles, and what an `lw` the plugin runs downloads for it: its
+  own provisioning and the pin redirect's, through that `lw`'s install-folder
+  override, step 5h.2) stays under the editor's data directory
+  (`<editor data>/loomworks/`). The plugin never installs a system-wide `lw`
+  and never writes configuration into the user's home. Shared runtime state
+  stays where `lw` keeps it, for every `lw` on the machine: daemon sockets and
+  identity, the trust store (§17.2), daemon logs. The plugin reads `lw`'s
+  per-user configuration (its settings, §19.1) and writes it only on an
+  explicit user action.
+
+  With none, the status page shows one inline note naming each source and
+  why it gave nothing (no host binary: running in-process); while the
+  observer launches, its note names the binary and its source.
+  `:LoomworksDaemon status` and `:checkhealth loomworks` list every source
+  with its verdict. The editor never launches a daemon from its own plugin
+  source unless `binary.source` asks for it, and runs no loopback runtime
+  until the thin-client part of §19.19 step 5 (the CLI's attached runs of
+  step 5e do not include the editor). It still watches for a daemon another
+  client starts and observes that one.
 - **Launch.** The observer launches `<binary> daemon run --root <root>`
   (§19.10: detached, no inherited handles, the state directory as working
   directory) only when no daemon is live on workspace load or on an explicit
@@ -2082,9 +2129,24 @@ runtime is deferred until that module is actively developed.
      interface ratchet in `tests/split`. Deferred to 5j: checking that the
      methods and signals the plugin uses on an interface version are covered
      by its transcripts.)*
-   - **5h — Editor-side binary provisioning**: the plugin resolves, downloads
-     and verifies a host binary itself; the schemas a binary implements are
-     published with each release. Used first only for the observer's binary.
+   - **5h — Editor-side binary selection and provisioning** (§19.16 "Host
+     binary"), used first only for the observer's binary:
+     - **5h.1** — the selection order (explicit, `lw` on the search path, the
+       plugin-managed `lw`, `binary.prefer`), the install-location rule, the
+       status page and `:checkhealth` listing; `daemon/host_binary.lua` and
+       its reads of `lw.pin` and of lw's pinned cache are removed. No
+       downloads. *(Done.)*
+     - **5h.2** — binary side: `lw version --json` (also a release asset
+       listed in `SHA256SUMS`), the daemon commands as pin-redirect commands
+       (§16.23), the install-folder override for an `lw` the plugin runs.
+     - **5h.3** — download, verify (against the plugin's hash) and cache the
+       managed `lw` under the editor's data directory; `binary.download`.
+     - **5h.4** — the plugin's own pin (a hash per host asset, outside the
+       bundle), the release sequencing that commits it, the CI interface
+       check.
+     - **5h.5** — channel upgrades through the verified `lw`
+       (`binary.channel`), compatibility-driven selection, the editor's
+       retirement of an incompatible idle daemon.
    - **5i — Standard-I/O bridge**: `lw daemon attach --root <root> --stdio`
      does discovery, launch, authentication and the handshake for the editor,
      which then reads none of lw's internal files; it forwards frames
