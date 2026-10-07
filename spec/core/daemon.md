@@ -1865,8 +1865,9 @@ the daemon's operations as with any other process:
 pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
 `provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
 (`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
-two-stage `release.yml`; the pre-launch probe, channel upgrades and the
-editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
+two-stage `release.yml`), the pre-launch probe of step 5h.5
+(`provision/probe.lua`, `provision/needs.lua` `problems`; channel upgrades and
+the editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1948,8 +1949,7 @@ in-process path. In `in-process` mode nothing below happens.
      script shim cannot start the daemon detached), so an extensionless `lw`
      or an `lw.cmd` in an earlier entry neither is chosen nor hides a later
      `lw.exe`. Used when it offers the interfaces the plugin needs, as the
-     pre-launch probe below decides *(step 5h.5; until then the first `lw`
-     found is used unchecked)*.
+     pre-launch probe below decides *(step 5h.5, `provision/probe.lua`)*.
   3. **The plugin-managed `lw`** under the editor's data directory: used when
      there is no system `lw`, or when it is too old (a status note says so).
      "Too old" is a **definite** failure of the probe; an unknown result is
@@ -1960,21 +1960,30 @@ in-process path. In `in-process` mode nothing below happens.
   --json` (§16.41) — asynchronously, bounded by a short timeout (about 3 s),
   with the editor's data directory as working directory (never the
   workspace) and no workspace-sourced environment — and checks the
-  descriptor with the one interface check of "Plugin pin" below (transport
-  overlap, schemas no newer than the plugin's, and the root and feature
-  interfaces the editor uses). The verdict is cached per process by the
-  binary's path, size and modification time; the selection itself stays
-  synchronous over cached verdicts, and while a probe runs the Runtime note
-  says so. Verdicts:
+  descriptor with the interface check of "Plugin pin" below (transport
+  overlap, and the root and feature interfaces the editor uses), except that
+  its schemas must **equal** the plugin's: a difference in either direction
+  is a definite failure — an older `lw` cannot read the workspace files at
+  the plugin's format, a newer one writes a format the editor will not
+  observe, and the managed `lw` the search falls through to matches the
+  plugin exactly. (An already running daemon is weighed separately at
+  connect: newer schemas are refused, older ones lead to retirement under
+  "Retiring an incompatible daemon" below; the pin check refuses only newer
+  schemas.) The verdict is cached per process by the binary's path, size
+  and modification time; the selection itself stays synchronous over cached
+  verdicts, and while a probe runs the Runtime note says so; should the
+  probe's own answer never arrive, the observer stops waiting shortly after
+  the probe's timeout and goes on as for *unknown*. Verdicts:
   - **compatible** — the binary is used;
-  - **incompatible** (a definite failure: no transport overlap, newer
-    schemas, a missing root interface) — a search-path `lw` is skipped with
+  - **incompatible** (a definite failure: no transport overlap, schemas
+    older or newer than the plugin's, a missing root interface) — a
+    search-path `lw` is skipped with
     a status note naming the problems ("too old/incompatible: …") and the
     search goes on to the managed `lw`; an explicit binary is never
     replaced (rule 1), the verdict is only noted;
   - **unknown** (no descriptor — an `lw` older than §16.41, or one with no
-    system Lua — or a timeout) — the binary is used and the handshake
-    decides.
+    system Lua — a descriptor with no `schemas`, or a timeout) — the binary
+    is used and the handshake decides.
 
   A missing feature interface is not a failure: that feature degrades with a
   note ("Interface client" above). The managed `lw` is not probed at run
@@ -2451,7 +2460,8 @@ runtime is deferred until that module is actively developed.
        upgrades"), compatibility-driven selection (§19.16 "Pre-launch
        probe"), the editor's retirement of an incompatible idle daemon
        (§19.16 "Retiring an incompatible daemon"). In parts: the spec; the
-       binary's `release query`; the probe in the selection; the retirement;
+       binary's `release query` *(done)*; the probe in the selection
+       *(done)*; the retirement;
        `binary.channel` (usable once the plugin pin names a release with
        `release query`).
    - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task

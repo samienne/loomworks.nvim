@@ -961,7 +961,14 @@ against Neovim's current directory; a path that names no file, or on Windows
 no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry
 (never the current directory, so an `lw` inside an opened repository is never
 started; on Windows `lw.exe`), and an
-`lw` the plugin manages under Neovim's data directory. When the plugin wants
+`lw` the plugin manages under Neovim's data directory. Before starting the
+daemon from an `lw` on `PATH` or one you named, the editor asks it `lw version
+--json` in the background (at most about 3 s, once per binary per session;
+the status page says "checking ..." meanwhile). An `lw` on `PATH` that is too
+old or otherwise incompatible with the plugin is skipped with a note naming
+why, and the plugin's own `lw` is used instead; one you named is still used,
+with the note. An `lw` that does not answer (one older than `version --json`)
+is used, and the connection decides. When the plugin wants
 its own `lw` and it is not there yet, the editor downloads the official
 release binary in the background (it keeps working in-process meanwhile; the
 status page says so), checks its SHA-256 against the one the plugin carries,

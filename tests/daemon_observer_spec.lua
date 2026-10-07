@@ -883,6 +883,81 @@ describe("the observer (§19.16)", function()
         assert.equals("managed", obs.selection.source)
     end)
 
+    describe("pre-launch probe (step 5h.5)", function()
+        local binsel = require("loomworks.provision.select")
+        local bad = { verdict = "incompatible", problems = { "transport 1..2 does not overlap ours" }, degraded = {} }
+
+        --- An observer over the real selection with PATH /p/lw, managed /m/lw
+        --- (and LOOMWORKS_LW when `explicit`); probes complete on `finish()`.
+        local function probing(verdict, explicit, backstop_ms)
+            local cache, t = {}, { probes = {}, spawned = {} }
+            obs = attach({ inspect = function() return { kind = "none" } end,
+                probe_backstop_ms = backstop_ms,
+                probe_cached = function(p) return cache[p] end,
+                run_probe = function(p, _, cb)
+                    t.probes[#t.probes + 1] = p
+                    t.finish = function() cache[p] = verdict; cb(verdict) end
+                end,
+                resolve = function(root, o)
+                    return binsel.resolve(root, vim.tbl_extend("force", o, { win = false,
+                        getenv = function(n) return explicit and n == "LOOMWORKS_LW" and "/e/lw" or nil end,
+                        exists = function() return true end,
+                        on_path = function() return "/p/lw" end,
+                        managed = function() return "/m/lw" end }))
+                end,
+                spawn = function(_, so) t.spawned[#t.spawned + 1] = so.argv[1]; return { pid = 1 } end })
+            return t
+        end
+
+        it("probes an lw on PATH before launching; an incompatible one falls through to the managed lw", function()
+            local t = probing(bad)
+            assert.equals("probing", obs.state)
+            assert.same({ "/p/lw" }, t.probes)
+            assert.truthy(obs:runtime_line():find("checking /p/lw (lw version --json)", 1, true), obs:runtime_line())
+            obs:start(false) -- a second start while probing starts no second probe
+            assert.equals(1, #t.probes)
+            t.finish()
+            assert.same({ "/m/lw" }, t.spawned)
+            assert.equals("managed", obs.selection.source)
+            assert.truthy(obs:runtime_line():find("lw on PATH (/p/lw) is too old/incompatible", 1, true),
+                obs:runtime_line())
+        end)
+
+        it("launches an lw on PATH whose verdict is unknown (the handshake decides)", function()
+            local t = probing({ verdict = "unknown", problems = { "timeout" }, degraded = {} })
+            t.finish()
+            assert.same({ "/p/lw" }, t.spawned)
+            assert.is_nil(obs.probe_note)
+        end)
+
+        it("never replaces an explicit lw: an incompatible verdict is only noted", function()
+            local t = probing(bad, true)
+            assert.same({ "/e/lw" }, t.probes)
+            t.finish()
+            assert.same({ "/e/lw" }, t.spawned)
+            assert.truthy(obs:runtime_line():find("LOOMWORKS_LW /e/lw is incompatible", 1, true), obs:runtime_line())
+        end)
+
+        it("a probe that ends after a stop is ignored", function()
+            local t = probing(bad)
+            obs:stop()
+            t.finish()
+            assert.same({}, t.spawned)
+            assert.equals("stopped", obs.state)
+        end)
+
+        it("a probe that never calls back ends as unknown after the backstop; a late callback is ignored", function()
+            local t = probing(bad, false, 50)
+            assert.equals("probing", obs.state)
+            assert.is_true(vim.wait(2000, function() return obs.state ~= "probing" end, 10))
+            assert.is_nil(obs._probing); assert.is_nil(obs._probe_backstop)
+            assert.same({ "/p/lw" }, t.spawned) -- launched as unknown: the handshake decides
+            t.finish() -- the late (incompatible) callback changes nothing
+            assert.same({ "/p/lw" }, t.spawned)
+            assert.equals(1, #t.probes)
+        end)
+    end)
+
     it("downloads a wanted plugin-managed lw first, then launches from it (step 5h.3)", function()
         local want = { sha256 = string.rep("ab", 32), version = "0.1.50", asset = "lw-linux-x86_64" }
         local installed, fetches, pending, spawned, pruned = false, 0, nil, nil, nil

@@ -21,8 +21,14 @@
 --- `binary.source` (development only, never automatic) runs the selected
 --- binary with a Lua source tree (`LOOMWORKS_LUA`, §16.11).
 ---
---- Compatibility is not probed here (step 5h.5); after connecting, the
---- daemon's handshake and `Root.describe` decide (§19.9, §19.20).
+--- A search-path or explicit lw is weighed by its cached pre-launch probe
+--- verdict (loomworks.provision.probe, §19.16 "Pre-launch probe", step 5h.5):
+--- an `incompatible` lw on PATH is refused and the search goes on (to the
+--- managed lw); an explicit one is never replaced, its verdict only noted
+--- (`probe_note`); `unknown` is used. A binary with no verdict yet is chosen
+--- and named in `probe`: the observer probes it (async) and resolves again.
+--- The selection itself never runs a process. After connecting, the daemon's
+--- handshake and `Root.describe` decide (§19.9, §19.20).
 
 local uv = vim.uv or vim.loop
 
@@ -43,6 +49,7 @@ local M = {}
 --- @field path? string the binary it found
 --- @field verdict "chosen"|"download"|"absent"|"refused"|"not tried"
 --- @field reason? string why it was not chosen
+--- @field probe? loomworks.provision.Probe the cached pre-launch probe verdict of a PATH or explicit binary (step 5h.5)
 
 --- @class loomworks.provision.Selection  the result of `resolve`
 --- @field path? string the chosen host binary
@@ -53,6 +60,8 @@ local M = {}
 --- @field download? loomworks.provision.Wanted the plugin-managed lw to download first (it decided the search)
 --- @field note? string why there is none (the Runtime line)
 --- @field warning? string an ignored setup value
+--- @field probe? string the chosen binary still to be probed (no cached verdict yet, step 5h.5)
+--- @field probe_note? string the pre-launch probe's lasting note: an incompatible lw on PATH that was skipped, or an incompatible explicit one used as named
 
 M.LABELS = {
     LOOMWORKS_LW = "LOOMWORKS_LW",
@@ -214,6 +223,8 @@ end
 ---   on_path   fun() → path|nil, why
 ---   managed   fun() → path|nil, why (loomworks.provision.managed.find)
 ---   is_dir, plugin_lua  for `binary.source`
+---   probe     fun(path) → loomworks.provision.Probe|nil, the cached pre-launch
+---             verdict (loomworks.provision.probe.cached); false: no probe
 --- @param root string
 --- @param opts? table
 --- @return string|nil path, loomworks.provision.Source|nil source, loomworks.provision.Selection sel
@@ -235,6 +246,16 @@ function M.resolve(root, opts)
         add(source, "chosen", path)
         sel.path, sel.source, sel.label = path, source, M.LABELS[source]
     end
+    -- The cached pre-launch verdict of a PATH or explicit binary (step 5h.5);
+    -- the managed lw is never probed.
+    local probe = opts.probe
+    if probe == nil then probe = require("loomworks.provision.probe").cached end
+    local function verdict(path)
+        if not probe then return nil, false end
+        local v = probe(path)
+        return v, v == nil
+    end
+    local function problems(v) return table.concat(v.problems, "; ") end
 
     local order = { "PATH", "managed" }
     if setting.prefer == "managed" then order = { "managed", "PATH" } end
@@ -254,6 +275,15 @@ function M.resolve(root, opts)
                 or (not exists(p) and "not a file") or nil
             if not bad then
                 choose(source, p)
+                -- Explicit means explicit: an incompatible verdict is only
+                -- noted, never a reason to run another lw (rule 1).
+                local v, pending = verdict(p)
+                sel.candidates[#sel.candidates].probe = v
+                if pending then sel.probe = p end
+                if v and v.verdict == "incompatible" then
+                    sel.probe_note = string.format("%s %s is incompatible (%s) — used as named; the handshake decides",
+                        M.LABELS[source], p, problems(v))
+                end
             else
                 add(source, "refused", p, bad)
                 sel.note = string.format("%s names %s, which is %s — no lw host binary "
@@ -272,8 +302,18 @@ function M.resolve(root, opts)
             local p, why, missing
             if source == "PATH" then p, why = (opts.on_path or M.on_path)()
             else p, why, missing = (opts.managed or require("loomworks.provision.managed").find)() end
-            if p then
+            local v, pending
+            if p and source == "PATH" then v, pending = verdict(p) end
+            if p and v and v.verdict == "incompatible" then
+                -- A definite failure: skipped, the search goes on (spec
+                -- §19.16 rule 3, "too old").
+                add(source, "refused", p, "too old/incompatible: " .. problems(v))
+                sel.candidates[#sel.candidates].probe = v
+                sel.probe_note = "lw on PATH (" .. p .. ") is too old/incompatible: " .. problems(v)
+            elseif p then
                 choose(source, p)
+                sel.candidates[#sel.candidates].probe = v
+                if pending then sel.probe = p end
             elseif missing and setting.download == false then
                 add(source, "absent", nil, tostring(why) .. "; downloads are off (binary.download = false)")
             elseif missing then
@@ -338,6 +378,17 @@ function M.describe(sel)
     end
     local s = sel.path .. " (" .. sel.label .. ")"
     if sel.env and sel.env.LOOMWORKS_LUA then s = s .. " with the Lua source " .. sel.env.LOOMWORKS_LUA end
+    -- The pre-launch probe (step 5h.5): a verdict worth saying. (A skipped
+    -- lw on PATH is the candidate's reason and the observer's `probe_note`.)
+    local chosen
+    for _, c in ipairs(sel.candidates or {}) do
+        if c.verdict == "chosen" then chosen = c end
+    end
+    if sel.probe then
+        s = s .. "; not probed yet"
+    elseif chosen and chosen.probe and (chosen.probe.verdict ~= "compatible" or #chosen.probe.degraded > 0) then
+        s = s .. "; probe: " .. require("loomworks.provision.probe").describe(chosen.probe)
+    end
     return s
 end
 

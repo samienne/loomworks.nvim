@@ -859,12 +859,25 @@ re-cut onto master step by step; this section is expanded as each step lands.
   verdict, shown by the observer's note, `:LoomworksDaemon status` and
   `health.lua` (`:checkhealth loomworks`). Reads no `lw.pin` and nothing of
   lw's data directory.
-  *Planned, step 5h.5 (spec §19.16 "Pre-launch probe", "Channel upgrades",
-  "Retiring an incompatible daemon"):* an async `lw version --json` probe of
-  a PATH / explicit candidate (3 s, data-dir cwd, cached per process by
-  path+size+mtime, `needs.check` verdict compatible / incompatible / unknown;
-  `resolve` stays synchronous over cached verdicts, `Observer:_launch` probes
-  first); `managed.wanted` = the newer of the pin and the accepted
+  Pre-launch probe (step 5h.5, spec §19.16 "Pre-launch probe"):
+  `provision/probe.lua` runs `<lw> version --json` async (`vim.system`,
+  `TIMEOUT_MS` 3 s, cwd `<stdpath data>`, single flight per binary) and
+  `classify` weighs it with `needs.problems`: `structure` → unknown (no
+  descriptor; also a failed command or a timeout), `fatal` (transport, schemas,
+  `loomworks.Root/1`) → incompatible, `degraded` (a feature interface) →
+  still compatible. Verdicts are cached for the session keyed by realpath +
+  size + mtime (`cached(path)`). `resolve` reads only that cache (`opts.probe`):
+  an incompatible PATH lw is `refused` ("too old/incompatible: …") and the
+  search goes on to the managed lw, with `Selection.probe_note`; an explicit
+  one stays chosen and its verdict is only the `probe_note`; a candidate with
+  no verdict yet is chosen and named in `Selection.probe`. `Observer:_launch`
+  then runs `_probe` (state `probing`, its Runtime note; single flight, a
+  late callback after `stop` ignored) and resolves again with `probed` set,
+  so an uncacheable verdict never loops. The observer shows `probe_note` on
+  the Runtime line; checkhealth shows the chosen candidate's cached verdict
+  and never probes. The managed lw is never probed.
+  *Planned, step 5h.5 (spec §19.16 "Channel upgrades",
+  "Retiring an incompatible daemon"):* `managed.wanted` = the newer of the pin and the accepted
   `binary.channel` result persisted in `<stdpath data>/loomworks/channel.json`
   (obtained by running the pinned managed lw's `release query --channel <c>
   --json`, spec §16.42, then `needs.check` on its descriptor); the observer
@@ -903,6 +916,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   via `daemon/version.observer_compatible`, and observer `ROOT` + `FEATURES`
   via `observer.offered_versions`; the one interface check used by
   `scripts/release/pin.lua` (hard gate) and CI's `pin-check` job (warning).
+  `problems(descriptor)` sorts the same problems into `structure` / `fatal` /
+  `degraded` for the pre-launch probe (`check` counts them all).
 - Server: hello `role` → `conn.observer`; `active_clients()` (non-observers)
   gates retirement (`_maybe_retire`, also from `service`'s `tasks.on_change`);
   `retire` broadcasts `retiring` to observers; `welcome.retiring`;

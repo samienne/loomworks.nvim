@@ -11,7 +11,8 @@
 ---     workspace load or on an explicit `:LoomworksDaemon connect`, and once
 ---     after the observed daemon retired (a version change) and exited with
 ---     no successor — never after any other drop (`lw daemon stop` must stop
----     it);
+---     it); a search-path or explicit lw is first probed with `lw version
+---     --json` (loomworks.provision.probe, the `probing` state, step 5h.5);
 ---   * watches the handle (WATCH_MS) and connects to a live daemon whose
 ---     transport range overlaps ours and whose schemas are not newer (the host
 ---     version may differ), as `client = "editor"`, `role = "observer"`, and
@@ -66,7 +67,7 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @class loomworks.daemon.Observer
 --- @field ws loomworks.Workspace
 --- @field root string
---- @field state "idle"|"no-binary"|"downloading"|"launching"|"connecting"|"connected"|"waiting"|"stopped"
+--- @field state "idle"|"no-binary"|"probing"|"downloading"|"launching"|"connecting"|"connected"|"waiting"|"stopped"
 --- @field note string|nil the current Runtime note
 --- @field conn loomworks.daemon.Conn|nil
 --- @field daemon { pid: integer, start_time: string|nil, lw_version: string|nil, exe: string|nil }|nil the observed daemon (`exe`: the binary its handle names)
@@ -86,6 +87,10 @@ M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- @field _dl_token table|nil identifies that download's callback (a cancelled one's is ignored)
 --- @field _download_failed string|nil the hash whose download failed: not retried until an explicit connect
 --- @field _download_note string|nil that failure's note
+--- @field _probing string|nil the binary whose pre-launch probe is in flight (step 5h.5)
+--- @field _probe_token table|nil identifies that probe's callback (one after a stop or the backstop is ignored)
+--- @field _probe_backstop uv.uv_timer_t|nil ends `probing` as unknown if the probe never calls back
+--- @field probe_note string|nil the last selection's lasting probe note (a skipped lw on PATH, an incompatible explicit lw), shown on the Runtime line
 --- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
 --- @field _connecting table|nil the one connection attempt in flight (single-flight token)
 --- @field _watch userdata|nil the handle-watch timer
@@ -165,6 +170,9 @@ end
 ---   binary      the setup option `binary` (loomworks.provision.BinarySetting)
 ---   resolve     fun(root, opts) → binary|nil, source, selection (loomworks.provision.binsel.resolve)
 ---   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
+---   probe_cached fun(path) → verdict|nil, or false (loomworks.provision.probe.cached; passed to resolve)
+---   run_probe   fun(path, opts, cb(verdict)) (loomworks.provision.probe.run)
+---   probe_backstop_ms  how long to wait for run_probe's callback before going on as unknown (default probe.TIMEOUT_MS + 2 s)
 ---   fetch       fun(wanted, opts, cb(path|nil, err)) (loomworks.provision.fetch.ensure)
 ---   cancel_fetch fun(sha256, why) (loomworks.provision.fetch.cancel)
 ---   touch       fun(path) (loomworks.provision.managed.touch)
@@ -238,7 +246,7 @@ function Observer:start(explicit)
     -- Single-flight: one connection, one attempt, one launch at a time.
     if self.conn or self._connecting then return end
     if self._child and self._child.code == nil then return end
-    if self._downloading then return end
+    if self._downloading or self._probing then return end
     local st = self:_inspect()
     if st.kind == "live" then return self:_connect(st) end
     if st.kind == "none" or st.kind == "stale" or st.kind == "unreadable" then
@@ -288,14 +296,23 @@ function M.mismatch_note(ch, what, binary)
         lw, theirs, version.identity(), ours)
 end
 
-function Observer:_launch()
+--- Select the host binary and launch the daemon from it. A search-path or
+--- explicit lw with no cached probe verdict is probed first (spec §19.16
+--- "Pre-launch probe", step 5h.5: `_probe`, then here again with `probed`
+--- set, so a binary whose verdict could not be cached is launched as
+--- unknown rather than probed again).
+--- @param probed? boolean called back from `_probe`
+function Observer:_launch(probed)
     local binsel = require("loomworks.provision.select")
     local resolve = self.opts.resolve or binsel.resolve
-    local bin, source, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary })
+    local bin, source, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary,
+        probe = self.opts.probe_cached })
     if type(sel) ~= "table" then
         sel = { path = bin, source = source, label = binsel.LABELS[source] or source, candidates = {} }
     end
     self.selection = sel
+    self.probe_note = sel.probe_note
+    if bin and sel.probe and not probed then return self:_probe(sel.probe) end
     if not bin then
         if sel.download then return self:_download(sel) end
         return self:_set("no-binary", binsel.none_note(sel))
@@ -309,6 +326,39 @@ function Observer:_launch()
     self._child = child
     self._binary = bin
     self:_set("launching", "starting the workspace daemon (" .. (sel.label and binsel.describe(sel) or bin) .. ")")
+end
+
+--- Probe `path` (`lw version --json`, async and bounded; loomworks.provision.
+--- probe), then start over as after a download: connect to a daemon that
+--- appeared meanwhile, or select again over the now cached verdict and
+--- launch. The editor keeps working meanwhile; the Runtime note says so.
+--- @param path string
+function Observer:_probe(path)
+    if self._probing then return end
+    self._probing = path
+    local token = {}
+    self._probe_token = token
+    self:_set("probing", "checking " .. path .. " (lw version --json) before launching the workspace daemon")
+    local probe = require("loomworks.provision.probe")
+    local run = self.opts.run_probe or probe.run
+    -- Belt and braces: the probe is bounded (TIMEOUT_MS), but a callback
+    -- that never arrives must not leave the observer `probing` for good.
+    -- After the backstop the binary counts as unknown (used; the handshake
+    -- decides) and a late callback is ignored (the token is gone).
+    local function finish()
+        if self._probe_token ~= token then return end -- a stop or the backstop owns the state
+        self._probe_token, self._probing = nil, nil
+        self:_stop_timer("_probe_backstop")
+        if self.state == "stopped" then return end
+        if self.conn or self._connecting or (self._child and self._child.code == nil) then return end
+        local now = self:_inspect()
+        if now.kind == "live" then return self:_connect(now) end
+        if now.kind == "none" or now.kind == "stale" or now.kind == "unreadable" then return self:_launch(true) end
+        self:_set("waiting", M.state_note(now))
+    end
+    self._probe_backstop = uv.new_timer()
+    self._probe_backstop:start(self.opts.probe_backstop_ms or (probe.TIMEOUT_MS + 2000), 0, vim.schedule_wrap(finish))
+    run(path, nil, finish)
 end
 
 --- Download the plugin-managed lw the selection wants (spec §19.16, step
@@ -414,7 +464,8 @@ function Observer:_on_watch()
         self._relaunch = nil
         return self:_launch()
     end
-    if self.state ~= "launching" and self.state ~= "no-binary" and self.state ~= "downloading" then
+    if self.state ~= "launching" and self.state ~= "no-binary" and self.state ~= "downloading"
+        and self.state ~= "probing" then
         local note = M.state_note(st)
         if self.state ~= "waiting" or not self._dropped then self:_set("waiting", note) end
     end
@@ -872,6 +923,9 @@ end
 --- @return string
 function Observer:runtime_line()
     local t = self.note or self.state
+    -- The pre-launch probe's lasting note (step 5h.5: a skipped lw on PATH,
+    -- an incompatible explicit one); a no-binary note already names it.
+    if self.probe_note and self.state ~= "no-binary" then t = t .. " — " .. self.probe_note end
     if self.warning then t = t .. " (" .. self.warning .. ")" end
     return t
 end
@@ -905,6 +959,8 @@ end
 function Observer:stop()
     if self.state == "stopped" then return end
     self.state = "stopped"
+    self._probe_token, self._probing = nil, nil
+    self:_stop_timer("_probe_backstop")
     if self._downloading then self:_cancel_download("the workspace was unloaded") end
     self:_stop_timer("_watch")
     self:_stop_timer("_keepalive")
