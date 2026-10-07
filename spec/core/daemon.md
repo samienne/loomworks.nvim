@@ -2194,6 +2194,24 @@ runtime is deferred until that module is actively developed.
      protocol schemas and transcripts become the cross-repository contract,
      in a separate protocol repository pinned by both sides (§19.20).
 
+**Later steps, in this order** (after the steps above; DAEMON.md 8a–8c):
+
+- **8a — Workspace data to `.lw/`**: lw's workspace data files move from
+  `.nvim/` to `.lw/` with a one-time migration recorded by a marker; when
+  both exist and disagree, lw refuses rather than choosing. Every deletion
+  scope that names `.nvim/` (the workspace-files scope of nuke, housekeeping's
+  `<root>/.nvim/tmp`, the launcher cache `.nvim/cache`) is moved and
+  re-reviewed for deletion safety; `lw bootstrap` writes the new ignore lines
+  and the launcher templates get a new generation.
+- **8b — Release v0.2.0**: `staging/daemon` is merged to master and released
+  once the daemon steps and 8a are done.
+- **8c — Repository split**: this repository keeps only the editor plugin;
+  the CLI, the daemon, the bootstrap and protocol code, the protocol
+  specification, the release workflow and the launcher scripts move to a new
+  repository with their history. Existing pins and launchers download from
+  the fixed release origin (§16.22), so releases stay or are mirrored there
+  for a transition period; the plugin's own pin points at the new origin.
+
 ### 19.20 Interfaces
 
 *Status: step 5g.1 is implemented on `staging/daemon`: the transport

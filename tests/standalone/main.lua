@@ -194,6 +194,30 @@ do
   local res2 = update.self_update({})
   ok(res2 and res2.updated == false, "second run is a no-op (already installed)")
 
+  -- `--force` naming the version this process RUNS from must never rm_rf the
+  -- running bundle (same identity check as gc: realpath, Windows case): it is
+  -- refused and the bundle stays intact. A forced reinstall of a version that
+  -- is not running still replaces it.
+  do
+    local running = data .. "/lua-0.0.0-test"
+    local marker = running .. "/loomworks/_release_marker.lua"
+    local probe = running .. "/loomworks/_running_probe.txt"
+    local pf = io.open(probe, "wb"); pf:write("in use"); pf:close()
+    local win = package.config:sub(1, 1) == "\\"
+    local spelled = win and running:upper():gsub("/", "\\") or running
+    local fr, ferr = update.self_update({ force = true, running_root = spelled })
+    ok(fr == nil and type(ferr) == "string" and ferr:find("running", 1, true) ~= nil,
+      "forced reinstall of the running version is refused  (got " .. tostring(ferr) .. ")")
+    ok(uv.fs_stat(marker) ~= nil and uv.fs_stat(probe) ~= nil,
+      "the running bundle is left untouched")
+    ok(uv.fs_stat(data .. "/.stage-0.0.0-test") == nil and uv.fs_stat(data .. "/.dl-0.0.0-test.zip") == nil,
+      "a refused reinstall leaves no staging/download residue")
+    local fr2, ferr2 = update.self_update({ force = true, running_root = data .. "/lua-9.9.9" })
+    ok(fr2 and fr2.updated == true, "forced reinstall of a non-running version proceeds"
+      .. (ferr2 and (" — " .. ferr2) or ""))
+    ok(uv.fs_stat(marker) ~= nil and uv.fs_stat(probe) == nil, "and replaces that bundle")
+  end
+
   -- tampered manifest at the mirror must be rejected (no install)
   local good = readfile(FX .. "manifest.json")
   local badmirror = sandbox .. "/badmirror"

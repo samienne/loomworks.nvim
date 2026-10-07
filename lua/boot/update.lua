@@ -578,6 +578,20 @@ function M.self_update(opts)
     return { version = version, updated = false, dir = dest_dir,
       channel_overridden = channel_overridden }
   end
+  -- A forced reinstall replaces `dest_dir` (rm_rf + rename). When that is the
+  -- bundle this process runs from (`running_root`, default the loaded system
+  -- Lua root; same identity check as gc: realpath, Windows case/8.3) it is
+  -- refused, before anything is downloaded: deleting or swapping a bundle in
+  -- use is not safe (on Windows its files may be open), and the running
+  -- version is by definition installed.
+  if uv.fs_stat(dest_dir) then
+    local running = canon_path(opts.running_root or rawget(_G, "__loomworks_luaroot"))
+    if running and canon_path(dest_dir) == running then
+      return nil, "lw " .. version .. " is the version running now; its bundle at '" ..
+        dest_dir .. "' is not replaced while in use - to reinstall it, run " ..
+        "`lw self-update --force` from a different lw version"
+    end
+  end
 
   local ok, err = paths.mkdirp(install)
   if not ok then return nil, "prepare data dir: " .. tostring(err) end

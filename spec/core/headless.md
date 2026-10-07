@@ -1113,7 +1113,11 @@ regular file. A removal re-checks the entry, requires its resolved path to be a
 direct child of the resolved install folder, and never removes the bundle just
 installed or the bundle the running host loaded. Installing a release whose
 `lua-<version>` name is taken there by anything else fails with a message
-naming it; that entry is never replaced. Its temporary download and staging
+naming it; that entry is never replaced. A forced reinstall (`--force`) of
+the version whose bundle the running host loaded (the same resolved-path
+identity) is refused with a message, before anything is fetched: the bundle in
+use is never removed or swapped (its files may be open), and reinstalling it
+takes a different lw version. Its temporary download and staging
 names (`.dl-<version>.zip`, `.stage-<version>`) are formed only from such a
 version.
 
