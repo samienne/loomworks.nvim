@@ -89,6 +89,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `release-notes` setting, ...). (#90)
 
 ### Fixed
+- The `unstable` update channel picks the highest release version instead of
+  the most recently published one, so a full release published after a newer
+  pre-release no longer moves `lw self-update` back down to it. (#165)
 - A program argument that looks like a global option (`--dev`, `--no-pin`,
   `--no-input`, `--local`, ...) is passed to the program again instead of
   being taken by lw: after `--`, and after `lw launch add`'s command (or
