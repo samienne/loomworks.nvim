@@ -52,7 +52,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   retired; and a daemon of a given version is retired at most once per
   workspace per Neovim session, so a repository pin that keeps launching the
   same release cannot cause a loop (the note then suggests updating the pin
-  or the plugin). (#PRNUM)
+  or the plugin). (#168)
 - Experimental daemon mode: before starting the daemon from an `lw` on `PATH`,
   `LOOMWORKS_LW` or `binary.path`, the editor checks it with `lw version
   --json` in the background (bounded to about 3 s, cached per binary for the
