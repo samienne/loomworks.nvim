@@ -912,7 +912,7 @@ file-level checks of §2.7 apply. The transport range under "From protocol
 11" is step 5g.1 (`version.negotiate`; an editor observes a daemon whose range
 overlaps its own); the CLI policy (`ensure.policy`, `describe`) and the
 generalised busy rule (`Server:conn_busy`, `status.busy_clients`) are
-implemented, step 5g.3; the editor retirement below is plan.*
+implemented, step 5g.3; the editor retirement below is plan (step 5h.5).*
 
 Client and daemon are the same binary, so after a self-update (§16.32) or a pin
 change (§16.24) a newer client can meet an older daemon. Both sides send their
@@ -951,7 +951,7 @@ match. A daemon whose schemas are newer than the client's is never stopped by
 it; the client refuses with the update message of §2.7 "Reading a newer file".
 
 **From protocol 11.** *(Transport: step 5g.1; the CLI policy and the busy rule: step 5g.3; the
-editor retirement: plan.)* The rules above split
+editor retirement: plan, step 5h.5.)* The rules above split
 into a protocol rule and a client policy:
 
 - **Transport.** Client and daemon agree on the highest transport version in
@@ -977,9 +977,15 @@ into a protocol rule and a client policy:
   daemon is therefore safe for a connected editor, which reconnects,
   re-describes and re-subscribes (§19.16). The CLI still never stops a busy
   daemon.
-- **Editor retirement.** The editor retires a daemon only when it is idle and
-  older than the binary the editor selected, or when their transport ranges do
-  not overlap.
+- **Editor retirement** (step 5h.5). The editor retires a daemon only when it
+  is idle **and incompatible** with the editor (§19.16 "Retiring an
+  incompatible daemon"), and only when the binary the editor selected is
+  itself compatible. A daemon that is merely older than that binary is never
+  retired by the editor, nor is one whose schemas are newer than the editor's;
+  the editor retires a daemon of a given `lw_version` at most once per
+  workspace per editor session. Retiring for "older" would make the editor
+  and the CLI, which requires an equal `lw_version`, restart each other's
+  daemon in turn.
 
 ### 19.10 Launch
 
@@ -1859,7 +1865,8 @@ the daemon's operations as with any other process:
 pruning of the plugin-managed `lw` of step 5h.3 (`provision/fetch.lua`,
 `provision/sha256.lua`, `provision/cache.lua`), the plugin pin of step 5h.4
 (`provision/pinned.lua`, `provision/needs.lua`, `scripts/release/pin.sh`, the
-two-stage `release.yml`; compatibility probes are step 5h.5); remote tasks shown as
+two-stage `release.yml`; the pre-launch probe, channel upgrades and the
+editor's retirement of an incompatible daemon are step 5h.5, plan); remote tasks shown as
 local ones (Running state, Joining late, End, UI below), the origin marker
 and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
@@ -1940,9 +1947,40 @@ in-process path. In `in-process` mode nothing below happens.
      counts). On Windows the file looked for in each entry is `lw.exe` (a
      script shim cannot start the daemon detached), so an extensionless `lw`
      or an `lw.cmd` in an earlier entry neither is chosen nor hides a later
-     `lw.exe`. Used when it offers the interfaces the plugin needs.
+     `lw.exe`. Used when it offers the interfaces the plugin needs, as the
+     pre-launch probe below decides *(step 5h.5; until then the first `lw`
+     found is used unchecked)*.
   3. **The plugin-managed `lw`** under the editor's data directory: used when
      there is no system `lw`, or when it is too old (a status note says so).
+     "Too old" is a **definite** failure of the probe; an unknown result is
+     not a failure.
+
+  **Pre-launch probe** (step 5h.5). Before launching from an `lw` found on
+  the search path or named explicitly, the observer runs `<binary> version
+  --json` (§16.41) — asynchronously, bounded by a short timeout (about 3 s),
+  with the editor's data directory as working directory (never the
+  workspace) and no workspace-sourced environment — and checks the
+  descriptor with the one interface check of "Plugin pin" below (transport
+  overlap, schemas no newer than the plugin's, and the root and feature
+  interfaces the editor uses). The verdict is cached per process by the
+  binary's path, size and modification time; the selection itself stays
+  synchronous over cached verdicts, and while a probe runs the Runtime note
+  says so. Verdicts:
+  - **compatible** — the binary is used;
+  - **incompatible** (a definite failure: no transport overlap, newer
+    schemas, a missing root interface) — a search-path `lw` is skipped with
+    a status note naming the problems ("too old/incompatible: …") and the
+    search goes on to the managed `lw`; an explicit binary is never
+    replaced (rule 1), the verdict is only noted;
+  - **unknown** (no descriptor — an `lw` older than §16.41, or one with no
+    system Lua — or a timeout) — the binary is used and the handshake
+    decides.
+
+  A missing feature interface is not a failure: that feature degrades with a
+  note ("Interface client" above). The managed `lw` is not probed at run
+  time: the pinned release was checked when it was pinned, and a channel
+  release is checked through its published descriptor before it is
+  downloaded ("Channel upgrades" below).
 
   The setup option `binary.prefer = "managed"` (default `"system"`) puts 3
   before 2. Its consequence: the daemon's version can then depend on who
@@ -1959,9 +1997,15 @@ in-process path. In `in-process` mode nothing below happens.
   release predates the command (§16.23 "A pin older than the command"): then
   the launch is refused and the editor works without a daemon. Compatibility is
   decided after connecting, by the handshake and `Root.describe` (§19.9,
-  §19.20); a pre-launch `lw version --json` probe (step 5h.5) is only a quick
-  pre-check. Only what the plugin itself downloads is hash-checked (against
-  the hash the plugin release carries, "Plugin pin" below); binaries the user
+  §19.20); the pre-launch `lw version --json` probe (above, step 5h.5) is only
+  a quick pre-check. It describes the binary probed, not what a redirect
+  command runs in a pinned repository (§16.41): a repository pinned to an
+  incompatible release is caught by the handshake after the launch, and the
+  once-per-version rule of "Retiring an incompatible daemon" keeps the editor
+  from retiring that release's daemon in a loop. Only what the plugin itself
+  downloads is hash-checked (against the hash the plugin release carries,
+  "Plugin pin" below, or one the pinned `lw` obtained from a release's signed
+  `SHA256SUMS`, "Channel upgrades" below); binaries the user
   installed (search path, explicit) get compatibility checks only. In daemon
   mode the plugin may download its managed `lw` automatically (step 5h.3;
   `binary.download = false` turns that off): official releases only (§17.8).
@@ -2001,9 +2045,10 @@ in-process path. In `in-process` mode nothing below happens.
   content-addressed by the binary's SHA-256, so a binary is never replaced in
   place (a running daemon keeps its file). The binary the plugin wants is a
   release version, a host asset name and that asset's SHA-256: this host's
-  asset of the plugin pin ("Plugin pin" below; a platform with no published
+  asset of the plugin pin ("Plugin pin" above; a platform with no published
   asset, or a pin without this host's asset, wants none and the slot only says
-  why). When the selection reaches a wanted managed `lw` that is not
+  why), or — with `binary.channel` set — a newer compatible release of that
+  channel ("Channel upgrades" below; step 5h.5). When the selection reaches a wanted managed `lw` that is not
   installed, that decides the search: in daemon mode the observer downloads it
   — asynchronously, the editor stays in-process meanwhile and the Runtime note
   says it is downloading, from where — then launches from it (or connects to a
@@ -2041,7 +2086,9 @@ in-process path. In `in-process` mode nothing below happens.
   or installed into, and whenever an editor selects the binary (marked at
   most once an hour) or connects to a daemon whose handle names it.
   After a successful download the observer prunes the other slots (only when
-  no download runs, never without a wanted hash): only entries named exactly
+  no download runs, never without a wanted hash; the wanted hashes are the
+  pin's and, with `binary.channel` set, the accepted channel release's —
+  both are kept, "Channel upgrades" below): only entries named exactly
   64 lowercase hex digits that are real directories (a link or junction is
   skipped, never followed) whose realpath is a direct child of the realpath of
   `<editor data>/loomworks/lw`, itself a real directory, and that hold only the
@@ -2054,8 +2101,77 @@ in-process path. In `in-process` mode nothing below happens.
   its file (it keeps running; a later launch downloads it again). The file is
   unlinked, then the empty directory removed (a failure — on Windows a
   running binary — skips it). A temporary file another process left is
-  removed once a day old. No
-  compatibility probe runs before the launch (step 5h.5).
+  removed once a day old. A search-path or explicit `lw` is probed before
+  the launch ("Pre-launch probe" above, step 5h.5); the managed `lw` is not.
+
+  **Channel upgrades** (step 5h.5). The setup option `binary.channel`
+  (`"stable"` or `"unstable"`; default unset = the plugin pin only, no
+  channel lookups) lets the managed `lw` move ahead of the pin. It applies
+  only when the selection reaches the managed source, `binary.download` is
+  not `false` and the runtime mode is daemon. In the background, at most
+  once a day and on `:LoomworksDaemon connect`:
+  1. The **pinned** managed `lw` is made present and verified first (the
+     download above). Only that binary resolves a channel — never an `lw`
+     from the search path or an explicit one, which are the user's to update.
+  2. It runs `<pinned lw> release query --channel <channel> --json` (§16.42)
+     with the release-source override (`binary.release_url`) and the
+     install-folder override of "Install location" passed through, the
+     editor's data directory as working directory, and bounded fetch limits.
+     The output must name a valid release version, this host's asset and a
+     64-hex hash, and carry the release's descriptor; that descriptor must
+     pass the interface check of "Plugin pin".
+  3. A result that passes and names a version newer than the current wanted
+     one (§16.29 ordering: a pre-release ranks below its release) is
+     **accepted**: it becomes the wanted binary and is downloaded as above,
+     hash-checked against the hash from the query. A running daemon is not
+     switched — a compatible daemon is never retired for being older; the
+     next launch uses the new binary, and the Runtime note says so.
+  4. A result that fails the check is one note ("<channel> offers lw <v>,
+     which this plugin cannot use (…); staying on <v'>") and is recorded so
+     the same release is not checked again.
+
+  The wanted binary is the newer of the pin and the last accepted channel
+  result, so it never goes below the pin. The last result is kept in the
+  plugin's own file `<editor data>/loomworks/channel.json` (outside
+  `loomworks/lw/`, written atomically, never pruned); changing
+  `binary.channel` invalidates it. Switching from `unstable` to `stable`
+  keeps a newer accepted pre-release until stable overtakes it (as for lw's
+  own bundles, §16.29); unsetting `binary.channel` returns to the pin. A
+  query result older than the accepted one (a withdrawn release) is ignored.
+  Offline, a bad signature, a tampered descriptor or a pinned `lw` older than
+  the query command are one note each; the editor keeps the current wanted
+  binary, downloads nothing and retries only at the next interval or an
+  explicit connect. A release-source override supersedes the channel; the
+  query reports that and the editor notes it (§16.29: never silent).
+  `:checkhealth loomworks` reports the last check and never queries. When a
+  search-path `lw` is selected, `binary.channel` has no effect and the status
+  note says why (`binary.prefer = "managed"` changes that).
+
+  **Retiring an incompatible daemon** (step 5h.5; §19.9 "Editor
+  retirement"). On connect, a daemon is **incompatible** with the editor
+  when its transport range does not overlap the editor's (detected at the
+  handshake; `ping`, `status` and `retire` are version-stable, §19.8, so the
+  editor can still authenticate and retire it), when it does not offer
+  `loomworks.Root/1`, or when its schemas are older than the editor's (it
+  cannot read the editor's files). A missing feature interface only degrades
+  that feature ("Interface client") and is never a reason to retire. The
+  editor sends `retire` (never `stop`) only when all of these hold:
+  - the daemon is idle (no busy client, §19.9 "Busy");
+  - its schemas are not newer than the editor's;
+  - the binary the editor selected passed the interface check (the probe's
+    *compatible* verdict, or the managed `lw`);
+  - that binary's `lw_version` differs from the daemon's;
+  - the editor has not already retired a daemon of that `lw_version` for
+    this workspace in this editor session.
+
+  Then the "Retiring" path below relaunches once. A busy incompatible daemon
+  is a note ("incompatible daemon is busy; retiring when idle") and is
+  re-checked through `status` about every 30 s. When the once-per-version
+  rule stops a retirement — the successor runs the same version again,
+  typically because a repository pin redirects to it — the note says so
+  (the daemon runs lw <v> again, likely a repository pin; update the pin or
+  the plugin) and the editor does not connect to it. A compatible daemon is
+  never retired by the editor, whatever its version.
 
   **Install location.** Everything the plugin installs (host binaries,
   release bundles, and what an `lw` the plugin runs downloads for it: its
@@ -2087,11 +2203,14 @@ in-process path. In `in-process` mode nothing below happens.
   is a note. A daemon that is starting, hung, of another host, or attached is
   not launched over; the observer notes it and watches.
 - **Connect.** The observer handshakes as `client = "editor"`,
-  `role = "observer"`. It observes a daemon whose protocol equals its own and
-  whose schemas are not newer (§19.9; the host version may differ).
-  - **Incompatible daemon.** The observer notes it (protocol or schemas) and
-    closes. It neither restarts nor retires that daemon, and does not connect
-    to it again.
+  `role = "observer"`. It observes a daemon whose transport range overlaps
+  its own and whose schemas are not newer (§19.9; the host version may
+  differ; editors of protocol 10 required an equal protocol).
+  - **Incompatible daemon.** The observer notes it (transport, schemas or a
+    missing root interface) and closes, and does not connect to it again. It
+    never restarts that daemon; it retires it only under "Retiring an
+    incompatible daemon" above *(step 5h.5; until then it never retires
+    one)*.
   - **Keepalive.** While connected it sends `ping` about every 30 s.
 - **No relaunch after a stop.** When the connection drops because the daemon
   stopped (`lw daemon stop`), crashed or dropped this observer, the observer
@@ -2328,8 +2447,13 @@ runtime is deferred until that module is actively developed.
        check. *(Done: §19.16 "Plugin pin"; first seeded with
        0.1.43-beta.15, which predates the descriptor.)*
      - **5h.5** — channel upgrades through the verified `lw`
-       (`binary.channel`), compatibility-driven selection, the editor's
-       retirement of an incompatible idle daemon.
+       (`binary.channel`, `lw release query`, §16.42; §19.16 "Channel
+       upgrades"), compatibility-driven selection (§19.16 "Pre-launch
+       probe"), the editor's retirement of an incompatible idle daemon
+       (§19.16 "Retiring an incompatible daemon"). In parts: the spec; the
+       binary's `release query`; the probe in the selection; the retirement;
+       `binary.channel` (usable once the plugin pin names a release with
+       `release query`).
    - **5i — Connections** (§19.10 "Connections", §19.11, §19.15 "Task
      ownership", §19.16 End state): `lw daemon run --root <root> --stdio`
      becomes a connect-or-start relay — discovery, launch, authentication and
@@ -2343,11 +2467,17 @@ runtime is deferred until that module is actively developed.
      Ctrl-C; the process-tree kill on Windows. The idle rule becomes "no
      connections and no background work", background work bounded by a
      maximum duration. The conformance runner gets its isolated daemon per
-     case through a temporary root or a hidden test-only flag.
+     case through a temporary root or a hidden test-only flag. A relay the
+     editor starts applies the **editor's** compatibility rule (§19.9
+     "Editor retirement", §19.16 "Retiring an incompatible daemon"), not the
+     CLI's `lw_version` equality, so it never restarts a compatible daemon;
+     the editor's retirement then goes through the relay connection.
    - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
      the short idle grace (a named constant of about 30-60 s, overridable);
      background results written atomically to the cache with a timestamp and
-     their inputs' fingerprint, an interrupted part not written, and reused
+     their inputs' fingerprint (which includes the daemon's `lw_version`, so
+     results of a retired daemon of another version are not reused), an
+     interrupted part not written, and reused
      on the next start when their inputs are unchanged.
    - **5j–5o — Editor consumers move to interfaces**, each step landing its
      interfaces with their schemas and transcripts: `view.Header/1` and

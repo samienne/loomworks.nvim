@@ -275,9 +275,13 @@ or a file was viewed — run only what trusted state names:
   executed passively.
 - **The editor's host binary** (§19.16): opening a workspace in daemon mode
   may download and run **official releases only** (the plugin-managed `lw`,
-  verified against the hash the plugin pin carries, §19.16 "Plugin pin");
-  never a binary or a URL
-  that a workspace file names.
+  verified against the hash the plugin pin carries, §19.16 "Plugin pin", or
+  against a hash the plugin-pinned `lw` obtained from an official release's
+  signed `SHA256SUMS`, §19.16 "Channel upgrades", §16.42); never a binary, a
+  URL or a channel that a workspace file names. The channel and the release
+  source come only from the editor's setup and the user's environment, and
+  the channel query and the pre-launch probe (§19.16) never run with the
+  workspace as working directory or with workspace-sourced environment.
 - **Version-control queries** (§16.25–§16.27, status hints, the `lw health`
   submodule report §16.31) disable
   repository-configured command hooks (file-system monitor, hooks path) on

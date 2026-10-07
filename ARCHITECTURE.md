@@ -859,6 +859,18 @@ re-cut onto master step by step; this section is expanded as each step lands.
   verdict, shown by the observer's note, `:LoomworksDaemon status` and
   `health.lua` (`:checkhealth loomworks`). Reads no `lw.pin` and nothing of
   lw's data directory.
+  *Planned, step 5h.5 (spec §19.16 "Pre-launch probe", "Channel upgrades",
+  "Retiring an incompatible daemon"):* an async `lw version --json` probe of
+  a PATH / explicit candidate (3 s, data-dir cwd, cached per process by
+  path+size+mtime, `needs.check` verdict compatible / incompatible / unknown;
+  `resolve` stays synchronous over cached verdicts, `Observer:_launch` probes
+  first); `managed.wanted` = the newer of the pin and the accepted
+  `binary.channel` result persisted in `<stdpath data>/loomworks/channel.json`
+  (obtained by running the pinned managed lw's `release query --channel <c>
+  --json`, spec §16.42, then `needs.check` on its descriptor); the observer
+  retires an idle incompatible daemon (no transport overlap, no
+  `loomworks.Root/1`, older schemas) once per `lw_version` per workspace per
+  session.
 - `provision/fetch.lua` (step 5h.3) — `ensure(wanted, opts, cb)`: async
   download of a `Wanted` record (`{ sha256, version, asset }`) into
   `<dir>/<sha256>.<pid>.<n>.dl` (`uv.fs_copyfile` with `excl` for a local
@@ -874,7 +886,9 @@ re-cut onto master step by step; this section is expanded as each step lands.
   (on selection and on connect), which `prune` honours (`UNUSED_S`). The
   observer's `_download` calls it when the selection carries `download`, then
   restarts (connect or `_launch`), and `_prune` runs `provision/cache.lua`
-  `prune` (deletion safety rule 11) with the in-use binaries (`_binary`, the
+  `prune` (deletion safety rule 11) with the wanted hash (planned, step 5h.5:
+  the wanted hashes, the pin's and the accepted channel release's) and the
+  in-use binaries (`_binary`, the
   observed and the live daemon's handle `exe`). `provision/sha256.lua`:
   `vim.fn.sha256` after a known-answer check on a NUL/high-byte string, else
   a pure-Lua (bit) SHA-256.
