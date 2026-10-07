@@ -41,6 +41,34 @@ M.REDIRECT_SUBCOMMANDS = {
   daemon = { run = true, restart = true },
 }
 
+-- The first release that has each redirected command a pinned lw may lack
+-- (spec §16.23 "A pin older than the command"). A pin naming an older release
+-- is never redirected to for it: that host would only fail with "unknown
+-- command". Keys: the command, `<command> <sub>`, and `daemon run --stdio`
+-- for the editor's form. Every other redirect command predates version pins.
+M.REDIRECT_SINCE = {
+  reset = "0.1.27",                           -- `lw reset` (#48)
+  ["daemon run"] = "0.1.43-beta.5",           -- lw daemon run|stop|kill|restart (#106)
+  ["daemon restart"] = "0.1.43-beta.5",       -- (#106)
+  ["daemon run --stdio"] = "0.1.43-beta.15",  -- the stdio transport (#152)
+}
+
+--- The first release that has the redirected command (`cmd`, `sub`, with
+--- `--stdio` when `stdio`), or nil when every pinnable release has it.
+--- @param cmd string|nil
+--- @param sub string|nil
+--- @param stdio boolean|nil
+--- @return string|nil
+function M.redirect_since(cmd, sub, stdio)
+  if cmd == nil then return nil end
+  if M.REDIRECT_SUBCOMMANDS[cmd] then
+    if sub == nil then return nil end
+    local key = cmd .. " " .. sub
+    return (stdio and M.REDIRECT_SINCE[key .. " --stdio"]) or M.REDIRECT_SINCE[key]
+  end
+  return M.REDIRECT_SINCE[cmd]
+end
+
 --- Is `v` a safe release version? THE TRUST BOUNDARY: a version flows into
 --- download URLs and into rm_rf'd cache paths, so it must not carry path
 --- separators, `..`, or whitespace. Whitelist an alphanumeric-led token of
@@ -212,8 +240,11 @@ function M.root_option(args)
 end
 
 --- Decide what a global host should do about a pin. Pure — all inputs explicit.
---- @param o { command?, sub?, pin?, self_version?, pinned_sentinel?, no_pin?, lw_override?, dev? }
---- @return "in-process"|"redirect"|"bypass"|"no-pin" action, string reason
+--- "unsupported": the pinned release predates the command (REDIRECT_SINCE);
+--- the third value is the release that introduced it. The caller does not
+--- redirect, and leaves the workspace daemon to the pinned lw (spec §16.23).
+--- @param o { command?, sub?, stdio?, pin?, self_version?, pinned_sentinel?, no_pin?, lw_override?, dev? }
+--- @return "in-process"|"redirect"|"bypass"|"no-pin"|"unsupported" action, string reason, string|nil since
 function M.decide(o)
   if o.pinned_sentinel then return "in-process", "already running as the pinned host" end
   if o.dev then return "bypass", "development source" end
@@ -225,6 +256,10 @@ function M.decide(o)
   if not o.pin then return "no-pin", "no pin in this workspace" end
   if o.self_version and o.pin.version == o.self_version then
     return "in-process", "pinned version == self"
+  end
+  local since = M.redirect_since(o.command, o.sub, o.stdio)
+  if since and require("boot.paths").compare_versions(o.pin.version, since) < 0 then
+    return "unsupported", "pinned version " .. tostring(o.pin.version) .. " predates it", since
   end
   return "redirect", "pinned version " .. tostring(o.pin.version)
 end

@@ -462,12 +462,42 @@ function M.rename_with_retry(src, dst, opts)
   return false, last
 end
 
---- Remove installed releases beyond the `keep` newest (never touches the
---- version named in `except`). Best-effort.
-function M.gc(keep, except)
+--- A path resolved (realpath when it exists), forward-slashed, without a
+--- trailing slash, lowercased on Windows — for identity comparisons only.
+local function canon_path(p)
+  if type(p) ~= "string" or p == "" then return nil end
+  local rp = uv.fs_realpath(p) or p
+  rp = rp:gsub("\\", "/"):gsub("/+$", "")
+  if paths.is_windows then rp = rp:lower() end
+  return rp
+end
+
+--- Remove installed releases beyond the `keep` newest. Best-effort, and
+--- deletion-safe (spec §16.22 "Install folder"): only entries
+--- `installed_releases` lists (a `lua-<release version>` real bundle
+--- directory, never a link/junction), re-checked right before removal, whose
+--- resolved path is a direct child of the resolved install folder
+--- (separator-bounded); never the version named in `except`, nor the bundle
+--- this process runs from (`running_root`, default the loaded system Lua root).
+--- @param keep? integer how many newest releases to keep (default 3)
+--- @param except? string a version never removed (the one just installed)
+--- @param running_root? string the running bundle's root, never removed
+function M.gc(keep, except, running_root)
+  local base = canon_path(paths.install_dir())
+  if not base then return end
+  local running = canon_path(running_root or rawget(_G, "__loomworks_luaroot"))
   local rels = paths.installed_releases()
   for i = (keep or 3) + 1, #rels do
-    if rels[i].ver ~= except then paths.rm_rf(rels[i].dir) end
+    local r = rels[i]
+    if r.ver ~= except and paths.is_release_bundle_dir(r.dir) then
+      local rp = canon_path(r.dir)
+      local parent, name = (rp or ""):match("^(.*)/([^/]+)$")
+      local want = "lua-" .. r.ver
+      if paths.is_windows then want = want:lower() end
+      if rp and rp ~= running and parent == base and name == want then
+        paths.rm_rf(r.dir)
+      end
+    end
   end
 end
 
@@ -529,9 +559,21 @@ function M.self_update(opts)
   end
 
   local version = manifest.version
+  -- `version` names a directory that is replaced (rm_rf) below and ranked by
+  -- installed_releases: only a strict release version is accepted.
+  if not paths.is_release_version(version) then
+    return nil, "manifest names an invalid release version '" .. tostring(version) .. "'"
+  end
   -- Release bundles go to the install folder (spec §16.22 "Install folder").
   local install = paths.install_dir()
   local dest_dir = install .. "/lua-" .. version
+  -- The install folder may be any user-chosen directory: a `lua-<version>`
+  -- entry there that is not a real bundle directory (a link, a junction, a
+  -- foreign folder) is never replaced or removed.
+  if uv.fs_lstat(dest_dir) and not paths.is_release_bundle_dir(dest_dir) then
+    return nil, "the install folder already holds '" .. dest_dir ..
+      "', which is not a loomworks release bundle - move it away and re-run"
+  end
   if uv.fs_stat(dest_dir) and not opts.force then
     return { version = version, updated = false, dir = dest_dir,
       channel_overridden = channel_overridden }
@@ -560,7 +602,7 @@ function M.self_update(opts)
   local okr, er = M.rename_with_retry(stage, dest_dir)
   if not okr then paths.rm_rf(stage); return nil, "activate: " .. tostring(er) end
 
-  M.gc(3, version)
+  M.gc(3, version, opts.running_root)
   return { version = version, updated = true, dir = dest_dir,
     channel_overridden = channel_overridden }
 end

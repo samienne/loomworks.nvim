@@ -149,8 +149,10 @@ local command, command_sub = pin.command_words(forwarded)
 -- launcher passes the user's cwd. A daemon started for a workspace (`lw
 -- daemon run --root <dir>`, which runs from the per-user state directory)
 -- names its workspace with --root (spec §16.23).
-local pin_start = paths.norm(getenv("LW_ROOT"))
-if not pin_start and command == "daemon" then pin_start = paths.norm(pin.root_option(forwarded)) end
+-- For a daemon command its --root wins over LW_ROOT: a launcher's LW_ROOT is
+-- the user's cwd, which may lie in another (nested / submodule) pinned root.
+local pin_start = (command == "daemon") and paths.norm(pin.root_option(forwarded)) or nil
+pin_start = pin_start or paths.norm(getenv("LW_ROOT"))
 local pin_root = pin.find_pin_root(pin_start or uv.cwd())
 
 -- The install folder (spec §16.22): a relative LOOMWORKS_INSTALL_DIR is not
@@ -364,7 +366,8 @@ elseif host_command == "self-update" then
   -- The bundle that was newest before this update: "what's new" is measured
   -- from it (spec §16.32).
   local prev_bundle = (paths.installed_releases()[1] or {}).ver
-  local res, err, info = require("boot.update").self_update({ force = force, channel = channel })
+  local res, err, info = require("boot.update").self_update({ force = force, channel = channel,
+    running_root = luaroot })
   if not res and info and info.host_incompatible then
     -- The (verified) release needs a newer host than this one. Replace the
     -- host first — otherwise the first release raising min_host_version would
@@ -510,9 +513,12 @@ do
   local self_version = (source_kind == "release" and luaroot)
     and luaroot:match("lua%-(.+)$") or nil
   local p = pin_root and pin.read(pin_root)
+  local stdio = false
+  for _, v in ipairs(forwarded) do if v == "--stdio" then stdio = true end end
   local decision = {
     command = command,
     sub = command_sub,
+    stdio = stdio,
     pin = p,
     self_version = self_version,
     pinned_sentinel = pinned_sentinel,
@@ -520,11 +526,27 @@ do
     lw_override = lw_override,
     dev = dev_opt_in,
   }
-  local action = pin.decide(decision)
+  local action, _, since = pin.decide(decision)
   -- A command this host runs itself in a repository that pins another lw
   -- leaves the workspace daemon to the pinned lw (spec §16.23): the CLI's
   -- ensure step neither starts nor replaces one (loomworks.daemon.ensure).
   if action ~= "redirect" then _G.__loomworks_foreign_pin = pin.foreign_pin(decision) end
+  -- The pinned lw predates the command (spec §16.23 "A pin older than the
+  -- command"): never redirect to a host that would only say "unknown command".
+  -- A daemon this host would start instead is the pinned lw's to start: refuse
+  -- (the editor then runs without a daemon, §19.16). Anything else runs here,
+  -- leaving the workspace daemon alone (foreign_pin above).
+  if action == "unsupported" then
+    local what = "lw " .. command .. (command_sub and pin.REDIRECT_SUBCOMMANDS[command]
+      and (" " .. command_sub .. ((stdio and command_sub == "run") and " --stdio" or "")) or "")
+    if command == "daemon" then
+      io.stderr:write("lw: this repo pins lw " .. p.version .. ", which predates `" .. what ..
+        "` (added in " .. since .. "); the workspace daemon is left to the pinned lw - not started\n")
+      exit(1)
+    end
+    io.stderr:write("lw: this repo pins lw " .. p.version .. ", which predates `" .. what ..
+      "` (added in " .. since .. "); running it as this lw, without the workspace daemon\n")
+  end
   if action == "redirect" then
     local asset, aerr = pin.detect_asset()
     if not asset then

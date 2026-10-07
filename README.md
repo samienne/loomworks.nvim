@@ -2185,6 +2185,11 @@ another folder (the editor plugin sets it for an `lw` it runs, so that one's
 downloads stay in the editor's data); settings, the machine key, installed
 modules, the daemons' sockets, identity and logs stay in the data directory for
 every `lw`, and housekeeping and `lw cleanup` never look in the install folder.
+`lw` only lists, runs or removes the `lua-<version>` release folders it
+installed there (a real folder holding `loomworks/cli.lua`), never a link or
+anything else, so the install folder may be shared with other files. A pinned
+release older than `LOOMWORKS_INSTALL_DIR` ignores it: run by a redirect, it
+keeps its own copy of the pinned release in the data directory.
 
 A `lw` that is killed or loses power mid-operation can leave a partial
 download, a staging directory or a temporary file behind. The next `lw`

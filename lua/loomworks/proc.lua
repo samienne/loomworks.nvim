@@ -447,6 +447,16 @@ function M.start_epoch(st)
     return nil
 end
 
+--- Every process's parent, from one snapshot: `{ [pid] = ppid }`.
+--- @return table<integer, integer>
+function M.parents()
+    local out = {}
+    for _, e in ipairs(snapshot()) do
+        if e.pid and e.ppid and e.pid ~= e.ppid then out[e.pid] = e.ppid end
+    end
+    return out
+end
+
 --- The descendants of `pid` (children first-level first), from one snapshot,
 --- each with the start time it had then: `{ pid, start }`. A descendant whose
 --- start time cannot be read is left out — it is never signalled unverified.

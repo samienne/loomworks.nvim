@@ -190,20 +190,61 @@ function M.version_gt(a, b)
   return compare_versions(a, b) > 0
 end
 
+--- Is `ver` the version of a lw release bundle directory name (`lua-<ver>`)?
+--- Strictly `<n>.<n>.<n>` with an optional `-<prerelease>` (dot-separated
+--- alphanumeric identifiers), and safe as a path segment (pin.valid_version).
+--- The install folder can be any user-chosen directory (LOOMWORKS_INSTALL_DIR),
+--- so a looser match would rank or delete foreign `lua-*` folders
+--- (`lua-language-server`) — spec §16.22 "Install folder".
+--- @param ver any
+--- @return boolean
+function M.is_release_version(ver)
+  if type(ver) ~= "string" then return false end
+  if not require("boot.pin").valid_version(ver) then return false end
+  if ver:match("^%d+%.%d+%.%d+$") then return true end
+  local pre = ver:match("^%d+%.%d+%.%d+%-(.+)$")
+  if not pre then return false end
+  for ident in (pre .. "."):gmatch("([^.]*)%.") do
+    if not ident:match("^[%w%-]+$") then return false end
+  end
+  return true
+end
+
+--- Is `dir` a real (not linked) release bundle directory: a directory (lstat:
+--- a symlink or junction is never one) holding a real `loomworks/` directory
+--- with the bundle's CLI entry `loomworks/cli.lua` as a regular file — what
+--- every bundle lw installs carries (scripts/release/build_bundle.sh). A
+--- foreign `lua-5.4.6` source tree does not.
+--- @param dir string
+--- @return boolean
+function M.is_release_bundle_dir(dir)
+  local st = uv.fs_lstat(dir)
+  if not st or st.type ~= "directory" then return false end
+  local lw = uv.fs_lstat(dir .. "/loomworks")
+  if not lw or lw.type ~= "directory" then return false end
+  local cli = uv.fs_lstat(dir .. "/loomworks/cli.lua")
+  return cli ~= nil and cli.type == "file"
+end
+
 --- List installed release versions as { {ver=, dir=}, ... }, newest first.
---- Release bundles live in the install folder (`install_dir()`).
+--- Release bundles live in the install folder (`install_dir()`). Only
+--- `lua-<release version>` entries that are real bundle directories
+--- (`is_release_bundle_dir`) are listed: this list ranks what runs
+--- (`newest_release_root`) and what self-update's gc removes, and the install
+--- folder may be a directory shared with unrelated files.
 function M.installed_releases()
   local base = M.install_dir()
   local scan = uv.fs_scandir(base)
   local out = {}
   if scan then
     while true do
-      local name, typ = uv.fs_scandir_next(scan)
+      local name = uv.fs_scandir_next(scan)
       if not name then break end
       local ver = name:match("^lua%-(.+)$")
-      local is_dir = typ == "directory"
-        or (uv.fs_stat(base .. "/" .. name) or {}).type == "directory"
-      if ver and is_dir then out[#out + 1] = { ver = ver, dir = base .. "/" .. name } end
+      local dir = base .. "/" .. name
+      if ver and M.is_release_version(ver) and M.is_release_bundle_dir(dir) then
+        out[#out + 1] = { ver = ver, dir = dir }
+      end
     end
   end
   table.sort(out, function(x, y) return M.version_gt(x.ver, y.ver) end)

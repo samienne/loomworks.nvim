@@ -639,7 +639,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   root's R and handle (live / starting / hung / stray / unknown_root; a
   daemon with no R yet that started under `STARTING_GRACE_S` ago is
   starting), plus `same_key` from the handle's `key_id` against
-  `auth.own_key_id()` (read-only; never creates the machine key).
+  `auth.own_key_id()` (read-only; never creates the machine key). A pin
+  redirect's wrapper (the global lw waiting on the pinned `daemon run`, same
+  `--root`, its parent) is dropped by `drop_redirect_wrappers(found,
+  proc.parents())`, so it is never listed or killed as a stray.
   `command.lua` renders it (`lw daemon list [--json]`; table rows and the
   summary come from one list via `command.rows` / `discover.counts`) and drives
   `stop --all` / `kill --all` through the per-workspace `M.stop` with a host
@@ -2414,7 +2417,10 @@ with no prior install (spec §16.21–16.24). Layers:
   JSON), select the host-binary asset for the platform (`HOST_ASSETS` keyed by
   `<os>/<arch>` → the real release asset names), walk up for the pin root, and
   `decide{…}` the redirect action (`in-process` | `redirect` | `bypass` |
-  `no-pin`). The redirect set is `REDIRECT_COMMANDS` (every routed command +
+  `no-pin` | `unsupported` — the pin predates the command per
+  `REDIRECT_SINCE`/`redirect_since(cmd, sub, stdio)`: main.lua refuses a
+  `daemon run`/`restart` (exit 1) and runs anything else itself, with
+  `foreign_pin` set). The redirect set is `REDIRECT_COMMANDS` (every routed command +
   `configure`) plus `REDIRECT_SUBCOMMANDS` (`daemon run` / `daemon restart`,
   the forms that start a workspace daemon); `command_words(args)` yields the
   command and its sub-command (skipping global flags and `--root <dir>`), and
@@ -2510,7 +2516,15 @@ with no prior install (spec §16.21–16.24). Layers:
   (absolute only; `install_dir_override` returns the reason it ignored a relative
   one) else `data_dir()`; release bundles (`installed_releases`, `self_update`,
   `gc`) and the release-notes record use it too, while modules, trust, daemon
-  state and housekeeping stay on `data_dir()` (spec §16.22 "Install folder"). Nothing the host executes is read from the repository: a clone
+  state and housekeeping stay on `data_dir()` (spec §16.22 "Install folder").
+  Since the install folder may be any directory, `installed_releases` lists only
+  `lua-<ver>` entries with `paths.is_release_version(ver)` (strict
+  `<n>.<n>.<n>[-pre]` + `pin.valid_version`) that `paths.is_release_bundle_dir`
+  accepts (lstat: real dirs `lua-<ver>/` and `loomworks/`, regular
+  `loomworks/cli.lua`); `gc(keep, except, running_root)` re-checks each before
+  `rm_rf`, requires its realpath to be a direct child of the install folder's,
+  and never removes `except` or the running bundle; `self_update` refuses a
+  `lua-<ver>` there that is not such a bundle. Nothing the host executes is read from the repository: a clone
   can ship files under its own `.nvim/cache/`, so a repo-local "already
   extracted" bundle or cached binary is never trusted by presence. Both reuse
   `download` + `verify.verify_file_sha256` + `extract_zip` + `rename_with_retry`;

@@ -1193,6 +1193,93 @@ do
   end
 end
 
+print("boot.pin — a pin older than the command is never redirected to (§16.23)")
+do
+  local pin = require("boot.pin")
+  local function act(o) return (pin.decide(o)) end
+  local function P(v) return { version = v, hashes = {} } end
+  eq(pin.redirect_since("reset"), "0.1.27", "reset: since 0.1.27")
+  eq(pin.redirect_since("daemon", "run"), "0.1.43-beta.5", "daemon run: since 0.1.43-beta.5")
+  eq(pin.redirect_since("daemon", "run", true), "0.1.43-beta.15", "daemon run --stdio: since 0.1.43-beta.15")
+  eq(pin.redirect_since("daemon", "restart", true), "0.1.43-beta.5", "--stdio only matters for run")
+  eq(pin.redirect_since("build"), nil, "build: every pinnable release has it")
+  eq(act({ command = "reset", pin = P("0.1.26"), self_version = "0.1.44" }), "unsupported",
+    "reset under a pin older than lw reset -> unsupported")
+  eq(act({ command = "reset", pin = P("0.1.27"), self_version = "0.1.44" }), "redirect",
+    "reset under a pin that has it -> redirect")
+  eq(act({ command = "daemon", sub = "run", stdio = true, pin = P("0.1.43-beta.14"), self_version = "0.1.44" }),
+    "unsupported", "daemon run --stdio under a pin before the stdio transport -> unsupported")
+  eq(act({ command = "daemon", sub = "run", stdio = true, pin = P("0.1.43-beta.15"), self_version = "0.1.44" }),
+    "redirect", "daemon run --stdio under a pin that has it -> redirect")
+  eq(act({ command = "daemon", sub = "run", pin = P("0.1.43-beta.14"), self_version = "0.1.44" }),
+    "redirect", "daemon run (socket) under beta.14 -> redirect (numeric pre-release order)")
+  eq(act({ command = "daemon", sub = "restart", pin = P("0.1.42"), self_version = "0.1.44" }),
+    "unsupported", "daemon restart under 0.1.42 -> unsupported")
+  eq(act({ command = "build", pin = P("0.1.20"), self_version = "0.1.44" }), "redirect",
+    "build under an old pin still redirects")
+  local _, _, since = pin.decide({ command = "reset", pin = P("0.1.20"), self_version = "0.1.44" })
+  eq(since, "0.1.27", "decide names the release that introduced the command")
+  eq(pin.foreign_pin({ pin = P("0.1.20"), self_version = "0.1.44" }), "0.1.20",
+    "the daemon stays the pinned lw's (foreign_pin) when not redirected")
+end
+
+print("host — daemon commands under a too-old pin, and --root over LW_ROOT (§16.23)")
+do
+  local sb = paths.norm(root .. "/tests/.tmp-oldpin"); paths.rm_rf(sb)
+  local repo, other = sb .. "/repo", sb .. "/other"
+  paths.mkdirp(repo); paths.mkdirp(other)
+  local function write_pin(dir, v)
+    local f = assert(io.open(dir .. "/lw.pin", "wb"))
+    f:write(require("boot.pin").serialize(v, { [require("boot.pin").bundle_asset(v)] = string.rep("a", 64) }))
+    f:close()
+  end
+  write_pin(repo, "0.1.43-beta.10")
+  write_pin(other, "0.1.43-beta.20")
+  local base_env = {}
+  local override = { LOCALAPPDATA = sb, XDG_DATA_HOME = sb, APPDATA = sb, XDG_CONFIG_HOME = sb,
+    LOOMWORKS_RELEASE_URL = sb .. "/no-mirror" }
+  for k, v in pairs(uv.os_environ()) do
+    if override[k] == nil and k ~= "LOOMWORKS_LUA" and k ~= "LOOMWORKS_LW" and k ~= "LOOMWORKS_PINNED"
+        and k ~= "LW_ROOT" and k ~= "LOOMWORKS_INSTALL_DIR" then
+      base_env[#base_env + 1] = k .. "=" .. v
+    end
+  end
+  for k, v in pairs(override) do base_env[#base_env + 1] = k .. "=" .. v end
+  local function host(args, extra)
+    local env = {}
+    for _, e in ipairs(base_env) do env[#env + 1] = e end
+    for k, v in pairs(extra or {}) do env[#env + 1] = k .. "=" .. v end
+    local logf = sb .. "/out.txt"
+    local fd = assert(uv.fs_open(logf, "w", 420))
+    local done, code = false, nil
+    local argv = { "lua", "--" }
+    for _, a in ipairs(args) do argv[#argv + 1] = a end
+    local h = uv.spawn(uv.exepath(), { args = argv, cwd = root, env = env, stdio = { nil, fd, fd } },
+      function(c) code = c; done = true end)
+    if h then
+      while not done do uv.run("once") end
+      h:close()
+    end
+    uv.fs_close(fd)
+    return code, slurp(logf) or ""
+  end
+  local code, out = host({ "daemon", "run", "--stdio", "--root", repo })
+  ok(code == 1 and out:find("predates `lw daemon run --stdio` (added in 0.1.43-beta.15)", 1, true)
+    and out:find("not started", 1, true) and not out:find("fetching", 1, true),
+    "daemon run --stdio under a pin before it: refused, nothing fetched  (exit " .. tostring(code) .. ": " .. out .. ")")
+  code, out = host({ "daemon", "restart", "--root", other }, nil)
+  ok(out:find("this repo pins lw 0.1.43-beta.20; fetching", 1, true) ~= nil,
+    "daemon restart under a pin that has it: redirected  (got " .. out .. ")")
+  -- A launcher's LW_ROOT (the user's cwd) must not override the daemon's --root.
+  code, out = host({ "daemon", "run", "--stdio", "--root", repo }, { LW_ROOT = other })
+  ok(code == 1 and out:find("pins lw 0.1.43-beta.10", 1, true) ~= nil,
+    "daemon run: --root wins over LW_ROOT  (exit " .. tostring(code) .. ": " .. out .. ")")
+  code, out = host({ "daemon", "run", "--stdio", "--root", other }, { LW_ROOT = repo })
+  ok(out:find("pins lw 0.1.43-beta.20; fetching", 1, true) ~= nil,
+    "daemon run: --root wins over LW_ROOT, the other way  (got " .. out .. ")")
+  paths.rm_rf(sb)
+end
+
 print("boot.paths — install folder (LOOMWORKS_INSTALL_DIR)")
 do
   local function with_env(name, value, fn)
@@ -1205,7 +1292,10 @@ do
   local data = paths.norm(root .. "/tests/.tmp-install/data")
   local inst = paths.norm(root .. "/tests/.tmp-install/inst")
   paths.rm_rf(root .. "/tests/.tmp-install")
-  paths.mkdirp(data .. "/lua-1.0.0"); paths.mkdirp(inst .. "/lua-2.0.0")
+  for _, d in ipairs({ data .. "/lua-1.0.0", inst .. "/lua-2.0.0" }) do
+    paths.mkdirp(d .. "/loomworks")
+    local f = assert(io.open(d .. "/loomworks/cli.lua", "wb")); f:write("return {}\n"); f:close()
+  end
   with_env("LOOMWORKS_DATA_DIR", data, function()
     with_env("LOOMWORKS_INSTALL_DIR", nil, function()
       eq(paths.install_dir(), data, "unset: the install folder is the data dir")
@@ -2875,7 +2965,9 @@ do
   local sb = root .. "/tests/.tmp-relorder"; paths.rm_rf(sb); paths.mkdirp(sb)
   uv.os_setenv("LOCALAPPDATA", sb); uv.os_setenv("XDG_DATA_HOME", sb)
   for _, v in ipairs({ "0.1.0", "0.2.0-beta.1", "0.2.0" }) do
-    paths.mkdirp(paths.data_dir() .. "/lua-" .. v)
+    local d = paths.data_dir() .. "/lua-" .. v
+    paths.mkdirp(d .. "/loomworks")
+    local f = assert(io.open(d .. "/loomworks/cli.lua", "wb")); f:write("return {}\n"); f:close()
   end
   local rels = paths.installed_releases()
   eq(rels[1] and rels[1].ver, "0.2.0", "newest = the full release")
@@ -2885,6 +2977,67 @@ do
   ok(uv.fs_stat(paths.data_dir() .. "/lua-0.2.0"), "gc keeps the newest full release")
   ok(not uv.fs_stat(paths.data_dir() .. "/lua-0.2.0-beta.1"), "gc removes the pre-release below it")
   ok(not uv.fs_stat(paths.data_dir() .. "/lua-0.1.0"), "gc removes the older release")
+  paths.rm_rf(sb)
+end
+
+print("boot.paths — installed_releases + gc in a shared install folder (§16.22 Install folder)")
+do
+  -- LOOMWORKS_INSTALL_DIR may name any folder (here: a stand-in for $HOME).
+  -- Only real `lua-<release version>` bundle directories are listed, ranked
+  -- or removed; foreign lua-* folders, links/junctions, and the running bundle
+  -- never are.
+  local win = package.config:sub(1, 1) == "\\"
+  local sb = paths.norm(root .. "/tests/.tmp-relshared"); paths.rm_rf(sb)
+  local home, outside = sb .. "/home", sb .. "/outside"
+  local function put(p, body)
+    paths.mkdirp((p:gsub("/[^/]*$", "")))
+    local f = assert(io.open(p, "wb")); f:write(body or "x"); f:close()
+  end
+  local function bundle(d) put(d .. "/loomworks/cli.lua", "return {}\n") end
+  bundle(home .. "/lua-0.1.40"); bundle(home .. "/lua-0.1.41"); bundle(home .. "/lua-0.1.42")
+  bundle(home .. "/lua-0.1.39"); bundle(home .. "/lua-0.1.38")
+  put(home .. "/lua-language-server/bin/lua-language-server", "binary")
+  put(home .. "/lua-5.4.6/src/lua.c", "int main(){}")        -- ranks above 0.1.x by version
+  bundle(home .. "/lua-9.9.9-rc..1")                          -- unsafe version
+  bundle(home .. "/lua-1.0.0+meta")                           -- not a strict release version
+  bundle(outside .. "/lua-7.7.7"); put(outside .. "/precious.txt", "keep")
+  local linked = uv.fs_symlink(outside .. "/lua-7.7.7", home .. "/lua-7.7.7", win and { junction = true } or { dir = true })
+  local old_env = uv.os_getenv("LOOMWORKS_INSTALL_DIR")
+  uv.os_setenv("LOOMWORKS_INSTALL_DIR", home)
+  local okp, perr = pcall(function()
+    local vers = {}
+    for _, r in ipairs(paths.installed_releases()) do vers[#vers + 1] = r.ver end
+    eq(table.concat(vers, ","), "0.1.42,0.1.41,0.1.40,0.1.39,0.1.38",
+      "only real lua-<release> bundle directories are listed")
+    eq(paths.newest_release_root(), home .. "/lua-0.1.42", "a foreign lua-5.4.6 never ranks as newest")
+    ok(paths.is_release_version("0.2.0-beta.1") and paths.is_release_version("1.2.3"),
+      "strict release versions accepted")
+    ok(not paths.is_release_version("5.4") and not paths.is_release_version("language-server")
+      and not paths.is_release_version("1.0.0+meta") and not paths.is_release_version("1.0.0-rc..1"),
+      "anything else refused")
+    -- keep 1, except 0.1.41, running bundle 0.1.39: only 0.1.40 and 0.1.38 go.
+    update.gc(1, "0.1.41", home .. "/lua-0.1.39")
+    ok(uv.fs_stat(home .. "/lua-0.1.42"), "gc keeps the newest")
+    ok(uv.fs_stat(home .. "/lua-0.1.41/loomworks/cli.lua"), "gc never removes `except`")
+    ok(uv.fs_stat(home .. "/lua-0.1.39/loomworks/cli.lua"), "gc never removes the running bundle")
+    ok(not uv.fs_stat(home .. "/lua-0.1.40"), "gc removes an old bundle")
+    ok(not uv.fs_stat(home .. "/lua-0.1.38"), "gc removes another old bundle")
+    ok(uv.fs_stat(home .. "/lua-language-server/bin/lua-language-server"), "gc never touches lua-language-server")
+    ok(uv.fs_stat(home .. "/lua-5.4.6/src/lua.c"), "gc never touches a foreign lua-5.4.6")
+    ok(uv.fs_stat(home .. "/lua-1.0.0+meta/loomworks/cli.lua"), "gc never touches a non-release name")
+    if linked then
+      ok(uv.fs_stat(outside .. "/lua-7.7.7/loomworks/cli.lua") and uv.fs_stat(outside .. "/precious.txt"),
+        "a linked lua-<ver> is neither listed nor followed by gc")
+      -- Even the running-bundle guard aside, a link is never listed.
+      update.gc(0, nil, nil)
+      ok(uv.fs_stat(outside .. "/lua-7.7.7/loomworks/cli.lua"), "gc(0) still never follows the link")
+    else
+      ok(true, "(symlink/junction not creatable here; linked-bundle check skipped)")
+    end
+  end)
+  if old_env then uv.os_setenv("LOOMWORKS_INSTALL_DIR", old_env) else uv.os_unsetenv("LOOMWORKS_INSTALL_DIR") end
+  if linked then uv.fs_unlink(home .. "/lua-7.7.7"); pcall(uv.fs_rmdir, home .. "/lua-7.7.7") end
+  if not okp then error(perr, 0) end
   paths.rm_rf(sb)
 end
 

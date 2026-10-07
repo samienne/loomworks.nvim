@@ -60,10 +60,38 @@ describe("binary descriptor", function()
         assert.is_true(snap.internal)
     end)
 
-    it("equals what a daemon's Root.describe reports for the same objects", function()
-        local reg = interfaces.new(nil, { validate_out = false })
-        core.mount(reg, {})
-        assert.same(reg:object_list(true), descriptor.describe().objects)
+    it("equals what a real daemon's Root.describe reports for its core objects", function()
+        -- A daemon of this build on a real workspace, asked over the loopback
+        -- transport (§19.1): its core-owned objects, binary, transport and
+        -- root methods are the descriptor's; what modules mount is not in it.
+        _G.LOOMWORKS_CLI_NO_AUTORUN = true
+        local server_mod = require("loomworks.daemon.server")
+        local client = require("loomworks.daemon.client")
+        local trust = require("loomworks.trust")
+        local H = require("tests.daemon_helpers")
+        trust._set_key_path(H.tmp() .. "/trust.key")
+        local srv = server_mod.new(H.workspace(), { exit = function() end, tick_ms = 100 })
+        -- The build service a daemon runs mounts the core interfaces.
+        require("loomworks.daemon.service").attach(srv, require("loomworks.cli")._daemon_build_host())
+        local ok, err = pcall(function()
+            assert(srv:start_attached({ command = "build" }))
+            local conn = assert(client.loopback_session(srv))
+            local d = assert(client.call_sync(conn, "/", "loomworks.Root", 1, "describe", {}))
+            conn:close()
+            local core_objects = {}
+            for _, o in ipairs(d.objects) do
+                if o.owner == "core" then core_objects[#core_objects + 1] = o end
+            end
+            local doc = descriptor.describe()
+            assert.is_true(#core_objects > 1, vim.inspect(d.objects))
+            assert.same(core_objects, doc.objects)
+            assert.same(d.transport, doc.transport)
+            assert.same(d.root_methods, doc.root_methods)
+            assert.equals(d.binary.lw_version, doc.binary.lw_version)
+        end)
+        if not srv.stopped then srv:stop("test end", 0) end
+        trust._set_key_path(nil)
+        assert(ok, err)
     end)
 
     it("encodes canonically: sorted keys, stable bytes, round-trips", function()

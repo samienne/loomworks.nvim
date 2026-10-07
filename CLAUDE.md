@@ -159,7 +159,9 @@ execute_deletion, clean_*, delete_*, nuke_cache, `Core:_nuke_files` /
 pruning), the device-side `rm` in `remote/staging.lua` (`device_remove`,
 `clean`) and `lw device clean`, `boot/repo_meta.prune_cache` (launcher-cache
 pruning by `lw bootstrap install` / `upgrade`), `loomworks/housekeeping.lua`
-(the startup housekeeping pass and `lw cleanup`)) **must** be reviewed for
+(the startup housekeeping pass and `lw cleanup`), `boot.update.gc` (release
+pruning by self-update) and the install-folder temp removals (`.dl-<ver>.zip`,
+`.stage-<ver>`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -211,6 +213,18 @@ directory safety before merging:
    never the current `lw.pin`'s, the running exe/bundle, or used within the
    threshold, and renamed to `.trash-<nonce>` before rm_rf. Never `.leftover`,
    trust.key, config, releases, modules.
+10. **Install folder** (spec §16.22): `install_dir()` may be any user-chosen
+   absolute `LOOMWORKS_INSTALL_DIR` (e.g. `$HOME`), so `installed_releases`
+   (what runs and what `gc` prunes) lists only `lua-<ver>` with
+   `paths.is_release_version` (strict `<n>.<n>.<n>[-pre]` + `valid_version`)
+   that `is_release_bundle_dir` accepts (lstat: real `lua-<ver>/` and
+   `loomworks/` dirs, regular `loomworks/cli.lua`; links/junctions skipped).
+   `gc` re-checks before `rm_rf`, requires the realpath to be a direct child
+   of the install folder's realpath (separator-bounded), never removes
+   `except` nor the running luaroot. `self_update` refuses (never removes) a
+   `lua-<ver>` there that is not such a bundle; temp names
+   (`.dl-<ver>.zip`, `.stage-<ver>`) only from a version that passed
+   `is_release_version`.
 
 ## Implementation Notes
 

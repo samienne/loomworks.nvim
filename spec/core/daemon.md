@@ -668,7 +668,11 @@ stale. It never launches, connects to or signals a daemon, and writes nothing.
    line, Linux `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`) and its start
    time; keep those that are `lw … daemon run` by the §19.5 identity rules. A
    command line that cannot be read (another user's process, access denied)
-   is skipped.
+   is skipped. A kept process that is the parent of another kept process with
+   the same `--root`, which started no earlier than it, is a pin redirect's
+   wrapper (§16.23: the invoked lw waiting on the pinned `daemon run`), not a
+   daemon, and is dropped — it is never listed, and never stopped or killed
+   as a stray (killing its tree would kill the live daemon).
 4. The daemon's workspace is its `--root <dir>` (or `--root=<dir>`) argument —
    every launched daemon has one (§19.10). One run by hand without it is
    listed with **root unknown**.

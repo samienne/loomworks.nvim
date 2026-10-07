@@ -66,6 +66,21 @@ describe("discover helpers (§19.6.1)", function()
         assert.equals("/w/b", discover.root_of({ "lw", "daemon", "run", "--root=/w/b" }))
         assert.is_nil(discover.root_of({ "lw", "daemon", "run" }))
     end)
+    it("a pin redirect's wrapper is not a daemon: only the pinned lw under it is listed (spec 16.23)", function()
+        -- 10 = global lw wrapping 11 (pinned lw), same --root; 20 = an unrelated
+        -- daemon whose parent 10 is not (another root); 30's parent id 31 is a
+        -- younger process (a reused id on Windows): not its parent.
+        local function d(pid, root, t)
+            return { pid = pid, root = root, start_time = string.format("win:%d", (11644473600 + t) * 10000000),
+                args = { "lw", "daemon", "run", "--root", root } }
+        end
+        local found = { d(10, "C:/w/a", 100), d(11, "C:/w/a", 101), d(20, "C:/w/b", 102),
+            d(31, "C:/w/c", 200), d(30, "C:/w/c", 150) }
+        local out = discover.drop_redirect_wrappers(found, { [11] = 10, [20] = 10, [30] = 31 })
+        local pids = {}
+        for _, e in ipairs(out) do pids[#pids + 1] = e.pid end
+        assert.same({ 11, 20, 31, 30 }, pids)
+    end)
     it("--under is separator-bounded", function()
         local d = H.tmp()
         vim.fn.mkdir(d .. "/ab/x", "p")

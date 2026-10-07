@@ -1092,8 +1092,32 @@ absolute path; a relative value is not honoured and the host says so, once, on
 standard error). It exists for an lw that another program runs and provisions —
 the editor plugin runs its own lw with the install folder inside the editor's
 data, so everything that lw downloads stays there. The value is inherited, so a
-pinned host a redirect re-execs, and a daemon the host starts, install into the
-same folder. It moves only installations: the **shared runtime state** — the
+daemon the host starts installs into the same folder, and so does a pinned host
+a redirect re-execs — when that pinned release knows the install folder. A
+pinned release from before it ignores the value: the redirecting host still
+fetches the pinned host binary and provisions the pinned bundle into the
+install folder (§16.23), but that pinned host then provisions its own copy of
+the bundle into the per-user data directory, as it always did. (There is no
+clean hand-over: such a host accepts a system-Lua root only as a development
+source, §16.11, which changes what it reports and allows.)
+
+The install folder may be any directory, shared with unrelated files, so the
+host MUST recognise its release bundles there strictly. It lists, ranks (the
+newest bundle is what runs, §16.13) and removes (keeping the newest three)
+only entries named `lua-<version>` whose version is a release version —
+`<n>.<n>.<n>` with an optional `-<pre-release>` of dot-separated alphanumeric
+identifiers, and a safe path segment (§16.23) — that are real directories (a
+symbolic link or junction never counts, and is never followed) holding a real
+`loomworks/` directory with the bundle's CLI entry `loomworks/cli.lua` as a
+regular file. A removal re-checks the entry, requires its resolved path to be a
+direct child of the resolved install folder, and never removes the bundle just
+installed or the bundle the running host loaded. Installing a release whose
+`lua-<version>` name is taken there by anything else fails with a message
+naming it; that entry is never replaced. Its temporary download and staging
+names (`.dl-<version>.zip`, `.stage-<version>`) are formed only from such a
+version.
+
+It moves only installations: the **shared runtime state** — the
 trust store (§17), the daemons' runtime directory, sockets, identity and logs
 (§19), device locks (§18), acquired modules (§16.20), host settings — stays in
 the per-user data and configuration directories for every lw on the machine,
@@ -1131,12 +1155,29 @@ cleans up, and the redirecting host neither dies nor exits before the pinned
 host has finished; an interrupt addressed to the redirecting host alone (a
 POSIX signal sent to its process only) is forwarded to the pinned host.
 
+**A pin older than the command.** Some redirected commands are newer than
+version pins: `reset` (first released in 0.1.27), `daemon run` and `daemon
+restart` (0.1.43-beta.5) and the `--stdio` form of `daemon run`
+(0.1.43-beta.15). A pin naming a release before the one that introduced the
+command MUST NOT be redirected to for it — that host would only fail with an
+unknown command. Instead the invoked host does not redirect and leaves the
+workspace daemon to the pinned release (as for a command it runs itself,
+below): a `daemon run` or `daemon restart` refuses with one line on standard
+error naming the pinned version and the release that introduced the command,
+and exits 1 without starting anything (the editor then works without a daemon,
+§19.16); `reset` runs as the invoked host, without the workspace daemon, after
+one such line.
+
 **One daemon per pinned workspace.** Whoever starts it — the editor, which
 launches `lw daemon run` with the binary it selected (§19.16), a CLI command, a
 `daemon restart` — the daemon of a pinned workspace is the pinned release. For
 `daemon run` the workspace is the one its `--root` names (the daemon runs from
-the per-user state directory, §19.10), and the redirect carries that root
-across the exec; its one-line notice goes to standard error, since a daemon's
+the per-user state directory, §19.10) — for a `daemon` command its `--root`
+decides which pin applies even when a launcher passed the user's directory
+(which may lie in another, nested pinned root) — and the redirect carries that
+root across the exec; the redirecting host that stays alive as the pinned
+daemon's parent is not itself a daemon, and the process scan (§19.6.1) never
+lists it or kills it as one; its one-line notice goes to standard error, since a daemon's
 standard output may be its protocol stream. A command the invoked host runs
 itself in such a repository (a configuration edit, a profile selection) leaves
 the workspace daemon to the pinned release: in daemon mode its ensure step
