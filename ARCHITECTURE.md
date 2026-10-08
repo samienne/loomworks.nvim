@@ -1304,8 +1304,14 @@ released Linux host on the released bundle to write the
   daemon first if none runs), authenticates there and forwards frames
   opaquely; it takes no runtime lock, writes no handle, and closing it closes
   only its connection (its tasks are cancelled, the daemon keeps running).
+  It reads the client's `hello` before connecting, verifies `server_proof`
+  before forwarding, adds `welcome.daemon` / `welcome.via = "relay"`, bounds
+  buffering per direction (`RELAY_HIGH_WATER`) and exits with the statuses of
+  spec §19.10 "Relay exit status". The discovery/launch/handshake code the
+  CLI uses moves to `daemon/connect.lua`, shared by the CLI and the relay.
   The private-pipe server stays only for the conformance runner's isolated
-  daemon (per-case temporary root or a hidden test-only flag).
+  daemon, behind the hidden `--private` flag (refused unless
+  `LOOMWORKS_TEST_PRIVATE_STDIO=1`), or a per-case temporary root.
 - `proto/conformance.lua` (shared) — the transcript engine: matching with
   selectors and `$`-matchers, frame validation against `transport.json`,
   method results, declared error codes, signal schemas and gapless `seq`.
