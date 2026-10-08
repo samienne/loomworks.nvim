@@ -415,7 +415,14 @@ versions read) and the class's own fields. The nonce is `lock_nonce`, not
 `nonce`: device-lock records already use `nonce` for their running program
 (§18.7). `start_time` is opaque and carries its method (`win:`, `linux:`,
 `mac:`); a value written by a method the reader cannot use is judged by
-heartbeat alone. A holder that holds a build-directory lock across
+heartbeat alone. It is a string, compared only for equality: `win:<creation
+time>` (the process creation time in 100 ns units, decimal),
+`linux:<boot id>:<start ticks>` (field 22 of `/proc/<pid>/stat`, with the
+boot id) or `mac:<seconds>.<microseconds>` — so it may itself contain colons,
+and a daemon's handle carries the same value as its runtime-lock record
+(§19.6). A daemon **instance id** `<pid>:<start_time>` (§19.10 "Skip an
+instance") is the decimal pid, a colon and that value verbatim; it is split
+at its first colon. A holder that holds a build-directory lock across
 several steps rewrites the record's operation when it moves from configure to
 build, so recovery knows which step was interrupted. A record without a start time (written by an older
 version) is judged by heartbeat alone.
