@@ -93,6 +93,7 @@ end
 --- @class loomworks.daemon.Decoder
 --- @field _buf string
 --- @field max integer current frame cap
+--- @field stop_payload? string the raw payload of the message `push` stopped at
 local Decoder = {}
 Decoder.__index = Decoder
 
@@ -105,9 +106,14 @@ end
 --- Push received bytes. Returns the decoded messages that became complete,
 --- or nil + an error ("frame too large", "malformed frame", "malformed
 --- message") — the stream is then unusable and the caller closes it.
+--- `stop(msg)`, when given, ends decoding after the first message it
+--- returns true for: that message's raw payload is kept in `stop_payload`
+--- and the bytes after it stay in `_buf`, undecoded (the `--stdio` relay
+--- forwards them unchanged, loomworks.daemon.relay).
 --- @param chunk string
+--- @param stop? fun(msg: table): boolean
 --- @return table[]|nil msgs, string|nil err
-function Decoder:push(chunk)
+function Decoder:push(chunk, stop)
     self._buf = self._buf .. chunk
     local out = {}
     while true do
@@ -131,6 +137,10 @@ function Decoder:push(chunk)
             return nil, "malformed message"
         end
         out[#out + 1] = msg
+        if stop and stop(msg) then
+            self.stop_payload = payload
+            break
+        end
     end
     return out
 end

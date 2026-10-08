@@ -414,10 +414,12 @@ describe("`lw help` index completeness (§16.38)", function()
     assert.is_nil(index:find("lw profile create <name> <tool>", 1, true))
   end)
 
-  -- Options accepted only for compatibility as no-ops (§16.38 allows them to
-  -- stay undocumented).
+  -- Options accepted only for compatibility as no-ops, and hidden test-only
+  -- options kept out of `--help` by their own section (§16.38 allows both to
+  -- stay undocumented; `daemon run --private`: §19.10 "Tests").
   local NOOP = { health = { ["--force"] = true, ["--refresh"] = true },
-    ["worktree add"] = { ["--pull"] = true } }
+    ["worktree add"] = { ["--pull"] = true },
+    ["daemon run"] = { ["--private"] = true } }
 
   local function options_of(spec)
     local opts = {}

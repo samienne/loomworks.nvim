@@ -298,6 +298,14 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 
 ### Changed
+- Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to
+  the workspace's shared daemon (starting it when none runs) instead of a
+  private daemon of its own, so a client on standard input and output shares
+  the daemon with every `lw` command; closing it closes only its connection.
+  `--no-launch` never starts a daemon and waits for one to appear;
+  `--skip-instance <pid>:<start_time>` (with `--no-launch`) never uses that
+  daemon. Failures before the daemon's welcome exit with statuses 10 to 16.
+  (#173)
 - In a repository with `lw.pin`, a global lw now also runs `lw reset`,
   `lw daemon run` and `lw daemon restart` as the pinned release, so the
   workspace daemon is the pinned release whoever starts it (the editor

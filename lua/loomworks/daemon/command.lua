@@ -402,8 +402,28 @@ function M.start_attached(root, host, command)
     return srv
 end
 
---- `lw daemon run [--root <dir>] [--stdio]`: serve in the foreground until
---- stopped; with `--stdio`, on standard input and output (loomworks.daemon.stdio).
+--- Does `lw daemon run` name a standard-I/O form (`--stdio`, `--private`,
+--- `--no-launch`, `--skip-instance`)? Like loomworks.daemon.relay.parse, only
+--- the options before a `--` count.
+--- @param args string[]
+--- @return boolean
+function M.relay_form(args)
+    for i = 3, #args do
+        local a = args[i]
+        if a == "--" then return false end
+        if a == "--stdio" or a == "--private" or a == "--no-launch" or a == "--skip-instance"
+            or (type(a) == "string" and a:sub(1, 16) == "--skip-instance=") then
+            return true
+        end
+    end
+    return false
+end
+
+--- `lw daemon run [--root <dir>] [--stdio [--no-launch [--skip-instance <id>]]]`:
+--- serve in the foreground until stopped; with `--stdio`, relay standard
+--- input and output to the shared daemon (loomworks.daemon.relay); with the
+--- hidden, gated `--stdio --private`, serve them as an attached runtime
+--- (loomworks.daemon.stdio).
 --- @param root string|nil
 --- @param args string[]
 --- @param host table
@@ -413,10 +433,21 @@ function M.run_server(root, args, host)
     -- hash its real path, loomworks.daemon.paths).
     local r = opt_value(args, "--root")
     if r then root = (r:gsub("\\", "/"):gsub("/+$", "")) end
+    -- The standard-I/O forms (§19.10 "Connections", step 5i): `--stdio` is
+    -- the relay to the shared daemon (loomworks.daemon.relay); `--private`
+    -- (tests only, gated by LOOMWORKS_TEST_PRIVATE_STDIO=1) the attached
+    -- runtime on standard I/O (loomworks.daemon.stdio).
+    if M.relay_form(args) then
+        local relay = require("loomworks.daemon.relay")
+        local o, uerr = relay.parse(args)
+        if not o then
+            host.note("lw: " .. uerr)
+            return relay.EXIT.usage
+        end
+        if o.private then return require("loomworks.daemon.stdio").serve(root, host) end
+        return relay.serve(root, o, host)
+    end
     if not root then host.die("no loomworks.json found (searched up from cwd) — `lw daemon run` needs a workspace") end
-    -- `--stdio` (§19.16, §19.20): an attached runtime serving this process's
-    -- standard input and output, no endpoint.
-    if has(args, "--stdio") then return require("loomworks.daemon.stdio").serve(root, host) end
     local server_mod = require("loomworks.daemon.server")
     local rt = require("loomworks.daemon.runtime")
     local srv = M._new_server(root, host, {

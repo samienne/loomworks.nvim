@@ -867,8 +867,8 @@ authentication; it never leaves the process. Its connection starts in the
 authenticated state — the server sends `welcome` over it and nothing before —
 and is then served exactly as an authenticated pipe connection (frame cap,
 requests, replies, task streams, broadcasts, flow control); closing either end
-is end-of-stream to the other. The standard-I/O transport (`lw daemon run
---stdio`, §19.16, §19.20) is a private pipe too: its connection is a child of
+is end-of-stream to the other. The private standard-I/O transport (`lw daemon
+run --stdio --private`, tests only, §19.10 "Tests", §19.20) is a private pipe too: its connection is a child of
 the process that spawned it, so the daemon answers that process's `hello`
 directly with `welcome` — no `challenge`, no `auth`, the nonce ignored; the
 versions in `hello` are negotiated as on the socket, and anything other than
@@ -876,7 +876,7 @@ versions in `hello` are negotiated as on the socket, and anything other than
 connection and stops the runtime: as for any disconnect (§19.15), the tasks
 the connection owns are cancelled, and the process exits once they ended
 (a process that spawned it and goes away leaves no build running). The socket transport keeps the challenge.
-*(Planned, step 5i: `lw daemon run --stdio` becomes a **connection**, never a
+*(Step 5i, `daemon/relay.lua`: `lw daemon run --stdio` is a **connection**, never a
 daemon — §19.10 "Connections". It connects to the workspace's shared daemon
 over the socket (starting it first if none runs), authenticates there with the
 challenge as any client, and then relays frames opaquely between its standard
@@ -888,7 +888,7 @@ runner's fresh, isolated daemon, behind the hidden, gated `--private` flag
 (§19.10 "Connections", "Tests") — never a user-facing attached mode, and
 unreachable without that gate.)*
 
-**Relay handshake.** *(Planned, step 5i.)* The relay's client sees the
+**Relay handshake.** *(Step 5i, `daemon/relay.lua`.)* The relay's client sees the
 pipe handshake above (`hello` first, then `welcome`, no `challenge`); the
 relay runs the socket handshake on its behalf:
 
@@ -912,7 +912,9 @@ relay runs the socket handshake on its behalf:
      `start_time` and `exe` from the handle it connected through, §19.6;
      `pid` and `start_time` identify that daemon instance, as for a lock
      holder, §19.5, so a client can name it to `--skip-instance`, §19.10 "No
-     launch"; `exe` for display only, absent when unknown). The client
+     launch"; `start_time` is absent when the handle carries none, and such
+     a daemon cannot be named, §19.16 "Skipping an incompatible daemon";
+     `exe` for display only, absent when unknown). The client
      applies its version rules (§19.9) to these, as it would to a
      `challenge`.
    - `via = "relay"`. A client that gets a `welcome` without `via` is
@@ -1104,8 +1106,10 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
 Concurrent launches resolve on the runtime lock: one daemon wins, the others
 exit, all clients connect to the winner.
 
-**Connections.** *(Planned, step 5i. Today `lw daemon run --stdio` is an
-attached runtime of its own, §19.8.)* Every client process is a
+**Connections.** *(Step 5i: the relay with `--no-launch`, `--skip-instance`
+and the gated `--private` is implemented, `daemon/relay.lua`; the editor's use
+of it, its `lw daemon list` classification, the idle rule and the two-stage
+Ctrl-C are planned.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -1120,7 +1124,19 @@ attached runtime of its own, §19.8.)* Every client process is a
   interface, so it never changes for a new one). It replaces the separate
   `lw daemon attach --stdio` bridge planned earlier. Each relay step
   (connect + handshake, the one wait on a starting daemon) is bounded as for
-  a routed command (about 5 s).
+  a routed command (about 5 s). A daemon still starting after that one wait
+  ends the relay with status 11 (not responding). Before it connects, the
+  relay checks the handle: a `key_id` (§19.6) that is not this lw's, or an
+  endpoint that fails the endpoint check (§19.7), ends the relay with status
+  12 — nothing is connected to — as a failed `server_proof` does.
+- **Lock held by an attached run.** When the runtime lock is held by an
+  **attached run** (§19.2: a CLI command running without a daemon), the relay
+  neither launches nor fails: it waits — no time bound, for as long as its
+  standard input stays open — re-reading the runtime lock about every 2 s,
+  until that run ends, and then continues connect-or-start from the start
+  (a daemon may have been started meanwhile, or it launches one). The client
+  closing standard input (EOF) while it waits ends the relay with status 0.
+  No exit status is added for this case.
 - **No launch.** `lw daemon run --root <root> --stdio --no-launch` is the
   relay that **never launches** a daemon (the editor's, after
   `lw daemon stop` and while a retiring daemon is still busy, §19.16
@@ -1129,8 +1145,8 @@ attached runtime of its own, §19.8.)* Every client process is a
   daemon of its root: it re-reads the runtime lock and the handle about every
   2 s (the cadence at which the editor watched the handle before), and
   connects as soon as one is live, with the same discovery, handshake and
-  checks as connect-or-start — the handle's `key_id` and `server_proof`
-  (status 12), another host (13), not responding (11). Once connected it
+  checks as connect-or-start — the handle's `key_id`, the endpoint check
+  and `server_proof` (status 12), another host (13), not responding (11). Once connected it
   relays exactly as above. A daemon still starting (lock held, handle not yet
   published) is waited on, as is a retiring one: on a `welcome` that says
   `retiring` the relay closes that connection, forwards nothing, and keeps
@@ -1167,7 +1183,12 @@ attached runtime of its own, §19.8.)* Every client process is a
   resumes once that queue has drained below half of it. A client that stops
   reading therefore stops the relay reading the daemon, so the daemon's
   owner flow control (§19.15 "Task stream") still reaches the running step
-  through the relay, and the relay's memory stays bounded.
+  through the relay, and the relay's memory stays bounded. Before the
+  daemon's `welcome` the relay keeps what the client pipelines after its
+  `hello` (forwarded after `welcome`); more than `RELAY_HIGH_WATER` of it is
+  a protocol violation that ends the relay with status 15 — the relay never
+  stops reading a client it has not yet relayed for, so it always sees that
+  client's EOF.
 - **Closing a connection** — killing the `--stdio` process, closing its
   standard input, a CLI command ending or interrupted — closes only that
   connection: the tasks it owns are cancelled (§19.15 "Task ownership"), the
@@ -1205,20 +1226,21 @@ attached runtime of its own, §19.8.)* Every client process is a
   the daemon commands (§16.23 "A pin older than the command",
   `pin.REDIRECT_SINCE`).
 
-**Relay exit status.** *(Planned, step 5i.)* A relay that fails before
+**Relay exit status.** *(Step 5i, `daemon/relay.lua`.)* A relay that fails before
 forwarding `welcome` writes nothing to standard output, one `lw: ...` line to
 standard error, and exits with:
 
 | Status | Meaning |
 |--|--|
-| 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing), or the daemon closed the connection after `welcome` |
-| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
+| 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing; for any relay, also while waiting on an attached run's runtime lock), or the daemon closed the connection after `welcome` |
+| 1 | standard input or output is unusable, or an internal error |
+| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1` or without `--stdio`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
 | 10 | could not start the workspace daemon (launch failure above; never with `--no-launch`) |
-| 11 | the daemon is not responding (hung, §19.5; or connect/handshake past its bound) |
-| 12 | the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — nothing is sent to it |
+| 11 | the daemon is not responding (hung, §19.5; connect/handshake past its bound; or still starting — lock held, handle not published — after the relay's one bounded wait; never with `--no-launch`, which keeps waiting on a starting daemon) |
+| 12 | the handle names another loomworks data dir's key (`key_id`, §19.6), its endpoint failed the endpoint check (§19.7), or the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — only the relay's own `hello` (versions and its nonce, no secret) was sent; nothing from the client is forwarded |
 | 13 | the workspace daemon runs on another host |
 | 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting) |
-| 15 | the client did not send `hello` first, or not within about 5 s |
+| 15 | the client sent no valid `hello` first (another frame, or a `hello` whose forwarded fields are not of their types or that does not fit the 64 KiB pre-authentication frame cap re-encoded), or none within about 5 s; or it sent more than `RELAY_HIGH_WATER` after `hello` before `welcome` ("Relay buffering") |
 | 16 | `--no-launch` only: the retiring daemon it waited on released the runtime lock and no other daemon is live — the caller decides whether to launch (never for a `--skip-instance` daemon) |
 
 Status 3 ("another daemon won", above) is never a relay's: a relay that
@@ -2072,8 +2094,9 @@ instead of reading the handle and the machine key itself; "Launch" and
   (step 6b); 11 — not responding; 12 — another data dir or not a loomworks
   daemon; 13 — another host; 14 — a retiring daemon is still busy, and the
   editor waits it out through a `--no-launch` relay (below); 16 — that
-  retiring daemon has exited (below); 2 and 15 — an internal error. Its
-  standard-error line is kept for the Runtime line's detail.
+  retiring daemon has exited (below); 1, 2, 15 and any status not listed —
+  an internal error. Its standard-error line is kept for the Runtime line's
+  detail.
 - **Following a stopped or retiring daemon without relaunching it.** "No
   relaunch after a stop" and "Retiring" below watch the handle, which the
   editor no longer reads once it uses the relay; instead it spawns
@@ -2103,6 +2126,11 @@ instead of reading the handle and the machine key itself; "Launch" and
   it after the skipped one exited), and the editor judges that one afresh. Nothing is
   retried on a timer and the editor never launches over the skipped daemon;
   the relay exits 0 when the editor kills it (workspace swap, shutdown).
+  A daemon whose start time is unknown (`welcome.daemon` without
+  `start_time`) cannot be named with `--skip-instance` (an instance id needs
+  both, §19.5). When the editor finds such a daemon incompatible it closes
+  that relay and stays in-process for the session; it spawns no skip relay,
+  and retries only on `:LoomworksDaemon connect`.
 
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`

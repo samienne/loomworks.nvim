@@ -3601,8 +3601,10 @@ help. The rules:
   command (the host-level ones included) with every sub-command it accepts,
   and lists the topics that are not commands. Every option a command accepts is
   documented in that command's help topic, its short spelling included; only a
-  pure alias of a documented command or sub-command, and an option accepted
-  solely for compatibility as a no-op, MAY stay undocumented. A usage error that
+  pure alias of a documented command or sub-command, an option accepted
+  solely for compatibility as a no-op, and a hidden test-only option its own
+  section keeps out of `--help` (`lw daemon run --private`, §19.10 "Tests"),
+  MAY stay undocumented. A usage error that
   lists a command's sub-commands lists all of them.
 
 ### 16.39 Configuration export and import
