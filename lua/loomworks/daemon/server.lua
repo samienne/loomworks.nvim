@@ -96,6 +96,7 @@ end
 --- @field exit_code integer|nil an attached runtime's exit status, recorded when it stopped
 --- @field stop_reason string|nil why it stopped (`LOST_LOCK`, `ROOT_REMOVED`, or the `stop` reason)
 --- @field interfaces loomworks.daemon.Registry|nil the interface registry with the root object (§19.20), created on start
+--- @field background boolean background work (§19.11) ran at the last lifetime check
 local Server = {}
 Server.__index = Server
 
@@ -124,6 +125,7 @@ function M.new(root, opts)
     self.n_clients = 0
     self.seq = 0
     self.busy = false
+    self.background = false
     self.retiring = false
     self.stopped = false
     self.exit = opts.exit or function(code)
@@ -153,7 +155,7 @@ function Server:_handle_record()
         started_at = self.started_at,
         clients = self.n_clients,
         busy = self.busy,
-        idle_since = (self.n_clients == 0 and not self.busy) and self.idle_since or nil,
+        idle_since = (self.n_clients == 0 and not self.busy and not self.background) and self.idle_since or nil,
         lock_nonce = self.R and self.R.record and self.R.record.lock_nonce or nil,
         -- Which data directory's key this daemon authenticates with (§19.6).
         key_id = self.key and auth.key_id(self.key) or nil,
@@ -373,9 +375,27 @@ function Server:_tick()
     self:lifetime()
 end
 
+--- Background work (§19.11): work the daemon owns with no connection as its
+--- owner. A run still settling after its owner left or after its task ended
+--- (`busy`: a cancellation killing its step, a reset's deletion), and the
+--- loaded model's tool detection (`service:background_work()`), which a
+--- `snapshot` or `query` load leaves running after its reply.
+--- @return boolean
+function Server:_background_work()
+    if self.busy then return true end
+    local svc = self.service
+    if svc and svc.background_work then
+        local ok, bg = pcall(svc.background_work, svc)
+        return ok and bg == true
+    end
+    return false
+end
+
 --- The lifetime rules of §19.11 checked on every tick: a connection silent
---- for three keepalive intervals is dropped as half-open; with no connection,
---- no running task and no request for the idle timeout, the daemon exits.
+--- for three keepalive intervals is dropped as half-open; idle — no
+--- connection and no background work — for the idle timeout, the daemon
+--- exits. The idle clock starts when the last connection closes or the last
+--- background work ends, whichever is later.
 function Server:lifetime()
     local now = uv.now()
     for conn in pairs(self.conns) do
@@ -387,9 +407,17 @@ function Server:lifetime()
         end
     end
     if self.stopped then return end
-    -- Idle only with no connection at all: one still authenticating (bounded
-    -- by the authentication timeout) is a client on its way in.
-    if self.n_clients == 0 and not self.busy and next(self.conns) == nil then
+    local bg = self:_background_work()
+    if bg ~= self.background then
+        self.background = bg
+        -- Background work ended: the idle clock (re)starts now.
+        if not bg then self.idle_since = os.time() end
+        self:_handle_changed()
+    end
+    -- Idle only with no connection at all — one still authenticating (bounded
+    -- by the authentication timeout) is a client on its way in — and no
+    -- background work.
+    if self.n_clients == 0 and next(self.conns) == nil and not bg then
         local since = math.max(self.idle_since or 0, self.last_request or 0)
         if os.time() - since >= self.idle_seconds then
             self:stop(string.format("idle for %ds", self.idle_seconds), 0)

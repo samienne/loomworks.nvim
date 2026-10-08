@@ -143,6 +143,52 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
     end)
 
+    -- Step 5i: idle is "no connections and no background work". A stand-in
+    -- service reports the background work (the model's tool detection).
+    local function fake_service(state)
+        return {
+            background_work = function() return state.scanning end,
+            owns_task = function() return false end,
+            on_stopping = function() end,
+        }
+    end
+
+    it("background work holds off the idle exit; the clock restarts when it ends", function()
+        local state = { scanning = true }
+        start({ idle_seconds = 1 })
+        srv.service = fake_service(state)
+        vim.wait(2500, function() return exited ~= nil end, 20)
+        assert.is_nil(exited)
+        assert.is_true(srv.background)
+        -- No idle time is published while it runs.
+        assert.is_nil(srv:_handle_record().idle_since)
+        state.scanning = false
+        local ended = os.time()
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        -- The idle timeout counted from the end of the work, not the start.
+        assert.is_true(os.time() - ended >= 1)
+    end)
+
+    it("a run settling without its owner (busy) is background work too", function()
+        start({ idle_seconds = 1 })
+        srv.busy = true
+        vim.wait(2500, function() return exited ~= nil end, 20)
+        assert.is_nil(exited)
+        srv.busy = false
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+    end)
+
+    it("the service reports the loaded model's tool detection as background work", function()
+        local svc = setmetatable({ ws = nil }, { __index = require("loomworks.daemon.service").Service })
+        assert.is_false(svc:background_work())
+        svc.ws = { _tool_state = "scanning" }
+        assert.is_true(svc:background_work())
+        svc.ws._tool_state = "scanned"
+        assert.is_false(svc:background_work())
+    end)
+
     it("exits when the workspace root is removed", function()
         start()
         local addr = srv.address

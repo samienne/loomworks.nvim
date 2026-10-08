@@ -1285,13 +1285,17 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   time it started, and its last progress percent, absent before the first
   tick. An addition to the frozen `status` shape (§19.8): a daemon of an
   older protocol omits it.
-- **Idle exit.** With no connection, no running task and no request for the
-  idle timeout — setting `daemon-idle-timeout`, default 1 hour — the daemon
-  exits.
-- *(Planned, step 5i.)* **Idle** becomes: **no connections and no background
-  work**. **Background work** is work the daemon owns with no connection as
+- **Idle exit.** Idle — **no connections and no background work** — for the
+  idle timeout (setting `daemon-idle-timeout`, default 1 hour), the daemon
+  exits. The idle clock starts when the last connection closes or the last
+  background work ends, whichever is later; the handle's `idle_since` is
+  absent while background work runs. *(Step 5i, `Server:lifetime`.)*
+  **Background work** is work the daemon owns with no connection as
   owner — tool detection, scans, the `compile_commands.json` refresh,
-  housekeeping. It keeps the daemon alive while it runs and has a maximum
+  housekeeping; today the loaded model's tool detection (a `snapshot` or
+  `query` load does not wait for it) and a run still settling after its
+  owner left or its task ended (a cancellation, a reset's deletion).
+- *(Planned, step 5i.)* Background work has a maximum
   duration, `BACKGROUND_MAX_DURATION` (10 minutes), after which it is
   stopped (and, from step 5r, its interrupted part is not written). The daemon's lifetime never depends on
   any client's lifetime: a client keeps it alive only through an open

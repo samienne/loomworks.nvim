@@ -690,6 +690,15 @@ function Service:on_run_done(run)
     if run.deleting then self:_update_busy() end
 end
 
+--- Is the daemon's own background work running (§19.11)? The loaded model's
+--- tool detection: a `snapshot` or `query` load does not wait for it, so it
+--- may outlive the connection that asked. (A run settling without its owner
+--- is the server's `busy`.)
+--- @return boolean
+function Service:background_work()
+    return self.ws ~= nil and self.ws._tool_state == "scanning"
+end
+
 --- Does `conn` own a running build? (The keepalive rule never drops it.)
 --- @param conn table
 --- @return boolean
