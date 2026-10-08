@@ -912,7 +912,9 @@ relay runs the socket handshake on its behalf:
      `start_time` and `exe` from the handle it connected through, §19.6;
      `pid` and `start_time` identify that daemon instance, as for a lock
      holder, §19.5, so a client can name it to `--skip-instance`, §19.10 "No
-     launch"; `exe` for display only, absent when unknown). The client
+     launch"; `start_time` is absent when the handle carries none, and such
+     a daemon cannot be named, §19.16 "Skipping an incompatible daemon";
+     `exe` for display only, absent when unknown). The client
      applies its version rules (§19.9) to these, as it would to a
      `challenge`.
    - `via = "relay"`. A client that gets a `welcome` without `via` is
@@ -1120,7 +1122,19 @@ attached runtime of its own, §19.8.)* Every client process is a
   interface, so it never changes for a new one). It replaces the separate
   `lw daemon attach --stdio` bridge planned earlier. Each relay step
   (connect + handshake, the one wait on a starting daemon) is bounded as for
-  a routed command (about 5 s).
+  a routed command (about 5 s). A daemon still starting after that one wait
+  ends the relay with status 11 (not responding). Before it connects, the
+  relay checks the handle: a `key_id` (§19.6) that is not this lw's, or an
+  endpoint that fails the endpoint check (§19.7), ends the relay with status
+  12 — nothing is connected to — as a failed `server_proof` does.
+- **Lock held by an attached run.** When the runtime lock is held by an
+  **attached run** (§19.2: a CLI command running without a daemon), the relay
+  neither launches nor fails: it waits — no time bound, for as long as its
+  standard input stays open — re-reading the runtime lock about every 2 s,
+  until that run ends, and then continues connect-or-start from the start
+  (a daemon may have been started meanwhile, or it launches one). The client
+  closing standard input (EOF) while it waits ends the relay with status 0.
+  No exit status is added for this case.
 - **No launch.** `lw daemon run --root <root> --stdio --no-launch` is the
   relay that **never launches** a daemon (the editor's, after
   `lw daemon stop` and while a retiring daemon is still busy, §19.16
@@ -1129,8 +1143,8 @@ attached runtime of its own, §19.8.)* Every client process is a
   daemon of its root: it re-reads the runtime lock and the handle about every
   2 s (the cadence at which the editor watched the handle before), and
   connects as soon as one is live, with the same discovery, handshake and
-  checks as connect-or-start — the handle's `key_id` and `server_proof`
-  (status 12), another host (13), not responding (11). Once connected it
+  checks as connect-or-start — the handle's `key_id`, the endpoint check
+  and `server_proof` (status 12), another host (13), not responding (11). Once connected it
   relays exactly as above. A daemon still starting (lock held, handle not yet
   published) is waited on, as is a retiring one: on a `welcome` that says
   `retiring` the relay closes that connection, forwards nothing, and keeps
@@ -1211,11 +1225,11 @@ standard error, and exits with:
 
 | Status | Meaning |
 |--|--|
-| 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing), or the daemon closed the connection after `welcome` |
+| 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing; for any relay, also while waiting on an attached run's runtime lock), or the daemon closed the connection after `welcome` |
 | 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
 | 10 | could not start the workspace daemon (launch failure above; never with `--no-launch`) |
-| 11 | the daemon is not responding (hung, §19.5; or connect/handshake past its bound) |
-| 12 | the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — nothing is sent to it |
+| 11 | the daemon is not responding (hung, §19.5; connect/handshake past its bound; or still starting — lock held, handle not published — after the relay's one bounded wait; never with `--no-launch`, which keeps waiting on a starting daemon) |
+| 12 | the handle names another loomworks data dir's key (`key_id`, §19.6), its endpoint failed the endpoint check (§19.7), or the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — nothing is sent to it |
 | 13 | the workspace daemon runs on another host |
 | 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting) |
 | 15 | the client did not send `hello` first, or not within about 5 s |
@@ -2103,6 +2117,11 @@ instead of reading the handle and the machine key itself; "Launch" and
   it after the skipped one exited), and the editor judges that one afresh. Nothing is
   retried on a timer and the editor never launches over the skipped daemon;
   the relay exits 0 when the editor kills it (workspace swap, shutdown).
+  A daemon whose start time is unknown (`welcome.daemon` without
+  `start_time`) cannot be named with `--skip-instance` (an instance id needs
+  both, §19.5). When the editor finds such a daemon incompatible it closes
+  that relay and stays in-process for the session; it spawns no skip relay,
+  and retries only on `:LoomworksDaemon connect`.
 
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`
