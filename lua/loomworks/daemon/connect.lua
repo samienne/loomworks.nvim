@@ -35,8 +35,12 @@ local M = {}
 --- @field pid integer
 --- @field start_time string opaque, with its method prefix (`win:`, `linux:`, `mac:`)
 
+-- Process ids are below 2^31 on every OS this runs on; the cap also keeps a
+-- parsed id exact (a huge decimal would lose precision as a float).
+M.PID_MAX = 0x7fffffff
+
 local function valid_pid(pid)
-    return type(pid) == "number" and pid >= 1 and pid == math.floor(pid)
+    return type(pid) == "number" and pid >= 1 and pid <= M.PID_MAX and pid == math.floor(pid)
 end
 
 -- A start time as loomworks.proc writes it: `<method>:<rest>`, no whitespace.
@@ -59,12 +63,14 @@ end
 
 --- Parse an instance id `<pid>:<start_time>` (the value of
 --- `--skip-instance`). Returns the instance, or nil when the value is not of
---- that form (a decimal pid, a colon, a start time with its method prefix).
+--- that form (a decimal pid below 2^31, a colon, a start time with its method prefix).
 --- @param s string|nil
 --- @return loomworks.daemon.Instance|nil
 function M.parse_instance(s)
     if type(s) ~= "string" then return nil end
     local p, st = s:match("^(%d+):(.+)$")
+    -- At most 10 digits before tonumber, so no value is rounded into range.
+    if not p or #p > 10 then return nil end
     local pid = tonumber(p)
     if not valid_pid(pid) or not valid_start(st) then return nil end
     return { pid = pid, start_time = st }

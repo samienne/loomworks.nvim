@@ -11,6 +11,7 @@ local client = require("loomworks.daemon.client")
 local handle = require("loomworks.daemon.handle")
 local dpaths = require("loomworks.daemon.paths")
 local trust = require("loomworks.trust")
+local inspect = require("loomworks.daemon.inspect")
 local H = require("tests.daemon_helpers")
 local uv = vim.uv or vim.loop
 
@@ -53,6 +54,18 @@ describe("daemon instance ids (§19.5, §19.10 \"Skip an instance\")", function(
         assert.is_nil(connect.parse_instance(1234))
     end)
 
+    it("caps the pid below 2^31 (a huge decimal would lose precision)", function()
+        assert.same({ pid = 2147483647, start_time = "win:1" }, connect.parse_instance("2147483647:win:1"))
+        for _, bad in ipairs({ "2147483648:win:1", "4294967296:win:1", "99999999999:win:1",
+            "9007199254740993:win:1", string.rep("9", 400) .. ":win:1" }) do
+            assert.is_nil(connect.parse_instance(bad), bad)
+        end
+        assert.equals("2147483647:win:1", connect.instance_id(2147483647, "win:1"))
+        assert.is_nil(connect.instance_id(2147483648, "win:1"))
+        assert.is_nil(connect.instance_id(2 ^ 53 + 2, "win:1"))
+        assert.is_false(connect.same_instance("9007199254740993:win:1", "9007199254740992:win:1"))
+    end)
+
     it("compares instances by pid and start time", function()
         local h = { pid = 1234, start_time = "win:100", endpoint = "x" }
         assert.is_true(connect.same_instance(h, "1234:win:100"))
@@ -91,8 +104,10 @@ describe("connect or start (§19.10)", function()
         assert.equals("live", r.st.kind)
         assert.is_false(r.launched)
         assert.truthy(r.conn.challenge)
-        assert.is_true(connect.same_instance(r.st.handle, { pid = srv.pid, start_time = srv.start_time })
-            or srv.start_time == nil)
+        -- loomworks.proc measures start times on win, linux and mac (CI's
+        -- platforms): the handle names the instance.
+        assert.is_string(srv.start_time, "no process start time on this platform")
+        assert.is_true(connect.same_instance(r.st.handle, { pid = srv.pid, start_time = srv.start_time }))
         assert.truthy(client.request(r.conn, { kind = "ping" }, STEP))
         r.conn:close()
     end)
@@ -162,6 +177,101 @@ describe("connect or start (§19.10)", function()
             on_hung = function(st) seen = st; return nil end })
         assert.equals("hung", r.outcome)
         assert.equals("hung", seen.kind)
+    end)
+
+    it("on_hung's new state continues the flow (a recovered daemon is connected)", function()
+        start_server()
+        local t = os.time() - 120
+        uv.fs_utime(dpaths.lock_path(root), t, t)
+        local calls = 0
+        local r = connect.connect_or_start(root, { step_ms = STEP, launch = function() error("must not launch") end,
+            on_hung = function(st)
+                calls = calls + 1
+                assert.equals("hung", st.kind)
+                local now = os.time()
+                uv.fs_utime(dpaths.lock_path(root), now, now)
+                return inspect.state(root)
+            end })
+        assert.equals(1, calls)
+        assert.equals("connected", r.outcome, tostring(r.detail))
+        assert.equals("live", r.st.kind)
+        assert.is_false(r.launched)
+        r.conn:close()
+    end)
+
+    it("on_hung recovering into another holder is \"elsewhere\"", function()
+        start_server()
+        local t = os.time() - 120
+        uv.fs_utime(dpaths.lock_path(root), t, t)
+        local r = connect.connect_or_start(root, { step_ms = STEP, launch = function() error("must not launch") end,
+            on_hung = function(st) return { kind = "attached", lock = st.lock, root = root } end })
+        assert.equals("elsewhere", r.outcome)
+        assert.equals("attached", r.st.kind)
+    end)
+
+    -- The live state of a daemon that has since stopped: its handle's
+    -- endpoint passes the check, but nothing listens there.
+    local function stopped_live_state()
+        start_server()
+        local st = inspect.state(root)
+        assert.equals("live", st.kind)
+        srv:stop("test end", 0)
+        assert.is_true(vim.wait(5000, function() return handle.read(root) == nil end, 20))
+        return st
+    end
+
+    it("a handle whose endpoint fails the check: \"endpoint\", with why, not connected", function()
+        local real = inspect.state
+        inspect.state = function() return { kind = "live", root = root, handle = { endpoint = "planted-endpoint" } } end
+        local ok, r = pcall(connect.connect_or_start, root, { step_ms = STEP,
+            launch = function() error("must not launch") end })
+        inspect.state = real
+        assert(ok, r)
+        assert.equals("endpoint", r.outcome)
+        assert.is_nil(r.conn)
+        assert.is_false(r.launched)
+        assert.truthy(r.detail and r.detail:find("planted-endpoint", 1, true), tostring(r.detail))
+    end)
+
+    it("nothing listening at the endpoint: \"unreachable\", with the client's error", function()
+        local st = stopped_live_state()
+        local real = inspect.state
+        inspect.state = function() return st end
+        local ok, r = pcall(connect.connect_or_start, root, { step_ms = 3000,
+            launch = function() error("must not launch") end })
+        inspect.state = real
+        assert(ok, r)
+        assert.equals("unreachable", r.outcome)
+        assert.is_nil(r.conn)
+        assert.is_string(r.detail)
+    end)
+
+    it("connect_launched: a failed launch is \"launch_failed\", no open", function()
+        local r = connect.connect_or_start(root, { step_ms = STEP, connect_launched = true,
+            launch = function() return false, "no lw binary" end })
+        assert.equals("launch_failed", r.outcome)
+        assert.equals("no lw binary", r.detail)
+        assert.is_nil(r.conn)
+    end)
+
+    it("connect_launched: a failed open of the launched daemon reports why, launched", function()
+        local st = stopped_live_state()
+        local r = connect.connect_or_start(root, { step_ms = 3000, connect_launched = true,
+            launch = function() return true, st end })
+        assert.equals("unreachable", r.outcome)
+        assert.is_true(r.launched)
+        assert.equals(st, r.launch_state)
+        assert.equals(st, r.st)
+        assert.is_nil(r.conn)
+    end)
+
+    it("an attached run holding the lock is \"elsewhere\", never launched over", function()
+        local rec = require("loomworks.lock_record").new("build", { mode = "attached" })
+        local f = assert(io.open(dpaths.lock_path(root), "w")); f:write(vim.json.encode(rec)); f:close()
+        local r = connect.connect_or_start(root, { step_ms = STEP, launch = function() error("must not launch") end })
+        assert.equals("elsewhere", r.outcome)
+        assert.equals("attached", r.st.kind)
+        os.remove(dpaths.lock_path(root))
     end)
 
     it("a daemon on another host is \"elsewhere\" (foreign), never launched over", function()
