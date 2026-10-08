@@ -684,8 +684,11 @@ stale. It never launches, connects to or signals a daemon, and writes nothing.
    `lw … daemon run --stdio` process is classified
    by the runtime lock R of its `--root`: when R names it (pid and start
    time), it is still a **runtime** — the attached `--stdio` of a repository
-   pinned to a release before 5i (§19.10 "Connections", "Compatibility") —
-   and is listed and treated as a daemon like any other. Any other `--stdio`
+   pinned to a release before 5i (§19.10 "Connections", "Compatibility"), or
+   the gated test-only `--stdio --private` runtime, which takes R with its
+   pid and start time like any runtime (§19.10 "Tests"; with no handle it is
+   listed as `starting`) — and is listed and treated as a daemon like any
+   other. Any other `--stdio`
    process (and its pin-redirect wrapper) is a **relay** (§19.10
    "Connections"), never a daemon: it is listed as a connection under the
    daemon of its `--root` (counted in that row's clients, and in `--json` as
@@ -694,6 +697,12 @@ stale. It never launches, connects to or signals a daemon, and writes nothing.
    skips it. A relay whose root has no listed daemon (it is connecting,
    launching, waiting on a retiring daemon, or a `--no-launch` relay waiting
    for one) is not listed.
+   This is decided on R alone, so an attached `--stdio` runtime of a release
+   before 5i that R no longer names — R taken over by another runtime,
+   unreadable, or its root deleted — is classified as a relay: it is not
+   listed (not as a stray either), and `kill --all --strays` (and
+   `kill_stray` on it) refuses it. That is the accepted cost of never acting
+   on a connection: end such a process with the operating system's tools.
 4. The daemon's workspace is its `--root <dir>` (or `--root=<dir>`) argument —
    every launched daemon has one (§19.10). One run by hand without it is
    listed with **root unknown**.

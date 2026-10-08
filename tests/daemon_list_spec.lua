@@ -174,6 +174,9 @@ describe("relays in the scan (§19.6.1 step 3, step 5i)", function()
             { { "--skip-instance=1:win:1" }, true }, { {}, false }, { { "--", "--stdio" }, false },
             { { "--", "--private", "--no-launch", "--skip-instance", "1:win:1" }, false },
             { { "--force" }, false },
+            -- An option's value is never read as an option (relay.parse skips it).
+            { { "--root", "--stdio" }, false }, { { "--root", "--", "--stdio" }, true },
+            { { "--root=--stdio" }, false }, { { "--skip-instance", "--", "--stdio" }, true },
         }
         for _, c in ipairs(cases) do
             for _, line in ipairs(lines(c[1])) do
@@ -182,6 +185,40 @@ describe("relays in the scan (§19.6.1 step 3, step 5i)", function()
                 assert.equals(command.relay_form(ra), discover.stdio_form(ra), table.concat(line, " "))
             end
         end
+    end)
+
+    it("a root named `--stdio` or `--` is a root, as relay.parse reads it", function()
+        local relay = require("loomworks.daemon.relay")
+        local env1 = function(k) return k == relay.PRIVATE_ENV and "1" or nil end
+        local plain = { "daemon", "run", "--root", "--stdio" }
+        assert.is_false(discover.stdio_form(plain))
+        assert.is_false(command.relay_form(plain))
+        local o = assert(relay.parse(plain, env1))
+        assert.equals("--stdio", o.root)
+        assert.is_false(o.stdio)
+        local dashes = { "daemon", "run", "--root", "--", "--stdio" }
+        assert.is_true(discover.stdio_form(dashes))
+        o = assert(relay.parse(dashes, env1))
+        assert.equals("--", o.root)
+        assert.is_true(o.stdio)
+        -- So the scan does not take a plain daemon rooted at `--stdio` for a relay.
+        assert.is_false(discover.is_relay({ pid = 10, start_time = "s", root = "--stdio",
+            args = { "lw", "daemon", "run", "--root", "--stdio" } }, nil))
+    end)
+
+    it("is_daemon_for reads --root=<dir> like --root <dir>", function()
+        assert.is_true(proc.is_daemon_for({ "lw", "daemon", "run", "--root=/w/a" }, "/w/a"))
+        assert.is_false(proc.is_daemon_for({ "lw", "daemon", "run", "--root=/w/a" }, "/w/b"))
+        assert.is_false(proc.is_daemon_for({ "lw", "daemon", "run", "--root", "/w/a" }, "/w/b"))
+        assert.is_true(proc.is_daemon_for({ "lw", "daemon", "run", "--root=/w/a" }))
+        -- kill_stray's re-check: a process now rooted elsewhere (`--root=`) is refused.
+        local orig = proc.cmdline
+        proc.cmdline = function() return { "lw", "daemon", "run", "--root=/w/other" } end
+        local ok, killed, reason = pcall(command.kill_stray, { pid = 999999, start_time = "win:1", root = "/w/a" })
+        proc.cmdline = orig
+        assert.is_true(ok, tostring(killed))
+        assert.is_false(killed)
+        assert.truthy(tostring(reason):find("no longer", 1, true), reason)
     end)
 
     it("a standard-I/O process is a relay unless R names it by pid and start time", function()
@@ -198,8 +235,14 @@ describe("relays in the scan (§19.6.1 step 3, step 5i)", function()
             nr.root = nil
             assert.is_true(discover.is_relay(nr, { pid = 10, start_time = r.start_time }))
         end
-        -- The gated private runtime takes no R: a connection-like process, never acted on.
-        assert.is_true(discover.is_relay(d(lines({ "--stdio", "--private" })[1]), nil))
+        -- The gated private runtime takes R (stdio.serve -> start_attached) like
+        -- any runtime: named by R it is a daemon; with no R it is not provably
+        -- that runtime, so a relay.
+        for _, line in ipairs(lines({ "--stdio", "--private" })) do
+            local r = d(line)
+            assert.is_false(discover.is_relay(r, { pid = 10, start_time = r.start_time }), table.concat(line, " "))
+            assert.is_true(discover.is_relay(r, nil), table.concat(line, " "))
+        end
         -- Not a standard-I/O form: never a relay, whatever R says.
         for _, extra in ipairs({ {}, { "--", "--stdio" }, { "--", "--no-launch" } }) do
             for _, line in ipairs(lines(extra)) do
@@ -633,6 +676,70 @@ describe("relays as real processes (§19.6.1 step 3)", function()
         p.close_stdin()
         assert.is_true(p.wait(60000), p.stderr())
         assert.equals(0, p.code, p.stderr())
+    end)
+end)
+
+describe("standard-I/O runtimes that hold R (§19.6.1 step 3)", function()
+    after_each(function() H.cleanup() end)
+
+    local protocol = require("loomworks.daemon.protocol")
+    local version = require("loomworks.daemon.version")
+    --- A real gated `lw daemon run --root <root> --stdio --private` (it takes
+    --- R, stdio.serve -> start_attached), welcomed.
+    local function private_runtime(root, env)
+        local p = H.lw_start({ "daemon", "run", "--root", root, "--stdio", "--private" },
+            { env = env, cwd = root, stdin = true })
+        H.track(p.pid, p.start)
+        p.write(protocol.encode({ kind = "hello", protocol = protocol.VERSION, protocol_min = protocol.VERSION_MIN,
+            lw_version = version.identity(), schemas = version.schemas(), client = "editor", role = "observer",
+            nonce = string.rep("ab", 16) }))
+        local first
+        assert.is_true(vim.wait(120000, function()
+            first = (protocol.new_decoder(protocol.MAX_FRAME):push(p.stdout()) or {})[1]
+            return first ~= nil or p.code ~= nil
+        end, 20), p.stderr())
+        assert.equals("welcome", first and first.kind, p.stderr())
+        local lk = rlock.read(root)
+        assert.equals(p.pid, lk and lk.pid, "the private runtime holds R")
+        assert.equals(p.start, lk.start_time)
+        return p
+    end
+
+    it("a private runtime named by R lists as a daemon, and kill_stray kills it", function()
+        local env, dir = H.env({ LOOMWORKS_TEST_PRIVATE_STDIO = "1" }), parent()
+        local a = ws(dir, "alpha")
+        local p = private_runtime(a, env)
+        local doc = list_json(dir, env)
+        assert.equals(1, #doc.daemons, vim.inspect(doc))
+        local e = by_pid(doc, p.pid)
+        assert.is_truthy(e, vim.inspect(doc))
+        assert.equals("starting", e.state, vim.inspect(e))
+        assert.same({}, e.relays)
+        assert.is_true(command.kill_stray({ pid = p.pid, start_time = p.start, root = a }))
+        assert.is_true(vim.wait(10000, function() return not H.alive(p.pid, p.start) end, 50))
+        assert.is_nil(rlock.read(a))
+    end)
+
+    it("R changing between list and kill: kill_stray decides on R read again", function()
+        local env, dir = H.env({ LOOMWORKS_TEST_PRIVATE_STDIO = "1" }), parent()
+        local a = ws(dir, "alpha")
+        local p = private_runtime(a, env)
+        local e = by_pid(list_json(dir, env), p.pid)
+        assert.is_truthy(e, "listed as a daemon")
+        local target = { pid = e.pid, start_time = e.start_time, root = a }
+        -- R now names another holder (taken over): not provably this runtime,
+        -- so a relay — refused, left running.
+        local orig = rlock.read
+        rlock.read = function() return { pid = p.pid + 1, start_time = p.start } end
+        local ok, killed, why = pcall(command.kill_stray, target)
+        rlock.read = orig
+        assert.is_true(ok, tostring(killed))
+        assert.is_false(killed)
+        assert.truthy(tostring(why):find("relay", 1, true), why)
+        assert.is_true(H.alive(p.pid, p.start))
+        -- R names it again: killed.
+        assert.is_true(command.kill_stray(target))
+        assert.is_true(vim.wait(10000, function() return not H.alive(p.pid, p.start) end, 50))
     end)
 end)
 

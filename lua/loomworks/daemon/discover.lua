@@ -19,8 +19,9 @@
 ---
 --- A `lw … daemon run --stdio` process (any standard-I/O form, M.stdio_form —
 --- the same predicate `lw daemon run` dispatches on) is a **relay** unless R
---- names it by pid and start time (then it is a pre-5i attached runtime, a
---- daemon like any other): never a daemon row or a stray, never stopped or
+--- names it by pid and start time (then it is a runtime — a pre-5i attached
+--- `--stdio`, or the gated test-only `--stdio --private`, which takes R —
+--- and a daemon like any other): never a daemon row or a stray, never stopped or
 --- killed; it is listed under the daemon of its root as `relays` (§19.6.1
 --- step 3).
 ---
@@ -73,26 +74,36 @@ end
 function M.run_args(args)
     if type(args) ~= "table" then return nil end
     for i = 1, #args - 1 do
-        if args[i] == "daemon" and args[i + 1] == "run" then return vim.list_slice(args, i) end
+        if args[i] == "daemon" and args[i + 1] == "run" then
+            -- (Plain Lua: the standalone host's vim shim has no list_slice.)
+            local out = {}
+            for j = i, #args do out[#out + 1] = args[j] end
+            return out
+        end
     end
     return nil
 end
 
 --- Does `lw daemon run` name a standard-I/O form (`--stdio`, `--private`,
 --- `--no-launch`, `--skip-instance`)? Like loomworks.daemon.relay.parse, only
---- the options before a `--` count. The one predicate both `lw daemon run`'s
---- dispatch (loomworks.daemon.command.relay_form) and the scan's relay
---- classification (M.is_relay) use, so the two cannot disagree.
+--- the options before a `--` count, and the value of a value-taking option
+--- (`--root <dir>`, `--skip-instance <id>`) is skipped, never read as an
+--- option (a root named `--stdio` or `--` is a root). The one predicate both
+--- `lw daemon run`'s dispatch (loomworks.daemon.command.relay_form) and the
+--- scan's relay classification (M.is_relay) use, so the two cannot disagree.
 --- @param run_args string[] `{ "daemon", "run", … }` (M.run_args)
 --- @return boolean
 function M.stdio_form(run_args)
-    for i = 3, #run_args do
+    local i = 3
+    while i <= #run_args do
         local a = run_args[i]
         if a == "--" then return false end
         if a == "--stdio" or a == "--private" or a == "--no-launch" or a == "--skip-instance"
             or (type(a) == "string" and a:sub(1, 16) == "--skip-instance=") then
             return true
         end
+        if a == "--root" then i = i + 1 end
+        i = i + 1
     end
     return false
 end
@@ -108,7 +119,10 @@ end
 --- Is a found `lw … daemon run` process a relay (§19.6.1 step 3, §19.10
 --- "Connections")? A standard-I/O form is a relay unless its root's runtime
 --- lock R names it by pid **and** start time — then it is a runtime (the
---- attached `--stdio` of a release before 5i) and a daemon like any other.
+--- attached `--stdio` of a release before 5i, or the gated `--stdio
+--- --private` runtime, which takes R) and a daemon like any other. A pre-5i
+--- runtime R no longer names (taken over, unreadable, root gone) is thus a
+--- relay: not listed, never killed (spec §19.6.1 step 3).
 --- A relay is never a daemon row or a stray, and is never stopped or killed.
 --- Anything not provably that runtime is a relay (the safe side: a relay is
 --- never acted on).
