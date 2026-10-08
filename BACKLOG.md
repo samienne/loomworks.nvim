@@ -537,6 +537,8 @@ implementations of the committed-ignore rule. Follow-ups:
   shows the daemon's running task") shows "running tasks: unavailable
   (timeout)" under parallel load / on the Windows CI runner; passes alone.
   Seen on PR #168 CI and a local `make test`. Make the wait robust.
+  Failed once more on Windows CI on PR #175 ("running tasks: unavailable
+  (timeout)"), passed on rerun.
 - `tests/daemon_reset_cli_spec.lua` "every case: the same output..." failed
   once on Windows CI (PR #171 run 37734890114, docs-only change), passed on
   rerun.

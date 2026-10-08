@@ -296,6 +296,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   keeps this machine's own settings, publishes nothing, deletes no build
   directories, and saves the previous working copy as a timestamped `.bak`.
   (#93)
+- Experimental daemon mode: Ctrl-C during a build, test, clean, reset or run
+  preparation that runs in the workspace daemon now asks the daemon to cancel
+  it and waits until it has stopped, printing `<op> stopped: ...` (exit 130);
+  a second Ctrl-C leaves at once while the daemon still stops it. Against an
+  older daemon the first Ctrl-C leaves at once, as before. (#PR)
 
 ### Changed
 - Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to

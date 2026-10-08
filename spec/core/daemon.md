@@ -1120,8 +1120,9 @@ exit, all clients connect to the winner.
 **Connections.** *(Step 5i: the relay with `--no-launch`, `--skip-instance`
 and the gated `--private` is implemented, `daemon/relay.lua`, and so is its
 `lw daemon list` / `kill --all --strays` classification (§19.6.1 step 3), and
-the idle rule with its background-work cap (§19.11 "Idle exit"); the
-editor's use of it and the two-stage Ctrl-C are planned.)* Every client process is a
+the idle rule with its background-work cap (§19.11 "Idle exit"), and the
+CLI's two-stage Ctrl-C (§19.15 "Task ownership"); the editor's use of it is
+planned.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -1899,8 +1900,9 @@ arguments as the in-process host does (§16.9; the same matcher, the same
 messages, the client's interactivity).
 
 **Cancellation.** An operation belongs to its client. When that client
-disconnects (Ctrl-C ends `lw`: the interrupt handler drops the connection,
-which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
+disconnects (a second Ctrl-C ends `lw` — so does the first against a daemon
+without `Tasks/1`, Task ownership: the interrupt handler drops the
+connection, which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
 retire, root removed, lost lock), or the workspace or the operation's subject
 is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
@@ -1920,8 +1922,8 @@ group, as Git Bash starts the native program it then signals with `kill
 -INT` — would otherwise never see it, while in-process the build's own
 processes in that console still stop).
 
-**Task ownership.** *(Planned, step 5i; today the first Ctrl-C drops the
-connection.)* Every task a connection starts — build, test, run preparation,
+**Task ownership.** *(Step 5i: the CLI's two-stage Ctrl-C is implemented,
+part F — `cli.lua` `_routed_cancel`, the interrupt handler's interceptor.)* Every task a connection starts — build, test, run preparation,
 configure, clean, reset — is owned by that connection. When the connection
 closes for any reason (a CLI's Ctrl-C, the editor quitting or crashing, `lw`
 killed, a `--stdio` relay ending), the daemon cancels its tasks as above.
@@ -2825,7 +2827,7 @@ runtime is deferred until that module is actively developed.
      `lw daemon list` / `kill` classification of relays; E — the idle rule
      *(done: tool detection past the cap is abandoned by unloading the
      model, a run past it stops the daemon through the stop path)*;
-     F — the CLI's two-stage Ctrl-C; G — the editor uses the relay.
+     F — the CLI's two-stage Ctrl-C *(done)*; G — the editor uses the relay.
    - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
      the short idle grace (a named constant of about 30-60 s, overridable);
      background results written atomically to the cache with a timestamp and

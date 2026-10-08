@@ -1342,6 +1342,19 @@ released Linux host on the released bundle to write the
   `parse_instance`, `same_instance`. `daemon/ensure.lua` keeps the CLI's
   policy on top of it: the step bounds, one line per outcome, `--break-locks`
   recovery, the version reconcile and `ping`.
+- `cli.lua` two-stage Ctrl-C (spec §19.15 "Task ownership", step 5i part
+  F): the interrupt cleanup offers a `sigint` first to an interceptor
+  (`M._set_interrupt_intercept`, one shot; Ctrl-Break, hangup and sigterm
+  are never intercepted). `_delegate` sets it, outside an attached run, only
+  while it waits for an accepted task's `done`: `M._routed_cancel` sends
+  `loomworks.Tasks/1.cancel` and the wait goes on, so the daemon's
+  `<op> stopped: …` line and exit status (130) come as usual; the next
+  Ctrl-C runs the cleanup (the connection closes, the daemon force-stops the
+  task). A connection without interface calls or an integer task id
+  (protocol 10) is not intercepted, and a `cancel` answered with a
+  nothing-ran error (`calls.RETRY_V0`: no `Tasks/1`) escalates to the
+  cleanup. The interceptor is a field (`M._interrupt_intercept`), not a
+  chunk local: cli.lua's main chunk is at Lua's 200-local limit.
 - `proto/conformance.lua` (shared) — the transcript engine: matching with
   selectors and `$`-matchers, frame validation against `transport.json`,
   method results, declared error codes, signal schemas and gapless `seq`.

@@ -13,6 +13,8 @@
 #     `--no-daemon`, CI) and returns at once; the next one reuses it;
 #   - it exits when its workspace is removed and after the idle timeout;
 #   - `lw daemon list` shows two daemons with their roots; `stop --all` stops both;
+#   - the first Ctrl-C of a routed build cancels it, lw reporting its end
+#     (POSIX);
 #   - no daemon process is left running at the end.
 #
 #   LW=<path to lw> bash scripts/ci/daemon-e2e.sh
@@ -214,6 +216,41 @@ printf '%s\n' "$out"
 wait_gone "$apid" && wait_gone "$bpid" && ok "stop --all stopped both" || bad "stop --all left a daemon"
 out=$(cd "$TMP" && "$LW" daemon list --under "$under")
 case "$out" in *"no workspace daemons are running"*) ok "list empty after stop --all" ;; *) bad "list after: $out" ;; esac
+
+say "two-stage Ctrl-C: the first one cancels a routed build and lw waits for its end (spec 19.15)"
+if [ "$os" = windows ]; then
+  # Git Bash cannot send one native process a console Ctrl-C; the plugin
+  # suite's console test covers Windows.
+  ok "skipped on Windows"
+else
+  CC="$TMP/ctrlc"; mkdir -p "$CC/app"
+  STEP_PID="$CC/step.pid"
+  cat > "$CC/loomworks.json" <<JSON
+{"projects":{"app":{"path":"app","shell":{"build_dir":"\${workspace_root}/out/\${variant}",
+ "configure_cmd":["sh","-c","echo \$\$ > '$STEP_PID'; exec sleep 60"],
+ "build_cmd":["true"],"configurations":{"Debug":{}}}}},
+ "configuration_sets":{"dev":{"app":"Debug"}}}
+JSON
+  (cd "$CC" && "$LW" --no-input --no-daemon profile create dev >/dev/null 2>&1) || bad "profile create"
+  (cd "$CC" && LOOMWORKS_RUNTIME=daemon exec "$LW" --no-input build dev >"$CC/out" 2>"$CC/err") &
+  bpid=$!
+  i=0; while [ ! -s "$STEP_PID" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+  cpid=$(pid_of "$CC/.nvim/loomworks.daemon.lock"); [ -n "$cpid" ] && track "$cpid"
+  spid=$(cat "$STEP_PID" 2>/dev/null)
+  if [ -n "$spid" ]; then
+    kill -INT "$bpid"
+    wait "$bpid"; code=$?
+    [ "$code" -eq 130 ] && ok "lw exited 130" || bad "lw exited $code: $(cat "$CC/err")"
+    grep -q "build stopped: cancelled by the client that started it" "$CC/err" \
+      && ok "lw stayed connected and reported the task's end" || bad "no stopped line: $(cat "$CC/err")"
+    i=0; while kill -0 "$spid" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
+    kill -0 "$spid" 2>/dev/null && { bad "the step $spid still runs"; kill -9 "$spid"; } || ok "the step was killed"
+  else
+    bad "the build's step never started: $(cat "$CC/err")"; kill -9 "$bpid" 2>/dev/null
+  fi
+  (cd "$CC" && "$LW" daemon stop >/dev/null 2>&1)
+  [ -n "$cpid" ] && { wait_gone "$cpid" || bad "stop left $cpid"; }
+fi
 
 say "no daemon left running"
 left=""
