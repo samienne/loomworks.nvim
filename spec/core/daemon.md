@@ -867,8 +867,8 @@ authentication; it never leaves the process. Its connection starts in the
 authenticated state — the server sends `welcome` over it and nothing before —
 and is then served exactly as an authenticated pipe connection (frame cap,
 requests, replies, task streams, broadcasts, flow control); closing either end
-is end-of-stream to the other. The standard-I/O transport (`lw daemon run
---stdio`, §19.16, §19.20) is a private pipe too: its connection is a child of
+is end-of-stream to the other. The private standard-I/O transport (`lw daemon
+run --stdio --private`, tests only, §19.10 "Tests", §19.20) is a private pipe too: its connection is a child of
 the process that spawned it, so the daemon answers that process's `hello`
 directly with `welcome` — no `challenge`, no `auth`, the nonce ignored; the
 versions in `hello` are negotiated as on the socket, and anything other than
@@ -876,7 +876,7 @@ versions in `hello` are negotiated as on the socket, and anything other than
 connection and stops the runtime: as for any disconnect (§19.15), the tasks
 the connection owns are cancelled, and the process exits once they ended
 (a process that spawned it and goes away leaves no build running). The socket transport keeps the challenge.
-*(Planned, step 5i: `lw daemon run --stdio` becomes a **connection**, never a
+*(Step 5i, `daemon/relay.lua`: `lw daemon run --stdio` is a **connection**, never a
 daemon — §19.10 "Connections". It connects to the workspace's shared daemon
 over the socket (starting it first if none runs), authenticates there with the
 challenge as any client, and then relays frames opaquely between its standard
@@ -888,7 +888,7 @@ runner's fresh, isolated daemon, behind the hidden, gated `--private` flag
 (§19.10 "Connections", "Tests") — never a user-facing attached mode, and
 unreachable without that gate.)*
 
-**Relay handshake.** *(Planned, step 5i.)* The relay's client sees the
+**Relay handshake.** *(Step 5i, `daemon/relay.lua`.)* The relay's client sees the
 pipe handshake above (`hello` first, then `welcome`, no `challenge`); the
 relay runs the socket handshake on its behalf:
 
@@ -1106,8 +1106,10 @@ holder is gone) launches `<own executable> daemon run --root <root>`:
 Concurrent launches resolve on the runtime lock: one daemon wins, the others
 exit, all clients connect to the winner.
 
-**Connections.** *(Planned, step 5i. Today `lw daemon run --stdio` is an
-attached runtime of its own, §19.8.)* Every client process is a
+**Connections.** *(Step 5i: the relay with `--no-launch`, `--skip-instance`
+and the gated `--private` is implemented, `daemon/relay.lua`; the editor's use
+of it, its `lw daemon list` classification, the idle rule and the two-stage
+Ctrl-C are planned.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -1219,7 +1221,7 @@ attached runtime of its own, §19.8.)* Every client process is a
   the daemon commands (§16.23 "A pin older than the command",
   `pin.REDIRECT_SINCE`).
 
-**Relay exit status.** *(Planned, step 5i.)* A relay that fails before
+**Relay exit status.** *(Step 5i, `daemon/relay.lua`.)* A relay that fails before
 forwarding `welcome` writes nothing to standard output, one `lw: ...` line to
 standard error, and exits with:
 

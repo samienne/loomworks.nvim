@@ -6,7 +6,8 @@
 --- (the engine: matching, frame validation against the schemas). Two
 --- transports:
 ---
----   stdio     spawns `<lw> daemon run --root <root> --stdio` and speaks over
+---   stdio     spawns `<lw> daemon run --root <root> --stdio --private`
+---             (with LOOMWORKS_TEST_PRIVATE_STDIO=1) and speaks over
 ---             its standard input and output — any binary, the Lua daemon
 ---             and a rewrite alike (`--lw` names the command; default: this
 ---             checkout through nvim)
@@ -228,10 +229,13 @@ end
 --- @return table driver
 function M.stdio_driver(root, ctx)
     local argv = vim.deepcopy(ctx.lw or M.default_lw())
-    for _, a in ipairs({ "daemon", "run", "--root", root, "--stdio" }) do argv[#argv + 1] = a end
+    -- The private runtime on standard I/O (gated, tests only, §19.10 "Tests"):
+    -- without `--private`, `--stdio` is the relay to the shared daemon.
+    for _, a in ipairs({ "daemon", "run", "--root", root, "--stdio", "--private" }) do argv[#argv + 1] = a end
     local inp, out, err = uv.new_pipe(false), uv.new_pipe(false), uv.new_pipe(false)
     local envl = {}
     for k, v in pairs(ctx.env.vars) do envl[#envl + 1] = k .. "=" .. v end
+    envl[#envl + 1] = "LOOMWORKS_TEST_PRIVATE_STDIO=1"
     local code
     local exe = table.remove(argv, 1)
     local h, pid = uv.spawn(exe, { args = argv, cwd = root, env = envl, stdio = { inp, out, err }, hide = true },

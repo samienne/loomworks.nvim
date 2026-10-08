@@ -11139,7 +11139,7 @@ the machine key (trust.key), the tool scan cache (tools.json), the newest three
 releases, installed modules, pinned releases in use, and the empty daemon
 working directory. <data dir> is %LOCALAPPDATA%\loomworks,
 $XDG_DATA_HOME/loomworks or ~/.local/share/loomworks (LOOMWORKS_DATA_DIR).]],
-  daemon = [[lw daemon [status] | list [--json] | stop [--force] | kill | restart [--force] | run [--root <dir>] [--stdio]
+  daemon = [[lw daemon [status] | list [--json] | stop [--force] | kill | restart [--force] | run [--root <dir>] [--stdio] [--no-launch]
        lw daemon stop --all [--force] | kill --all [--strays]   [--under <dir>]
 
 EXPERIMENTAL, opt-in. The workspace daemon is one long-lived `lw` process per
@@ -11169,9 +11169,13 @@ exactly as before.
   restart   stop (with --force if given), then start a daemon in the
             background
   run       serve this workspace in the foreground (what a started daemon
-            runs; --root names the workspace). --stdio: speak the protocol
-            on standard input and output instead (one client, no endpoint;
-            ends when the client closes standard input)
+            runs; --root names the workspace). --stdio (with --root): relay
+            the protocol between standard input/output and the workspace's
+            daemon, starting it first when none runs (a connection, not a
+            daemon; ends when the client closes standard input).
+            --no-launch: never start one, wait for a daemon to appear;
+            --skip-instance <pid>:<start_time> (with --no-launch): never use
+            that daemon instance
 
   --all     with stop / kill: do it for every daemon `lw daemon list` shows
             (--under <dir>: only those workspaces), one line each, through

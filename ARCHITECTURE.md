@@ -1294,24 +1294,33 @@ released Linux host on the released bundle to write the
   `model_change` / `retiring` broadcast (`server.takes_v0_broadcasts`): it
   subscribes to `Workspace/1.changed` and gets the root's `retiring`
   signal; connections below 11 keep every broadcast.
-- `daemon/stdio.lua` — `lw daemon run --root <root> --stdio`: an attached
-  runtime whose one connection is this process's standard input and output
-  (`Server:adopt_pipe`: the first frame is `hello`, answered by `welcome`
-  without a challenge; stopping when the client closes standard input).
-  This is the **current** behaviour. *Planned (spec §19.10 "Connections",
-  step 5i):* `--stdio` becomes a connect-or-start **relay** — it connects to
-  the workspace's shared daemon over the socket (launching the detached
-  daemon first if none runs), authenticates there and forwards frames
-  opaquely; it takes no runtime lock, writes no handle, and closing it closes
-  only its connection (its tasks are cancelled, the daemon keeps running).
-  It reads the client's `hello` before connecting, verifies `server_proof`
-  before forwarding, adds `welcome.daemon` / `welcome.via = "relay"`, bounds
-  buffering per direction (`RELAY_HIGH_WATER`) and exits with the statuses of
-  spec §19.10 "Relay exit status". `--no-launch` (the editor's, after a stop
-  or a busy retirement) never launches: it waits for a daemon to appear and
-  then relays; with `--skip-instance <pid>:<start_time>` (the editor's after
-  an incompatible daemon) it never relays to that instance. The discovery/launch/handshake code the
-  CLI uses lives in `daemon/connect.lua` (step 5i, PR B), for the relay to share.
+- `daemon/relay.lua` — `lw daemon run --root <root> --stdio` (spec §19.10
+  "Connections", §19.8 "Relay handshake", step 5i): a connect-or-start
+  **relay** to the workspace's shared daemon, never a daemon (no runtime
+  lock, no handle, nothing registered). `Relay:run` reads the client's
+  `hello` first (`HELLO_MS`, else 15), then connects or starts through
+  `daemon/connect.lua` (`connect = false`, then its own `open`): the handle's
+  `key_id` (`command.other_key`), the endpoint check and `server_proof`
+  (12), another host (13), hung / still starting / unreachable (11), launch
+  failure (10); an attached run's lock is waited on (`POLL_MS`, no bound
+  while stdin is open, EOF = 0). The socket `hello` carries the client's
+  versions, client and role (`client.connect`'s `hello` option) and the
+  connection runs in raw mode (`raw`: after `welcome` the bytes are handed
+  over undecoded, `protocol.Decoder:push(chunk, stop)`); `welcome_frame`
+  splices `daemon` / `via = "relay"` into the daemon's raw `welcome`. A
+  `retiring` welcome is dropped: wait `RETIRE_WAIT_MS` for the lock (14),
+  then connect or start again. `--no-launch` (`_wait_for_daemon`) polls for
+  a live daemon, waits out a retiring one (16 when it is gone and none other
+  live); `--skip-instance` treats that instance as absent (`present`, exact
+  instance ids). Relaying: `flow` per direction, pausing the source past
+  `HIGH_WATER` (4 MiB) and resuming below half. `parse` holds the usage rules
+  (2), including the `--private` gate (`LOOMWORKS_TEST_PRIVATE_STDIO=1`).
+- `daemon/stdio.lua` — `lw daemon run --root <root> --stdio --private`
+  (tests only, gated as above): an attached runtime whose one connection is
+  this process's standard input and output (`Server:adopt_pipe`: the first
+  frame is `hello`, answered by `welcome` without a challenge; stopping when
+  the client closes standard input) — the conformance runner's fresh,
+  isolated daemon per case.
 - `daemon/connect.lua` — connect or start (spec §19.10): `connect_or_start(root,
   opts)` reads the runtime state (`inspect`), waits once, bounded, for a daemon
   still starting, then `open`s an authenticated connection to the live one
@@ -1324,9 +1333,6 @@ released Linux host on the released bundle to write the
   `parse_instance`, `same_instance`. `daemon/ensure.lua` keeps the CLI's
   policy on top of it: the step bounds, one line per outcome, `--break-locks`
   recovery, the version reconcile and `ping`.
-  The private-pipe server stays only for the conformance runner's isolated
-  daemon, behind the hidden `--private` flag (refused unless
-  `LOOMWORKS_TEST_PRIVATE_STDIO=1`), or a per-case temporary root.
 - `proto/conformance.lua` (shared) — the transcript engine: matching with
   selectors and `$`-matchers, frame validation against `transport.json`,
   method results, declared error codes, signal schemas and gapless `seq`.

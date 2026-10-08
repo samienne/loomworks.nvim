@@ -38,6 +38,7 @@ M.ERR_TRANSPORT = "transport"   -- the negotiated transport has no interface cal
 --- @field closed boolean|nil
 --- @field on_close fun(conn: loomworks.daemon.Conn)|nil called once when the connection closes
 ---   after it was established (either side; runs in a libuv callback)
+--- @field welcome_payload string|nil the `welcome` frame's raw JSON payload (raw mode only)
 local Conn = {}
 Conn.__index = Conn
 
@@ -112,6 +113,10 @@ end
 --- `on_challenge(msg)` → true to go on), "auth" its welcome; after the
 --- welcome, replies go to their pending callbacks and broadcasts to
 --- `opts.on_message`. `finish(conn|nil, err, detail)` ends the handshake.
+--- With `opts.raw` (the `--stdio` relay, loomworks.daemon.relay) nothing is
+--- decoded after the welcome: the bytes that followed it, and every later
+--- chunk, go to `opts.raw(chunk)` unchanged, and the welcome's raw payload is
+--- kept in `conn.welcome_payload`.
 --- @param conn loomworks.daemon.Conn
 --- @param opts table
 --- @param state "hello"|"auth"
@@ -121,12 +126,14 @@ end
 --- @return fun(rerr: string|nil, chunk: string|nil)
 local function frame_reader(conn, opts, state, finish, is_done, on_challenge)
     local decoder = protocol.new_decoder(protocol.MAX_FRAME)
+    local stop = opts.raw and function(m) return m.kind == protocol.KIND.welcome end or nil
     return function(rerr, chunk)
         if rerr or not chunk then
             if not is_done() then return finish(nil, M.ERR_CLOSED) end
             return conn:close()
         end
-        local msgs, derr = decoder:push(chunk)
+        if state == "raw" then return opts.raw(chunk) end
+        local msgs, derr = decoder:push(chunk, stop)
         if not msgs then
             if not is_done() then return finish(nil, M.ERR_CLOSED, derr) end
             return conn:close()
@@ -143,6 +150,13 @@ local function frame_reader(conn, opts, state, finish, is_done, on_challenge)
                 conn.welcome = msg
                 conn.on_close = opts.on_close
                 state = "ready"
+                if opts.raw then
+                    state = "raw"
+                    conn.welcome_payload = decoder.stop_payload
+                    local rest = decoder._buf
+                    decoder._buf = ""
+                    if rest ~= "" then opts.raw(rest) end
+                end
                 finish(conn)
             else
                 local p = msg.req_id and conn._pending[msg.req_id]
@@ -206,7 +220,13 @@ end
 ---         key (tests: K override), on_message = fun(msg) for broadcasts,
 ---         on_close = fun(conn) once an established connection closes,
 ---         protocol / protocol_min = the range to announce (tests: an older
----         client; default ours) }
+---         client; default ours),
+---         hello = the fields to announce in `hello` instead of this lw's
+---         (`protocol`, `protocol_min`, `lw_version`, `schemas`, `client`,
+---         `role`: the `--stdio` relay forwards its client's, §19.8 "Relay
+---         handshake"; the nonce is always this connection's own),
+---         raw = fun(chunk) — after `welcome`, hand the connection's bytes
+---         over undecoded (see frame_reader) }
 --- @param endpoint string
 --- @param opts table|nil
 --- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, detail: string|nil)
@@ -219,7 +239,10 @@ function M.connect(endpoint, opts, cb)
     if not nc then return cb(nil, M.ERR_CONNECT, "no random source") end
     -- Built before going asynchronous: the editor host forbids vim.fn (the
     -- version fingerprint's sha256) inside libuv callbacks.
-    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = opts.protocol or protocol.VERSION,
+    local fh = opts.hello
+    local hello = protocol.encode(fh and { kind = protocol.KIND.hello, protocol = fh.protocol,
+        protocol_min = fh.protocol_min, lw_version = fh.lw_version, schemas = fh.schemas, client = fh.client,
+        role = fh.role, nonce = nc } or { kind = protocol.KIND.hello, protocol = opts.protocol or protocol.VERSION,
         protocol_min = opts.protocol_min or protocol.VERSION_MIN, lw_version = version.identity(),
         schemas = version.schemas(), client = opts.client or "cli", role = opts.role, nonce = nc })
     local pipe = uv.new_pipe(false)

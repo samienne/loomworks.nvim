@@ -1,6 +1,8 @@
---- loomworks/daemon/stdio.lua — the standard-I/O transport (spec §19.16
---- "End state", §19.20 "Schemas and conformance"):
---- `lw daemon run --root <root> --stdio`.
+--- loomworks/daemon/stdio.lua — the private standard-I/O transport (spec
+--- §19.8, §19.10 "Tests", §19.20 "Schemas and conformance"):
+--- `lw daemon run --root <root> --stdio --private`, admitted only with
+--- LOOMWORKS_TEST_PRIVATE_STDIO=1 (loomworks.daemon.relay.parse). Without the
+--- flag `--stdio` is the relay to the shared daemon (loomworks.daemon.relay).
 ---
 --- The daemon's server and build service run in this process as an attached
 --- runtime (R held in `attached` mode, §19.1, §19.2), with exactly one
@@ -13,8 +15,8 @@
 --- standard output: notes and the runtime log go to standard error and the
 --- log file.
 ---
---- This is the transport the conformance runner drives (step 5g.2) and the
---- editor's child daemon will use (step 5p).
+--- This is the fresh, isolated daemon the conformance runner drives per case
+--- (scripts/conformance.lua); it is never a user-facing mode.
 
 local uv = vim.uv or vim.loop
 
@@ -55,7 +57,7 @@ function M.serve(root, host)
     local command = require("loomworks.daemon.command")
     local server_mod = require("loomworks.daemon.server")
     local srv = command._new_server(root, host, {})
-    local ok, err, code = srv:start_attached({ command = "daemon run --stdio" })
+    local ok, err, code = srv:start_attached({ command = "daemon run --stdio --private" })
     if not ok then
         if code == server_mod.EXIT_HELD then
             host.note("lw: another runtime holds this workspace: " .. tostring(err))
