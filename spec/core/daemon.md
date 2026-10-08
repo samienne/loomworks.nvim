@@ -900,10 +900,14 @@ relay runs the socket handshake on its behalf:
 4. It forwards the daemon's `welcome`, adding two fields, and from then on
    copies frames both ways unchanged:
    - `daemon = { protocol, protocol_min, lw_version, schemas,
-     session_generation, exe? }` — the daemon's side of the handshake, taken
-     from the `challenge` the relay verified (`exe` from the handle, for
-     display only, §19.6; absent when unknown). The client applies its
-     version rules (§19.9) to these, as it would to a `challenge`.
+     session_generation, pid, start_time, exe? }` — the daemon's side of the
+     handshake, taken from the `challenge` the relay verified (`pid`,
+     `start_time` and `exe` from the handle it connected through, §19.6;
+     `pid` and `start_time` identify that daemon instance, as for a lock
+     holder, §19.5, so a client can name it to `--skip-instance`, §19.10 "No
+     launch"; `exe` for display only, absent when unknown). The client
+     applies its version rules (§19.9) to these, as it would to a
+     `challenge`.
    - `via = "relay"`. A client that gets a `welcome` without `via` is
      talking to an attached runtime (a repository pinned before 5i): the
      editor treats it as such and never sends `retire` over it.
@@ -1132,6 +1136,24 @@ attached runtime of its own, §19.8.)* Every client process is a
   relay exits 0, having launched nothing. Statuses 10 and 14 are never a
   `--no-launch` relay's. `--no-launch` without `--stdio`, or with
   `--private`, is usage (status 2).
+- **Skip an instance.** `--no-launch --skip-instance <pid>:<start_time>`
+  (the editor's after it found that daemon incompatible, §19.16 "Through the
+  relay") names one daemon instance by process id and process start time
+  (§19.5; the handle's `pid` and `start_time`, as `welcome.daemon` reports
+  them, §19.8 "Relay handshake"). The relay treats that daemon as not
+  present: it never connects or relays to it, and while it holds the
+  runtime lock (or its handle is the live one) the relay keeps waiting as a
+  `--no-launch` relay waits on a starting daemon — no bound, nothing
+  launched, status 0 on EOF. Once the lock is released, or held by a
+  different instance, the relay proceeds as a plain `--no-launch` relay: it
+  connects to a live daemon of another instance when one appears (a
+  `retiring` one is waited on as above). It never exits 16 for the skipped
+  daemon — 16 is only for a retiring daemon it connected to — so a skipped
+  daemon that exits with none other live leaves the relay waiting, as after
+  a stop. `--skip-instance` names at most one instance; it is usage (status
+  2) without `--no-launch` (an ordinary relay could neither use the skipped
+  daemon nor launch while it holds the lock, so it would only wait, which is
+  what `--no-launch` is), or when its value is not `<pid>:<start_time>`.
 - **Relay buffering.** The relay bounds what it buffers in each direction:
   while the queue of frames waiting to be written to one side holds more
   than `RELAY_HIGH_WATER` (4 MiB) it stops reading the other side, and
@@ -1162,6 +1184,12 @@ attached runtime of its own, §19.8.)* Every client process is a
   relays (`welcome` with `via`); closing its standard input while it waits
   ends it with status 0; a retiring daemon is waited on, never relaunched
   over, and its exit with no other daemon live ends the relay with status 16.
+  `--skip-instance` is tested on the same root: with the named daemon live
+  the relay never connects to it (the daemon sees no connection) and keeps
+  waiting; after that daemon stops it stays waiting (no status 16) and
+  connects to the next daemon started for the root; a value naming another
+  instance (different start time) does not skip the live one; without
+  `--no-launch`, or with a malformed value, it is status 2.
 - **Compatibility.** A repository pinned to a release from 0.1.43-beta.15 up
   to the one before the release that ships this step still gets that
   release's attached `--stdio` (it works, but is not shared with the CLI; its
@@ -1177,14 +1205,14 @@ standard error, and exits with:
 | Status | Meaning |
 |--|--|
 | 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing), or the daemon closed the connection after `welcome` |
-| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or `--no-launch` without `--stdio` or with `--private` |
+| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
 | 10 | could not start the workspace daemon (launch failure above; never with `--no-launch`) |
 | 11 | the daemon is not responding (hung, §19.5; or connect/handshake past its bound) |
 | 12 | the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — nothing is sent to it |
 | 13 | the workspace daemon runs on another host |
 | 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting) |
 | 15 | the client did not send `hello` first, or not within about 5 s |
-| 16 | `--no-launch` only: the retiring daemon it waited on released the runtime lock and no other daemon is live — the caller decides whether to launch |
+| 16 | `--no-launch` only: the retiring daemon it waited on released the runtime lock and no other daemon is live — the caller decides whether to launch (never for a `--skip-instance` daemon) |
 
 Status 3 ("another daemon won", above) is never a relay's: a relay that
 loses a launch race connects to the winner. The editor maps each status to
@@ -2055,6 +2083,19 @@ instead of reading the handle and the machine key itself; "Launch" and
   one attempt, as in "Retiring". On `retiring` received over a live relay
   connection the editor disconnects and spawns one ordinary relay, whose own
   wait (`RELAY_RETIRE_WAIT`) covers the retiring daemon.
+- **Skipping an incompatible daemon.** The editor learns that a daemon is
+  incompatible only from `welcome.daemon`, after the relay connected; a new
+  relay of either form would connect straight back to it. So when the editor
+  does not observe an incompatible daemon — "Incompatible daemon" below,
+  including once it declines to retire one it held a connection to ("Retiring
+  an incompatible daemon") — it closes that relay, stays in-process, and
+  spawns one `lw daemon run --root <root> --stdio --no-launch
+  --skip-instance <pid>:<start_time>` naming that daemon from
+  `welcome.daemon` (§19.10 "Skip an instance"). That relay never connects to
+  it; it connects to a successor once one is live (another client launched
+  it after the skipped one exited), and the editor judges that one afresh. Nothing is
+  retried on a timer and the editor never launches over the skipped daemon;
+  the relay exits 0 when the editor kills it (workspace swap, shutdown).
 
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`
@@ -2418,7 +2459,9 @@ in-process path. In `in-process` mode nothing below happens.
   - **Incompatible daemon.** A daemon with older schemas (and nothing else
     wrong) is observed; any other incompatible daemon (no transport overlap,
     newer schemas, or, over transport 11, a missing root interface) the
-    observer notes and does not observe, and does not connect to it again.
+    observer notes and does not observe, and does not connect to it again
+    (planned, 5i: through the relay it follows a successor with
+    `--no-launch --skip-instance`, "Skipping an incompatible daemon" above).
     It never restarts an incompatible daemon; it retires it only under
     "Retiring an incompatible daemon" above *(step 5h.5)*, which also says
     how long an older-schema daemon stays observed.
@@ -2428,13 +2471,20 @@ in-process path. In `in-process` mode nothing below happens.
   never launches a daemon by itself. This keeps `lw daemon stop` meaningful.
   It watches the handle (about every 2 s) and connects again when a live
   daemon appears. It skips one it was told is `retiring` or found
-  incompatible, identified by pid and start time.
+  incompatible, identified by pid and start time. *(Planned, 5i: replaced by
+  "Following a stopped or retiring daemon without relaunching it" and
+  "Skipping an incompatible daemon" under "Through the relay" above — a
+  `--no-launch` relay, with `--skip-instance` for an incompatible daemon,
+  instead of watching the handle.)*
 - **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
   disconnects at once, so a version change completes (§19.11). Once that
   daemon has exited and no other daemon is live, the observer launches one
   daemon itself (one attempt, not a loop: an early exit is a note) and
   connects to it; a successor another client started first is observed
-  instead.
+  instead. *(Planned, 5i: replaced by "Following a stopped or retiring
+  daemon without relaunching it" under "Through the relay" above — the wait
+  happens in a relay, `RELAY_RETIRE_WAIT` or `--no-launch` with exit 16,
+  and the one launch is an ordinary relay's.)*
 - **Model changes.** On `model_change` the editor applies its files' pending
   changes at once (§19.12).
 - **Tasks.** Each observed task becomes a **remote task** in the editor.
@@ -2678,7 +2728,8 @@ runtime is deferred until that module is actively developed.
      forwarding, `welcome.daemon` and `welcome.via` added), its bounded
      buffering (`RELAY_HIGH_WATER`), its wait on a retiring daemon
      (`RELAY_RETIRE_WAIT`), its `--no-launch` form that only waits for a
-     daemon (the editor's after a stop or a busy retirement) and its exit
+     daemon (the editor's after a stop or a busy retirement; with
+     `--skip-instance`, after an incompatible daemon) and its exit
      statuses (§19.10 "Relay exit status"). Relays register nothing; `lw daemon list` and
      `kill --all --strays` show them as connections of their daemon, while a
      `--stdio` process the runtime lock names is still a runtime (older

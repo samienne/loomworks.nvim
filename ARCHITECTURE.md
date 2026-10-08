@@ -1309,7 +1309,8 @@ released Linux host on the released bundle to write the
   buffering per direction (`RELAY_HIGH_WATER`) and exits with the statuses of
   spec §19.10 "Relay exit status". `--no-launch` (the editor's, after a stop
   or a busy retirement) never launches: it waits for a daemon to appear and
-  then relays. The discovery/launch/handshake code the
+  then relays; with `--skip-instance <pid>:<start_time>` (the editor's after
+  an incompatible daemon) it never relays to that instance. The discovery/launch/handshake code the
   CLI uses moves to `daemon/connect.lua`, shared by the CLI and the relay.
   The private-pipe server stays only for the conformance runner's isolated
   daemon, behind the hidden `--private` flag (refused unless
