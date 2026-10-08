@@ -5,6 +5,15 @@ they don't get lost.
 
 ---
 
+## Split `cli.lua`: its main chunk is at Lua's 200-local limit
+
+`lua/loomworks/cli.lua`'s main chunk has reached Lua's limit of 200 local
+variables per function, so new top-level helpers must be `M.` fields (e.g.
+`M._interrupt_intercept`, step 5i PR F) or locals inside functions. Split the
+file into modules (e.g. the daemon delegation `_delegate*` / `_routed_*`, the
+interrupt handling, the per-command handlers) so the limit stops shaping the
+code.
+
 ## Stable channel: resolve by highest version, not `/releases/latest`
 
 The stable update channel (lw self-update, `lw release query --channel
@@ -537,6 +546,8 @@ implementations of the committed-ignore rule. Follow-ups:
   shows the daemon's running task") shows "running tasks: unavailable
   (timeout)" under parallel load / on the Windows CI runner; passes alone.
   Seen on PR #168 CI and a local `make test`. Make the wait robust.
+  Failed once more on Windows CI on PR #175 ("running tasks: unavailable
+  (timeout)"), passed on rerun.
 - `tests/daemon_reset_cli_spec.lua` "every case: the same output..." failed
   once on Windows CI (PR #171 run 37734890114, docs-only change), passed on
   rerun.

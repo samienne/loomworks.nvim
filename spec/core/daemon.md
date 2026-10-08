@@ -1120,8 +1120,9 @@ exit, all clients connect to the winner.
 **Connections.** *(Step 5i: the relay with `--no-launch`, `--skip-instance`
 and the gated `--private` is implemented, `daemon/relay.lua`, and so is its
 `lw daemon list` / `kill --all --strays` classification (§19.6.1 step 3), and
-the idle rule with its background-work cap (§19.11 "Idle exit"); the
-editor's use of it and the two-stage Ctrl-C are planned.)* Every client process is a
+the idle rule with its background-work cap (§19.11 "Idle exit"), and the
+CLI's two-stage Ctrl-C (§19.15 "Task ownership"); the editor's use of it is
+planned.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -1899,8 +1900,8 @@ arguments as the in-process host does (§16.9; the same matcher, the same
 messages, the client's interactivity).
 
 **Cancellation.** An operation belongs to its client. When that client
-disconnects (Ctrl-C ends `lw`: the interrupt handler drops the connection,
-which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
+disconnects (`lw` ending on Ctrl-C — see Task ownership for when that is —
+drops the connection, which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
 retire, root removed, lost lock), or the workspace or the operation's subject
 is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
@@ -1920,8 +1921,8 @@ group, as Git Bash starts the native program it then signals with `kill
 -INT` — would otherwise never see it, while in-process the build's own
 processes in that console still stop).
 
-**Task ownership.** *(Planned, step 5i; today the first Ctrl-C drops the
-connection.)* Every task a connection starts — build, test, run preparation,
+**Task ownership.** *(Step 5i: the CLI's two-stage Ctrl-C is implemented,
+part F — `cli.lua` `_routed_cancel`, the interrupt handler's interceptor.)* Every task a connection starts — build, test, run preparation,
 configure, clean, reset — is owned by that connection. When the connection
 closes for any reason (a CLI's Ctrl-C, the editor quitting or crashing, `lw`
 killed, a `--stdio` relay ending), the daemon cancels its tasks as above.
@@ -1929,13 +1930,24 @@ Other connections only observe: closing an observer never stops a task.
 Configure counts as a connection-owned task from step 5i (cancelled when its
 connection closes), but in 5i it reaches the daemon only as a step of a
 routed build, test or run preparation; a standalone configure is not routed
-through the daemon until steps 5j–5o. In the CLI the **first Ctrl-C** sends a
-graceful cancel (the same as `loomworks.Tasks/1.cancel`) and keeps waiting
-for the task to end; a **second Ctrl-C** closes the connection and the daemon
-force-stops the task — on Windows the step's whole process tree: the daemon
-runs in its own console, so a build never receives the console's Ctrl-C. A
-daemon of protocol 10 has no `Tasks/1`: against it the first Ctrl-C closes
-the connection, as today. *(Future, not
+through the daemon until steps 5j–5o. In the CLI, once the daemon has
+accepted the task, the **first Ctrl-C** asks the daemon to stop it
+(`loomworks.Tasks/1.cancel`: the daemon stops the running step's process tree
+as above — the daemon runs in its own console, so a build never receives the
+console's Ctrl-C) and prints one stderr line, `lw: stopping the <op> - press
+Ctrl-C again to stop waiting`; `lw` keeps waiting until the task has stopped
+(its `<op> stopped: …` line is printed as usual). A **second Ctrl-C** makes
+`lw` leave at once, closing the connection, while the daemon finishes
+stopping the task. Either way `lw` exits 130 after an intercepted Ctrl-C —
+also when the task ended before the cancel landed (the daemon then answers
+that there is no running task) and when the connection is lost meanwhile —
+and a run's program is never started. A Ctrl-C before the daemon has accepted
+the task closes the connection and exits 130 (there is nothing to cancel
+yet). A daemon of protocol 10 has no `Tasks/1`: against it the first Ctrl-C
+closes the connection, as before. Only Ctrl-C is two-stage: Ctrl-Break, a
+closed console, a hangup and a termination request end `lw` at once
+(closing the connection). An attached run (§19.1 "Loopback": the runtime is
+the `lw` process itself) is unchanged — a Ctrl-C ends it. *(Future, not
 planned in a step: `lw build --detach` hands a task over to the daemon, which
 then owns it with no connection.)*
 
@@ -2825,7 +2837,7 @@ runtime is deferred until that module is actively developed.
      `lw daemon list` / `kill` classification of relays; E — the idle rule
      *(done: tool detection past the cap is abandoned by unloading the
      model, a run past it stops the daemon through the stop path)*;
-     F — the CLI's two-stage Ctrl-C; G — the editor uses the relay.
+     F — the CLI's two-stage Ctrl-C *(done)*; G — the editor uses the relay.
    - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
      the short idle grace (a named constant of about 30-60 s, overridable);
      background results written atomically to the cache with a timestamp and

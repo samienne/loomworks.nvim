@@ -1342,6 +1342,24 @@ released Linux host on the released bundle to write the
   `parse_instance`, `same_instance`. `daemon/ensure.lua` keeps the CLI's
   policy on top of it: the step bounds, one line per outcome, `--break-locks`
   recovery, the version reconcile and `ping`.
+- `cli.lua` two-stage Ctrl-C (spec §19.15 "Task ownership", step 5i part
+  F): the interrupt cleanup offers a `sigint` first to an interceptor
+  (`M._set_interrupt_intercept`, one shot; Ctrl-Break, hangup and sigterm
+  are never intercepted). `_delegate` sets it, outside an attached run, only
+  while it waits for an accepted task's `done` (`M._await_routed`, which
+  restores the previous interceptor also when the wait raises):
+  `M._routed_cancel` sends `loomworks.Tasks/1.cancel` (the daemon stops the
+  step's process tree), one `lw: stopping the <op> - press Ctrl-C again to
+  stop waiting` line is printed, and the wait goes on until the task has
+  stopped; the next Ctrl-C runs the cleanup (the connection closes, the
+  daemon finishes stopping the task). An intercepted Ctrl-C is recorded:
+  whatever `done` says — or a lost connection — `M._interrupted_end` exits
+  130 and a run's program is never started (the task may have finished
+  before the cancel landed). A connection without interface calls or an integer task id
+  (protocol 10) is not intercepted, and a `cancel` answered with a
+  nothing-ran error (`calls.RETRY_V0`: no `Tasks/1`) escalates to the
+  cleanup. The interceptor is a field (`M._interrupt_intercept`), not a
+  chunk local: cli.lua's main chunk is at Lua's 200-local limit.
 - `proto/conformance.lua` (shared) — the transcript engine: matching with
   selectors and `$`-matchers, frame validation against `transport.json`,
   method results, declared error codes, signal schemas and gapless `seq`.

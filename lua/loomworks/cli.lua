@@ -276,19 +276,36 @@ local function interrupt_context(signal, windows)
 end
 M._interrupt_context = interrupt_context
 
+--- The interrupt interceptor (`M._set_interrupt_intercept`), or nil. (A
+--- field, not a chunk local: cli.lua's main chunk is at Lua's 200-local limit.)
+--- @type (fun(escalate: fun()): boolean)|nil
+M._interrupt_intercept = nil
+
+--- Offer the next Ctrl-C to `fn` instead of ending lw (nil: none). The
+--- interceptor is used at most once: the Ctrl-C after it ends lw. Returns the
+--- previous interceptor.
+--- @param fn (fun(escalate: fun()): boolean)|nil
+--- @return (fun(escalate: fun()): boolean)|nil
+function M._set_interrupt_intercept(fn)
+  local prev = M._interrupt_intercept
+  M._interrupt_intercept = fn
+  return prev
+end
+
 --- Build the guarded interrupt-cleanup callback (the body a signal handler
 --- runs, called with the signal name): run the exit hooks with the interrupt
 --- context (releasing held build/device locks and stopping a remote run's
 --- device program), flush the output streams, then exit with `code`. The
 --- returned closure fires the cleanup at most once — a repeated Ctrl-C or a
---- second signal is ignored. `exit_fn` defaults to os.exit and is injectable
+--- second signal is ignored — except that a Ctrl-C while an interceptor is set
+--- (`M._set_interrupt_intercept`) goes to it first. `exit_fn` defaults to os.exit and is injectable
 --- so tests can drive the callback without terminating the process.
 --- @param code integer
 --- @param exit_fn? fun(code: integer)
 --- @return fun(signal?: string) callback
 local function make_interrupt_cleanup(code, exit_fn)
   local fired = false
-  return function(signal)
+  local function fire(signal)
     if fired then return end
     fired = true
     run_exit_hooks(interrupt_context(type(signal) == "string" and signal or nil,
@@ -296,6 +313,22 @@ local function make_interrupt_cleanup(code, exit_fn)
     pcall(function() io.stdout:flush() end)
     pcall(function() io.stderr:flush() end)
     ;(exit_fn or os.exit)(code)
+  end
+  return function(signal)
+    if fired then return end
+    -- The two-stage Ctrl-C (spec §19.15 "Task ownership"): a Ctrl-C (sigint
+    -- only; Ctrl-Break, a closed console, a hangup or a termination request
+    -- end lw at once) is first offered to the interceptor, which is taken
+    -- down as it is offered, so the next Ctrl-C ends lw here. The
+    -- interceptor gets `escalate` (this cleanup, for when it finds it cannot
+    -- act after all) and returns whether it handled the interrupt.
+    local intercept = M._interrupt_intercept
+    if intercept and signal == "sigint" then
+      M._interrupt_intercept = nil
+      local ok, handled = pcall(intercept, function() fire(signal) end)
+      if ok and handled then return end
+    end
+    fire(signal)
   end
 end
 
@@ -8146,17 +8179,27 @@ function M._delegate(op, root, args, ensured, opts)
     if lost() then return lost_lock() end
     return could_not("unexpected reply")
   end
-  waiting(function() return done ~= nil end)
+  -- The two-stage Ctrl-C (§19.15 "Task ownership"): the first one asks the
+  -- daemon to stop the task and the wait goes on until it has stopped; the
+  -- second ends lw, closing the connection, while the daemon finishes
+  -- stopping it. (Not for an attached run: its runtime is this process.)
+  local function wait_done() waiting(function() return done ~= nil end) end
+  local intercepted = false
+  if attached then wait_done() else intercepted = M._await_routed(conn, task_id, op, wait_done) end
   conn:close()
   -- Its runtime lock taken over mid-operation: the running task was
   -- cancelled (its steps killed) as on Ctrl-C (§19.2); the command ends.
   if lost() then
     if ctrl_c_enabled then M._restore_console_ctrl_c() end
-    return lost_lock()
+    local code = lost_lock()
+    return intercepted and 130 or code
   end
   -- The routed operation ended: this process's Ctrl-C state as it started,
   -- before a run's program (or the in-process device run) inherits it.
   if ctrl_c_enabled then M._restore_console_ctrl_c() end
+  -- Interrupted: exit 130 however the task ended, and a run's program is
+  -- never started (the task may have finished before the cancel landed).
+  if intercepted then return M._interrupted_end(op, done) end
   if not done then
     if attached then return lost_lock() end
     errw("lw: lost the connection to the workspace daemon during the " .. op .. " — it was not re-run here\n")
@@ -8170,6 +8213,71 @@ function M._delegate(op, root, args, ensured, opts)
   if op == "run" and opts.release then opts.release() end
   if op == "run" and done.code == 0 then return M._finish_routed_run(root, req, run_args, done, attached) end
   return done.code
+end
+
+--- Wait for a routed task's end (`wait`) with the two-stage Ctrl-C (spec
+--- §19.15 "Task ownership"): the first Ctrl-C meanwhile goes to
+--- `_routed_cancel` and prints one stderr line saying lw goes on waiting. The
+--- previous interceptor is restored afterwards, also when `wait` raises (the
+--- error is re-raised). Returns whether a Ctrl-C was intercepted.
+--- @param conn table the client session
+--- @param task_id any the accepted reply's task id
+--- @param op string
+--- @param wait fun()
+--- @return boolean intercepted
+function M._await_routed(conn, task_id, op, wait)
+  local state = { intercepted = false }
+  local prev = M._set_interrupt_intercept(function(escalate)
+    local handled = M._routed_cancel(conn, task_id, escalate)
+    if handled then
+      state.intercepted = true
+      errw("lw: stopping the " .. op .. " - press Ctrl-C again to stop waiting\n")
+    end
+    return handled
+  end)
+  local ok, err = pcall(wait)
+  M._set_interrupt_intercept(prev)
+  if not ok then error(err, 0) end
+  return state.intercepted
+end
+
+--- The end of a routed operation whose first Ctrl-C was intercepted (spec
+--- §19.15 "Task ownership"): exit status 130 however the task ended — also
+--- when it finished before the cancel landed or the connection was lost —
+--- and a run's program is never started.
+--- @param op string
+--- @param done table|nil the task's end (nil: the connection was lost)
+--- @return integer
+function M._interrupted_end(op, done)
+  if not done then
+    errw("lw: lost the connection to the workspace daemon while stopping the " .. op .. "\n")
+  elseif done.error then
+    errw("lw: " .. tostring(done.error) .. "\n")
+  elseif op == "run" and done.code == 0 then
+    errw("lw: interrupted - the program was not started\n")
+  end
+  return 130
+end
+
+--- The first Ctrl-C of a routed operation (spec §19.15 "Task ownership"):
+--- send `loomworks.Tasks/1.cancel` for the task `conn` started and keep
+--- waiting for it to end. Returns false — the Ctrl-C then ends lw and closes
+--- the connection, as a second one does — when the connection cannot carry
+--- the call: a daemon of protocol 10 (no interface calls, an integer task
+--- id). A daemon that turns out to have no `Tasks/1` (the call's error says
+--- nothing ran) gets the same through `escalate`. Any other answer (the task
+--- already ended, the connection closed) leaves the wait to end as it does.
+--- @param conn table the client session
+--- @param task_id any the accepted reply's task id
+--- @param escalate fun() end lw now (the interrupt cleanup)
+--- @return boolean handled
+function M._routed_cancel(conn, task_id, escalate)
+  local calls = require("loomworks.daemon.calls")
+  if type(task_id) ~= "string" or conn.closed or not calls.speaks_calls(conn) then return false end
+  conn:call("/tasks", "loomworks.Tasks", 1, "cancel", { task_id = task_id }, function(_, err)
+    if type(err) == "table" and calls.RETRY_V0[err.code] then escalate() end
+  end)
+  return true
 end
 
 --- The exit of an attached run whose runtime stopped by itself (spec §19.2,
