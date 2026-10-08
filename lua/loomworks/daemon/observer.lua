@@ -107,6 +107,10 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @field incompat_note string|nil the observed daemon is incompatible (older schemas): what the editor does about it, on the Runtime line
 --- @field retire_check_ms integer how often a busy incompatible daemon is re-checked through `status` (spec §19.16: about every 30 s)
 --- @field retired_note string|nil the last retirement this observer made (why), shown on the Runtime line until it observes the successor
+--- @field channel_note string|nil the `binary.channel` check's note (step 5h.5: an accepted, rejected or failed check, or why the channel has no effect), shown on the Runtime line
+--- @field _channel_token table|nil the channel check (query or download) in flight (single flight; a late callback after a stop is ignored)
+--- @field _channel_next integer|nil when (epoch s) the next background channel check is weighed
+--- @field _channel_force boolean|nil an explicit connect asked for a channel check that could not run yet
 --- @field opts table the attach options (test seams, see `attach`)
 --- @field watch_ms integer handle-watch interval
 --- @field keepalive_ms integer keepalive ping interval
@@ -189,6 +193,11 @@ end
 ---   connect     fun(endpoint, opts, cb) (loomworks.daemon.client.connect)
 ---   check       fun(root, endpoint) → ok, why (loomworks.daemon.endpoint.check)
 ---   wanted      fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.wanted: the managed lw's version, for a retirement)
+---   data        the editor's data directory (the managed lw, channel.json; default stdpath("data"))
+---   pinned_wanted fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.pinned_wanted)
+---   channel_query fun(pinned, channel, opts, cb(res)) (loomworks.provision.channel.run)
+---   channel_load / channel_save  replace loomworks.provision.channel.load / save
+---   now         fun() → epoch seconds (the channel interval)
 ---   notify      fun(msg, level) (vim.notify: the one notice of a retirement)
 ---   watch_ms, keepalive_ms, retire_check_ms
 --- @param ws loomworks.Workspace
@@ -254,6 +263,9 @@ function Observer:start(explicit)
         if self._downloading then self:_cancel_download("restarted by :LoomworksDaemon connect") end
     end
     self:_start_watch()
+    -- The binary.channel check runs in the background (step 5h.5): on load
+    -- when due, and on every explicit connect.
+    self:_channel_check(explicit)
     -- Single-flight: one connection, one attempt, one launch at a time (a
     -- connection held to retire an incompatible daemon included).
     if self.conn or self._connecting or self._retire then return end
@@ -318,7 +330,7 @@ function Observer:_launch(probed)
     local binsel = require("loomworks.provision.select")
     local resolve = self.opts.resolve or binsel.resolve
     local bin, source, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary,
-        probe = self.opts.probe_cached })
+        probe = self.opts.probe_cached, data = self.opts.data })
     if type(sel) ~= "table" then
         sel = { path = bin, source = source, label = binsel.LABELS[source] or source, candidates = {} }
     end
@@ -390,7 +402,7 @@ function Observer:_download(sel)
     self._downloading = want.sha256
     local token = {}
     self._dl_token = token
-    local fopts = { release_url = setting.release_url, getenv = self.opts.getenv }
+    local fopts = { release_url = setting.release_url, getenv = self.opts.getenv, data = self.opts.data }
     local st = (self.opts.fetch or fetch.ensure)(want, fopts, function(path, err)
         if self._dl_token ~= token then return end -- cancelled: a newer download or a stop owns the state
         self._dl_token = nil
@@ -423,9 +435,11 @@ function Observer:_cancel_download(why)
     if sha then pcall(self.opts.cancel_fetch or require("loomworks.provision.fetch").cancel, sha, why) end
 end
 
---- Remove the plugin-managed binaries other than `want`, never one in use:
---- the binary this observer launched, the observed daemon's, the live
---- daemon's (loomworks.provision.cache, deletion-safety rule 11). Best effort.
+--- Remove the plugin-managed binaries other than the wanted ones — `want`,
+--- the pin's and, with `binary.channel` set, the accepted channel release's
+--- (spec §19.16 "Channel upgrades": both are kept) — never one in use: the
+--- binary this observer launched, the observed daemon's, the live daemon's
+--- (loomworks.provision.cache, deletion-safety rule 11). Best effort.
 --- @param want loomworks.provision.Wanted
 function Observer:_prune(want)
     local list = {}
@@ -434,7 +448,137 @@ function Observer:_prune(want)
     use(self.daemon and self.daemon.exe)
     local ok, st = pcall(self._inspect, self)
     if ok and type(st) == "table" and type(st.handle) == "table" then use(st.handle.exe) end
-    pcall(self.opts.prune or require("loomworks.provision.cache").prune, { keep = { want.sha256 }, in_use = list })
+    local keep, seen = {}, {}
+    local function add(w)
+        local sha = type(w) == "table" and w.sha256 or nil
+        if type(sha) == "string" and not seen[sha] then seen[sha] = true; keep[#keep + 1] = sha end
+    end
+    add(want)
+    local managed = require("loomworks.provision.managed")
+    local pok, pin = pcall(self.opts.pinned_wanted or managed.pinned_wanted)
+    if pok then add(pin) end
+    local wok, cur = pcall(managed.wanted, { setting = self.opts.binary, data = self.opts.data })
+    if wok then add(cur) end
+    pcall(self.opts.prune or require("loomworks.provision.cache").prune,
+        { keep = keep, in_use = list, data = self.opts.data })
+end
+
+--- How long (s) before the observer weighs again a channel check it could
+--- not decide (the selection did not reach the managed lw yet, e.g. an lw on
+--- PATH still to be probed). Weighing runs no process.
+M.CHANNEL_RETRY_S = 60
+
+--- Set the channel check's note; the status page re-renders.
+--- @param note string|nil
+function Observer:_set_channel_note(note)
+    if self.channel_note == note then return end
+    self.channel_note = note
+    self:_emit("daemon_runtime_changed", self)
+end
+
+--- The `binary.channel` check (spec §19.16 "Channel upgrades", step 5h.5):
+--- in the background, at most once a day (channel.json's last check) and on
+--- every explicit connect, when the setting applies and the selection reaches
+--- the managed lw. The pinned managed lw is made present first (the same
+--- download as a launch's, shared per hash), then it runs `release query`
+--- (loomworks.provision.channel.run); a newer release that passes the check is
+--- downloaded and only then recorded as accepted. A running daemon is never
+--- switched: the next launch uses the new binary. Any failure is one note;
+--- the editor keeps the current wanted binary.
+--- @param explicit boolean `:LoomworksDaemon connect`
+function Observer:_channel_check(explicit)
+    if explicit then self._channel_force = true end
+    if self.state == "stopped" or self._channel_token then return end
+    local chan = require("loomworks.provision.channel")
+    local binsel = require("loomworks.provision.select")
+    local setting = binsel.check_setting(self.opts.binary)
+    if not chan.applies(setting) then
+        self._channel_force = nil
+        return self:_set_channel_note(nil)
+    end
+    local now = (self.opts.now or os.time)()
+    if not self._channel_force and self._channel_next and now < self._channel_next then return end
+    local _, _, sel = (self.opts.resolve or binsel.resolve)(self.root, { getenv = self.opts.getenv,
+        setting = self.opts.binary, probe = self.opts.probe_cached, data = self.opts.data })
+    if type(sel) ~= "table" or sel.probe or sel.source ~= "managed" then
+        -- An lw the user installed or named is selected (the channel has no
+        -- effect, said once), or the selection is still undecided.
+        self._channel_next = now + M.CHANNEL_RETRY_S
+        return self:_set_channel_note(type(sel) == "table" and sel.channel_note or nil)
+    end
+    local data = self.opts.data
+    local rec = chan.for_channel((self.opts.channel_load or chan.load)({ data = data }), setting.channel)
+    if not self._channel_force and not chan.due(rec, setting.channel, now) then
+        self._channel_next = (rec.checked or now) + chan.INTERVAL_S
+        return self:_set_channel_note(rec.note)
+    end
+    self._channel_force = nil
+    local managed = require("loomworks.provision.managed")
+    local pin = (self.opts.pinned_wanted or managed.pinned_wanted)()
+    if type(pin) ~= "table" then
+        -- No pinned binary for this host: nothing can resolve a channel.
+        self._channel_next = now + chan.INTERVAL_S
+        return
+    end
+    local token = {}
+    self._channel_token = token
+    local fetch = self.opts.fetch or require("loomworks.provision.fetch").ensure
+    local fopts = { release_url = setting.release_url, getenv = self.opts.getenv, data = data }
+    local function current() return managed.wanted({ setting = setting, data = data }) or pin end
+    local function ctx()
+        return { channel = setting.channel, current = current(), asset = pin.asset, rejected = rec.rejected,
+            pinned_version = pin.version }
+    end
+    local function save(out)
+        -- Every completion ends here. This check satisfies an explicit
+        -- connect that arrived while it ran: no second query next tick.
+        self._channel_force = nil
+        local nrec = chan.record(rec, out, (self.opts.now or os.time)())
+        pcall(self.opts.channel_save or chan.save, nrec, { data = data })
+        self._channel_next = nrec.checked + chan.INTERVAL_S
+        self:_set_channel_note(out.note)
+    end
+    -- 1. The pinned managed lw, present and verified.
+    fetch(pin, fopts, function(pinned, perr)
+        if self._channel_token ~= token or self.state == "stopped" then return end
+        if not pinned then
+            self._channel_token = nil
+            return save(chan.classify({ error = "the pinned lw v" .. tostring(pin.version) .. " could not be installed: "
+                .. tostring(perr) }, ctx()))
+        end
+        -- 2. It resolves the channel.
+        local query = self.opts.channel_query or chan.run
+        query(pinned, setting.channel, { release_url = setting.release_url, data = data }, function(res)
+            if self._channel_token ~= token or self.state == "stopped" then return end
+            local c = ctx()
+            local out = chan.classify(res, c)
+            if out.kind ~= "accepted" then
+                self._channel_token = nil
+                return save(out)
+            end
+            -- 3. Accepted: download it (hash from the query), then record it.
+            local what = "lw v" .. out.version .. " from " .. setting.channel
+            self:_set_channel_note("downloading " .. what .. " — staying on lw v" .. tostring(c.current.version)
+                .. " meanwhile")
+            fetch(out.wanted, fopts, function(path, err)
+                if self._channel_token ~= token or self.state == "stopped" then return end
+                self._channel_token = nil
+                if not path then
+                    return save(chan.classify({ error = "could not install " .. what .. ": " .. tostring(err) }, c))
+                end
+                local running = self.conn or self._connecting or self._retire
+                    or (self._child and self._child.code == nil)
+                local extra = out.override and ("; " .. out.override) or ""
+                out.note = what .. " is installed"
+                    .. (running and ": the next daemon launch uses it (the running daemon is not switched)" or "")
+                    .. extra
+                save(out)
+                self:_prune(out.wanted)
+                -- Not running a daemon for want of a binary: start over.
+                if not running and (self.state == "no-binary" or self.state == "idle") then self:start(false) end
+            end)
+        end)
+    end)
 end
 
 function Observer:_start_watch()
@@ -443,6 +587,7 @@ function Observer:_start_watch()
     self._watch = t
     t:start(self.watch_ms, self.watch_ms, vim.schedule_wrap(function()
         if self.state == "stopped" then return end
+        pcall(self._channel_check, self, false)
         local ok, err = pcall(self._on_watch, self)
         if not ok then self:_set("waiting", "internal error: " .. tostring(err)) end
     end))
@@ -661,8 +806,8 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
     local binsel = require("loomworks.provision.select")
     local resolve = self.opts.resolve or binsel.resolve
     local _, _, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary,
-        probe = self.opts.probe_cached })
-    local b = R.selected(sel, { wanted = self.opts.wanted })
+        probe = self.opts.probe_cached, data = self.opts.data })
+    local b = R.selected(sel, { wanted = self.opts.wanted, setting = self.opts.binary })
     if b.pending and not wait.probed then
         -- A PATH or explicit lw with no verdict yet: probe it first
         -- (bounded, asynchronous), then weigh again over the cached verdict.
@@ -1267,6 +1412,8 @@ function Observer:runtime_line()
     -- The pre-launch probe's lasting note (step 5h.5: a skipped lw on PATH,
     -- an incompatible explicit one); a no-binary note already names it.
     if self.probe_note and self.state ~= "no-binary" then t = t .. " — " .. self.probe_note end
+    -- The binary.channel check's note (step 5h.5).
+    if self.channel_note then t = t .. " — " .. self.channel_note end
     if self.retired_note and self.state ~= "connected" then t = t .. " (" .. self.retired_note .. ")" end
     if self.warning then t = t .. " (" .. self.warning .. ")" end
     return t

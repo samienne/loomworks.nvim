@@ -10,7 +10,7 @@
 --- them equal to ours, `problems(d, { exact_schemas = true })`), and every interface the observer uses
 --- (loomworks.daemon.observer ROOT and FEATURES) is offered at its version.
 ---
---- One check, three uses: scripts/release/pin.lua refuses to pin (and the
+--- One check, four uses: scripts/release/pin.lua refuses to pin (and the
 --- release workflow refuses to publish) a release that fails it; ordinary CI
 --- only warns, since a development checkout may need interfaces newer than
 --- the last published release (the editor then degrades with feature notes;
@@ -18,7 +18,10 @@
 --- editor's pre-launch probe of a search-path or explicit lw
 --- (loomworks.provision.probe, §19.16 "Pre-launch probe") weighs the same
 --- problems through `problems`: only a structural or fatal one makes that
---- binary incompatible, a missing feature interface only degrades the feature.
+--- binary incompatible, a missing feature interface only degrades the feature;
+--- and a `binary.channel` release (loomworks.provision.channel, §19.16
+--- "Channel upgrades") must pass `check` with exact schemas before the
+--- editor downloads it.
 
 local M = {}
 
@@ -95,11 +98,14 @@ function M.problems(d, opts)
 end
 
 --- Check a descriptor (the pin and release gate: every problem counts).
---- Returns true, or false + the problems (one line each).
+--- Returns true, or false + the problems (one line each). `opts` as for
+--- `problems`: a channel release (loomworks.provision.channel) is checked
+--- with `exact_schemas`, since it becomes the managed lw.
 --- @param d any a decoded binary descriptor
+--- @param opts? { exact_schemas?: boolean }
 --- @return boolean ok, string[] problems
-function M.check(d)
-    local p = M.problems(d)
+function M.check(d, opts)
+    local p = M.problems(d, opts)
     if type(d) ~= "table" then return false, p.structure end
     local problems = {}
     for _, list in ipairs({ p.structure, p.fatal, p.degraded }) do

@@ -24,6 +24,13 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
+--- The re-check tick for the tests against a real (in-process) daemon. It
+--- also bounds a `status` reply (an unanswered status at the next tick ends
+--- the wait, §19.16), and the daemon shares this test's event loop: a loop
+--- stall longer than the tick (seen on Windows CI past 100 ms) reads as a
+--- daemon that stopped answering. The fake-daemon tests keep 100 ms.
+local REAL_RETIRE_CHECK_MS = 1000
+
 local function older_schemas()
     local s = version.schemas()
     return { user = s.user - 1, cache = s.cache }
@@ -238,6 +245,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
                 return { kind = "none" }
             end,
             spawn = function() spawned = spawned + 1; return { pid = 99 } end,
+            retire_check_ms = REAL_RETIRE_CHECK_MS,
         })
         obs = attach(opts)
         assert.is_true(vim.wait(10000, function() return s.exited ~= nil end, 10), obs:runtime_line())
@@ -262,23 +270,38 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
             if c.authed and not c.closed and not c.observer then busy = c end
         end
         busy.in_flight = { [999] = true }
+        local statuses = 0
         obs = attach(vim.tbl_extend("force", managed_selection("9.9.9"), {
             connect = function(ep, copts, cb)
                 client.connect(ep, copts, function(c, e)
-                    if c then c.challenge = vim.tbl_extend("force", c.challenge, { schemas = older_schemas(),
-                        lw_version = "0.0.1" }) end
+                    if c then
+                        c.challenge = vim.tbl_extend("force", c.challenge, { schemas = older_schemas(),
+                            lw_version = "0.0.1" })
+                        local request = c.request
+                        c.request = function(cc, msg, rcb)
+                            if msg.kind == "status" then statuses = statuses + 1 end
+                            return request(cc, msg, rcb)
+                        end
+                    end
                     cb(c, e)
                 end)
             end,
+            retire_check_ms = REAL_RETIRE_CHECK_MS,
             spawn = function() return { pid = 99 } end }))
-        assert.is_true(vim.wait(5000, function()
+        assert.is_true(vim.wait(10000, function()
             return obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true) ~= nil
         end, 10), obs:runtime_line())
-        vim.wait(400) -- several re-checks: still busy, never retired
+        -- Two more re-checks: still busy, never retired.
+        local first = statuses
+        assert.is_true(vim.wait(10 * REAL_RETIRE_CHECK_MS, function() return statuses >= first + 2 end, 10),
+            obs:runtime_line())
+        assert.truthy(obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true),
+            obs:runtime_line())
         assert.is_false(s.srv.retiring)
         assert.is_false(R.was_retired(root, "0.0.1"))
         busy.in_flight = {}
-        assert.is_true(vim.wait(5000, function() return s.srv.retiring end, 10), obs:runtime_line())
+        assert.is_true(vim.wait(10 * REAL_RETIRE_CHECK_MS, function() return s.srv.retiring end, 10),
+            obs:runtime_line())
         cli:close()
         assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
     end)

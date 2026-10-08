@@ -72,9 +72,10 @@ end
 --- The selected binary, weighed (spec §19.16: "the binary the editor selected
 --- passed the interface check (the probe's compatible verdict, or the
 --- managed lw)"). `opts.wanted` replaces loomworks.provision.managed.wanted
---- (tests).
+--- (tests); `opts.setting` (the setup option `binary`) lets it weigh
+--- `binary.channel` (the managed lw may be an accepted channel release).
 --- @param sel loomworks.provision.Selection|nil
---- @param opts? { wanted?: fun(): loomworks.provision.Wanted|nil }
+--- @param opts? { wanted?: fun(): loomworks.provision.Wanted|nil, setting?: loomworks.provision.BinarySetting }
 --- @return loomworks.daemon.SelectedBinary
 function M.selected(sel, opts)
     opts = opts or {}
@@ -95,7 +96,9 @@ function M.selected(sel, opts)
         if c.verdict == "chosen" then chosen = c end
     end
     if sel.source == "managed" then
-        local w = (opts.wanted or require("loomworks.provision.managed").wanted)()
+        local w
+        if opts.wanted then w = opts.wanted()
+        else w = require("loomworks.provision.managed").wanted({ setting = opts.setting }) end
         if type(w) ~= "table" or type(w.version) ~= "string" then
             return { ok = false, path = sel.path, why = "the plugin pin names no version" }
         end

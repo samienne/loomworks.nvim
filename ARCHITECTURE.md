@@ -879,11 +879,29 @@ re-cut onto master step by step; this section is expanded as each step lands.
   so an uncacheable verdict never loops. The observer shows `probe_note` on
   the Runtime line; checkhealth shows the chosen candidate's cached verdict
   and never probes. The managed lw is never probed.
-  *Planned, step 5h.5 (spec §19.16 "Channel upgrades"):* `managed.wanted` =
-  the newer of the pin and the accepted
-  `binary.channel` result persisted in `<stdpath data>/loomworks/channel.json`
-  (obtained by running the pinned managed lw's `release query --channel <c>
-  --json`, spec §16.42, then `needs.check` on its descriptor).
+  Channel upgrades (step 5h.5, spec §19.16 "Channel upgrades"):
+  `managed.wanted({ setting })` = the newer of the pin (`managed.pinned_wanted`)
+  and the accepted `binary.channel` release persisted in
+  `<stdpath data>/loomworks/channel.json` (`provision/channel.lua`: `load` /
+  `save` (per-pid temp + rename), `for_channel` (another channel keeps only the
+  accepted release), `due` (once a day), `accepted` (re-checks the stored
+  descriptor on every read)). `select.resolve` passes the setting to
+  `managed.find`, and sets `channel_note` when a PATH or explicit lw is
+  selected. `Observer:_channel_check(explicit)` runs from `start` and every
+  watch tick (cheap until due; explicit connect forces it): when the setting
+  applies (`channel.applies`: a valid channel, `download ~= false`, no
+  `binary.source`) and the selection is the managed lw, it `fetch.ensure`s the
+  pinned binary, runs `channel.run` (`<pinned> release query --channel <c>
+  --json --timeout 60`, data dir as cwd, `LOOMWORKS_INSTALL_DIR` and
+  `binary.release_url` passed through), weighs the result with
+  `channel.classify` (newer only; `needs.check(d, { exact_schemas = true })`;
+  an `unknown command` exit 2 = a pinned lw older than the query), downloads an
+  accepted release and only then records it; every outcome updates
+  `checked` and the note (`channel_note`, on the Runtime line). Single flight
+  (`_channel_token`, a late callback after `stop` ignored). `_prune` keeps
+  the wanted, pin and accepted hashes. checkhealth reads `channel.describe`
+  and never queries. `editor_retire.selected` weighs the channel-aware wanted
+  version.
   Retirement of an incompatible daemon (step 5h.5, spec §19.16 "Retiring an
   incompatible daemon"): the pure decisions live in
   `daemon/editor_retire.lua` — `incompatibility(ch, conn)` sorts the

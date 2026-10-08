@@ -301,8 +301,11 @@ while vim.uv.now() - t0 < %d do handle.read(%q); vim.uv.sleep(1); vim.uv.update_
         assert.truthy(tostring(err):find("EPERM", 1, true))
         assert.equals("EPERM", code)
         assert.truthy(stat.calls > 1, stat.calls)
-        -- Bounded: never past the budget (plus one rename and a loaded scheduler).
-        assert.truthy(ms < 150 + 1000, ms)
+        -- Bounded: never past the budget (plus one rename, the staged file's
+        -- write and removal, and a loaded scheduler — Windows CI has taken
+        -- 1450 ms here). The rename never succeeds, so an unbounded retry
+        -- would not return at all.
+        assert.truthy(ms < 150 + 3000, ms)
         assert.equals(1, handle.read(root).n)
         for name in vim.fs.dir(root .. "/.nvim") do
             assert.is_nil(name:find(".tmp-", 1, true), name)

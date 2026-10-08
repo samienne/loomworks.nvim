@@ -42,6 +42,7 @@ local M = {}
 --- @field source? string|boolean development only: run the binary with this Lua tree (`true`: this plugin's)
 --- @field download? boolean false: never download the plugin-managed lw (default true; daemon mode only)
 --- @field release_url? string release-source override for that download (else LOOMWORKS_RELEASE_URL, else lw's origin)
+--- @field channel? "stable"|"unstable" let the managed lw move ahead of the pin to this channel's newest compatible release (default unset: the pin only; step 5h.5)
 
 --- @class loomworks.provision.Candidate  one step of the search
 --- @field source loomworks.provision.Source
@@ -62,6 +63,7 @@ local M = {}
 --- @field warning? string an ignored setup value
 --- @field probe? string the chosen binary still to be probed (no cached verdict yet, step 5h.5)
 --- @field probe_note? string the pre-launch probe's lasting note: an incompatible lw on PATH that was skipped, or an incompatible explicit one used as named
+--- @field channel_note? string `binary.channel` is set but has no effect: an lw on PATH or an explicit one was selected (step 5h.5)
 
 M.LABELS = {
     LOOMWORKS_LW = "LOOMWORKS_LW",
@@ -194,6 +196,10 @@ function M.check_setting(v)
         if type(v.release_url) == "string" and v.release_url ~= "" then out.release_url = v.release_url
         else warns[#warns + 1] = "binary.release_url: expected a URL or directory, ignored" end
     end
+    if v.channel ~= nil then
+        if v.channel == "stable" or v.channel == "unstable" then out.channel = v.channel
+        else warns[#warns + 1] = "binary.channel: expected \"stable\" or \"unstable\", ignored" end
+    end
     return out, (#warns > 0 and table.concat(warns, "; ") or nil)
 end
 
@@ -221,7 +227,9 @@ end
 ---   win       boolean: Windows rules (default: the host's)
 ---   cwd       the directory a relative explicit value is taken against (default: the editor's)
 ---   on_path   fun() → path|nil, why
----   managed   fun() → path|nil, why (loomworks.provision.managed.find)
+---   managed   fun(opts) → path|nil, why, missing (loomworks.provision.managed.find;
+---             opts.setting carries `binary.channel`)
+---   data      the editor's data directory (the managed lw; default stdpath)
 ---   is_dir, plugin_lua  for `binary.source`
 ---   probe     fun(path) → loomworks.provision.Probe|nil, the cached pre-launch
 ---             verdict (loomworks.provision.probe.cached); false: no probe
@@ -301,7 +309,10 @@ function M.resolve(root, opts)
         else
             local p, why, missing
             if source == "PATH" then p, why = (opts.on_path or M.on_path)()
-            else p, why, missing = (opts.managed or require("loomworks.provision.managed").find)() end
+            else
+                p, why, missing = (opts.managed or require("loomworks.provision.managed").find)({ setting = setting,
+                    data = opts.data, win = opts.win })
+            end
             local v, pending
             if p and source == "PATH" then v, pending = verdict(p) end
             if p and v and v.verdict == "incompatible" then
@@ -339,6 +350,12 @@ function M.resolve(root, opts)
         end
     end
     if not sel.path and not sel.note and not sel.download then sel.note = M.none_note(sel) end
+    -- Only the plugin's managed lw resolves a channel (spec §19.16 "Channel
+    -- upgrades"): an lw the user installed or named is theirs to update.
+    if setting.channel and sel.path and sel.source ~= "managed" then
+        sel.channel_note = "binary.channel = " .. setting.channel .. " has no effect: " .. tostring(sel.label)
+            .. " is selected" .. (sel.source == "PATH" and " (binary.prefer = \"managed\" changes that)" or "")
+    end
     return sel.path, sel.source, sel
 end
 

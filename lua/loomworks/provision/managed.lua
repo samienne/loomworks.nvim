@@ -10,9 +10,11 @@
 --- binary is never replaced in place (a running daemon keeps its file). The
 --- wanted binary (release version, asset, SHA-256) comes from the plugin's
 --- own pin, loomworks.provision.pinned (spec §19.16 "Plugin pin", written
---- only by scripts/release/pin.sh from a verified release) — a channel
---- upgrade (step 5h.5) comes later. A wanted binary that is not installed is
---- downloaded by loomworks.provision.fetch (daemon mode only).
+--- only by scripts/release/pin.sh from a verified release), or — with the
+--- setup option `binary.channel` — the newer accepted channel release
+--- (loomworks.provision.channel, §19.16 "Channel upgrades", step 5h.5). A
+--- wanted binary that is not installed is downloaded by
+--- loomworks.provision.fetch (daemon mode only).
 
 local uv = vim.uv or vim.loop
 
@@ -107,11 +109,27 @@ end
 
 --- The managed binary the plugin wants: this host's asset of the plugin pin
 --- (loomworks.provision.pinned), or nil + why (an unsupported platform, a pin
---- without this host's asset, an invalid pin). Tests inject `pinned`,
---- `sysname` and `machine`.
---- @param opts? { pinned?: loomworks.provision.Pin, sysname?: string, machine?: string }
+--- without this host's asset, an invalid pin). With `opts.setting` naming a
+--- `binary.channel` that applies, the accepted channel release when it is
+--- newer than the pin (never below the pin; loomworks.provision.channel).
+--- Tests inject `pinned`, `sysname`, `machine` and `channel` (replaces
+--- loomworks.provision.channel.accepted).
+--- @param opts? { pinned?: loomworks.provision.Pin, sysname?: string, machine?: string, setting?: loomworks.provision.BinarySetting, data?: string, channel?: fun(setting: table, asset: string): loomworks.provision.Wanted|nil }
 --- @return loomworks.provision.Wanted|nil wanted, string|nil why
 function M.wanted(opts)
+    opts = opts or {}
+    local w, why = M.pinned_wanted(opts)
+    if not w or type(opts.setting) ~= "table" or opts.setting.channel == nil then return w, why end
+    local chan = require("loomworks.provision.channel")
+    local acc = (opts.channel or function(s, a) return chan.accepted(s, a, { data = opts.data }) end)(opts.setting, w.asset)
+    if acc and acc.asset == w.asset and chan.compare(acc.version, w.version) > 0 then return acc end
+    return w
+end
+
+--- The plugin pin's binary for this host (`wanted` without the channel).
+--- @param opts? { pinned?: loomworks.provision.Pin, sysname?: string, machine?: string }
+--- @return loomworks.provision.Wanted|nil wanted, string|nil why
+function M.pinned_wanted(opts)
     opts = opts or {}
     local pin = opts.pinned
     if pin == nil then
@@ -225,11 +243,15 @@ end
 --- used (`touch`). `opts.wanted` returns a `loomworks.provision.Wanted`
 --- record or a bare hash. Tests inject `exists` (a fake file system: no
 --- hashing or marking unless `verify` / `touch` are injected too).
---- @param opts? { data?: string, win?: boolean, wanted?: fun(): (loomworks.provision.Wanted|string|nil), string|nil, exists?: fun(path: string): boolean, verify?: fun(path: string, sha256: string): boolean, string|nil, touch?: fun(path: string, opts: table) }
+--- `opts.setting` (the setup option `binary`) lets the default `wanted`
+--- weigh `binary.channel`.
+--- @param opts? { data?: string, win?: boolean, setting?: loomworks.provision.BinarySetting, wanted?: fun(): (loomworks.provision.Wanted|string|nil), string|nil, exists?: fun(path: string): boolean, verify?: fun(path: string, sha256: string): boolean, string|nil, touch?: fun(path: string, opts: table) }
 --- @return string|nil path, string|nil why, loomworks.provision.Wanted|nil missing
 function M.find(opts)
     opts = opts or {}
-    local want, why = (opts.wanted or M.wanted)()
+    local want, why
+    if opts.wanted then want, why = opts.wanted()
+    else want, why = M.wanted({ setting = opts.setting, data = opts.data }) end
     if not want then return nil, why or M.NOT_YET end
     local sha = type(want) == "table" and want.sha256 or want
     local p = M.path(sha, opts)
