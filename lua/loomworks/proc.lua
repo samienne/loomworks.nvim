@@ -838,16 +838,18 @@ function M.is_lw(args)
 end
 
 --- Is this command line `lw … daemon run` — for `root` when it names one
---- with `--root`?
+--- with `--root <dir>` or `--root=<dir>`?
 --- @param args string[]
 --- @param root? string
 --- @return boolean
 function M.is_daemon_for(args, root)
     if not M.is_lw(args) then return false end
     local run, named
-    for i = 1, #args - 1 do
-        if args[i] == "daemon" and args[i + 1] == "run" then run = true end
-        if args[i] == "--root" then named = args[i + 1] end
+    for i = 1, #args do
+        local a = args[i]
+        if a == "daemon" and args[i + 1] == "run" then run = true end
+        if a == "--root" then named = args[i + 1]
+        elseif type(a) == "string" and a:sub(1, 7) == "--root=" then named = a:sub(8) end
     end
     if not run then return false end
     if named and root then

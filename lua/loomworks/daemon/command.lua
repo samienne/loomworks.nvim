@@ -404,19 +404,13 @@ end
 
 --- Does `lw daemon run` name a standard-I/O form (`--stdio`, `--private`,
 --- `--no-launch`, `--skip-instance`)? Like loomworks.daemon.relay.parse, only
---- the options before a `--` count.
---- @param args string[]
+--- the options before a `--` count. The predicate lives in
+--- loomworks.daemon.discover (stdio_form) so `lw daemon list` / `kill --all`
+--- classify a relay process exactly as this dispatch treats it.
+--- @param args string[] `{ "daemon", "run", … }`
 --- @return boolean
 function M.relay_form(args)
-    for i = 3, #args do
-        local a = args[i]
-        if a == "--" then return false end
-        if a == "--stdio" or a == "--private" or a == "--no-launch" or a == "--skip-instance"
-            or (type(a) == "string" and a:sub(1, 16) == "--skip-instance=") then
-            return true
-        end
-    end
-    return false
+    return require("loomworks.daemon.discover").stdio_form(args)
 end
 
 --- `lw daemon run [--root <dir>] [--stdio [--no-launch [--skip-instance <id>]]]`:
@@ -563,6 +557,22 @@ local function json_entry(e)
     }
 end
 
+--- One entry's `--json` text: json_entry plus `relays` (§19.6.1 step 3: the
+--- relays connected through that daemon, `[ { pid, start_time } ]`), always
+--- an array — spliced in by hand, as an empty table is `{}` or `[]` depending
+--- on the host's encoder.
+local function json_text(e)
+    local enc = require("loomworks.io").encode_sorted
+    local t = json_entry(e)
+    t.relays = "@@lw-relays@@"
+    local rs = {}
+    for _, r in ipairs(e.relays or {}) do rs[#rs + 1] = enc({ pid = r.pid, start_time = r.start_time }) end
+    local text = enc(t)
+    local i, j = text:find('"@@lw-relays@@"', 1, true)
+    assert(i, "relays placeholder not found")
+    return text:sub(1, i - 1) .. "[" .. table.concat(rs, ",") .. "]" .. text:sub(j + 1)
+end
+
 --- The summary line's counts text: "3 daemons (1 idle, 1 stray, 1 other
 --- data dir)" — counted from the same entries the rows show.
 function M.summary(list)
@@ -583,9 +593,8 @@ function M.list(args, host)
     local list, ms = require("loomworks.daemon.discover").list({ under = under_of(args, host) })
     if has(args, "--json") then
         -- (Built by hand so an empty list is `[]` under every host's encoder.)
-        local enc = require("loomworks.io").encode_sorted
         local ds = {}
-        for _, e in ipairs(list) do ds[#ds + 1] = enc(json_entry(e)) end
+        for _, e in ipairs(list) do ds[#ds + 1] = json_text(e) end
         host.out(string.format('{"daemons":[%s],"scan_ms":%d,"schema":1}', table.concat(ds, ","),
             math.floor(ms + 0.5)))
         return 0
@@ -610,15 +619,25 @@ function M.list(args, host)
 end
 
 --- Kill a stray daemon (§19.6.1): only after its command line is read again
---- and is still `lw … daemon run` for that root with the same start time;
---- never this process or an ancestor. If it held its workspace's runtime
---- lock, that lock is reclaimed (§19.5). Returns true or false + reason.
+--- and is still `lw … daemon run` for that root with the same start time,
+--- and is not a relay (discover.is_relay, against R read again: a relay is a
+--- connection, never killed); never this process or an ancestor. If it held
+--- its workspace's runtime lock, that lock is reclaimed (§19.5). Returns true
+--- or false + reason.
 function M.kill_stray(e)
     local proc = require("loomworks.proc")
+    local discover = require("loomworks.daemon.discover")
     local args = proc.cmdline(e.pid, e.start_time)
-    if not args or not proc.is_daemon_for(args, e.root) or (e.root == nil and require("loomworks.daemon.discover")
-            .root_of(args) ~= nil) then
+    if not args or not proc.is_daemon_for(args, e.root) or (e.root == nil and discover.root_of(args) ~= nil) then
         return false, "it is no longer the daemon that was listed (not killed)"
+    end
+    -- (R unreadable: a standard-I/O form is then not provably the runtime,
+    -- so it counts as a relay.)
+    local ok_lk, lk = false, nil
+    if e.root then ok_lk, lk = pcall(rlock.read, e.root) end
+    local now = { pid = e.pid, start_time = e.start_time, args = args, root = e.root }
+    if discover.is_relay(now, ok_lk and lk or nil) then
+        return false, "it is a relay (a connection to its workspace's daemon), not a daemon (not killed)"
     end
     if proc.ancestors()[e.pid] then return false, "it is this process or its ancestor (not killed)" end
     local ok, err = proc.kill_tree(e.pid, e.start_time)

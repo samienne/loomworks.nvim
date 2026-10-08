@@ -642,13 +642,22 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `auth.own_key_id()` (read-only; never creates the machine key). A pin
   redirect's wrapper (the global lw waiting on the pinned `daemon run`, same
   `--root`, its parent) is dropped by `drop_redirect_wrappers(found,
-  proc.parents())`, so it is never listed or killed as a stray.
+  proc.parents())`, so it is never listed or killed as a stray (a parent of
+  the other form — a relay that launched its daemon — is not a wrapper).
+  A standard-I/O `daemon run` (`stdio_form` on `run_args(cmdline)` — the
+  predicate `command.relay_form` dispatches on, so they cannot disagree) is
+  a **relay** (`is_relay`) unless its root's R names it by pid and start
+  time (a pre-5i attached runtime or the gated `--stdio --private` one, both
+  of which take R: then a daemon): never classified or
+  listed as a daemon; `attach_relays` hangs it as `relays` on the entry of
+  its root's runtime (else the first for that root; none listed: left out).
   `command.lua` renders it (`lw daemon list [--json]`; table rows and the
   summary come from one list via `command.rows` / `discover.counts`) and drives
   `stop --all` / `kill --all` through the per-workspace `M.stop` with a host
   whose `die` raises (one result per daemon), skipping a daemon of another
   data dir (`same_key == false`) without connecting; `kill --all --strays` re-reads
-  a stray's command line and start time before `proc.kill_tree`. The health
+  a stray's command line and start time, and refuses a relay (`is_relay`
+  against R read again), before `proc.kill_tree`. The health
   provider `suggestions.daemon_count_provider` prints the count.
 - `protocol.lua` — `<len>\n<json>` framing; the decoder checks the length
   prefix against the cap (64 KiB before authentication, 16 MiB after) before

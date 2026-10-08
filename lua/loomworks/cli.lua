@@ -11184,7 +11184,9 @@ exactly as before.
             after checking each is still that daemon. A daemon of another
             loomworks data dir (another LOOMWORKS_DATA_DIR, a test run's;
             `list` marks it "other data dir") is not this lw's and is
-            skipped. Exit 1 when one of this lw's is left running.
+            skipped. A `run --stdio` relay is a connection, not a daemon: it
+            is never listed as one (`--json`: `relays` on its daemon), stopped
+            or killed. Exit 1 when one of this lw's is left running.
 
 A daemon on another host (a shared drive) is never stopped or killed from
 here: run the command there. Kills are printed on stderr.
