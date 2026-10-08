@@ -76,6 +76,74 @@ describe("relay arguments (§19.10 \"Relay exit status\": usage)", function()
             assert.truthy(err and err:find(c[3], 1, true), table.concat(c[1], " ") .. ": " .. tostring(err))
         end
     end)
+
+    it("only the options before `--` select a standard-I/O form", function()
+        local command = require("loomworks.daemon.command")
+        assert.is_true(command.relay_form(args("--root", "/w", "--stdio")))
+        assert.is_true(command.relay_form(args("--skip-instance=1:win:1")))
+        assert.is_false(command.relay_form(args("--root", "/w", "--", "--stdio")))
+        assert.is_false(command.relay_form(args("--", "--private", "--no-launch", "--skip-instance", "1:win:1")))
+        -- `lw daemon run -- --stdio` is the ordinary foreground server, never the relay.
+        local saved_serve = relay.serve
+        local relayed = false
+        relay.serve = function() relayed = true; return 0 end
+        local ok, err = pcall(command.run_server, nil, args("--", "--stdio"), {
+            note = function() end, die = function(m) error("die: " .. m, 0) end })
+        relay.serve = saved_serve
+        assert.is_false(ok)
+        assert.truthy(tostring(err):find("no loomworks.json", 1, true), tostring(err))
+        assert.is_false(relayed)
+    end)
+end)
+
+describe("relay hardening", function()
+    it("honours the timing test hooks only behind the private-stdio gate, within bounds", function()
+        local function env(vars) return function(k) return vars[k] end end
+        local name = "LW_TEST_RELAY_POLL_MS"
+        assert.equals(2000, relay._test_ms(env({ [name] = "50" }), name, 2000, 10))
+        local gate = relay.PRIVATE_ENV
+        assert.equals(50, relay._test_ms(env({ [gate] = "1", [name] = "50" }), name, 2000, 10))
+        assert.equals(10, relay._test_ms(env({ [gate] = "1", [name] = "0" }), name, 2000, 10))
+        assert.equals(2000, relay._test_ms(env({ [gate] = "1", [name] = "-5" }), name, 2000, 10))
+        assert.equals(2000, relay._test_ms(env({ [gate] = "1", [name] = "soon" }), name, 2000, 10))
+        assert.equals(2000, relay._test_ms(env({ [gate] = "1", [name] = "inf" }), name, 2000, 10))
+        assert.equals(2000, relay._test_ms(env({ [gate] = "1" }), name, 2000, 10))
+        assert.equals(0, relay._test_ms(env({ [gate] = "1", LW_TEST_RELAY_RETIRE_MS = "0" }),
+            "LW_TEST_RELAY_RETIRE_MS", 60000, 0))
+        assert.equals(60000, relay._test_ms(env({ [gate] = "0", LW_TEST_RELAY_RETIRE_MS = "0" }),
+            "LW_TEST_RELAY_RETIRE_MS", 60000, 0))
+    end)
+
+    it("validates the client's hello before forwarding it", function()
+        assert.is_true(relay.valid_hello(hello()))
+        assert.is_true(relay.valid_hello({ kind = "hello" }))
+        assert.is_true(relay.valid_hello(hello({ schemas = {} })))
+        for _, bad in ipairs({
+            hello({ protocol = "11" }), hello({ protocol_min = true }), hello({ lw_version = 3 }),
+            hello({ schemas = "x" }), hello({ schemas = { 1, 2 } }), hello({ client = {} }), hello({ role = 1 }),
+            hello({ protocol = 0 / 0 }), hello({ protocol = math.huge }),
+            hello({ lw_version = string.rep("x", protocol.PREAUTH_MAX) }),
+            { kind = "ping" },
+        }) do
+            local ok, why = relay.valid_hello(bad)
+            assert.is_false(ok, vim.inspect(bad):sub(1, 200))
+            assert.is_string(why)
+        end
+    end)
+
+    it("does not resume standard input once closed; an unreadable one counts as EOF", function()
+        local calls = 0
+        local inp = { read_start = function() calls = calls + 1; error("EBADF") end }
+        local r = relay.new("/w", inp, {}, {})
+        r.closed = true
+        r:_resume_stdin()
+        assert.equals(0, calls)
+        assert.is_false(r.eof)
+        r.closed = false
+        r:_resume_stdin()
+        assert.equals(1, calls)
+        assert.is_true(r.eof)
+    end)
 end)
 
 describe("relay buffering (§19.10 \"Relay buffering\")", function()
@@ -291,6 +359,31 @@ describe("the relay against an in-process daemon", function()
         h.close()
         assert.equals(15, h.run())
         assert.equals(0, #h.out)
+    end)
+
+    it("15: a hello whose forwarded fields are not of their types; nothing connected or written", function()
+        start_server()
+        for _, bad in ipairs({ hello({ protocol = "11" }), hello({ schemas = { 1 } }), hello({ client = 7 }) }) do
+            local h = harness()
+            h.send(bad)
+            assert.equals(15, h.run(), h.note())
+            assert.truthy(h.note():find("did not send hello first", 1, true), h.note())
+            assert.equals(0, #h.out)
+        end
+        assert.equals(0, srv:client_count())
+    end)
+
+    it("15: more than HIGH_WATER pipelined before welcome, while standard input stays open", function()
+        local saved_hw = relay.HIGH_WATER
+        relay.HIGH_WATER = 1024
+        local h = harness({ relay = { no_launch = true } })
+        h.raw(protocol.encode(hello()) .. string.rep("x", 2048))
+        local code = h.run()
+        relay.HIGH_WATER = saved_hw
+        assert.equals(15, code, h.note())
+        assert.truthy(h.note():find("more than 1024 bytes before welcome", 1, true), h.note())
+        assert.equals(0, #h.out)
+        assert.is_nil(inspect.state(root).lock)
     end)
 
     it("no daemon: launches one, then connects", function()

@@ -402,6 +402,23 @@ function M.start_attached(root, host, command)
     return srv
 end
 
+--- Does `lw daemon run` name a standard-I/O form (`--stdio`, `--private`,
+--- `--no-launch`, `--skip-instance`)? Like loomworks.daemon.relay.parse, only
+--- the options before a `--` count.
+--- @param args string[]
+--- @return boolean
+function M.relay_form(args)
+    for i = 3, #args do
+        local a = args[i]
+        if a == "--" then return false end
+        if a == "--stdio" or a == "--private" or a == "--no-launch" or a == "--skip-instance"
+            or (type(a) == "string" and a:sub(1, 16) == "--skip-instance=") then
+            return true
+        end
+    end
+    return false
+end
+
 --- `lw daemon run [--root <dir>] [--stdio [--no-launch [--skip-instance <id>]]]`:
 --- serve in the foreground until stopped; with `--stdio`, relay standard
 --- input and output to the shared daemon (loomworks.daemon.relay); with the
@@ -420,7 +437,7 @@ function M.run_server(root, args, host)
     -- the relay to the shared daemon (loomworks.daemon.relay); `--private`
     -- (tests only, gated by LOOMWORKS_TEST_PRIVATE_STDIO=1) the attached
     -- runtime on standard I/O (loomworks.daemon.stdio).
-    if has(args, "--stdio") or has(args, "--private") or has(args, "--no-launch") or opt_value(args, "--skip-instance") then
+    if M.relay_form(args) then
         local relay = require("loomworks.daemon.relay")
         local o, uerr = relay.parse(args)
         if not o then

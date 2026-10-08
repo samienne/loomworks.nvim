@@ -1183,7 +1183,12 @@ Ctrl-C are planned.)* Every client process is a
   resumes once that queue has drained below half of it. A client that stops
   reading therefore stops the relay reading the daemon, so the daemon's
   owner flow control (§19.15 "Task stream") still reaches the running step
-  through the relay, and the relay's memory stays bounded.
+  through the relay, and the relay's memory stays bounded. Before the
+  daemon's `welcome` the relay keeps what the client pipelines after its
+  `hello` (forwarded after `welcome`); more than `RELAY_HIGH_WATER` of it is
+  a protocol violation that ends the relay with status 15 — the relay never
+  stops reading a client it has not yet relayed for, so it always sees that
+  client's EOF.
 - **Closing a connection** — killing the `--stdio` process, closing its
   standard input, a CLI command ending or interrupted — closes only that
   connection: the tasks it owns are cancelled (§19.15 "Task ownership"), the
@@ -1228,13 +1233,14 @@ standard error, and exits with:
 | Status | Meaning |
 |--|--|
 | 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing; for any relay, also while waiting on an attached run's runtime lock), or the daemon closed the connection after `welcome` |
-| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
+| 1 | standard input or output is unusable, or an internal error |
+| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1` or without `--stdio`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
 | 10 | could not start the workspace daemon (launch failure above; never with `--no-launch`) |
 | 11 | the daemon is not responding (hung, §19.5; connect/handshake past its bound; or still starting — lock held, handle not published — after the relay's one bounded wait; never with `--no-launch`, which keeps waiting on a starting daemon) |
-| 12 | the handle names another loomworks data dir's key (`key_id`, §19.6), its endpoint failed the endpoint check (§19.7), or the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — nothing is sent to it |
+| 12 | the handle names another loomworks data dir's key (`key_id`, §19.6), its endpoint failed the endpoint check (§19.7), or the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — only the relay's own `hello` (versions and its nonce, no secret) was sent; nothing from the client is forwarded |
 | 13 | the workspace daemon runs on another host |
 | 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting) |
-| 15 | the client did not send `hello` first, or not within about 5 s |
+| 15 | the client sent no valid `hello` first (another frame, or a `hello` whose forwarded fields are not of their types or that does not fit the 64 KiB pre-authentication frame cap re-encoded), or none within about 5 s; or it sent more than `RELAY_HIGH_WATER` after `hello` before `welcome` ("Relay buffering") |
 | 16 | `--no-launch` only: the retiring daemon it waited on released the runtime lock and no other daemon is live — the caller decides whether to launch (never for a `--skip-instance` daemon) |
 
 Status 3 ("another daemon won", above) is never a relay's: a relay that
@@ -2088,8 +2094,9 @@ instead of reading the handle and the machine key itself; "Launch" and
   (step 6b); 11 — not responding; 12 — another data dir or not a loomworks
   daemon; 13 — another host; 14 — a retiring daemon is still busy, and the
   editor waits it out through a `--no-launch` relay (below); 16 — that
-  retiring daemon has exited (below); 2 and 15 — an internal error. Its
-  standard-error line is kept for the Runtime line's detail.
+  retiring daemon has exited (below); 1, 2, 15 and any status not listed —
+  an internal error. Its standard-error line is kept for the Runtime line's
+  detail.
 - **Following a stopped or retiring daemon without relaunching it.** "No
   relaunch after a stop" and "Retiring" below watch the handle, which the
   editor no longer reads once it uses the relay; instead it spawns

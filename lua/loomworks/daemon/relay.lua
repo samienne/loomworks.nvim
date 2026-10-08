@@ -59,16 +59,33 @@ M.HELLO_MS = 5000
 --- What the relay buffers per direction before it stops reading the other
 --- side; it resumes below half (§19.10 "Relay buffering").
 M.HIGH_WATER = 4 * 1024 * 1024
+--- The environment variable that admits `--private` (§19.10 "Tests") and
+--- the relay's timing test hooks below.
+M.PRIVATE_ENV = "LOOMWORKS_TEST_PRIVATE_STDIO"
+
+--- A timing test hook: the environment variable `name`, in milliseconds,
+--- honoured only when PRIVATE_ENV is `1`; a value that is not a finite
+--- non-negative number gives `default`, one below `min` is raised to it.
+--- @param getenv fun(name: string): string|nil
+--- @param name string
+--- @param default integer
+--- @param min integer
+--- @return integer
+function M._test_ms(getenv, name, default, min)
+    if getenv(M.PRIVATE_ENV) ~= "1" then return default end
+    local v = tonumber(getenv(name) or "")
+    if not v or v ~= v or v < 0 or v == math.huge then return default end
+    return math.max(min, math.floor(v))
+end
+
 --- How long an ordinary relay waits for a retiring daemon to release the
 --- runtime lock (`RELAY_RETIRE_WAIT`, §19.8 step 5). The test hook shortens it.
-M.RETIRE_WAIT_MS = tonumber(os.getenv("LW_TEST_RELAY_RETIRE_MS") or "") or 60000
+M.RETIRE_WAIT_MS = M._test_ms(os.getenv, "LW_TEST_RELAY_RETIRE_MS", 60000, 0)
 --- The cadence at which a waiting relay re-reads the runtime lock and the
 --- handle (`--no-launch`, an attached run's lock; §19.10 "No launch").
-M.POLL_MS = tonumber(os.getenv("LW_TEST_RELAY_POLL_MS") or "") or 2000
+M.POLL_MS = M._test_ms(os.getenv, "LW_TEST_RELAY_POLL_MS", 2000, 10)
 --- How long the relay waits, at exit, for queued bytes to be written.
 M.FLUSH_MS = 5000
---- The environment variable that admits `--private` (§19.10 "Tests").
-M.PRIVATE_ENV = "LOOMWORKS_TEST_PRIVATE_STDIO"
 
 -- ---------------------------------------------------------------------------
 -- Arguments
@@ -206,7 +223,8 @@ end
 --- @field inp table standard input (a libuv stream)
 --- @field out table standard output (a libuv stream)
 --- @field hello? table the client's `hello`
---- @field bad_hello? boolean the first frame was not a `hello`
+--- @field bad_hello? boolean the first frame was not a valid `hello`
+--- @field overflow? boolean the client sent more than HIGH_WATER before `welcome`
 --- @field eof boolean the client closed standard input
 --- @field pending string[] client bytes read after `hello`, before `welcome`
 --- @field pending_n integer their size
@@ -246,15 +264,49 @@ function Relay:_fail(code, line)
     return code
 end
 
+-- The forwarded `hello` fields and the JSON type each must have when
+-- present (§19.8 step 2).
+local HELLO_TYPES = { protocol = "number", protocol_min = "number", lw_version = "string", schemas = "table",
+    client = "string", role = "string" }
+
+--- Is `msg` a `hello` the relay can forward? Every forwarded field present
+--- is of its type (a number finite, `schemas` an object), and the relay's
+--- own `hello` made of them — with a nonce — encodes within the
+--- pre-authentication frame cap (protocol.PREAUTH_MAX). Returns true, or
+--- false + why.
+--- @param msg table
+--- @return boolean, string|nil
+function M.valid_hello(msg)
+    if type(msg) ~= "table" or msg.kind ~= protocol.KIND.hello then return false, "not hello" end
+    local fields = { kind = protocol.KIND.hello, nonce = string.rep("0", 64) }
+    for k, t in pairs(HELLO_TYPES) do
+        local v = msg[k]
+        if v ~= nil and v ~= vim.NIL then
+            local what = t == "table" and "an object" or ("a " .. t)
+            if type(v) ~= t then return false, "hello." .. k .. " is not " .. what end
+            if t == "number" and (v ~= v or v == math.huge or v == -math.huge) then
+                return false, "hello." .. k .. " is not a finite number"
+            end
+            if t == "table" and next(v) ~= nil and vim.islist(v) then return false, "hello." .. k .. " is not " .. what end
+            fields[k] = v
+        end
+    end
+    local ok, payload = pcall(vim.json.encode, fields)
+    if not ok or type(payload) ~= "string" then return false, "hello cannot be encoded" end
+    if #payload > protocol.PREAUTH_MAX then return false, "hello too large" end
+    return true
+end
+
 -- Standard input. Before `hello`: decode the first frame. After it: keep
--- the bytes (forwarded after `welcome`), stopping to read past HIGH_WATER.
--- Once relaying: `self.up` takes them.
+-- the bytes (forwarded after `welcome`); more than HIGH_WATER of them is a
+-- protocol violation (status 15). Once relaying: `self.up` takes them.
 function Relay:_on_stdin(err, chunk)
     if err or not chunk then
         self.eof = true
         return
     end
     if self.up then return self.up.push(chunk) end
+    if self.overflow then return end
     if not self.hello then
         if self.bad_hello then return end
         local msgs, derr = self.decoder:push(chunk, function() return true end)
@@ -268,6 +320,12 @@ function Relay:_on_stdin(err, chunk)
             self.bad_hello = true
             return
         end
+        local ok, why = M.valid_hello(msgs[1])
+        if not ok then
+            self.bad_hello = true
+            self.bad_hello_why = why
+            return
+        end
         self.hello = msgs[1]
         chunk = self.decoder._buf
         self.decoder._buf = ""
@@ -275,8 +333,11 @@ function Relay:_on_stdin(err, chunk)
     end
     self.pending[#self.pending + 1] = chunk
     self.pending_n = self.pending_n + #chunk
-    if self.pending_n > M.HIGH_WATER and not self.stdin_paused then
-        self.stdin_paused = true
+    if self.pending_n > M.HIGH_WATER then
+        -- The client pipelined more than the relay buffers before `welcome`:
+        -- stop reading and drop what was kept; the waits end with status 15.
+        self.overflow = true
+        self.pending, self.pending_n = {}, 0
         pcall(function() self.inp:read_stop() end)
     end
 end
@@ -285,16 +346,38 @@ function Relay:_read_stdin()
     self.inp:read_start(function(err, chunk) self:_on_stdin(err, chunk) end)
 end
 
+-- Resume reading standard input (the upstream flow drained, from a write
+-- completion callback): nothing once the relay closed; a stream that can no
+-- longer be read counts as the client gone.
+function Relay:_resume_stdin()
+    if self.closed then return end
+    local ok = pcall(function() self:_read_stdin() end)
+    if not ok then self.eof = true end
+end
+
+--- Why a wait ended early: the client's pre-`welcome` overflow (status 15,
+--- after one standard-error line) or its EOF (0); nil when neither.
+--- @return integer|nil
+function Relay:_ended()
+    if self.overflow then
+        return self:_fail(M.EXIT.no_hello, string.format(
+            "the client sent more than %d bytes before welcome", M.HIGH_WATER))
+    end
+    if self.eof then return M.EXIT.ok end
+    return nil
+end
+
 -- Daemon bytes after `welcome` (the connection's raw mode).
 function Relay:_on_daemon(chunk)
     if self.down then return self.down.push(chunk) end
     self.dbuf[#self.dbuf + 1] = chunk
 end
 
---- Wait up to `ms` or until the client closes standard input. True when it did.
+--- Wait up to `ms` or until the client closes standard input (or overflows
+--- the pre-`welcome` buffer). True when it did (Relay:_ended says how).
 function Relay:_sleep(ms)
-    vim.wait(ms, function() return self.eof end, 20)
-    return self.eof
+    vim.wait(ms, function() return self.eof or self.overflow == true end, 20)
+    return self.eof or self.overflow == true
 end
 
 -- Close the current daemon connection (a retiring one), forwarding nothing.
@@ -357,7 +440,8 @@ end
 --- daemon that is not retiring, or the exit status.
 function Relay:_connect_or_start()
     while true do
-        if self.eof then return M.EXIT.ok end
+        local e = self:_ended()
+        if e then return e end
         local r = connect.connect_or_start(self.root, { step_ms = self.opts.step_ms, connect = false,
             launch = self.opts.launch })
         local o, st = r.outcome, r.st
@@ -373,7 +457,7 @@ function Relay:_connect_or_start()
         elseif o == "elsewhere" then
             -- An attached run holds the runtime lock: wait for it to end,
             -- with no bound while the client is there (§19.10).
-            if self:_sleep(M.POLL_MS) then return M.EXIT.ok end
+            if self:_sleep(M.POLL_MS) then return self:_ended() end
         elseif o == "launch_failed" then
             -- An attached run that took the lock meanwhile is waited on too.
             if self:_state().kind ~= "attached" then
@@ -382,7 +466,7 @@ function Relay:_connect_or_start()
             end
         elseif st.kind ~= "live" then
             -- Not expected (a launch reports a live daemon): read again.
-            if self:_sleep(M.POLL_MS) then return M.EXIT.ok end
+            if self:_sleep(M.POLL_MS) then return self:_ended() end
         else
             local code = self:_open(st)
             if code then return code end
@@ -392,9 +476,10 @@ function Relay:_connect_or_start()
             local inst = instance_of(st)
             self:_drop()
             local gone = vim.wait(M.RETIRE_WAIT_MS, function()
-                return self.eof or not M.present(self:_state(), inst)
+                return self.eof or self.overflow == true or not M.present(self:_state(), inst)
             end, 100)
-            if self.eof then return M.EXIT.ok end
+            local e = self:_ended()
+            if e then return e end
             if not gone then
                 return self:_fail(M.EXIT.retire_timeout, string.format(
                     "the retiring workspace daemon (pid %s) still holds the workspace after %d s",
@@ -410,7 +495,8 @@ function Relay:_wait_for_daemon()
     local skip = self.opts.skip
     local retiring -- the retiring daemon this relay connected to
     while true do
-        if self.eof then return M.EXIT.ok end
+        local e = self:_ended()
+        if e then return e end
         local st = self:_state()
         local skipped = skip ~= nil and M.present(st, skip, true)
         if st.kind == "foreign" then
@@ -429,7 +515,7 @@ function Relay:_wait_for_daemon()
             return self:_fail(M.EXIT.retired, string.format(
                 "the retiring workspace daemon (pid %s) has exited and no other daemon is live", tostring(retiring.pid)))
         end
-        if self:_sleep(M.POLL_MS) then return M.EXIT.ok end
+        if self:_sleep(M.POLL_MS) then return self:_ended() end
     end
 end
 
@@ -463,20 +549,16 @@ function Relay:_relay()
         function() conn:pause_reading() end, function() conn:resume_reading() end, client_gone)
     self.up = M.flow(conn.pipe, M.HIGH_WATER,
         function() pcall(function() self.inp:read_stop() end) end,
-        function() self:_read_stdin() end,
+        function() self:_resume_stdin() end,
         function() self.daemon_closed = true end)
     self.down.push(M.welcome_frame(conn.welcome_payload or vim.json.encode(conn.welcome), conn.challenge, self.st.handle))
     for _, c in ipairs(self.dbuf) do self.down.push(c) end
     self.dbuf = {}
-    -- Client bytes read before `welcome` (§19.8: the client may pipeline).
-    self.up.paused = self.stdin_paused == true
+    -- Client bytes read before `welcome` (§19.8: the client may pipeline;
+    -- at most HIGH_WATER of them, Relay:_on_stdin).
     local pend = self.pending
     self.pending, self.pending_n = {}, 0
     for _, c in ipairs(pend) do self.up.push(c) end
-    if self.up.paused and conn.pipe:get_write_queue_size() < M.HIGH_WATER / 2 then
-        self.up.paused = false
-        self:_read_stdin()
-    end
     while not (self.eof or self.daemon_closed) do
         vim.wait(3600 * 1000, function() return self.eof or self.daemon_closed end, 20)
     end
@@ -526,6 +608,8 @@ function Relay:run()
     local code
     if self.opts.no_launch then code = self:_wait_for_daemon() else code = self:_connect_or_start() end
     if code then return code end
+    -- An overflow during the (bounded) connect itself.
+    if self.overflow then return self:_ended() end
     return self:_relay()
 end
 
