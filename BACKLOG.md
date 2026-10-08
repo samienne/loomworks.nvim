@@ -51,6 +51,13 @@ considered and not added: configuring stays a step of `lw build`
 - No end-to-end test for an attached device run found by probing (the
   device stubs are in-process only).
 - `ensure.meet` with `no_launch` is only tested through a mocked meet.
+- Editor retirement after an editor stall: the unanswered-status bound is
+  one `retire_check_ms` tick (30 s default,
+  `lua/loomworks/daemon/observer.lua` ~883-929), so an editor event-loop
+  stall of 30 s or more while a status is in flight ends the retire wait for
+  that session (the daemon stays observed / editor runs in-process; nothing
+  breaks). Changing it is a spec 19.16 change; consider measuring from the
+  reply time or allowing one missed tick.
 
 ## Two meanings of "clean"
 
@@ -449,6 +456,14 @@ Open follow-ups:
   a checkout that switches branches between pins (or a launcher-only user who
   never runs update) keeps accumulating them. Health reports them; the
   launcher could prune on a fresh fetch.
+- **Launcher "written by" label mixes a beta range with a stable pin.**
+  `lw bootstrap install` reports old launchers as "written by lw
+  0.1.36-beta.1-0.1.37-beta.1" (the range of versions with byte-identical
+  launcher content, from `boot/launcher.lua` GENERATIONS) even when
+  `lw.pin` is stable 0.1.36, so a stable pin looks like it sits beside beta
+  launchers. Prefer the stable version name in the range, and say plainly
+  when the launchers match the pin's own generation. (Reported by the
+  reactive repo during its 0.1.36 -> 0.1.43 repin.)
 - The per-user pinned cache (`<data>/loomworks/pinned/`) is still never GC'd
   (see the note under Workspace trust). The standalone suite runs in
 CI on Linux only, so the dynamic `lw.cmd` tests (retry, PATH shadowing) run only
@@ -518,6 +533,10 @@ implementations of the committed-ignore rule. Follow-ups:
   'nothing to pull'" failed once in a full local run ("not in a git
   repository") and passes alone; likely cwd/env leakage from another spec.~~
   DONE (#80): the cause was a slow git probe read as "git missing".
+- `tests/daemon_readonly_cli_spec.lua:260` ("lw status over the projection
+  shows the daemon's running task") shows "running tasks: unavailable
+  (timeout)" under parallel load / on the Windows CI runner; passes alone.
+  Seen on PR #168 CI and a local `make test`. Make the wait robust.
 
 ### `lw health fix <n>` (deferred, user idea)
 
