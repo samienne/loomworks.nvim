@@ -1311,7 +1311,19 @@ released Linux host on the released bundle to write the
   or a busy retirement) never launches: it waits for a daemon to appear and
   then relays; with `--skip-instance <pid>:<start_time>` (the editor's after
   an incompatible daemon) it never relays to that instance. The discovery/launch/handshake code the
-  CLI uses moves to `daemon/connect.lua`, shared by the CLI and the relay.
+  CLI uses lives in `daemon/connect.lua` (step 5i, PR B), for the relay to share.
+- `daemon/connect.lua` — connect or start (spec §19.10): `connect_or_start(root,
+  opts)` reads the runtime state (`inspect`), waits once, bounded, for a daemon
+  still starting, then `open`s an authenticated connection to the live one
+  (endpoint check + socket handshake verifying `server_proof`) or launches the
+  detached daemon (`launch.launch`; `connect_launched` then connects to it).
+  It prints nothing and returns an outcome (`connected`, `live`, `launched`,
+  `launch_failed`, `starting`, `hung`, `elsewhere`, `endpoint`, `untrusted`,
+  `unreachable`); hung-holder recovery is the caller's (`on_hung`). Also the
+  daemon instance id `<pid>:<start_time>` (§19.5): `instance_id`,
+  `parse_instance`, `same_instance`. `daemon/ensure.lua` keeps the CLI's
+  policy on top of it: the step bounds, one line per outcome, `--break-locks`
+  recovery, the version reconcile and `ping`.
   The private-pipe server stays only for the conformance runner's isolated
   daemon, behind the hidden `--private` flag (refused unless
   `LOOMWORKS_TEST_PRIVATE_STDIO=1`), or a per-case temporary root.
