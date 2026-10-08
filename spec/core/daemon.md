@@ -1119,8 +1119,9 @@ exit, all clients connect to the winner.
 
 **Connections.** *(Step 5i: the relay with `--no-launch`, `--skip-instance`
 and the gated `--private` is implemented, `daemon/relay.lua`, and so is its
-`lw daemon list` / `kill --all --strays` classification (§19.6.1 step 3); the
-editor's use of it, the idle rule and the two-stage Ctrl-C are planned.)* Every client process is a
+`lw daemon list` / `kill --all --strays` classification (§19.6.1 step 3), and
+the idle rule with its background-work cap (§19.11 "Idle exit"); the
+editor's use of it and the two-stage Ctrl-C are planned.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -1285,17 +1286,46 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   time it started, and its last progress percent, absent before the first
   tick. An addition to the frozen `status` shape (§19.8): a daemon of an
   older protocol omits it.
-- **Idle exit.** With no connection, no running task and no request for the
-  idle timeout — setting `daemon-idle-timeout`, default 1 hour — the daemon
-  exits.
-- *(Planned, step 5i.)* **Idle** becomes: **no connections and no background
-  work**. **Background work** is work the daemon owns with no connection as
+- **Idle exit.** Idle — **no connections and no background work** — for the
+  idle timeout (setting `daemon-idle-timeout`, default 1 hour), the daemon
+  exits. The idle clock starts when the last connection closes or the last
+  background work ends, whichever is later; the handle's `idle_since` is
+  absent while background work runs. *(Step 5i, `Server:lifetime`.)*
+  **Background work** is work the daemon owns with no connection as
   owner — tool detection, scans, the `compile_commands.json` refresh,
-  housekeeping. It keeps the daemon alive while it runs and has a maximum
-  duration, `BACKGROUND_MAX_DURATION` (10 minutes), after which it is
-  stopped (and, from step 5r, its interrupted part is not written). The daemon's lifetime never depends on
-  any client's lifetime: a client keeps it alive only through an open
-  connection.
+  housekeeping; today the loaded model's tool detection (a `snapshot` or
+  `query` load does not wait for it) and a run still settling after its
+  owner left or its task ended (a cancellation, a reset's deletion).
+- **Background work cap.** Background work has a maximum duration,
+  `BACKGROUND_MAX_DURATION` (10 minutes), after which it is stopped (and,
+  from step 5r, its interrupted part is not written). The clock counts only
+  while the work is ownerless and no connection is open: it starts when the
+  last connection closes or the work starts, whichever is later, and a
+  connection opening resets it. Past the cap:
+  - **Tool detection** cannot be cancelled (it has no handle): it is
+    abandoned — with no run active, the daemon unloads the model, so the
+    late result is dropped (a torn-down model never applies it, so no
+    workspace file records it); the probe subprocesses run to completion on
+    their own. The CLI's machine-level tool cache (`tools.json`, §16), which
+    a detection fills when it completes, may still record that late result once it
+    completes — it is a complete detection, not an interrupted part. The
+    next request loads the model afresh.
+  - While a request is being processed (a model segment is running, e.g.
+    waiting for the model to load for a client that has since gone), the
+    cap does not act; it acts on the first lifetime check after the
+    segment ends.
+  - **A run** still settling — a cancellation killing its step, or a
+    reset's deletion — is stopped as on any stop: the daemon stops (it has
+    no connection), through the same path as every exit (§19.15) — a
+    deletion stops between entries and its cache entries stay `unknown`
+    (an entry is reset only after its tree was removed), the run's locks
+    are released, the task ends. Background work that can be neither
+    abandoned nor stopped otherwise stops the daemon the same way.
+
+  *(Step 5i, `Server:lifetime`, `Service:abandon_background`,
+  `Service:in_segment`.)* The
+  daemon's lifetime never depends on any client's lifetime: a client keeps
+  it alive only through an open connection.
 - *(Planned, step 5r.)* **Short idle grace.** An idle daemon exits after a
   short grace — a named constant of about 30-60 s, overridable by the
   `daemon-idle-timeout` setting — instead of the 1-hour timeout, so a script
@@ -2792,7 +2822,9 @@ runtime is deferred until that module is actively developed.
      the editor's retirement then goes through the relay connection.
      In parts: the spec *(done)*; B — connection code extracted from the
      CLI into `daemon/connect.lua`; C — the relay and `--private`; D —
-     `lw daemon list` / `kill` classification of relays; E — the idle rule;
+     `lw daemon list` / `kill` classification of relays; E — the idle rule
+     *(done: tool detection past the cap is abandoned by unloading the
+     model, a run past it stops the daemon through the stop path)*;
      F — the CLI's two-stage Ctrl-C; G — the editor uses the relay.
    - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
      the short idle grace (a named constant of about 30-60 s, overridable);

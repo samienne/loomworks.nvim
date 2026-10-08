@@ -4795,7 +4795,10 @@ function Workspace:_scan_tools_async()
         config, cache,
         function(tools_by_type)
             self._core._deps.schedule(function()
-                if not self._core._workspace then return end
+                -- A torn-down workspace (unloaded, e.g. the daemon abandoned
+                -- this detection past BACKGROUND_MAX_DURATION, §19.11) drops
+                -- the late result.
+                if self._torn_down or not self._core._workspace then return end
                 self._tools_by_type = tools_by_type
                 -- Enrich with SDK-derived tools
                 self:_enrich_tools_from_sdks(tools_by_type)

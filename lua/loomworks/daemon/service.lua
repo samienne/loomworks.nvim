@@ -690,6 +690,37 @@ function Service:on_run_done(run)
     if run.deleting then self:_update_busy() end
 end
 
+--- Is the daemon's own background work running (§19.11)? The loaded model's
+--- tool detection: a `snapshot` or `query` load does not wait for it, so it
+--- may outlive the connection that asked. (A run settling without its owner
+--- is the server's `busy`.)
+--- @return boolean
+function Service:background_work()
+    return self.ws ~= nil and self.ws._tool_state == "scanning"
+end
+
+--- Is a request's model segment running (`_drain`)? A lifetime tick can run
+--- inside one (e.g. during its wait for the model to load); the background
+--- work cap does not act then (§19.11 "Background work cap").
+--- @return boolean
+function Service:in_segment()
+    return self.draining == true or self.current ~= nil
+end
+
+--- Abandon the model's tool detection past BACKGROUND_MAX_DURATION (§19.11
+--- "Background work cap"): it has no handle to cancel, so with no run active
+--- the model is unloaded — the torn-down workspace never applies or saves the
+--- late result; the probe subprocesses run to completion on their own. The
+--- next request loads the model afresh. False when a run is active (the
+--- server stops instead) or a model segment is running (the server defers
+--- the cap while `in_segment`; never unload under a segment's feet).
+--- @return boolean abandoned
+function Service:abandon_background()
+    if next(self.runs) or self:in_segment() then return false end
+    if self.ws then self:_unload() end
+    return true
+end
+
 --- Does `conn` own a running build? (The keepalive rule never drops it.)
 --- @param conn table
 --- @return boolean

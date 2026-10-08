@@ -316,6 +316,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   over, unreadable, or its workspace deleted) now counts as a relay: it is
   not listed as a stray and `kill --all --strays` leaves it running; end it
   with the operating system's tools. (#174)
+- Experimental daemon: an idle daemon now waits for its own background work
+  (tool detection after a snapshot or query, a cancelled build or a reset's
+  deletion still settling) before the idle timeout starts counting, and
+  `idle_since` is absent from its handle meanwhile. Background work left
+  running with no connection open is capped at 10 minutes: tool detection is
+  then abandoned (the model is unloaded and loaded afresh by the next
+  request), and a build or reset still settling stops the daemon, its
+  deletion stopping between entries with their cache entries left
+  `unknown`. (#175)
 - In a repository with `lw.pin`, a global lw now also runs `lw reset`,
   `lw daemon run` and `lw daemon restart` as the pinned release, so the
   workspace daemon is the pinned release whoever starts it (the editor

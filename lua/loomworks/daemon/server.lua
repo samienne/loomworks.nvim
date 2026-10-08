@@ -79,6 +79,9 @@ M.TICK_MS = 5000
 M.KEEPALIVE_MS = 30000
 --- Idle timeout default (§19.11, setting `daemon-idle-timeout`).
 M.IDLE_SECONDS = 3600
+--- `BACKGROUND_MAX_DURATION` (§19.11 "Background work cap"): ownerless
+--- background work with no connection open is stopped after this long.
+M.BACKGROUND_MAX_MS = 10 * 60 * 1000
 --- An unauthenticated connection is closed after this long (§19.8).
 M.AUTH_TIMEOUT_MS = 5000
 --- A request in flight longer than this is logged once as a warning (§19.9
@@ -96,11 +99,13 @@ end
 --- @field exit_code integer|nil an attached runtime's exit status, recorded when it stopped
 --- @field stop_reason string|nil why it stopped (`LOST_LOCK`, `ROOT_REMOVED`, or the `stop` reason)
 --- @field interfaces loomworks.daemon.Registry|nil the interface registry with the root object (§19.20), created on start
+--- @field background boolean background work (§19.11) ran at the last lifetime check
+--- @field background_since number|nil uv.now() when the background work became ownerless with no connection open (the cap's clock)
 local Server = {}
 Server.__index = Server
 
 --- @param root string workspace root
---- @param opts? { exit?: fun(code: integer), tick_ms?: integer, auth_timeout_ms?: integer, log?: fun(line: string), idle_seconds?: number, keepalive_ms?: integer }
+--- @param opts? { exit?: fun(code: integer), tick_ms?: integer, auth_timeout_ms?: integer, log?: fun(line: string), idle_seconds?: number, keepalive_ms?: integer, background_max_ms?: integer }
 --- @return loomworks.daemon.Server
 function M.new(root, opts)
     opts = opts or {}
@@ -120,10 +125,12 @@ function M.new(root, opts)
     self.auth_timeout_ms = opts.auth_timeout_ms or env_ms("LW_TEST_DAEMON_AUTH_MS") or M.AUTH_TIMEOUT_MS
     self.keepalive_ms = opts.keepalive_ms or env_ms("LW_TEST_DAEMON_KEEPALIVE_MS") or M.KEEPALIVE_MS
     self.idle_seconds = opts.idle_seconds or M.IDLE_SECONDS
+    self.background_max_ms = opts.background_max_ms or M.BACKGROUND_MAX_MS
     self.conns = {}
     self.n_clients = 0
     self.seq = 0
     self.busy = false
+    self.background = false
     self.retiring = false
     self.stopped = false
     self.exit = opts.exit or function(code)
@@ -153,7 +160,7 @@ function Server:_handle_record()
         started_at = self.started_at,
         clients = self.n_clients,
         busy = self.busy,
-        idle_since = (self.n_clients == 0 and not self.busy) and self.idle_since or nil,
+        idle_since = (self.n_clients == 0 and not self.busy and not self.background) and self.idle_since or nil,
         lock_nonce = self.R and self.R.record and self.R.record.lock_nonce or nil,
         -- Which data directory's key this daemon authenticates with (§19.6).
         key_id = self.key and auth.key_id(self.key) or nil,
@@ -373,9 +380,29 @@ function Server:_tick()
     self:lifetime()
 end
 
+--- Background work (§19.11): work the daemon owns with no connection as its
+--- owner. A run still settling after its owner left or after its task ended
+--- (`busy`: a cancellation killing its step, a reset's deletion), and the
+--- loaded model's tool detection (`service:background_work()`), which a
+--- `snapshot` or `query` load leaves running after its reply.
+--- @return boolean
+function Server:_background_work()
+    if self.busy then return true end
+    local svc = self.service
+    if svc and svc.background_work then
+        local ok, bg = pcall(svc.background_work, svc)
+        return ok and bg == true
+    end
+    return false
+end
+
 --- The lifetime rules of §19.11 checked on every tick: a connection silent
---- for three keepalive intervals is dropped as half-open; with no connection,
---- no running task and no request for the idle timeout, the daemon exits.
+--- for three keepalive intervals is dropped as half-open; idle — no
+--- connection and no background work — for the idle timeout, the daemon
+--- exits. The idle clock starts when the last connection closes or the last
+--- background work ends, whichever is later. Background work ownerless with
+--- no connection open for BACKGROUND_MAX_DURATION is stopped
+--- (`_background_cap`).
 function Server:lifetime()
     local now = uv.now()
     for conn in pairs(self.conns) do
@@ -387,14 +414,75 @@ function Server:lifetime()
         end
     end
     if self.stopped then return end
-    -- Idle only with no connection at all: one still authenticating (bounded
-    -- by the authentication timeout) is a client on its way in.
-    if self.n_clients == 0 and not self.busy and next(self.conns) == nil then
+    local bg = self:_background_work()
+    if bg ~= self.background then
+        self.background = bg
+        -- Background work ended: the idle clock (re)starts now.
+        if not bg then self.idle_since = os.time() end
+        self:_handle_changed()
+    end
+    -- No connection at all — one still authenticating (bounded by the
+    -- authentication timeout) is a client on its way in.
+    local unconnected = self.n_clients == 0 and next(self.conns) == nil
+    -- The cap's clock (§19.11 "Background work cap") counts only while the
+    -- work is ownerless and no connection is open; a connection resets it
+    -- (here, and in `_on_connection` for one opened and closed between ticks).
+    if bg and unconnected then
+        self.background_since = self.background_since or now
+        -- A request still in a model segment (its client gone, e.g. this tick
+        -- runs inside the segment's wait for the model) defers the cap: the
+        -- model is never unloaded, nor the daemon stopped, under a running
+        -- segment. The clock keeps its start; a later tick acts.
+        local svc = self.service
+        local in_segment = svc and svc.in_segment and svc:in_segment()
+        if now - self.background_since >= self.background_max_ms and not in_segment then
+            self.background_since = nil
+            self:_background_cap()
+            return
+        end
+    else
+        self.background_since = nil
+    end
+    -- Idle only with no connection and no background work.
+    if unconnected and not bg then
         local since = math.max(self.idle_since or 0, self.last_request or 0)
         if os.time() - since >= self.idle_seconds then
             self:stop(string.format("idle for %ds", self.idle_seconds), 0)
         end
     end
+end
+
+--- Background work outlasted BACKGROUND_MAX_DURATION with no connection
+--- open (§19.11 "Background work cap"). A run still settling (a cancellation
+--- killing its step, a reset's deletion: `busy`) is stopped through the stop
+--- path — `on_stopping` stops a deletion between entries (its entries stay
+--- `unknown`), releases the run's locks and ends its task — and the daemon,
+--- which has no connection, exits. Otherwise the work is the model's tool
+--- detection, which cannot be cancelled: the model is unloaded, so its late
+--- result is dropped, and the idle clock starts.
+function Server:_background_cap()
+    local mins = self.background_max_ms / 60000
+    local why = string.format("background work ran past %s minutes (BACKGROUND_MAX_DURATION)",
+        (mins == math.floor(mins)) and string.format("%d", mins) or string.format("%.2f", mins))
+    if self.busy then
+        self:stop(why, 0)
+        return
+    end
+    local svc = self.service
+    local abandoned = false
+    if svc and svc.abandon_background then
+        local ok, res = pcall(svc.abandon_background, svc)
+        abandoned = ok and res == true
+    end
+    if not abandoned or self:_background_work() then
+        -- Nothing could be abandoned (or it is still running): stop.
+        self:stop(why, 0)
+        return
+    end
+    self:log("%s: tool detection abandoned (the model was unloaded)", why)
+    self.background = false
+    self.idle_since = os.time()
+    self:_handle_changed()
 end
 
 --- R was reclaimed or removed while this process held it: it has lost
@@ -652,6 +740,9 @@ function Server:_on_connection(err)
     local conn = { sock = sock, decoder = protocol.new_decoder(protocol.PREAUTH_MAX), state = "new",
         last_seen = uv.now() }
     self.last_request = os.time()
+    -- Opening a connection resets the background work cap's clock (§19.11),
+    -- even one that closes again before the next lifetime tick.
+    self.background_since = nil
     self.conns[conn] = true
     conn.auth_timer = uv.new_timer()
     conn.auth_timer:start(self.auth_timeout_ms, 0, function()

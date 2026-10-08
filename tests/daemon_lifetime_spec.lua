@@ -143,6 +143,230 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
     end)
 
+    -- Step 5i: idle is "no connections and no background work". A stand-in
+    -- service reports the background work (the model's tool detection).
+    local function fake_service(state)
+        return {
+            background_work = function() return state.scanning end,
+            owns_task = function() return false end,
+            on_stopping = function() end,
+        }
+    end
+
+    it("background work holds off the idle exit; the clock restarts when it ends", function()
+        local state = { scanning = true }
+        start({ idle_seconds = 1 })
+        srv.service = fake_service(state)
+        vim.wait(2500, function() return exited ~= nil end, 20)
+        assert.is_nil(exited)
+        assert.is_true(srv.background)
+        -- No idle time is published while it runs.
+        assert.is_nil(srv:_handle_record().idle_since)
+        state.scanning = false
+        local ended = os.time()
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        -- The idle timeout counted from the end of the work, not the start.
+        assert.is_true(os.time() - ended >= 1)
+    end)
+
+    it("a run settling without its owner (busy) is background work too", function()
+        start({ idle_seconds = 1 })
+        srv.busy = true
+        vim.wait(2500, function() return exited ~= nil end, 20)
+        assert.is_nil(exited)
+        srv.busy = false
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+    end)
+
+    it("the service reports the loaded model's tool detection as background work", function()
+        local svc = setmetatable({ ws = nil }, { __index = require("loomworks.daemon.service").Service })
+        assert.is_false(svc:background_work())
+        svc.ws = { _tool_state = "scanning" }
+        assert.is_true(svc:background_work())
+        svc.ws._tool_state = "scanned"
+        assert.is_false(svc:background_work())
+    end)
+
+    -- BACKGROUND_MAX_DURATION (§19.11 "Background work cap").
+    it("tool detection past the cap is abandoned: the model is unloaded, the daemon stays, the idle clock starts", function()
+        local state = { scanning = true, abandoned = 0 }
+        start({ idle_seconds = 2, background_max_ms = 300 })
+        local svc = fake_service(state)
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        assert.is_true(vim.wait(5000, function() return state.abandoned > 0 end, 20))
+        assert.is_nil(exited)
+        assert.is_false(srv.background)
+        assert.is_not_nil(srv:_handle_record().idle_since)
+        local at = os.time()
+        -- Then an ordinary idle exit, timed from the abandonment.
+        assert.is_true(vim.wait(10000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        assert.is_true(os.time() - at >= 1)
+        assert.equals(1, state.abandoned)
+    end)
+
+    it("a run settling past the cap stops the daemon through the stop path", function()
+        local stopping
+        start({ idle_seconds = 3600, background_max_ms = 300 })
+        local svc = fake_service({})
+        svc.on_stopping = function(_, reason) stopping = reason end
+        svc.abandon_background = function() error("a run is never abandoned") end
+        srv.service = svc
+        srv.busy = true
+        assert.is_true(vim.wait(5000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        assert.matches("BACKGROUND_MAX_DURATION", stopping)
+        assert.matches("BACKGROUND_MAX_DURATION", srv.stop_reason)
+    end)
+
+    it("the cap's clock counts only while no connection is open", function()
+        local state = { scanning = true, abandoned = 0 }
+        start({ idle_seconds = 3600, background_max_ms = 400 })
+        local svc = fake_service(state)
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        -- A connection open (stand-in: the client count) holds the clock.
+        srv.n_clients = 1
+        vim.wait(1200, function() return state.abandoned > 0 end, 20)
+        assert.equals(0, state.abandoned)
+        assert.is_nil(srv.background_since)
+        -- The last connection left: the clock starts now, not at the work's start.
+        srv.n_clients = 0
+        local left = uv.now()
+        assert.is_true(vim.wait(5000, function() return state.abandoned > 0 end, 20))
+        assert.is_true(uv.now() - left >= 350)
+        assert.is_nil(exited)
+    end)
+
+    it("tool detection that cannot be abandoned past the cap stops the daemon", function()
+        local stopping
+        start({ idle_seconds = 3600, background_max_ms = 300 })
+        local svc = fake_service({ scanning = true })
+        svc.on_stopping = function(_, reason) stopping = reason end
+        svc.abandon_background = function() return false end
+        srv.service = svc
+        assert.is_true(vim.wait(5000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        assert.matches("BACKGROUND_MAX_DURATION", stopping)
+        assert.matches("BACKGROUND_MAX_DURATION", srv.stop_reason)
+    end)
+
+    it("a connection opened and closed between ticks resets the cap's clock", function()
+        local state = { scanning = true, abandoned = 0 }
+        start({ idle_seconds = 3600, background_max_ms = 400, tick_ms = NO_TICK })
+        local svc = fake_service(state)
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        srv:lifetime()
+        assert.is_not_nil(srv.background_since)
+        -- The clock is already past the cap when a short connection comes and goes.
+        srv.background_since = uv.now() - 10000
+        local conn = assert(client.session(srv.address))
+        assert.is_nil(srv.background_since)
+        conn:close()
+        assert.is_true(vim.wait(5000, function()
+            return srv.n_clients == 0 and next(srv.conns) == nil
+        end, 20))
+        -- The next tick restarts the clock instead of acting on the old one.
+        srv:lifetime()
+        assert.equals(0, state.abandoned)
+        assert.is_not_nil(srv.background_since)
+        assert.is_nil(exited)
+    end)
+
+    it("the cap defers while a request is in progress, then acts", function()
+        local state = { scanning = true, abandoned = 0, seg = true }
+        start({ idle_seconds = 3600, background_max_ms = 400, tick_ms = NO_TICK })
+        local svc = fake_service(state)
+        svc.in_segment = function() return state.seg end
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        srv:lifetime()
+        srv.background_since = uv.now() - 10000
+        -- A tick inside the segment (e.g. its wait for the model): no action.
+        srv:lifetime()
+        assert.equals(0, state.abandoned)
+        assert.is_nil(exited)
+        assert.is_false(srv.stopped == true)
+        assert.is_not_nil(srv.background_since) -- the clock keeps its start
+        -- The segment ended: the next tick acts.
+        state.seg = false
+        srv:lifetime()
+        assert.equals(1, state.abandoned)
+        assert.is_nil(exited)
+    end)
+
+    it("the service never abandons inside a model segment and reports one as in progress", function()
+        local unloaded = 0
+        local Service = require("loomworks.daemon.service").Service
+        local svc = setmetatable({ ws = { _tool_state = "scanning" }, runs = {},
+            host = { unload = function() unloaded = unloaded + 1 end } }, { __index = Service })
+        assert.is_false(svc:in_segment())
+        svc.draining, svc.current = true, {}
+        assert.is_true(svc:in_segment())
+        assert.is_false(svc:abandon_background())
+        assert.equals(0, unloaded)
+        assert.is_not_nil(svc.ws)
+        svc.draining, svc.current = false, nil
+        assert.is_true(svc:abandon_background())
+        assert.equals(1, unloaded)
+    end)
+
+    it("the service abandons tool detection by unloading the model, never with a run active", function()
+        local unloaded = 0
+        local Service = require("loomworks.daemon.service").Service
+        local svc = setmetatable({ ws = { _tool_state = "scanning" }, runs = {},
+            host = { unload = function() unloaded = unloaded + 1 end } }, { __index = Service })
+        svc.runs[{ ctx = {} }] = true
+        assert.is_false(svc:abandon_background())
+        assert.equals(0, unloaded)
+        svc.runs = {}
+        assert.is_true(svc:abandon_background())
+        assert.equals(1, unloaded)
+        assert.is_nil(svc.ws)
+        assert.is_false(svc:background_work())
+    end)
+
+    it("a torn-down workspace drops its tool detection's late result", function()
+        local cb, remerged = nil, false
+        local deps = {
+            events = { emit = function() end },
+            schedule = function(fn) fn() end,
+            detect_tools_async = function(_, _, done) cb = done end,
+        }
+        local fake = setmetatable({
+            _core = { _deps = deps, _workspace = {} },
+            _config_from_objects = function() return {} end,
+            _serialize_cache = function() return {} end,
+            remerge = function() remerged = true end,
+        }, { __index = require("loomworks.workspace").Workspace })
+        fake:_scan_tools_async()
+        assert.equals("scanning", fake._tool_state)
+        fake._torn_down = true
+        cb({ cmake = {} })
+        assert.is_false(remerged)
+        assert.is_nil(fake._tools_by_type)
+    end)
+
     it("exits when the workspace root is removed", function()
         start()
         local addr = srv.address
