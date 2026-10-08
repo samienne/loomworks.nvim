@@ -680,7 +680,8 @@ stale. It never launches, connects to or signals a daemon, and writes nothing.
    wrapper (§16.23: the invoked lw waiting on the pinned `daemon run`), not a
    daemon, and is dropped — it is never listed, and never stopped or killed
    as a stray (killing its tree would kill the live daemon).
-   *(Planned, step 5i.)* A `lw … daemon run --stdio` process is classified
+   *(Step 5i, `discover.is_relay` on the dispatch's own `stdio_form`.)* A
+   `lw … daemon run --stdio` process is classified
    by the runtime lock R of its `--root`: when R names it (pid and start
    time), it is still a **runtime** — the attached `--stdio` of a repository
    pinned to a release before 5i (§19.10 "Connections", "Compatibility") —
@@ -749,7 +750,8 @@ daemons whose root lies under `<dir>` (separator-bounded, case-insensitive on
 Windows); a daemon with an unknown root is then left out. `--json` prints
 `{ schema = 1, scan_ms, daemons = [ { pid, start_time, root, state, reason,
 uptime_s, started_at, clients, busy, idle_since, lw_version, protocol,
-endpoint, same_key } ] }` (absent values are `null`), sorted by root.
+endpoint, same_key, relays } ] }` (absent values are `null`; `relays` is
+always an array, step 3), sorted by root.
 
 **Stopping all.** `lw daemon stop --all [--force]` and `lw daemon kill --all`
 (each accepting `--under <dir>`) apply `lw daemon stop [--force]` /
@@ -1107,9 +1109,9 @@ Concurrent launches resolve on the runtime lock: one daemon wins, the others
 exit, all clients connect to the winner.
 
 **Connections.** *(Step 5i: the relay with `--no-launch`, `--skip-instance`
-and the gated `--private` is implemented, `daemon/relay.lua`; the editor's use
-of it, its `lw daemon list` classification, the idle rule and the two-stage
-Ctrl-C are planned.)* Every client process is a
+and the gated `--private` is implemented, `daemon/relay.lua`, and so is its
+`lw daemon list` / `kill --all --strays` classification (§19.6.1 step 3); the
+editor's use of it, the idle rule and the two-stage Ctrl-C are planned.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the

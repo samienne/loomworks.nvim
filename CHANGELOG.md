@@ -306,6 +306,13 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `--skip-instance <pid>:<start_time>` (with `--no-launch`) never uses that
   daemon. Failures before the daemon's welcome exit with statuses 10 to 16.
   (#173)
+- Experimental daemon: `lw daemon list` no longer shows a `lw daemon run
+  --stdio` relay as a daemon (a stray, once it was 30 s old): a relay is a
+  connection, listed in `--json` as `relays` (pid and start time) on its
+  workspace daemon's entry, and `lw daemon stop --all` / `kill --all
+  [--strays]` never stop or kill it. A `--stdio` process that holds its
+  workspace's runtime lock (a release before the relay) is still a daemon.
+  (#PR)
 - In a repository with `lw.pin`, a global lw now also runs `lw reset`,
   `lw daemon run` and `lw daemon restart` as the pinned release, so the
   workspace daemon is the pinned release whoever starts it (the editor
