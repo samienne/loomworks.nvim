@@ -1306,7 +1306,14 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
     abandoned — with no run active, the daemon unloads the model, so the
     late result is dropped (a torn-down model never applies it, so no
     workspace file records it); the probe subprocesses run to completion on
-    their own. The next request loads the model afresh.
+    their own. The CLI's machine-level tool cache (`tools.json`, §16), which
+    a detection fills when it completes, may still record that late result once it
+    completes — it is a complete detection, not an interrupted part. The
+    next request loads the model afresh.
+  - While a request is being processed (a model segment is running, e.g.
+    waiting for the model to load for a client that has since gone), the
+    cap does not act; it acts on the first lifetime check after the
+    segment ends.
   - **A run** still settling — a cancellation killing its step, or a
     reset's deletion — is stopped as on any stop: the daemon stops (it has
     no connection), through the same path as every exit (§19.15) — a
@@ -1315,7 +1322,8 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
     are released, the task ends. Background work that can be neither
     abandoned nor stopped otherwise stops the daemon the same way.
 
-  *(Step 5i, `Server:lifetime`, `Service:abandon_background`.)* The
+  *(Step 5i, `Server:lifetime`, `Service:abandon_background`,
+  `Service:in_segment`.)* The
   daemon's lifetime never depends on any client's lifetime: a client keeps
   it alive only through an open connection.
 - *(Planned, step 5r.)* **Short idle grace.** An idle daemon exits after a

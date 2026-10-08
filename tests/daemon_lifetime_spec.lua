@@ -249,6 +249,88 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.is_nil(exited)
     end)
 
+    it("tool detection that cannot be abandoned past the cap stops the daemon", function()
+        local stopping
+        start({ idle_seconds = 3600, background_max_ms = 300 })
+        local svc = fake_service({ scanning = true })
+        svc.on_stopping = function(_, reason) stopping = reason end
+        svc.abandon_background = function() return false end
+        srv.service = svc
+        assert.is_true(vim.wait(5000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        assert.matches("BACKGROUND_MAX_DURATION", stopping)
+        assert.matches("BACKGROUND_MAX_DURATION", srv.stop_reason)
+    end)
+
+    it("a connection opened and closed between ticks resets the cap's clock", function()
+        local state = { scanning = true, abandoned = 0 }
+        start({ idle_seconds = 3600, background_max_ms = 400, tick_ms = NO_TICK })
+        local svc = fake_service(state)
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        srv:lifetime()
+        assert.is_not_nil(srv.background_since)
+        -- The clock is already past the cap when a short connection comes and goes.
+        srv.background_since = uv.now() - 10000
+        local conn = assert(client.session(srv.address))
+        assert.is_nil(srv.background_since)
+        conn:close()
+        assert.is_true(vim.wait(5000, function()
+            return srv.n_clients == 0 and next(srv.conns) == nil
+        end, 20))
+        -- The next tick restarts the clock instead of acting on the old one.
+        srv:lifetime()
+        assert.equals(0, state.abandoned)
+        assert.is_not_nil(srv.background_since)
+        assert.is_nil(exited)
+    end)
+
+    it("the cap defers while a request is in progress, then acts", function()
+        local state = { scanning = true, abandoned = 0, seg = true }
+        start({ idle_seconds = 3600, background_max_ms = 400, tick_ms = NO_TICK })
+        local svc = fake_service(state)
+        svc.in_segment = function() return state.seg end
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        srv:lifetime()
+        srv.background_since = uv.now() - 10000
+        -- A tick inside the segment (e.g. its wait for the model): no action.
+        srv:lifetime()
+        assert.equals(0, state.abandoned)
+        assert.is_nil(exited)
+        assert.is_false(srv.stopped == true)
+        assert.is_not_nil(srv.background_since) -- the clock keeps its start
+        -- The segment ended: the next tick acts.
+        state.seg = false
+        srv:lifetime()
+        assert.equals(1, state.abandoned)
+        assert.is_nil(exited)
+    end)
+
+    it("the service never abandons inside a model segment and reports one as in progress", function()
+        local unloaded = 0
+        local Service = require("loomworks.daemon.service").Service
+        local svc = setmetatable({ ws = { _tool_state = "scanning" }, runs = {},
+            host = { unload = function() unloaded = unloaded + 1 end } }, { __index = Service })
+        assert.is_false(svc:in_segment())
+        svc.draining, svc.current = true, {}
+        assert.is_true(svc:in_segment())
+        assert.is_false(svc:abandon_background())
+        assert.equals(0, unloaded)
+        assert.is_not_nil(svc.ws)
+        svc.draining, svc.current = false, nil
+        assert.is_true(svc:abandon_background())
+        assert.equals(1, unloaded)
+    end)
+
     it("the service abandons tool detection by unloading the model, never with a run active", function()
         local unloaded = 0
         local Service = require("loomworks.daemon.service").Service

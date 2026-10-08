@@ -425,10 +425,17 @@ function Server:lifetime()
     -- authentication timeout) is a client on its way in.
     local unconnected = self.n_clients == 0 and next(self.conns) == nil
     -- The cap's clock (§19.11 "Background work cap") counts only while the
-    -- work is ownerless and no connection is open; a connection resets it.
+    -- work is ownerless and no connection is open; a connection resets it
+    -- (here, and in `_on_connection` for one opened and closed between ticks).
     if bg and unconnected then
         self.background_since = self.background_since or now
-        if now - self.background_since >= self.background_max_ms then
+        -- A request still in a model segment (its client gone, e.g. this tick
+        -- runs inside the segment's wait for the model) defers the cap: the
+        -- model is never unloaded, nor the daemon stopped, under a running
+        -- segment. The clock keeps its start; a later tick acts.
+        local svc = self.service
+        local in_segment = svc and svc.in_segment and svc:in_segment()
+        if now - self.background_since >= self.background_max_ms and not in_segment then
             self.background_since = nil
             self:_background_cap()
             return
@@ -733,6 +740,9 @@ function Server:_on_connection(err)
     local conn = { sock = sock, decoder = protocol.new_decoder(protocol.PREAUTH_MAX), state = "new",
         last_seen = uv.now() }
     self.last_request = os.time()
+    -- Opening a connection resets the background work cap's clock (§19.11),
+    -- even one that closes again before the next lifetime tick.
+    self.background_since = nil
     self.conns[conn] = true
     conn.auth_timer = uv.new_timer()
     conn.auth_timer:start(self.auth_timeout_ms, 0, function()
