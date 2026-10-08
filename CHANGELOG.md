@@ -324,7 +324,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   then abandoned (the model is unloaded and loaded afresh by the next
   request), and a build or reset still settling stops the daemon, its
   deletion stopping between entries with their cache entries left
-  `unknown`.
+  `unknown`. (#175)
 - In a repository with `lw.pin`, a global lw now also runs `lw reset`,
   `lw daemon run` and `lw daemon restart` as the pinned release, so the
   workspace daemon is the pinned release whoever starts it (the editor
