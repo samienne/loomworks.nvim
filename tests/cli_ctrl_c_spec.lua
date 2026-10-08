@@ -97,4 +97,78 @@ describe("two-stage Ctrl-C (cli)", function()
             assert.is_true(escalated, code)
         end
     end)
+    describe("_await_routed / _interrupted_end", function()
+        local writes
+        local orig_stderr
+        before_each(function()
+            writes = {}
+            orig_stderr = io.stderr
+            io.stderr = { write = function(_, s) writes[#writes + 1] = s end, flush = function() end }
+        end)
+        after_each(function() io.stderr = orig_stderr end)
+        local function err_text() return table.concat(writes) end
+
+        it("the first Ctrl-C while waiting cancels, prints one line, and is recorded", function()
+            local conn = fake_conn(11, { { outcome = "ok" }, nil })
+            local code
+            local cleanup = cli._make_interrupt_cleanup(130, function(c) code = c end)
+            local intercepted = cli._await_routed(conn, "t-1", "build", function() cleanup("sigint") end)
+            assert.is_true(intercepted)
+            assert.is_nil(code)
+            assert.equals(1, #conn.calls)
+            assert.equals("lw: stopping the build - press Ctrl-C again to stop waiting\n", err_text())
+            assert.is_nil(cli._interrupt_intercept)
+        end)
+
+        it("no Ctrl-C: not recorded, no line, the previous interceptor restored", function()
+            local prev = function() return true end
+            cli._set_interrupt_intercept(prev)
+            local seen
+            local intercepted = cli._await_routed(fake_conn(11), "t-1", "test", function()
+                seen = cli._interrupt_intercept
+            end)
+            assert.is_false(intercepted)
+            assert.is_function(seen)
+            assert.are_not.equal(prev, seen)
+            assert.equals(prev, cli._interrupt_intercept)
+            assert.equals("", err_text())
+        end)
+
+        it("a Ctrl-C the daemon cannot take (protocol 10) is not recorded and prints nothing", function()
+            local code
+            local cleanup = cli._make_interrupt_cleanup(130, function(c) code = c end)
+            local intercepted = cli._await_routed(fake_conn(10), 3, "build", function() cleanup("sigint") end)
+            assert.is_false(intercepted)
+            assert.equals(130, code)
+            assert.equals("", err_text())
+        end)
+
+        it("restores the interceptor when the wait raises, and re-raises", function()
+            local prev = function() return true end
+            cli._set_interrupt_intercept(prev)
+            local ok, err = pcall(cli._await_routed, fake_conn(11), "t-1", "build", function() error("boom", 0) end)
+            assert.is_false(ok)
+            assert.equals("boom", err)
+            assert.equals(prev, cli._interrupt_intercept)
+        end)
+
+        it("after an intercepted Ctrl-C a run whose task finished is not started: 130", function()
+            assert.equals(130, cli._interrupted_end("run", { code = 0 }))
+            assert.truthy(err_text():find("the program was not started", 1, true))
+        end)
+
+        it("after an intercepted Ctrl-C every end exits 130", function()
+            assert.equals(130, cli._interrupted_end("build", { code = 0 }))
+            assert.equals(130, cli._interrupted_end("build", { code = 1 }))
+            assert.equals(130, cli._interrupted_end("test", { code = 130 }))
+            assert.equals("", err_text())
+            assert.equals(130, cli._interrupted_end("build", { code = 1, error = "no running task" }))
+            assert.truthy(err_text():find("lw: no running task", 1, true))
+        end)
+
+        it("a connection lost after an intercepted Ctrl-C exits 130 with a line", function()
+            assert.equals(130, cli._interrupted_end("build", nil))
+            assert.equals("lw: lost the connection to the workspace daemon while stopping the build\n", err_text())
+        end)
+    end)
 end)

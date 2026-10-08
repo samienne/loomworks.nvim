@@ -1900,9 +1900,8 @@ arguments as the in-process host does (§16.9; the same matcher, the same
 messages, the client's interactivity).
 
 **Cancellation.** An operation belongs to its client. When that client
-disconnects (a second Ctrl-C ends `lw` — so does the first against a daemon
-without `Tasks/1`, Task ownership: the interrupt handler drops the
-connection, which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
+disconnects (`lw` ending on Ctrl-C — see Task ownership for when that is —
+drops the connection, which is the cancellation, and exits 130), the daemon stops (`lw daemon stop`, idle,
 retire, root removed, lost lock), or the workspace or the operation's subject
 is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
@@ -1931,13 +1930,24 @@ Other connections only observe: closing an observer never stops a task.
 Configure counts as a connection-owned task from step 5i (cancelled when its
 connection closes), but in 5i it reaches the daemon only as a step of a
 routed build, test or run preparation; a standalone configure is not routed
-through the daemon until steps 5j–5o. In the CLI the **first Ctrl-C** sends a
-graceful cancel (the same as `loomworks.Tasks/1.cancel`) and keeps waiting
-for the task to end; a **second Ctrl-C** closes the connection and the daemon
-force-stops the task — on Windows the step's whole process tree: the daemon
-runs in its own console, so a build never receives the console's Ctrl-C. A
-daemon of protocol 10 has no `Tasks/1`: against it the first Ctrl-C closes
-the connection, as today. *(Future, not
+through the daemon until steps 5j–5o. In the CLI, once the daemon has
+accepted the task, the **first Ctrl-C** asks the daemon to stop it
+(`loomworks.Tasks/1.cancel`: the daemon stops the running step's process tree
+as above — the daemon runs in its own console, so a build never receives the
+console's Ctrl-C) and prints one stderr line, `lw: stopping the <op> - press
+Ctrl-C again to stop waiting`; `lw` keeps waiting until the task has stopped
+(its `<op> stopped: …` line is printed as usual). A **second Ctrl-C** makes
+`lw` leave at once, closing the connection, while the daemon finishes
+stopping the task. Either way `lw` exits 130 after an intercepted Ctrl-C —
+also when the task ended before the cancel landed (the daemon then answers
+that there is no running task) and when the connection is lost meanwhile —
+and a run's program is never started. A Ctrl-C before the daemon has accepted
+the task closes the connection and exits 130 (there is nothing to cancel
+yet). A daemon of protocol 10 has no `Tasks/1`: against it the first Ctrl-C
+closes the connection, as before. Only Ctrl-C is two-stage: Ctrl-Break, a
+closed console, a hangup and a termination request end `lw` at once
+(closing the connection). An attached run (§19.1 "Loopback": the runtime is
+the `lw` process itself) is unchanged — a Ctrl-C ends it. *(Future, not
 planned in a step: `lw build --detach` hands a task over to the daemon, which
 then owns it with no connection.)*
 

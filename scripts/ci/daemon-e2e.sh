@@ -223,32 +223,46 @@ if [ "$os" = windows ]; then
   # suite's console test covers Windows.
   ok "skipped on Windows"
 else
-  CC="$TMP/ctrlc"; mkdir -p "$CC/app"
-  STEP_PID="$CC/step.pid"
-  cat > "$CC/loomworks.json" <<JSON
+  CTRLC_WS="$TMP/ctrlc"; mkdir -p "$CTRLC_WS/app"
+  STEP_PID="$CTRLC_WS/step.pid"
+  cat > "$CTRLC_WS/loomworks.json" <<JSON
 {"projects":{"app":{"path":"app","shell":{"build_dir":"\${workspace_root}/out/\${variant}",
  "configure_cmd":["sh","-c","echo \$\$ > '$STEP_PID'; exec sleep 60"],
  "build_cmd":["true"],"configurations":{"Debug":{}}}}},
  "configuration_sets":{"dev":{"app":"Debug"}}}
 JSON
-  (cd "$CC" && "$LW" --no-input --no-daemon profile create dev >/dev/null 2>&1) || bad "profile create"
-  (cd "$CC" && LOOMWORKS_RUNTIME=daemon exec "$LW" --no-input build dev >"$CC/out" 2>"$CC/err") &
+  (cd "$CTRLC_WS" && "$LW" --no-input --no-daemon profile create dev >/dev/null 2>&1) || bad "profile create"
+  (cd "$CTRLC_WS" && LOOMWORKS_RUNTIME=daemon exec "$LW" --no-input build dev >"$CTRLC_WS/out" 2>"$CTRLC_WS/err") &
   bpid=$!
-  i=0; while [ ! -s "$STEP_PID" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
-  cpid=$(pid_of "$CC/.nvim/loomworks.daemon.lock"); [ -n "$cpid" ] && track "$cpid"
+  # The Ctrl-C must come after the daemon accepted the task (before that it
+  # just closes the connection) and while its step runs.
+  i=0
+  while { [ ! -s "$STEP_PID" ] || ! grep -q "building through the workspace daemon" "$CTRLC_WS/err" 2>/dev/null; } \
+    && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+  cpid=$(pid_of "$CTRLC_WS/.nvim/loomworks.daemon.lock"); [ -n "$cpid" ] && track "$cpid"
   spid=$(cat "$STEP_PID" 2>/dev/null)
-  if [ -n "$spid" ]; then
+  if [ -n "$spid" ] && grep -q "building through the workspace daemon" "$CTRLC_WS/err"; then
     kill -INT "$bpid"
-    wait "$bpid"; code=$?
-    [ "$code" -eq 130 ] && ok "lw exited 130" || bad "lw exited $code: $(cat "$CC/err")"
-    grep -q "build stopped: cancelled by the client that started it" "$CC/err" \
-      && ok "lw stayed connected and reported the task's end" || bad "no stopped line: $(cat "$CC/err")"
+    # Watchdog: lw must end within ~30 s of the Ctrl-C.
+    i=0; while kill -0 "$bpid" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+    if kill -0 "$bpid" 2>/dev/null; then
+      kill -9 "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+      bad "lw did not end after the Ctrl-C: $(cat "$CTRLC_WS/err")"
+    else
+      wait "$bpid"; code=$?
+      [ "$code" -eq 130 ] && ok "lw exited 130" || bad "lw exited $code: $(cat "$CTRLC_WS/err")"
+      grep -q "stopping the build - press Ctrl-C again to stop waiting" "$CTRLC_WS/err" \
+        && ok "lw said it waits for the stop" || bad "no stopping line: $(cat "$CTRLC_WS/err")"
+      grep -q "build stopped: cancelled by the client that started it" "$CTRLC_WS/err" \
+        && ok "lw stayed connected and reported the task's end" || bad "no stopped line: $(cat "$CTRLC_WS/err")"
+    fi
     i=0; while kill -0 "$spid" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
     kill -0 "$spid" 2>/dev/null && { bad "the step $spid still runs"; kill -9 "$spid"; } || ok "the step was killed"
   else
-    bad "the build's step never started: $(cat "$CC/err")"; kill -9 "$bpid" 2>/dev/null
+    bad "the build's step never started: $(cat "$CTRLC_WS/err")"; kill -9 "$bpid" 2>/dev/null
+    [ -n "$spid" ] && kill -9 "$spid" 2>/dev/null
   fi
-  (cd "$CC" && "$LW" daemon stop >/dev/null 2>&1)
+  (cd "$CTRLC_WS" && "$LW" daemon stop >/dev/null 2>&1)
   [ -n "$cpid" ] && { wait_gone "$cpid" || bad "stop left $cpid"; }
 fi
 

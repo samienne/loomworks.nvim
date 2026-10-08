@@ -5,6 +5,15 @@ they don't get lost.
 
 ---
 
+## Split `cli.lua`: its main chunk is at Lua's 200-local limit
+
+`lua/loomworks/cli.lua`'s main chunk has reached Lua's limit of 200 local
+variables per function, so new top-level helpers must be `M.` fields (e.g.
+`M._interrupt_intercept`, step 5i PR F) or locals inside functions. Split the
+file into modules (e.g. the daemon delegation `_delegate*` / `_routed_*`, the
+interrupt handling, the per-command handlers) so the limit stops shaping the
+code.
+
 ## Stable channel: resolve by highest version, not `/releases/latest`
 
 The stable update channel (lw self-update, `lw release query --channel

@@ -8180,28 +8180,26 @@ function M._delegate(op, root, args, ensured, opts)
     return could_not("unexpected reply")
   end
   -- The two-stage Ctrl-C (§19.15 "Task ownership"): the first one asks the
-  -- daemon to cancel the task and the wait goes on, so the task's end (its
-  -- "<op> stopped: …" line and exit status) is reported as usual; the second
-  -- ends lw, closing the connection, and the daemon force-stops the task.
-  -- (Not for an attached run: its runtime is this process.)
-  local prev_intercept
-  if not attached then
-    prev_intercept = M._set_interrupt_intercept(function(escalate)
-      return M._routed_cancel(conn, task_id, escalate)
-    end)
-  end
-  waiting(function() return done ~= nil end)
-  if not attached then M._set_interrupt_intercept(prev_intercept) end
+  -- daemon to stop the task and the wait goes on until it has stopped; the
+  -- second ends lw, closing the connection, while the daemon finishes
+  -- stopping it. (Not for an attached run: its runtime is this process.)
+  local function wait_done() waiting(function() return done ~= nil end) end
+  local intercepted = false
+  if attached then wait_done() else intercepted = M._await_routed(conn, task_id, op, wait_done) end
   conn:close()
   -- Its runtime lock taken over mid-operation: the running task was
   -- cancelled (its steps killed) as on Ctrl-C (§19.2); the command ends.
   if lost() then
     if ctrl_c_enabled then M._restore_console_ctrl_c() end
-    return lost_lock()
+    local code = lost_lock()
+    return intercepted and 130 or code
   end
   -- The routed operation ended: this process's Ctrl-C state as it started,
   -- before a run's program (or the in-process device run) inherits it.
   if ctrl_c_enabled then M._restore_console_ctrl_c() end
+  -- Interrupted: exit 130 however the task ended, and a run's program is
+  -- never started (the task may have finished before the cancel landed).
+  if intercepted then return M._interrupted_end(op, done) end
   if not done then
     if attached then return lost_lock() end
     errw("lw: lost the connection to the workspace daemon during the " .. op .. " — it was not re-run here\n")
@@ -8215,6 +8213,50 @@ function M._delegate(op, root, args, ensured, opts)
   if op == "run" and opts.release then opts.release() end
   if op == "run" and done.code == 0 then return M._finish_routed_run(root, req, run_args, done, attached) end
   return done.code
+end
+
+--- Wait for a routed task's end (`wait`) with the two-stage Ctrl-C (spec
+--- §19.15 "Task ownership"): the first Ctrl-C meanwhile goes to
+--- `_routed_cancel` and prints one stderr line saying lw goes on waiting. The
+--- previous interceptor is restored afterwards, also when `wait` raises (the
+--- error is re-raised). Returns whether a Ctrl-C was intercepted.
+--- @param conn table the client session
+--- @param task_id any the accepted reply's task id
+--- @param op string
+--- @param wait fun()
+--- @return boolean intercepted
+function M._await_routed(conn, task_id, op, wait)
+  local state = { intercepted = false }
+  local prev = M._set_interrupt_intercept(function(escalate)
+    local handled = M._routed_cancel(conn, task_id, escalate)
+    if handled then
+      state.intercepted = true
+      errw("lw: stopping the " .. op .. " - press Ctrl-C again to stop waiting\n")
+    end
+    return handled
+  end)
+  local ok, err = pcall(wait)
+  M._set_interrupt_intercept(prev)
+  if not ok then error(err, 0) end
+  return state.intercepted
+end
+
+--- The end of a routed operation whose first Ctrl-C was intercepted (spec
+--- §19.15 "Task ownership"): exit status 130 however the task ended — also
+--- when it finished before the cancel landed or the connection was lost —
+--- and a run's program is never started.
+--- @param op string
+--- @param done table|nil the task's end (nil: the connection was lost)
+--- @return integer
+function M._interrupted_end(op, done)
+  if not done then
+    errw("lw: lost the connection to the workspace daemon while stopping the " .. op .. "\n")
+  elseif done.error then
+    errw("lw: " .. tostring(done.error) .. "\n")
+  elseif op == "run" and done.code == 0 then
+    errw("lw: interrupted - the program was not started\n")
+  end
+  return 130
 end
 
 --- The first Ctrl-C of a routed operation (spec §19.15 "Task ownership"):

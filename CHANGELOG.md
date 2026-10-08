@@ -298,9 +298,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   (#93)
 - Experimental daemon mode: Ctrl-C during a build, test, clean, reset or run
   preparation that runs in the workspace daemon now asks the daemon to cancel
-  it and waits until it has stopped, printing `<op> stopped: ...` (exit 130);
-  a second Ctrl-C leaves at once while the daemon still stops it. Against an
-  older daemon the first Ctrl-C leaves at once, as before. (#176)
+  it and waits until it has stopped (`lw: stopping the <op> - press Ctrl-C
+  again to stop waiting`, then `<op> stopped: ...`, exit 130); a second Ctrl-C
+  leaves at once while the daemon finishes stopping it. After a Ctrl-C `lw run`
+  never starts the program, even when the preparation had just finished.
+  Against an older daemon the first Ctrl-C leaves at once, as before. (#176)
 
 ### Changed
 - Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to

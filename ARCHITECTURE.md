@@ -1346,11 +1346,16 @@ released Linux host on the released bundle to write the
   F): the interrupt cleanup offers a `sigint` first to an interceptor
   (`M._set_interrupt_intercept`, one shot; Ctrl-Break, hangup and sigterm
   are never intercepted). `_delegate` sets it, outside an attached run, only
-  while it waits for an accepted task's `done`: `M._routed_cancel` sends
-  `loomworks.Tasks/1.cancel` and the wait goes on, so the daemon's
-  `<op> stopped: …` line and exit status (130) come as usual; the next
-  Ctrl-C runs the cleanup (the connection closes, the daemon force-stops the
-  task). A connection without interface calls or an integer task id
+  while it waits for an accepted task's `done` (`M._await_routed`, which
+  restores the previous interceptor also when the wait raises):
+  `M._routed_cancel` sends `loomworks.Tasks/1.cancel` (the daemon stops the
+  step's process tree), one `lw: stopping the <op> - press Ctrl-C again to
+  stop waiting` line is printed, and the wait goes on until the task has
+  stopped; the next Ctrl-C runs the cleanup (the connection closes, the
+  daemon finishes stopping the task). An intercepted Ctrl-C is recorded:
+  whatever `done` says — or a lost connection — `M._interrupted_end` exits
+  130 and a run's program is never started (the task may have finished
+  before the cancel landed). A connection without interface calls or an integer task id
   (protocol 10) is not intercepted, and a `cancel` answered with a
   nothing-ran error (`calls.RETRY_V0`: no `Tasks/1`) escalates to the
   cleanup. The interceptor is a field (`M._interrupt_intercept`), not a
