@@ -312,7 +312,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   workspace daemon's entry, and `lw daemon stop --all` / `kill --all
   [--strays]` never stop or kill it. A `--stdio` process that holds its
   workspace's runtime lock (a release before the relay) is still a daemon.
-  (#PR)
+  (#174)
 - In a repository with `lw.pin`, a global lw now also runs `lw reset`,
   `lw daemon run` and `lw daemon restart` as the pinned release, so the
   workspace daemon is the pinned release whoever starts it (the editor
