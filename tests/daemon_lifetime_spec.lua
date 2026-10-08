@@ -189,6 +189,102 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.is_false(svc:background_work())
     end)
 
+    -- BACKGROUND_MAX_DURATION (§19.11 "Background work cap").
+    it("tool detection past the cap is abandoned: the model is unloaded, the daemon stays, the idle clock starts", function()
+        local state = { scanning = true, abandoned = 0 }
+        start({ idle_seconds = 2, background_max_ms = 300 })
+        local svc = fake_service(state)
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        assert.is_true(vim.wait(5000, function() return state.abandoned > 0 end, 20))
+        assert.is_nil(exited)
+        assert.is_false(srv.background)
+        assert.is_not_nil(srv:_handle_record().idle_since)
+        local at = os.time()
+        -- Then an ordinary idle exit, timed from the abandonment.
+        assert.is_true(vim.wait(10000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        assert.is_true(os.time() - at >= 1)
+        assert.equals(1, state.abandoned)
+    end)
+
+    it("a run settling past the cap stops the daemon through the stop path", function()
+        local stopping
+        start({ idle_seconds = 3600, background_max_ms = 300 })
+        local svc = fake_service({})
+        svc.on_stopping = function(_, reason) stopping = reason end
+        svc.abandon_background = function() error("a run is never abandoned") end
+        srv.service = svc
+        srv.busy = true
+        assert.is_true(vim.wait(5000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+        assert.matches("BACKGROUND_MAX_DURATION", stopping)
+        assert.matches("BACKGROUND_MAX_DURATION", srv.stop_reason)
+    end)
+
+    it("the cap's clock counts only while no connection is open", function()
+        local state = { scanning = true, abandoned = 0 }
+        start({ idle_seconds = 3600, background_max_ms = 400 })
+        local svc = fake_service(state)
+        svc.abandon_background = function()
+            state.abandoned = state.abandoned + 1
+            state.scanning = false
+            return true
+        end
+        srv.service = svc
+        -- A connection open (stand-in: the client count) holds the clock.
+        srv.n_clients = 1
+        vim.wait(1200, function() return state.abandoned > 0 end, 20)
+        assert.equals(0, state.abandoned)
+        assert.is_nil(srv.background_since)
+        -- The last connection left: the clock starts now, not at the work's start.
+        srv.n_clients = 0
+        local left = uv.now()
+        assert.is_true(vim.wait(5000, function() return state.abandoned > 0 end, 20))
+        assert.is_true(uv.now() - left >= 350)
+        assert.is_nil(exited)
+    end)
+
+    it("the service abandons tool detection by unloading the model, never with a run active", function()
+        local unloaded = 0
+        local Service = require("loomworks.daemon.service").Service
+        local svc = setmetatable({ ws = { _tool_state = "scanning" }, runs = {},
+            host = { unload = function() unloaded = unloaded + 1 end } }, { __index = Service })
+        svc.runs[{ ctx = {} }] = true
+        assert.is_false(svc:abandon_background())
+        assert.equals(0, unloaded)
+        svc.runs = {}
+        assert.is_true(svc:abandon_background())
+        assert.equals(1, unloaded)
+        assert.is_nil(svc.ws)
+        assert.is_false(svc:background_work())
+    end)
+
+    it("a torn-down workspace drops its tool detection's late result", function()
+        local cb, remerged = nil, false
+        local deps = {
+            events = { emit = function() end },
+            schedule = function(fn) fn() end,
+            detect_tools_async = function(_, _, done) cb = done end,
+        }
+        local fake = setmetatable({
+            _core = { _deps = deps, _workspace = {} },
+            _config_from_objects = function() return {} end,
+            _serialize_cache = function() return {} end,
+            remerge = function() remerged = true end,
+        }, { __index = require("loomworks.workspace").Workspace })
+        fake:_scan_tools_async()
+        assert.equals("scanning", fake._tool_state)
+        fake._torn_down = true
+        cb({ cmake = {} })
+        assert.is_false(remerged)
+        assert.is_nil(fake._tools_by_type)
+    end)
+
     it("exits when the workspace root is removed", function()
         start()
         local addr = srv.address

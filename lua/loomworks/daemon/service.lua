@@ -699,6 +699,19 @@ function Service:background_work()
     return self.ws ~= nil and self.ws._tool_state == "scanning"
 end
 
+--- Abandon the model's tool detection past BACKGROUND_MAX_DURATION (§19.11
+--- "Background work cap"): it has no handle to cancel, so with no run active
+--- the model is unloaded — the torn-down workspace never applies or saves the
+--- late result; the probe subprocesses run to completion on their own. The
+--- next request loads the model afresh. False when a run is active (the
+--- server stops instead).
+--- @return boolean abandoned
+function Service:abandon_background()
+    if next(self.runs) then return false end
+    if self.ws then self:_unload() end
+    return true
+end
+
 --- Does `conn` own a running build? (The keepalive rule never drops it.)
 --- @param conn table
 --- @return boolean
