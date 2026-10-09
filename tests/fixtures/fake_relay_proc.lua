@@ -30,8 +30,10 @@ local function close_stdout()
     if package.config:sub(1, 1) == "\\" then
         pcall(ffi.cdef, "void* GetStdHandle(unsigned long n); int CloseHandle(void* h); int _close(int fd);")
         local h = ffi.C.GetStdHandle(4294967285) -- STD_OUTPUT_HANDLE (-11)
-        pcall(function() ffi.C._close(1) end)
-        pcall(function() ffi.C.CloseHandle(h) end)
+        -- _close(1) also closes the OS handle; close that directly only when
+        -- _close failed (closing it again could hit a reused handle value).
+        local ok, rc = pcall(function() return ffi.C._close(1) end)
+        if not ok or rc ~= 0 then pcall(function() ffi.C.CloseHandle(h) end) end
     else
         pcall(ffi.cdef, "int close(int fd);")
         ffi.C.close(1)

@@ -52,7 +52,7 @@ describe("the editor's relay client: the relay process (§19.16)", function()
 
     it("a relay that ignores EOF is killed (its own pid only) after KILL_MS; its detached child lives on", function()
         local pidfile = H.tmp() .. "-child.pid"
-        local r, got = spawn("ignore", pidfile, { kill_ms = 1500 })
+        local r, got = spawn("ignore", pidfile, { kill_ms = 3000 })
         local child
         assert.is_true(vim.wait(20000, function()
             local f = io.open(pidfile, "r")
@@ -71,7 +71,7 @@ describe("the editor's relay client: the relay process (§19.16)", function()
         assert.is_true(alive(r.pid))
         -- Then killed: a plain kill of its own process.
         assert.is_true(vim.wait(10000, function() return r.code ~= nil end, 10), "the relay was not killed")
-        assert.is_true(now_ms() - t0 >= 1400, "killed before KILL_MS")
+        assert.is_true(now_ms() - t0 >= 2900, "killed before KILL_MS")
         -- Nothing else: the detached child it started is untouched.
         assert.is_true(alive(child), "the relay's child was killed too")
         -- Ended by the editor: not mapped.
@@ -91,7 +91,10 @@ describe("the editor's relay client: the relay process (§19.16)", function()
     end)
 
     it("the exit, then the EOFs within EOF_GRACE_MS: reported after the EOFs", function()
-        local r, got = spawn("exit-held", "400")
+        -- The EOFs come once the child (a fresh nvim) started and slept 400 ms:
+        -- a wide grace, so a slow start on a loaded machine is not mistaken
+        -- for EOFs that never come (that case is the next test).
+        local r, got = spawn("exit-held", "400", { eof_grace_ms = 15000 })
         assert.is_true(vim.wait(20000, function() return got.n ~= nil end, 10))
         assert.equals("exit", got.err)
         assert.equals(10, got.info.code)

@@ -588,6 +588,7 @@ end
 ---   on_close    fun(conn) once the established connection closes (either side)
 ---   kill_ms     replaces KILL_MS
 ---   exit_wait_ms replaces EXIT_WAIT_MS
+---   eof_grace_ms replaces EOF_GRACE_MS
 ---
 --- `cb(conn|nil, err, exit)` is called at most once, from a libuv callback:
 --- with the connection once `welcome` arrived (`conn.relay` is the relay,
@@ -664,7 +665,7 @@ function RC.connect(opts, cb)
         if out_eof and err_eof then return report(nil, "exit", exit_info()) end
         if not grace then
             grace = uv.new_timer()
-            grace:start(RC.EOF_GRACE_MS, 0, function()
+            grace:start(opts.eof_grace_ms or RC.EOF_GRACE_MS, 0, function()
                 close_handle(grace)
                 if not reported and not r.welcomed then report(nil, "exit", exit_info()) end
             end)
