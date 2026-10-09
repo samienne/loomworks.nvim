@@ -701,7 +701,12 @@ profiles don't clobber each other.
 
 **Preemption rules**:
 - Clean/delete **cancel** any active build/configure Operations on the
-  same ConfigUnits (stopping their overseer tasks).
+  same ConfigUnits (stopping their overseer tasks). *(Step 5k, plan:)* for
+  an operation the editor runs in the workspace daemon, the cancel is
+  `Tasks/1.cancel` and only for tasks the editor owns; a conflicting task
+  another client started (a `lw build` in a terminal) is not cancelled, and
+  the clean meets its build-directory locks (daemon.md §19.15 "The editor as
+  owner").
 - Build/configure issued during a clean/delete are **deferred** via
   `after_deletions()` until the deletion Operation completes.
 

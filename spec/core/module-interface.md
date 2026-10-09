@@ -1412,6 +1412,22 @@ target paths are supported. The DAP adapter is resolved per language
 from `user.json` `debug.adapters` mapping, with per-language fallback
 defaults provided by the integrations.
 
+**One spec for run and debug.** *(Step 5k, plan; part C2. Behaviour
+change.)* The program a debug session starts is resolved exactly as the
+run of the same target: the same program, arguments, working directory
+and environment (§8.7 — for a module target the working-directory
+precedence per-invocation override → descriptor `working_dir` → project
+directory, and the run environment with its `PATH` additions; for a launch
+configuration its `args`, `env` and `working_dir`; the §17.9 denylist
+applied to both), followed by the ordered debug languages with their
+resolved adapters. Debug only hands that spec to the debugger instead of the
+task runner. Until this step a module target was debugged in its **build
+directory** with **no arguments and no run environment**, unlike its run;
+from it a module target is debugged where and how it runs. One resolver
+serves both hosts (in-process and the daemon's `Launch/1.prepare_debug`,
+daemon.md §19.15 "Debug"); the adapter-specific request shape and the
+installed-adapter check stay in the editor (below).
+
 **Test debugging.** `loomtest.debug(test_id)` mirrors `loomtest.run()`:
 same resolution logic (test/suite/target), same build-before-run via
 `ensure_built()`, but dispatches to `runner.debug()` which calls
@@ -1461,7 +1477,10 @@ section listing the current adapter per language. Enter on an item
 opens a picker with known adapters showing installed/default/current
 status. Selection persists to `user.json` via
 `Workspace:set_debug_adapter(language, adapter)`. Known adapters per
-language are reported by the integrations themselves.
+language are reported by the integrations themselves. *(Step 5k, plan:)*
+in `daemon` runtime mode the section reads and writes the mapping through
+the daemon's `loomworks.DebugConfig/1` (daemon.md §19.20), in-process when
+that interface is unavailable; the installed status stays the editor's.
 
 **Language-based adapter resolution.** Adapters are resolved per
 language, not per module type. Modules declare their supported

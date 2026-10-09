@@ -137,14 +137,18 @@ The editor's `C` action deletes the build directory and resets the unit to
 unconfigured (spec section 4.7), while `lw clean` runs the build system's own
 clean target. Decide whether to align the names or the behaviour.
 
-## Daemon tasks in overseer and build messages
+## Daemon task output replay
 
-Decided 2026-10-05: in daemon observer mode, a CLI-started (remote) task shows
-in fidget, lualine and the status page, with its output, but not in overseer's
-task list, and its output is not parsed into the quickfix list or diagnostics
-(spec/core/daemon.md §19.16). Design both together in the step where editor
-operations themselves run in the daemon: then the editor's own builds leave
-overseer too unless daemon tasks can appear there.
+Settled for step 5k (spec/core/daemon.md §19.16 "Tasks in the task runner"):
+every daemon task is one overseer task (editor-owned: start/stop/restart by
+calls; observed: read-only with an origin marker), and the quickfix list is
+overseer's own output action; no loomworks-parsed diagnostics, for local
+tasks either. Deferred: `Tasks/1.attach { task_id }` replaying a task's
+output from its start (capped, about 1 MiB) so an overseer buffer is complete
+after the editor joins late or reconnects. Today a late joiner gets output
+from the moment it subscribes (§19.15 "Tasks of interface methods"); replay
+needs per-task output retention in the daemon. Parsing build output into
+diagnostics stays undecided for local and daemon tasks alike.
 
 ## Variable rename: what should it cascade to?
 

@@ -1809,7 +1809,10 @@ Reset, step 5d); other operations future. The task-streamed interface
 methods ("Tasks of interface methods" below: `Build/1`, `Tests/1.run`,
 `Launch/1.prepare_run`) are implemented, step 5g.2 part B, and the CLI calls
 them over transport 11; `loomworks.Tasks/1` observation signals, `list` and
-`cancel` are implemented, step 5g.2 part A.*
+`cancel` are implemented, step 5g.2 part A. The editor's operations as calls
+("Editor scopes and configure", "Debug", the editor in "Task ownership" and
+"Not routed" below; §19.16 "Editor operations"): step 5k, specified (part 0),
+plan.*
 
 A running operation streams `task` events on a **task stream**, separate from
 model changes and observable by every connected client (a build started by the
@@ -1965,6 +1968,54 @@ standard error, so standard output carries only the report. Hence:
   the client's real terminal (colour, size, redraws), unlike the build's
   tools above.
 
+**Debug.** *(Step 5k, plan; part B2.)* A debug launch takes the same split:
+the daemon prepares it, the client hands the result to its debugger, which
+starts the program — the program is never the daemon's. `prepare_debug {
+args, interactive, env, command }` takes the arguments of `prepare_run`
+except `quiet` and `prefix` (no report, no wrapper), has the outcomes of
+`build`, and runs as a task (`meta.kind = debug`) doing steps 1–4 of Run
+above in the same order, with the same gates and lines. `done` then carries
+`exit_code` 0 and `debug` (`loomworks.Common/1` `DebugSpec`):
+
+- `name`, `program`, `args`, `cwd`, `env` — resolved exactly as the run's
+  `launch` of the same target and arguments (`program` is the run's `cmd`;
+  `env` only the launch's own contribution, the §17.9 denylist applied, never
+  a whole environment). A run and a debug of one target differ only in who
+  starts the program (§8.9.6 "Launch target debugging", which states the
+  behaviour change this makes for module targets);
+- `language` — the launch's primary language: a launch configuration's first
+  `debug` entry (§8.9.6 "Multi-adapter debugging"), otherwise the primary
+  language of the target's module;
+- `adapters` — one `{ language, adapter }` per debug language in order (a
+  launch configuration's `debug` array, otherwise `language` alone), each
+  adapter resolved from the workspace's mapping with its default
+  (`DebugConfig/1`, §19.20): the first launches the program, the others
+  attach to its process.
+
+Whether an adapter is installed in the client's debugger, its install hint,
+and the adapter-specific request shape (§8.9.6, spec/integrations/debug/)
+stay with the client, which checks the first before it sends the call.
+There is no device debug (§18; spec/core/integrations.md §11): a device
+target, or a target found foreign by its kit or by probing its artifact
+(§18.1, §18.11), ends the task nonzero — before the build when the kit
+tells, otherwise once the build probed it, and before any deploy — with the
+in-process refusal of debugging a foreign target (§18.11) as its failure
+line; `prepare_debug` is never `declined` for it (the editor keeps device
+targets in-process and never sends one, §19.16 "Editor operations").
+
+**Build scope of a launch.** *(Step 5k, plan; part B2.)* `prepare_run` and
+`prepare_debug` take an optional `build_scope`: `profile` (the default:
+steps 1 and 3 above, as `lw run` builds) or `target` — in place of steps 1
+and 3, the launch flow the editor runs before a launch in-process (§8.8.4
+steps 3–6): the launch's dependencies (explicit `depends_on` and deploy-source
+projects, a deploy source in the configuration it names), the pre-build
+deploy steps, the launch target's own unit, the post-build deploy steps. Each
+build in it takes the build-directory locks of the units it builds, for that
+build only, as in-process; a failing step ends the task with the in-process
+failure line, the later steps not run. With `no_build` neither scope builds
+or deploys. The CLI sends no `build_scope`; the editor sends `target`, so an
+editor launch builds what it built in-process, not the whole profile.
+
 **Clean.** *(Step 5c.)* `clean { args, interactive, env, command }` — `lw
 clean [<profile>]` (§16.1: each project's build-system clean on the
 profile's build directories; the configuration is kept) — has the outcomes of
@@ -2069,6 +2120,46 @@ stops meanwhile asks it to stop between entries.
 The reset writes the cache exactly when the in-process reset does, and its
 write-back's `model_change` precedes `done` (§19.16, End).
 
+**Editor scopes and configure.** *(Step 5k, plan; part B1.)* `Build/1` grows
+additively for the editor's actions (§19.16 "Editor operations"); its
+interfaces are still drafts, so this is no new version (§19.20 "Schemas and
+conformance"). The CLI's requests are unchanged.
+
+- **`configure { profile | units, reconfigure, interactive, env, command }`**
+  — task-streamed, the outcomes of `build`, `meta.kind = configure`. It runs
+  the configure step of every unit of its scope — also one already
+  configured, as the editor's configure action does in-process — with the
+  gates of the build-step sequence that apply before a configure (the
+  validity and tool/configuration compatibility gates refuse as in-process)
+  and `reconfigure` meaning the full-reconfigure reset (§16.4). The
+  build-directory locks of §16.6 are taken **exclusive** up front in
+  canonical order with the §19.5 record (holder kind `daemon`, operation
+  `configure`; a dead holder's lock reclaimed as for a build). It prints
+  `configuring <scope>`, one `==> [configure] <name>` line and step per unit,
+  and `CONFIGURE OK: <scope>`; a failing step ends the task with the
+  in-process failure line and the step's exit code, the later steps not run.
+  It writes the configure record and the cache exactly as the in-process
+  configure does, the write-back's `model_change` before `done`. It
+  cancels as a build (`configure stopped: <reason>`).
+- **`units`** on `build`, `configure` and `clean` — a non-empty array, each
+  item `{ id }` (a configuration unit's id, e.g. a `view.ProjectsIndex/1`
+  record's `active.unit_id`) or `{ project, configuration }` (the project key
+  and configuration-unit key, as in `meta.units`); exclusive with `profile`
+  (both → `invalid_args`; a unit that does not resolve → `refused` with the
+  in-process message). The scope is then those configuration units, each with
+  the tool its unit records, as the editor's unit actions run in-process —
+  the same steps, locks, gates and lines as for a profile, restricted to
+  them. Such a task's `meta.profile` is absent and `meta.units` lists the
+  units; an observer resolves them as for `reset --all` (§19.16 "Running
+  state"). `<scope>` in the lines above is the profile's name or the units'
+  `<project>/<configuration>` names.
+- **`jobs`** on `build` — an integer ≥ 1: the build tool's parallelism for
+  this build only (the editor's serial `-j1` build), passed to the module as
+  the in-process build passes its parallel-jobs option.
+- **`targets`** items may be `{ project, target }` besides a string: that
+  target of that project only. A string keeps its meaning (`--target`,
+  §16.4).
+
 **Confirmation.** A daemon never prompts. An operation whose in-process form
 asks the user before acting (a confirmation, a picker) either is `declined`
 for that form (profile onboarding, above) or is asked by the client before it
@@ -2143,8 +2234,9 @@ is unloaded/removed, the daemon terminates the running step's process tree
 (identity-verified by process id and start time, §19.5), records nothing for
 that step, releases its locks and ends the task nonzero (`build stopped:
 <reason>`; `test stopped: <reason>` for a test run; `run stopped: <reason>`
-for a run's preparation; `clean stopped: <reason>` for a clean; `reset
-stopped: <reason>` for a reset). A client that loses the connection after its operation was
+for a run's preparation, `debug stopped: <reason>` for a debug's;
+`configure stopped: <reason>` for a configure; `clean stopped: <reason>` for
+a clean; `reset stopped: <reason>` for a reset). A client that loses the connection after its operation was
 accepted reports a failure; it never re-runs the operation another way (for a
 run: it starts no program). Cancellation ends with the task: a run's program,
 started after it, is never the daemon's to stop (Run). A
@@ -2165,8 +2257,24 @@ killed, a `--stdio` relay ending), the daemon cancels its tasks as above.
 Other connections only observe: closing an observer never stops a task.
 Configure counts as a connection-owned task from step 5i (cancelled when its
 connection closes), but in 5i it reaches the daemon only as a step of a
-routed build, test or run preparation; a standalone configure is not routed
-through the daemon until steps 5j–5o. In the CLI, once the daemon has
+routed build, test or run preparation; a standalone configure is routed from
+step 5k, by the editor (`Build/1.configure`; the CLI has no configure
+command).
+
+*(Step 5k, plan; part C1.)* **The editor as owner.** A task the editor starts
+through a call is owned by its connection like a CLI's. The editor cancels
+only its own tasks, always with `loomworks.Tasks/1.cancel` (graceful, as the
+CLI's first Ctrl-C) and then waits for the task's `done`: a stop from the
+task runner, and the pre-emption of §5.4 — a clean cancels the running build
+or configure on the same units before it starts — cancel an editor-owned task
+this way. A conflicting task another client owns (a `lw build` in a
+terminal) is never cancelled (`forbidden`, below): the editor's operation is
+sent anyway and meets the build-directory locks that task holds exactly as a
+second CLI command would (§16.6). The editor has no second stage: quitting it, or unloading or
+swapping the workspace, closes its relay connection (§19.16 "Teardown"),
+which cancels every task it owns.
+
+In the CLI, once the daemon has
 accepted the task, the **first Ctrl-C** asks the daemon to stop it
 (`loomworks.Tasks/1.cancel`: the daemon stops the running step's process tree
 as above — the daemon runs in its own console, so a build never receives the
@@ -2194,12 +2302,14 @@ method, `done.result`), part B; the observation bound to the subscription,
 step 5g.3 (`tasks.lua` `Task:_observes`).)* The task stream is a
 **transport** mechanism (§19.8), not part of any one interface: a method its
 schema declares task-streamed (§19.20) — `Build/1.build`, `Tests/1.run`,
-`Launch/1.prepare_run`, a module's log stream — replies `accepted` with a
+`Launch/1.prepare_run`, from step 5k `Build/1.configure` and
+`Launch/1.prepare_debug`, a module's log stream — replies `accepted` with a
 `task_id` and then streams `task` frames with the phases, ownership, flow
 control, observer bounds and disconnect-cancellation above. What the
 interface types is the payload: `start.meta` also names `object`, `iface`, `v`
 and `method`, and `done` carries `result`, validated against the method's
-task result schema (for `prepare_run` the launch spec, for a test run its
+task result schema (for `prepare_run` the launch spec, for `prepare_debug`
+the debug spec, for a test run its
 structured results: `steps`, one `{ name, exit_code, status }` per test step
 run, and the `junit` files written; per-case results come later as an
 optional field). The outcomes of the operations (`accepted`, `refused`,
@@ -2210,7 +2320,10 @@ not errors (§19.20).
   `loomworks.Tasks/1` on `/tasks` (optionally for one `task_id`) receives its
   `started` / `ended` signals and the frames of the tasks it matches, bounded
   as for an observer above. A connection of protocol 10 keeps receiving every
-  task's frames as today.
+  task's frames as today. A connection that joins late — subscribing with a
+  `task_id`, or adopting what `list` returns — receives a task's output from
+  that moment; nothing earlier is replayed (no `attach` method; BACKLOG
+  "Daemon task output replay").
 - **Cancellation**, besides the disconnect above, is
   `loomworks.Tasks/1.cancel { task_id }`, allowed for the task's owner only;
   any other connection gets the error `forbidden`.
@@ -2291,8 +2404,10 @@ remote program's liveness stay with the client process:
   in-process from the deploy (deploy → stage → execute, §18.4–§18.5) without
   building again.
 
-The editor's own run and debug launches stay in-process in this step
-(§19.16).
+The editor's own run and debug launches stay in-process in this step; from
+step 5k their preparation is routed (`prepare_run`, `prepare_debug` with
+`build_scope = "target"`; §19.16 "Editor operations"), a device target's
+launch staying in-process.
 
 `lw clean` (step 5c) is routed by the same rules, an argument `cmd_clean`
 refuses taking the place of one `cmd_build` refuses, and its lines name the
@@ -2327,7 +2442,11 @@ the daemon's operations as with any other process:
 - `lw device clean` (§16.34) — its device locks and the device's staging stay
   with the client process, as for a device run;
 - the editor's own operations, including its clean, delete and configure
-  actions (§19.16).
+  actions (§19.16) — until step 5k, which routes its builds, configures,
+  module cleans and launch preparations (§19.16 "Editor operations"); its
+  deletions (delete a profile, a configuration, an orphaned build directory)
+  stay here until step 5o (`Maintenance/1.execute_deletion`), its test runs
+  until step 5m, and its device-target launches with no step planned.
 
 ### 19.16 The editor as a client
 
@@ -2346,7 +2465,8 @@ and the version-mismatch note (`daemon/observer.lua` `mismatch_note`); commands
 and the attached editor future. The interface client ("Interface client"
 below): the subscription to `/tasks` and `/workspace` is implemented, step
 5g.3 (`daemon/observer.lua` `_subscribe`); the views
-and operations steps 5j–5o (§19.19); the connection through the `--stdio`
+and operations steps 5j–5o (§19.19) — "Editor operations" below (step 5k)
+specified, part 0, plan; the connection through the `--stdio`
 relay, step 5i PR G: its spec (PR G0) *done*; the relay transport and
 lifecycle ("Through the relay" except "Skipping an incompatible daemon",
 `--retiring`) PR G1, *done* (`daemon/client.lua` `relay`, `daemon/observer.lua`
@@ -2572,7 +2692,12 @@ configuration: daemon offers loomworks.LspConfig/2, editor needs /1`); it
 never fails the connection or the other features. The features of step 5j
 are `statusline` (`loomworks.view.Header/1`) and `project index`
 (`loomworks.view.ProjectsIndex/1`), beside `tasks` and `model changes`; a
-degraded view is built in-process (§19.13 "Two sources, one shape"). The describe is bounded
+degraded view is built in-process (§19.13 "Two sources, one shape"). Step 5k
+adds `operations` (`loomworks.Build/1` with `configure`, `units`, `jobs` and
+qualified targets), `launch` (`loomworks.Launch/1` with `prepare_debug` and
+`build_scope`), `debug adapters` (`loomworks.DebugConfig/1`) and, in `tasks`,
+`Tasks/1.cancel` and `list`; a degraded one runs in-process ("Editor
+operations" below). The describe is bounded
 (about 3 s) and never blocks the editor; when it fails or times out the editor
 uses `welcome.objects`. An interface that appears later (the root's
 `objects_changed`) is subscribed to then, and a refused subscription is
@@ -2588,21 +2713,99 @@ Against a daemon of protocol 10 (no `welcome.objects`) the editor observes
 through the v0 broadcasts as below and notes interface features as "daemon
 too old".
 
-*(Future:)* The editor's run and debug launches (§8.6) take the CLI's split
-(§19.15, Run): `prepare_run` in the daemon, then the returned launch spec
-handed to the editor's task runner (run) or to the debugger as the debuggee's
-program, arguments, working directory and environment (debug). The program
-is then the editor's, never the daemon's. Until the editor moves its
-operations to commands, its launches stay in-process; the observer shows a
-CLI run's preparation as a remote task (`kind = run`) like a build, and never
-the program.
+**Editor operations.** *(Step 5k, plan: part 0 this spec; B1 and B2 the
+daemon side, §19.15 "Editor scopes and configure", "Debug", "Build scope of a
+launch", §19.20 `DebugConfig/1`; C1 the calls, task runner and cancellation;
+C2 run and debug through preparation and the debug adapters.)* In `daemon`
+mode, while connected to a compatible daemon, the editor runs these
+operations as **interface calls**, owning their tasks (§19.15 "The editor as
+owner"):
+
+- builds — of a profile (`Build/1.build { profile }`), of configuration units
+  (`units`), serial (`jobs = 1`), of a launch target before a launch
+  (`targets` with `{ project, target }`);
+- configures — of a profile or of units (`Build/1.configure`);
+- module cleans — of a profile or of units (`Build/1.clean`), and the clean
+  of a clean-and-build, followed by its build as a second call once the
+  clean's task ended successfully;
+- the preparation of run and debug launches of non-device targets
+  (`Launch/1.prepare_run`, `Launch/1.prepare_debug`, both with `build_scope =
+  "target"`): the editor then runs the returned `launch` in its task runner,
+  or hands the returned `debug` to its debugger (its adapter-specific shape
+  and the installed-adapter check, made before the call, stay in the editor,
+  §8.9.6). The program is the editor's, never the daemon's; stopping a run or
+  debug session stops it as in-process;
+- the debug adapters section reads and writes `DebugConfig/1` (`adapters`,
+  `known_languages`, `set_adapter`) and re-reads it on `Workspace/1`
+  `changed`.
+
+Every other operation stays in-process in 5k: the deletions (a profile, a
+configuration, an orphaned build directory — step 5o, keeping one reviewed
+deletion path, §4.6), test runs and discovery (step 5m), device-target
+launches (build → deploy → install → launch, §11), and model commands such as
+materializing a profile from a configuration set (step 5o; the build that
+follows it is routed). A confirmation the editor shows before an operation
+(a clean's) is asked before the call (§19.15 "Confirmation"). Each call
+carries the editor process's whole environment **at call time**, under the
+rules of §19.15 "Environment" — what an in-process task of the editor
+inherits.
+
+**Availability.** The editor routes an operation only when it can be
+carried; otherwise it runs it in-process, as before 5k:
+
+- no connection (no host binary, a relay still starting, the daemon stopped,
+  a daemon found incompatible — the editor never routes to one, including
+  one with older schemas it only observes), or a feature degraded (its
+  interface or method missing — an older daemon's `unknown_method`, or
+  `invalid_args` for a parameter it lacks, means nothing ran): in-process,
+  with the observer's one Runtime-line note (e.g. `operations: daemon offers
+  no loomworks.Build/1.configure — running them in-process`), no popup. The
+  operation's progress title says `(in-process)`;
+- `declined` (a foreign kit, trust, another environment while a build runs):
+  in-process, with the reason as one notification line;
+- `refused`: the operation fails with the refusal's message, as the
+  in-process operation would have refused it;
+- the connection lost **after** `accepted`: the operation fails ("the
+  workspace daemon disconnected") and is **never re-run in-process** (for a
+  launch: no program is started), as for the CLI (§19.15 "Cancellation").
+  An `internal` error from a call is handled as by the CLI (§19.20 "The CLI's
+  calls"): the operation fails and is not re-run.
+
+There is no separate opt-out: `runtime.mode = "in-process"` (§19.1) keeps
+every operation in-process. An in-process fallback may run beside a daemon
+task; the cross-process build-directory locks (§16.6) serialize them.
+
+**Tasks in the task runner.** Every daemon task the editor knows becomes
+**one** task in the editor's task runner (overseer, §12) — one per daemon
+task, not one per step: a profile build is one entry whose output carries the
+`==> [build] <project>` lines, where in-process it is one entry per project;
+the units' states come from `meta.units` (Running state below).
+
+- An **editor-owned** task is a task-runner task whose start is the call,
+  whose stop is `Tasks/1.cancel` (§19.15 "The editor as owner"), whose
+  restart sends the call again, and whose output is the task's frames written
+  to a terminal buffer, so colours and the task runner's own output actions
+  (opening the output in the quickfix list) work as for a local task.
+- An **observed** task (another client's, `meta.origin`) is listed
+  read-only, its origin marker in its name (e.g. `[lw] build dev`); stop and
+  restart only say `started by lw (cli) — cancel it there`. Its output
+  starts when the editor joined (Joining late below).
+
+No diagnostics are parsed from a task's output by loomworks, for daemon tasks
+as for local ones; the quickfix list is the task runner's own action. When
+the task runner cannot host such tasks (its extension point unavailable), the
+editor keeps them out of its list and shows them as remote tasks only (UI
+below), with a Runtime-line note. An editor-owned task has **one** progress
+entry — the remote-task entry of UI below, with no origin marker — and the
+editor's own progress wrapper is not shown for a routed operation; a launch's
+or debug session's final phase (running, debugging) keeps its own entry.
 
 **Step 4: the observer.** In `daemon` mode (selected as in §19.1: the
 environment, the setup option `runtime.mode`, then lw's `runtime-mode` setting), each
 workspace the editor loads gets an **observer**. It watches the task streams
 and model changes of operations started elsewhere (a `lw build` in a
 terminal). It runs none of the editor's own operations, which stay on the
-in-process path. In `in-process` mode nothing below happens.
+in-process path *(until step 5k: "Editor operations" above)*. In `in-process` mode nothing below happens.
 
 - **Host binary.** The observer selects the host binary it launches the
   daemon from; first match wins:
@@ -2847,7 +3050,11 @@ in-process path. In `in-process` mode nothing below happens.
   feature interface only degrades that feature ("Interface client") and is
   never a reason to retire. The
   editor sends `retire` (never `stop`) only when all of these hold:
-  - the daemon is idle (no busy client, §19.9 "Busy");
+  - the daemon is idle (no busy client, §19.9 "Busy") — the editor's own
+    connection included: from step 5k a task the editor owns makes it busy,
+    so the editor never retires a daemon under its own running tasks (and it
+    routes nothing to a daemon it found incompatible, "Editor operations"
+    above);
   - its schemas are not newer than the editor's;
   - the binary the editor selected passed the interface check (the probe's
     *compatible* verdict, or the managed `lw`);
@@ -2924,7 +3131,9 @@ in-process path. In `in-process` mode nothing below happens.
   occasions ("Through the relay" above, its forms), and a relay's exit before
   `welcome` replaces the early-exit note ("Exit before `welcome`").)*
 - **Connect.** The observer handshakes as `client = "editor"`,
-  `role = "observer"`. It observes a daemon whose transport range overlaps
+  `role = "observer"` — also from step 5k, when it owns tasks: an observer
+  may start and own operations (§19.15 "The editor as owner"); there is no
+  separate role. It observes a daemon whose transport range overlaps
   its own and whose schemas are not newer (§19.9; the host version may
   differ; editors of protocol 10 required an equal protocol). *(From step 5i
   PR G1 the handshake runs inside the relay and the editor judges
@@ -3008,12 +3217,16 @@ in-process path. In `in-process` mode nothing below happens.
     status page's Profiles and Tasks sections (spec/ui.md §1.5, §1.9), and
     in the status line. It is neither cancelled nor restarted from the editor
     (§19.15). Its only difference is an **origin marker** naming who started
-    it, from `meta.origin` (§19.15). It is not added to the task runner's task
-    list; that, and turning its output into the quickfix list and diagnostics,
-    belong to the step where editor operations themselves run in the daemon.
+    it, from `meta.origin` (§19.15). *(Until step 5k:)* it is not added to the
+    task runner's task list. *(From step 5k, plan:)* it is listed there
+    read-only, and a task the editor itself started through a call is shown
+    the same way without an origin marker, cancelled and restarted from the
+    editor ("Tasks in the task runner" above).
 - **Teardown.** Unloading or swapping the workspace stops its observer: the
   timers stop, the connection closes, remote tasks are cleared. The daemon
-  keeps running (§19.11). *(From step 5i PR G1 the connection closes by
+  keeps running (§19.11); from step 5k the close cancels the tasks the
+  editor owns (§19.15 "The editor as owner"), and their operations end as
+  failed in the editor. *(From step 5i PR G1 the connection closes by
   closing the relay's standard input, a waiting relay is ended the same way,
   never by a process-tree kill: "The relay process" under "Through the
   relay" above.)*
@@ -3272,6 +3485,27 @@ runtime is deferred until that module is actively developed.
        lualine and the status page's header moved onto it,
        `lw.buf_project` (separator-bounded longest prefix), the lualine → `loomworks.events` edge removed and the
        reach-in counts lowered *(done once merged)*.
+     - **5k — Editor operations as calls** (§19.15 "Editor scopes and
+       configure", "Debug", "Build scope of a launch", "The editor as owner";
+       §19.16 "Editor operations"; §19.20 `DebugConfig/1`), in parts: A —
+       preparation with no behaviour change, in-process only: one debug-spec
+       seam shared by both hosts, the adapter defaults and resolution in a
+       host-neutral module, and a guard ratchet on the editor's operation
+       call sites; 0 — spec *(done once merged)*; B1 — daemon side: `Build/1`
+       `configure`, `units`, `jobs` and project-qualified targets, with
+       schemas and transcripts on the `shell` fixture; B2 — daemon side:
+       `Launch/1.prepare_debug` with `Common/1` `DebugSpec`, `build_scope` on
+       both preparations, and `DebugConfig/1` on `/debug`, with schemas and
+       transcripts; C1 — editor side: the call API with owned tasks, routing
+       of builds, configures and module cleans with the availability rule,
+       the task-runner bridge (editor-owned and read-only observed tasks),
+       cancellation, one progress entry per owned task, and retirement
+       counting the editor's own tasks (needs B1); C2 — editor side: run and
+       debug through `prepare_run` / `prepare_debug` for non-device targets,
+       the module-target debug unified with run (§8.9.6), the debug adapters
+       section on `DebugConfig/1`, the reach-in counts lowered (needs B2 and
+       C1); D *(optional)* — a real-daemon end-to-end suite for the editor
+       client, unless folded into C1 and C2. B1 and B2 are independent.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
@@ -3496,12 +3730,12 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 | `/profiles` | `loomworks.Profiles/1` | list, set_active, add_tool, remove_tool, set_device, clear_device, query, compiler_cache |
 | `/projects` | `loomworks.Projects/1` | add, remove, configuration add / rename / remove / save, launch_save, deploy_save, variable_set, description_set, type_config_set, expand_preview, candidates |
 | `/projects` | `loomworks.ConfigSets/1` | add, update_mapping, generate_defaults |
-| `/build` | `loomworks.Build/1` | build T, clean T, reset T |
+| `/build` | `loomworks.Build/1` | build T, configure T, clean T, reset T |
 | `/tests` | `loomworks.Tests/1` | discover T, run T |
 | `/launch` | `loomworks.Launch/1` | prepare_run T, prepare_debug T, device_log |
 | `/debug` | `loomworks.DebugConfig/1` | adapters, set_adapter, known_languages |
 | `/lsp` | `loomworks.LspConfig/1` | get, compile_command, set_option (changed) |
-| `/tasks` | `loomworks.Tasks/1` | list, cancel, attach (started, ended; task frames) |
+| `/tasks` | `loomworks.Tasks/1` | list, cancel (started, ended; task frames) |
 | `/toolchains` | `loomworks.Toolchains/1` | list, rescan |
 | `/toolchains` | `loomworks.Sdks/1` | list, add, remove, detect |
 | `/devices` | `loomworks.Devices/1` | list, scan (changed) |
@@ -3513,6 +3747,33 @@ the steps of §19.19. Their schemas, not this table, are the full contract.
 
 An interface whose surface grows unwieldy is split at its next version without
 disturbing the clients of the others.
+
+`Tasks/1` has no `attach`: a late joiner subscribes with a `task_id` or
+adopts what `list` returns, and receives output from then on (§19.15 "Tasks
+of interface methods"); replaying a task's earlier output is BACKLOG
+("Daemon task output replay").
+
+**`DebugConfig/1`.** *(Step 5k, plan; part B2.)* The workspace's debug-adapter
+mapping (§8.9.6 "Adapter configuration"), on `/debug`:
+
+- `adapters {}` → `{ languages: [{ language, adapter, default, known,
+  overridden }] }` — one record per known language (`known_languages`): the
+  adapter in effect, the integration's default, the adapters known for the
+  language (`known`, from the integrations' declarations, never from the
+  client's debugger), and whether the working copy overrides the default;
+- `set_adapter { language, adapter? }` — sets the language's adapter in the
+  working copy (`user.json` `debug.adapters`, never `loomworks.json`), or,
+  with no `adapter`, removes the override so the default applies; written
+  as the in-process `Workspace:set_debug_adapter` writes it, under the model
+  lock, with a `model_change` (§19.12). The adapter name is stored as given,
+  as in-process (a client's picker offers `known`);
+- `known_languages {}` → `{ languages: [..] }` — every language a module or
+  integration declares (§8.9.6 "Language-based adapter resolution").
+
+It has no signal of its own: a change reaches subscribers as `Workspace/1`
+`changed`, on which a client reads `adapters` again. Whether an adapter is
+installed is the client's question (its debugger's adapter table, the
+install hint), never the daemon's.
 
 **Module interfaces.** A module provides an interface only for a feature core
 has no abstraction for (a device log stream, signing setup); a feature core
