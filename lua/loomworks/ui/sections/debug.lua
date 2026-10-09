@@ -4,6 +4,7 @@
 --- Allows picking from known adapters via Enter action.
 
 local debug_mod = require("loomworks.debug")
+local debug_config = require("loomworks.debug_config")
 
 --- Render the Debug Adapters section.
 --- @param tree loomworks.Tree
@@ -34,8 +35,8 @@ return function(tree, ctx)
     tree:blank()
 
     for _, lang in ipairs(languages) do
-        local current = debug_mod.resolve_adapter(ws, lang)
-        local default = debug_mod.default_adapter(lang)
+        local current = debug_config.resolve_adapter(ws, lang)
+        local default = debug_config.default_adapter(lang)
 
         if not current and not default then goto next_lang end
 
@@ -55,7 +56,7 @@ return function(tree, ctx)
         tree:item(label, {
             hl = hl,
             on_enter = function()
-                local known = debug_mod.known_adapters(lang)
+                local known = debug_config.known_adapters(lang)
                 if #known == 0 then return end
 
                 vim.ui.select(known, {

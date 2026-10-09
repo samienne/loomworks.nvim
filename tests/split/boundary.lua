@@ -50,6 +50,9 @@ M.shared = {
     -- the version-range negotiation.
     "^loomworks%.daemon%.protocol$",
     "^loomworks%.daemon%.version$",
+    -- The debug-adapter tables (defaults, known adapters, user.json override):
+    -- the editor's debug path reads them, the daemon serves them (step 5k).
+    "^loomworks%.debug_config$",
 }
 
 local binary_toplevel = {

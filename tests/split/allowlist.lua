@@ -8,6 +8,16 @@
 ---              (`require(name)`, `"loomworks." .. id`). Must match exactly.
 ---   reach_ins  per plugin-side file, the ceiling on `core:` / `get_workspace(` /
 ---              `._workspace` sites. Rising fails; when it drops, lower the number.
+---   operation_sites  per file, the ceiling on editor operation call sites
+---              (step 5k): in plugin-side files the overseer entry points
+---              (`run_profile_action`, `run_configuration_action`, `run_*_clean`,
+---              `launch_single_task`, `launch_run_task`) called through another
+---              module, `tracker.start(`, `debug_mod.run(`, `:build(` /
+---              `:configure(` / `:clean(` / `:launch(` and `<…>target:debug(`;
+---              in binary-side files only the calls into those plugin-side
+---              starters (tests/split/scan.lua has the exact rules). Step 5k
+---              routes them through the daemon; rising fails; when it drops,
+---              lower the number.
 ---   interfaces_dynamic  per plugin-side file, sites naming a daemon interface at
 ---              run time (`iface = <expression>`, `:call(obj, <expression>, ...)`),
 ---              which the interface ratchet cannot check. Must match exactly;
@@ -158,6 +168,21 @@ return {
         ["lua/loomworks/ui/tree.lua"] = 4,
         ["lua/loomworks/workspace_view.lua"] = 3,
         ["plugin/loomworks.lua"] = 1,
+    },
+    -- Plugin-side files: the editor's own starts. Binary-side files
+    -- (config_unit, launch_target, profile, target): their calls into the
+    -- plugin-side starters, reached only from the editor (`LaunchTarget:launch`
+    -- -> `overseer.launch_run_task`, `:debug` -> `debug_mod.run`, ...).
+    -- Device steps are not counted (see tests/split/scan.lua).
+    operation_sites = {
+        ["lua/loomtest/runner.lua"] = 1,
+        ["lua/loomworks/config_unit.lua"] = 3,
+        ["lua/loomworks/init.lua"] = 4,
+        ["lua/loomworks/launch_target.lua"] = 5,
+        ["lua/loomworks/profile.lua"] = 3,
+        ["lua/loomworks/session_tracker.lua"] = 5,
+        ["lua/loomworks/target.lua"] = 3,
+        ["lua/loomworks/ui/actions.lua"] = 14,
     },
     -- observer.lua: conn:call(M.ROOT.object, M.ROOT.iface, ...) for describe
     -- and subscribe, the subscribe args `iface = want.iface` (want is one of

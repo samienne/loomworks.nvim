@@ -18,7 +18,9 @@
 ---     5g.3): `iface = "<name>", v = <n>` names an interface version; any other
 ---     quoted interface name (`"loomworks.<Upper>..."`, `"lw.<...>"`) is
 ---     unversioned. The guard checks each version has a schema and
----     transcripts under spec/protocol/.
+---     transcripts under spec/protocol/;
+---   * editor operation call sites (step 5k), also in binary-side files: see
+---     count_ops below.
 ---
 --- Not caught: an aliased require (`local r = require; r("x")`),
 --- `package.loaded[...]` / `package.preload[...]` lookups, `loadfile`/`dofile`,
@@ -123,9 +125,119 @@ local function count(line, pat)
     return n
 end
 
---- Scan one file: sorted unique static targets, dynamic-site count, reach-ins.
-function M.scan_file(rel)
-    local targets, seen, dynamic, reach = {}, {}, 0, 0
+-- Editor operation call sites (step 5k): the places the editor starts a
+-- build / configure / clean / launch / debug in-process. Step 5k routes them
+-- through the daemon (Build/1, Launch/1.prepare_run / prepare_debug), so
+-- their count per file may only fall. Counted:
+--   * in plugin-side and shared files: calls of the overseer entry points
+--     (`run_profile_action`, `run_configuration_action`, `run_*_clean`,
+--     `launch_single_task`, `launch_run_task`) and of the session start
+--     (`<…>tracker.start(`), the nvim-dap session start (`debug_mod.run(`),
+--     and the operation methods `:build(` / `:configure(` / `:clean(` /
+--     `:launch(`, plus `:debug(` on a receiver named `*target` (the
+--     LaunchTarget method; any other `:debug(` is a logger);
+--   * in binary-side files: only the calls into those plugin-side starters
+--     (the overseer entry points, `debug_mod.run(`, `tracker.start(`). A
+--     binary-side module can only reach them from inside the editor, so each
+--     is an in-process editor start living on the wrong side (e.g.
+--     `LaunchTarget:launch` / `:debug` -> `overseer.launch_run_task` /
+--     `debug_mod.run`), which 5k moves behind Launch/1. Binary-side
+--     operation methods (`profile:build()`) are the domain's own, not counted.
+-- A function's calls of its own module's helpers are not routing: an entry
+-- point only counts through a receiver other than `M` (bare `launch_tasks(`,
+-- overseer's internal helper, and `M.run_profile_action(` are skipped).
+-- `require("loomworks.overseer")` / `"loomworks.debug"` /
+-- `"loomworks.session_tracker"` read as `overseer` / `debug_mod` /
+-- `session_tracker`. String contents and trailing `--` comments are blanked
+-- before matching; a definition head (`function M.run_profile_action(`) is
+-- not a site, but calls later on the same line are.
+-- Not counted, on purpose: the device steps (`:device_install(`,
+-- `:device_launch(`, `overseer.run_cmd_task(`). Device targets stay
+-- in-process (decision D1 of step 5k), so they would put a floor under the
+-- ceilings that 5k never lowers and hide whether the moved sites went.
+-- Blind spots: a call through an alias (`local f = overseer.launch_run_task`),
+-- the dap module or session tracker bound under another name (`local d =
+-- require("loomworks.debug")`; overseer entry points count on any receiver
+-- but `M`), a LaunchTarget held in a variable not named `*target`, a call
+-- result as receiver for `:debug(`, and a string or comment spanning lines.
+local REQ_ALIAS = {
+    ["loomworks.overseer"] = "overseer",
+    ["loomworks.debug"] = "debug_mod",
+    ["loomworks.session_tracker"] = "session_tracker",
+}
+local ENTRY = {
+    run_profile_action = true, run_configuration_action = true,
+    run_profile_clean = true, run_configuration_clean = true,
+    launch_single_task = true, launch_run_task = true,
+}
+local OP_METHODS = {
+    "[%w_%]%)]%s*:build%s*%(",
+    "[%w_%]%)]%s*:configure%s*%(",
+    "[%w_%]%)]%s*:clean%s*%(",
+    "[%w_%]%)]%s*:launch%s*%(",
+}
+
+--- `line` with known requires aliased, string contents blanked, a trailing
+--- `--` comment and a leading definition head removed.
+local function op_code(line)
+    line = line:gsub("require%s*%(?%s*([\"'])([%w_.]+)%1%s*%)?", function(_, name)
+        return REQ_ALIAS[name]
+    end)
+    local out, i, n = {}, 1, #line
+    while i <= n do
+        local c = line:sub(i, i)
+        if c == "-" and line:sub(i + 1, i + 1) == "-" then break end
+        if c == '"' or c == "'" then
+            local j = i + 1
+            while j <= n do
+                local d = line:sub(j, j)
+                if d == "\\" then j = j + 2
+                elseif d == c then break
+                else j = j + 1 end
+            end
+            out[#out + 1] = c .. c
+            i = j + 1
+        elseif c == "[" and line:match("^%[=*%[", i) then
+            local eq = line:match("^%[(=*)%[", i)
+            local _, e = line:find("]" .. eq .. "]", i + #eq + 2, true)
+            out[#out + 1] = '""'
+            if not e then break end
+            i = e + 1
+        else
+            out[#out + 1] = c
+            i = i + 1
+        end
+    end
+    line = table.concat(out)
+    line = line:gsub("^%s*local%s+function%s+[%w_]+%s*%(", "")
+    line = line:gsub("^%s*function%s+[%w_.:]+%s*%(", "")
+    return line
+end
+M.op_code = op_code
+
+--- Editor operation call sites on one code line of a file on `side`
+--- ("plugin" when nil; "binary" counts only calls into plugin-side starters).
+local function count_ops(line, side)
+    line = op_code(line)
+    local n = 0
+    for recv, name in line:gmatch("([%w_]+)%s*%.%s*([%w_]+)%s*%(") do
+        if recv ~= "M" and ENTRY[name] then n = n + 1
+        elseif recv == "debug_mod" and name == "run" then n = n + 1
+        elseif recv:match("tracker$") and name == "start" then n = n + 1 end
+    end
+    if side == "binary" then return n end
+    for _, pat in ipairs(OP_METHODS) do n = n + count(line, pat) end
+    for recv in line:gmatch("([%w_]+)%s*:%s*debug%s*%(") do
+        if recv:lower():match("target$") then n = n + 1 end
+    end
+    return n
+end
+M.count_ops = count_ops
+
+--- Scan one file: sorted unique static targets, dynamic-site count, reach-ins,
+--- editor operation call sites (counted by the rules of `side`, see count_ops).
+function M.scan_file(rel, side)
+    local targets, seen, dynamic, reach, ops = {}, {}, 0, 0, 0
     for _, line in ipairs(code_lines(rel)) do
         for _, pat in ipairs(STATIC) do
             for target in line:gmatch(pat) do
@@ -137,9 +249,10 @@ function M.scan_file(rel)
         end
         for _, pat in ipairs(DYNAMIC) do dynamic = dynamic + count(line, pat) end
         for _, pat in ipairs(REACH) do reach = reach + count(line, pat) end
+        ops = ops + count_ops(line, side)
     end
     table.sort(targets)
-    return targets, dynamic, reach
+    return targets, dynamic, reach, ops
 end
 
 -- Interface references (the interface ratchet, step 5g.3): a versioned one
@@ -350,11 +463,11 @@ function M.uncovered(ref, doc)
 end
 
 --- Current state of the tree.
---- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts, interfaces }
+--- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, operation_sites, counts, interfaces }
 ---   `interfaces[rel]` = { refs, unversioned, calls } of each plugin-side file naming one
 function M.current()
     local res = {
-        unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {},
+        unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {}, operation_sites = {},
         counts = { plugin = 0, shared = 0, binary = 0 }, interfaces = {}, interfaces_dynamic = {},
     }
     local files = M.files()
@@ -376,7 +489,7 @@ function M.current()
     for _, rel in ipairs(files) do
         local side = M.side_of_file(rel)
         if side == "plugin" or side == "shared" then
-            local targets, dynamic, reach = M.scan_file(rel)
+            local targets, dynamic, reach, ops = M.scan_file(rel, side)
             local bad = {}
             for _, t in ipairs(targets) do
                 if side_by_mod[t] == "binary" then bad[#bad + 1] = t end
@@ -384,6 +497,7 @@ function M.current()
             if #bad > 0 then res.edges[rel] = bad end
             if dynamic > 0 then res.dynamic[rel] = dynamic end
             if side == "plugin" and reach > 0 then res.reach_ins[rel] = reach end
+            if ops > 0 then res.operation_sites[rel] = ops end
             if side == "plugin" then
                 local refs, unversioned, idyn, calls = M.interface_refs(rel)
                 if #refs > 0 or #unversioned > 0 or #calls > 0 then
@@ -391,6 +505,9 @@ function M.current()
                 end
                 if idyn > 0 then res.interfaces_dynamic[rel] = idyn end
             end
+        elseif side == "binary" then
+            local _, _, _, ops = M.scan_file(rel, side)
+            if ops > 0 then res.operation_sites[rel] = ops end
         end
     end
     return res
@@ -415,7 +532,7 @@ function M.render(res)
         out[#out + 1] = "        },"
     end
     out[#out + 1] = "    },"
-    for _, key in ipairs({ "dynamic", "reach_ins", "interfaces_dynamic" }) do
+    for _, key in ipairs({ "dynamic", "reach_ins", "operation_sites", "interfaces_dynamic" }) do
         out[#out + 1] = ("    %s = {"):format(key)
         for _, rel in ipairs(sorted_keys(res[key])) do
             out[#out + 1] = ('        ["%s"] = %d,'):format(rel, res[key][rel])
