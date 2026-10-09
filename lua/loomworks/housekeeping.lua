@@ -12,7 +12,8 @@
 ---   * only direct children of the fixed directories, each a real directory
 ---     (lstat) whose resolved path is the one expected (`fixed`);
 ---   * only names matching an exact pattern (validated version / sha256 /
----     module name / vcvars arch / hex nonce / pid);
+---     module name / vcvars arch / hex nonce / pid; the tool cache's
+---     `tools.json.<pid>.<nonce>.tmp`, `tool_cache.is_temp_name`);
 ---   * a candidate that is a link or junction is skipped; the lstat type must
 ---     be the pattern's (file / directory / socket); trees go through
 ---     `io.rm_rf` (links unlinked, never followed);
@@ -341,6 +342,7 @@ end
 --- @field pin_version? string|false the current repository's pinned version
 --- @field device_lock_dir_default? boolean device locks are in `<data>/device-locks`
 --- @field sockets? boolean test sockets (default: POSIX)
+--- @field cache_dir? string|false the tool cache directory `<cache>` (default: `tool_cache.default_dir()`; false: none)
 
 --- Add a candidate `dir/name` when its lstat type is `typ` and it is at least
 --- `min_age` old. Returns the item or nil.
@@ -498,6 +500,28 @@ local function scan_legacy_logs(items, ctx, dir)
     for _, n in ipairs(names(dir)) do
         local h = n:match("^(%x+)%.log$") or n:match("^(%x+)%.log%.1$")
         if h and #h == 16 then consider(items, ctx, dir, n, "file", "runtime log", min) end
+    end
+end
+
+--- Unlink one regular file (never a tree, never through a link): the item's
+--- path is lstat-checked again here, just before the unlink.
+local function unlink_file(item)
+    local st = uv().fs_lstat(item.path)
+    if not st or st.type ~= "file" then return false, "changed meanwhile" end
+    local ok, err = uv().fs_unlink(item.path)
+    if ok then return true end
+    return false, "unlink " .. item.path .. ": " .. tostring(err)
+end
+
+--- `tools.json.<pid>.<nonce>.tmp` directly in the tool cache directory
+--- `<cache>` (spec §16.40, §16.43): a write of the tool cache interrupted
+--- before its rename. Regular files only, unlinked by name (no tree removal).
+local function scan_tool_cache(items, ctx, dir)
+    local tc = require("loomworks.tool_cache")
+    for _, n in ipairs(names(dir)) do
+        if tc.is_temp_name(n) then
+            consider(items, ctx, dir, n, "file", "temp file", M.AGE.transient, { remove = unlink_file })
+        end
     end
 end
 
@@ -720,6 +744,9 @@ function M.collect(opts)
             guarded(scan_legacy_logs, items, ctx, logs)
         end
     end
+    local cache = opts.cache_dir
+    if cache == nil then cache = require("loomworks.tool_cache").default_dir() end
+    if cache and fixed(cache) then guarded(scan_tool_cache, items, ctx, norm(cache)) end
     for _, t in ipairs(opts.tmp_dirs or default_tmp_dirs()) do
         if fixed(t) then guarded(scan_tmp, items, ctx, norm(t), ctx.is_windows) end
     end

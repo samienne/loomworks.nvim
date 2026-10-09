@@ -305,6 +305,17 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Against an older daemon the first Ctrl-C leaves at once, as before. (#176)
 
 ### Changed
+- The machine-level tool cache (`tools.json`) is now reused per module type
+  only while what the detection depended on is unchanged: another `lw`
+  version, a changed `PATH` or `PATHEXT`, or a compiler newly installed into a
+  directory on `PATH` re-detects just the affected module types, in the CLI
+  and in the experimental workspace daemon alike, so a restarted daemon starts
+  warm without serving stale toolchains. A toolchain found outside `PATH` (a
+  registry or installer query) or upgraded in place still needs `lw tools`.
+  Each module type is written as soon as its detection finishes, never half
+  written; older releases keep reading the file. Housekeeping and
+  `lw cleanup` remove a leftover temporary file of an interrupted write after
+  24 hours. (#PRNUM)
 - Experimental daemon: with no `daemon-idle-timeout` set, an idle daemon now
   exits after 45 seconds without clients or background work instead of 1
   hour, so a script of several `lw` commands still shares one daemon but

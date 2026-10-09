@@ -44,6 +44,7 @@ local function sandbox()
         bin = mkdir(real .. "/bin"),
         root = mkdir(real .. "/ws"),
         outside = mkdir(real .. "/outside"),
+        cache = mkdir(real .. "/cache"),
     }
     write(sb.outside .. "/precious.txt", "precious")
     write(sb.data .. "/trust.key") -- lw's data directory (marker, §16.40)
@@ -55,6 +56,7 @@ local function opts(sb, extra)
         data = sb.data, tmp_dirs = { sb.tmp }, run_dirs = {}, sockets = false,
         exe = sb.bin .. "/lw.exe", bundle = false, pin_version = false, now = NOW,
         device_lock_dir_default = true, is_windows = true, force = true,
+        cache_dir = sb.cache,
     }
     for k, v in pairs(extra or {}) do o[k] = v end
     return o
@@ -90,6 +92,7 @@ local function plant_leftovers(sb)
         write(sb.bin .. "/lw.exe.old"),
         write(sb.root .. "/.nvim/tmp/lw-test-" .. HEX24 .. ".xml"),
         write(sb.root .. "/.nvim/tmp/lw-describe-" .. HEX24 .. ".txt"),
+        write(sb.cache .. "/tools.json.4242." .. HEX24 .. ".tmp"),
     }
     if IS_WIN then list[#list + 1] = write(sb.tmp .. "/lw_vcvars_x64_0123456789abcdef.bat") end
     for _, p in ipairs(list) do age(p) end
@@ -167,6 +170,9 @@ describe("housekeeping (spec §16.40)", function()
             write(sb.tmp .. "/lw_vcvars_x64_0123.bat"),
             write(sb.bin .. "/lw.exe.older"), write(sb.bin .. "/other.exe.old"),
             write(sb.root .. "/.nvim/tmp/notes.txt"),
+            write(sb.cache .. "/tools.json.tmp"), write(sb.cache .. "/tools.json.12ab." .. HEX24 .. ".tmp"),
+            write(sb.cache .. "/tools.json.4242.abc.tmp"), write(sb.cache .. "/xtools.json.4242." .. HEX24 .. ".tmp"),
+            write(sb.cache .. "/tools.json.4242." .. HEX24 .. ".tmp.bak"),
         }
         for _, p in ipairs(near) do
             age((p:gsub("/[^/]+$", "")), OLD)
@@ -205,6 +211,52 @@ describe("housekeeping (spec §16.40)", function()
         if inner then assert.is_false(exists(stage)) end
         if hl then assert.is_false(exists(hard)) end
         if fl then assert.is_true(exists(flink)) end
+    end)
+
+    it("tool cache temp files (§16.43): only regular files directly in <cache>, exact name, older than 24 h", function()
+        local name = "tools.json.4242." .. HEX24 .. ".tmp"
+        local old = write(sb.cache .. "/" .. name)
+        age(old)
+        -- Survivors: wrong prefix, young file, a link and a directory at a
+        -- matching name, a matching file in a subdirectory, the cache itself.
+        local wrong = write(sb.cache .. "/tool.json.4242." .. HEX24 .. ".tmp"); age(wrong)
+        local young = write(sb.cache .. "/tools.json.4243." .. HEX24 .. ".tmp")
+        age(young, NOW - 23 * 3600)
+        local dir = mkdir(sb.cache .. "/tools.json.4244." .. HEX24 .. ".tmp")
+        write(dir .. "/inner"); age(dir .. "/inner"); age(dir)
+        local sub = write(sb.cache .. "/sub/tools.json.4245." .. HEX24 .. ".tmp")
+        age(sub); age(sb.cache .. "/sub")
+        local dlink = sb.cache .. "/tools.json.4246." .. HEX24 .. ".tmp"
+        local dl = dirlink(sb.outside, dlink)
+        local flink = sb.cache .. "/tools.json.4247." .. HEX24 .. ".tmp"
+        local fl = uv.fs_symlink(sb.outside .. "/precious.txt", flink)
+        local cache_file = write(sb.cache .. "/tools.json", "{}"); age(cache_file)
+
+        local items = hk.collect(opts(sb))
+        local got = paths_of(items)
+        assert.same({ [old] = "temp file" }, got)
+        for _, it in ipairs(items) do assert.is_true(hk.remove(it, NOW), it.path) end
+        assert.is_false(exists(old))
+        for _, p in ipairs({ wrong, young, dir, dir .. "/inner", sub, cache_file }) do
+            assert.is_true(exists(p), p)
+        end
+        if dl then assert.is_true(exists(dlink)) end
+        if fl then assert.is_true(exists(flink)) end
+        assert.equals("precious", read(sb.outside .. "/precious.txt"))
+        -- A <cache> that is itself a link is not scanned.
+        local real_cache = mkdir(sb.base .. "/real-cache")
+        local o2 = write(real_cache .. "/" .. name); age(o2)
+        local link_cache = sb.base .. "/link-cache"
+        if dirlink(real_cache, link_cache) then
+            assert.same({}, paths_of(hk.collect(opts(sb, { cache_dir = link_cache }))))
+        end
+        -- Re-checked before removal: replaced by a directory meanwhile -> kept.
+        local again = write(sb.cache .. "/" .. name); age(again)
+        local items2 = hk.collect(opts(sb))
+        assert.equals(1, #items2)
+        assert.is_true(uv.fs_unlink(again)); mkdir(again)
+        assert.is_false((hk.remove(items2[1], NOW)))
+        assert.is_true(exists(again))
     end)
 
     it("ignores a fixed directory that is itself a link (realpath check)", function()

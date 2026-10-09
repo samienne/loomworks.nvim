@@ -1398,7 +1398,7 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   `Service:in_segment`.)* The
   daemon's lifetime never depends on any client's lifetime: a client keeps
   it alive only through an open connection.
-- *(Planned, step 5r.)* **Warm restarts.** A script running several `lw`
+- *(Step 5r: idle grace B, tool cache C.)* **Warm restarts.** A script running several `lw`
   commands in a row pays one cold start, and a restarted daemon reuses what
   an earlier one already worked out:
   - **Idle grace.** The default of the idle timeout above is the named
@@ -3109,7 +3109,8 @@ runtime is deferred until that module is actively developed.
      includes the `lw` identity with its `lw_version`, so results of a retired
      daemon of another version are not reused; each type written atomically
      on completion, an interrupted type not written; reused on the next start
-     when its fingerprint matches; the same check in the in-process CLI);
+     when its fingerprint matches; the same check in the in-process CLI)
+     *(done once merged)*;
      D *(optional)* — `lw daemon status` shows the idle deadline.
    - **5j–5o — Editor consumers move to interfaces**, each step landing its
      interfaces with their schemas and transcripts: `view.Header/1` and

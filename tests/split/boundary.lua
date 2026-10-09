@@ -64,7 +64,7 @@ local binary_toplevel = {
     "proc", "profile", "program_fields", "project", "release_notes",
     "release_notice", "reserved_compiler", "reset_plan", "root_finder",
     "run_prep", "runenv", "save_guard", "sdk", "submodules", "suggestions",
-    "target", "term", "test_unit", "tool", "trust", "txn", "types", "user",
+    "target", "term", "test_unit", "tool", "tool_cache", "trust", "txn", "types", "user",
     "variables", "workspace",
 }
 
