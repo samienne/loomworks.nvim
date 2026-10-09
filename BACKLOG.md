@@ -84,6 +84,19 @@ considered and not added: configuring stays a step of `lw build`
   shared daemon is untouched); fix by having the wrapper end its child when
   its own standard input closes or it is killed (e.g. a job object on
   Windows), or by exec-ing the pinned relay where the platform allows.
+- `lw daemon status` is itself a connection (step 5r PR D follow-up): its
+  close restarts the idle clock, so the shown `idle_deadline` is always about
+  one idle timeout away (spec/core/daemon.md section 19.11 "Idle deadline").
+  Option: status-only connections do not count as activity; that is a
+  section 19.11 lifetime change ("Idle exit") and needs a decision.
+- Put `idle_timeout` in the daemon handle (`.nvim/loomworks.daemon.json`,
+  section 19.6, which already carries `idle_since`) so `lw daemon list` can
+  show each daemon's deadline (`idle_since + idle_timeout`) without
+  connecting.
+- Add a `loomworks.Root/1` transcript case for the `retiring` signal so it
+  can leave the guard's `transcripts_uncovered` exceptions
+  (`tests/split/allowlist.lua`). `objects_changed` stays there until a module
+  mounts objects (step 5q) and a transcript can show one appearing.
 
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 

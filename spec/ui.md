@@ -1103,7 +1103,10 @@ Users can override these by defining the highlight groups before plugin load.
 ## 3. Winbar / Statusline Component
 
 `lualine/components/loomworks.lua` provides a lualine component for
-winbar display.
+winbar display. Its data are the `loomworks.view.Header/1` and
+`loomworks.view.ProjectsIndex/1` tables (daemon.md §19.13 "Views"; step 5j,
+plan): the daemon's while the editor is subscribed, otherwise built
+in-process with the same shape.
 
 **Default display**: `{set_name} {join} {project}/{configuration}`
 

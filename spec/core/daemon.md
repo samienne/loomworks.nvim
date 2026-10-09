@@ -1616,7 +1616,8 @@ workspace. Sending `welcome` never loads the workspace.
 `loomworks.Workspace/1.header`: implemented, step 5g.2 part A
 (`daemon/core_interfaces.lua`); the CLI's read commands call
 `Snapshot/1.get` over transport 11 since part B (`daemon/calls.lua`); the
-editor views steps 5j–5n, §19.19.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
+editor views steps 5j–5n, §19.19: `view.Header/1` and `view.ProjectsIndex/1`
+specified ("Views" below, step 5j part 0), plan.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
 (§19.20), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
@@ -1626,6 +1627,117 @@ returning its full state on subscribe (`initial`, §19.20) and following with
 `update` signals, so a reconnect re-hydrates with no further protocol; the
 editor's projection of file-shaped tables is replaced by these views as the
 steps land.
+
+**Views.** *(Step 5j: specified, part 0; the daemon side (part B,
+`daemon/views.lua` mounted on `/views`) and the editor side (part C): plan,
+§19.19.)* Two views back the editor's always-warm surfaces, the statusline
+(spec/ui.md §3) and the buffer → project lookup. Both are served by the
+`/views` object. Each has one method, `get` (no arguments; returns the view's
+full state), and one signal, `update`, declared `initial` (§19.20), whose
+payload is the same full state: never a delta. A client replaces its table on
+every `update`, and after a `seq` gap or a new session generation (§19.12) it
+calls `get` again. The daemon sends `update` at the point where it checks
+`Workspace/1.header_changed`: after every model segment and every committed
+write, before the acknowledgement of the command that caused the change, and
+only when the view's state differs from the one last sent on that
+subscription. Unless a field says otherwise it is required; an optional field
+is absent (never `null`) when it does not apply, and a client shows an
+unknown enum value as neutral.
+
+- `loomworks.view.Header/1` — the always-warm header. Its state is
+  `Workspace/1.header`'s fields with the same meaning (`root` string,
+  `state` one of `loaded` / `unloaded` / `error` / `refused`; optional `name`
+  string, `active_profile` string (the active profile's key), `error` string,
+  "Header" above; and `pid` integer, `lw_version` string,
+  `session_generation` integer, required in `Workspace/1.header` but optional
+  here: the daemon always sends them, the in-process builder leaves them out,
+  "Two sources, one shape" below), plus:
+  - `active_profile_id` (string, optional) — the active profile's opaque id
+    (§19.12); present exactly when `active_profile` is and the view comes
+    from the daemon, absent in-process. It is what a client puts in an
+    `{ id }` reference (§19.20) once commands move to interfaces (step 5o).
+  - `config_set` (string, optional) — the name of the active profile's
+    configuration set; present when `state` is `loaded` and a profile is
+    active.
+  - `config_set_id` (string, optional) — that configuration set's opaque id
+    (§19.12); present exactly when `config_set` is and the view comes from
+    the daemon, absent in-process (step 5o, as `active_profile_id`).
+  - `diagnostics` (`"error"` or `"warn"`, optional) — the highest severity
+    among the workspace's structural diagnostics (spec/ui.md §1); absent when
+    there are none or the workspace is not loaded.
+  - `trust` (`"user"` or `"cache"`, optional) — present only when `state` is
+    `refused` by a trust refusal (§17.4): the refused file, the working copy
+    (`user`: the status page offers review & trust and discarding it) or the
+    cache (`cache`: it offers resetting the build cache). Absent for a
+    newer-schema or journal refusal.
+
+  `Workspace/1.header` is unchanged: `view.Header/1` is a separate interface
+  and adds its fields only to itself.
+- `loomworks.view.ProjectsIndex/1` — what the statusline and the buffer →
+  project lookup need, nothing of the status page. Its state is
+  `{ projects }`: `projects` (array, required) holds one record per project of
+  the workspace, ordered by key; it is empty when the workspace is not loaded.
+  A record:
+  - `id` (string, optional) — the project's opaque id (§19.12); always sent
+    by the daemon, absent in-process.
+  - `key` (string) — the project's key.
+  - `label` (string) — the project's display text, which every entity
+    record carries beside its `key` (§19.12 "Ids on the interfaces"). A
+    project has no display name of its own (data-model.md §1.2), so its
+    `label` is its key; a client shows `label`, never derives it.
+  - `type` (string) — the project's module type (`cmake`, `meson`, …); a
+    project of an unknown or rejected type (§8.0) is listed with its declared
+    type and without `active`.
+  - `path` (string) — the project's directory relative to the workspace root,
+    `/`-separated: its declared `path`, or its key when it declares none.
+  - `abs_path` (string) — the workspace root joined with `path`, absolute and
+    `/`-separated, as the daemon resolves it (not case-folded; a client
+    compares it with its own path normalization, §2.3 — case-insensitive on
+    Windows).
+  - `active` (object, optional) — present when the active profile maps the
+    project; absent with no active profile:
+    - `configuration` (string) — the name of the project's configuration in
+      the active profile.
+    - `unit_id` (string, optional) — the opaque id (§19.12) of the
+      configuration unit for the project's configuration and tool; absent
+      when the profile has no unit for the project yet, and always absent
+      in-process (records built in-process carry no ids, "Two sources, one
+      shape").
+    - `tool_key` (string, optional) — the key of that configuration's tool;
+      absent for a module whose single toolchain has none.
+    - `state` (string) — the configuration unit's state as the right column
+      of state-lifecycle.md §3.4 names it (`unconfigured`, `configured`,
+      `built`, `configure_failed`, `build_failed`, `unknown`, `configuring`,
+      `building`, `deleting`); `unconfigured` when the profile has no unit
+      for the project yet. It includes a task another client runs in the
+      daemon (§19.16 "Running state"). Only state changes send `update`; a
+      build's progress never does. The profile's overall state (the
+      statusline icon) is computed by the client from these states.
+
+  The buffer → project lookup (`lw.buf_project`, "Two sources, one shape")
+  is the record whose `abs_path` is the longest prefix of the buffer's path
+  **on a separator boundary**: a record matches when the buffer's path equals
+  its `abs_path` or starts with its `abs_path` followed by `/`, so a project
+  at `/a/foo` does not match a buffer in `/a/foobar`. Both paths are compared
+  in their normalized form (§2.3: `/`-separated, and lowercased on Windows).
+  This deliberately fixes today's `project_for_buf`, whose bare prefix test
+  lets `/a/foo` claim a buffer in `/a/foobar`.
+
+**Two sources, one shape.** The editor renders each view from one table of
+the view's shape: the daemon's (`initial`, then `update`, `get` after a gap)
+while it holds a subscription to the view, otherwise one it builds from its
+in-process model with the same builder the daemon uses. The shape is shared;
+what only the daemon knows is optional in it and left out in-process: the
+header's `pid`, `lw_version` and `session_generation`, and every opaque id
+(`active_profile_id`, `config_set_id`, a project record's `id` and
+`active.unit_id`). A view the daemon does not offer (or offers only at another
+version) is built in-process too, with the one Runtime-line note of §19.16
+"Interface client". The plugin keeps `lw.project_for_buf(bufnr)` (it returns
+the `loomworks.Project` and clangd and qmlls use it until step 5l moves LSP)
+and adds `lw.buf_project(bufnr)`, returning the buffer's ProjectsIndex record
+by the separator-bounded longest-prefix rule above (or `nil` when no record
+matches); `lw.buf_status(bufnr)` keeps its return shape and reads the two
+views.
 
 ### 19.14 Commands
 
@@ -2446,7 +2558,8 @@ in-process ("End state").
 **Interface client.** *(Step 5g.3: discovery through `Root.describe` with
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`
 subscriptions, `objects_changed` and the per-feature note; the views and
-operations: plan, steps 5j–5o.)* On every connect, including
+operations: plan, steps 5j–5o — the `/views` features of step 5j specified,
+part 0.)* On every connect, including
 each reconnect, the editor **discovers** the daemon through the root object
 (`welcome.objects`, `Root.describe`; §19.20), picks per interface the highest
 version both sides support, and subscribes to the views and tasks it shows,
@@ -2454,7 +2567,10 @@ taking their full state from each subscription's `initial`. A missing or
 incompatible interface degrades only the feature that needs it, with one
 Runtime-line note naming the interface and both versions (e.g. `lsp
 configuration: daemon offers loomworks.LspConfig/2, editor needs /1`); it
-never fails the connection or the other features. The describe is bounded
+never fails the connection or the other features. The features of step 5j
+are `statusline` (`loomworks.view.Header/1`) and `project index`
+(`loomworks.view.ProjectsIndex/1`), beside `tasks` and `model changes`; a
+degraded view is built in-process (§19.13 "Two sources, one shape"). The describe is bounded
 (about 3 s) and never blocks the editor; when it fails or times out the editor
 uses `welcome.objects`. An interface that appears later (the root's
 `objects_changed`) is subscribed to then, and a refused subscription is
@@ -3140,6 +3256,20 @@ runtime is deferred until that module is actively developed.
      `view.Tests/1` (5m); `view.Workspace/1` and `Devices/1` (5n); the
      command methods of `Workspace`, `Profiles`, `Projects`, `ConfigSets`,
      `Sdks` and `Maintenance` (5o).
+     - **5j — Header and project index** (§19.13 "Views"; §19.16 "Interface
+       client"), in parts: A — the guard's method/signal coverage deferred
+       from 5g.3 (#185) *(done once merged)*; 0 — spec: the two views' fields,
+       the `update` rule and the two sources *(done once merged)*; B — daemon
+       side: the schemas of `loomworks.view.Header/1` and
+       `loomworks.view.ProjectsIndex/1`, their transcripts on the `empty` and
+       `shell` fixtures, and a new `daemon/views.lua` mounted on `/views`,
+       sending `update` where `header_check` runs, with the ids the daemon
+       alone fills (`active_profile_id`, `config_set_id`, the records' `id`
+       and `active.unit_id`); C — editor side: a view
+       store fed by the observer's subscription or by the in-process builder,
+       lualine and the status page's header moved onto it,
+       `lw.buf_project` (separator-bounded longest prefix), the lualine → `loomworks.events` edge removed and the
+       reach-in counts lowered.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved
