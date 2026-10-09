@@ -3049,7 +3049,11 @@ runtime is deferred until that module is actively developed.
      `observer._subscribe`, transport-11 delivery by subscription, the guard's
      interface ratchet in `tests/split`. Deferred to 5j: checking that the
      methods and signals the plugin uses on an interface version are covered
-     by its transcripts.)*
+     by its transcripts — done once merged: each versioned table declares
+     the `methods` the plugin calls and the `signals` it handles, every
+     interface call names a declared method, and every declared one is sent
+     or expected in that version's transcripts; uses not yet transcribed are
+     an allow-listed, exact-match exception.)*
    - **5h — Editor-side binary selection and provisioning** (§19.16 "Host
      binary"), used first only for the observer's binary:
      - **5h.1** — the selection order (explicit, `lw` on the search path, the

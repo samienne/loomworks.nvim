@@ -144,6 +144,123 @@ describe("plugin/binary boundary", function()
         end
     end)
 
+    -- Step 5j: each versioned table declares the methods the file calls on it
+    -- and the signals it handles; every interface call's method is a declared
+    -- literal, and every declared one is exercised by the version's transcripts.
+    it("calls only methods its interface tables declare (interface ratchet, 5j)", function()
+        local bad = {}
+        for _, rel in ipairs(scan.sorted_keys(current.interfaces)) do
+            local e = current.interfaces[rel]
+            local declared = {}
+            for _, r in ipairs(e.refs) do
+                for _, field in ipairs({ "methods", "signals" }) do
+                    local list = r[field]
+                    if list == nil then
+                        bad[#bad + 1] = ("%s:%d: %s/%d declares no `%s` (write `%s = { ... }`, empty if none)")
+                            :format(rel, r.line, r.iface, r.v, field, field)
+                    elseif list == false then
+                        bad[#bad + 1] = ("%s:%d: %s/%d `%s` is not a list of string literals")
+                            :format(rel, r.line, r.iface, r.v, field)
+                    end
+                end
+                for _, m in ipairs(r.methods or {}) do declared[m] = true end
+            end
+            for _, c in ipairs(e.calls or {}) do
+                if not c.method then
+                    bad[#bad + 1] = ("%s:%d: an interface call whose method is not a string literal"):format(rel, c.line)
+                elseif not declared[c.method] then
+                    bad[#bad + 1] = ("%s:%d: calls method %q, which no interface table in the file declares in `methods`")
+                        :format(rel, c.line, c.method)
+                end
+            end
+        end
+        if #bad > 0 then
+            fail("Plugin-side interface uses not declared on a versioned interface table:", bad,
+                "Declare on the `{ iface = ..., v = <n> }` table the `methods` the file calls and the `signals` "
+                .. "it handles, so the guard can check them against the transcripts. " .. SEE)
+        end
+    end)
+
+    it("uses only methods and signals its versions' transcripts cover (interface ratchet, 5j)", function()
+        local found, seen, checked = {}, {}, 0
+        for _, rel in ipairs(scan.sorted_keys(current.interfaces)) do
+            for _, r in ipairs(current.interfaces[rel].refs) do
+                local ns, rest = r.iface:match("^([%w_]+)%.(.+)$")
+                local fh = ns and io.open(("%s/spec/protocol/transcripts/%s/%s.%d.json")
+                    :format(scan.root, ns, rest, r.v), "rb")
+                if fh then -- (a missing file fails the ratchet above)
+                    local doc = vim.json.decode(fh:read("*a"))
+                    fh:close()
+                    checked = checked + #(r.methods or {}) + #(r.signals or {})
+                    for _, u in ipairs(scan.uncovered(r, doc)) do
+                        if not seen[u] then seen[u] = rel .. ":" .. r.line; found[#found + 1] = u end
+                    end
+                end
+            end
+        end
+        table.sort(found)
+        local rec, recset = allow.transcripts_uncovered or {}, {}
+        local new, stale = {}, {}
+        for _, u in ipairs(rec) do recset[u] = true end
+        for _, u in ipairs(found) do
+            if not recset[u] then new[#new + 1] = ("%s (declared at %s)"):format(u, seen[u]) end
+        end
+        for _, u in ipairs(rec) do
+            if not seen[u] then stale[#stale + 1] = u end
+        end
+        if #new > 0 then
+            fail("Plugin-side interface uses no transcript of that version exercises:", new,
+                "Add a case to spec/protocol/transcripts/<namespace>/<Rest>.<v>.json that sends the method "
+                .. "(a `call`) or expects the signal, so client and server conformance cover it. " .. SEE)
+        end
+        if #stale > 0 then
+            fail("Recorded uncovered uses that are now covered or no longer used:", stale,
+                "Good: delete them from `transcripts_uncovered` in tests/split/allowlist.lua. " .. SEE)
+        end
+        -- Root's describe and subscribe and Workspace's changed, at least.
+        assert.is_true(checked >= 3)
+    end)
+
+    it("the coverage check names the interface, version and missing method or signal", function()
+        local ref = { iface = "loomworks.Foo", v = 2, object = "/foo",
+            methods = { "get", "set" }, signals = { "changed", "gone" } }
+        local doc = { cases = {
+            { steps = {
+                { send = { kind = "call", object = "/foo", iface = "loomworks.Foo", v = 2, method = "get" } },
+                -- Another version's or interface's call covers nothing here.
+                { send = { kind = "call", object = "/foo", iface = "loomworks.Foo", v = 1, method = "set" } },
+                { send = { kind = "call", object = "/", iface = "loomworks.Root", v = 2, method = "set" } },
+                -- A signal frame naming no interface counts on the interface's object.
+                { expect = { kind = "signal", object = "/foo", name = "changed" } },
+                { expect_none = { kind = "signal", object = "/foo", name = "gone" } },
+            } },
+        } }
+        assert.same({ "loomworks.Foo/2 method set", "loomworks.Foo/2 signal gone" }, scan.uncovered(ref, doc))
+        ref.methods, ref.signals = { "get" }, { "changed" }
+        assert.same({}, scan.uncovered(ref, doc))
+        assert.same({ "loomworks.Foo/2 method get" }, scan.uncovered({ iface = "loomworks.Foo", v = 2,
+            methods = { "get" } }, { cases = {} }))
+    end)
+
+    it("the interface scanner reads declared methods and signals and interface calls' methods", function()
+        local r, _, _, calls = scan.interface_refs_text(table.concat({
+            "M.A = {",
+            '    object = "/a", iface = "loomworks.A", v = 1,',
+            '    methods = { "describe", "subscribe" }, signals = {},',
+            "}",
+            'M.B = { iface = "loomworks.B", v = 1, methods = { name } }',
+            'conn:call(M.A.object, M.A.iface, M.A.v, "describe", {}, cb)',
+            "conn:call(M.A.object, M.A.iface, M.A.v, method, {}, cb)",
+        }, "\n"))
+        assert.equals(2, #r)
+        assert.equals("/a", r[1].object)
+        assert.same({ "describe", "subscribe" }, r[1].methods)
+        assert.same({}, r[1].signals)
+        assert.is_false(r[2].methods)
+        assert.is_nil(r[2].signals)
+        assert.same({ { method = "describe", line = 6 }, { line = 7 } }, calls)
+    end)
+
     it("the interface scanner: either field order, tables across lines, runtime names counted", function()
         local function refs(text)
             local r, u, d = scan.interface_refs_text(text)
