@@ -713,7 +713,10 @@ end
 --- Returns adapter entries and the base spec data for the primary adapter.
 --- @return { adapter: string }[] adapters, table spec_data
 function LaunchTarget:multi_adapter_specs()
-    local spec = require("loomworks.run_prep").resolve_debug(self)
+    -- The command-launch reading for every launch configuration, as before
+    -- step 5k: a target-backed one has no `command`, so `program` stays nil
+    -- here (unchanged; run_prep.resolve_debug resolves that case).
+    local spec = require("loomworks.run_prep").resolve_command_debug(self)
     local parsed = {}
     for _, a in ipairs(spec.adapters) do
         parsed[#parsed + 1] = { adapter = a.adapter }

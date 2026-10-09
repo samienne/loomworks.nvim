@@ -311,7 +311,7 @@ describe("plugin/binary boundary", function()
         end
     end)
 
-    it("does not raise editor operation call sites per plugin file (ratchet 3, step 5k)", function()
+    it("does not raise editor operation call sites per file (ratchet 3, step 5k)", function()
         local rose, dropped = {}, {}
         local ceil = allow.operation_sites or {}
         for _, rel in ipairs(scan.sorted_keys(current.operation_sites)) do
@@ -356,5 +356,47 @@ describe("plugin/binary boundary", function()
         end
         -- build, clean, run_configuration_action, target:debug, debug_mod.run
         assert.equals(5, n)
+    end)
+
+    it("the operation-site scanner skips a module's calls of its own helpers", function()
+        -- overseer.lua's internal helper and its own entry points through `M`
+        assert.equals(0, scan.count_ops("launch_tasks(overseer, all_tasks.build):next(f)"))
+        assert.equals(0, scan.count_ops("return M.run_profile_action(profile, 'build')"))
+        -- the same entry point through another module counts
+        assert.equals(1, scan.count_ops("overseer.run_profile_action(profile, 'build')"))
+        assert.equals(1, scan.count_ops("require(\"loomworks.overseer\").launch_run_task({})"))
+        assert.equals(1, scan.count_ops("tracker.start(target, mode)"))
+        assert.equals(1, scan.count_ops("require('loomworks.debug').run(spec)"))
+    end)
+
+    it("the operation-site scanner counts calls on a definition line", function()
+        assert.equals(1, scan.count_ops("function M.go(t) return t:launch() end"))
+        assert.equals(1, scan.count_ops("local function go(t) debug_mod.run(t) end"))
+        assert.equals(0, scan.count_ops("function LaunchTarget:launch()"))
+    end)
+
+    it("the operation-site scanner ignores comments and string contents", function()
+        assert.equals(0, scan.count_ops("x = 1 -- profile:build() here"))
+        assert.equals(0, scan.count_ops("log('run_configuration_action: unit:build() for %s', k)"))
+        assert.equals(0, scan.count_ops("local s = [[target:debug()]]"))
+        assert.equals(1, scan.count_ops("notify(\"a -- b\"); profile:build() -- then profile:clean()"))
+    end)
+
+    it("the operation-site scanner counts :debug( only on a launch target", function()
+        assert.equals(0, scan.count_ops("logger:debug('x')"))
+        assert.equals(0, scan.count_ops("self._logger:debug('x')"))
+        assert.equals(0, scan.count_ops("ctx:debug('x')"))
+        assert.equals(1, scan.count_ops("new_target:debug()"))
+        assert.equals(1, scan.count_ops("launch_target:debug()"))
+    end)
+
+    it("the operation-site scanner counts only plugin-side starters in binary files", function()
+        assert.equals(0, scan.count_ops("profile:build()", "binary"))
+        assert.equals(0, scan.count_ops("unit:clean()", "binary"))
+        assert.equals(1, scan.count_ops("overseer.launch_run_task({})", "binary"))
+        assert.equals(1, scan.count_ops("debug_mod.run({})", "binary"))
+        -- device steps stay in-process (5k decision D1) and are not counted
+        assert.equals(0, scan.count_ops("target:device_install(serial)"))
+        assert.equals(0, scan.count_ops("overseer.run_cmd_task({})", "binary"))
     end)
 end)
