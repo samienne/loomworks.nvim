@@ -481,6 +481,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Before, e.g. an editor following the workspace daemon through a
   `--no-launch` relay could stop with "the workspace daemon runs on another
   host (?, pid ?)" while the CLI started a daemon. (#178)
+- Lock files are now created with their record already in them and rewritten
+  by replacing the whole file, so another process never finds a lock file
+  empty while it is being written. Where the file system has no hard links
+  (e.g. FAT), a lock file is still created first and filled right after.
+  (#180)
 - The `unstable` update channel picks the highest release version instead of
   the most recently published one, so a full release published after a newer
   pre-release no longer moves `lw self-update` (and `lw release query

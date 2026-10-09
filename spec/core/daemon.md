@@ -425,10 +425,17 @@ instance") is the decimal pid, a colon and that value verbatim; it is split
 at its first colon. A holder that holds a build-directory lock across
 several steps rewrites the record's operation when it moves from configure to
 build, so recovery knows which step was interrupted. A record without a start time (written by an older
-version) is judged by heartbeat alone. A lock file is created empty (the
-exclusive create) and its record written right after: a reader that finds a
-fresh empty lock file (modified within the last 2 s) reads it again for up to
-250 ms before judging it, so a record being written is never taken for another
+version) is judged by heartbeat alone. A lock file is created with its
+record already in it: the record is written to a temporary file beside it
+(`<lock file>.new.<nonce>`, a name no lock-file reader or scan matches) and
+given the lock file's name by a hard link, an atomic create-if-absent; the
+temporary name is then removed. Where the file system has no hard links, the
+lock file is created exclusively and its record written right after. A
+holder rewriting its record writes a temporary file and renames it over the
+lock file, only while the lock file still carries its nonce. A reader that
+finds a fresh empty lock file (modified within the last 2 s; one created
+without hard links, or by an older version) reads it again for up to 250 ms
+before judging it, so a record being written is never taken for another
 host's live holder; one still empty then is judged as a record without fields.
 
 **Holder states.** A process that finds a lock held classifies the holder:

@@ -189,12 +189,10 @@ function M.lock(path, opts)
     local wait_ms = (opts and opts.wait_ms) or M.WAIT_MS
     local deadline = u.hrtime() + wait_ms * 1e6
     local rec = lock_record.new("save")
-    local body = vim.json.encode(rec)
     while true do
-        local fd, _, code = u.fs_open(lock_path, "wx", 420) -- 0644, exclusive create
-        if fd then
-            u.fs_write(fd, body, 0)
-            u.fs_close(fd)
+        -- Exclusive create with the record in place (lock_record.create).
+        local created, _, code = lock_record.create(lock_path, rec)
+        if created then
             return { path = lock_path, token = rec.lock_nonce, record = rec }
         end
         -- Anything but "exists" (no directory, no permission) cannot be waited

@@ -2,8 +2,9 @@
 ---
 --- Serializes configure/build/clean across separate processes (editor + CLI,
 --- or two CLIs) that share a build directory — advisory, host-provided
---- exclusion. The primitive is an O_EXCL lockfile
---- (`uv.fs_open(path, "wx")`): an atomic create-if-absent that works across
+--- exclusion. The primitive is an exclusively created lockfile
+--- (lock_record.create: a hard link of a written temp, else O_EXCL
+--- `uv.fs_open(path, "wx")`): an atomic create-if-absent that works across
 --- processes, unlike a `building=true` flag in a JSON file (a read-check-write
 --- of a shared file is a TOCTOU race — two processes can both see "free").
 ---
@@ -70,12 +71,9 @@ end
 --- success, else nil + the fs error (e.g. "EEXIST").
 --- @return table|nil record, string|nil err
 local function create_locked(path, action, extra)
-    local fd, err = uv.fs_open(path, "wx", tonumber("644", 8))
-    if not fd then return nil, err end
     local rec = lock_record.new(action, extra)
-    local body = vim.json.encode(rec)
-    uv.fs_write(fd, body)
-    uv.fs_close(fd)
+    local ok, err = lock_record.create(path, rec)
+    if not ok then return nil, err end
     return rec
 end
 
@@ -140,8 +138,10 @@ end
 
 --- Merge `fields` into a HELD lock's record and rewrite its lockfile (a
 --- `vim.NIL` value removes the field). A released handle is a no-op: the
---- lockfile may belong to another process by now. Best-effort — a failed
---- write leaves the previous record.
+--- lockfile may belong to another process by now. The new record replaces
+--- the old by a rename (lock_record.replace), so a reader never sees an
+--- empty lockfile; when no rename succeeds the lockfile is rewritten in
+--- place. Best-effort — a failed write leaves the previous record.
 --- @param handle table|nil
 --- @param fields table
 function M.update_record(handle, fields)
@@ -149,6 +149,8 @@ function M.update_record(handle, fields)
     for k, v in pairs(fields or {}) do
         if v == vim.NIL then handle.record[k] = nil else handle.record[k] = v end
     end
+    local ok, err = lock_record.replace(handle.path, handle.record)
+    if ok or err == "lost" then return end
     local body = vim.json.encode(handle.record)
     -- "r+" (never "w"): a lockfile that vanished (forced off by `lw unlock`)
     -- is not recreated behind another process's back.
