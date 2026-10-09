@@ -319,7 +319,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `:LoomworksDaemon connect`. New relay flag `--no-launch --retiring
   <pid>:<start_time>` waits for that retiring daemon to exit (status 16), and
   a relay that gives up on a retiring daemon (status 14) names it on its last
-  standard-error line, `retiring <pid>:<start_time>`. (#PRNUM)
+  standard-error line, `retiring <pid>:<start_time>`. (#178)
 - Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to
   the workspace's shared daemon (starting it when none runs) instead of a
   private daemon of its own, so a client on standard input and output shares
