@@ -26,11 +26,8 @@ return {
         },
         ["lua/loomworks/daemon/observer.lua"] = {
             "loomworks.daemon.client",
-            "loomworks.daemon.endpoint",
             "loomworks.daemon.inspect",
-            "loomworks.daemon.launch",
             "loomworks.daemon.runtime",
-            "loomworks.daemon.server",
         },
         ["lua/loomworks/daemon/remote_task.lua"] = {
             "loomworks.operation",

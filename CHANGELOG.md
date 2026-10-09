@@ -305,6 +305,21 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Against an older daemon the first Ctrl-C leaves at once, as before. (#176)
 
 ### Changed
+- Experimental daemon mode: the editor connects to the workspace daemon only
+  through `lw daemon run --root <dir> --stdio` - the same shared daemon as the
+  CLI - and no longer reads the daemon's handle or launches it itself. On load
+  and on `:LoomworksDaemon connect` the relay connects or starts the daemon;
+  after `lw daemon stop` (or any drop) the editor waits through a
+  `--no-launch` relay and never restarts it, and it follows a daemon the CLI
+  starts later. With no host binary the editor stays in-process and no longer
+  observes a daemon another client started. A relay that fails before the
+  daemon answers is one note on the Runtime line; a pinned `lw` too old for
+  the editor's relay flags is named there. Until a later step, an
+  incompatible daemon the editor does not observe leaves it in-process until
+  `:LoomworksDaemon connect`. New relay flag `--no-launch --retiring
+  <pid>:<start_time>` waits for that retiring daemon to exit (status 16), and
+  a relay that gives up on a retiring daemon (status 14) names it on its last
+  standard-error line, `retiring <pid>:<start_time>`. (#PRNUM)
 - Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to
   the workspace's shared daemon (starting it when none runs) instead of a
   private daemon of its own, so a client on standard input and output shares

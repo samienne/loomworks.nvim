@@ -953,9 +953,12 @@ normal rows in the status page's Tasks section ending in a dim `lw` (or
 `editor`) marker, whose Enter shows the output (it cannot cancel them: they
 belong to the terminal that started them). Builds already running when the
 editor connects are picked up too. Its own builds still run in the
-editor. It starts the daemon from the `lw` it finds when you open the
-workspace or run `:LoomworksDaemon connect`, and never restarts one you
-stopped with `lw daemon stop`. It looks, in this order, at `LOOMWORKS_LW`,
+editor. It connects through `lw daemon run --stdio` from the `lw` it finds
+(the same shared daemon the `lw` commands use), which starts the daemon when
+you open the workspace or run `:LoomworksDaemon connect` and none is running;
+it never restarts one you stopped with `lw daemon stop`, but picks up one a
+terminal `lw` starts later. With no `lw` found it stays in-process and does
+not watch for a daemon. It looks, in this order, at `LOOMWORKS_LW`,
 `setup({ binary = { path = "/path/to/lw" } })` (a relative path is taken
 against Neovim's current directory; a path that names no file, or on Windows
 no `.exe`, stops the search with a note), `lw` in an absolute `PATH` entry

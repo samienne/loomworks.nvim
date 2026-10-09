@@ -10,7 +10,9 @@
 --- Transport is a libuv pipe on both hosts, or the in-memory loopback of an
 --- attached run (`loopback_connect` / `loopback_session`, §19.1) through the
 --- same frame reader. `connect` is asynchronous; the `session` / `call`
---- wrappers pump the event loop with `vim.wait` (the CLI).
+--- wrappers pump the event loop with `vim.wait` (the CLI). The editor
+--- connects through the `--stdio` relay instead (`M.relay`, below): the same
+--- connection class and frame reader over the relay's standard I/O.
 
 local uv = vim.uv or vim.loop
 local protocol = require("loomworks.daemon.protocol")
@@ -387,5 +389,336 @@ function M.call(endpoint, kind, opts)
     conn:close()
     return reply, rerr, info
 end
+
+-- ---------------------------------------------------------------------------
+-- The editor's relay client (M.relay)
+-- ---------------------------------------------------------------------------
+
+--- `M.relay` — the editor's side of the `--stdio` relay (spec §19.16
+--- "Through the relay", §19.10 "Connections").
+---
+--- The editor never reads the handle or the machine key to connect: it spawns
+--- `<binary> daemon run --root <root> --stdio [--no-launch [--retiring <id> |
+--- --skip-instance <id>]]` and speaks the protocol over the relay's standard
+--- input and output. The relay runs the socket handshake (and, in its
+--- ordinary form, launches the shared daemon) on the editor's behalf and
+--- forwards the daemon's `welcome` with `daemon = {…}` and `via = "relay"`
+--- added; there is no `challenge` on this side.
+---
+--- The relay process (normative, §19.16 "The relay process"):
+---   * spawned hidden and NOT detached, plain pipes for standard input,
+---     output and error, the per-user state directory as working directory,
+---     the environment a daemon launch would get (launch.env);
+---   * no handshake timeout here: every step of a relay is bounded inside
+---     the relay, and the waiting forms wait without a bound by design;
+---   * ended by closing its standard input (it exits 0); only when it has not
+---     exited KILL_MS later is its own pid killed — a plain kill, NEVER a
+---     process-tree kill (on Windows the daemon a relay launched is its child
+---     by parent pid, loomworks.daemon.discover: a tree kill would take the
+---     shared daemon down). An older pin's attached `--stdio` runtime (a
+---     `welcome` without `via`) is ended the same way;
+---   * the exit status is reported only for a relay that exits before the
+---     editor received `welcome` (and that the editor did not end itself);
+---     after `welcome` any exit or EOF is a drop of the connection. The exit
+---     and the EOF on standard output arrive in either order.
+---   * standard error is kept: its `lw: …` line is the Runtime line's detail,
+---     and a status-14 relay's last line `retiring <pid>:<start_time>`
+---     (§19.10 "Retiring-instance line") names the instance for `--retiring`.
+---
+--- Libuv callbacks here never call vim.fn; the caller's callbacks are
+--- invoked from libuv callbacks and must only schedule.
+
+local RC = {}
+
+local function relay_env_ms(name)
+    local v = tonumber(os.getenv(name) or "")
+    return (v and v > 0) and v or nil
+end
+
+--- How long after closing a relay's standard input the editor waits before
+--- it kills the relay's own process id (spec §19.16: about 5 s).
+RC.KILL_MS = relay_env_ms("LW_TEST_RELAY_KILL_MS") or 5000
+--- How long, once the relay exited, its remaining pipe EOFs are waited for
+--- before the outcome is reported anyway (the daemon never holds them).
+RC.EOF_GRACE_MS = 1000
+--- How many standard-error lines are kept.
+RC.STDERR_LINES = 50
+
+--- The relay forms (§19.16 "Through the relay").
+RC.FORMS = { ordinary = true, ["no-launch"] = true, retiring = true, skip = true }
+
+--- The `daemon run` arguments of a relay form (after the executable prefix).
+--- @param root string
+--- @param form "ordinary"|"no-launch"|"retiring"|"skip"
+--- @param instance? string `<pid>:<start_time>` (retiring, skip)
+--- @return string[]
+function RC.args(root, form, instance)
+    local a = { "daemon", "run", "--root", root, "--stdio" }
+    if form == "no-launch" or form == "retiring" or form == "skip" then a[#a + 1] = "--no-launch" end
+    if form == "retiring" then
+        a[#a + 1] = "--retiring"; a[#a + 1] = instance
+    elseif form == "skip" then
+        a[#a + 1] = "--skip-instance"; a[#a + 1] = instance
+    end
+    return a
+end
+
+--- The retiring instance a status-14 relay named: its LAST standard-error
+--- line when that is exactly `retiring <pid>:<start_time>` (§19.10
+--- "Retiring-instance line"; both parts in the form `--retiring` takes), or
+--- nil (a relay of an older pin, a daemon without a start time).
+--- @param lines string[]
+--- @return string|nil instance id
+function RC.retiring_instance(lines)
+    local last
+    for i = #lines, 1, -1 do
+        if lines[i] ~= "" then last = lines[i]; break end
+    end
+    local id = last and last:match("^retiring (%S+)$")
+    if not id then return nil end
+    local connect = require("loomworks.daemon.connect")
+    local inst = connect.parse_instance(id)
+    return inst and connect.instance_id(inst) or nil
+end
+
+--- The detail line of a relay's standard error: its last `lw: …` line, else
+--- its last non-empty line that is not the retiring-instance line.
+--- @param lines string[]
+--- @return string|nil
+function RC.detail_line(lines)
+    local fallback
+    for i = #lines, 1, -1 do
+        local l = lines[i]
+        if l:sub(1, 4) == "lw: " then return l end
+        if not fallback and l ~= "" and not l:match("^retiring ") then fallback = l end
+    end
+    return fallback
+end
+
+--- @class loomworks.daemon.RelayProc  one relay process (the editor's)
+--- @field form string
+--- @field pid integer|nil
+--- @field code integer|nil its exit status, once it exited
+--- @field lines string[] its standard-error lines (the last STDERR_LINES)
+--- @field eof boolean|nil its standard output reached EOF (it exited: the daemon holds none of its pipes)
+--- @field welcomed boolean|nil the editor received `welcome` through it
+--- @field ended boolean|nil the editor ended it (closed its standard input): its exit is not mapped
+--- @field done boolean|nil the outcome was reported (welcome, or the exit before it)
+--- @field conn loomworks.daemon.Conn|nil the connection over it
+local Relay = {}
+Relay.__index = Relay
+
+--- @class loomworks.daemon.RelayExit  a relay that exited before `welcome`
+--- @field code integer|nil the exit status (nil: unknown — it was ended after a protocol error)
+--- @field line string|nil the detail line (RC.detail_line)
+--- @field retiring string|nil the instance a status-14 relay named (RC.retiring_instance)
+--- @field form string the relay's form
+
+local function close_handle(h)
+    if h then pcall(function() if not h:is_closing() then h:close() end end) end
+end
+
+--- End the relay (idempotent): close its standard input; when it has not
+--- exited KILL_MS later, kill its own process (never its tree).
+function Relay:close()
+    if self.ended then return end
+    self.ended = true
+    if self.stdin then
+        local s = self.stdin
+        -- EOF after what was queued; a shutdown that cannot be queued (the
+        -- pipe already closing or broken) closes it outright.
+        local ok, res = pcall(function() return s:shutdown(function() close_handle(s) end) end)
+        if not ok or not res then close_handle(s) end
+    end
+    if self.code ~= nil then return end
+    local t = uv.new_timer()
+    self._kill_timer = t
+    t:start(self.kill_ms or RC.KILL_MS, 0, function()
+        close_handle(t)
+        if self.code == nil and self.proc and not self.proc:is_closing() then
+            -- A plain kill of the relay's own pid: on Windows TerminateProcess
+            -- of that one process; its children (the shared daemon) live on.
+            pcall(function() self.proc:kill("sigkill") end)
+        end
+    end)
+    pcall(function() t:unref() end)
+end
+
+--- The duplex stream a Conn writes and reads (frame_reader): writes go to
+--- the relay's standard input, reads come from its standard output; closing
+--- it ends the relay.
+local function duplex(r)
+    local s = {}
+    function s.write(_, data, cb)
+        if r.ended or not r.stdin then return end
+        return r.stdin:write(data, cb)
+    end
+    function s.read_start(_, cb) r.reader = cb end
+    function s.read_stop() r.reader = nil end
+    function s.is_closing() return r.ended == true end
+    function s.close() r:close() end
+    return s
+end
+
+--- Spawn a relay and speak the protocol through it. Returns the relay, or
+--- nil + why when it could not be spawned (nothing to end then).
+---
+--- opts:
+---   argv        the executable prefix (the selected host binary, e.g. `{ bin }`)
+---   root        the workspace root
+---   env         extra environment (the selection's, `binary.source`)
+---   form        "ordinary"|"no-launch"|"retiring"|"skip"
+---   instance    the `<pid>:<start_time>` of a retiring / skip relay
+---   client, role  the `hello`'s
+---   on_message  fun(msg) broadcasts after `welcome` (from a libuv callback)
+---   on_close    fun(conn) once the established connection closes (either side)
+---   kill_ms     replaces KILL_MS
+---
+--- `cb(conn|nil, err, exit)` is called at most once, from a libuv callback:
+--- with the connection once `welcome` arrived (`conn.relay` is the relay,
+--- `conn.challenge` = `welcome.daemon`, or {} for a `welcome` without `via`);
+--- or nil + "exit" + loomworks.daemon.RelayExit when the relay exited before
+--- `welcome`; or nil + "protocol" + RelayExit when it sent something else
+--- first (the relay is ended). Never for a relay the editor ended itself.
+--- @param opts table
+--- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, exit: loomworks.daemon.RelayExit|nil)
+--- @return loomworks.daemon.RelayProc|nil, string|nil
+function RC.connect(opts, cb)
+    local launch = require("loomworks.daemon.launch")
+    local paths = require("loomworks.daemon.paths")
+    local exit_status = require("loomworks.build_run").exit_status
+    local argv = vim.list_extend({}, opts.argv or {})
+    local exe = table.remove(argv, 1)
+    if not exe then return nil, "no host binary" end
+    for _, a in ipairs(RC.args(opts.root, opts.form, opts.instance)) do argv[#argv + 1] = a end
+    local cwd = paths.state_dir()
+    pcall(vim.fn.mkdir, cwd, "p")
+    if not uv.fs_stat(cwd) then return nil, "cannot create " .. cwd end
+    -- Built here, on the main loop (the version fingerprint uses vim.fn).
+    local nonce = auth.nonce() or string.rep("0", 64)
+    local hello = protocol.encode({ kind = protocol.KIND.hello, protocol = protocol.VERSION,
+        protocol_min = protocol.VERSION_MIN, lw_version = version.identity(), schemas = version.schemas(),
+        client = opts.client or "editor", role = opts.role, nonce = nonce })
+    local env = launch.env(opts.root, opts.env)
+
+    local r = setmetatable({ form = opts.form, lines = {}, kill_ms = opts.kill_ms }, Relay)
+    local stdin, stdout, stderr = uv.new_pipe(false), uv.new_pipe(false), uv.new_pipe(false)
+    r.stdin = stdin
+    local out_eof, err_eof, partial = false, false, ""
+    local reported = false
+    local conn = setmetatable({ _pending = {}, relay = r }, Conn)
+    conn.pipe = duplex(r)
+    r.conn = conn
+
+    local function report(c, err, info)
+        if reported then return end
+        reported = true
+        r.done = true
+        if r.ended and not c then return end -- ended by the editor: not mapped
+        cb(c, err, info)
+    end
+    local function exit_info()
+        return { code = r.code, line = RC.detail_line(r.lines), retiring = RC.retiring_instance(r.lines), form = r.form }
+    end
+    -- Before `welcome`: report the exit once the status is known and the
+    -- output has ended (in either order; the remaining EOFs only briefly).
+    local grace
+    local function settle()
+        if reported or r.welcomed then return end
+        if r.code == nil then return end
+        if out_eof and err_eof then return report(nil, "exit", exit_info()) end
+        if not grace then
+            grace = uv.new_timer()
+            grace:start(RC.EOF_GRACE_MS, 0, function()
+                close_handle(grace)
+                if not reported and not r.welcomed then report(nil, "exit", exit_info()) end
+            end)
+        end
+    end
+
+    -- The handshake: frame_reader in state "auth" (no challenge on a relay).
+    local function finish(c, err, detail)
+        if c then
+            r.welcomed = true
+            local w = c.welcome or {}
+            if w.via == "relay" and type(w.daemon) == "table" then
+                c.challenge = w.daemon
+                c.transport = M._agreed(w.daemon, opts)
+            else
+                -- An older pin's attached runtime (§19.10 "Compatibility"): no
+                -- `daemon` to judge; interface calls only when it lists objects.
+                c.challenge = {}
+                c.transport = type(w.objects) == "table" and 11 or 10
+            end
+            return report(c)
+        end
+        if out_eof then return settle() end -- the relay is exiting: wait for its status
+        -- Something other than `welcome` first: end it, not mapped by status.
+        local info = exit_info()
+        info.code = nil
+        info.line = "the relay sent no welcome first (" .. tostring(detail or err) .. ")"
+        report(nil, "protocol", info)
+        r:close()
+    end
+    local reader = frame_reader(conn, opts, "auth", finish, function() return r.welcomed == true end)
+    r.reader = reader
+
+    local okp, proc, pid = pcall(uv.spawn, exe, {
+        args = argv, env = env, cwd = cwd,
+        stdio = { stdin, stdout, stderr },
+        hide = true,
+        detached = false,
+    }, function(code, signal)
+        r.code = exit_status(code, signal)
+        if r._kill_timer then close_handle(r._kill_timer) end
+        close_handle(r.proc)
+        if r.welcomed then
+            -- After `welcome` any exit is a drop.
+            if not conn.closed then conn:close() end
+            return
+        end
+        settle()
+    end)
+    if not okp or not proc then
+        close_handle(stdin); close_handle(stdout); close_handle(stderr)
+        return nil, "cannot start " .. tostring(exe) .. ": " .. tostring(okp and pid or proc)
+    end
+    r.proc, r.pid = proc, pid
+
+    stdout:read_start(function(rerr, chunk)
+        if chunk then
+            if r.reader then r.reader(nil, chunk) end
+            return
+        end
+        out_eof = true
+        r.eof = true
+        close_handle(stdout)
+        -- EOF (or a read error): before `welcome` the handshake ends and the
+        -- status is awaited; after it, the connection drops.
+        if r.reader then r.reader(rerr, nil) elseif r.welcomed and not conn.closed then conn:close() end
+        if not r.welcomed then settle() end
+    end)
+    stderr:read_start(function(_, chunk)
+        if chunk then
+            partial = partial .. chunk
+            while true do
+                local nl = partial:find("\n", 1, true)
+                if not nl then break end
+                r.lines[#r.lines + 1] = (partial:sub(1, nl - 1):gsub("\r$", ""))
+                partial = partial:sub(nl + 1)
+                if #r.lines > RC.STDERR_LINES then table.remove(r.lines, 1) end
+            end
+            return
+        end
+        if partial ~= "" then r.lines[#r.lines + 1] = (partial:gsub("\r$", "")); partial = "" end
+        err_eof = true
+        close_handle(stderr)
+        settle()
+    end)
+    pcall(function() stdin:write(hello) end)
+    return r
+end
+
+M.relay = RC
 
 return M

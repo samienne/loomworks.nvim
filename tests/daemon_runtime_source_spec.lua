@@ -149,7 +149,7 @@ describe("the Runtime line (spec/ui.md §1.1)", function()
 
     local function attach(env, content)
         return observer.attach(ws, { getenv = env_of(env), settings_file = settings_file(content),
-            watch_ms = 50, keepalive_ms = 100, resolve = function() return nil end })
+            keepalive_ms = 100, resolve = function() return nil end })
     end
 
     local function header()

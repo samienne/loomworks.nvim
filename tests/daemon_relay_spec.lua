@@ -53,6 +53,10 @@ describe("relay arguments (§19.10 \"Relay exit status\": usage)", function()
         assert.same({ pid = 7, start_time = "linux:b:1" }, o.skip)
         o = assert(relay.parse(args("--root", "/w", "--stdio", "--private"), env1))
         assert.is_true(o.private)
+        o = assert(relay.parse(args("--root", "/w", "--stdio", "--no-launch", "--retiring", "12:win:99"), env0))
+        assert.same({ pid = 12, start_time = "win:99" }, o.retiring)
+        o = assert(relay.parse(args("--root", "/w", "--stdio", "--no-launch", "--retiring=7:linux:b:1"), env0))
+        assert.same({ pid = 7, start_time = "linux:b:1" }, o.retiring)
     end)
 
     it("refuses each usage error", function()
@@ -69,6 +73,12 @@ describe("relay arguments (§19.10 \"Relay exit status\": usage)", function()
             { args("--root", "/w", "--stdio", "--no-launch", "--skip-instance"), env0, "<pid>:<start_time>" },
             { args("--root", "/w", "--stdio", "--no-launch", "--skip-instance", "1:win:1", "--skip-instance", "2:win:2"),
                 env0, "at most one" },
+            { args("--root", "/w", "--stdio", "--retiring", "1:win:1"), env0, "--retiring needs --no-launch" },
+            { args("--root", "/w", "--stdio", "--no-launch", "--retiring", "garbage"), env0, "<pid>:<start_time>" },
+            { args("--root", "/w", "--stdio", "--no-launch", "--retiring", "12"), env0, "<pid>:<start_time>" },
+            { args("--root", "/w", "--stdio", "--no-launch", "--retiring"), env0, "<pid>:<start_time>" },
+            { args("--root", "/w", "--stdio", "--no-launch", "--retiring", "1:win:1", "--retiring", "2:win:2"),
+                env0, "at most one" },
         }
         for _, c in ipairs(cases) do
             local o, err = relay.parse(c[1], c[2])
@@ -81,6 +91,8 @@ describe("relay arguments (§19.10 \"Relay exit status\": usage)", function()
         local command = require("loomworks.daemon.command")
         assert.is_true(command.relay_form(args("--root", "/w", "--stdio")))
         assert.is_true(command.relay_form(args("--skip-instance=1:win:1")))
+        assert.is_true(command.relay_form(args("--retiring", "1:win:1")))
+        assert.is_true(command.relay_form(args("--retiring=1:win:1")))
         assert.is_false(command.relay_form(args("--root", "/w", "--", "--stdio")))
         assert.is_false(command.relay_form(args("--", "--private", "--no-launch", "--skip-instance", "1:win:1")))
         -- `lw daemon run -- --stdio` is the ordinary foreground server, never the relay.
@@ -528,7 +540,7 @@ describe("the relay against an in-process daemon", function()
         assert.equals(0, #h.out)
     end)
 
-    it("14: the retiring daemon still holds the lock after RELAY_RETIRE_WAIT", function()
+    it("14: the retiring daemon still holds the lock after RELAY_RETIRE_WAIT; its retiring line feeds --retiring", function()
         relay.RETIRE_WAIT_MS = 500
         start_server()
         srv.busy = true
@@ -536,9 +548,43 @@ describe("the relay against an in-process daemon", function()
         local h = harness()
         h.send(hello())
         assert.equals(14, h.run())
-        assert.truthy(h.note():find("retiring", 1, true), h.note())
         assert.equals(0, #h.out)
+        -- Its `lw: …` line, then exactly `retiring <pid>:<start_time>`, last
+        -- (§19.10 "Retiring-instance line").
+        assert.equals(2, #h.notes, h.note())
+        assert.truthy(h.notes[1]:find("^lw: the retiring workspace daemon"), h.note())
+        local id = connect.instance_id({ pid = srv.pid, start_time = srv.start_time })
+        assert.equals("retiring " .. id, h.notes[2])
         assert.is_true(vim.wait(5000, function() return srv:client_count() == 0 end, 20))
+        -- The editor's parse of it, and `--no-launch --retiring` given that
+        -- value exits 16 once the daemon has released the lock.
+        local rc = require("loomworks.daemon.client").relay
+        assert.equals(id, rc.retiring_instance(h.notes))
+        assert.equals(h.notes[1], rc.detail_line(h.notes))
+        local h2 = harness({ relay = { no_launch = true, retiring = connect.parse_instance(id) } })
+        h2.send(hello())
+        local max_clients = 0
+        local t = uv.new_timer()
+        t:start(20, 20, vim.schedule_wrap(function()
+            if srv and not srv.stopped then max_clients = math.max(max_clients, srv:client_count()) end
+        end))
+        vim.defer_fn(function() srv.busy = false; srv:_maybe_retire() end, 600)
+        vim.defer_fn(function() h2.close() end, 60000)
+        assert.equals(16, h2.run(), h2.note())
+        t:stop(); t:close()
+        -- Never connected to the named retiring daemon.
+        assert.equals(0, max_clients)
+        assert.equals(0, #h2.out)
+    end)
+
+    it("no retiring line for a daemon whose start time is unknown", function()
+        assert.is_nil(relay.retiring_line({ pid = 5 }))
+        assert.equals("retiring 5:win:1", relay.retiring_line({ pid = 5, start_time = "win:1" }))
+        local rc = require("loomworks.daemon.client").relay
+        assert.is_nil(rc.retiring_instance({ "lw: x" }))
+        assert.is_nil(rc.retiring_instance({ "retiring 5:win:1", "lw: later" }))
+        assert.is_nil(rc.retiring_instance({ "retiring nope" }))
+        assert.equals("5:win:1", rc.retiring_instance({ "lw: x", "retiring 5:win:1", "" }))
     end)
 
     describe("--no-launch", function()
@@ -601,6 +647,24 @@ describe("the relay against an in-process daemon", function()
             assert.equals(0, #h.out)
         end)
 
+        it("--retiring naming an instance already gone, with none other live: 16 at once", function()
+            local h = harness({ relay = { no_launch = true, retiring = { pid = 999999, start_time = "win:1" } } })
+            h.send(hello())
+            vim.defer_fn(function() h.close() end, 60000)
+            assert.equals(16, h.run(), h.note())
+            assert.equals(0, #h.out)
+            assert.is_nil(inspect.state(root).lock)
+        end)
+
+        it("--retiring with another daemon live connects to that one", function()
+            start_server()
+            local h = harness({ relay = { no_launch = true, retiring = { pid = srv.pid, start_time = "win:0" } },
+                on_frame = ping_then_close })
+            h.send(hello())
+            assert.equals(0, h.run(), h.note())
+            assert.equals("relay", h.frames[1].via)
+        end)
+
         it("--skip-instance naming another instance does not skip the live daemon", function()
             start_server()
             local h = harness({ relay = { no_launch = true, skip = { pid = srv.pid, start_time = "win:0" } },
@@ -645,6 +709,8 @@ describe("the relay as a real process", function()
             { "daemon", "run", "--root", root, "--no-launch" },
             { "daemon", "run", "--root", root, "--stdio", "--skip-instance", "1:win:1" },
             { "daemon", "run", "--root", root, "--stdio", "--no-launch", "--skip-instance", "nope" },
+            { "daemon", "run", "--root", root, "--stdio", "--retiring", "1:win:1" },
+            { "daemon", "run", "--root", root, "--stdio", "--no-launch", "--retiring", "nope" },
         }) do
             local r = H.lw(a, { env = env, cwd = root })
             assert.equals(2, r.code, table.concat(a, " ") .. "\n" .. r.stderr)

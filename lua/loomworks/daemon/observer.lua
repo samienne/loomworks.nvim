@@ -6,19 +6,28 @@
 --- `Workspace:teardown`). It never runs an operation: the editor's own
 --- operations stay on the in-process path. It
 ---
----   * resolves a host binary (loomworks.provision.select) and launches
----     `<binary> daemon run --root <root>` only when no daemon is live on
----     workspace load or on an explicit `:LoomworksDaemon connect`, and once
----     after the observed daemon retired (a version change) and exited with
----     no successor — never after any other drop (`lw daemon stop` must stop
----     it); a search-path or explicit lw is first probed with `lw version
----     --json` (loomworks.provision.probe, the `probing` state, step 5h.5);
----   * watches the handle (WATCH_MS) and connects to a live daemon whose
----     transport range overlaps ours and whose schemas are not newer (the host
----     version may differ), as `client = "editor"`, `role = "observer"`, and
----     pings it every KEEPALIVE_MS (§19.11);
----   * skips a daemon that is `retiring` (broadcast or in `welcome`) or
----     incompatible, identified by pid + start time;
+---   * connects ONLY through the `--stdio` relay (loomworks.daemon.
+---     client.relay, §19.16 "Through the relay", step 5i PR G1): before each
+---     spawn it selects the host binary (loomworks.provision.select; a
+---     search-path or explicit lw is first probed with `lw version --json`,
+---     loomworks.provision.probe, the `probing` state, step 5h.5) and runs
+---     `<binary> daemon run --root <root> --stdio` — the ordinary form (it
+---     connects to the workspace's daemon or starts it) on workspace load,
+---     on `:LoomworksDaemon connect`, on `retiring` / after its own `retire`,
+---     and once per retirement episode after a status 16; a `--no-launch`
+---     relay after a drop (so `lw daemon stop` stays meaningful) and after a
+---     status 10 / 11 / 14; `--no-launch --retiring <id>` after a status 14
+---     that named the retiring daemon. It reads none of lw's internal files to
+---     connect, launch or follow a daemon (only `_prune`'s in-use check reads
+---     the handle, read-only). With no host binary it spawns nothing and
+---     stays in-process;
+---   * judges `welcome.daemon` (transport range overlapping ours, schemas not
+---     newer; the host version may differ) as `client = "editor"`, `role =
+---     "observer"`, and pings it every KEEPALIVE_MS (§19.11); a `welcome`
+---     without `via` (an older pin's attached `--stdio`) is observed without
+---     that check and never retired. Until step 5i PR G2 an incompatible
+---     daemon it does not observe has its relay closed, and the editor stays
+---     in-process until an explicit connect;
 ---   * on a transport-11 daemon (`welcome.objects`, §19.20) re-describes it
 ---     (`Root.describe`, bounded by DESCRIBE_MS, falling back to
 ---     `welcome.objects`) and subscribes to `loomworks.Tasks/1` on `/tasks`
@@ -59,10 +68,6 @@ end
 
 --- Keepalive interval (spec §19.11: about every 30 s).
 M.KEEPALIVE_MS = env_ms("LW_TEST_DAEMON_KEEPALIVE_MS") or 30000
---- Handle watch interval (spec §19.16: about every 2 s).
-M.WATCH_MS = env_ms("LW_TEST_OBSERVER_WATCH_MS") or 2000
---- Handshake timeout.
-M.CONNECT_MS = env_ms("LW_TEST_DAEMON_STEP_MS") or 5000
 --- How often a busy incompatible daemon is re-checked (spec §19.16
 --- "Retiring an incompatible daemon": about every 30 s).
 M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
@@ -70,7 +75,7 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @class loomworks.daemon.Observer
 --- @field ws loomworks.Workspace
 --- @field root string
---- @field state "idle"|"no-binary"|"probing"|"downloading"|"launching"|"connecting"|"connected"|"waiting"|"stopped"
+--- @field state "idle"|"no-binary"|"probing"|"downloading"|"connecting"|"connected"|"waiting"|"stopped"
 --- @field note string|nil the current Runtime note
 --- @field conn loomworks.daemon.Conn|nil
 --- @field daemon { pid: integer, start_time: string|nil, lw_version: string|nil, exe: string|nil }|nil the observed daemon (`exe`: the binary its handle names)
@@ -81,11 +86,13 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
 --- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
 --- @field generation any session generation of the observed daemon
---- @field skip table<string, boolean> daemons never connected to again ("pid:start")
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
---- @field _child table|nil the daemon this observer launched (until it is live or exited): `{ pid, code }`
---- @field _binary string|nil the host binary it was launched from
+--- @field _relay loomworks.daemon.RelayProc|nil the relay in flight, until its `welcome` or its exit (single flight); after `welcome` the relay is the connection's (`conn.relay`)
+--- @field _relay_token table|nil identifies that relay's callback: `{ form, answer, conn }` (one after a stop or a replacement is ignored)
+--- @field _want table|nil the relay to spawn once a probe or download in flight ends: `{ form, instance?, answer?, prefix? }`
+--- @field _episode { launched: boolean|nil }|nil the open retirement episode (§19.16 "Following a stopped or retiring daemon"): its one ordinary relay after a status 16 is spent once `launched`
+--- @field _binary string|nil the host binary the last relay was spawned from (an ordinary relay launches the daemon from it)
 --- @field _downloading string|nil the hash of the plugin-managed lw being downloaded (step 5h.3)
 --- @field _dl_token table|nil identifies that download's callback (a cancelled one's is ignored)
 --- @field _download_failed string|nil the hash whose download failed: not retried until an explicit connect
@@ -95,14 +102,9 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @field _probe_backstop uv.uv_timer_t|nil ends `probing` as unknown if the probe never calls back
 --- @field probe_note string|nil the last selection's lasting probe note (a skipped lw on PATH, an incompatible explicit lw), shown on the Runtime line
 --- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
---- @field _connecting table|nil the one connection attempt in flight (single-flight token)
---- @field _watch userdata|nil the handle-watch timer
 --- @field _keepalive userdata|nil the keepalive ping timer
 --- @field _retire_timer userdata|nil the busy incompatible daemon's re-check timer
---- @field _dropped boolean|nil the last connection dropped (keeps its note while waiting)
---- @field _dropped_id string|nil the daemon that last dropped us: a reconnect to it is quiet
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
---- @field _relaunch boolean|nil the observed daemon retired: launch one successor once it has exited
 --- @field _retire loomworks.daemon.RetireWait|nil an incompatible daemon weighed for a retirement (step 5h.5): its connection is the observed one (older schemas only) or held, unobserved, while the selected binary is probed or while the daemon is busy
 --- @field incompat_note string|nil the observed daemon is incompatible (older schemas): what the editor does about it, on the Runtime line
 --- @field retire_check_ms integer how often a busy incompatible daemon is re-checked through `status` (spec §19.16: about every 30 s)
@@ -112,13 +114,10 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @field _channel_next integer|nil when (epoch s) the next background channel check is weighed
 --- @field _channel_force boolean|nil an explicit connect asked for a channel check that could not run yet
 --- @field opts table the attach options (test seams, see `attach`)
---- @field watch_ms integer handle-watch interval
 --- @field keepalive_ms integer keepalive ping interval
 --- @field warning string|nil an invalid runtime-mode value that was ignored (shown on the Runtime line)
 local Observer = {}
 Observer.__index = Observer
-
-local function daemon_id(pid, start) return tostring(pid) .. ":" .. tostring(start) end
 
 --- The interface versions the observer uses (spec §19.16 "Interface client",
 --- step 5g.3): each names its object, interface and version (the guard's
@@ -181,7 +180,8 @@ end
 ---   settings_file / read_setting  lw's settings file (loomworks.daemon.runtime.read_setting)
 ---   binary      the setup option `binary` (loomworks.provision.BinarySetting)
 ---   resolve     fun(root, opts) → binary|nil, source, selection (loomworks.provision.binsel.resolve)
----   spawn       fun(root, opts) → child|nil, err (loomworks.daemon.launch.spawn)
+---   relay       fun(opts, cb) → relay|nil, err (loomworks.daemon.client.relay.connect: spawns the relay)
+---   kill_ms     the relay's kill backstop (loomworks.daemon.client.relay.KILL_MS)
 ---   probe_cached fun(path) → verdict|nil, or false (loomworks.provision.probe.cached; passed to resolve)
 ---   run_probe   fun(path, opts, cb(verdict)) (loomworks.provision.probe.run)
 ---   probe_backstop_ms  how long to wait for run_probe's callback before going on as unknown (default probe.TIMEOUT_MS + 2 s)
@@ -189,9 +189,7 @@ end
 ---   cancel_fetch fun(sha256, why) (loomworks.provision.fetch.cancel)
 ---   touch       fun(path) (loomworks.provision.managed.touch)
 ---   prune       fun(opts) (loomworks.provision.cache.prune)
----   inspect     fun(root) → state (loomworks.daemon.inspect.state)
----   connect     fun(endpoint, opts, cb) (loomworks.daemon.client.connect)
----   check       fun(root, endpoint) → ok, why (loomworks.daemon.endpoint.check)
+---   inspect     fun(root) → state (loomworks.daemon.inspect.state; only `_prune`'s read-only in-use check)
 ---   wanted      fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.wanted: the managed lw's version, for a retirement)
 ---   data        the editor's data directory (the managed lw, channel.json; default stdpath("data"))
 ---   pinned_wanted fun() → loomworks.provision.Wanted|nil (loomworks.provision.managed.pinned_wanted)
@@ -199,7 +197,7 @@ end
 ---   channel_load / channel_save  replace loomworks.provision.channel.load / save
 ---   now         fun() → epoch seconds (the channel interval)
 ---   notify      fun(msg, level) (vim.notify: the one notice of a retirement)
----   watch_ms, keepalive_ms, retire_check_ms
+---   keepalive_ms, retire_check_ms
 --- @param ws loomworks.Workspace
 --- @param opts? table
 --- @return loomworks.daemon.Observer|nil
@@ -215,9 +213,8 @@ function M.attach(ws, opts)
     if not sel.daemon then return nil end
     if ws._daemon_observer then return ws._daemon_observer end
     local self = setmetatable({
-        ws = ws, root = ws.root, opts = opts, state = "idle", seq = 0, skip = {},
+        ws = ws, root = ws.root, opts = opts, state = "idle", seq = 0,
         _tasks = {}, _order = {},
-        watch_ms = opts.watch_ms or M.WATCH_MS,
         keepalive_ms = opts.keepalive_ms or M.KEEPALIVE_MS,
         retire_check_ms = opts.retire_check_ms or M.RETIRE_CHECK_MS,
     }, Observer)
@@ -245,54 +242,49 @@ function Observer:_set(state, note)
     self:_emit("daemon_runtime_changed", self)
 end
 
-function Observer:_inspect()
-    return (self.opts.inspect or require("loomworks.daemon.inspect").state)(self.root)
-end
-
---- Start observing: connect to a live daemon, or launch one (spec §19.16:
---- here — on workspace load, or `explicit` from `:LoomworksDaemon connect` —
---- and once after a retirement (`_on_watch`), never after another drop), then
---- keep watching the handle.
+--- Start observing (spec §19.16 "Through the relay"): spawn an ordinary
+--- relay — on workspace load, or `explicit` from `:LoomworksDaemon connect`,
+--- which also ends a relay that only waits (it launches nothing) and the open
+--- retirement episode. Single flight: nothing while connected, while a
+--- connection is held to retire an incompatible daemon, or while an
+--- ordinary relay is in flight.
 --- @param explicit boolean
 function Observer:start(explicit)
     if self.state == "stopped" then return end
     if explicit then
-        self.skip = {}; self._download_failed = nil
+        self._download_failed = nil
+        self._episode = nil
         -- An explicit connect aborts a download in flight (it may hang) and
         -- starts over.
         if self._downloading then self:_cancel_download("restarted by :LoomworksDaemon connect") end
     end
-    self:_start_watch()
     -- The binary.channel check runs in the background (step 5h.5): on load
     -- when due, and on every explicit connect.
     self:_channel_check(explicit)
-    -- Single-flight: one connection, one attempt, one launch at a time (a
-    -- connection held to retire an incompatible daemon included).
-    if self.conn or self._connecting or self._retire then return end
-    if self._child and self._child.code == nil then return end
-    if self._downloading or self._probing then return end
-    local st = self:_inspect()
-    if st.kind == "live" then return self:_connect(st) end
-    if st.kind == "none" or st.kind == "stale" or st.kind == "unreadable" then
-        return self:_launch()
+    if self.conn or self._retire then return end
+    if self._downloading or self._probing then
+        if explicit then self._want = { form = "ordinary" } end
+        return
     end
-    self:_set("waiting", M.state_note(st))
+    if self._relay then
+        if not explicit or (self._relay_token and self._relay_token.form == "ordinary") then return end
+        self:_end_relay()
+    end
+    self:_spawn({ form = "ordinary" })
 end
 
---- The note for a daemon state the observer does not launch over.
---- @param st table
+--- The waiting note of a relay form until it forwards `welcome` (§19.16
+--- "Waiting notes"). `what` names the binary and its source (ordinary).
+--- @param form string
+--- @param what? string
 --- @return string
-function M.state_note(st)
-    local pid = st.lock and st.lock.pid or (st.handle and st.handle.pid) or "?"
-    if st.kind == "starting" then return "the workspace daemon (pid " .. tostring(pid) .. ") is starting" end
-    if st.kind == "hung" then
-        return "the workspace daemon (pid " .. tostring(pid) .. ") is not responding — lw daemon stop --force"
+function M.form_note(form, what)
+    if form == "ordinary" then
+        return "connecting to or starting the workspace daemon" .. (what and (" (" .. what .. ")") or "")
+    elseif form == "retiring" then
+        return "waiting for the retiring daemon to exit"
     end
-    if st.kind == "foreign" then
-        return "the workspace daemon runs on " .. tostring(st.lock and st.lock.host or "another host")
-    end
-    if st.kind == "attached" then return "the workspace runtime is held by an lw command (pid " .. tostring(pid) .. ")" end
-    return "no workspace daemon — waiting for one"
+    return "waiting for a workspace daemon, none is launched (:LoomworksDaemon connect starts one)"
 end
 
 --- The note for a daemon this plugin cannot observe (spec §19.16 "version
@@ -320,13 +312,19 @@ function M.mismatch_note(ch, what, binary)
         lw, theirs, version.identity(), ours)
 end
 
---- Select the host binary and launch the daemon from it. A search-path or
---- explicit lw with no cached probe verdict is probed first (spec §19.16
---- "Pre-launch probe", step 5h.5: `_probe`, then here again with `probed`
---- set, so a binary whose verdict could not be cached is launched as
---- unknown rather than probed again).
+--- Select the host binary and spawn a relay of `want.form` from it (spec
+--- §19.16 "Through the relay"). A search-path or explicit lw with no cached
+--- probe verdict is probed first (spec §19.16 "Pre-launch probe", step 5h.5:
+--- `_probe`, then here again with `probed` set, so a binary whose verdict
+--- could not be cached is used as unknown rather than probed again); a
+--- wanted plugin-managed lw is downloaded first. With no host binary no
+--- relay is spawned: the editor stays in-process.
+--- want: { form, instance? (retiring), answer? (spawned for a status 10/11),
+---         prefix? (the note it follows) }
+--- @param want table
 --- @param probed? boolean called back from `_probe`
-function Observer:_launch(probed)
+function Observer:_spawn(want, probed)
+    self._want = want
     local binsel = require("loomworks.provision.select")
     local resolve = self.opts.resolve or binsel.resolve
     local bin, source, sel = resolve(self.root, { getenv = self.opts.getenv, setting = self.opts.binary,
@@ -339,30 +337,59 @@ function Observer:_launch(probed)
     if bin and sel.probe and not probed then return self:_probe(sel.probe) end
     if not bin then
         if sel.download then return self:_download(sel) end
+        self._want = nil
         return self:_set("no-binary", binsel.none_note(sel))
     end
-    local spawn = self.opts.spawn or require("loomworks.daemon.launch").spawn
-    local child, err = spawn(self.root, { argv = { bin }, env = sel.env })
-    if not child then
-        return self:_set("waiting", "could not start the workspace daemon from " .. bin .. " ("
+    self._want = nil
+    local token = { form = want.form, answer = want.answer }
+    local connect = self.opts.relay or require("loomworks.daemon.client").relay.connect
+    local r, err = connect({
+        argv = { bin }, root = self.root, env = sel.env, form = want.form, instance = want.instance,
+        client = "editor", role = "observer", kill_ms = self.opts.kill_ms,
+        on_message = function(msg)
+            vim.schedule(function()
+                -- Only the observed connection's messages count: one held
+                -- to retire an incompatible daemon it cannot observe is not
+                -- observed through (its task frames would start tasks that
+                -- nothing ends).
+                if not token.conn or token.conn ~= self.conn then return end
+                self:_on_message(msg)
+            end)
+        end,
+        on_close = function(c) vim.schedule(function() self:_on_closed(c) end) end,
+    }, function(conn, cerr, info)
+        vim.schedule(function() self:_on_relay(token, conn, cerr, info) end)
+    end)
+    if not r then
+        return self:_set("waiting", "could not start the relay to the workspace daemon from " .. bin .. " ("
             .. tostring(err) .. ")")
     end
-    self._child = child
+    self._relay, self._relay_token = r, token
     self._binary = bin
-    self:_set("launching", "starting the workspace daemon (" .. (sel.label and binsel.describe(sel) or bin) .. ")")
+    local note = M.form_note(want.form, sel.label and binsel.describe(sel) or bin)
+    if want.prefix then note = want.prefix .. " — " .. note end
+    self:_set(want.form == "ordinary" and "connecting" or "waiting", note)
+end
+
+--- End the relay in flight (before its `welcome`): close its standard input
+--- (client.relay: a plain kill of its own pid only after about 5 s, never a
+--- tree kill). Its exit is not mapped.
+function Observer:_end_relay()
+    local r = self._relay
+    self._relay, self._relay_token = nil, nil
+    if r then pcall(r.close, r) end
 end
 
 --- Probe `path` (`lw version --json`, async and bounded; loomworks.provision.
---- probe), then start over as after a download: connect to a daemon that
---- appeared meanwhile, or select again over the now cached verdict and
---- launch. The editor keeps working meanwhile; the Runtime note says so.
+--- probe), then select again over the now cached verdict and spawn the
+--- relay that was wanted (`_want`). The editor keeps working meanwhile; the Runtime note says so.
 --- @param path string
 function Observer:_probe(path)
     if self._probing then return end
     self._probing = path
     local token = {}
     self._probe_token = token
-    self:_set("probing", "checking " .. path .. " (lw version --json) before launching the workspace daemon")
+    self:_set("probing", "checking " .. path .. " (lw version --json) before connecting to the workspace daemon")
     local probe = require("loomworks.provision.probe")
     local run = self.opts.run_probe or probe.run
     -- Belt and braces: the probe is bounded (TIMEOUT_MS), but a callback
@@ -374,11 +401,8 @@ function Observer:_probe(path)
         self._probe_token, self._probing = nil, nil
         self:_stop_timer("_probe_backstop")
         if self.state == "stopped" then return end
-        if self.conn or self._connecting or (self._child and self._child.code == nil) then return end
-        local now = self:_inspect()
-        if now.kind == "live" then return self:_connect(now) end
-        if now.kind == "none" or now.kind == "stale" or now.kind == "unreadable" then return self:_launch(true) end
-        self:_set("waiting", M.state_note(now))
+        if self.conn or self._relay or self._retire then return end
+        self:_spawn(self._want or { form = "ordinary" }, true)
     end
     self._probe_backstop = uv.new_timer()
     self._probe_backstop:start(self.opts.probe_backstop_ms or (probe.TIMEOUT_MS + 2000), 0, vim.schedule_wrap(finish))
@@ -386,8 +410,7 @@ function Observer:_probe(path)
 end
 
 --- Download the plugin-managed lw the selection wants (spec §19.16, step
---- 5h.3), then start over: connect to a daemon that appeared meanwhile, or
---- launch. A failure is one note and leaves the editor in-process; it is not
+--- 5h.3), then spawn the relay that was wanted (`_want`). A failure is one note and leaves the editor in-process; it is not
 --- retried until `:LoomworksDaemon connect`.
 --- @param sel loomworks.provision.Selection
 function Observer:_download(sel)
@@ -414,11 +437,8 @@ function Observer:_download(sel)
             return self:_set("no-binary", self._download_note)
         end
         self:_prune(want)
-        if self.conn or self._connecting or (self._child and self._child.code == nil) then return end
-        local now = self:_inspect()
-        if now.kind == "live" then return self:_connect(now) end
-        if now.kind == "none" or now.kind == "stale" or now.kind == "unreadable" then return self:_launch() end
-        self:_set("waiting", M.state_note(now))
+        if self.conn or self._relay or self._retire then return end
+        self:_spawn(self._want or { form = "ordinary" })
     end)
     local url = type(st) == "table" and st.url or fetch.url(want, fopts)
     if self._downloading then
@@ -438,15 +458,17 @@ end
 --- Remove the plugin-managed binaries other than the wanted ones — `want`,
 --- the pin's and, with `binary.channel` set, the accepted channel release's
 --- (spec §19.16 "Channel upgrades": both are kept) — never one in use: the
---- binary this observer launched, the observed daemon's, the live daemon's
---- (loomworks.provision.cache, deletion-safety rule 11). Best effort.
+--- binary this observer's relays run from, the observed daemon's, the live
+--- daemon's (loomworks.provision.cache, deletion-safety rule 11). Best effort.
+--- (The live daemon's handle is read here, read-only, only for this in-use
+--- check — never to decide whether, when or to what the editor connects.)
 --- @param want loomworks.provision.Wanted
 function Observer:_prune(want)
     local list = {}
     local function use(p) if type(p) == "string" and p ~= "" then list[#list + 1] = p end end
     use(self._binary)
     use(self.daemon and self.daemon.exe)
-    local ok, st = pcall(self._inspect, self)
+    local ok, st = pcall(self.opts.inspect or require("loomworks.daemon.inspect").state, self.root)
     if ok and type(st) == "table" and type(st.handle) == "table" then use(st.handle.exe) end
     local keep, seen = {}, {}
     local function add(w)
@@ -566,8 +588,7 @@ function Observer:_channel_check(explicit)
                 if not path then
                     return save(chan.classify({ error = "could not install " .. what .. ": " .. tostring(err) }, c))
                 end
-                local running = self.conn or self._connecting or self._retire
-                    or (self._child and self._child.code == nil)
+                local running = self.conn or self._relay or self._retire
                 local extra = out.override and ("; " .. out.override) or ""
                 out.note = what .. " is installed"
                     .. (running and ": the next daemon launch uses it (the running daemon is not switched)" or "")
@@ -581,147 +602,128 @@ function Observer:_channel_check(explicit)
     end)
 end
 
-function Observer:_start_watch()
-    if self._watch then return end
-    local t = uv.new_timer()
-    self._watch = t
-    t:start(self.watch_ms, self.watch_ms, vim.schedule_wrap(function()
-        if self.state == "stopped" then return end
-        pcall(self._channel_check, self, false)
-        local ok, err = pcall(self._on_watch, self)
-        if not ok then self:_set("waiting", "internal error: " .. tostring(err)) end
-    end))
-end
-
---- One watch tick: a launched daemon that exited early is a note; a live
---- daemon we are not connected to is connected to (unless skipped).
-function Observer:_on_watch()
-    if self.conn or self._connecting or self._retire then return end
-    local st = self:_inspect()
-    local child = self._child
-    -- The launched daemon exited without becoming the live one. EXIT_HELD
-    -- means some runtime holds R — another daemon (then it is live or
-    -- starting and is picked up below) or an attached lw command (noted).
-    if child and child.code ~= nil and st.kind ~= "live" and st.kind ~= "starting" then
-        self._child = nil
-        if child.code == require("loomworks.daemon.server").EXIT_HELD then
-            return self:_set("waiting", M.state_note(st))
+--- The pinned `lw` version of the workspace (`lw.pin`, §16.21: the nearest
+--- one up from the root, not past a git working tree's top), for the note
+--- of a relay flag the pinned release does not support — read only for that
+--- note, never to decide anything — or nil. (Its `version = <v>` line only;
+--- the plugin does not use the lw side's pin module, boot.pin.)
+--- @param root string
+--- @return string|nil
+function M.pinned_version(root)
+    local dir = type(root) == "string" and root:gsub("\\", "/"):gsub("/+$", "") or ""
+    while dir ~= "" do
+        if uv.fs_stat(dir .. "/lw.pin") then
+            local f = io.open(dir .. "/lw.pin", "r")
+            if not f then return nil end
+            local text = f:read("*a") or ""
+            f:close()
+            for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+                local v = line:match("^%s*version%s*=%s*([%w%.%-%+]+)%s*$")
+                if v then return v end
+            end
+            return nil
         end
-        return self:_set("waiting", "could not start the workspace daemon (it exited with status "
-            .. tostring(child.code) .. ")")
+        if uv.fs_stat(dir .. "/.git") then return nil end
+        local parent = dir:gsub("/[^/]*$", "")
+        if parent == dir then break end
+        dir = parent
     end
-    if st.kind == "live" then
-        local h = st.handle or {}
-        if self.skip[daemon_id(h.pid, h.start_time)] then return end
-        return self:_connect(st)
-    end
-    -- The daemon retired for a version change and has exited, and nothing
-    -- took its place: launch one successor ourselves — once (§19.16).
-    if self._relaunch and (st.kind == "none" or st.kind == "stale" or st.kind == "unreadable") then
-        self._relaunch = nil
-        return self:_launch()
-    end
-    if self.state ~= "launching" and self.state ~= "no-binary" and self.state ~= "downloading"
-        and self.state ~= "probing" then
-        local note = M.state_note(st)
-        if self.state ~= "waiting" or not self._dropped then self:_set("waiting", note) end
-    end
+    return nil
 end
 
---- Connect to the live daemon of `st`.
-function Observer:_connect(st)
-    local h = st.handle or {}
-    -- The daemon that just dropped us, still live on disk: `lw daemon stop`
-    -- closes its connections before it removes its handle, so a watch tick
-    -- in between sees the stopping daemon. Try it again quietly — keep the
-    -- "disconnected" note and state while trying, and on failure; only a
-    -- connection that succeeds changes what the editor shows.
-    local quiet = self._dropped and self._dropped_id == daemon_id(h.pid, h.start_time) or nil
-    local check = self.opts.check or require("loomworks.daemon.endpoint").check
-    local eok, why = check(self.root, h.endpoint)
-    if not eok then
-        self.skip[daemon_id(h.pid, h.start_time)] = true
-        if quiet then return end
-        return self:_set("waiting", tostring(why))
+--- The Runtime note of a relay that exited before `welcome` (§19.16 "Exit
+--- before `welcome`"), without its follow-up; the relay's `lw: …` line is
+--- the detail (never the status-14 `retiring` line).
+--- @param code integer|nil
+--- @param form string the relay's form
+--- @param root string
+--- @return string
+function M.exit_note(code, form, root)
+    if code == 10 then return "could not start the workspace daemon; the editor runs degraded" end
+    if code == 11 then return "the workspace daemon is not responding" end
+    if code == 12 then return "the daemon belongs to another loomworks data dir, or is not a loomworks daemon" end
+    if code == 13 then return "the workspace daemon runs on another host" end
+    if code == 14 then return "a retiring daemon is still busy" end
+    if code == 16 then return "the retiring daemon has exited and no other is live" end
+    if code == 3 then
+        return "the pinned lw predates the shared-daemon relay and another runtime holds this workspace; "
+            .. "running in-process — update the pin"
     end
-    local connect = self.opts.connect or require("loomworks.daemon.client").connect
-    if not quiet then
-        self:_set("connecting", "connecting to the workspace daemon (pid " .. tostring(h.pid) .. ")")
+    if code == 2 and form ~= "ordinary" then
+        local v = M.pinned_version(root)
+        if v then return "the pinned lw " .. v .. " does not support the editor relay flags — update the pin" end
     end
-    -- `exe`: the executable the daemon's handle names (§19.6; display only).
-    local target = { pid = h.pid, start_time = h.start_time, quiet = quiet,
-        exe = type(h.exe) == "string" and h.exe ~= "" and h.exe or nil }
-    self._connecting = target
-    connect(h.endpoint, {
-        client = "editor", role = "observer", timeout_ms = M.CONNECT_MS,
-        on_message = function(msg)
-            vim.schedule(function()
-                -- Only the observed connection's messages count: one held
-                -- to retire an incompatible daemon it cannot observe is not
-                -- observed through (its task frames would start tasks that
-                -- nothing ends).
-                if target.conn and target.conn ~= self.conn then return end
-                self:_on_message(msg)
-            end)
-        end,
-        on_close = function(c) vim.schedule(function() self:_on_closed(c) end) end,
-    }, function(conn, err)
-        target.conn = conn
-        vim.schedule(function() self:_on_connected(target, conn, err) end)
-    end)
+    if code == 2 then return "internal error (usage)" end
+    if code == 15 then return "internal error (protocol)" end
+    if code == 0 then return "internal error (the relay ended although the editor kept its standard input open)" end
+    return "internal error (the relay exited with status " .. tostring(code) .. ")"
 end
 
-function Observer:_on_connected(target, conn, err)
-    -- Only the attempt in flight counts; anything else (stopped meanwhile,
-    -- superseded) closes the connection it got.
-    if self.state == "stopped" or self._connecting ~= target or self.conn then
+--- The relay's outcome (client.relay.connect's callback, on the main loop):
+--- its `welcome` — judged and observed, or an incompatible daemon weighed
+--- for a retirement — or its exit before `welcome` (`_on_relay_exit`).
+--- @param token table the relay's token (`_relay_token`)
+--- @param conn loomworks.daemon.Conn|nil
+--- @param err string|nil
+--- @param info loomworks.daemon.RelayExit|nil
+function Observer:_on_relay(token, conn, err, info)
+    -- Only the relay in flight counts; anything else (stopped meanwhile,
+    -- replaced) closes the connection it got.
+    if self.state == "stopped" or self._relay_token ~= token or self.conn then
         if conn then conn.on_close = nil; conn:close() end
         return
     end
-    self._connecting = nil
-    if not conn then
-        if err == "untrusted" then self.skip[daemon_id(target.pid, target.start_time)] = true end
-        if target.quiet then return end
-        return self:_set("waiting", "could not reach the workspace daemon (pid " .. tostring(target.pid)
-            .. ", " .. tostring(err) .. ")")
-    end
+    self._relay, self._relay_token = nil, nil
+    if not conn then return self:_on_relay_exit(token, err, info) end
+    token.conn = conn
+    -- The retirement episode ends at the next `welcome`.
+    self._episode = nil
+    local w = conn.welcome or {}
+    local via = w.via == "relay"
+    local d = via and type(w.daemon) == "table" and w.daemon or {}
+    -- `exe`: the executable the daemon's handle names (§19.6; display only).
+    local target = { pid = d.pid, start_time = d.start_time,
+        exe = type(d.exe) == "string" and d.exe ~= "" and d.exe or nil }
     local ch = conn.challenge or {}
-    local version = require("loomworks.daemon.version")
-    local ok, what = version.observer_compatible(ch)
-    -- Incompatible (§19.16 "Retiring an incompatible daemon", step 5h.5): no
-    -- transport overlap, schemas other than ours, or no loomworks.Root/1. A
-    -- daemon with newer schemas is only refused. One whose only problem is
-    -- older schemas is observed as usual and weighed for a retirement on the
-    -- observed connection; any other is weighed on a held connection it is
-    -- not observed through.
-    local inc = require("loomworks.daemon.editor_retire").incompatibility(ch, conn)
-    if (not ok or inc) and not (inc and inc.observable) then
-        self.skip[daemon_id(target.pid, target.start_time)] = true
-        if inc and not inc.newer then return self:_weigh_retire(target, conn, ch, inc) end
-        conn.on_close = nil
-        conn:close()
-        return self:_set("waiting", M.mismatch_note(ch, what or "schemas", target.exe or self._binary))
+    local inc
+    if via then
+        -- Judged by the EDITOR's compatibility rule from `welcome.daemon`
+        -- (§19.16 "Through the relay"): the relay applies no version policy.
+        local version = require("loomworks.daemon.version")
+        local ok, what = version.observer_compatible(ch)
+        -- Incompatible (§19.16 "Retiring an incompatible daemon", step 5h.5): no
+        -- transport overlap, schemas other than ours, or no loomworks.Root/1. A
+        -- daemon with newer schemas is only refused. One whose only problem is
+        -- older schemas is observed as usual and weighed for a retirement on the
+        -- observed connection; any other is weighed on a held connection it is
+        -- not observed through. Its relay is closed when the editor does not
+        -- observe it, and the editor stays in-process until an explicit
+        -- connect (step 5i PR G1; the skip relay is PR G2).
+        inc = require("loomworks.daemon.editor_retire").incompatibility(ch, conn)
+        if (not ok or inc) and not (inc and inc.observable) then
+            if inc and not inc.newer then return self:_weigh_retire(target, conn, ch, inc) end
+            conn.on_close = nil
+            conn:close()
+            return self:_set("waiting", M.mismatch_note(ch, what or "schemas", target.exe or self._binary))
+        end
     end
-    if conn.welcome and conn.welcome.retiring then
-        self.skip[daemon_id(target.pid, target.start_time)] = true
-        self._relaunch = true
+    -- (A `welcome` without `via` is an older pin's attached `--stdio`: no
+    -- `welcome.daemon` to judge, observed without the check, never retired.)
+    if w.retiring then
+        -- (A relay waits out a retiring daemon itself; one forwarded anyway
+        -- is followed as a `retiring`.)
         conn.on_close = nil
         conn:close()
-        return self:_set("waiting", "the workspace daemon (pid " .. tostring(target.pid)
-            .. ") is retiring — waiting for its successor")
+        return self:_after_retire("the workspace daemon (pid " .. tostring(target.pid) .. ") is retiring")
     end
     self.conn = conn
-    self._child = nil
     self.retired_note = nil
-    self._dropped = nil
-    self._dropped_id = nil
-    self._relaunch = nil
     self.daemon = { pid = target.pid, start_time = target.start_time, lw_version = ch.lw_version, exe = target.exe }
     -- A daemon running a plugin-managed binary marks it used, so no editor
     -- prunes it (loomworks.provision.cache; a no-op for any other binary).
     if target.exe then pcall(self.opts.touch or require("loomworks.provision.managed").touch, target.exe) end
     self.generation = ch.session_generation
-    self.seq = tonumber(conn.welcome and conn.welcome.seq) or 0
+    self.seq = tonumber(w.seq) or 0
     self:_start_keepalive()
     self.feature_note = nil
     self.incompat_note = nil
@@ -734,6 +736,57 @@ function Observer:_on_connected(target, conn, err)
         -- Older schemas only: observed, and weighed for a retirement.
         if inc then self:_weigh_retire(target, conn, ch, inc) end
     end)
+end
+
+--- A relay exited before `welcome` (§19.16 "Exit before `welcome`"): its
+--- status's note, with the relay's `lw: …` line as detail, and its
+--- follow-up — one no-launch relay after a 10 / 11 (not in answer to one
+--- that was itself such an answer), a retiring (or no-launch) relay after a
+--- 14, the episode's one ordinary relay after a 16; otherwise wait: stay
+--- in-process with the note until an explicit `:LoomworksDaemon connect`.
+--- @param token table
+--- @param err string|nil "exit" or "protocol"
+--- @param info loomworks.daemon.RelayExit|nil
+function Observer:_on_relay_exit(token, err, info)
+    info = info or {}
+    local code = info.code
+    local function with(note) return info.line and (note .. " (" .. info.line .. ")") or note end
+    if err ~= "exit" or code == nil then
+        return self:_set("waiting", with("internal error: the relay to the workspace daemon failed"))
+    end
+    local note = M.exit_note(code, token.form, self.root)
+    if code == 10 or code == 11 then
+        if token.answer then return self:_set("waiting", with(note)) end
+        return self:_spawn({ form = "no-launch", answer = true, prefix = with(note) })
+    elseif code == 14 then
+        -- A status 14 starts a retirement episode when none is open; the
+        -- wait goes on in a relay that never launches (§19.16 "Status 14").
+        self._episode = self._episode or {}
+        if info.retiring then
+            return self:_spawn({ form = "retiring", instance = info.retiring, prefix = with(note) })
+        end
+        return self:_spawn({ form = "no-launch", prefix = with(note) })
+    elseif code == 16 then
+        -- At most one ordinary relay per retirement episode (§19.16 "Status 16").
+        local ep = self._episode
+        if ep and not ep.launched then
+            ep.launched = true
+            return self:_spawn({ form = "ordinary", prefix = note })
+        end
+        return self:_set("waiting", with(note) .. " — :LoomworksDaemon connect starts one")
+    end
+    return self:_set("waiting", with(note))
+end
+
+--- The observed daemon retires (its `retiring`, or the editor's own
+--- `retire` succeeded): spawn one ordinary relay — its own wait
+--- (`RELAY_RETIRE_WAIT`) covers the retiring daemon and it launches the
+--- successor — and open a retirement episode (§19.16 "Retiring").
+--- @param prefix string the note it follows
+function Observer:_after_retire(prefix)
+    self._episode = { launched = false }
+    if self._relay then self:_end_relay() end
+    return self:_spawn({ form = "ordinary", prefix = prefix })
 end
 
 --- @class loomworks.daemon.RetireWait  an incompatible daemon being weighed for a retirement (step 5h.5)
@@ -774,15 +827,18 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
         wait = { conn = conn, target = target, ch = ch, inc = inc, observed = self.conn == conn or nil }
         self._retire = wait
         if not wait.observed then
-            -- The daemon goes away (stops, exits, drops us): forget it; the
-            -- watch goes on (it is skipped by pid and start time). (The
-            -- observed connection's close is `_on_closed`.)
+            -- The daemon goes away (stops, exits, drops us) or its relay
+            -- ends: forget it. The editor stays in-process until an explicit
+            -- connect (step 5i PR G1: an incompatible daemon it does not
+            -- observe is not followed). (The observed connection's close is
+            -- `_on_closed`.)
             conn.on_close = function(c)
                 vim.schedule(function()
                     if self._retire and self._retire.conn == c then
                         self:_drop_retire()
                         if self.state ~= "stopped" then
-                            self:_set("waiting", R.note(ch, inc, binary, "it went away; waiting for a daemon"))
+                            self:_set("waiting", R.note(ch, inc, binary,
+                                "it went away — :LoomworksDaemon connect connects again"))
                         end
                     end
                 end)
@@ -852,10 +908,10 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
             .. " again after it was retired, likely a repository pin", "update the pin or the plugin")
     end
     if conn.welcome and conn.welcome.retiring then
-        -- Already retiring (another client asked): wait for its successor.
+        -- Already retiring (another client asked): follow it to its
+        -- successor through an ordinary relay (§19.16 "Retiring").
         self:_drop_retire()
-        self._relaunch = true
-        return self:_set("waiting", R.note(ch, inc, binary, "it is retiring; waiting for its successor"))
+        return self:_after_retire(R.note(ch, inc, binary, "it is retiring"))
     end
     wait.version = b.version
     self:_check_retire()
@@ -900,14 +956,10 @@ function Observer:_check_retire()
                 self:_drop_retire()
                 if wait.observed then
                     -- Closed as the "Retiring" path of `_on_closed`.
-                    local d = wait.target
-                    self.skip[daemon_id(d.pid, d.start_time)] = true
                     self._retired_note = true
                     return wait.conn:close()
                 end
-                self._relaunch = true
-                return self:_set("waiting", R.note(wait.ch, wait.inc, binary,
-                    "it is retiring; waiting for its successor"))
+                return self:_after_retire(R.note(wait.ch, wait.inc, binary, "it is retiring"))
             end
             if R.busy(st) then
                 local tail = "incompatible daemon is busy; retiring when idle"
@@ -999,7 +1051,6 @@ function Observer:_retire_now()
                 return failed(tostring(err))
             end
             -- Retired (it accepted, or closed the connection on its way out).
-            self.skip[daemon_id(target.pid, target.start_time)] = true
             self.retired_note = msg
             pcall(self.opts.notify or vim.notify, "loomworks: " .. msg, vim.log.levels.INFO)
             if wait.observed then
@@ -1008,10 +1059,9 @@ function Observer:_retire_now()
                 if self.conn == wait.conn then
                     self._retired_note = true
                     wait.conn:close()
-                elseif self.conn == nil and not self._connecting then
+                elseif self.conn == nil and not self._relay then
                     -- Already closed, without the daemon's `retiring`.
-                    self._relaunch = true
-                    self:_set("waiting", "the workspace daemon is retiring — waiting for its successor")
+                    self:_after_retire("the workspace daemon is retiring")
                 end
                 return
             end
@@ -1019,8 +1069,7 @@ function Observer:_retire_now()
                 wait.conn.on_close = nil
                 pcall(wait.conn.close, wait.conn)
             end
-            self._relaunch = true
-            self:_set("waiting", "the workspace daemon is retiring — waiting for its successor")
+            self:_after_retire("the workspace daemon is retiring")
         end)
     end)
 end
@@ -1259,8 +1308,11 @@ function Observer:_stop_timer(field)
 end
 
 --- The connection closed (the daemon stopped, crashed, retired, or dropped
---- this observer). Watch for the next live daemon; relaunch only after a
---- retirement (once, when it has exited), never after a stop (§19.16).
+--- this observer, or its relay ended). After a retirement: one ordinary
+--- relay, which waits the retiring daemon out and launches its successor;
+--- after any other drop: one no-launch relay, which connects when a daemon
+--- appears and never launches one, so `lw daemon stop` stays meaningful
+--- (§19.16 "Following a stopped or retiring daemon").
 function Observer:_on_closed(c)
     if c ~= self.conn then return end
     local d = self.daemon
@@ -1276,15 +1328,12 @@ function Observer:_on_closed(c)
     if self._retire and self._retire.conn == c then self:_drop_retire() end
     self:_end_tasks("the workspace daemon disconnected")
     if self.state == "stopped" then return end
-    self._dropped = true
-    self._dropped_id = d and daemon_id(d.pid, d.start_time) or nil
     if self._retired_note then
         self._retired_note = nil
-        self._relaunch = true
-        return self:_set("waiting", "the workspace daemon is retiring — waiting for its successor")
+        return self:_after_retire("the workspace daemon (pid " .. tostring(d and d.pid) .. ") is retiring")
     end
-    self._relaunch = nil
-    self:_set("waiting", "the workspace daemon disconnected — waiting for it")
+    if self._relay then return end
+    self:_spawn({ form = "no-launch", prefix = "the workspace daemon disconnected" })
 end
 
 --- Apply the workspace files' pending changes now (spec §19.12).
@@ -1319,8 +1368,6 @@ function Observer:_on_message(msg)
     if msg.kind == "model_change" then
         return self:_model_change(msg.seq, msg.session_generation)
     elseif msg.kind == "retiring" then
-        local d = self.daemon
-        if d then self.skip[daemon_id(d.pid, d.start_time)] = true end
         local c = self.conn
         if c then
             self._retired_note = true
@@ -1443,16 +1490,19 @@ function M.runtime_line(ws)
     return head .. " — " .. table.concat(parts, "; "), sel.warning ~= nil
 end
 
---- Stop observing (workspace teardown): timers stop, the connection closes,
---- remote tasks are cleared. The daemon keeps running (§19.11).
+--- Stop observing (workspace teardown): timers stop, the connection closes
+--- and a relay still waiting is ended — both by closing the relay's standard
+--- input, never a process-tree kill (client.relay) — and remote tasks are
+--- cleared. The daemon keeps running (§19.11).
 function Observer:stop()
     if self.state == "stopped" then return end
     self.state = "stopped"
     self._probe_token, self._probing = nil, nil
     self:_stop_timer("_probe_backstop")
     if self._downloading then self:_cancel_download("the workspace was unloaded") end
-    self:_stop_timer("_watch")
     self:_stop_timer("_keepalive")
+    self:_end_relay()
+    self._want = nil
     self:_drop_retire()
     local c = self.conn
     self.conn = nil

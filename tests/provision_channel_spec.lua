@@ -236,8 +236,9 @@ describe("binary.channel: the observer's background check", function()
     local function attach(extra)
         local o = {
             getenv = function(n) if n == "LOOMWORKS_RUNTIME" then return "daemon" end end,
-            watch_ms = 60000, data = data, binary = { channel = "unstable" },
-            -- A daemon is starting: the observer waits, launches nothing.
+            data = data, binary = { channel = "unstable" },
+            -- Its relay waits (spawns nothing real, never answers).
+            relay = function() return { close = function() end } end,
             inspect = function() return { kind = "starting", lock = { pid = 7 } } end,
             resolve = function() return "/m/lw", "managed", { path = "/m/lw", source = "managed", label = "plugin-managed lw", candidates = {} } end,
             pinned_wanted = function() return pin end,

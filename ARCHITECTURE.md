@@ -829,35 +829,43 @@ re-cut onto master step by step; this section is expanded as each step lands.
   mode (`init.setup` hooks `workspace_changed` → `observer.attach(ws)`; the
   CLI never calls setup, so it never attaches). Owned by the workspace
   (`ws._daemon_observer`), stopped first in `Workspace:teardown`. `start`
-  (load / `:LoomworksDaemon connect`) connects to a live daemon or launches
-  one through `launch.spawn(root, { argv = { <host binary> } })` without a
-  blocking readiness wait; a uv timer (`WATCH_MS`) watches the handle and
-  connects when a live daemon appears — the only way back after a drop, except
-  that after a `retiring` drop (`_relaunch`) the watch launches one successor
-  once the retired daemon has exited and none is live (§19.16). `client.connect` with `client = "editor"`, `role =
-  "observer"`, `on_message` / `on_close` (both only `vim.schedule`);
-  `version.observer_compatible`; daemons `retiring` / incompatible / untrusted
-  go into `skip` (pid:start). Keepalive `ping` timer. `model_change` (seq /
-  generation) → `ws._tracker:sync()`. `task` events → RemoteTasks; events
-  `daemon_task_started|progress|stopped`, `daemon_runtime_changed`. Joining
-  late: each connect sends `status` (`_join_late`) and adopts every listed
-  task not yet seen (`remote_task.adopt`: start time from `started_at`,
-  percent from `percent`); tasks are kept in start order.
-  *Planned, step 5i PR G1/G2 (spec §19.16 "Through the relay"):* the
-  observer drops the handle watch, `_inspect`, `launch.spawn` and its
-  `_child`, and the `skip` table. It connects only through a relay child,
-  `<selected binary> daemon run --root R --stdio [--no-launch]
-  [--retiring pid:start | --skip-instance pid:start]` (a relay client in
-  `daemon/`, spawned hidden, not detached, plain stdio pipes, cwd = state
-  dir, env = `launch.env(root, sel.env)`; `frame_reader` from state `auth`;
-  challenge and transport from `welcome.daemon`). It ends a relay by closing
-  its stdin and only after about 5 s plain-kills the relay pid, never
-  `kill_tree` (on Windows the daemon a relay launched is its child). The
-  relay's exit status is mapped only before `welcome` (note + follow-up per
-  the spec table); after `welcome` any exit is a drop -> one `--no-launch`
-  relay. `Observer:_weigh_retire` / `editor_retire.lua` retire only over
-  `welcome.via == "relay"` (G2). `:LoomworksDaemon status` and checkhealth
-  keep reading the handle / lock read-only for diagnostics.
+  (load / `:LoomworksDaemon connect`) spawns an ordinary relay (step 5i PR
+  G1, spec §19.16 "Through the relay"); the observer reads none of lw's
+  internal files to connect, launch or follow a daemon (only `_prune`'s
+  read-only in-use check reads the handle). `_spawn(want)` selects the host
+  binary (probe / download first, `_want` remembers the form) and calls
+  `daemon/client.lua` `relay.connect` (seam `opts.relay`): `<binary> daemon
+  run --root R --stdio [--no-launch [--retiring pid:start]]`, spawned hidden,
+  not detached, plain stdio pipes, cwd = state dir, env = `launch.env(root,
+  sel.env)`; `client._frame_reader` from state `auth`, `conn.challenge` =
+  `welcome.daemon` (`{}` for a `welcome` without `via`: observed without the
+  version check, never retired), transport `client._agreed(welcome.daemon)`.
+  No handshake timeout. The relay's `close` closes its stdin and only after
+  `KILL_MS` (~5 s) plain-kills the relay pid, never `kill_tree` (on Windows
+  the daemon a relay launched is its child). Exit and stdout EOF arrive in
+  either order: the exit status (+ the `lw: ...` detail line and a parsed
+  `retiring` line) is reported only before `welcome` and never for a relay
+  the editor ended (`_on_relay_exit`: 10/11 -> one no-launch relay, 14 ->
+  `--retiring` or no-launch relay and a retirement episode, 16 -> the
+  episode's one ordinary relay, others -> note + wait, 2 with flags names
+  the `lw.pin` version); after `welcome` any exit/EOF is a drop
+  (`_on_closed` -> one `--no-launch` relay; after `retiring` or the editor's
+  own retire -> `_after_retire`: one ordinary relay + episode). Until PR G2
+  an incompatible daemon it does not observe has its relay closed and the
+  editor stays in-process until an explicit connect. `client = "editor"`,
+  `role = "observer"`, `on_message` / `on_close` (both only `vim.schedule`);
+  `version.observer_compatible` on `welcome.daemon`. Keepalive `ping` timer.
+  `model_change` (seq / generation) → `ws._tracker:sync()`. `task` events →
+  RemoteTasks; events `daemon_task_started|progress|stopped`,
+  `daemon_runtime_changed`. Joining late: each connect sends `status`
+  (`_join_late`) and adopts every listed task not yet seen
+  (`remote_task.adopt`: start time from `started_at`, percent from
+  `percent`); tasks are kept in start order. *Planned, step 5i PR G2:* the
+  skip relay (`--no-launch --skip-instance pid:start`) for an incompatible
+  daemon, and `Observer:_weigh_retire` / `editor_retire.lua` only over
+  `welcome.via == "relay"` (already true: a `welcome` without `via` is never
+  weighed). `:LoomworksDaemon status` and checkhealth keep reading the
+  handle / lock read-only for diagnostics.
 - `daemon/remote_task.lua` — RemoteTask: resolves `start` meta once at the
   wire boundary (profile by key among `ws:get_profiles()`, units through that
   profile's ProfileProjects to their ConfigUnit); unresolved keys stay names
@@ -1336,7 +1344,10 @@ released Linux host on the released bundle to write the
   then connect or start again. `--no-launch` (`_wait_for_daemon`) polls for
   a live daemon, waits out a retiring one (16 when it is gone and none other
   live); `--skip-instance` treats that instance as absent (`present`, exact
-  instance ids). Relaying: `flow` per direction, pausing the source past
+  instance ids); `--retiring` (step 5i PR G1) seeds that wait with the named
+  instance, so one already gone with none other live is 16 at once. A 14
+  writes `retiring_line` (`retiring <pid>:<start_time>`, `connect.instance_id`)
+  as its last standard-error line. Relaying: `flow` per direction, pausing the source past
   `HIGH_WATER` (4 MiB) and resuming below half. `parse` holds the usage rules
   (2), including the `--private` gate (`LOOMWORKS_TEST_PRIVATE_STDIO=1`).
 - `daemon/stdio.lua` — `lw daemon run --root <root> --stdio --private`
