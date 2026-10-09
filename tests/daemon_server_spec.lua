@@ -545,6 +545,8 @@ describe("lw daemon run | stop | kill | restart (real processes)", function()
         assert.is_true(H.alive(lk.pid, lk.start_time))
         local s = lw({ "daemon", "status" })
         assert.truthy(s.stdout:find("answers      1 client", 1, true), s.stdout)
+        -- Step 5r D: the idle timeout in effect (the grace) and the deadline.
+        assert.truthy(s.stdout:find("  idle         timeout 45s, exits at ", 1, true), s.stdout)
         -- stop ends the process.
         local st = lw({ "daemon", "stop" })
         assert.equals(0, st.code, st.stderr)

@@ -111,6 +111,34 @@ function M.query(st, timeout_ms)
     return M.request(st, "status", timeout_ms)
 end
 
+--- The `idle` line of `lw daemon status` (step 5r D, §19.11 "Warm
+--- restarts") from a `status` reply: the idle timeout in effect and, when
+--- the idle clock runs once this query closes, the deadline; nil for a daemon
+--- that does not report its idle timeout (an older one).
+--- @param r table the `status` reply
+--- @param now? integer epoch seconds (default os.time())
+--- @return string|nil
+function M.idle_text(r, now)
+    local t = tonumber(r.idle_timeout)
+    if not t then return nil end
+    local head = "timeout " .. age(t)
+    local dl = tonumber(r.idle_deadline)
+    if dl then
+        return string.format("%s, exits at %s (in %s) unless a client connects", head,
+            os.date("%H:%M:%S", dl), age(dl - (now or os.time())))
+    end
+    local others = (tonumber(r.clients) or 1) - 1
+    local why
+    if others > 0 then
+        why = string.format("%d other client%s", others, others == 1 and "" or "s")
+    elseif r.busy then
+        why = "an operation is running"
+    else
+        why = "background work"
+    end
+    return head .. ", idle timer not running (" .. why .. ")"
+end
+
 --- `lw daemon status`: the mode, then the daemon as its files describe it,
 --- and — for a live daemon on this host — what it answers. Never launches.
 --- @param root string|nil
@@ -151,6 +179,8 @@ function M.status(root, host)
         if r then
             out(string.format("  answers      %d client%s%s", tonumber(r.clients) or 0, r.clients == 1 and "" or "s",
                 r.retiring and ", retiring (exits when idle)" or ""))
+            local idle = M.idle_text(r)
+            if idle then out("  idle         " .. idle) end
         elseif tostring(err):match("^untrusted handle") then
             out("  answers      NOT ASKED — " .. tostring(err))
         elseif tostring(err):match("^untrusted") then
