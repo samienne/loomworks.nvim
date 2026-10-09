@@ -939,7 +939,8 @@ relay runs the socket handshake on its behalf:
    closes that connection, waits for the retiring daemon's runtime lock to
    be released — at most `RELAY_RETIRE_WAIT` (60 s) — launches the
    successor (§19.10) and repeats from step 2. A daemon still holding the
-   lock after that bound ends the relay with status 14. A `--no-launch`
+   lock after that bound ends the relay with status 14, its standard error
+   naming that daemon (§19.10 "Relay exit status"). A `--no-launch`
    relay instead keeps waiting without a bound and never launches the
    successor (§19.10 "No launch").
 
@@ -1121,8 +1122,9 @@ exit, all clients connect to the winner.
 and the gated `--private` is implemented, `daemon/relay.lua`, and so is its
 `lw daemon list` / `kill --all --strays` classification (§19.6.1 step 3), and
 the idle rule with its background-work cap (§19.11 "Idle exit"), and the
-CLI's two-stage Ctrl-C (§19.15 "Task ownership"); the editor's use of it is
-planned.)* Every client process is a
+CLI's two-stage Ctrl-C (§19.15 "Task ownership"); the editor's use of it
+(§19.16 "Through the relay") and the `--retiring` flag ("A named retiring
+daemon" below) are planned, step 5i PR G.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -1151,9 +1153,9 @@ planned.)* Every client process is a
   closing standard input (EOF) while it waits ends the relay with status 0.
   No exit status is added for this case.
 - **No launch.** `lw daemon run --root <root> --stdio --no-launch` is the
-  relay that **never launches** a daemon (the editor's, after
-  `lw daemon stop` and while a retiring daemon is still busy, §19.16
-  "Through the relay"). It reads the client's `hello` first as any relay
+  relay that **never launches** a daemon (the editor's after a drop such as
+  `lw daemon stop`, after a relay's status 10 or 11, and while a retiring
+  daemon is still busy, §19.16 "Through the relay"). It reads the client's `hello` first as any relay
   (§19.8 "Relay handshake", status 15), then waits inside lw for a live
   daemon of its root: it re-reads the runtime lock and the handle about every
   2 s (the cadence at which the editor watched the handle before), and
@@ -1190,6 +1192,27 @@ planned.)* Every client process is a
   2) without `--no-launch` (an ordinary relay could neither use the skipped
   daemon nor launch while it holds the lock, so it would only wait, which is
   what `--no-launch` is), or when its value is not `<pid>:<start_time>`.
+- **A named retiring daemon.** *(Planned, step 5i PR G1.)*
+  `--no-launch --retiring <pid>:<start_time>` (the editor's after a relay
+  exited 14, with the instance that relay's `retiring` line named, "Relay
+  exit status" below and §19.16 "Through the relay") names one daemon
+  instance (as for `--skip-instance`) that the relay treats as a retiring
+  daemon it already saw, as if it had connected to it and got a `welcome`
+  that says `retiring`. It closes a race a plain `--no-launch` relay leaves open: a
+  retiring daemon that exits after the status-14 relay gave up but before
+  this relay first looks is never seen retiring, so a plain `--no-launch`
+  relay would wait on as after a stop and never exit 16. With `--retiring`,
+  while that instance holds the runtime lock (or its handle is the live
+  one) the relay waits on it as on a retiring daemon ("No launch" above: no
+  bound, nothing launched); once that instance no longer holds the lock —
+  including when it is already gone at the relay's first check — and no
+  other daemon is live, the relay exits 16. Otherwise it is a plain
+  `--no-launch` relay: a live daemon of another instance is connected to (a
+  `retiring` one is waited on as above), status 0 on EOF. `--retiring`
+  names at most one instance; it is usage (status 2) without `--no-launch`,
+  or when its value is not `<pid>:<start_time>`. The editor never passes it
+  together with `--skip-instance`; whether that combination is usage is not
+  specified.
 - **Relay buffering.** The relay bounds what it buffers in each direction:
   while the queue of frames waiting to be written to one side holds more
   than `RELAY_HIGH_WATER` (4 MiB) it stops reading the other side, and
@@ -1230,7 +1253,19 @@ planned.)* Every client process is a
   waiting; after that daemon stops it stays waiting (no status 16) and
   connects to the next daemon started for the root; a value naming another
   instance (different start time) does not skip the live one; without
-  `--no-launch`, or with a malformed value, it is status 2.
+  `--no-launch`, or with a malformed value, it is status 2. `--retiring`
+  *(planned, PR G1)* is tested likewise: naming an instance already gone,
+  with no other daemon live, it exits 16 at once; naming a live retiring
+  daemon it waits, launches nothing, and exits 16 once that daemon has
+  released the lock; with another daemon live it connects to that one;
+  without `--no-launch`, or with a malformed value, it is status 2. The
+  status-14 line *(planned, PR G1)* is tested with a retiring daemon kept
+  busy past `RELAY_RETIRE_WAIT` (the bound shortened for the test): the
+  relay exits 14, its standard output is empty, and its standard error is
+  its `lw: ...` line followed by exactly `retiring <pid>:<start_time>`
+  naming that daemon's handle `pid` and `start_time`; a `--no-launch
+  --retiring` relay given that value exits 16 once the daemon has released
+  the lock.
 - **Compatibility.** A repository pinned to a release from 0.1.43-beta.15 up
   to the one before the release that ships this step still gets that
   release's attached `--stdio` (it works, but is not shared with the CLI; its
@@ -1241,24 +1276,41 @@ planned.)* Every client process is a
 
 **Relay exit status.** *(Step 5i, `daemon/relay.lua`.)* A relay that fails before
 forwarding `welcome` writes nothing to standard output, one `lw: ...` line to
-standard error, and exits with:
+standard error (on status 14 followed by the retiring-instance line below),
+and exits with:
 
 | Status | Meaning |
 |--|--|
 | 0 | the client closed standard input (with `--no-launch`, also while waiting, having launched nothing; for any relay, also while waiting on an attached run's runtime lock), or the daemon closed the connection after `welcome` |
 | 1 | standard input or output is unusable, or an internal error |
-| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1` or without `--stdio`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>` |
+| 2 | usage: no `--root`, `--private` without `LOOMWORKS_TEST_PRIVATE_STDIO=1` or without `--stdio`, or `--no-launch` without `--stdio` or with `--private`, or `--skip-instance` without `--no-launch` or not `<pid>:<start_time>`, or (planned, PR G1) `--retiring` without `--no-launch` or not `<pid>:<start_time>` |
 | 10 | could not start the workspace daemon (launch failure above; never with `--no-launch`) |
 | 11 | the daemon is not responding (hung, §19.5; connect/handshake past its bound; or still starting — lock held, handle not published — after the relay's one bounded wait; never with `--no-launch`, which keeps waiting on a starting daemon) |
 | 12 | the handle names another loomworks data dir's key (`key_id`, §19.6), its endpoint failed the endpoint check (§19.7), or the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — only the relay's own `hello` (versions and its nonce, no secret) was sent; nothing from the client is forwarded |
 | 13 | the workspace daemon runs on another host |
-| 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting) |
+| 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting); standard error also names that daemon (`retiring <pid>:<start_time>`, below) |
 | 15 | the client sent no valid `hello` first (another frame, or a `hello` whose forwarded fields are not of their types or that does not fit the 64 KiB pre-authentication frame cap re-encoded), or none within about 5 s; or it sent more than `RELAY_HIGH_WATER` after `hello` before `welcome` ("Relay buffering") |
-| 16 | `--no-launch` only: the retiring daemon it waited on released the runtime lock and no other daemon is live — the caller decides whether to launch (never for a `--skip-instance` daemon) |
+| 16 | `--no-launch` only: the retiring daemon it waited on (one it connected to, or — planned, PR G1 — the one `--retiring` names, also when already gone at its first check) released the runtime lock and no other daemon is live — the caller decides whether to launch (never for a `--skip-instance` daemon) |
+
+**Retiring-instance line.** *(Planned, step 5i PR G1.)* A relay that exits
+14 writes, after its `lw: ...` line, exactly one more standard-error line,
+the last it writes: `retiring <pid>:<start_time>` — the literal word
+`retiring`, one space, then the retiring daemon's instance in the form
+`--retiring` takes (§19.10 "A named retiring daemon"): its handle `pid` and
+`start_time` (§19.5) as unsigned decimal integers joined by `:`, with no
+other characters, ending in the platform's newline. It names the daemon whose
+runtime lock the relay waited on. A relay that does not know both values
+(a handle without `start_time`) writes no such line. No other status writes
+it, and nothing else on a relay's standard error starts with `retiring `.
+The editor passes the value to `--retiring` (§19.16 "Through the relay").
 
 Status 3 ("another daemon won", above) is never a relay's: a relay that
-loses a launch race connects to the winner. The editor maps each status to
-its Runtime-line note (§19.16 "Through the relay").
+loses a launch race connects to the winner. A status 3 from `daemon run
+--stdio` therefore comes only from an older pin's attached runtime ("Compatibility"
+above), whose runtime lock was held. The editor maps each status, and an
+older pin's, to its Runtime-line note and follow-up (§19.16 "Through the
+relay"); a status is only meaningful when the relay exits before forwarding
+`welcome`.
 
 ### 19.11 Lifetime
 
@@ -2111,14 +2163,26 @@ and the attached editor future. The interface client ("Interface client"
 below): the subscription to `/tasks` and `/workspace` is implemented, step
 5g.3 (`daemon/observer.lua` `_subscribe`); the views
 and operations steps 5j–5o (§19.19); the connection through the `--stdio`
-relay, step 5i. The editor-owned child daemon of the earlier plan (step 5p) is
-dropped.*
+relay, step 5i PR G: its spec (PR G0) *done*; the relay transport and
+lifecycle ("Through the relay" except "Skipping an incompatible daemon",
+`--retiring`) PR G1, planned; the incompatible-daemon policy over the relay
+("Skipping an incompatible daemon", retirement only over `via = "relay"`)
+PR G2, planned. Until G1 the observer works as "Step 4" below describes
+(handle watch, its own launch). The editor-owned child daemon of the
+earlier plan (step 5p) is dropped.*
 
 **End state.** *(Planned, step 5i.)* The editor is a **pure `lw` client**
 of the **same daemon as the CLI**. It spawns `lw daemon run --root <root>
 --stdio`, which connects to the workspace's shared daemon or starts it first
 (§19.10 "Connections"), and speaks the protocol through that relay; it reads
-none of lw's internal files, and holds a keepalive (§19.11). Its tasks are
+none of lw's internal files to connect, launch or follow a daemon, and holds
+a keepalive (§19.11). Only diagnostics may still read them, read-only:
+`:LoomworksDaemon status` and `:checkhealth loomworks` may inspect the
+handle, the runtime lock and the daemon logs to describe what they find;
+nothing they read decides whether, when or to what the editor connects, and
+they never write, remove or lock anything there. The relay needs a host
+binary ("Host binary" below): with none the editor spawns no relay, stays
+in-process, and does not observe a daemon another client started. Its tasks are
 owned by its connection, so an editor that quits or crashes leaves no task
 running; the daemon itself outlives it under §19.11. Operations move from the
 editor to commands in the order of §19.19. When the shared daemon cannot be
@@ -2127,46 +2191,155 @@ private-daemon fallback. The editor never runs the daemon code inside its own
 process (the earlier design D8, superseded), nor a child daemon of its own
 (the earlier step 5p, dropped).
 
-**Through the relay.** *(Planned, step 5i.)* The editor spawns the relay
-instead of reading the handle and the machine key itself; "Launch" and
-"Connect" below then happen inside the relay (§19.8 "Relay handshake",
-§19.10 "Connections"):
+**Through the relay.** *(Planned, step 5i PR G1; "Skipping an incompatible
+daemon" PR G2.)* The editor spawns the relay instead of reading the handle
+and the machine key itself; "Launch" and "Connect" below then happen inside
+the relay (§19.8 "Relay handshake", §19.10 "Connections"). Before each spawn
+it selects the host binary ("Host binary" below, with its pre-launch probe;
+the selection may be cached for the session) and runs one of these forms of
+`<binary> daemon run --root <root> --stdio`:
 
+- **ordinary** (no further flag): connects to the workspace's daemon or
+  starts it. Spawned on workspace load, on `:LoomworksDaemon connect`, on
+  `retiring` and after the editor's own `retire`, and once per retirement
+  episode after a status 16 ("Following a stopped or retiring daemon
+  without relaunching it" below);
+- **no launch** (`--no-launch`, §19.10 "No launch"): waits for a daemon and
+  never launches one. Spawned after a drop, after a status 10 or 11, and
+  after a status 14 whose standard error has no `retiring` line the editor
+  can parse;
+- **retiring** (`--no-launch --retiring <pid>:<start_time>`, §19.10 "A named
+  retiring daemon"): waits for the named retiring daemon to exit. Spawned
+  after a status 14 whose standard error names that instance (§19.10
+  "Retiring-instance line");
+- **skip** (`--no-launch --skip-instance <pid>:<start_time>`, §19.10 "Skip
+  an instance"): "Skipping an incompatible daemon" below.
+
+With no host binary the editor spawns no relay of any form and stays
+in-process ("End state").
+
+- **The relay process.** The editor spawns a relay hidden (no console window
+  on Windows) and **not detached**, with plain pipes for its standard input,
+  output and error, the per-user state directory (§19.10) as its working
+  directory, and the environment it gives the selected binary for a daemon
+  launch. It sets no handshake timeout of its own: each step of a relay is
+  bounded inside the relay (§19.10 "Connections"), and the waiting forms
+  wait without a bound by design. These rules are normative:
+  - The editor **never kills a relay's process tree**. On Windows the daemon
+    a relay launched is a child of the relay by parent process id (§19.6.1),
+    so a tree kill would take down the shared daemon. The editor ends a
+    relay by **closing its standard input** (the relay exits 0, §19.10);
+    only when the relay has not exited about 5 s later does it kill the
+    relay's own process id — a plain kill, never its tree.
+  - An older pin's attached `--stdio` runtime (a `welcome` without `via`,
+    §19.10 "Compatibility") holds the workspace's runtime lock; it is ended
+    the same way, by EOF on its standard input, never by a tree kill, so it
+    releases the lock and cancels its tasks as a closing connection does.
+  - The daemon **never inherits the relay's pipes**: the relay launches it
+    detached with no inherited standard handles (§19.10 "Launch"), so the
+    editor sees EOF on the relay's standard output when the relay exits,
+    whatever the daemon does, and ending a relay never reaches the daemon.
+    End-to-end tests check that a daemon started through an editor relay
+    survives the relay and the editor, and that no relay is left (`lw daemon
+    list`) after teardown.
+  - The relay's exit and the EOF on its standard output arrive in either
+    order. The exit status is mapped ("Exit before `welcome`" below) only
+    when the relay exits before the editor has received `welcome`; after
+    `welcome`, any exit or EOF of the relay is a **drop** of the connection.
+    A relay the editor ended itself (workspace swap, shutdown, a skip relay
+    replaced) is not mapped.
+  - The relay's last standard-error line is kept for the Runtime line's
+    detail.
 - It sends its usual `hello` (`client = "editor"`, `role = "observer"`) and
   judges the daemon from `welcome.daemon` exactly as it judges a `challenge`
   today, by the **editor's** compatibility rule (§19.9 "Editor retirement",
   "Retiring an incompatible daemon" below), never the CLI's `lw_version`
   equality: the relay itself applies no version policy, so a relay the editor
   starts never restarts a compatible daemon. The editor's `retire` goes over
-  the relay connection, and only when `welcome.via = "relay"`; a `welcome`
-  without `via` is an attached runtime of an older pin, which the editor
-  observes but never retires.
-- A relay that exits before `welcome` is mapped from its exit status
-  (§19.10 "Relay exit status") to the note the editor shows today for that
-  case: 10 — could not start the workspace daemon, the editor runs degraded
-  (step 6b); 11 — not responding; 12 — another data dir or not a loomworks
-  daemon; 13 — another host; 14 — a retiring daemon is still busy, and the
-  editor waits it out through a `--no-launch` relay (below); 16 — that
-  retiring daemon has exited (below); 1, 2, 15 and any status not listed —
-  an internal error. Its standard-error line is kept for the Runtime line's
-  detail.
+  the relay connection, and only when `welcome.via = "relay"`. A `welcome`
+  without `via` comes from an attached runtime of an older pin (§19.10
+  "Compatibility"): the editor observes it **without the version check**
+  (such a `welcome` carries no `welcome.daemon` to judge) and **never
+  retires it**.
+- **Waiting notes.** A relay reports nothing while it waits (on an attached
+  run, a starting daemon, a retiring daemon, or for any daemon at all). Until
+  it forwards `welcome` the Runtime line shows one generic note for its form:
+  ordinary — connecting to or starting the workspace daemon (naming the
+  binary and its source, as for a launch); no launch — waiting for a
+  workspace daemon, none is launched (`:LoomworksDaemon connect` starts
+  one); retiring — waiting for the retiring daemon to exit; skip — the
+  incompatible-daemon note ("Connect" below). A progress line from the relay
+  is not part of step 5i (BACKLOG).
+- **Exit before `welcome`.** A relay that exits before `welcome` is mapped
+  from its exit status (§19.10 "Relay exit status") to a Runtime-line note,
+  with the relay's `lw: ...` standard-error line as detail (never the
+  status-14 `retiring` line), and a follow-up. "Wait"
+  means: the editor stays in-process with that note and spawns no further
+  relay until an explicit `:LoomworksDaemon connect` (or a workspace
+  reload).
+
+  | Status | Note | Follow-up |
+  |--|--|--|
+  | 10 | could not start the workspace daemon; the editor runs degraded (step 6b) | one no-launch relay, then wait |
+  | 11 | the workspace daemon is not responding | one no-launch relay, then wait |
+  | 12 | the daemon belongs to another loomworks data dir, or is not a loomworks daemon | wait |
+  | 13 | the workspace daemon runs on another host | wait |
+  | 14 | a retiring daemon is still busy | a retiring relay, or a no-launch relay ("Following a stopped or retiring daemon" below) |
+  | 16 | the retiring daemon has exited and no other is live | the retirement episode's one ordinary relay, else wait |
+  | 3 | the pinned `lw` predates the shared-daemon relay and another runtime holds this workspace (an older pin's attached `--stdio`, §19.10 "Compatibility"); running in-process — update the pin | wait |
+  | 1 | an internal error — or, for a repository pinned before 0.1.43-beta.15, the pin redirect's refusal (§16.23 "A pin older than the command"), whose standard-error line names the pinned version and the release that introduced the command; the note shows that line | wait |
+  | 2 | an internal error (usage) — or, when the relay was spawned with `--no-launch`, `--skip-instance` or `--retiring`, the pinned `lw <version>` does not support the editor relay flags (update the pin), naming the pinned version | wait |
+  | 15 | an internal error (protocol) | wait |
+  | 0 | an internal error (the relay ended although the editor kept its standard input open) | wait |
+  | any other | an internal error | wait |
+
+  "One no-launch relay" is one per failure: a no-launch relay spawned in
+  answer to a status 10 or 11 is not answered with another when it, too,
+  exits before `welcome` (it then follows the table's other rows or waits).
+  A pinned release that predates a flag the editor passes (`--no-launch`,
+  `--skip-instance`, `--retiring`) may answer with a usage status; that is
+  status 2 above, and the editor still waits for an explicit
+  `:LoomworksDaemon connect`. The note then names the pinned version (from
+  `lw.pin`, §16.21) — that the pinned `lw <version>` does not support the
+  editor relay flags — with the relay's usage line as detail, so the user is
+  not left with a bare usage error. A status 2 from a relay spawned with none
+  of those flags is the plain internal-error note.
 - **Following a stopped or retiring daemon without relaunching it.** "No
   relaunch after a stop" and "Retiring" below watch the handle, which the
-  editor no longer reads once it uses the relay; instead it spawns
-  `lw daemon run --root <root> --stdio --no-launch` (§19.10 "No launch"),
-  which waits inside lw and never launches. When the connection drops
-  because the daemon stopped, crashed or dropped this observer, the editor
-  reconnects only through a `--no-launch` relay, so `lw daemon stop` stays
-  meaningful: the relay connects when a daemon appears, and the editor kills
-  it (closes its standard input, status 0) when it no longer wants one
-  (workspace swap, shutdown). After a relay exits 14, the editor likewise
-  waits through a `--no-launch` relay, which connects to a successor another
-  client starts; when it exits 16 (the retiring daemon is gone, no other is
-  live) the editor spawns one ordinary relay, which launches the successor —
-  one attempt, as in "Retiring". On `retiring` received over a live relay
-  connection the editor disconnects and spawns one ordinary relay, whose own
-  wait (`RELAY_RETIRE_WAIT`) covers the retiring daemon.
-- **Skipping an incompatible daemon.** The editor learns that a daemon is
+  editor no longer reads once it uses the relay; relays wait inside lw
+  instead.
+  - **Drop.** When the connection drops (after `welcome`) because the daemon
+    stopped, crashed or dropped this observer, or the relay ended, the
+    editor reconnects only through one no-launch relay, so `lw daemon stop`
+    stays meaningful: the relay connects when a daemon appears, and the
+    editor ends it ("The relay process") when it no longer wants one
+    (workspace swap, shutdown).
+  - **Retiring.** On `retiring` received over a live relay connection, and
+    after its own `retire` succeeded ("Retiring an incompatible daemon"),
+    the editor disconnects and spawns one ordinary relay, whose own wait
+    (`RELAY_RETIRE_WAIT`) covers the retiring daemon and which launches the
+    successor. This starts a **retirement episode**.
+  - **Status 14.** When a relay exits 14 the editor waits through a relay
+    that never launches: a retiring relay naming the retiring daemon, with
+    the instance the exited relay's standard error named (§19.10
+    "Retiring-instance line": the last line that is exactly `retiring
+    <pid>:<start_time>`, both decimal integers), passed as `--retiring
+    <pid>:<start_time>`. Only when that line is missing or unparseable (a
+    relay from an older pin, or a daemon without `start_time`) is it a
+    plain no-launch relay. A status 14 also starts a retirement episode
+    when none is open. Either relay connects to a successor another client
+    starts. A plain no-launch relay can miss a daemon that exits before it
+    first looks (§19.10 "A named retiring daemon"); it then waits as after
+    a stop, until a daemon appears or an explicit connect.
+  - **Status 16.** When that relay exits 16 (the retiring daemon is gone,
+    no other is live) the editor spawns one ordinary relay, which launches
+    the successor — at most **one per retirement episode**. A further 16 in
+    the same episode is a note and a wait. The episode, and its count, end
+    at the next `welcome` and on `:LoomworksDaemon connect`.
+- **Skipping an incompatible daemon.** *(Planned, step 5i PR G2. Until then,
+  from PR G1, the editor closes the relay of an incompatible daemon it does
+  not observe and stays in-process until an explicit `:LoomworksDaemon
+  connect`.)* The editor learns that a daemon is
   incompatible only from `welcome.daemon`, after the relay connected; a new
   relay of either form would connect straight back to it. So when the editor
   does not observe an incompatible daemon — "Incompatible daemon" below,
@@ -2178,7 +2351,9 @@ instead of reading the handle and the machine key itself; "Launch" and
   it; it connects to a successor once one is live (another client launched
   it after the skipped one exited), and the editor judges that one afresh. Nothing is
   retried on a timer and the editor never launches over the skipped daemon;
-  the relay exits 0 when the editor kills it (workspace swap, shutdown).
+  the relay exits 0 when the editor ends it (workspace swap, shutdown).
+  The editor retires an incompatible daemon only over a relay connection
+  (`welcome.via = "relay"`).
   A daemon whose start time is unknown (`welcome.daemon` without
   `start_time`) cannot be named with `--skip-instance` (an instance id needs
   both, §19.5). When the editor finds such a daemon incompatible it closes
@@ -2531,25 +2706,36 @@ in-process path. In `in-process` mode nothing below happens.
   with its verdict. The editor never launches a daemon from its own plugin
   source unless `binary.source` asks for it, and runs no loopback runtime
   until the thin-client part of §19.19 step 5 (the CLI's attached runs of
-  step 5e do not include the editor). It still watches for a daemon another
-  client starts and observes that one.
+  step 5e do not include the editor). Until step 5i PR G1 it still watches
+  for a daemon another client starts and observes that one. From PR G1 it
+  does not: the editor follows daemons only through relays, which need a
+  host binary, so with none it spawns no relay, stays in-process, and does
+  not observe a daemon another client started ("End state").
 - **Launch.** The observer launches `<binary> daemon run --root <root>`
   (§19.10: detached, no inherited handles, the state directory as working
   directory) only when no daemon is live on workspace load or on an explicit
   `:LoomworksDaemon connect`, and once after a retirement (below). Readiness is not awaited in a blocking wait: the
   observer watches the handle. An early exit other than "another daemon won"
   is a note. A daemon that is starting, hung, of another host, or attached is
-  not launched over; the observer notes it and watches.
+  not launched over; the observer notes it and watches. *(Until step 5i PR
+  G1. From G1 the editor launches nothing itself and starts no child daemon:
+  an ordinary relay launches the daemon when none is live, on the same
+  occasions ("Through the relay" above, its forms), and a relay's exit before
+  `welcome` replaces the early-exit note ("Exit before `welcome`").)*
 - **Connect.** The observer handshakes as `client = "editor"`,
   `role = "observer"`. It observes a daemon whose transport range overlaps
   its own and whose schemas are not newer (§19.9; the host version may
-  differ; editors of protocol 10 required an equal protocol).
+  differ; editors of protocol 10 required an equal protocol). *(From step 5i
+  PR G1 the handshake runs inside the relay and the editor judges
+  `welcome.daemon`; a `welcome` without `via` is observed without this check,
+  "Through the relay" above.)*
   - **Incompatible daemon.** A daemon with older schemas (and nothing else
     wrong) is observed; any other incompatible daemon (no transport overlap,
     newer schemas, or, over transport 11, a missing root interface) the
     observer notes and does not observe, and does not connect to it again
-    (planned, 5i: through the relay it follows a successor with
-    `--no-launch --skip-instance`, "Skipping an incompatible daemon" above).
+    (from step 5i PR G2, through the relay it follows a successor with
+    `--no-launch --skip-instance`, "Skipping an incompatible daemon" above;
+    in PR G1 alone it stays in-process until an explicit connect).
     It never restarts an incompatible daemon; it retires it only under
     "Retiring an incompatible daemon" above *(step 5h.5)*, which also says
     how long an older-schema daemon stays observed.
@@ -2559,20 +2745,22 @@ in-process path. In `in-process` mode nothing below happens.
   never launches a daemon by itself. This keeps `lw daemon stop` meaningful.
   It watches the handle (about every 2 s) and connects again when a live
   daemon appears. It skips one it was told is `retiring` or found
-  incompatible, identified by pid and start time. *(Planned, 5i: replaced by
-  "Following a stopped or retiring daemon without relaunching it" and
-  "Skipping an incompatible daemon" under "Through the relay" above — a
-  `--no-launch` relay, with `--skip-instance` for an incompatible daemon,
-  instead of watching the handle.)*
+  incompatible, identified by pid and start time. *(Until step 5i PR G1;
+  then replaced by "Following a stopped or retiring daemon without
+  relaunching it" and, from PR G2, "Skipping an incompatible daemon" under
+  "Through the relay" above — a `--no-launch` relay, with `--skip-instance`
+  for an incompatible daemon, instead of watching the handle. The editor
+  then keeps no list of skipped daemons of its own.)*
 - **Retiring.** On `retiring` (broadcast, or in `welcome`) the observer
   disconnects at once, so a version change completes (§19.11). Once that
   daemon has exited and no other daemon is live, the observer launches one
   daemon itself (one attempt, not a loop: an early exit is a note) and
   connects to it; a successor another client started first is observed
-  instead. *(Planned, 5i: replaced by "Following a stopped or retiring
-  daemon without relaunching it" under "Through the relay" above — the wait
-  happens in a relay, `RELAY_RETIRE_WAIT` or `--no-launch` with exit 16,
-  and the one launch is an ordinary relay's.)*
+  instead. *(Until step 5i PR G1; then replaced by "Following a stopped or
+  retiring daemon without relaunching it" under "Through the relay" above —
+  the wait happens in a relay (`RELAY_RETIRE_WAIT`, or `--no-launch`, with
+  `--retiring` when the instance is known, ending in exit 16), and the one
+  launch per retirement episode is an ordinary relay's.)*
 - **Model changes.** On `model_change` the editor applies its files' pending
   changes at once (§19.12).
 - **Tasks.** Each observed task becomes a **remote task** in the editor.
@@ -2625,7 +2813,10 @@ in-process path. In `in-process` mode nothing below happens.
     belong to the step where editor operations themselves run in the daemon.
 - **Teardown.** Unloading or swapping the workspace stops its observer: the
   timers stop, the connection closes, remote tasks are cleared. The daemon
-  keeps running (§19.11).
+  keeps running (§19.11). *(From step 5i PR G1 the connection closes by
+  closing the relay's standard input, a waiting relay is ended the same way,
+  never by a process-tree kill: "The relay process" under "Through the
+  relay" above.)*
 - **Quiet degradation.** Every problem is the observer's one current note,
   shown on the status page's Runtime line, never a notification or a repeated
   message.
@@ -2837,7 +3028,11 @@ runtime is deferred until that module is actively developed.
      `lw daemon list` / `kill` classification of relays; E — the idle rule
      *(done: tool detection past the cap is abandoned by unloading the
      model, a run past it stops the daemon through the stop path)*;
-     F — the CLI's two-stage Ctrl-C *(done)*; G — the editor uses the relay.
+     F — the CLI's two-stage Ctrl-C *(done)*; G — the editor uses the relay
+     (§19.16 "Through the relay"): G0 its spec *(done)*, G1 the relay
+     transport and lifecycle with the relay's `--retiring` flag (§19.10 "A
+     named retiring daemon"), G2 the incompatible-daemon policy over the
+     relay.
    - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
      the short idle grace (a named constant of about 30-60 s, overridable);
      background results written atomically to the cache with a timestamp and

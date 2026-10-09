@@ -67,6 +67,15 @@ considered and not added: configuring stays a step of `lw build`
   that session (the daemon stays observed / editor runs in-process; nothing
   breaks). Changing it is a spec 19.16 change; consider measuring from the
   reply time or allowing one missed tick.
+- Relay progress line (step 5i PR G follow-up): a `daemon run --stdio`
+  relay reports nothing while it waits (attached run's lock, starting
+  daemon, retiring daemon, `--no-launch` wait), so the editor shows only a
+  generic note per relay form (spec/core/daemon.md section 19.16 "Waiting
+  notes"). Add a machine-readable progress line on the relay's stderr (what
+  it is waiting on, e.g. the retiring daemon's pid:start_time) so the
+  Runtime line can say what is happening. (Naming the retiring instance on
+  exit 14 is no longer open: spec section 19.10 "Retiring-instance line"
+  specifies it, and the editor passes it to `--retiring`.)
 
 ## Two meanings of "clean"
 
@@ -548,6 +557,9 @@ implementations of the committed-ignore rule. Follow-ups:
   Seen on PR #168 CI and a local `make test`. Make the wait robust.
   Failed once more on Windows CI on PR #175 ("running tasks: unavailable
   (timeout)"), passed on rerun.
+- Standalone bootstrap tests (Windows): "the helper's children are
+  enumerated" failed with (0) on PR #177 (run 37891094721), passed on
+  rerun.
 - `tests/daemon_reset_cli_spec.lua` "every case: the same output..." failed
   once on Windows CI (PR #171 run 37734890114, docs-only change), passed on
   rerun.
