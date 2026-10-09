@@ -5,6 +5,16 @@ they don't get lost.
 
 ---
 
+## `views.normalize` / `deps.normalize`: `vim.fs.normalize` expands `$VAR` and `~`
+
+`loomworks.views.normalize` (the separator-boundary match of `lw.buf_project`
+and `lw.buf_status`) and `deps.normalize` call `vim.fs.normalize`, which also
+expands environment variables (`$VAR`) and a leading `~`. A real path that
+contains `$` (e.g. `/src/a$b/...`) or starts with `~` is rewritten, so a buffer
+in such a project can mis-match (no project, or another one). Normalize
+separators, trailing slash and case only, e.g. `vim.fs.normalize(p, { expand_env = false })`
+where available, or a local implementation.
+
 ## Split `cli.lua`: its main chunk is at Lua's 200-local limit
 
 `lua/loomworks/cli.lua`'s main chunk has reached Lua's limit of 200 local

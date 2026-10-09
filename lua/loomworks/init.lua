@@ -12,6 +12,23 @@ local events = require("loomworks.events")
 --- @type loomworks.Core
 local core = Core.new()
 
+-- The editor's views (spec §19.13 "Two sources, one shape"): built from the
+-- in-process model whenever the observer holds no daemon subscription.
+local views = require("loomworks.views")
+views.set_builder("header", function() return core:view_header() end)
+views.set_builder("projects", function() return core:view_projects_index() end)
+-- An in-process view is built on read and has no change of its own: when the
+-- model it is built from may have changed, tell the store, which redraws the
+-- statusline (a running state then starts its spinner at once).
+for _, ev in ipairs({
+    "workspace_changed", "active_set_changed", "profile_renamed",
+    "task_started", "task_stopped", "task_result",
+    "operation_started", "operation_finished",
+    "deletion_started", "deletion_completed", "deletion_failed",
+}) do
+    events.on(ev, function() views.changed() end)
+end
+
 --- Auto-load mode. Default: "auto".
 --- @type string|false
 local auto_load_mode = "auto"
@@ -581,93 +598,33 @@ function M.compile_command_for_file(file)
     return ws:compile_command_for_file(file)
 end
 
+--- The buffer's project as its `loomworks.view.ProjectsIndex/1` record (spec
+--- §19.13 "Views"): the record whose `abs_path` is the longest prefix of the
+--- buffer's path on a separator boundary, nil when none matches (or the
+--- workspace is not loaded, in the daemon too). Unlike `project_for_buf`, a
+--- project at `/a/foo` never claims a buffer in `/a/foobar`.
+--- @param bufnr? number defaults to the current buffer
+--- @return loomworks.ViewProjectRecord|nil
+function M.buf_project(bufnr)
+    return views.buf_project(bufnr)
+end
+
+--- The always-warm header (`loomworks.view.Header/1`): the daemon's while
+--- the editor is subscribed to it, otherwise built in-process.
+--- @return loomworks.ViewHeader|nil
+function M.view_header()
+    return views.header()
+end
+
 --- Get status info for the buffer's project, suitable for statusline/winbar.
+--- Read from the two views (spec §19.13 "Two sources, one shape"): nil unless
+--- the header is `loaded` and the buffer is in a project.
 --- @param bufnr? number defaults to current buffer
 --- @return loomworks.BufStatus|nil
 function M.buf_status(bufnr)
-    bufnr = bufnr or 0
-    local active_set = core:get_active_configuration_set()
-    if not active_set then return nil end
-
-    local project = core:project_for_buf(bufnr)
-    if not project then return nil end
-
-    local profile = core:get_active_profile()
-    local set_name = profile and (profile._config_set_ref and profile._config_set_ref.name or profile._configuration_set_name) or nil
-
-    local status
-    if profile and project.configuration then
-        local pp = profile:project(project.key)
-        if pp then
-            status = pp:status()
-        end
-    end
-
-    -- Profile-aggregate state for the icon surface. Profile:status()
-    -- returns a human label that can be composite ("1 building,
-    -- 2 built"), so we compute a single icon-friendly key here. Order
-    -- matters: running and failed dominate the aggregate so the user
-    -- sees the actionable signal first.
-    local profile_state = nil
-    if profile then
-        local counts = {
-            unconfigured = 0, configured = 0, built = 0,
-            configure_failed = 0, build_failed = 0,
-            configuring = 0, building = 0,
-            deleting = 0, cleaning = 0,
-        }
-        local total = 0
-        for _, pp in ipairs(profile:projects()) do
-            local s = pp:status()
-            counts[s] = (counts[s] or 0) + 1
-            total = total + 1
-        end
-        if total == 0 then
-            profile_state = nil
-        elseif counts.deleting > 0 or counts.cleaning > 0 then
-            profile_state = "deleting"
-        elseif counts.configuring > 0 or counts.building > 0 then
-            profile_state = counts.building > 0 and "building" or "configuring"
-        elseif counts.configure_failed > 0 then
-            profile_state = "failed_configure"
-        elseif counts.build_failed > 0 then
-            profile_state = "failed_build"
-        elseif counts.built == total then
-            profile_state = "built"
-        elseif counts.configured + counts.built == total then
-            profile_state = "configured"
-        elseif counts.unconfigured == total then
-            profile_state = "unconfigured"
-        else
-            profile_state = "mixed"
-        end
-    end
-
-    -- Workspace-level diagnostic summary for the winbar indicator.
-    -- Highest severity wins (error trumps warn). Nil when clean.
-    local diagnostic_severity = nil
-    local ws = core:get_workspace()
-    if ws and ws.diagnostics then
-        for _, d in ipairs(ws:diagnostics()) do
-            if d.severity == "error" then
-                diagnostic_severity = "error"
-                break
-            elseif d.severity == "warn" then
-                diagnostic_severity = "warn"
-            end
-        end
-    end
-
-    return {
-        profile_key = active_set.name,
-        set_name = set_name,
-        tool_key = project._tool and project._tool.key or nil,
-        project = project.key,
-        configuration = project.configuration,
-        status = status,
-        profile_state = profile_state,
-        diagnostic_severity = diagnostic_severity,
-    }
+    local header = views.header()
+    if not header or header.state ~= "loaded" then return nil end
+    return views.status_of(header, views.projects_index(), vim.api.nvim_buf_get_name(bufnr or 0))
 end
 
 -- ---------------------------------------------------------------------------

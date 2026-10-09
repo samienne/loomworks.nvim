@@ -63,6 +63,7 @@
 
 local uv = vim.uv or vim.loop
 local remote_task = require("loomworks.daemon.remote_task")
+local views = require("loomworks.views")
 
 local M = {}
 
@@ -94,6 +95,7 @@ M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 --- @field _feat table<string, string>|nil per feature, on this connection: "pending", "subscribed", "refused" (retried once), "gave_up" or "missing" (offered at other versions only)
 --- @field _why table<string, string>|nil per feature: why it is not subscribed (its note)
 --- @field _sub_only boolean|nil the connected daemon delivers to a transport-11 connection only by subscription (its `describe` reports `delivery = "subscription"`, step 5g.3)
+--- @field _view_seq integer|nil the last `seq` of the `/views` object seen on this connection (a gap re-fetches the views, step 5j)
 --- @field generation any session generation of the observed daemon
 --- @field _tasks table<integer, loomworks.RemoteTask> running remote tasks by daemon task id
 --- @field _order integer[] task ids in start order
@@ -149,17 +151,19 @@ M.WORKSPACE = {
     object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes",
     methods = {}, signals = { "changed" },
 }
--- The editor views (§19.13 "Views", step 5j): served on `/views` since
--- part B; the observer subscribes to them in part C (not yet in FEATURES).
+-- The editor views (§19.13 "Views", step 5j): `initial`, then each full-state
+-- `update`, `get` after a `seq` gap, into the view store (loomworks.views)
+-- under the store's name `view`.
 M.VIEW_HEADER = {
     object = "/views", iface = "loomworks.view.Header", v = 1, feature = "statusline",
-    methods = { "get" }, signals = { "update" },
+    methods = { "get" }, signals = { "update" }, view = "header",
 }
 M.VIEW_PROJECTS = {
     object = "/views", iface = "loomworks.view.ProjectsIndex", v = 1, feature = "project index",
-    methods = { "get" }, signals = { "update" },
+    methods = { "get" }, signals = { "update" }, view = "projects",
 }
-M.FEATURES = { M.TASKS, M.WORKSPACE }
+M.VIEWS = { M.VIEW_HEADER, M.VIEW_PROJECTS }
+M.FEATURES = { M.TASKS, M.WORKSPACE, M.VIEW_HEADER, M.VIEW_PROJECTS }
 
 --- How long the connect's `Root.describe` may take before the observer
 --- falls back to `welcome.objects` (§19.16 "Interface client").
@@ -269,6 +273,26 @@ function Observer:_emit(event, data)
     local core = self.ws and self.ws._core
     local events = core and core._deps and core._deps.events
     if events then pcall(events.emit, event, data) end
+end
+
+--- Adopt the daemon's full state of a view into the store; the status page
+--- re-renders (its header reads the store).
+--- @param name loomworks.ViewName
+--- @param state table
+function Observer:_set_view(name, state)
+    views.set(self, name, state)
+    self:_emit("daemon_view_changed", { view = name })
+end
+
+--- Drop this observer's daemon views (all, or `name`) from the store: they
+--- are built in-process again, and the status page re-renders the same way
+--- as on a set. Every clear (a removed `/views`, a resubscribe, a close, a
+--- stop) goes through here.
+--- @param name? loomworks.ViewName
+function Observer:_clear_views(name)
+    if views.clear(self, name) then
+        self:_emit("daemon_view_changed", { view = name })
+    end
 end
 
 --- Set the state and the note; the status page re-renders.
@@ -1282,8 +1306,9 @@ end
 --- 5g.3), then `done()`. A daemon of transport 11 that lists its objects in
 --- `welcome` is re-described (`Root.describe`; `welcome.objects` when that
 --- fails or times out) and gets a subscription to `/tasks`
---- (loomworks.Tasks/1) and `/workspace` (loomworks.Workspace/1) when it
---- offers them — it sends such a connection only what it subscribed to; a
+--- (loomworks.Tasks/1), `/workspace` (loomworks.Workspace/1) and the views
+--- on `/views` (loomworks.view.Header/1, loomworks.view.ProjectsIndex/1,
+--- step 5j) when it offers them — it sends such a connection only what it subscribed to; a
 --- missing or refused one is a per-feature note, never a failed connection.
 --- Any other daemon is observed through the protocol-10 broadcasts (`mode`
 --- "v0").
@@ -1291,6 +1316,8 @@ end
 --- @param done fun()
 function Observer:_subscribe(conn, done)
     self._feat, self._why, self._sub_only = {}, {}, nil
+    self._view_seq = nil
+    self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
     if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
         or type(conn.call) ~= "function" then
@@ -1329,7 +1356,7 @@ function Observer:_ensure_subscriptions(conn, objects, done)
             self._feat[f] = "pending"
             pending = pending + 1
             conn:call(M.ROOT.object, M.ROOT.iface, M.ROOT.v, "subscribe",
-                { object = want.object, iface = want.iface, v = want.v }, function(_, err)
+                { object = want.object, iface = want.iface, v = want.v }, function(result, err)
                     vim.schedule(function()
                         if self.conn ~= conn or not self._feat then return settle() end
                         if err then
@@ -1341,6 +1368,7 @@ function Observer:_ensure_subscriptions(conn, objects, done)
                         else
                             self._feat[f] = "subscribed"
                             self._why[f] = nil
+                            if want.view then self:_view_subscribed(want, result) end
                         end
                         settle()
                     end)
@@ -1369,7 +1397,10 @@ function Observer:_on_objects_changed(args)
     if not conn or self.mode ~= "interfaces" or not self._feat then return end
     for _, p in ipairs(type(args.removed) == "table" and args.removed or {}) do
         for _, want in ipairs(M.FEATURES) do
-            if want.object == p then self._feat[want.feature] = nil end
+            if want.object == p then
+                self._feat[want.feature] = nil
+                if want.view then self:_clear_views(want.view) end
+            end
         end
     end
     self:_describe(conn, function(objects, delivery)
@@ -1378,6 +1409,54 @@ function Observer:_on_objects_changed(args)
         objects = objects or {}
         self:_ensure_subscriptions(conn, objects, function() self:_connected_note() end)
     end)
+end
+
+--- A view subscription succeeded (§19.13 "Views"): its `seq` baseline and
+--- its `initial` full state go to the view store.
+--- @param want table M.VIEW_HEADER or M.VIEW_PROJECTS
+--- @param result table|nil the subscribe result `{ sub_id, seq, initial? }`
+function Observer:_view_subscribed(want, result)
+    if type(result) ~= "table" then return end
+    local seq = tonumber(result.seq)
+    -- Both views share the `/views` object's `seq` (counted per object and
+    -- connection, §19.12): the baseline is the highest one seen.
+    if seq and seq > (self._view_seq or 0) then self._view_seq = seq end
+    if type(result.initial) == "table" then
+        self:_set_view(want.view, result.initial)
+    end
+end
+
+--- A view's `update` (§19.13 "Views"): the full state replaces the store's
+--- table. A `seq` gap means a lost signal: every subscribed view is fetched
+--- again with `get`.
+--- @param want table M.VIEW_HEADER or M.VIEW_PROJECTS
+--- @param msg table the signal frame
+function Observer:_view_update(want, msg)
+    local st = self._feat and self._feat[want.feature]
+    if st ~= "subscribed" and st ~= "pending" then return end
+    local seq = tonumber(msg.seq)
+    local gap = seq ~= nil and self._view_seq ~= nil and seq > self._view_seq + 1
+    if seq and seq > (self._view_seq or 0) then self._view_seq = seq end
+    if type(msg.args) == "table" then
+        self:_set_view(want.view, msg.args)
+    end
+    if gap then self:_refetch_views() end
+end
+
+--- Fetch every subscribed view again (`get`, its full state) after a gap.
+function Observer:_refetch_views()
+    local conn = self.conn
+    if not conn or type(conn.call) ~= "function" then return end
+    for _, want in ipairs(M.VIEWS) do
+        if self._feat and self._feat[want.feature] == "subscribed" then
+            conn:call(want.object, want.iface, want.v, "get", {}, function(state, err)
+                vim.schedule(function()
+                    if self.state == "stopped" or self.conn ~= conn or err or type(state) ~= "table" then return end
+                    self:_set_view(want.view, state)
+                end)
+            end)
+        end
+    end
 end
 
 --- Joining late (spec §19.16): ask `status` and adopt every task in its
@@ -1451,6 +1530,8 @@ function Observer:_on_closed(c)
     self.feature_note = nil
     self.incompat_note = nil
     self._feat, self._why, self._sub_only = nil, nil, nil
+    self._view_seq = nil
+    self:_clear_views()
     self:_stop_timer("_keepalive")
     -- An observed incompatible daemon weighed for a retirement: forget it
     -- (a retirement in flight still reports through its reply).
@@ -1491,6 +1572,12 @@ function Observer:_on_message(msg)
             return self:_on_objects_changed(args)
         elseif msg.object == M.WORKSPACE.object and msg.iface == M.WORKSPACE.iface and msg.name == "changed" then
             return self:_model_change(args.seq, args.session_generation)
+        elseif msg.name == "update" then
+            for _, want in ipairs(M.VIEWS) do
+                if msg.object == want.object and msg.iface == want.iface and msg.v == want.v then
+                    return self:_view_update(want, msg)
+                end
+            end
         end
         return
     end
@@ -1637,6 +1724,8 @@ function Observer:stop()
     local c = self.conn
     self.conn = nil
     if c then c.on_close = nil; c:close() end
+    self._view_seq = nil
+    self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
 end

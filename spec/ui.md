@@ -15,7 +15,11 @@ editor height). Window position and size can be configured via `setup()`
 options or overridden per `open()` call — the `win` table is passed
 directly to `Snacks.win`. The page contains these sections in order:
 
-1. **Header** — plugin version, workspace name, workspace root, and one
+1. **Header** — plugin version, workspace name, workspace root (from
+   `loomworks.view.Header/1`, daemon.md §19.13 "Two sources, one shape":
+   the daemon's while subscribed, shown as it is — `Workspace: not loaded in
+   the workspace daemon` before the daemon loads it — otherwise built
+   in-process), and one
    `Runtime` line, the header's last line (above Diagnostics, never further
    down the page): the runtime mode, the source that selected it (core
    §19.1: `env`, `setup`, `lw setting`, `default`), and in `daemon` mode the
@@ -1104,9 +1108,11 @@ Users can override these by defining the highlight groups before plugin load.
 
 `lualine/components/loomworks.lua` provides a lualine component for
 winbar display. Its data are the `loomworks.view.Header/1` and
-`loomworks.view.ProjectsIndex/1` tables (daemon.md §19.13 "Views"; step 5j,
-plan): the daemon's while the editor is subscribed, otherwise built
-in-process with the same shape.
+`loomworks.view.ProjectsIndex/1` tables (daemon.md §19.13 "Views"; step 5j),
+read through `lw.buf_status()`: the daemon's while the editor is subscribed,
+shown as they are, otherwise built in-process with the same shape. The
+component reaches into neither the workspace nor its events: its spinner
+runs while a render shows a running state.
 
 **Default display**: `{set_name} {join} {project}/{configuration}`
 
@@ -1128,6 +1134,7 @@ and join string are not affected. This is the display-text rule of `specificatio
 component never shows descriptions.
 
 **Returns empty** when:
-- No workspace loaded
+- No workspace loaded (the header's `state` is not `loaded`; with a daemon
+  subscription, also while the daemon has not loaded the workspace)
 - No active profile
 - Current buffer is not in any project

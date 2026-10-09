@@ -1064,6 +1064,30 @@ function Core:project_for_buf(bufnr)
     return best_project
 end
 
+--- `loomworks.view.Header/1`'s state built from the in-process model (spec
+--- §19.13 "Two sources, one shape"): the daemon's builder, without the
+--- session fields and ids only the daemon fills. A failed load reports as
+--- the daemon's `error_state` does (cli.lua).
+--- @return loomworks.ViewHeader
+function Core:view_header()
+    local ws = self._workspace
+    local e = not ws and self._setup_error or nil
+    local err
+    if e then
+        local kind = type(e.trust) == "table" and e.trust.kind or nil
+        err = { message = e.message, refused = (e.trust or e.newer or e.journal) and true or nil,
+            trust = (kind == "user" or kind == "cache") and kind or nil }
+    end
+    return require("loomworks.view_state").header(ws, err, { root = (ws and ws.root) or (e and e.root) or nil })
+end
+
+--- `loomworks.view.ProjectsIndex/1`'s state built from the in-process model
+--- (no ids; no projects when no workspace is loaded).
+--- @return loomworks.ViewProjectsIndex
+function Core:view_projects_index()
+    return require("loomworks.view_state").projects_index(self._workspace)
+end
+
 --- Detach the active workspace fully. Called on VimLeave-style shutdown.
 function Core:shutdown()
     self:_stop_refused_watch()

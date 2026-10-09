@@ -2216,6 +2216,11 @@ Customize which parts to show:
 Available fields: `set_name`, `project`, `configuration`, `tool_key`,
 `profile_key`, `status`.
 
+The component reads `lw.buf_status()`. With no active profile it shows just
+the project name of the buffer (the profile, configuration, tool and status
+fields are empty); `tool_key` is the tool the active profile uses for the
+buffer's project.
+
 ## Workspace File Layout
 
 ```
@@ -2401,10 +2406,20 @@ end
 
 -- Projects
 lw.get_projects()                           -- all Project objects
-lw.project_for_buf(bufnr)                   -- find project for buffer
+lw.project_for_buf(bufnr)                   -- find project for buffer (loomworks.Project)
+lw.buf_project(bufnr)                       -- the buffer's project record: { key, label, type,
+                                            --   path, abs_path, active? = { configuration,
+                                            --   tool_key?, state } } (longest prefix on a
+                                            --   separator boundary), nil when none
+lw.view_header()                            -- { root, state, name?, active_profile?,
+                                            --   config_set?, diagnostics?, ... }
 
 -- Buffer status (for statusline/winbar)
-lw.buf_status(bufnr)                        -- { project, configuration, status, ... }
+lw.buf_status(bufnr)                        -- { project, configuration?, tool_key?, status?,
+                                            --   profile_key?, set_name?, ... }; nil when the
+                                            --   buffer is in no project. With no active profile
+                                            --   only `project` (and diagnostics) is set.
+                                            --   tool_key: the active profile's tool for the project
 
 -- Events
 lw.on("active_set_changed", function(active_set)

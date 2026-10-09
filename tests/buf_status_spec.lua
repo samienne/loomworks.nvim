@@ -1,9 +1,11 @@
--- Test the buf_status logic as used by lualine.
--- buf_status is on the init.lua facade and uses the singleton Core.
--- We reproduce its logic here, driven by a test Core, to verify the
--- data shape returned under various conditions.
+-- Test lw.buf_status as lualine uses it: init.lua reads the two views
+-- (spec §19.13 "Two sources, one shape") through loomworks.views; here the
+-- views are built in-process from a test Core with the same builder
+-- (Core:view_header / Core:view_projects_index), and the buffer path comes
+-- from the test's `buf_name`.
 
 local Core = require("loomworks.core")
+local views = require("loomworks.views")
 local h = require("tests.helpers")
 
 local function make_core(config_overrides, user_overrides, cache_overrides, dep_overrides)
@@ -21,34 +23,11 @@ local function make_core(config_overrides, user_overrides, cache_overrides, dep_
     return core, deps
 end
 
---- Reproduce buf_status logic (mirrors init.lua)
+--- lw.buf_status over the in-process views of `core` (mirrors init.lua).
 local function buf_status(core, bufnr)
-    bufnr = bufnr or 0
-    local active_set = core:get_active_configuration_set()
-    if not active_set then return nil end
-
-    local project = core:project_for_buf(bufnr)
-    if not project then return nil end
-
-    local profile = core:get_active_profile()
-    local set_name = profile and (profile._config_set_ref and profile._config_set_ref.name or profile._configuration_set_name) or nil
-
-    local status
-    if profile and project.configuration then
-        local pp = profile:project(project.key)
-        if pp then
-            status = pp:status()
-        end
-    end
-
-    return {
-        profile_key = active_set.name,
-        set_name = set_name,
-        tool_key = project._tool and project._tool.key or nil,
-        project = project.key,
-        configuration = project.configuration,
-        status = status,
-    }
+    local header = core:view_header()
+    if not header or header.state ~= "loaded" then return nil end
+    return views.status_of(header, core:view_projects_index(), core._deps.buf_name(bufnr or 0))
 end
 
 describe("buf_status", function()
@@ -241,5 +220,77 @@ describe("buf_status", function()
         assert.is_not_nil(result)
         assert.equals("Frontend", result.project)
         assert.is_nil(result.tool_key)
+    end)
+
+    it("a project at /root/App does not claim a buffer in /root/AppX (separator boundary)", function()
+        local core = make_core({
+            configuration_sets = { debug = { App = "Debug" } },
+        }, {
+            active_profile = "debug",
+            profiles = { debug = { configuration_set = "debug" } },
+        }, nil, {
+            buf_name = function() return "/root/AppX/src/main.cpp" end,
+        })
+        core:setup({ root = "/root" })
+        assert.is_nil(buf_status(core, 0))
+    end)
+end)
+
+describe("loomworks.views", function()
+    local function rec(key, abs, active)
+        return { key = key, label = key, type = "cmake", path = key, abs_path = abs, active = active }
+    end
+
+    it("matches the longest prefix on a separator boundary", function()
+        local idx = { projects = { rec("a", "/w/a"), rec("ab", "/w/a/b"), rec("foo", "/w/foo") } }
+        assert.equals("ab", views.match(idx, "/w/a/b/x.c").key)
+        assert.equals("a", views.match(idx, "/w/a/bc/x.c").key)
+        assert.equals("a", views.match(idx, "/w/a").key)
+        assert.is_nil(views.match(idx, "/w/foobar/x.c"))
+        assert.is_nil(views.match(idx, ""))
+        assert.is_nil(views.match(nil, "/w/a/x.c"))
+    end)
+
+    it("status_of is nil unless the header is loaded", function()
+        local idx = { projects = { rec("a", "/w/a", { configuration = "Debug", state = "built" }) } }
+        assert.is_nil(views.status_of({ root = "/w", state = "unloaded" }, { projects = {} }, "/w/a/x.c"))
+        assert.is_nil(views.status_of({ root = "/w", state = "error", error = "x" }, idx, "/w/a/x.c"))
+        local st = views.status_of({ root = "/w", state = "loaded", active_profile = "p", config_set = "s",
+            diagnostics = "warn" }, idx, "/w/a/x.c")
+        assert.same({ profile_key = "p", set_name = "s", project = "a", configuration = "Debug",
+            status = "built", profile_state = "built", diagnostic_severity = "warn" }, st)
+    end)
+
+    it("profile_state aggregates the mapped projects", function()
+        local function idx(...)
+            local out = {}
+            for i, s in ipairs({ ... }) do out[i] = rec("p" .. i, "/w/p" .. i, { configuration = "D", state = s }) end
+            out[#out + 1] = rec("unmapped", "/w/u")
+            return { projects = out }
+        end
+        assert.equals("building", views.profile_state(idx("built", "building")))
+        assert.equals("failed_build", views.profile_state(idx("built", "build_failed")))
+        assert.equals("built", views.profile_state(idx("built", "built")))
+        assert.equals("configured", views.profile_state(idx("built", "configured")))
+        assert.equals("unconfigured", views.profile_state(idx("unconfigured")))
+        assert.equals("mixed", views.profile_state(idx("built", "unconfigured")))
+        assert.is_nil(views.profile_state({ projects = { rec("u", "/w/u") } }))
+    end)
+
+    it("serves the daemon's table while set, the builder's otherwise", function()
+        local owner = {}
+        views.set_builder("projects", function() return { projects = { rec("built", "/w/b") } } end)
+        assert.equals("in-process", views.source("projects"))
+        assert.equals("built", views.projects_index().projects[1].key)
+        views.set(owner, "projects", { projects = {} })
+        assert.equals("daemon", views.source("projects"))
+        assert.same({}, views.projects_index().projects)
+        views.clear({}, "projects") -- another owner: kept
+        assert.equals("daemon", views.source("projects"))
+        views.clear(owner)
+        assert.equals("in-process", views.source("projects"))
+        -- Restore init.lua's builder.
+        local core = require("loomworks")._core()
+        views.set_builder("projects", function() return core:view_projects_index() end)
     end)
 end)
