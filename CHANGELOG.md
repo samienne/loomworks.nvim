@@ -45,7 +45,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   when it will exit if no client connects (`idle  timeout 45s, exits at
   14:03:12 (in 45s) unless a client connects`), or that the idle timer is not
   running while other clients, an operation or background work keep it up.
-  An older daemon shows no idle line. (#PR)
+  An older daemon shows no idle line. (#184)
 - Experimental daemon mode: `setup({ binary = { channel = "stable" } })` (or
   `"unstable"`) lets the plugin's own `lw` move ahead of its pinned release.
   At most once a day and on `:LoomworksDaemon connect`, the pinned `lw` asks
