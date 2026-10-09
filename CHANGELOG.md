@@ -309,7 +309,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   exits after 45 seconds without clients or background work instead of 1
   hour, so a script of several `lw` commands still shares one daemon but
   nothing lingers; set `daemon-idle-timeout` (e.g. `1h`) to keep the old
-  behaviour. An attached editor keeps the daemon alive as before. (#TBD)
+  behaviour. An attached editor keeps the daemon alive as before. (#182)
 - Experimental daemon mode: the editor connects to the workspace daemon only
   through `lw daemon run --root <dir> --stdio` - the same shared daemon as the
   CLI - and no longer reads the daemon's handle or launches it itself. On load
