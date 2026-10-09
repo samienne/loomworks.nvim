@@ -1398,7 +1398,7 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   `Service:in_segment`.)* The
   daemon's lifetime never depends on any client's lifetime: a client keeps
   it alive only through an open connection.
-- *(Step 5r: idle grace B, tool cache C.)* **Warm restarts.** A script running several `lw`
+- *(Step 5r: idle grace B, tool cache C, idle deadline D.)* **Warm restarts.** A script running several `lw`
   commands in a row pays one cold start, and a restarted daemon reuses what
   an earlier one already worked out:
   - **Idle grace.** The default of the idle timeout above is the named
@@ -1409,6 +1409,20 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
     (e.g. `1h`); an invalid value falls back to the grace. An attached
     editor is unaffected: its connection and keepalive keep the daemon
     alive, so only the gap after the last client goes away shrinks.
+  - **Idle deadline** *(part D)*. The `status` reply carries
+    `idle_timeout`, the idle timeout in effect in seconds, and — when
+    nothing but the asking connection keeps the daemon up (no other client,
+    no run, no background work) — `idle_deadline`, the wall-clock time
+    (epoch seconds) at which the daemon exits if the asker closes now and
+    no client connects: the asker is a connection, so its close restarts
+    the idle clock, and the deadline is that close plus the timeout. Both
+    are additions to the frozen `status` shape (§19.8): a daemon of an older
+    protocol omits them, and a client ignores fields it does not know.
+    `lw daemon status` shows them on an `idle` line —
+    `timeout 45s, exits at 14:03:12 (in 45s) unless a client connects`, or
+    `timeout 45s, idle timer not running (<n> other clients | an operation
+    is running | background work)` — and no line for a daemon that does not
+    report `idle_timeout`.
   - **Persisted background results.** In step 5r the only background result
     is **tool detection**; scans, the `compile_commands.json` refresh and
     housekeeping are not daemon background work yet, and each defines its
@@ -1453,7 +1467,8 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   handle may keep it alive.
 
 **Commands.** `lw daemon status` reads the handle and lock and, for a live
-same-host daemon, asks it for `status` (clients, running operations, versions);
+same-host daemon, asks it for `status` (clients, running operations, versions,
+from step 5r the idle timeout and deadline — "Warm restarts");
 it never launches. `lw daemon stop` sends `stop` (the daemon exits as above)
 and waits (about 10 s) for the runtime lock to be released; it never kills —
 a daemon that does not stop in time is reported as not responding, with
@@ -3111,7 +3126,8 @@ runtime is deferred until that module is actively developed.
      on completion, an interrupted type not written; reused on the next start
      when its fingerprint matches; the same check in the in-process CLI)
      *(done once merged)*;
-     D *(optional)* — `lw daemon status` shows the idle deadline.
+     D *(optional)* — `lw daemon status` shows the idle deadline (`status`
+     `idle_timeout` / `idle_deadline`) *(done once merged)*.
    - **5j–5o — Editor consumers move to interfaces**, each step landing its
      interfaces with their schemas and transcripts: `view.Header/1` and
      `view.ProjectsIndex/1` (5j); the editor's operations as calls,

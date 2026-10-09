@@ -916,6 +916,16 @@ function Server:status(conn)
     -- The running tasks (protocol 7, §19.11): each one's `start` meta, when it
     -- started and its last percent.
     r.tasks = self.service and self.service.tasks and self.service.tasks:snapshot(conn) or {}
+    -- The idle deadline (step 5r D, §19.11 "Warm restarts"): the idle
+    -- timeout in effect, and — when nothing but the asking connection keeps
+    -- the daemon up (no other client, no run, no background work) — the time
+    -- it exits if the asker closes now and no client connects (the asker's
+    -- close restarts the idle clock). Additions to the frozen shape.
+    r.idle_timeout = self.idle_seconds
+    local others = self.n_clients - ((conn and conn.authed) and 1 or 0)
+    if others <= 0 and not self.busy and not self.background and not self.stopped then
+        r.idle_deadline = os.time() + self.idle_seconds
+    end
     return r
 end
 

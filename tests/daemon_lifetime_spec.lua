@@ -150,6 +150,48 @@ describe("lifetime rules (§19.11, in-process server)", function()
         assert.equals(0, exited)
     end)
 
+    -- Step 5r D (§19.11 "Warm restarts"): `status` reports the idle timeout
+    -- in effect and, when only the asker keeps the daemon up, the deadline
+    -- the asker's close starts; `lw daemon status` renders it.
+    it("status reports the idle timeout and the idle deadline (step 5r D)", function()
+        start({ tick_ms = NO_TICK, idle_seconds = 120 })
+        local a = assert(client.session(srv.address))
+        local before = os.time()
+        local st = assert(client.request(a, { kind = "status" }))
+        assert.equals(120, st.idle_timeout)
+        assert.is_number(st.idle_deadline)
+        assert.truthy(st.idle_deadline >= before + 120 and st.idle_deadline <= os.time() + 120, st.idle_deadline)
+        -- Another client keeps it up: the timeout only, no deadline.
+        local b = assert(client.session(srv.address))
+        assert.is_true(vim.wait(10000, function() return srv:client_count() == 2 end, 20))
+        st = assert(client.request(a, { kind = "status" }))
+        assert.equals(120, st.idle_timeout)
+        assert.is_nil(st.idle_deadline)
+        b:close()
+        assert.is_true(vim.wait(10000, function() return srv:client_count() == 1 end, 20))
+        -- Background work keeps it up too.
+        srv.background = true
+        st = assert(client.request(a, { kind = "status" }))
+        assert.is_nil(st.idle_deadline)
+        srv.background = false
+        a:close()
+    end)
+
+    it("lw daemon status renders the idle line (step 5r D)", function()
+        local command = require("loomworks.daemon.command")
+        local now = 1000000
+        local t = command.idle_text({ clients = 1, idle_timeout = 45, idle_deadline = now + 45 }, now)
+        assert.equals("timeout 45s, exits at " .. os.date("%H:%M:%S", now + 45) .. " (in 45s) unless a client connects", t)
+        assert.equals("timeout 60m, idle timer not running (2 other clients)",
+            command.idle_text({ clients = 3, idle_timeout = 3600 }, now))
+        assert.equals("timeout 45s, idle timer not running (an operation is running)",
+            command.idle_text({ clients = 1, busy = true, idle_timeout = 45 }, now))
+        assert.equals("timeout 45s, idle timer not running (background work)",
+            command.idle_text({ clients = 1, idle_timeout = 45 }, now))
+        -- An older daemon reports no idle timeout: no line.
+        assert.is_nil(command.idle_text({ clients = 1 }, now))
+    end)
+
     it("drops a connection silent for three keepalive intervals", function()
         start({ keepalive_ms = 1000, tick_ms = NO_TICK })
         local conn = assert(client.session(srv.address))
