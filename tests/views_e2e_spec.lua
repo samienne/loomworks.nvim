@@ -31,7 +31,7 @@ local function daemon_mode(name)
 end
 
 describe("editor views from a real daemon /views (§19.13, step 5j)", function()
-    local root, srv, core, obs, sess, buf
+    local root, ws_root, srv, core, obs, sess, buf
 
     before_each(function()
         trust._set_key_path(H.tmp() .. "/trust.key")
@@ -46,8 +46,14 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
         core = Core.new()
         core:setup({ root = root })
         assert.is_true(vim.wait(30000, function() return core._state == "initialized" end, 20))
+        -- Buffers are named under the workspace's resolved root: on a runner
+        -- whose temp dir is an 8.3 short path (C:/Users/RUNNER~1/...),
+        -- `root` is that short form while the workspace root (and so every
+        -- `abs_path`) is the realpath'd long one, and a path match is a plain
+        -- prefix compare.
+        ws_root = core:get_workspace().root
         buf = vim.api.nvim_create_buf(true, false)
-        vim.api.nvim_buf_set_name(buf, root .. "/app/src/main.c")
+        vim.api.nvim_buf_set_name(buf, ws_root .. "/app/src/main.c")
     end)
 
     after_each(function()
@@ -132,7 +138,7 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
 
         -- A buffer outside every project: nil from both.
         local other = vim.api.nvim_create_buf(true, false)
-        vim.api.nvim_buf_set_name(other, root .. "/appendix/x.c")
+        vim.api.nvim_buf_set_name(other, ws_root .. "/appendix/x.c")
         assert.is_nil(lw.buf_status(other))
         assert.is_nil(lw.buf_project(other))
         vim.api.nvim_buf_delete(other, { force = true })
