@@ -17,7 +17,9 @@
 ---     and once per retirement episode after a status 16; a `--no-launch`
 ---     relay after a drop (so `lw daemon stop` stays meaningful) and after a
 ---     status 10 / 11 / 14; `--no-launch --retiring <id>` after a status 14
----     that named the retiring daemon. It reads none of lw's internal files to
+---     that named the retiring daemon; `--no-launch --skip-instance <id>`
+---     after an incompatible daemon it does not observe (never together with
+---     `--retiring`). It reads none of lw's internal files to
 ---     connect, launch or follow a daemon (only `_prune`'s in-use check reads
 ---     the handle, read-only). With no host binary it spawns nothing and
 ---     stays in-process;
@@ -25,9 +27,12 @@
 ---     newer; the host version may differ) as `client = "editor"`, `role =
 ---     "observer"`, and pings it every KEEPALIVE_MS (§19.11); a `welcome`
 ---     without `via` (an older pin's attached `--stdio`) is observed without
----     that check and never retired. Until step 5i PR G2 an incompatible
----     daemon it does not observe has its relay closed, and the editor stays
----     in-process until an explicit connect;
+---     that check and never retired. An incompatible daemon it does not
+---     observe (including one it declines to retire) has its relay closed;
+---     the editor stays in-process and follows a successor through one
+---     `--no-launch --skip-instance <id>` relay naming that daemon (step 5i
+---     PR G2, `_skip`), or — the daemon's start time unknown, so it cannot
+---     be named — spawns no relay until an explicit connect;
 ---   * on a transport-11 daemon (`welcome.objects`, §19.20) re-describes it
 ---     (`Root.describe`, bounded by DESCRIBE_MS, falling back to
 ---     `welcome.objects`) and subscribes to `loomworks.Tasks/1` on `/tasks`
@@ -283,6 +288,21 @@ function Observer:start(explicit)
     self:_spawn({ form = "ordinary" })
 end
 
+--- The instance id `<pid>:<start_time>` (§19.5, the value `--skip-instance`
+--- takes) of a daemon from `welcome.daemon`, or nil when either part is
+--- missing or malformed: a daemon whose start time is unknown cannot be
+--- named. The same form as the binary's connect.instance_id (not required
+--- here: the plugin reaches the binary only through the protocol).
+--- @param d table|nil { pid, start_time }
+--- @return string|nil
+function M.instance_id(d)
+    if type(d) ~= "table" then return nil end
+    local pid, st = d.pid, d.start_time
+    if type(pid) ~= "number" or pid < 1 or pid > 0x7fffffff or pid ~= math.floor(pid) then return nil end
+    if type(st) ~= "string" or not st:match("^%a+:%S+$") then return nil end
+    return string.format("%d:%s", pid, st)
+end
+
 --- The waiting note of a relay form until it forwards `welcome` (§19.16
 --- "Waiting notes"). `what` names the binary and its source (ordinary).
 --- @param form string
@@ -293,6 +313,9 @@ function M.form_note(form, what)
         return "connecting to or starting the workspace daemon" .. (what and (" (" .. what .. ")") or "")
     elseif form == "retiring" then
         return "waiting for the retiring daemon to exit"
+    elseif form == "skip" then
+        -- Follows the incompatible-daemon note (its prefix, `_skip`).
+        return "waiting for another workspace daemon, none is launched"
     end
     return "waiting for a workspace daemon, none is launched (:LoomworksDaemon connect starts one)"
 end
@@ -329,7 +352,7 @@ end
 --- could not be cached is used as unknown rather than probed again); a
 --- wanted plugin-managed lw is downloaded first. With no host binary no
 --- relay is spawned: the editor stays in-process.
---- want: { form, instance? (retiring), answer? (spawned for a status 10/11),
+--- want: { form, instance? (retiring, skip), answer? (spawned for a status 10/11),
 ---         prefix? (the note it follows) }
 --- @param want table
 --- @param probed? boolean called back from `_probe`
@@ -351,7 +374,7 @@ function Observer:_spawn(want, probed)
         return self:_set("no-binary", binsel.none_note(sel))
     end
     self._want = nil
-    local token = { form = want.form, answer = want.answer }
+    local token = { form = want.form, answer = want.answer, instance = want.instance }
     local connect = self.opts.relay or require("loomworks.daemon.client").relay.connect
     local r, err = connect({
         argv = { bin }, root = self.root, env = sel.env, form = want.form, instance = want.instance,
@@ -740,14 +763,23 @@ function Observer:_on_relay(token, conn, err, info)
         -- older schemas is observed as usual and weighed for a retirement on the
         -- observed connection; any other is weighed on a held connection it is
         -- not observed through. Its relay is closed when the editor does not
-        -- observe it, and the editor stays in-process until an explicit
-        -- connect (step 5i PR G1; the skip relay is PR G2).
+        -- observe it, and a successor is followed through a skip relay
+        -- (step 5i PR G2, `_skip`).
+        if token.form == "skip" and M.instance_id(target) == token.instance then
+            -- A skip relay never connects to the daemon it skips (§19.10
+            -- "Skip an instance"); one that did is not trusted, and nothing
+            -- is spawned again (no loop back to that daemon).
+            conn.on_close = nil
+            conn:close()
+            return self:_set("waiting", "internal error: the relay connected to the daemon it was told to skip "
+                .. "(pid " .. tostring(target.pid) .. ") — :LoomworksDaemon connect tries again")
+        end
         inc = require("loomworks.daemon.editor_retire").incompatibility(ch, conn)
         if (not ok or inc) and not (inc and inc.observable) then
             if inc and not inc.newer then return self:_weigh_retire(target, conn, ch, inc) end
             conn.on_close = nil
             conn:close()
-            return self:_set("waiting", M.mismatch_note(ch, what or "schemas", target.exe or self._binary))
+            return self:_skip(target, M.mismatch_note(ch, what or "schemas", target.exe or self._binary))
         end
     end
     -- (A `welcome` without `via` is an older pin's attached `--stdio`: no
@@ -832,6 +864,31 @@ function Observer:_after_retire(prefix)
     return self:_spawn({ form = "ordinary", prefix = prefix })
 end
 
+--- Follow past an incompatible daemon the editor does not observe (spec
+--- §19.16 "Skipping an incompatible daemon", step 5i PR G2): its relay is
+--- already closed; the editor stays in-process and spawns one `--no-launch
+--- --skip-instance <pid>:<start_time>` relay naming it from
+--- `welcome.daemon`, which never connects to it, launches nothing and
+--- connects to a successor once one is live (judged afresh). A daemon whose
+--- start time is unknown cannot be named (§19.5): no relay is spawned, and
+--- the editor stays in-process for the session until an explicit
+--- `:LoomworksDaemon connect`. Nothing is retried on a timer.
+--- @param target table the daemon { pid, start_time, exe } (`welcome.daemon`)
+--- @param note string the incompatible-daemon note
+function Observer:_skip(target, note)
+    -- Already observing a daemon (a successor connected meanwhile): a late
+    -- outcome of an earlier wait (a retire reply after its connection
+    -- closed) spawns nothing and leaves the state as it is.
+    if self.state == "stopped" or self.conn then return end
+    if self._relay then self:_end_relay() end
+    local id = M.instance_id(target)
+    if not id then
+        return self:_set("waiting", note .. " (its start time is unknown, so no relay can skip it; "
+            .. ":LoomworksDaemon connect tries again)")
+    end
+    return self:_spawn({ form = "skip", instance = id, prefix = note })
+end
+
 --- @class loomworks.daemon.RetireWait  an incompatible daemon being weighed for a retirement (step 5h.5)
 --- @field conn loomworks.daemon.Conn the connection to it: the observed one (`observed`), or held and not observed through
 --- @field observed boolean|nil only its schemas are older: it is observed meanwhile (spec §19.16 "Connect")
@@ -871,17 +928,16 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
         self._retire = wait
         if not wait.observed then
             -- The daemon goes away (stops, exits, drops us) or its relay
-            -- ends: forget it. The editor stays in-process until an explicit
-            -- connect (step 5i PR G1: an incompatible daemon it does not
-            -- observe is not followed). (The observed connection's close is
-            -- `_on_closed`.)
+            -- ends: forget it, and follow a successor through a skip relay
+            -- naming it, which launches nothing (step 5i PR G2, `_skip`).
+            -- (The observed connection's close is `_on_closed`.)
             conn.on_close = function(c)
                 vim.schedule(function()
                     if self._retire and self._retire.conn == c then
                         self:_drop_retire()
                         if self.state ~= "stopped" then
-                            self:_set("waiting", R.note(ch, inc, binary,
-                                "it went away — :LoomworksDaemon connect connects again"))
+                            self:_skip(target, R.note(ch, inc, binary, "its connection closed — not observing it; "
+                                .. "running in-process"))
                         end
                     end
                 end)
@@ -890,7 +946,7 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
     end
     wait.probed = wait.probed or probed
     -- Declined: an observed daemon stays observed (the note says why it is
-    -- not retired); a held one is closed and noted.
+    -- not retired); a held one is closed, noted, and skipped (`_skip`).
     local function decline(why, advice)
         if wait.observed then
             self._retire = nil
@@ -898,8 +954,15 @@ function Observer:_weigh_retire(target, conn, ch, inc, probed)
             return self:_note_incompatible(wait, "observing it without retiring it (" .. why .. "); " .. advice)
         end
         self:_drop_retire()
-        return self:_set("waiting", R.note(ch, inc, binary, "not observing it (" .. why .. "); " .. advice
+        return self:_skip(target, R.note(ch, inc, binary, "not observing it (" .. why .. "); " .. advice
             .. " — running in-process"))
+    end
+    -- The editor retires a daemon only over a relay connection
+    -- (`welcome.via = "relay"`, §19.16 "Through the relay"); a `welcome`
+    -- without `via` (an older pin's attached `--stdio`) is never weighed —
+    -- this only guards that rule.
+    if not (type(conn.welcome) == "table" and conn.welcome.via == "relay") then
+        return decline("not connected through the relay", "update the pin or the plugin")
     end
     -- The selection: the same as a launch would make (over cached verdicts).
     local binsel = require("loomworks.provision.select")
@@ -1029,7 +1092,7 @@ function Observer:_retire_unanswered(wait, what)
         return self:_note_incompatible(wait, "observing it without retiring it (" .. tail .. ")")
     end
     self:_drop_retire()
-    return self:_set("waiting", require("loomworks.daemon.editor_retire").note(wait.ch, wait.inc,
+    return self:_skip(wait.target, require("loomworks.daemon.editor_retire").note(wait.ch, wait.inc,
         wait.target.exe or self._binary, "not observing it (" .. tail .. ") — running in-process"))
 end
 
@@ -1065,7 +1128,7 @@ function Observer:_retire_now()
             wait.conn.on_close = nil
             pcall(wait.conn.close, wait.conn)
         end
-        return self:_set("waiting", R.note(ch, wait.inc, binary, "not observing it; " .. tail
+        return self:_skip(target, R.note(ch, wait.inc, binary, "not observing it; " .. tail
             .. " — running in-process"))
     end
     -- No reply within a re-check tick: a failure (a late reply is ignored).

@@ -3,7 +3,9 @@
 --- §19.9 "Editor retirement", step 5h.5): the pure decisions. The observer
 --- (loomworks.daemon.observer) does the I/O: it asks the daemon's `status`,
 --- sends `retire` (never `stop`) and relaunches once through its "Retiring"
---- path.
+--- path — only over a relay connection (`welcome.via = "relay"`). A daemon
+--- it neither observes nor retires is followed past through one
+--- `--no-launch --skip-instance` relay (observer `_skip`, step 5i PR G2).
 ---
 --- * `incompatibility` — is a connected daemon incompatible with the editor?
 ---   No transport overlap, schemas that differ from ours (older: it cannot

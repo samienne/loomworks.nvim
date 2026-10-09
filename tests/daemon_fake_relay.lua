@@ -14,7 +14,9 @@
 --     that connection and waits it out; once that daemon is gone with none
 --     other live, a no-launch / retiring relay exits 16 and an ordinary relay
 --     launches; a `retiring` relay treats the named instance so from the
---     start (§19.10 "A named retiring daemon");
+--     start (§19.10 "A named retiring daemon"); a `skip` relay treats the
+--     named instance as not present: never connected to, never a status 16
+--     (§19.10 "Skip an instance");
 --   * `r.exit(code, info)` (tests) ends a relay before `welcome` with that
 --     status; `r:close()` is the editor ending it (not reported).
 -- `f.spawns` lists each relay as "<form>[ <instance>]"; `o.manual`: relays
@@ -43,6 +45,7 @@ function M.new(o)
             if timer then pcall(function() timer:stop(); timer:close() end); timer = nil end
         end
         local retiring = ropts.form == "retiring" and connect_mod.parse_instance(ropts.instance) or nil
+        local skip = ropts.form == "skip" and connect_mod.parse_instance(ropts.instance) or nil
         local launched_here = false
         function r.close(self)
             if self.ended then return end
@@ -61,7 +64,7 @@ function M.new(o)
             local st = (o.inspect or require("loomworks.daemon.inspect").state)(ropts.root)
             local h = st.handle
             local live = st.kind == "live" and h ~= nil
-            if live and not (retiring and same(h, retiring)) then
+            if live and not (retiring and same(h, retiring)) and not (skip and same(h, skip)) then
                 r.connecting = true
                 local copts = { client = ropts.client, role = ropts.role, on_message = ropts.on_message,
                     on_close = ropts.on_close, timeout_ms = 30000 }

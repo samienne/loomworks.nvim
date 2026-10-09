@@ -855,9 +855,16 @@ re-cut onto master step by step; this section is expanded as each step lands.
   episode's one ordinary relay, others -> note + wait, 2 with flags names
   the `lw.pin` version); after `welcome` any exit/EOF is a drop
   (`_on_closed` -> one `--no-launch` relay; after `retiring` or the editor's
-  own retire -> `_after_retire`: one ordinary relay + episode). Until PR G2
-  an incompatible daemon it does not observe has its relay closed and the
-  editor stays in-process until an explicit connect. `client = "editor"`,
+  own retire -> `_after_retire`: one ordinary relay + episode). An
+  incompatible daemon it does not observe (refused, declined, unanswered,
+  failed retire, or its held connection closing) has its relay closed and
+  `_skip` spawns one `--no-launch --skip-instance <pid>:<start_time>` relay
+  naming it from `welcome.daemon` (`observer.instance_id`, the form of `connect.instance_id`, which the
+  plugin does not require; step 5i PR G2), so
+  the editor follows a successor without connecting back to it; with no
+  `start_time` it spawns nothing until an explicit connect. The editor keeps
+  no skip list of its own and never passes `--retiring` with
+  `--skip-instance`. `client = "editor"`,
   `role = "observer"`, `on_message` / `on_close` (both only `vim.schedule`);
   `version.observer_compatible` on `welcome.daemon`. Keepalive `ping` timer.
   `model_change` (seq / generation) → `ws._tracker:sync()`. `task` events →
@@ -865,11 +872,10 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `daemon_runtime_changed`. Joining late: each connect sends `status`
   (`_join_late`) and adopts every listed task not yet seen
   (`remote_task.adopt`: start time from `started_at`, percent from
-  `percent`); tasks are kept in start order. *Planned, step 5i PR G2:* the
-  skip relay (`--no-launch --skip-instance pid:start`) for an incompatible
-  daemon, and `Observer:_weigh_retire` / `editor_retire.lua` only over
-  `welcome.via == "relay"` (already true: a `welcome` without `via` is never
-  weighed). `:LoomworksDaemon status` and checkhealth keep reading the
+  `percent`); tasks are kept in start order. `Observer:_weigh_retire` /
+  `editor_retire.lua` act only over `welcome.via == "relay"` (a `welcome`
+  without `via` is observed unchecked and never weighed; `_weigh_retire`
+  also declines one itself). `:LoomworksDaemon status` and checkhealth keep reading the
   handle / lock read-only for diagnostics.
 - `daemon/remote_task.lua` — RemoteTask: resolves `start` meta once at the
   wire boundary (profile by key among `ws:get_profiles()`, units through that

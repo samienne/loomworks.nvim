@@ -320,6 +320,15 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   <pid>:<start_time>` waits for that retiring daemon to exit (status 16), and
   a relay that gives up on a retiring daemon (status 14) names it on its last
   standard-error line, `retiring <pid>:<start_time>`. (#178)
+- In `runtime-mode daemon`, a workspace daemon the editor cannot use and does
+  not retire (newer file formats, no common protocol, busy and then gone, or
+  one it already retired this session) no longer leaves the editor
+  in-process until `:LoomworksDaemon connect`: it keeps working in-process
+  and connects to the next daemon started for the workspace, without
+  starting one itself and without connecting back to the one it left. A
+  daemon whose start time is unknown still waits for
+  `:LoomworksDaemon connect`. The editor retires a daemon only through the
+  shared-daemon relay, never an older pin's attached `--stdio`. (#179)
 - Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to
   the workspace's shared daemon (starting it when none runs) instead of a
   private daemon of its own, so a client on standard input and output shares

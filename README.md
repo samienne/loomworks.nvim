@@ -980,7 +980,11 @@ with newer file formats, or one already retired in this Neovim session for
 the same version (say, a repository pin keeps starting it), is left alone
 with a note. One whose only problem is older file formats stays observed
 (its tasks show as usual) until it is retired, and for the session when the
-editor will not retire it. When the plugin wants
+editor will not retire it. Any other daemon it leaves alone (or cannot
+use at all) is not connected to again: the editor keeps working in-process
+and picks up the next daemon that is started for the workspace (say, after
+you stop the old one with `lw daemon stop` and a terminal `lw` starts a new
+one), without starting one itself. When the plugin wants
 its own `lw` and it is not there yet, the editor downloads the official
 release binary in the background (it keeps working in-process meanwhile; the
 status page says so), checks its SHA-256 against the one the plugin carries,

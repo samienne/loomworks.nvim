@@ -869,7 +869,7 @@ describe("the observer (§19.16)", function()
         assert.equals(2, #fr.spawns)
     end)
 
-    it("does not observe an incompatible daemon (note, closed, skipped)", function()
+    it("does not observe an incompatible daemon (note, closed, skipped through a skip relay)", function()
         s = new_server(root)
         local connects, closed = 0, 0
         obs = attach({ connect = function(_, _, cb)
@@ -884,14 +884,21 @@ describe("the observer (§19.16)", function()
         local h = assert(require("loomworks.daemon.handle").read(root))
         assert.is_string(h.exe)
         assert.truthy(obs:runtime_line():find("lw v9.0.0 at " .. h.exe, 1, true), obs:runtime_line())
+        -- Step 5i PR G2: its relay is closed, and a successor is followed
+        -- through one skip relay naming it (handle pid and start time),
+        -- which never connects to it.
+        local id = observer.instance_id(h)
+        assert.is_string(id, "the handle names an instance")
+        assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), vim.inspect(fr.spawns))
+        assert.same({ "ordinary", "skip " .. id }, fr.spawns, vim.inspect(fr.spawns))
         vim.wait(300)
-        assert.equals(1, connects)
-        assert.equals(1, closed)
-        -- Until step 5i PR G2: its relay is closed and the editor stays
-        -- in-process until an explicit connect.
-        assert.same({ "ordinary" }, fr.spawns)
+        assert.equals(1, connects, "connections")
+        assert.equals(1, closed, "closed")
+        assert.equals("waiting", obs.state, obs:runtime_line())
+        -- An explicit connect ends the skip relay and tries an ordinary one.
         obs:start(true)
-        assert.same({ "ordinary", "ordinary" }, fr.spawns)
+        assert.is_true(fr.relays[2].ended, "skip relay ended")
+        assert.same({ "ordinary", "skip " .. id, "ordinary" }, fr.spawns, vim.inspect(fr.spawns))
     end)
 
     it("relays are single-flight; a late answer of a replaced relay is closed", function()
