@@ -28,7 +28,8 @@ describe("conformance transcripts (§19.20)", function()
             "transcripts/loomworks/Tasks.1.json", "transcripts/lw/internal.Snapshot.1.json",
             "transcripts/loomworks/Build.1.json", "transcripts/loomworks/Tests.1.json",
             "transcripts/loomworks/Launch.1.json", "transcripts/loomworks/Toolchains.1.json",
-            "transcripts/loomworks/Profiles.1.json" }) do
+            "transcripts/loomworks/Profiles.1.json", "transcripts/loomworks/view.Header.1.json",
+            "transcripts/loomworks/view.ProjectsIndex.1.json" }) do
             assert.is_true(have[rel] == true, rel)
         end
     end)

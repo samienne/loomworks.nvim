@@ -87,7 +87,8 @@ M.LOAD_WAIT_MS = 45000
 --- @field server loomworks.daemon.Server
 --- @field host table { load(root, handlers, opts?: { wait_tools?: boolean }) → ws|nil, err; unload(); current() → the loaded
 ---   workspace (nil while it (re)loads); settle(ms); setup_error() → refusal; unknown_target_hint?;
----   error_state?() → { message, refused? }|nil, the failed load the welcome header reports }
+---   error_state?() → { message, refused?, trust? }|nil, the failed load the welcome header and view.Header/1
+---   report (`trust`: the file a trust refusal refused, `user` or `cache`) }
 --- @field ws table|nil the live workspace
 --- @field env_sig string|nil the environment signature `ws` was loaded in
 --- @field stopping boolean|nil the server is stopping (`on_stopping`): no new request starts
@@ -169,6 +170,16 @@ function Service:with_model(ctx, fn)
         self.scheduled = false
         self:_drain()
     end)
+end
+
+--- Before a request's acknowledgement from inside its model segment: what
+--- the segment changed so far reaches the subscribers first
+--- (`Workspace.header_changed` and the views' `update`, §19.13 "Views").
+--- The check after the segment still runs; it sends only what changed since.
+--- @param ctx table
+function Service:_before_ack(ctx)
+    if self.current ~= ctx then return end
+    pcall(require("loomworks.daemon.core_interfaces").header_check, self)
 end
 
 function Service:_drain()
@@ -344,14 +355,21 @@ function Service:on_reset(conn, msg)
     return self:_on_operation("reset", conn, msg)
 end
 
+--- The model the header and the views (§19.13) report: the live workspace,
+--- else the host's load failure. Never loads.
+--- @return table|nil ws, loomworks.ViewLoadError|nil err
+function Service:header_model()
+    local ws = self.ws
+    if ws and self.host.current and self.host.current() ~= ws then ws = nil end
+    local err = (not ws and self.host.error_state) and self.host.error_state() or nil
+    return ws, err
+end
+
 --- The `welcome` header's model fields (§19.13): the live workspace's name
 --- and active profile, else the host's load failure. Never loads.
 --- @return table
 function Service:header()
-    local ws = self.ws
-    if ws and self.host.current and self.host.current() ~= ws then ws = nil end
-    local err = (not ws and self.host.error_state) and self.host.error_state() or nil
-    return snapshot.header(ws, err)
+    return snapshot.header(self:header_model())
 end
 
 --- A read-only model request (`snapshot`, `query`): validate it, then answer
@@ -369,6 +387,7 @@ function Service:_on_model_request(conn, msg, answer, bad, deliver)
     local ctx = { op = msg.kind, conn = conn, env = env, args = {} }
     function ctx.reply(fields)
         ctx.replied = true
+        self:_before_ack(ctx)
         -- An interface method's adapter takes the fields as its result.
         if deliver then return deliver(fields) end
         fields.kind = protocol.KIND.ok
@@ -500,6 +519,7 @@ function Service:_on_operation(op, conn, msg, deliver, call)
         command = type(msg.command) == "string" and msg.command or ("lw " .. op) }
     function ctx.reply(fields)
         ctx.replied = true
+        self:_before_ack(ctx)
         if deliver then return deliver(fields) end
         fields.kind = protocol.KIND.ok
         fields.req_id = msg.req_id

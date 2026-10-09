@@ -8684,13 +8684,17 @@ function M._daemon_build_host()
     end,
     setup_error = function() return M._setup_failure(core()).message end,
     -- The failed load the welcome header reports (spec §19.13), nil when
-    -- none: `refused` for a trust, newer-schema or journal refusal.
+    -- none: `refused` for a trust, newer-schema or journal refusal, `trust`
+    -- the refused file's kind (`user` / `cache`) of a trust refusal
+    -- (view.Header/1).
     error_state = function()
       local c = core()
       local e = c.get_setup_error and c:get_setup_error()
       if not e then return nil end
+      local kind = type(e.trust) == "table" and e.trust.kind or nil
       return { message = M._setup_failure(c).message,
-        refused = (e.trust or e.newer or e.journal) and true or nil }
+        refused = (e.trust or e.newer or e.journal) and true or nil,
+        trust = (kind == "user" or kind == "cache") and kind or nil }
     end,
     unknown_target_hint = function(ws, step, targets) return M._unknown_target_hint(ws, step, targets) end,
   }

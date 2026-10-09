@@ -66,7 +66,7 @@ end
 
 --- @class loomworks.daemon.InterfaceImpl
 --- @field methods table<string, fun(ctx: loomworks.daemon.CallContext, args: table): any, loomworks.proto.ErrorObject|nil>
---- @field initial? fun(ctx: loomworks.daemon.CallContext, args: table, signals: string[]): any the full state on subscribe
+--- @field initial? fun(ctx: loomworks.daemon.CallContext, args: table, signals: string[], sub: loomworks.daemon.Subscription): any the full state on subscribe
 --- @field doc? table an inline schema document (tests; else loaded from the protocol directory)
 --- @field same_build? boolean callable only by a client of the daemon's own lw_version
 --- @field internal? boolean not a stable contract
@@ -97,6 +97,7 @@ end
 --- @field v integer
 --- @field signals table<string, true>|nil nil: every signal of the interface
 --- @field args table the subscription's `args` (valid against the interface's `subscribe_args`)
+--- @field view_sig string|nil a view's state last sent on it (loomworks.daemon.views)
 
 --- @class loomworks.daemon.Registry
 --- @field server loomworks.daemon.Server
@@ -404,13 +405,14 @@ function Registry:root_signal(name, args)
 end
 
 --- Emit a signal of an interface version mounted on `object` to the
---- connections subscribed to it (filtered by `accept(sub_args)` when given).
+--- connections subscribed to it (filtered by `accept(sub_args, sub)` when
+--- given; it is asked right before that subscription's frame is sent).
 --- @param object string
 --- @param iface string
 --- @param v integer
 --- @param name string
 --- @param args table
---- @param accept? fun(sub_args: table): boolean
+--- @param accept? fun(sub_args: table, sub: loomworks.daemon.Subscription): boolean
 --- @return integer delivered
 function Registry:emit(object, iface, v, name, args, accept)
     local e = self:resolve(object, iface, v)
@@ -426,13 +428,31 @@ function Registry:emit(object, iface, v, name, args, accept)
     local n = 0
     for _, s in ipairs(subs_in_order(self.subs)) do
         if s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
-            and not s.conn.closed and (not accept or accept(s.args)) then
+            and not s.conn.closed and (not accept or accept(s.args, s)) then
             self.server:_send(s.conn,
                 envelope.signal(object, iface, v, name, args, s.id, self:_next_seq(s.conn, object)))
             n = n + 1
         end
     end
     return n
+end
+
+--- Does any open connection subscribe to signal `name` of an interface
+--- version on `object`? (A signal whose state is costly to build is built
+--- only then.)
+--- @param object string
+--- @param iface string
+--- @param v integer
+--- @param name string
+--- @return boolean
+function Registry:has_subscribers(object, iface, v, name)
+    for _, s in pairs(self.subs) do
+        if s.object == object and s.iface == iface and s.v == v and (not s.signals or s.signals[name])
+            and not s.conn.closed then
+            return true
+        end
+    end
+    return false
 end
 
 --- The `seq` of the next signal of `object` sent to `conn` (counted per
@@ -571,7 +591,7 @@ function M.root_impl()
         reg.subs[sub.id] = sub
         local result = { sub_id = sub.id, seq = reg:last_seq(ctx.conn, args.object) }
         if want_initial and e.impl.initial then
-            local ok, initial = pcall(e.impl.initial, ctx, sub_args, names)
+            local ok, initial = pcall(e.impl.initial, ctx, sub_args, names, sub)
             if not ok then
                 reg.subs[sub.id] = nil
                 reg:_log("initial state of %s/%d failed: %s", args.iface, args.v, tostring(initial))

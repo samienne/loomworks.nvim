@@ -187,20 +187,13 @@ function M.build(ws, scope, reg)
 end
 
 --- The `welcome` header's model fields (spec §19.13): the loaded workspace's
---- name and active profile, or its error state.
+--- name and active profile, or its error state (loomworks.view_state, the
+--- views' builder, owns the one implementation).
 --- @param ws table|nil the live workspace (nil: not loaded)
 --- @param err table|nil { message, refused? } the host's load failure, if any
 --- @return table { state = "loaded"|"unloaded"|"error"|"refused", name?, active_profile?, error? }
 function M.header(ws, err)
-    if ws then
-        local ap = ws._active_profile
-        return { state = "loaded", name = ws.name,
-            active_profile = (ap and not ap._removed and ap.key) or ws._active_profile_key or nil }
-    end
-    if err and err.message then
-        return { state = err.refused and "refused" or "error", error = err.message }
-    end
-    return { state = "unloaded" }
+    return require("loomworks.view_state").base_header(ws, err)
 end
 
 --- Host-probing queries (spec §19.14): name → fn(ws, args) → result table or
