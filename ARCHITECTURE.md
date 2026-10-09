@@ -1493,7 +1493,14 @@ plugin-side interface reference is a table holding `iface = "<name>"` and
 schema under `spec/protocol/interfaces/` and transcripts under
 `spec/protocol/transcripts/`; a site naming an interface at run time
 (`iface = <expression>`, `:call(obj, <expression>, …)`) is counted and must
-match `interfaces_dynamic` in `tests/split/allowlist.lua`. The two are complementary: the guard says *only through the
+match `interfaces_dynamic` in `tests/split/allowlist.lua`. Step 5j adds
+the methods and signals: each versioned table declares the `methods` the
+file calls on it and the `signals` it handles (string-literal lists, e.g.
+the observer's `M.ROOT`), every interface call (`:call(`) passes a declared
+method as a literal, and `scan.uncovered` checks each declared one is sent
+(a `call`) or expected (a `signal` frame) in that version's transcripts; a
+use no transcript exercises yet must match `transcripts_uncovered`
+exactly. The two are complementary: the guard says *only through the
 protocol*, the schemas say *what the protocol is*.
 
 ### Workspace trust (spec §17)

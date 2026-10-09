@@ -13,6 +13,11 @@
 ---              which the interface ratchet cannot check. Must match exactly;
 ---              each is reviewed to resolve to a versioned table the ratchet
 ---              does check (spec §19.20).
+---   transcripts_uncovered  `"<iface>/<v> method|signal <name>"` the plugin
+---              declares it uses (its interface tables' `methods` / `signals`)
+---              that the version's transcripts (spec/protocol/transcripts/)
+---              do not exercise (step 5j). Must match exactly: add a
+---              transcript case rather than an entry; a covered one is deleted.
 ---
 --- To regenerate after removing coupling: `nvim -l tests/split/scan.lua` prints
 --- today's state in this format. Never use it to add entries without review.
@@ -162,5 +167,14 @@ return {
     -- one of M.TASKS / M.WORKSPACE): all resolve to its versioned tables.
     interfaces_dynamic = {
         ["lua/loomworks/daemon/observer.lua"] = 3,
+    },
+    -- Root's two connection-wide signals, handled by the observer since step
+    -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core
+    -- objects are mounted before any load; a module mounting objects sends
+    -- it), `retiring` needs the daemon retired mid-case (a `retire` control
+    -- frame), after which it exits once idle.
+    transcripts_uncovered = {
+        "loomworks.Root/1 signal objects_changed",
+        "loomworks.Root/1 signal retiring",
     },
 }

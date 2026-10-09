@@ -132,10 +132,23 @@ Observer.__index = Observer
 
 --- The interface versions the observer uses (spec §19.16 "Interface client",
 --- step 5g.3): each names its object, interface and version (the guard's
---- interface ratchet, tests/split, checks a schema and transcripts exist).
-M.ROOT = { object = "/", iface = "loomworks.Root", v = 1 }
-M.TASKS = { object = "/tasks", iface = "loomworks.Tasks", v = 1, feature = "tasks" }
-M.WORKSPACE = { object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes" }
+--- interface ratchet, tests/split, checks a schema and transcripts exist),
+--- and declares the `methods` it calls and the `signals` it handles there
+--- (the guard checks every literal method of a `conn:call` here is declared
+--- and every declared one is covered by that version's transcripts, step
+--- 5j). Keep `signals` in step with `_on_message`.
+M.ROOT = {
+    object = "/", iface = "loomworks.Root", v = 1,
+    methods = { "describe", "subscribe" }, signals = { "retiring", "objects_changed" },
+}
+M.TASKS = {
+    object = "/tasks", iface = "loomworks.Tasks", v = 1, feature = "tasks",
+    methods = {}, signals = {},
+}
+M.WORKSPACE = {
+    object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes",
+    methods = {}, signals = { "changed" },
+}
 M.FEATURES = { M.TASKS, M.WORKSPACE }
 
 --- How long the connect's `Root.describe` may take before the observer

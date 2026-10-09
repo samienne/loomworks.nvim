@@ -151,8 +151,13 @@ end
 -- whose interface argument is not a string literal — cannot be checked
 -- statically: such sites are counted per file (`dynamic`) and must match the
 -- `interfaces_dynamic` allowlist exactly, like dynamic requires.
--- (Blind spot, deferred to step 5j: the methods and signals called on a
--- versioned interface are not checked against its schema.)
+-- Methods and signals (step 5j): a versioned table declares the `methods` the
+-- file calls on it and the `signals` it handles (`methods = { "describe" }`,
+-- string literals only); the guard checks each against the version's
+-- transcripts (`uncovered`), and every interface call's method (the fourth
+-- argument of `:call(`, a string literal) against the file's declarations.
+-- (Blind spot: a signal handler is not matched to a declaration, since signal
+-- dispatch has no scannable form, so `signals` is trusted as declared.)
 local IFACE_FIELD = { '()iface%s*=%s*"([%w_.]+)"()', "()iface%s*=%s*'([%w_.]+)'()" }
 local IFACE_NAME = {
     '"(loomworks%.%u[%w_]*)"', "'(loomworks%.%u[%w_]*)'",
@@ -221,27 +226,61 @@ local function line_of(text, pos)
     return nl + 1
 end
 
---- The interface versions a file names (`refs`, `{ iface, v, line }`), the
---- interface names it quotes without a version (`unversioned`), and the
---- number of sites naming an interface at run time (`dynamic`).
+--- The string literals of the list field `name = { "a", "b" }` at the top
+--- level of the table body text[open+1 .. close-1]; nil without the field,
+--- false when the list holds anything but string literals.
+local function table_list(text, open, close, name)
+    local depth, i = 0, open + 1
+    while i < close do
+        local c = text:sub(i, i)
+        if c == "{" then depth = depth + 1
+        elseif c == "}" then depth = depth - 1
+        elseif depth == 0 and c == name:sub(1, 1) and not text:sub(i - 1, i - 1):match("[%w_.]") then
+            local body = text:sub(i, close):match("^" .. name .. "%s*=%s*(%b{})")
+            if body then
+                local out, rest = {}, body:sub(2, -2)
+                for _, s in rest:gmatch("([\"'])([%w_]*)%1") do out[#out + 1] = s end
+                local left = rest:gsub("([\"'])[%w_]*%1", ""):gsub("[%s,;]", "")
+                if left ~= "" then return false end
+                return out
+            end
+        end
+        i = i + 1
+    end
+end
+
+-- An interface call (`:call(`) and its method, the fourth argument.
+local CALL_SITE = ":call%s*%("
+local CALL_METHOD = ":call%s*%(%s*[^,()]+,%s*[^,()]+,%s*[^,()]+,%s*([\"'])([%w_]+)%1"
+
+--- The interface versions a file names (`refs`, `{ iface, v, line, object,
+--- methods, signals }`, the last three as the table declares them), the
+--- interface names it quotes without a version (`unversioned`), the number
+--- of sites naming an interface at run time (`dynamic`) and its interface
+--- calls (`calls`, `{ method, line }`, `method` nil when not a literal).
 --- @param rel string
---- @return table[] refs, string[] unversioned, integer dynamic
+--- @return table[] refs, string[] unversioned, integer dynamic, table[] calls
 function M.interface_refs(rel)
     return M.interface_refs_text(code_text(rel))
 end
 
 --- `interface_refs` of a code text (comment lines already blanked).
 --- @param text string
---- @return table[] refs, string[] unversioned, integer dynamic
+--- @return table[] refs, string[] unversioned, integer dynamic, table[] calls
 function M.interface_refs_text(text)
-    local refs, unversioned, dynamic = {}, {}, 0
+    local refs, unversioned, dynamic, calls = {}, {}, 0, {}
     local covered = {}
     for _, pat in ipairs(IFACE_FIELD) do
         for pos, name, stop in text:gmatch(pat) do
             local open, close = enclosing_table(text, pos)
             local v = open and table_version(text, open, close)
             if v then
-                refs[#refs + 1] = { iface = name, v = v, line = line_of(text, pos) }
+                refs[#refs + 1] = {
+                    iface = name, v = v, line = line_of(text, pos),
+                    object = text:sub(open, close):match("[{,%s]object%s*=%s*[\"']([^\"']*)[\"']"),
+                    methods = table_list(text, open, close, "methods"),
+                    signals = table_list(text, open, close, "signals"),
+                }
                 covered[#covered + 1] = { pos, stop }
             end
         end
@@ -258,12 +297,61 @@ function M.interface_refs_text(text)
     for _, pat in ipairs(IFACE_DYNAMIC) do
         for _ in text:gmatch(pat) do dynamic = dynamic + 1 end
     end
-    return refs, unversioned, dynamic
+    for at in text:gmatch("()" .. CALL_SITE) do
+        local _, method = text:match("^" .. CALL_METHOD, at)
+        calls[#calls + 1] = { method = method, line = line_of(text, at) }
+    end
+    return refs, unversioned, dynamic, calls
+end
+
+--- What a decoded transcript file covers of interface `iface`/`v` on
+--- `object`: the methods its cases `send` as calls and the signals they
+--- `expect` (a signal frame naming the interface, or naming none but the
+--- object). Sets keyed by name.
+--- @param doc table
+--- @param iface string
+--- @param v integer
+--- @param object string|nil
+--- @return table<string, true> methods, table<string, true> signals
+function M.transcript_coverage(doc, iface, v, object)
+    local methods, signals = {}, {}
+    for _, case in ipairs(type(doc) == "table" and type(doc.cases) == "table" and doc.cases or {}) do
+        for _, step in ipairs(type(case) == "table" and type(case.steps) == "table" and case.steps or {}) do
+            local s, e = step.send, step.expect
+            if type(s) == "table" and s.kind == "call" and s.iface == iface and s.v == v
+                and type(s.method) == "string" then
+                methods[s.method] = true
+            end
+            if type(e) == "table" and e.kind == "signal" and type(e.name) == "string"
+                and (e.iface == iface or (e.iface == nil and object ~= nil and e.object == object)) then
+                signals[e.name] = true
+            end
+        end
+    end
+    return methods, signals
+end
+
+--- The declared uses of `ref` (an `interface_refs` entry) that its
+--- transcripts do not cover, as `"<iface>/<v> method <name>"` and
+--- `"<iface>/<v> signal <name>"`.
+--- @param ref table
+--- @param doc table the decoded transcripts of ref.iface / ref.v
+--- @return string[]
+function M.uncovered(ref, doc)
+    local methods, signals = M.transcript_coverage(doc, ref.iface, ref.v, ref.object)
+    local out = {}
+    for _, m in ipairs(type(ref.methods) == "table" and ref.methods or {}) do
+        if not methods[m] then out[#out + 1] = ("%s/%d method %s"):format(ref.iface, ref.v, m) end
+    end
+    for _, s in ipairs(type(ref.signals) == "table" and ref.signals or {}) do
+        if not signals[s] then out[#out + 1] = ("%s/%d signal %s"):format(ref.iface, ref.v, s) end
+    end
+    return out
 end
 
 --- Current state of the tree.
 --- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts, interfaces }
----   `interfaces[rel]` = { refs, unversioned } of each plugin-side file naming one
+---   `interfaces[rel]` = { refs, unversioned, calls } of each plugin-side file naming one
 function M.current()
     local res = {
         unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {},
@@ -297,8 +385,10 @@ function M.current()
             if dynamic > 0 then res.dynamic[rel] = dynamic end
             if side == "plugin" and reach > 0 then res.reach_ins[rel] = reach end
             if side == "plugin" then
-                local refs, unversioned, idyn = M.interface_refs(rel)
-                if #refs > 0 or #unversioned > 0 then res.interfaces[rel] = { refs = refs, unversioned = unversioned } end
+                local refs, unversioned, idyn, calls = M.interface_refs(rel)
+                if #refs > 0 or #unversioned > 0 or #calls > 0 then
+                    res.interfaces[rel] = { refs = refs, unversioned = unversioned, calls = calls }
+                end
                 if idyn > 0 then res.interfaces_dynamic[rel] = idyn end
             end
         end
