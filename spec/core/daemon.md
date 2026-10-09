@@ -939,7 +939,8 @@ relay runs the socket handshake on its behalf:
    closes that connection, waits for the retiring daemon's runtime lock to
    be released — at most `RELAY_RETIRE_WAIT` (60 s) — launches the
    successor (§19.10) and repeats from step 2. A daemon still holding the
-   lock after that bound ends the relay with status 14. A `--no-launch`
+   lock after that bound ends the relay with status 14, its standard error
+   naming that daemon (§19.10 "Relay exit status"). A `--no-launch`
    relay instead keeps waiting without a bound and never launches the
    successor (§19.10 "No launch").
 
@@ -1193,10 +1194,11 @@ daemon" below) are planned, step 5i PR G.)* Every client process is a
   what `--no-launch` is), or when its value is not `<pid>:<start_time>`.
 - **A named retiring daemon.** *(Planned, step 5i PR G1.)*
   `--no-launch --retiring <pid>:<start_time>` (the editor's after a relay
-  exited 14, §19.16 "Through the relay") names one daemon instance (as for
-  `--skip-instance`) that the relay treats as a retiring daemon it already
-  saw, as if it had connected to it and got a `welcome` that says
-  `retiring`. It closes a race a plain `--no-launch` relay leaves open: a
+  exited 14, with the instance that relay's `retiring` line named, "Relay
+  exit status" below and §19.16 "Through the relay") names one daemon
+  instance (as for `--skip-instance`) that the relay treats as a retiring
+  daemon it already saw, as if it had connected to it and got a `welcome`
+  that says `retiring`. It closes a race a plain `--no-launch` relay leaves open: a
   retiring daemon that exits after the status-14 relay gave up but before
   this relay first looks is never seen retiring, so a plain `--no-launch`
   relay would wait on as after a stop and never exit 16. With `--retiring`,
@@ -1256,7 +1258,14 @@ daemon" below) are planned, step 5i PR G.)* Every client process is a
   with no other daemon live, it exits 16 at once; naming a live retiring
   daemon it waits, launches nothing, and exits 16 once that daemon has
   released the lock; with another daemon live it connects to that one;
-  without `--no-launch`, or with a malformed value, it is status 2.
+  without `--no-launch`, or with a malformed value, it is status 2. The
+  status-14 line *(planned, PR G1)* is tested with a retiring daemon kept
+  busy past `RELAY_RETIRE_WAIT` (the bound shortened for the test): the
+  relay exits 14, its standard output is empty, and its standard error is
+  its `lw: ...` line followed by exactly `retiring <pid>:<start_time>`
+  naming that daemon's handle `pid` and `start_time`; a `--no-launch
+  --retiring` relay given that value exits 16 once the daemon has released
+  the lock.
 - **Compatibility.** A repository pinned to a release from 0.1.43-beta.15 up
   to the one before the release that ships this step still gets that
   release's attached `--stdio` (it works, but is not shared with the CLI; its
@@ -1267,7 +1276,8 @@ daemon" below) are planned, step 5i PR G.)* Every client process is a
 
 **Relay exit status.** *(Step 5i, `daemon/relay.lua`.)* A relay that fails before
 forwarding `welcome` writes nothing to standard output, one `lw: ...` line to
-standard error, and exits with:
+standard error (on status 14 followed by the retiring-instance line below),
+and exits with:
 
 | Status | Meaning |
 |--|--|
@@ -1278,9 +1288,21 @@ standard error, and exits with:
 | 11 | the daemon is not responding (hung, §19.5; connect/handshake past its bound; or still starting — lock held, handle not published — after the relay's one bounded wait; never with `--no-launch`, which keeps waiting on a starting daemon) |
 | 12 | the handle names another loomworks data dir's key (`key_id`, §19.6), its endpoint failed the endpoint check (§19.7), or the endpoint did not prove this lw's key (another loomworks data dir, or not a loomworks daemon) — only the relay's own `hello` (versions and its nonce, no secret) was sent; nothing from the client is forwarded |
 | 13 | the workspace daemon runs on another host |
-| 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting) |
+| 14 | a retiring daemon still held the runtime lock after `RELAY_RETIRE_WAIT` (never with `--no-launch`, which keeps waiting); standard error also names that daemon (`retiring <pid>:<start_time>`, below) |
 | 15 | the client sent no valid `hello` first (another frame, or a `hello` whose forwarded fields are not of their types or that does not fit the 64 KiB pre-authentication frame cap re-encoded), or none within about 5 s; or it sent more than `RELAY_HIGH_WATER` after `hello` before `welcome` ("Relay buffering") |
 | 16 | `--no-launch` only: the retiring daemon it waited on (one it connected to, or — planned, PR G1 — the one `--retiring` names, also when already gone at its first check) released the runtime lock and no other daemon is live — the caller decides whether to launch (never for a `--skip-instance` daemon) |
+
+**Retiring-instance line.** *(Planned, step 5i PR G1.)* A relay that exits
+14 writes, after its `lw: ...` line, exactly one more standard-error line,
+the last it writes: `retiring <pid>:<start_time>` — the literal word
+`retiring`, one space, then the retiring daemon's instance in the form
+`--retiring` takes (§19.10 "A named retiring daemon"): its handle `pid` and
+`start_time` (§19.5) as unsigned decimal integers joined by `:`, with no
+other characters, ending in the platform's newline. It names the daemon whose
+runtime lock the relay waited on. A relay that does not know both values
+(a handle without `start_time`) writes no such line. No other status writes
+it, and nothing else on a relay's standard error starts with `retiring `.
+The editor passes the value to `--retiring` (§19.16 "Through the relay").
 
 Status 3 ("another daemon won", above) is never a relay's: a relay that
 loses a launch race connects to the winner. A status 3 from `daemon run
@@ -2184,10 +2206,12 @@ the selection may be cached for the session) and runs one of these forms of
   without relaunching it" below);
 - **no launch** (`--no-launch`, §19.10 "No launch"): waits for a daemon and
   never launches one. Spawned after a drop, after a status 10 or 11, and
-  after a status 14 when the retiring instance is unknown;
+  after a status 14 whose standard error has no `retiring` line the editor
+  can parse;
 - **retiring** (`--no-launch --retiring <pid>:<start_time>`, §19.10 "A named
   retiring daemon"): waits for the named retiring daemon to exit. Spawned
-  after a status 14 when the editor knows that instance;
+  after a status 14 whose standard error names that instance (§19.10
+  "Retiring-instance line");
 - **skip** (`--no-launch --skip-instance <pid>:<start_time>`, §19.10 "Skip
   an instance"): "Skipping an incompatible daemon" below.
 
@@ -2248,7 +2272,8 @@ in-process ("End state").
   is not part of step 5i (BACKLOG).
 - **Exit before `welcome`.** A relay that exits before `welcome` is mapped
   from its exit status (§19.10 "Relay exit status") to a Runtime-line note,
-  with the relay's standard-error line as detail, and a follow-up. "Wait"
+  with the relay's `lw: ...` standard-error line as detail (never the
+  status-14 `retiring` line), and a follow-up. "Wait"
   means: the editor stays in-process with that note and spawns no further
   relay until an explicit `:LoomworksDaemon connect` (or a workspace
   reload).
@@ -2263,7 +2288,8 @@ in-process ("End state").
   | 16 | the retiring daemon has exited and no other is live | the retirement episode's one ordinary relay, else wait |
   | 3 | the pinned `lw` predates the shared-daemon relay and another runtime holds this workspace (an older pin's attached `--stdio`, §19.10 "Compatibility"); running in-process — update the pin | wait |
   | 1 | an internal error — or, for a repository pinned before 0.1.43-beta.15, the pin redirect's refusal (§16.23 "A pin older than the command"), whose standard-error line names the pinned version and the release that introduced the command; the note shows that line | wait |
-  | 2, 15 | an internal error (usage or protocol) | wait |
+  | 2 | an internal error (usage) — or, when the relay was spawned with `--no-launch`, `--skip-instance` or `--retiring`, the pinned `lw <version>` does not support the editor relay flags (update the pin), naming the pinned version | wait |
+  | 15 | an internal error (protocol) | wait |
   | 0 | an internal error (the relay ended although the editor kept its standard input open) | wait |
   | any other | an internal error | wait |
 
@@ -2272,7 +2298,12 @@ in-process ("End state").
   exits before `welcome` (it then follows the table's other rows or waits).
   A pinned release that predates a flag the editor passes (`--no-launch`,
   `--skip-instance`, `--retiring`) may answer with a usage status; that is
-  status 2 above.
+  status 2 above, and the editor still waits for an explicit
+  `:LoomworksDaemon connect`. The note then names the pinned version (from
+  `lw.pin`, §16.21) — that the pinned `lw <version>` does not support the
+  editor relay flags — with the relay's usage line as detail, so the user is
+  not left with a bare usage error. A status 2 from a relay spawned with none
+  of those flags is the plain internal-error note.
 - **Following a stopped or retiring daemon without relaunching it.** "No
   relaunch after a stop" and "Retiring" below watch the handle, which the
   editor no longer reads once it uses the relay; relays wait inside lw
@@ -2289,14 +2320,17 @@ in-process ("End state").
     (`RELAY_RETIRE_WAIT`) covers the retiring daemon and which launches the
     successor. This starts a **retirement episode**.
   - **Status 14.** When a relay exits 14 the editor waits through a relay
-    that never launches: a retiring relay naming the retiring daemon when
-    it knows that instance (from `welcome.daemon` of its own connection to
-    it, with both `pid` and `start_time`), else a plain no-launch relay. A
-    status 14 also starts a retirement episode when none is open. Either
-    relay connects to a successor another client starts. A plain no-launch
-    relay can miss a daemon that exits before it first looks (§19.10 "A
-    named retiring daemon"); it then waits as after a stop, until a daemon
-    appears or an explicit connect.
+    that never launches: a retiring relay naming the retiring daemon, with
+    the instance the exited relay's standard error named (§19.10
+    "Retiring-instance line": the last line that is exactly `retiring
+    <pid>:<start_time>`, both decimal integers), passed as `--retiring
+    <pid>:<start_time>`. Only when that line is missing or unparseable (a
+    relay from an older pin, or a daemon without `start_time`) is it a
+    plain no-launch relay. A status 14 also starts a retirement episode
+    when none is open. Either relay connects to a successor another client
+    starts. A plain no-launch relay can miss a daemon that exits before it
+    first looks (§19.10 "A named retiring daemon"); it then waits as after
+    a stop, until a daemon appears or an explicit connect.
   - **Status 16.** When that relay exits 16 (the retiring daemon is gone,
     no other is live) the editor spawns one ordinary relay, which launches
     the successor — at most **one per retirement episode**. A further 16 in
