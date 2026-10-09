@@ -77,8 +77,9 @@ M.ROOT_REMOVED = "the workspace root was removed"
 M.TICK_MS = 5000
 --- Keepalive interval (§19.11): a connection silent for three is dropped.
 M.KEEPALIVE_MS = 30000
---- Idle timeout default (§19.11, setting `daemon-idle-timeout`).
-M.IDLE_SECONDS = 3600
+--- Idle timeout default (§19.11, setting `daemon-idle-timeout`): the idle
+--- grace, defined in the runtime module.
+M.IDLE_SECONDS = require("loomworks.daemon.runtime").IDLE_GRACE_SECONDS
 --- `BACKGROUND_MAX_DURATION` (§19.11 "Background work cap"): ownerless
 --- background work with no connection open is stopped after this long.
 M.BACKGROUND_MAX_MS = 10 * 60 * 1000

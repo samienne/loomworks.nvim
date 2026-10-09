@@ -59,9 +59,11 @@ function M.resolve(configured, opts)
     return M.DEFAULT, "default", warning
 end
 
---- The idle-timeout setting (spec §19.11) and its default (1 hour).
+--- The idle-timeout setting (spec §19.11 "Idle exit").
 M.IDLE_SETTING = "daemon-idle-timeout"
-M.IDLE_DEFAULT = 3600
+--- The idle grace (spec §19.11 "Warm restarts", step 5r): the default of the
+--- idle timeout, defined only here; every other default refers to it.
+M.IDLE_GRACE_SECONDS = 45
 
 --- Parse a duration: seconds (`3600`) or `<n>s|m|h` (`90s`, `30m`, `1h`).
 --- @param v any
@@ -76,11 +78,11 @@ function M.parse_duration(v)
 end
 
 --- The daemon's idle timeout in seconds from a settings table (an invalid
---- value falls back to the default).
+--- or absent value falls back to the idle grace `IDLE_GRACE_SECONDS`).
 --- @param cfg table|nil
 --- @return integer
 function M.idle_seconds(cfg)
-    return M.parse_duration(cfg and cfg[M.IDLE_SETTING]) or M.IDLE_DEFAULT
+    return M.parse_duration(cfg and cfg[M.IDLE_SETTING]) or M.IDLE_GRACE_SECONDS
 end
 
 local function truthy(v) return v ~= nil and v ~= "" and v ~= "0" and v:lower() ~= "false" end

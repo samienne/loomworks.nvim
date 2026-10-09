@@ -265,7 +265,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Experimental: with `runtime-mode daemon`, every workspace command keeps the
   workspace daemon running (it only answers status requests for now; nothing
   runs through it yet). `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true`
-  never start it; it exits after `daemon-idle-timeout` (default 1h) without
+  never start it; it exits after `daemon-idle-timeout` (default 45s) without
   clients, or when the workspace is removed. Kills and forced unlocks are now
   recorded in the workspace's runtime log, `.nvim/loomworks.daemon.log`
   (`lw daemon status` names it). (#107, #121)
@@ -305,6 +305,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Against an older daemon the first Ctrl-C leaves at once, as before. (#176)
 
 ### Changed
+- Experimental daemon: with no `daemon-idle-timeout` set, an idle daemon now
+  exits after 45 seconds without clients or background work instead of 1
+  hour, so a script of several `lw` commands still shares one daemon but
+  nothing lingers; set `daemon-idle-timeout` (e.g. `1h`) to keep the old
+  behaviour. An attached editor keeps the daemon alive as before. (#182)
 - Experimental daemon mode: the editor connects to the workspace daemon only
   through `lw daemon run --root <dir> --stdio` - the same shared daemon as the
   CLI - and no longer reads the daemon's handle or launches it itself. On load

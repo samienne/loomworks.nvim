@@ -6794,7 +6794,9 @@ local function effective_config_default(key)
     local v = os.getenv(rt.ENV)
     return (rt.is_valid(v) and v) or rt.DEFAULT
   end
-  if key == "daemon-idle-timeout" then return "1h" end
+  if key == "daemon-idle-timeout" then
+    return require("loomworks.daemon.runtime").IDLE_GRACE_SECONDS .. "s"
+  end
   if key == "runtime-busy-wait" then return "5s" end
   return nil
 end
@@ -11364,7 +11366,7 @@ again (as without the daemon); no output is lost or reordered.
 Lifetime: the daemon runs while a client is connected (a connection silent for
 three 30 s keepalive intervals is dropped) and exits after
 `daemon-idle-timeout` without any (setting: seconds, or a number with s, m or h
-such as 90s, 2m, 30m, 1h; default 1h),
+such as 90s, 2m, 30m, 1h; default 45s),
 when the workspace directory is removed, or when its lock is taken over.
 
 Files: .nvim/loomworks.daemon.lock (the runtime lock: one runtime per
