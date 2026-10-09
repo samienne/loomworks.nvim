@@ -887,7 +887,7 @@ describe("the observer (§19.16)", function()
         -- Step 5i PR G2: its relay is closed, and a successor is followed
         -- through one skip relay naming it (handle pid and start time),
         -- which never connects to it.
-        local id = require("loomworks.daemon.connect").instance_id(h)
+        local id = observer.instance_id(h)
         assert.is_string(id, "the handle names an instance")
         assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), vim.inspect(fr.spawns))
         assert.same({ "ordinary", "skip " .. id }, fr.spawns, vim.inspect(fr.spawns))

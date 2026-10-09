@@ -328,7 +328,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   starting one itself and without connecting back to the one it left. A
   daemon whose start time is unknown still waits for
   `:LoomworksDaemon connect`. The editor retires a daemon only through the
-  shared-daemon relay, never an older pin's attached `--stdio`. (#PRNUM)
+  shared-daemon relay, never an older pin's attached `--stdio`. (#179)
 - Experimental daemon: `lw daemon run --root <dir> --stdio` is now a relay to
   the workspace's shared daemon (starting it when none runs) instead of a
   private daemon of its own, so a client on standard input and output shares

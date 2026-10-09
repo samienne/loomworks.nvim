@@ -288,6 +288,21 @@ function Observer:start(explicit)
     self:_spawn({ form = "ordinary" })
 end
 
+--- The instance id `<pid>:<start_time>` (§19.5, the value `--skip-instance`
+--- takes) of a daemon from `welcome.daemon`, or nil when either part is
+--- missing or malformed: a daemon whose start time is unknown cannot be
+--- named. The same form as the binary's connect.instance_id (not required
+--- here: the plugin reaches the binary only through the protocol).
+--- @param d table|nil { pid, start_time }
+--- @return string|nil
+function M.instance_id(d)
+    if type(d) ~= "table" then return nil end
+    local pid, st = d.pid, d.start_time
+    if type(pid) ~= "number" or pid < 1 or pid > 0x7fffffff or pid ~= math.floor(pid) then return nil end
+    if type(st) ~= "string" or not st:match("^%a+:%S+$") then return nil end
+    return string.format("%d:%s", pid, st)
+end
+
 --- The waiting note of a relay form until it forwards `welcome` (§19.16
 --- "Waiting notes"). `what` names the binary and its source (ordinary).
 --- @param form string
@@ -750,7 +765,7 @@ function Observer:_on_relay(token, conn, err, info)
         -- not observed through. Its relay is closed when the editor does not
         -- observe it, and a successor is followed through a skip relay
         -- (step 5i PR G2, `_skip`).
-        if token.form == "skip" and require("loomworks.daemon.connect").instance_id(target) == token.instance then
+        if token.form == "skip" and M.instance_id(target) == token.instance then
             -- A skip relay never connects to the daemon it skips (§19.10
             -- "Skip an instance"); one that did is not trusted, and nothing
             -- is spawned again (no loop back to that daemon).
@@ -863,7 +878,7 @@ end
 function Observer:_skip(target, note)
     if self.state == "stopped" then return end
     if self._relay then self:_end_relay() end
-    local id = require("loomworks.daemon.connect").instance_id(target)
+    local id = M.instance_id(target)
     if not id then
         return self:_set("waiting", note .. " (its start time is unknown, so no relay can skip it; "
             .. ":LoomworksDaemon connect tries again)")

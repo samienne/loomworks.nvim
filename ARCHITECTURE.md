@@ -859,7 +859,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   incompatible daemon it does not observe (refused, declined, unanswered,
   failed retire, or its held connection closing) has its relay closed and
   `_skip` spawns one `--no-launch --skip-instance <pid>:<start_time>` relay
-  naming it from `welcome.daemon` (`connect.instance_id`; step 5i PR G2), so
+  naming it from `welcome.daemon` (`observer.instance_id`, the form of `connect.instance_id`, which the
+  plugin does not require; step 5i PR G2), so
   the editor follows a successor without connecting back to it; with no
   `start_time` it spawns nothing until an explicit connect. The editor keeps
   no skip list of its own and never passes `--retiring` with
