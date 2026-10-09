@@ -104,7 +104,48 @@ describe("view_state (§19.13 Views, two sources one shape)", function()
         assert.equals("error", view_state.header(ws, nil).diagnostics)
     end)
 
-    it("reports a trust refusal's file, and nothing of a profile when not loaded", function()
+    it("names the active profile and its set only when they resolve, so ids always come with them", function()
+        -- A dangling active key (no live profile object): no profile, no set.
+        local ws = fake_ws("/r")
+        ws._active_profile = nil
+        ws._active_profile_key = "gone"
+        local h = view_state.header(ws, nil, { id = ids() })
+        assert.equals("loaded", h.state)
+        assert.is_nil(h.active_profile)
+        assert.is_nil(h.active_profile_id)
+        assert.is_nil(h.config_set)
+        assert.is_nil(h.config_set_id)
+        -- Workspace/1.header keeps its own fallback (unchanged by the view).
+        assert.equals("gone", view_state.base_header(ws, nil).active_profile)
+        -- A removed profile object: the same.
+        ws = fake_ws("/r")
+        ws._profile._removed = true
+        h = view_state.header(ws, nil, { id = ids() })
+        assert.is_nil(h.active_profile)
+        assert.is_nil(h.active_profile_id)
+        assert.is_nil(h.config_set)
+        -- A profile whose configuration set does not resolve: no set, no set id.
+        for _, broken in ipairs({ "missing", "removed" }) do
+            ws = fake_ws("/r")
+            if broken == "missing" then ws._profile._config_set_ref = nil else ws._cs._removed = true end
+            ws._profile._configuration_set_name = "dev-set"
+            h = view_state.header(ws, nil, { id = ids() })
+            assert.equals("dev", h.active_profile)
+            assert.is_string(h.active_profile_id)
+            assert.is_nil(h.config_set)
+            assert.is_nil(h.config_set_id)
+        end
+    end)
+
+    it("treats a removed unit as no unit: no unit_id, state unconfigured", function()
+        local ws = fake_ws("/r")
+        ws._unit._removed = true
+        local app = view_state.projects_index(ws, { id = ids() }).projects[1]
+        assert.equals("app", app.key)
+        assert.same({ configuration = "Debug", state = "unconfigured", tool_key = "ninja-gcc" }, app.active)
+    end)
+
+    it("reports a trust refusal's file,and nothing of a profile when not loaded", function()
         local h = view_state.header(nil, { message = "refused", refused = true, trust = "user" }, { root = "/r" })
         assert.same({ root = "/r", state = "refused", error = "refused", trust = "user" }, h)
         local n = view_state.header(nil, { message = "newer", refused = true }, { root = "/r" })
@@ -190,5 +231,32 @@ describe("daemon /views (§19.13 Views)", function()
         assert.equals(3, #u[3].args.projects)
         assert.equals("building", u[3].args.projects[1].active.state)
         svc.current = nil
+    end)
+
+    it("writes the view update before the request's acknowledgement on the real reply path (D8)", function()
+        subscribe(views.HEADER)
+        ws = fake_ws(srv.root)
+        ws._active_profile = nil
+        svc.ws = ws
+        sent = {}
+        -- A model request whose segment changes the header, answered through
+        -- ctx.reply -> Server:_send (the loopback stand-in records frame order).
+        svc:_on_model_request(conn, { kind = "query", req_id = 42, env = { PATH = "/bin" } }, function(w)
+            w._active_profile = w._profile
+            return {}
+        end)
+        assert.is_true(vim.wait(2000, function()
+            for _, f in ipairs(sent) do if f.req_id == 42 then return true end end
+            return false
+        end, 10))
+        local upd, ack
+        for i, f in ipairs(sent) do
+            if not upd and f.kind == "signal" and f.name == "update" and f.args.active_profile == "dev" then upd = i end
+            if f.req_id == 42 then ack = ack or i end
+        end
+        assert.is_number(upd)
+        assert.is_number(ack)
+        assert.equals("ok", sent[ack].kind)
+        assert.is_true(upd < ack, "the update must be written before the acknowledgement")
     end)
 end)

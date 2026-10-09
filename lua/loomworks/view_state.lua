@@ -109,15 +109,19 @@ function M.header(ws, err, opts)
     local s = opts.session
     if s then h.pid, h.lw_version, h.session_generation = s.pid, s.lw_version, s.session_generation end
     if h.state == "loaded" then
+        -- The view names the active profile and its configuration set only
+        -- when the object resolves (live, not removed), so the daemon always
+        -- sends their ids with them (§19.13 "Views": `active_profile_id` /
+        -- `config_set_id` present exactly when the name is). A dangling key
+        -- (base_header's fallback, kept for Workspace/1.header) is left out.
         local ap = active_profile(ws)
-        if ap and opts.id and h.active_profile == ap.key then h.active_profile_id = opts.id(ap) end
-        if ap and h.active_profile then
+        h.active_profile = ap and type(ap.key) == "string" and ap.key or nil
+        if h.active_profile then
+            if opts.id then h.active_profile_id = opts.id(ap) end
             local cs = ap._config_set_ref
-            if cs and not cs._removed and cs.name then
+            if cs and not cs._removed and type(cs.name) == "string" then
                 h.config_set = cs.name
                 if opts.id then h.config_set_id = opts.id(cs) end
-            elseif type(ap._configuration_set_name) == "string" then
-                h.config_set = ap._configuration_set_name
             end
         end
         h.diagnostics = diagnostics_level(ws)
@@ -154,10 +158,12 @@ function M.projects_index(ws, opts)
             local pp = ap and p._module and ap:project(p.key) or nil
             local config = pp and pp:variant_name() or nil
             if type(config) == "string" then
+                -- A removed unit is no unit: no `unit_id`, state `unconfigured`
+                -- (§19.13: both describe "no unit for the project yet").
                 local unit = pp._config_unit
                 if unit and unit._removed then unit = nil end
                 local tool = pp:tool_object()
-                rec.active = { configuration = config, state = pp:status(),
+                rec.active = { configuration = config, state = unit and pp:status() or "unconfigured",
                     tool_key = tool and type(tool.key) == "string" and tool.key or nil,
                     unit_id = unit and opts.id and opts.id(unit) or nil }
             end

@@ -97,6 +97,9 @@ considered and not added: configuring stays a step of `lw build`
   can leave the guard's `transcripts_uncovered` exceptions
   (`tests/split/allowlist.lua`). `objects_changed` stays there until a module
   mounts objects (step 5q) and a transcript can show one appearing.
+- `view.Header/1` (step 5j): every views check while a client is subscribed
+  recomputes `ws:diagnostics()` for the header's `diagnostics` field. Cache
+  the level by model generation so an unchanged workspace costs nothing.
 
 ## Lock record follow-ups (PR #180, atomic lock create/update)
 
