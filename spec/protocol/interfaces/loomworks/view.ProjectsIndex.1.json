@@ -1,0 +1,61 @@
+{
+  "interface": "loomworks.view.ProjectsIndex",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /views (spec 19.13 Views): what the statusline and the buffer to project lookup need of the workspace's projects, nothing of the status page. get returns the full state; update, declared initial, carries the full state again whenever it changed (a unit's state change, never a build's progress), never a delta. The editor builds the same shape in-process without the ids.",
+  "methods": {
+    "get": {
+      "description": "The view's full state. Never loads the workspace: an unloaded one has no projects.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "$ref": "#/$defs/ProjectsIndex" },
+      "needs_env": false,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "update": {
+      "description": "The view's full state, sent after a model segment or a committed write that changed it (before the acknowledgement of the command that caused the change), only when it differs from the state last sent on the subscription.",
+      "initial": true,
+      "args": { "$ref": "#/$defs/ProjectsIndex" }
+    }
+  },
+  "$defs": {
+    "ProjectsIndex": {
+      "type": "object",
+      "required": ["projects"],
+      "properties": {
+        "projects": {
+          "description": "One record per project of the workspace, ordered by key; empty when the workspace is not loaded.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Project" }
+        }
+      }
+    },
+    "Project": {
+      "type": "object",
+      "required": ["key", "label", "type", "path", "abs_path"],
+      "properties": {
+        "id": { "description": "The project's opaque id (spec 19.12): always sent by the daemon, absent in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "key": { "type": "string" },
+        "label": { "description": "The project's display text: its key (a project has no display name of its own). Clients show it, never derive it.", "type": "string" },
+        "type": { "description": "The project's module type (cmake, meson, ...); a project of an unknown or rejected type is listed with its declared type and without active.", "type": "string" },
+        "path": { "description": "The project's directory relative to the workspace root, /-separated: its declared path, or its key when it declares none.", "type": "string" },
+        "abs_path": { "description": "The workspace root joined with path, absolute and /-separated, as the daemon resolves it (not case-folded).", "type": "string" },
+        "active": {
+          "description": "Present when the active profile maps the project.",
+          "type": "object",
+          "required": ["configuration", "state"],
+          "properties": {
+            "configuration": { "description": "The name of the project's configuration in the active profile.", "type": "string" },
+            "unit_id": { "description": "The opaque id of the configuration unit for that configuration and tool; absent when the profile has no unit for the project yet, and always in-process.", "$ref": "loomworks.Common/1#/$defs/Id" },
+            "tool_key": { "description": "The key of that configuration's tool; absent for a module whose single toolchain has none.", "type": "string" },
+            "state": {
+              "description": "The configuration unit's state (state-lifecycle 3.4); unconfigured when the profile has no unit for the project yet. Includes a task another client runs in the daemon. Clients show an unknown state as neutral.",
+              "enum": ["unconfigured", "configured", "built", "configure_failed", "build_failed", "unknown", "configuring", "building", "deleting"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

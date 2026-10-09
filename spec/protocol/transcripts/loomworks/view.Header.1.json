@@ -1,0 +1,75 @@
+{
+  "transcripts": 1,
+  "interface": "loomworks.view.Header",
+  "version": 1,
+  "description": "Object /views (spec 19.13 Views, 19.20): get, and the update signal with the full state as initial.",
+  "cases": [
+    {
+      "name": "get reports the session and an unloaded model without loading it",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/views", "iface": "loomworks.view.Header", "v": 1, "method": "get", "args": {} } },
+        { "expect": {
+            "kind": "ok", "req_id": 1,
+            "result": {
+              "root": { "$var": "welcome.header.root" },
+              "pid": { "$var": "welcome.header.pid" },
+              "lw_version": { "$var": "lw_version" },
+              "session_generation": { "$var": "welcome.header.session_generation" },
+              "state": "unloaded",
+              "name": { "$absent": true },
+              "active_profile_id": { "$absent": true },
+              "trust": { "$absent": true }
+            }
+        } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/views", "iface": "loomworks.view.Header", "v": 1, "method": "get", "args": { "x": 1 } } },
+        { "expect": { "kind": "error", "req_id": 2, "error": { "code": "invalid_args" } } }
+      ]
+    },
+    {
+      "name": "subscribing returns the full state as initial; a load sends update with the full state, an unchanged state none",
+      "allow": [ { "kind": "model_change" } ],
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/", "iface": "loomworks.Root", "v": 1, "method": "subscribe", "args": { "object": "/views", "iface": "loomworks.view.Header", "v": 1 } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": {
+            "sub_id": { "$bind": "sub" }, "seq": 0,
+            "initial": {
+              "root": { "$var": "welcome.header.root" }, "pid": { "$var": "welcome.header.pid" },
+              "session_generation": { "$var": "welcome.header.session_generation" },
+              "state": "unloaded", "name": { "$absent": true }
+            }
+        } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": { "outcome": "ok" } } },
+        { "expect": {
+            "kind": "signal", "object": "/views", "iface": "loomworks.view.Header", "v": 1, "name": "update",
+            "sub_id": { "$var": "sub" }, "seq": 1,
+            "args": {
+              "root": { "$var": "welcome.header.root" }, "pid": { "$var": "welcome.header.pid" },
+              "lw_version": { "$var": "lw_version" },
+              "session_generation": { "$var": "welcome.header.session_generation" },
+              "state": "loaded", "name": { "$type": "string" }, "error": { "$absent": true },
+              "active_profile": { "$absent": true }, "active_profile_id": { "$absent": true },
+              "config_set": { "$absent": true }, "config_set_id": { "$absent": true }
+            }
+        } },
+        { "send": { "kind": "call", "req_id": 3, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 3, "result": { "outcome": "ok" } } },
+        { "expect_none": { "kind": "signal", "object": "/views", "name": "update" }, "within_ms": 200 }
+      ]
+    },
+    {
+      "name": "get reports the loaded model once an operation loaded it, with no active profile",
+      "fixture": "shell",
+      "steps": [
+        { "send": { "kind": "call", "req_id": 1, "object": "/toolchains", "iface": "loomworks.Toolchains", "v": 1, "method": "list", "args": {}, "env": { "$var": "env" } } },
+        { "expect": { "kind": "ok", "req_id": 1, "result": { "outcome": "ok" } } },
+        { "send": { "kind": "call", "req_id": 2, "object": "/views", "iface": "loomworks.view.Header", "v": 1, "method": "get", "args": {} } },
+        { "expect": { "kind": "ok", "req_id": 2, "result": {
+            "state": "loaded", "name": { "$type": "string" }, "error": { "$absent": true }, "trust": { "$absent": true },
+            "active_profile": { "$absent": true }, "active_profile_id": { "$absent": true },
+            "config_set": { "$absent": true }
+        } } }
+      ]
+    }
+  ]
+}

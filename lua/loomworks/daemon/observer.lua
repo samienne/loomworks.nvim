@@ -149,6 +149,16 @@ M.WORKSPACE = {
     object = "/workspace", iface = "loomworks.Workspace", v = 1, feature = "model changes",
     methods = {}, signals = { "changed" },
 }
+-- The editor views (§19.13 "Views", step 5j): served on `/views` since
+-- part B; the observer subscribes to them in part C (not yet in FEATURES).
+M.VIEW_HEADER = {
+    object = "/views", iface = "loomworks.view.Header", v = 1, feature = "statusline",
+    methods = { "get" }, signals = { "update" },
+}
+M.VIEW_PROJECTS = {
+    object = "/views", iface = "loomworks.view.ProjectsIndex", v = 1, feature = "project index",
+    methods = { "get" }, signals = { "update" },
+}
 M.FEATURES = { M.TASKS, M.WORKSPACE }
 
 --- How long the connect's `Root.describe` may take before the observer

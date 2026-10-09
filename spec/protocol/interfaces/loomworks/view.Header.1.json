@@ -1,0 +1,52 @@
+{
+  "interface": "loomworks.view.Header",
+  "version": 1,
+  "status": "draft",
+  "description": "Object /views (spec 19.13 Views): the always-warm header the statusline and the status page's header show. get returns the full state; update, declared initial, carries the full state again whenever it changed, never a delta. The editor builds the same shape in-process without the daemon-only fields (pid, lw_version, session_generation, the ids).",
+  "methods": {
+    "get": {
+      "description": "The view's full state. Never loads the workspace.",
+      "params": { "type": "object", "additionalProperties": false },
+      "result": { "$ref": "#/$defs/Header" },
+      "needs_env": false,
+      "mutates": false
+    }
+  },
+  "signals": {
+    "update": {
+      "description": "The view's full state, sent after a model segment or a committed write that changed it (before the acknowledgement of the command that caused the change), only when it differs from the state last sent on the subscription.",
+      "initial": true,
+      "args": { "$ref": "#/$defs/Header" }
+    }
+  },
+  "$defs": {
+    "Header": {
+      "type": "object",
+      "required": ["root", "state"],
+      "properties": {
+        "root": { "type": "string" },
+        "state": {
+          "description": "As Workspace/1.header's state: loaded; unloaded before the daemon loaded the workspace; error or refused (a trust, newer-schema or journal refusal) with the load failure's message. Clients show an unknown state as neutral.",
+          "enum": ["loaded", "unloaded", "error", "refused"]
+        },
+        "name": { "description": "The workspace's name (state loaded).", "type": "string" },
+        "active_profile": { "description": "The active profile's key (state loaded; absent when none).", "type": "string" },
+        "active_profile_id": { "description": "The active profile's opaque id (spec 19.12): present exactly when active_profile is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "config_set": { "description": "The name of the active profile's configuration set (state loaded, a profile active).", "type": "string" },
+        "config_set_id": { "description": "That configuration set's opaque id: present exactly when config_set is and the view comes from the daemon.", "$ref": "loomworks.Common/1#/$defs/Id" },
+        "error": { "description": "The load failure (state error or refused).", "type": "string" },
+        "diagnostics": {
+          "description": "The highest severity among the workspace's structural diagnostics; absent when there are none or the workspace is not loaded.",
+          "enum": ["error", "warn"]
+        },
+        "trust": {
+          "description": "Present only when state is refused by a trust refusal (spec 17.4): the refused file, the working copy (user) or the cache (cache).",
+          "enum": ["user", "cache"]
+        },
+        "pid": { "description": "The daemon's process id (absent in-process).", "type": "integer" },
+        "lw_version": { "description": "The daemon's lw_version (absent in-process).", "type": "string" },
+        "session_generation": { "description": "The daemon's session generation (absent in-process).", "type": "integer" }
+      }
+    }
+  }
+}

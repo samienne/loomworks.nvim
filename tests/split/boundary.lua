@@ -65,13 +65,13 @@ local binary_toplevel = {
     "release_notice", "reserved_compiler", "reset_plan", "root_finder",
     "run_prep", "runenv", "save_guard", "sdk", "submodules", "suggestions",
     "target", "term", "test_unit", "tool", "tool_cache", "trust", "txn", "types", "user",
-    "variables", "workspace",
+    "variables", "view_state", "workspace",
 }
 
 local binary_daemon = {
     "auth", "calls", "client", "command", "connect", "core_interfaces", "descriptor", "discover", "endpoint", "ensure",
     "envscope", "handle", "inspect", "interfaces", "launch", "loopback", "paths", "relay", "rlock", "rlog",
-    "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks",
+    "runner", "running", "runtime", "server", "service", "snapshot", "stdio", "tasks", "views",
 }
 
 M.binary = {

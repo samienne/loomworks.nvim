@@ -1434,7 +1434,23 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   through `Service:_query` in a model segment. `header_check` emits
   `Workspace.header_changed` when the header's state, name, active profile
   or error differs from the last seen (after every model segment in
-  `Service:_drain` and every `Server:model_changed`).
+  `Service:_drain` and every `Server:model_changed`, and before the
+  acknowledgement of a request answered inside its segment:
+  `Service:_before_ack` from the requests' `ctx.reply`), then runs
+  `daemon/views.check`.
+- `daemon/views.lua` (binary side; step 5j part B) — the editor views on
+  `/views`: `loomworks.view.Header/1` and `loomworks.view.ProjectsIndex/1`
+  (spec §19.13 "Views"), each `get` (never loading; built from
+  `Service:header_model()`) and `update` (declared `initial`, full state).
+  The state comes from `view_state.lua`, the one builder (binary side, pure
+  over the model, reading no files) that the editor also calls in-process
+  (part C); the daemon passes its session fields and an id function
+  (`service.ids`), so only daemon views carry `pid` / `lw_version` /
+  `session_generation` and the opaque ids. `check` builds a view only when
+  `Registry:has_subscribers` says someone listens and sends `update` to a
+  subscription only when the state's `view_state.signature` differs from the
+  one last sent on it (`sub.view_sig`, set by `initial` too; the registry
+  passes the subscription to `initial` and to `emit`'s `accept`).
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
   request kind as its interface method (entities as `{ key }`) and maps the

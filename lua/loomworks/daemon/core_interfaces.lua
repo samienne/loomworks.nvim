@@ -9,6 +9,8 @@
 ---   /launch      loomworks.Launch/1       prepare_run T
 ---   /toolchains  loomworks.Toolchains/1   list
 ---   /profiles    loomworks.Profiles/1     compiler_cache
+---   /views       loomworks.view.Header/1, loomworks.view.ProjectsIndex/1
+---                                         get (update; loomworks.daemon.views)
 ---
 --- Each method adapts the handler the protocol-10 request kind already uses
 --- (loomworks.daemon.service), so the v0 alias and the interface method are
@@ -31,7 +33,9 @@
 --- Signals: `Workspace.changed` with every committed state-file write (beside
 --- the protocol-10 `model_change` broadcast, §19.12);
 --- `Workspace.header_changed` when the header's state, name, active profile
---- or error changed (checked after every model segment and every write);
+--- or error changed (checked after every model segment and every write, and
+--- before the acknowledgement of a request answered inside its segment);
+--- the views' `update` at the same point (loomworks.daemon.views.check);
 --- `Tasks.started` / `Tasks.ended` as a task starts and ends, to the
 --- subscribers of `/tasks` (filtered by the subscription's `task_id`). The
 --- task frames themselves reach a connection of transport 11 only for a task
@@ -72,7 +76,8 @@ function M.header(service)
 end
 
 --- Emit `Workspace.header_changed { header }` when the header's model fields
---- differ from the last ones seen (the first call only records them).
+--- differ from the last ones seen (the first call only records them), then
+--- the views' `update` where a view changed (§19.13 "Views").
 --- @param service loomworks.daemon.BuildService
 function M.header_check(service)
     local h = M.header(service)
@@ -80,9 +85,12 @@ function M.header_check(service)
         tostring(h.error) }, "\n")
     local last = service._header_sig
     service._header_sig = sig
-    if last == nil or last == sig then return end
     local reg = service.server.interfaces
-    if reg then reg:emit(M.WORKSPACE.path, M.WORKSPACE.iface, M.WORKSPACE.v, "header_changed", { header = h }) end
+    if reg and last ~= nil and last ~= sig then
+        reg:emit(M.WORKSPACE.path, M.WORKSPACE.iface, M.WORKSPACE.v, "header_changed", { header = h })
+    end
+    local ok, err = pcall(require("loomworks.daemon.views").check, service)
+    if not ok and reg then reg:_log("view update failed: %s", tostring(err)) end
 end
 
 --- The `loomworks.Workspace/1` handlers.
@@ -303,6 +311,8 @@ function M.mount(registry, service)
         { M.LAUNCH, M.launch_impl },
         { M.TOOLCHAINS, M.toolchains_impl },
         { M.PROFILES, M.profiles_impl },
+        require("loomworks.daemon.views").MOUNTS[1],
+        require("loomworks.daemon.views").MOUNTS[2],
     }) do
         local where, make = m[1], m[2]
         local ok, err = registry:mount(where.path, "core", where.iface, where.v, make(service))

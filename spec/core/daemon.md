@@ -1617,7 +1617,7 @@ workspace. Sending `welcome` never loads the workspace.
 (`daemon/core_interfaces.lua`); the CLI's read commands call
 `Snapshot/1.get` over transport 11 since part B (`daemon/calls.lua`); the
 editor views steps 5j–5n, §19.19: `view.Header/1` and `view.ProjectsIndex/1`
-specified ("Views" below, step 5j part 0), plan.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
+specified ("Views" below, step 5j part 0) and served (part B), the editor's use plan.)* The `snapshot` request becomes `lw.internal.Snapshot/1.get { scope }`
 (§19.20), flagged `same_build`: the CLI's read commands and the parity tests
 use it, the editor never does, and `snapshot` stays as its v0 alias. The
 always-warm header is the `loomworks.view.Header/1` interface (and
@@ -1628,9 +1628,9 @@ returning its full state on subscribe (`initial`, §19.20) and following with
 editor's projection of file-shaped tables is replaced by these views as the
 steps land.
 
-**Views.** *(Step 5j: specified, part 0; the daemon side (part B,
-`daemon/views.lua` mounted on `/views`) and the editor side (part C): plan,
-§19.19.)* Two views back the editor's always-warm surfaces, the statusline
+**Views.** *(Step 5j: specified, part 0; the daemon side implemented, part B
+(`daemon/views.lua` mounted on `/views`, the builder `view_state.lua`); the
+editor side (part C): plan, §19.19.)* Two views back the editor's always-warm surfaces, the statusline
 (spec/ui.md §3) and the buffer → project lookup. Both are served by the
 `/views` object. Each has one method, `get` (no arguments; returns the view's
 full state), and one signal, `update`, declared `initial` (§19.20), whose
@@ -3265,7 +3265,7 @@ runtime is deferred until that module is actively developed.
        `shell` fixtures, and a new `daemon/views.lua` mounted on `/views`,
        sending `update` where `header_check` runs, with the ids the daemon
        alone fills (`active_profile_id`, `config_set_id`, the records' `id`
-       and `active.unit_id`); C — editor side: a view
+       and `active.unit_id`) *(done once merged)*; C — editor side: a view
        store fed by the observer's subscription or by the in-process builder,
        lualine and the status page's header moved onto it,
        `lw.buf_project` (separator-bounded longest prefix), the lualine → `loomworks.events` edge removed and the
