@@ -8,6 +8,12 @@
 ---              (`require(name)`, `"loomworks." .. id`). Must match exactly.
 ---   reach_ins  per plugin-side file, the ceiling on `core:` / `get_workspace(` /
 ---              `._workspace` sites. Rising fails; when it drops, lower the number.
+---   operation_sites  per plugin-side file, the ceiling on editor operation call
+---              sites (step 5k): the overseer entry points (`run_profile_action`,
+---              `run_configuration_action`, `run_*_clean`, `launch_tasks`,
+---              `launch_single_task`), `:build(` / `:configure(` / `:clean(` /
+---              `:launch(` / `:debug(` and `debug.run`. Step 5k routes them
+---              through the daemon; rising fails; when it drops, lower the number.
 ---   interfaces_dynamic  per plugin-side file, sites naming a daemon interface at
 ---              run time (`iface = <expression>`, `:call(obj, <expression>, ...)`),
 ---              which the interface ratchet cannot check. Must match exactly;
@@ -158,6 +164,13 @@ return {
         ["lua/loomworks/ui/tree.lua"] = 4,
         ["lua/loomworks/workspace_view.lua"] = 3,
         ["plugin/loomworks.lua"] = 1,
+    },
+    operation_sites = {
+        ["lua/loomtest/runner.lua"] = 1,
+        ["lua/loomworks/init.lua"] = 2,
+        ["lua/loomworks/overseer.lua"] = 8,
+        ["lua/loomworks/session_tracker.lua"] = 5,
+        ["lua/loomworks/ui/actions.lua"] = 14,
     },
     -- observer.lua: conn:call(M.ROOT.object, M.ROOT.iface, ...) for describe
     -- and subscribe, the subscribe args `iface = want.iface` (want is one of

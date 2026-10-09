@@ -310,4 +310,51 @@ describe("plugin/binary boundary", function()
                 .. "tests/split/allowlist.lua so it cannot creep back. " .. SEE)
         end
     end)
+
+    it("does not raise editor operation call sites per plugin file (ratchet 3, step 5k)", function()
+        local rose, dropped = {}, {}
+        local ceil = allow.operation_sites or {}
+        for _, rel in ipairs(scan.sorted_keys(current.operation_sites)) do
+            local now, max = current.operation_sites[rel], ceil[rel] or 0
+            if now > max then
+                rose[#rose + 1] = ("%s: %d sites, ceiling %d"):format(rel, now, max)
+            end
+        end
+        for _, rel in ipairs(scan.sorted_keys(ceil)) do
+            local now = current.operation_sites[rel] or 0
+            if now < ceil[rel] then
+                dropped[#dropped + 1] = ("%s: %d sites, ceiling %d"):format(rel, now, ceil[rel])
+            end
+        end
+        if #rose > 0 then
+            fail("More in-process editor operation call sites than recorded:", rose,
+                "The editor starts builds, configures, cleans, launches and debug "
+                .. "sessions through the workspace daemon (step 5k: Build/1, "
+                .. "Launch/1.prepare_run / prepare_debug); route the new call there "
+                .. "instead of adding an in-process one. " .. SEE)
+        end
+        if #dropped > 0 then
+            fail("Editor operation call sites dropped below the recorded ceiling:", dropped,
+                "Good: lower (or delete) the number in `operation_sites` in "
+                .. "tests/split/allowlist.lua so it cannot creep back. " .. SEE)
+        end
+    end)
+
+    it("the operation-site scanner counts calls, not definitions or the logger", function()
+        local n = 0
+        for _, line in ipairs({
+            "local function launch_tasks(a) end",
+            "function M.run_profile_action(p) end",
+            "profile:build()",
+            "unit:clean(function() overseer.run_configuration_action(unit, 'build') end)",
+            "log:debug('x')",
+            "self._deps.log:debug('x')",
+            "target:debug()",
+            "debug_mod.run({})",
+        }) do
+            n = n + scan.count_ops(line)
+        end
+        -- build, clean, run_configuration_action, target:debug, debug_mod.run
+        assert.equals(5, n)
+    end)
 end)

@@ -123,9 +123,47 @@ local function count(line, pat)
     return n
 end
 
---- Scan one file: sorted unique static targets, dynamic-site count, reach-ins.
+-- Editor operation call sites (step 5k): the places a plugin-side file starts
+-- a build / configure / clean / launch / debug in-process — the overseer
+-- entry points, the domain objects' operation methods and the nvim-dap
+-- session start. Step 5k routes them through the daemon (Build/1,
+-- Launch/1.prepare_run / prepare_debug), so their count per file may only
+-- fall. A definition line (`function M.run_profile_action(`) is not a site.
+-- Blind spots: a call through an alias (`local f = overseer.launch_tasks`)
+-- and an operation method on a receiver named `*log` (`log:debug(` is the
+-- logger, and is skipped).
+local OPS = {
+    "run_profile_action%s*%(",
+    "run_configuration_action%s*%(",
+    "run_profile_clean%s*%(",
+    "run_configuration_clean%s*%(",
+    "launch_single_task%s*%(",
+    "launch_tasks%s*%(",
+    "debug_mod%.run%s*%(",
+    "loomworks%.debug[\"']%s*%)%s*%.run%s*%(",
+    "[%w_%]%)]:build%s*%(",
+    "[%w_%]%)]:configure%s*%(",
+    "[%w_%]%)]:clean%s*%(",
+    "[%w_%]%)]:launch%s*%(",
+}
+local OP_DEBUG = "([%w_]+)%s*:debug%s*%("
+
+--- Editor operation call sites on one code line.
+local function count_ops(line)
+    if line:match("^%s*local%s+function%s") or line:match("^%s*function%s") then return 0 end
+    local n = 0
+    for _, pat in ipairs(OPS) do n = n + count(line, pat) end
+    for recv in line:gmatch(OP_DEBUG) do
+        if not recv:match("log$") then n = n + 1 end
+    end
+    return n
+end
+M.count_ops = count_ops
+
+--- Scan one file: sorted unique static targets, dynamic-site count, reach-ins,
+--- editor operation call sites.
 function M.scan_file(rel)
-    local targets, seen, dynamic, reach = {}, {}, 0, 0
+    local targets, seen, dynamic, reach, ops = {}, {}, 0, 0, 0
     for _, line in ipairs(code_lines(rel)) do
         for _, pat in ipairs(STATIC) do
             for target in line:gmatch(pat) do
@@ -137,9 +175,10 @@ function M.scan_file(rel)
         end
         for _, pat in ipairs(DYNAMIC) do dynamic = dynamic + count(line, pat) end
         for _, pat in ipairs(REACH) do reach = reach + count(line, pat) end
+        ops = ops + count_ops(line)
     end
     table.sort(targets)
-    return targets, dynamic, reach
+    return targets, dynamic, reach, ops
 end
 
 -- Interface references (the interface ratchet, step 5g.3): a versioned one
@@ -350,11 +389,11 @@ function M.uncovered(ref, doc)
 end
 
 --- Current state of the tree.
---- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, counts, interfaces }
+--- @return table { unclassified, ambiguous, edges, dynamic, reach_ins, operation_sites, counts, interfaces }
 ---   `interfaces[rel]` = { refs, unversioned, calls } of each plugin-side file naming one
 function M.current()
     local res = {
-        unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {},
+        unclassified = {}, ambiguous = {}, edges = {}, dynamic = {}, reach_ins = {}, operation_sites = {},
         counts = { plugin = 0, shared = 0, binary = 0 }, interfaces = {}, interfaces_dynamic = {},
     }
     local files = M.files()
@@ -376,7 +415,7 @@ function M.current()
     for _, rel in ipairs(files) do
         local side = M.side_of_file(rel)
         if side == "plugin" or side == "shared" then
-            local targets, dynamic, reach = M.scan_file(rel)
+            local targets, dynamic, reach, ops = M.scan_file(rel)
             local bad = {}
             for _, t in ipairs(targets) do
                 if side_by_mod[t] == "binary" then bad[#bad + 1] = t end
@@ -384,6 +423,7 @@ function M.current()
             if #bad > 0 then res.edges[rel] = bad end
             if dynamic > 0 then res.dynamic[rel] = dynamic end
             if side == "plugin" and reach > 0 then res.reach_ins[rel] = reach end
+            if side == "plugin" and ops > 0 then res.operation_sites[rel] = ops end
             if side == "plugin" then
                 local refs, unversioned, idyn, calls = M.interface_refs(rel)
                 if #refs > 0 or #unversioned > 0 or #calls > 0 then
@@ -415,7 +455,7 @@ function M.render(res)
         out[#out + 1] = "        },"
     end
     out[#out + 1] = "    },"
-    for _, key in ipairs({ "dynamic", "reach_ins", "interfaces_dynamic" }) do
+    for _, key in ipairs({ "dynamic", "reach_ins", "operation_sites", "interfaces_dynamic" }) do
         out[#out + 1] = ("    %s = {"):format(key)
         for _, rel in ipairs(sorted_keys(res[key])) do
             out[#out + 1] = ('        ["%s"] = %d,'):format(rel, res[key][rel])
