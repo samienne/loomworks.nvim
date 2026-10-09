@@ -24,9 +24,16 @@
 ---   - Project/config gets the per-config marker from `status.status`.
 ---   - Running states (configuring/building/deleting) animate the
 ---     spinner. The animation is driven by a module-level uv timer that
----     starts on `task_started` and stops when the running-task count
----     hits zero, so there's zero refresh cost while the workspace is
----     idle. `status_icons = false` disables both icons and the timer.
+---     starts when a render shows a running state and stops once renders
+---     have shown none for a while, so there's zero refresh cost while the
+---     workspace is idle. `status_icons = false` disables both icons and
+---     the timer.
+---
+--- Data: `lw.buf_status()`, which reads the editor's views
+--- (`loomworks.view.Header/1`, `loomworks.view.ProjectsIndex/1`; spec
+--- §19.13 "Two sources, one shape"): the daemon's while the editor is
+--- subscribed, otherwise built in-process. The component itself never
+--- reaches into the workspace or its events.
 
 local M = require("lualine.component"):extend()
 
@@ -94,10 +101,13 @@ local SPINNER_FRAMES = { "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}",
     "\u{2807}", "\u{280f}" }
 local SPINNER_INTERVAL_MS = 80
 
+--- How long the timer keeps redrawing after the last render that showed a
+--- running state (covers lualine refreshing on its own schedule).
+local IDLE_STOP_MS = 2000
+
 local _uv = vim.uv or vim.loop
 local _timer = nil
-local _running_count = 0
-local _events_attached = false
+local _last_running_ms = nil
 
 --- Frame index derived from monotonic time so all callers within a
 --- given tick agree on the frame without holding shared mutable state.
@@ -114,47 +124,26 @@ local function stop_timer()
     _timer = nil
 end
 
-local function maybe_start_timer()
-    if _timer or _running_count == 0 then return end
+local function now_ms() return _uv.hrtime() / 1e6 end
+
+--- Note that a render showed a running state and start the timer if it
+--- isn't running. The timer stops by itself once no render has shown one
+--- for IDLE_STOP_MS.
+local function note_running()
+    _last_running_ms = now_ms()
+    if _timer then return end
     _timer = _uv.new_timer()
     -- Manual statusline refresh — lualine's own timer is too slow for
     -- spinner animation (1s default). We could lower it globally but
     -- that affects every other component too; cheaper to just kick
     -- redrawstatus ~12 times per second only while tasks are active.
     _timer:start(0, SPINNER_INTERVAL_MS, vim.schedule_wrap(function()
-        if _running_count > 0 then
+        if _last_running_ms and now_ms() - _last_running_ms <= IDLE_STOP_MS then
             pcall(vim.cmd, "redrawstatus")
         else
             stop_timer()
         end
     end))
-end
-
---- Attach the task_started/task_stopped listeners exactly once per
---- nvim session. Safe to call from every component instance; later
---- calls no-op via the `_events_attached` guard.
-local function attach_events()
-    if _events_attached then return end
-    local ok, events = pcall(require, "loomworks.events")
-    if not ok then return end
-    _events_attached = true
-    events.on("task_started", function()
-        _running_count = _running_count + 1
-        maybe_start_timer()
-    end)
-    events.on("task_stopped", function()
-        _running_count = math.max(0, _running_count - 1)
-        if _running_count == 0 then stop_timer() end
-    end)
-    -- A build observed in the workspace daemon (spec §19.16) spins the same.
-    events.on("daemon_task_started", function()
-        _running_count = _running_count + 1
-        maybe_start_timer()
-    end)
-    events.on("daemon_task_stopped", function()
-        _running_count = math.max(0, _running_count - 1)
-        if _running_count == 0 then stop_timer() end
-    end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -179,10 +168,6 @@ function M:init(options)
         if glyph and glyph ~= "" then
             self._icons[field] = glyph .. " "
         end
-    end
-
-    if self.options.status_icons ~= false then
-        attach_events()
     end
 end
 
@@ -225,6 +210,7 @@ function M:_status_marker(state)
         glyph = STATUS_ICON[state]
     end
     if not glyph then return "" end
+    if RUNNING_STATES[state] then note_running() end
     return "%#" .. hl .. "#" .. glyph .. "%* "
 end
 

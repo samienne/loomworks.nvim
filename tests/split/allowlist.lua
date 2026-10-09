@@ -127,9 +127,6 @@ return {
             "loomworks.project",
             "loomworks.variables",
         },
-        ["lua/lualine/components/loomworks.lua"] = {
-            "loomworks.events",
-        },
     },
     dynamic = {
         ["lua/loomworks/init.lua"] = 1,
@@ -139,7 +136,7 @@ return {
         ["lua/loomtest/runner.lua"] = 1,
         ["lua/loomworks/auto_load.lua"] = 1,
         ["lua/loomworks/device_log.lua"] = 1,
-        ["lua/loomworks/init.lua"] = 62,
+        ["lua/loomworks/init.lua"] = 59,
         ["lua/loomworks/integrations/lsp/clangd.lua"] = 1,
         ["lua/loomworks/integrations/lsp/qmlls.lua"] = 1,
         ["lua/loomworks/loomtest_adapter.lua"] = 2,
@@ -157,16 +154,18 @@ return {
         ["lua/loomworks/ui/sections/profiles.lua"] = 2,
         ["lua/loomworks/ui/sections/projects.lua"] = 6,
         ["lua/loomworks/ui/sections/sdks.lua"] = 1,
-        ["lua/loomworks/ui/status.lua"] = 7,
+        ["lua/loomworks/ui/status.lua"] = 6,
         ["lua/loomworks/ui/tree.lua"] = 4,
         ["lua/loomworks/workspace_view.lua"] = 3,
         ["plugin/loomworks.lua"] = 1,
     },
     -- observer.lua: conn:call(M.ROOT.object, M.ROOT.iface, ...) for describe
-    -- and subscribe, and the subscribe args `iface = want.iface` (want is
-    -- one of M.TASKS / M.WORKSPACE): all resolve to its versioned tables.
+    -- and subscribe, the subscribe args `iface = want.iface` (want is one of
+    -- M.FEATURES), and the views' `get` after a seq gap,
+    -- conn:call(want.object, want.iface, ...) (want is one of M.VIEWS, step
+    -- 5j): all resolve to its versioned tables.
     interfaces_dynamic = {
-        ["lua/loomworks/daemon/observer.lua"] = 3,
+        ["lua/loomworks/daemon/observer.lua"] = 4,
     },
     -- Root's two connection-wide signals, handled by the observer since step
     -- 5g.3 but in no transcript: `objects_changed` has no core trigger (core

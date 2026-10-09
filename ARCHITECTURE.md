@@ -256,6 +256,7 @@ may import from its own layer or any layer below it, never above.
 |------|------|-------------|
 | `plugin/loomworks.lua` | Command registration (`:LoomworksInit`, `:LoomworksInfo`), double-load guard | Contain logic; import core.lua |
 | `init.lua` | Singleton Core instance, public API surface, version string | Hold state beyond the Core ref; contain business logic |
+| `views.lua` | Editor view store: `view.Header/1` and `view.ProjectsIndex/1` tables from the daemon subscription or the in-process builder; buffer -> project record lookup; `buf_status` derivation | Require binary-side modules; query the workspace itself (builders are registered by init.lua) |
 
 ### Infrastructure Layer
 
@@ -372,7 +373,7 @@ may import from its own layer or any layer below it, never above.
 | `integrations/lsp/clangd.lua` | clangd-specific wiring: `build_config(user_cfg)` for zero-config setup, function-based cmd + root_dir (resolve per-buffer: SDK clangd inside workspace, user base cmd outside), auto-restart on workspace/active set changes, capability auto-detection for blink.cmp/cmp_nvim_lsp, binary_required enforcement; **always-on `--pch-storage=disk`** + **user-configurable `--clang-tidy`/`--background-index`/`--background-index-priority`/`extra_args`** appended to every cmd (last-wins via LLVM `cl::opt`); reads via `Workspace:get_lsp_options("clangd")` (defaults applied); coalesced restart on `on_lsp_options_changed`; **OOM-adaptive `-j` step-down** via `on_unexpected_exit` (seed `-j 12` on first OOM, halve to 1 floor, give up after); single-retry policy for non-OOM crashes; nvim LSP log snapshot rotation (5 generations) on every (re)start; `reset(root_dir)` clears adaptive state and re-enables clangd | Reference specific modules; read `project.cmake` or other module-specific fields |
 | `fidget.lua` | fidget.nvim progress handles for operations and tasks | Require fidget.nvim unconditionally (graceful no-op) |
 | `task_tracker.lua` | Overseer component bridging task lifecycle to ConfigUnit, cache recording, and build dir lock release on completion/dispose (idempotent) | Be imported by anything except overseer |
-| `lualine/components/loomworks.lua` | Winbar component showing active profile context for current buffer | Import core.lua; do anything beyond formatting |
+| `lualine/components/loomworks.lua` | Winbar component showing active profile context for current buffer, from `lw.buf_status()` (the view store) | Import core.lua or loomworks.events; do anything beyond formatting |
 
 ---
 
@@ -1032,7 +1033,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
 - UI: the status page's `Runtime:` header line (`init.daemon_runtime_line`),
   `(daemon)` rows + "Show output" scratch buffer in `ui/sections/tasks.lua`
   (`init.get_daemon_tasks`), fidget handles keyed `daemon:<id>`, the lualine
-  spinner counts `daemon_task_*`; `:LoomworksDaemon [status|connect]`.
+  spinner runs while a render shows a running state (step 5j: it no longer
+  counts `daemon_task_*`; it reads only `buf_status`); `:LoomworksDaemon [status|connect]`.
 
 **Step 5, first operation moved: the batch `lw test` (spec §19.15)** adds:
 
@@ -1451,6 +1453,21 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   subscription only when the state's `view_state.signature` differs from the
   one last sent on it (`sub.view_sig`, set by `initial` too; the registry
   passes the subscription to `initial` and to `emit`'s `accept`).
+- `views.lua` (plugin side; step 5j part C) — the editor's view store: one
+  table per view (`header`, `projects`), the daemon's while the observer
+  holds a subscription (`Observer:_view_subscribed` takes `initial`,
+  `_view_update` each full-state `update`, `_refetch_views` a `get` of every
+  subscribed view after a `/views` `seq` gap; cleared on close, stop, a
+  removed object and each new subscribe), otherwise built in-process through
+  the builders init.lua registers (`Core:view_header` /
+  `Core:view_projects_index`, which call `view_state.lua` without ids). A
+  daemon view is rendered as it is: `state = "unloaded"` and no projects
+  until the daemon loads the workspace. Readers: `init.buf_status`
+  (`views.status_of`: the record by `views.match`, the profile icon by
+  `views.profile_state`), `init.buf_project` (separator-bounded longest
+  prefix on normalized paths), `init.view_header` (the status page header).
+  A daemon change redraws the statusline and emits `daemon_view_changed`
+  (the status page re-renders).
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
   request kind as its interface method (entities as `{ key }`) and maps the

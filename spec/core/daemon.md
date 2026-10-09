@@ -1630,7 +1630,9 @@ steps land.
 
 **Views.** *(Step 5j: specified, part 0; the daemon side implemented, part B
 (`daemon/views.lua` mounted on `/views`, the builder `view_state.lua`); the
-editor side (part C): plan, §19.19.)* Two views back the editor's always-warm surfaces, the statusline
+editor side implemented, part C (the view store `views.lua`, the observer's
+`/views` subscriptions, lualine and the status page header on the store,
+`lw.buf_project`).)* Two views back the editor's always-warm surfaces, the statusline
 (spec/ui.md §3) and the buffer → project lookup. Both are served by the
 `/views` object. Each has one method, `get` (no arguments; returns the view's
 full state), and one signal, `update`, declared `initial` (§19.20), whose
@@ -2559,7 +2561,7 @@ in-process ("End state").
 `welcome.objects` as the fallback, the `/tasks` and `/workspace`
 subscriptions, `objects_changed` and the per-feature note; the views and
 operations: plan, steps 5j–5o — the `/views` features of step 5j specified,
-part 0.)* On every connect, including
+part 0, and implemented, part C.)* On every connect, including
 each reconnect, the editor **discovers** the daemon through the root object
 (`welcome.objects`, `Root.describe`; §19.20), picks per interface the highest
 version both sides support, and subscribes to the views and tasks it shows,
@@ -3269,7 +3271,7 @@ runtime is deferred until that module is actively developed.
        store fed by the observer's subscription or by the in-process builder,
        lualine and the status page's header moved onto it,
        `lw.buf_project` (separator-bounded longest prefix), the lualine → `loomworks.events` edge removed and the
-       reach-in counts lowered.
+       reach-in counts lowered *(done once merged)*.
    - ~~**5p — Editor-owned child daemon**~~ — dropped: the editor connects
      through the `--stdio` relay of 5i instead. The editor no longer loading
      the workspace itself in daemon mode is reached once 5j–5o have moved

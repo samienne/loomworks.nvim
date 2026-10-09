@@ -41,6 +41,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `lw status --check`. (#90)
 
 ### Added
+- `lw.buf_project(bufnr)` returns the buffer's project as a record (`key`,
+  `label`, `type`, `path`, `abs_path` and the active configuration, tool key
+  and state). It matches on a separator boundary, so a project at `/a/foo`
+  does not claim a buffer in `/a/foobar`; `lw.project_for_buf` is unchanged.
+  (#188)
 - Experimental daemon: `lw daemon status` shows the daemon's idle timeout and
   when it will exit if no client connects (`idle  timeout 45s, exits at
   14:03:12 (in 45s) unless a client connects`), or that the idle timer is not
@@ -310,6 +315,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Against an older daemon the first Ctrl-C leaves at once, as before. (#176)
 
 ### Changed
+- Experimental daemon mode: the statusline component and the status page
+  header show the workspace daemon's view while the editor is connected to
+  it, including `Workspace: not loaded in the workspace daemon` until the
+  daemon loads the workspace, and the editor's own model otherwise. The
+  Runtime line names `statusline` and `project index` when the daemon does
+  not offer them. (#188)
 - The machine-level tool cache (`tools.json`) is now reused per module type
   only while what the detection depended on is unchanged: another `lw`
   version, a changed `PATH` or `PATHEXT`, or a compiler newly installed into a

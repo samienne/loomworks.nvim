@@ -25,9 +25,14 @@ local function daemon_mode(name)
     return os.getenv(name)
 end
 
---- `/tasks` (loomworks.Tasks/1) and `/workspace` (loomworks.Workspace/1)
---- with stub handlers: what a daemon with a build service offers, so the
---- observer subscribes (step 5g.3) and a transport-11 connection is sent
+--- The states the stub `/views` serve (`get`, `initial`); a test changes them
+--- and emits `update` itself. Reset per mount.
+local VIEW_STATE = {}
+
+--- `/tasks` (loomworks.Tasks/1), `/workspace` (loomworks.Workspace/1) and
+--- `/views` (loomworks.view.Header/1, loomworks.view.ProjectsIndex/1) with
+--- stub handlers: what a daemon with a build service offers, so the
+--- observer subscribes (step 5g.3, 5j) and a transport-11 connection is sent
 --- only what it subscribed to.
 local function mount_views(srv)
     local reg = srv:registry()
@@ -39,6 +44,17 @@ local function mount_views(srv)
         header = function() return { root = srv.root, pid = srv.pid, lw_version = srv.identity,
             session_generation = srv.generation, state = "unloaded" } end,
     } }))
+    -- A daemon that has not loaded the workspace: what a freshly launched
+    -- one reports until a request loads it.
+    VIEW_STATE.header = { root = srv.root, pid = srv.pid, lw_version = srv.identity,
+        session_generation = srv.generation, state = "unloaded" }
+    VIEW_STATE.projects = { projects = {} }
+    for _, v in ipairs({ { "loomworks.view.Header", "header" }, { "loomworks.view.ProjectsIndex", "projects" } }) do
+        assert(reg:mount("/views", "core", v[1], 1, {
+            methods = { get = function() return VIEW_STATE[v[2]] end },
+            initial = function() return VIEW_STATE[v[2]] end,
+        }))
+    end
 end
 
 --- An in-process server; `views == false`: without `/tasks` and `/workspace`.
@@ -256,7 +272,8 @@ describe("the observer (§19.16)", function()
         local subs = {}
         for _, sub in ipairs(s.srv.interfaces:subscriptions_of(sc)) do subs[#subs + 1] = sub.object .. " " .. sub.iface end
         table.sort(subs)
-        assert.same({ "/tasks loomworks.Tasks", "/workspace loomworks.Workspace" }, subs)
+        assert.same({ "/tasks loomworks.Tasks", "/views loomworks.view.Header",
+            "/views loomworks.view.ProjectsIndex", "/workspace loomworks.Workspace" }, subs)
         -- A task another client owns reaches it through the subscription,
         -- with the opaque string id of transport 11.
         local owner_client = assert(client.session(s.srv.address))
@@ -306,7 +323,9 @@ describe("the observer (§19.16)", function()
         assert.is_true(obs._sub_only)
         assert.is_true(vim.wait(5000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         assert.equals("tasks: daemon offers no loomworks.Tasks, editor needs /1; "
-            .. "model changes: daemon offers no loomworks.Workspace, editor needs /1", obs.feature_note)
+            .. "model changes: daemon offers no loomworks.Workspace, editor needs /1; "
+            .. "statusline: daemon offers no loomworks.view.Header, editor needs /1; "
+            .. "project index: daemon offers no loomworks.view.ProjectsIndex, editor needs /1", obs.feature_note)
         assert.truthy(obs:runtime_line():find("observing the workspace daemon", 1, true))
         assert.truthy(obs:runtime_line():find("editor needs /1", 1, true))
         assert.equals("tasks: daemon offers loomworks.Tasks/2,/3, editor needs /1",
@@ -340,7 +359,7 @@ describe("the observer (§19.16)", function()
             conn.welcome.objects = { { path = "/", interfaces = { { name = "loomworks.Root", versions = { 1 } } } } }
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/tasks", "/views", "/views", "/workspace" }, subs_of(s.srv))
         assert.is_nil(obs.feature_note)
     end)
 
@@ -354,7 +373,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/tasks", "/views", "/views", "/workspace" }, subs_of(s.srv))
     end)
 
     it("falls back to welcome.objects when describe never answers (bounded)", function()
@@ -367,7 +386,7 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/tasks", "/workspace" }, subs_of(s.srv))
+        assert.same({ "/tasks", "/views", "/views", "/workspace" }, subs_of(s.srv))
     end)
 
     it("subscribes when /tasks and /workspace appear later (objects_changed); the note clears", function()
@@ -375,7 +394,7 @@ describe("the observer (§19.16)", function()
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.feature_note ~= nil end, 10), obs:runtime_line())
         mount_views(s.srv)
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 2 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 4 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
@@ -394,14 +413,67 @@ describe("the observer (§19.16)", function()
             end
         end) })
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.same({ "/workspace" }, subs_of(s.srv))
+        assert.same({ "/views", "/views", "/workspace" }, subs_of(s.srv))
         assert.truthy((obs.feature_note or ""):find("tasks: loomworks.Tasks/1 refused (busy)", 1, true))
         assert(s.srv:registry():mount("/other", "core", "loomworks.Tasks", 1, { methods = {
             list = function() return { tasks = {} } end,
             cancel = function() return { outcome = "ok" } end,
         } }))
-        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 2 end, 10))
+        assert.is_true(vim.wait(5000, function() return #subs_of(s.srv) == 4 end, 10))
         assert.is_true(vim.wait(5000, function() return obs.feature_note == nil end, 10), obs:runtime_line())
+    end)
+
+    it("takes the views' initial state, applies each update, re-gets after a seq gap (step 5j)", function()
+        local lw = require("loomworks")
+        local store = require("loomworks.views")
+        -- In-process (no subscription yet): built from the loaded model.
+        assert.equals("in-process", store.source("header"))
+        assert.equals("loaded", lw.view_header().state)
+        s = new_server(root)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function()
+            return store.source("header") == "daemon" and store.source("projects") == "daemon"
+        end, 10), obs:runtime_line())
+        assert.is_nil(obs.feature_note)
+        -- The daemon's views are rendered as they are: it has not loaded the
+        -- workspace, so no buffer has a project or a status.
+        assert.equals("unloaded", lw.view_header().state)
+        assert.is_nil(store.status_of(lw.view_header(), store.projects_index(), root .. "/App/main.c"))
+        assert.is_nil(store.match(store.projects_index(), root .. "/App/main.c"))
+        -- An update replaces the table (full state).
+        local reg = s.srv:registry()
+        VIEW_STATE.header = { root = root, state = "loaded", name = "dm", active_profile = "dev",
+            active_profile_id = "p1", config_set = "dev", config_set_id = "c1", pid = s.srv.pid,
+            lw_version = s.srv.identity, session_generation = s.srv.generation }
+        VIEW_STATE.projects = { projects = { { id = "x1", key = "App", label = "App", type = "shell",
+            path = "App", abs_path = root .. "/App",
+            active = { configuration = "Debug", unit_id = "u1", state = "building" } } } }
+        reg:emit("/views", "loomworks.view.Header", 1, "update", VIEW_STATE.header)
+        reg:emit("/views", "loomworks.view.ProjectsIndex", 1, "update", VIEW_STATE.projects)
+        assert.is_true(vim.wait(5000, function()
+            local idx = store.projects_index()
+            return lw.view_header().state == "loaded" and #idx.projects == 1
+        end, 10))
+        local st = store.status_of(lw.view_header(), store.projects_index(), root .. "/App/main.c")
+        assert.same({ profile_key = "dev", set_name = "dev", project = "App", configuration = "Debug",
+            status = "building", profile_state = "building" }, st)
+        -- A lost signal (a gap in the `/views` seq): both views are fetched
+        -- again with `get`.
+        local sc = server_conn(s.srv, function(c) return c.observer end)
+        reg:_next_seq(sc, "/views")
+        VIEW_STATE.projects = { projects = { { id = "x1", key = "App", label = "App", type = "shell",
+            path = "App", abs_path = root .. "/App",
+            active = { configuration = "Debug", unit_id = "u1", state = "built" } } } }
+        reg:emit("/views", "loomworks.view.Header", 1, "update", VIEW_STATE.header)
+        assert.is_true(vim.wait(5000, function()
+            local rec = store.projects_index().projects[1]
+            return rec and rec.active.state == "built"
+        end, 10))
+        -- Stopping drops the daemon's tables: in-process again.
+        obs:stop()
+        assert.equals("in-process", store.source("header"))
+        assert.equals("in-process", store.source("projects"))
+        assert.equals("loaded", lw.view_header().state)
     end)
 
     it("a transport-11 daemon offering neither view and sending v0 broadcasts (step 5g.1) gets no note", function()

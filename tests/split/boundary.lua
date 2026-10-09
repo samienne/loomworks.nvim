@@ -32,6 +32,7 @@ M.plugin = {
     "^loomworks%.device_log$",       -- nvim buffer view of a device log stream
     "^loomworks%.overseer$",         -- adapter part stays; planning half moves out later
     "^loomworks%.workspace_view$",   -- view-model part stays; orchestration moves out later
+    "^loomworks%.views$",            -- the editor view store (spec §19.13 "Two sources, one shape")
     "^loomworks%.daemon%.observer$", -- becomes loomworks.client.session
     "^loomworks%.daemon%.editor_retire$", -- the observer's retirement decisions (spec §19.16)
     "^loomworks%.daemon%.remote_task$",

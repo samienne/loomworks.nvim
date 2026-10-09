@@ -2401,7 +2401,13 @@ end
 
 -- Projects
 lw.get_projects()                           -- all Project objects
-lw.project_for_buf(bufnr)                   -- find project for buffer
+lw.project_for_buf(bufnr)                   -- find project for buffer (loomworks.Project)
+lw.buf_project(bufnr)                       -- the buffer's project record: { key, label, type,
+                                            --   path, abs_path, active? = { configuration,
+                                            --   tool_key?, state } } (longest prefix on a
+                                            --   separator boundary), nil when none
+lw.view_header()                            -- { root, state, name?, active_profile?,
+                                            --   config_set?, diagnostics?, ... }
 
 -- Buffer status (for statusline/winbar)
 lw.buf_status(bufnr)                        -- { project, configuration, status, ... }

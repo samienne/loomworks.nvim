@@ -213,4 +213,23 @@ describe("the Runtime line (spec/ui.md §1.1)", function()
         assert.truthy(note:find("file formats user " .. (s.user + 1), 1, true), note)
         assert.truthy(note:find("file formats user " .. s.user .. ", cache " .. s.cache, 1, true), note)
     end)
+
+    it("the header reads view.Header/1: in-process, then the daemon's as it is (step 5j)", function()
+        local store = require("loomworks.views")
+        local lines = header()
+        local function text() return table.concat(lines, "\n") end
+        local function has(s)
+            for _, l in ipairs(lines) do if l:find(s, 1, true) then return true end end
+            return false
+        end
+        assert.truthy(has("Workspace: " .. ws.name), text())
+        -- A daemon that has not loaded the workspace yet.
+        local owner = {}
+        store.set(owner, "header", { root = root, state = "unloaded", pid = 1, lw_version = "x",
+            session_generation = 1 })
+        lines = header()
+        store.clear(owner)
+        assert.truthy(has("Workspace: not loaded in the workspace daemon"), text())
+        assert.truthy(has("Root:      " .. root), text())
+    end)
 end)
