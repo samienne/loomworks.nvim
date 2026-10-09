@@ -85,6 +85,26 @@ considered and not added: configuring stays a step of `lw build`
   its own standard input closes or it is killed (e.g. a job object on
   Windows), or by exec-ing the pinned relay where the platform allows.
 
+## Lock record follow-ups (PR #180, atomic lock create/update)
+
+- Crash-leftover temps are never cleaned up: a process killed between
+  writing `<lock file>.new.<hex>` and removing it leaves `*.lock.new.<hex>` /
+  `*.loomworks-lock.new.<hex>` behind for good. Candidate: housekeeping
+  treats a name matching `%.lock%.new%.%x+$` (and the `.loomworks-lock`
+  form) as a transient temp, like the `.reclaim.` temps. This is a
+  deletion-safety change and needs the mandatory review (CLAUDE.md).
+- NFS: a retried `link` may return EEXIST after it actually succeeded (the
+  reply to the first attempt was lost), so the creator thinks the lock is
+  held by someone else while the lock file carries its own record; the lock
+  stays self-held until the process exits (or its heartbeat stops and it
+  goes stale). Consider comparing the existing record's nonce with ours on
+  EEXIST.
+- A lock file with no host recorded (empty, still being written) could get
+  its own "being written" state: held, not reclaimable, and a `--no-launch`
+  relay retries instead of exiting 13 with "runs on another host (?, pid ?)".
+  Spec change (spec/core/daemon.md section 19.5); deferred pending the
+  user's decision.
+
 ## Two meanings of "clean"
 
 The editor's `C` action deletes the build directory and resets the unit to
