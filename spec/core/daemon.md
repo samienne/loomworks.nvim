@@ -1357,8 +1357,9 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   tick. An addition to the frozen `status` shape (§19.8): a daemon of an
   older protocol omits it.
 - **Idle exit.** Idle — **no connections and no background work** — for the
-  idle timeout (setting `daemon-idle-timeout`, default 1 hour), the daemon
-  exits. The idle clock starts when the last connection closes or the last
+  idle timeout (setting `daemon-idle-timeout`; default the idle grace
+  `IDLE_GRACE_SECONDS`, 45 seconds, from step 5r — 1 hour before it, see
+  "Warm restarts" below), the daemon exits. The idle clock starts when the last connection closes or the last
   background work ends, whichever is later; the handle's `idle_since` is
   absent while background work runs. *(Step 5i, `Server:lifetime`.)*
   **Background work** is work the daemon owns with no connection as
@@ -1368,7 +1369,8 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   owner left or its task ended (a cancellation, a reset's deletion).
 - **Background work cap.** Background work has a maximum duration,
   `BACKGROUND_MAX_DURATION` (10 minutes), after which it is stopped (and,
-  from step 5r, its interrupted part is not written). The clock counts only
+  from step 5r, its interrupted part is not written — "Warm restarts"
+  below). The clock counts only
   while the work is ownerless and no connection is open: it starts when the
   last connection closes or the work starts, whichever is later, and a
   connection opening resets it. Past the cap:
@@ -1396,16 +1398,52 @@ operation (§19.15). A running build makes the daemon busy (handle `busy`); a
   `Service:in_segment`.)* The
   daemon's lifetime never depends on any client's lifetime: a client keeps
   it alive only through an open connection.
-- *(Planned, step 5r.)* **Short idle grace.** An idle daemon exits after a
-  short grace — a named constant of about 30-60 s, overridable by the
-  `daemon-idle-timeout` setting — instead of the 1-hour timeout, so a script
-  running several `lw` commands in a row does not pay a cold start for each.
-  **Persisted background results.** Each background result is written to the
-  cache atomically with a timestamp and the fingerprint of its inputs (the
-  search path, compiler modification times, the project files — extending
-  the CLI's existing tool-scan freshness); a part interrupted (stop, idle
-  exit, maximum duration) is simply not written. On the next start the daemon
-  reuses each cached result whose inputs are unchanged and reruns the rest.
+- *(Planned, step 5r.)* **Warm restarts.** A script running several `lw`
+  commands in a row pays one cold start, and a restarted daemon reuses what
+  an earlier one already worked out:
+  - **Idle grace.** The default of the idle timeout above is the named
+    constant `IDLE_GRACE_SECONDS` = **45 seconds**, defined once (the
+    runtime's settings code; every other default refers to it). It replaces
+    the former 1-hour default; it is not an extra phase before or after the
+    idle timeout. The `daemon-idle-timeout` setting still overrides it
+    (e.g. `1h`); an invalid value falls back to the grace. An attached
+    editor is unaffected: its connection and keepalive keep the daemon
+    alive, so only the gap after the last client goes away shrinks.
+  - **Persisted background results.** In step 5r the only background result
+    is **tool detection**; scans, the `compile_commands.json` refresh and
+    housekeeping are not daemon background work yet, and each defines its
+    own unit and fingerprint when it becomes one. Tool detection is persisted
+    in the machine-level tool cache `tools.json` (§16.43) — never in
+    `loomworks.cache.json`, which keeps no tool results and whose entries are
+    the source of build directories for deletion. The unit is the **module
+    type**: each type's result is written with a timestamp and the
+    fingerprint of its inputs (§16.43: the `lw` identity including its
+    `lw_version`, the normalized search path, `PATHEXT`, the platform, the
+    module id and module interface version, and the modification time of
+    each search-path directory), so a retired daemon's results are never
+    reused by a daemon of another version.
+  - **Written per type, atomically, on completion.** A module type's result
+    is written as soon as its detection finishes, to a uniquely named
+    temporary file renamed over `tools.json` (§16.43). An **interrupted
+    part** is a module type whose detection had not finished when the work
+    ended — the daemon stopped (`lw daemon stop`, a retirement, the root
+    removed, the lock lost) or the work was abandoned at the maximum
+    duration above — and it is not written; types that finished before stay
+    written. (Idle exit never interrupts background work: the daemon is not
+    idle while background work runs.) A type that finishes after its work
+    was abandoned is a complete result and may still be written, as above.
+  - **Reuse on start.** On the next load the daemon reuses each module
+    type's cached result whose fingerprint matches the current inputs and
+    detects only the other types; a load whose types all match runs no
+    detection, so no background work follows it. There is no time-to-live: a
+    fingerprint mismatch reruns only that type, and `lw tools` rescans every
+    type (§16.43).
+  - **Limits.** Several writers (daemons of other workspaces, in-process
+    `lw` commands) share `tools.json`; two that write at the same time can
+    lose one of the updates, which costs only a later re-detection of that
+    type. On Windows a rename blocked by another process (a reader, an
+    antivirus scan) loses only that cache write. Neither ever leaves a torn
+    `tools.json`.
 - **Root removed.** On each heartbeat the daemon checks its workspace root; if
   it is gone, it cancels running tasks and exits.
 - **Lost lock** — §19.2.
@@ -3062,13 +3100,16 @@ runtime is deferred until that module is actively developed.
      transport and lifecycle with the relay's `--retiring` flag (§19.10 "A
      named retiring daemon") *(done)*, G2 the incompatible-daemon policy over the
      relay *(done)*.
-   - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
-     the short idle grace (a named constant of about 30-60 s, overridable);
-     background results written atomically to the cache with a timestamp and
-     their inputs' fingerprint (which includes the daemon's `lw_version`, so
-     results of a retired daemon of another version are not reused), an
-     interrupted part not written, and reused
-     on the next start when their inputs are unchanged.
+   - **5r — Warm restarts** (§19.11 "Warm restarts", §16.43), right after 5i
+     (ids are not in order), in parts: A — the spec *(done once merged)*;
+     B — the idle grace (`IDLE_GRACE_SECONDS` = 45 s as the default of
+     `daemon-idle-timeout`, the setting still overriding it); C — the
+     fingerprinted per-module-type tool cache in `tools.json` (fingerprint
+     includes the `lw` identity with its `lw_version`, so results of a retired
+     daemon of another version are not reused; each type written atomically
+     on completion, an interrupted type not written; reused on the next start
+     when its fingerprint matches; the same check in the in-process CLI);
+     D *(optional)* — `lw daemon status` shows the idle deadline.
    - **5j–5o — Editor consumers move to interfaces**, each step landing its
      interfaces with their schemas and transcripts: `view.Header/1` and
      `view.ProjectsIndex/1` (5j); the editor's operations as calls,
