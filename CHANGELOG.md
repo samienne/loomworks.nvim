@@ -265,7 +265,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - Experimental: with `runtime-mode daemon`, every workspace command keeps the
   workspace daemon running (it only answers status requests for now; nothing
   runs through it yet). `--no-daemon`, `LOOMWORKS_NO_DAEMON=1` and `CI=true`
-  never start it; it exits after `daemon-idle-timeout` (default 1h) without
+  never start it; it exits after `daemon-idle-timeout` (default 45s) without
   clients, or when the workspace is removed. Kills and forced unlocks are now
   recorded in the workspace's runtime log, `.nvim/loomworks.daemon.log`
   (`lw daemon status` names it). (#107, #121)
