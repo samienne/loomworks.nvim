@@ -420,7 +420,13 @@ end
 ---   * the exit status is reported only for a relay that exits before the
 ---     editor received `welcome` (and that the editor did not end itself);
 ---     after `welcome` any exit or EOF is a drop of the connection. The exit
----     and the EOF on standard output arrive in either order.
+---     and the EOF on standard output arrive in either order: once it exited,
+---     its remaining EOFs are waited for EOF_GRACE_MS; once its standard
+---     output ended before `welcome`, its exit is waited for EXIT_WAIT_MS,
+---     then it is an internal error and the relay is ended;
+---   * the KILL_MS timer is unref'd: at editor quit it never fires (on
+---     Windows the libuv job object ends the relay; on POSIX a relay that
+---     ignores EOF is orphaned — accepted);
 ---   * standard error is kept: its `lw: …` line is the Runtime line's detail,
 ---     and a status-14 relay's last line `retiring <pid>:<start_time>`
 ---     (§19.10 "Retiring-instance line") names the instance for `--retiring`.
@@ -441,6 +447,11 @@ RC.KILL_MS = relay_env_ms("LW_TEST_RELAY_KILL_MS") or 5000
 --- How long, once the relay exited, its remaining pipe EOFs are waited for
 --- before the outcome is reported anyway (the daemon never holds them).
 RC.EOF_GRACE_MS = 1000
+--- How long, once a relay's standard output reached EOF before `welcome`, its
+--- exit is waited for (spec §19.16 "The relay process": about 5 s). A relay
+--- still running then is an internal error (no status: the "protocol" case
+--- of the exit-before-`welcome` table) and is ended (Relay:close).
+RC.EXIT_WAIT_MS = relay_env_ms("LW_TEST_RELAY_EXIT_WAIT_MS") or 5000
 --- How many standard-error lines are kept.
 RC.STDERR_LINES = 50
 
@@ -505,6 +516,9 @@ end
 --- @field ended boolean|nil the editor ended it (closed its standard input): its exit is not mapped
 --- @field done boolean|nil the outcome was reported (welcome, or the exit before it)
 --- @field conn loomworks.daemon.Conn|nil the connection over it
+--- @field kill_ms integer|nil replaces KILL_MS
+--- @field _kill_timer uv.uv_timer_t|nil the KILL_MS backstop (unref'd), once ended
+--- @field _exit_wait uv.uv_timer_t|nil the EXIT_WAIT_MS bound (unref'd), once standard output ended before `welcome`
 local Relay = {}
 Relay.__index = Relay
 
@@ -573,13 +587,15 @@ end
 ---   on_message  fun(msg) broadcasts after `welcome` (from a libuv callback)
 ---   on_close    fun(conn) once the established connection closes (either side)
 ---   kill_ms     replaces KILL_MS
+---   exit_wait_ms replaces EXIT_WAIT_MS
 ---
 --- `cb(conn|nil, err, exit)` is called at most once, from a libuv callback:
 --- with the connection once `welcome` arrived (`conn.relay` is the relay,
 --- `conn.challenge` = `welcome.daemon`, or {} for a `welcome` without `via`);
 --- or nil + "exit" + loomworks.daemon.RelayExit when the relay exited before
---- `welcome`; or nil + "protocol" + RelayExit when it sent something else
---- first (the relay is ended). Never for a relay the editor ended itself.
+--- `welcome`; or nil + "protocol" + RelayExit (no `code`) when it sent
+--- something else first, or when its standard output ended and it had not
+--- exited EXIT_WAIT_MS later (the relay is ended). Never for a relay the editor ended itself.
 --- @param opts table
 --- @param cb fun(conn: loomworks.daemon.Conn|nil, err: string|nil, exit: loomworks.daemon.RelayExit|nil)
 --- @return loomworks.daemon.RelayProc|nil, string|nil
@@ -621,11 +637,30 @@ function RC.connect(opts, cb)
         return { code = r.code, line = RC.detail_line(r.lines), retiring = RC.retiring_instance(r.lines), form = r.form }
     end
     -- Before `welcome`: report the exit once the status is known and the
-    -- output has ended (in either order; the remaining EOFs only briefly).
+    -- output has ended (in either order; the remaining EOFs only briefly,
+    -- EOF_GRACE_MS; the exit after the EOF on standard output, EXIT_WAIT_MS).
     local grace
     local function settle()
         if reported or r.welcomed then return end
-        if r.code == nil then return end
+        if r.code == nil then
+            if out_eof and not r._exit_wait then
+                local t = uv.new_timer()
+                r._exit_wait = t
+                local ms = opts.exit_wait_ms or RC.EXIT_WAIT_MS
+                t:start(ms, 0, function()
+                    close_handle(t)
+                    if reported or r.welcomed or r.code ~= nil then return end
+                    local info = exit_info()
+                    info.code = nil
+                    info.line = string.format("the relay closed its standard output but had not exited %g s later",
+                        ms / 1000)
+                    report(nil, "protocol", info)
+                    r:close()
+                end)
+                pcall(function() t:unref() end)
+            end
+            return
+        end
         if out_eof and err_eof then return report(nil, "exit", exit_info()) end
         if not grace then
             grace = uv.new_timer()
@@ -671,6 +706,7 @@ function RC.connect(opts, cb)
     }, function(code, signal)
         r.code = exit_status(code, signal)
         if r._kill_timer then close_handle(r._kill_timer) end
+        if r._exit_wait then close_handle(r._exit_wait) end
         close_handle(r.proc)
         if r.welcomed then
             -- After `welcome` any exit is a drop.

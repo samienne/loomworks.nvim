@@ -287,18 +287,107 @@ describe("binary.channel: the observer's background check", function()
         assert.truthy(obs.channel_note:find("is installed", 1, true), tostring(obs.channel_note))
     end)
 
-    it("an explicit connect during a check is satisfied by it: the next tick runs no second query", function()
+    it("an explicit connect during a check re-runs it once that check ends; a plain tick does not", function()
         obs = attach()
         assert.equals(1, #queries)
         obs:start(true) -- in flight: remembered, not run
         assert.equals(1, #queries)
         Q(query_res("9.9.9-beta.1", sha("9")))
         assert.equals("9.9.9-beta.1", channel.load({ data = data }).accepted.version)
+        assert.is_true(vim.wait(2000, function() return #queries == 2 end, 10))
+        Q(query_res("9.9.9-beta.1", sha("9")))
+        -- Done: neither a plain start nor a tick queries again before it is due.
         obs:start(false)
-        assert.equals(1, #queries)
+        vim.wait(100)
+        assert.equals(2, #queries)
         -- A later explicit connect still checks again.
         obs:start(true)
+        assert.equals(3, #queries)
+    end)
+
+    it("a check that ends with no explicit connect pending runs no second query", function()
+        obs = attach()
+        Q(query_res("9.9.9-beta.1", sha("9")))
+        vim.wait(100)
+        obs:start(false)
+        assert.equals(1, #queries)
+    end)
+
+    it("a low-rate tick weighs it in a long session: the undecided retry, then the daily re-check", function()
+        local now, decided = 1000000, false
+        local managed_sel = { path = "/m/lw", source = "managed", label = "plugin-managed lw", candidates = {} }
+        obs = attach({
+            channel_tick_ms = 20,
+            now = function() return now end,
+            resolve = function()
+                if decided then return "/m/lw", "managed", managed_sel end
+                return "/p/lw", "path", { path = "/p/lw", source = "path", probe = "/p/lw", candidates = {} }
+            end,
+            run_probe = function() end, -- never answers here
+        })
+        assert.is_not_nil(obs._channel_timer)
+        assert.equals(0, #queries)
+        -- Decided, but the undecided retry (CHANNEL_RETRY_S) is not up yet.
+        decided = true
+        vim.wait(100)
+        assert.equals(0, #queries)
+        now = now + observer.CHANNEL_RETRY_S
+        assert.is_true(vim.wait(2000, function() return #queries == 1 end, 10))
+        Q(query_res("9.9.9-beta.1", sha("9")))
+        -- Not due again until a day later.
+        now = now + channel.INTERVAL_S - 10
+        vim.wait(100)
+        assert.equals(1, #queries)
+        now = now + 20
+        assert.is_true(vim.wait(2000, function() return #queries == 2 end, 10))
+        Q(query_res("9.9.9-beta.1", sha("9")))
+        -- Stopped: the timer is gone and nothing is weighed any more.
+        local t = obs._channel_timer
+        obs:stop()
+        assert.is_nil(obs._channel_timer)
+        assert.is_true(t:is_closing())
+        now = now + 2 * channel.INTERVAL_S
+        vim.wait(100)
         assert.equals(2, #queries)
+        obs = nil
+    end)
+
+    it("a probe that decides the selection weighs the channel at once, not after the retry", function()
+        local decided, P = false, nil
+        local managed_sel = { path = "/m/lw", source = "managed", label = "plugin-managed lw", candidates = {} }
+        obs = attach({
+            resolve = function()
+                if decided then return "/m/lw", "managed", managed_sel end
+                return "/p/lw", "path", { path = "/p/lw", source = "path", probe = "/p/lw", candidates = {} }
+            end,
+            run_probe = function(_, _, cb) P = cb end,
+        })
+        assert.equals(0, #queries)
+        assert.is_not_nil(P)
+        decided = true
+        P({ ok = true })
+        assert.equals(1, #queries)
+    end)
+
+    it("a download that ends weighs the channel again", function()
+        local decided, D = false, nil
+        local want = { sha256 = sha("7"), version = "0.1.44-beta.2", asset = ASSET }
+        local managed_sel = { path = "/m/lw", source = "managed", label = "plugin-managed lw", candidates = {} }
+        obs = attach({
+            resolve = function()
+                if decided then return "/m/lw", "managed", managed_sel end
+                return nil, nil, { download = want, candidates = {} }
+            end,
+            fetch = function(w, _, cb)
+                fetched[#fetched + 1] = w
+                if w == want then D = cb else cb("/m/" .. w.sha256 .. "/lw") end
+            end,
+        })
+        assert.equals(0, #queries)
+        assert.is_not_nil(D)
+        decided = true
+        D("/m/" .. want.sha256 .. "/lw")
+        assert.equals(1, #queries)
     end)
 
     it("an lw without the query command keeps the pin: one note, no download, not retried until due", function()

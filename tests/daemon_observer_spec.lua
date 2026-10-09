@@ -442,7 +442,9 @@ describe("the observer (§19.16)", function()
         assert.same({ "ordinary" }, fr.spawns)
         local ro = fr.relays[1].ropts
         assert.same({ "lw" }, ro.argv)
-        assert.equals(root, ro.root)
+        -- The workspace's root (its canonical form: on a Windows runner the
+        -- temp dir may be an 8.3 short path such as RUNNER~1).
+        assert.equals(ws.root, ro.root)
         assert.equals("editor", ro.client)
         assert.equals("observer", ro.role)
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())

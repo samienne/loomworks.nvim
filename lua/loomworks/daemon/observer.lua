@@ -71,6 +71,10 @@ M.KEEPALIVE_MS = env_ms("LW_TEST_DAEMON_KEEPALIVE_MS") or 30000
 --- How often a busy incompatible daemon is re-checked (spec §19.16
 --- "Retiring an incompatible daemon": about every 30 s).
 M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
+--- How often the `binary.channel` check is weighed in the background (spec
+--- §19.16 "Channel upgrades"): a weighing runs no process, it only decides
+--- whether a check is due (CHANNEL_RETRY_S, the daily INTERVAL_S).
+M.CHANNEL_TICK_MS = env_ms("LW_TEST_DAEMON_CHANNEL_TICK_MS") or 60000
 
 --- @class loomworks.daemon.Observer
 --- @field ws loomworks.Workspace
@@ -104,6 +108,8 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @field selection loomworks.provision.Selection|nil the last host-binary selection (spec §19.16 "Host binary"), made when it launches
 --- @field _keepalive userdata|nil the keepalive ping timer
 --- @field _retire_timer userdata|nil the busy incompatible daemon's re-check timer
+--- @field _channel_timer userdata|nil the `binary.channel` check's weighing timer (unref'd; stopped on stop)
+--- @field _channel_undecided boolean|nil the last weighing found the selection undecided (CHANNEL_RETRY_S)
 --- @field _retired_note boolean|nil the connection is being closed because the daemon retires
 --- @field _retire loomworks.daemon.RetireWait|nil an incompatible daemon weighed for a retirement (step 5h.5): its connection is the observed one (older schemas only) or held, unobserved, while the selected binary is probed or while the daemon is busy
 --- @field incompat_note string|nil the observed daemon is incompatible (older schemas): what the editor does about it, on the Runtime line
@@ -112,7 +118,7 @@ M.RETIRE_CHECK_MS = env_ms("LW_TEST_DAEMON_RETIRE_CHECK_MS") or 30000
 --- @field channel_note string|nil the `binary.channel` check's note (step 5h.5: an accepted, rejected or failed check, or why the channel has no effect), shown on the Runtime line
 --- @field _channel_token table|nil the channel check (query or download) in flight (single flight; a late callback after a stop is ignored)
 --- @field _channel_next integer|nil when (epoch s) the next background channel check is weighed
---- @field _channel_force boolean|nil an explicit connect asked for a channel check that could not run yet
+--- @field _channel_force boolean|nil an explicit connect asked for a channel check that could not run yet (the selection undecided, or a check in flight: it runs right after that one)
 --- @field opts table the attach options (test seams, see `attach`)
 --- @field keepalive_ms integer keepalive ping interval
 --- @field warning string|nil an invalid runtime-mode value that was ignored (shown on the Runtime line)
@@ -198,6 +204,7 @@ end
 ---   now         fun() → epoch seconds (the channel interval)
 ---   notify      fun(msg, level) (vim.notify: the one notice of a retirement)
 ---   keepalive_ms, retire_check_ms
+---   channel_tick_ms  replaces CHANNEL_TICK_MS
 --- @param ws loomworks.Workspace
 --- @param opts? table
 --- @return loomworks.daemon.Observer|nil
@@ -217,6 +224,7 @@ function M.attach(ws, opts)
         _tasks = {}, _order = {},
         keepalive_ms = opts.keepalive_ms or M.KEEPALIVE_MS,
         retire_check_ms = opts.retire_check_ms or M.RETIRE_CHECK_MS,
+        channel_tick_ms = opts.channel_tick_ms or M.CHANNEL_TICK_MS,
     }, Observer)
     ws._daemon_observer = self
     if sel.warning then self.warning = sel.warning end
@@ -259,8 +267,10 @@ function Observer:start(explicit)
         if self._downloading then self:_cancel_download("restarted by :LoomworksDaemon connect") end
     end
     -- The binary.channel check runs in the background (step 5h.5): on load
-    -- when due, and on every explicit connect.
+    -- when due, on every explicit connect, and on a low-rate tick for a long
+    -- session (the undecided retry, the daily re-check).
     self:_channel_check(explicit)
+    self:_start_channel_timer()
     if self.conn or self._retire then return end
     if self._downloading or self._probing then
         if explicit then self._want = { form = "ordinary" } end
@@ -401,6 +411,8 @@ function Observer:_probe(path)
         self._probe_token, self._probing = nil, nil
         self:_stop_timer("_probe_backstop")
         if self.state == "stopped" then return end
+        -- The verdict may have decided the selection: weigh the channel again.
+        self:_channel_recheck()
         if self.conn or self._relay or self._retire then return end
         self:_spawn(self._want or { form = "ordinary" }, true)
     end
@@ -437,6 +449,8 @@ function Observer:_download(sel)
             return self:_set("no-binary", self._download_note)
         end
         self:_prune(want)
+        -- The selection now reaches the managed lw: weigh the channel again.
+        self:_channel_recheck()
         if self.conn or self._relay or self._retire then return end
         self:_spawn(self._want or { form = "ordinary" })
     end)
@@ -490,6 +504,27 @@ end
 --- PATH still to be probed). Weighing runs no process.
 M.CHANNEL_RETRY_S = 60
 
+--- Weigh the channel check every `channel_tick_ms` while the observer
+--- lives (idempotent). Unref'd: it never keeps the editor alive.
+function Observer:_start_channel_timer()
+    if self._channel_timer or self.state == "stopped" then return end
+    local t = uv.new_timer()
+    self._channel_timer = t
+    t:start(self.channel_tick_ms, self.channel_tick_ms, vim.schedule_wrap(function()
+        if self._channel_timer ~= t then return end
+        pcall(self._channel_check, self, false)
+    end))
+    pcall(function() t:unref() end)
+end
+
+--- Weigh the channel check again now that a probe or a download ended: a
+--- selection that was undecided (CHANNEL_RETRY_S) may be decided by it, so
+--- that retry's wait is not kept.
+function Observer:_channel_recheck()
+    if self._channel_undecided then self._channel_next = nil end
+    pcall(self._channel_check, self, false)
+end
+
 --- Set the channel check's note; the status page re-renders.
 --- @param note string|nil
 function Observer:_set_channel_note(note)
@@ -500,8 +535,10 @@ end
 
 --- The `binary.channel` check (spec §19.16 "Channel upgrades", step 5h.5):
 --- in the background, at most once a day (channel.json's last check) and on
---- every explicit connect, when the setting applies and the selection reaches
---- the managed lw. The pinned managed lw is made present first (the same
+--- every explicit connect (one that arrives while a check runs re-runs it
+--- once that check ends), when the setting applies and the selection reaches
+--- the managed lw. Weighed on start, on a low-rate tick (`_channel_timer`),
+--- and after a probe or a download ends. The pinned managed lw is made present first (the same
 --- download as a launch's, shared per hash), then it runs `release query`
 --- (loomworks.provision.channel.run); a newer release that passes the check is
 --- downloaded and only then recorded as accepted. A running daemon is never
@@ -515,7 +552,7 @@ function Observer:_channel_check(explicit)
     local binsel = require("loomworks.provision.select")
     local setting = binsel.check_setting(self.opts.binary)
     if not chan.applies(setting) then
-        self._channel_force = nil
+        self._channel_force, self._channel_undecided = nil, nil
         return self:_set_channel_note(nil)
     end
     local now = (self.opts.now or os.time)()
@@ -526,8 +563,10 @@ function Observer:_channel_check(explicit)
         -- An lw the user installed or named is selected (the channel has no
         -- effect, said once), or the selection is still undecided.
         self._channel_next = now + M.CHANNEL_RETRY_S
+        self._channel_undecided = true
         return self:_set_channel_note(type(sel) == "table" and sel.channel_note or nil)
     end
+    self._channel_undecided = nil
     local data = self.opts.data
     local rec = chan.for_channel((self.opts.channel_load or chan.load)({ data = data }), setting.channel)
     if not self._channel_force and not chan.due(rec, setting.channel, now) then
@@ -552,13 +591,17 @@ function Observer:_channel_check(explicit)
             pinned_version = pin.version }
     end
     local function save(out)
-        -- Every completion ends here. This check satisfies an explicit
-        -- connect that arrived while it ran: no second query next tick.
-        self._channel_force = nil
+        -- Every completion ends here (the token already cleared). An
+        -- explicit connect that arrived while this check ran set
+        -- `_channel_force` again (this check cleared it when it began): it
+        -- gets a check of its own, run right after this one.
         local nrec = chan.record(rec, out, (self.opts.now or os.time)())
         pcall(self.opts.channel_save or chan.save, nrec, { data = data })
         self._channel_next = nrec.checked + chan.INTERVAL_S
         self:_set_channel_note(out.note)
+        if self._channel_force then
+            vim.schedule(function() pcall(self._channel_check, self, false) end)
+        end
     end
     -- 1. The pinned managed lw, present and verified.
     fetch(pin, fopts, function(pinned, perr)
@@ -1501,6 +1544,7 @@ function Observer:stop()
     self:_stop_timer("_probe_backstop")
     if self._downloading then self:_cancel_download("the workspace was unloaded") end
     self:_stop_timer("_keepalive")
+    self:_stop_timer("_channel_timer")
     self:_end_relay()
     self._want = nil
     self:_drop_retire()

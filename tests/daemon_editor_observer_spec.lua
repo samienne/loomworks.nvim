@@ -52,9 +52,13 @@ local function listed(root, env)
     local r = H.lw({ "daemon", "list", "--json" }, { env = env, cwd = root })
     assert.equals(0, r.code, r.stderr)
     local out = {}
-    local want = vim.fs.normalize(root):lower()
+    -- Compared in canonical form: the daemon lists its root resolved (long
+    -- names on Windows), while a test root may be an 8.3 short path (a
+    -- Windows runner's temp dir under RUNNER~1).
+    local function canon(p) return vim.fs.normalize(uv.fs_realpath(p) or p):lower() end
+    local want = canon(root)
     for _, d in ipairs(vim.json.decode(r.stdout).daemons) do
-        if type(d.root) == "string" and vim.fs.normalize(d.root):lower() == want then out[#out + 1] = d end
+        if type(d.root) == "string" and canon(d.root) == want then out[#out + 1] = d end
     end
     return out
 end

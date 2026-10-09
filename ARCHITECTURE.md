@@ -842,8 +842,13 @@ re-cut onto master step by step; this section is expanded as each step lands.
   version check, never retired), transport `client._agreed(welcome.daemon)`.
   No handshake timeout. The relay's `close` closes its stdin and only after
   `KILL_MS` (~5 s) plain-kills the relay pid, never `kill_tree` (on Windows
-  the daemon a relay launched is its child). Exit and stdout EOF arrive in
-  either order: the exit status (+ the `lw: ...` detail line and a parsed
+  the daemon a relay launched is its child). The `KILL_MS` timer is unref'd:
+  at editor quit it never fires (Windows: libuv's job object ends the relay;
+  POSIX: a relay ignoring EOF is orphaned — accepted). Exit and stdout EOF
+  arrive in either order (after the exit, the EOFs are awaited
+  `EOF_GRACE_MS` ~1 s; after a stdout EOF before `welcome`, the exit is
+  awaited `EXIT_WAIT_MS` ~5 s, then it is reported as `"protocol"` (no
+  status: internal error, wait) and the relay is closed): the exit status (+ the `lw: ...` detail line and a parsed
   `retiring` line) is reported only before `welcome` and never for a relay
   the editor ended (`_on_relay_exit`: 10/11 -> one no-launch relay, 14 ->
   `--retiring` or no-launch relay and a retirement episode, 16 -> the
@@ -919,8 +924,11 @@ re-cut onto master step by step; this section is expanded as each step lands.
   accepted release), `due` (once a day), `accepted` (re-checks the stored
   descriptor on every read)). `select.resolve` passes the setting to
   `managed.find`, and sets `channel_note` when a PATH or explicit lw is
-  selected. `Observer:_channel_check(explicit)` runs from `start` and every
-  watch tick (cheap until due; explicit connect forces it): when the setting
+  selected. `Observer:_channel_check(explicit)` runs from `start`, an
+  unref'd `_channel_timer` (`CHANNEL_TICK_MS` 60 s, stopped by `stop`) and
+  `_channel_recheck` after a probe or download ends (cheap until due; the
+  undecided retry `CHANNEL_RETRY_S`; explicit connect forces it, and one
+  arriving mid-check re-runs it after that check): when the setting
   applies (`channel.applies`: a valid channel, `download ~= false`, no
   `binary.source`) and the selection is the managed lw, it `fetch.ensure`s the
   pinned binary, runs `channel.run` (`<pinned> release query --channel <c>

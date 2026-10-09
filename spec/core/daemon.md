@@ -1297,9 +1297,11 @@ and exits with:
 14 writes, after its `lw: ...` line, exactly one more standard-error line,
 the last it writes: `retiring <pid>:<start_time>` — the literal word
 `retiring`, one space, then the retiring daemon's instance in the form
-`--retiring` takes (§19.10 "A named retiring daemon"): its handle `pid` and
-`start_time` (§19.5) as unsigned decimal integers joined by `:`, with no
-other characters, ending in the platform's newline. It names the daemon whose
+`--retiring` and `--skip-instance` take (§19.10 "A named retiring daemon"):
+exactly its instance id (§19.5) — the handle's `pid` in decimal, a colon,
+and its `start_time` verbatim (an opaque string that may itself contain
+colons, e.g. `win:<creation time>`), as in `retiring 1234:win:5678` — with
+no other characters, ending in the platform's newline. It names the daemon whose
 runtime lock the relay waited on. A relay that does not know both values
 (a handle without `start_time`) writes no such line. No other status writes
 it, and nothing else on a relay's standard error starts with `retiring `.
@@ -2232,7 +2234,11 @@ in-process ("End state").
     so a tree kill would take down the shared daemon. The editor ends a
     relay by **closing its standard input** (the relay exits 0, §19.10);
     only when the relay has not exited about 5 s later does it kill the
-    relay's own process id — a plain kill, never its tree.
+    relay's own process id — a plain kill, never its tree. That backstop
+    timer does not keep the editor alive: at editor quit it never fires. On
+    Windows the editor's process job then ends a relay still running; on
+    POSIX a relay that ignores EOF on its standard input is orphaned. This
+    is accepted (a relay exits on EOF; the backstop is for a hung one).
   - An older pin's attached `--stdio` runtime (a `welcome` without `via`,
     §19.10 "Compatibility") holds the workspace's runtime lock; it is ended
     the same way, by EOF on its standard input, never by a tree kill, so it
@@ -2247,7 +2253,16 @@ in-process ("End state").
   - The relay's exit and the EOF on its standard output arrive in either
     order. The exit status is mapped ("Exit before `welcome`" below) only
     when the relay exits before the editor has received `welcome`; after
-    `welcome`, any exit or EOF of the relay is a **drop** of the connection.
+    `welcome`, any exit or EOF of the relay is a **drop** of the connection
+    (the editor ends the relay as above). Before `welcome`, once the relay
+    has exited the editor waits about 1 s for the EOFs still missing, then
+    maps the status anyway. Once its standard output reached EOF the editor
+    waits about 5 s for the relay's exit; a relay still running then is an
+    internal error with no exit status — the editor waits with the
+    internal-error note, as the "Exit before `welcome`" table's internal
+    errors do (a relay that sends anything other than `welcome` first is
+    treated the same) — and the editor ends it as above (closing its
+    standard input, then the plain kill).
     A relay the editor ended itself (workspace swap, shutdown, a skip relay
     replaced) is not mapped.
   - The relay's last standard-error line is kept for the Runtime line's
@@ -2325,7 +2340,8 @@ in-process ("End state").
     that never launches: a retiring relay naming the retiring daemon, with
     the instance the exited relay's standard error named (§19.10
     "Retiring-instance line": the last line that is exactly `retiring
-    <pid>:<start_time>`, both decimal integers), passed as `--retiring
+    <pid>:<start_time>`, the value being the daemon's instance id, §19.5 —
+    e.g. `retiring 1234:win:5678`), passed as `--retiring
     <pid>:<start_time>`. Only when that line is missing or unparseable (a
     relay from an older pin, or a daemon without `start_time`) is it a
     plain no-launch relay. A status 14 also starts a retirement episode
