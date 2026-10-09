@@ -54,6 +54,8 @@ function M.env(extra)
     -- whose 1 s budget a healthy daemon can miss there: the command then
     -- runs without it and prints a line the parity tests do not expect.
     vars.LW_TEST_DAEMON_STEP_MS = "30000"
+    -- ... and a routed operation's own connect + handshake (5 s).
+    vars.LW_TEST_DAEMON_CONNECT_MS = "30000"
     if M.is_win then vars.APPDATA = cfg else vars.XDG_CONFIG_HOME = cfg end
     for k, v in pairs(extra or {}) do vars[k] = v or nil end
     return { vars = vars, data = data, config = cfg }

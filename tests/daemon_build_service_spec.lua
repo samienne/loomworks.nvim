@@ -20,6 +20,10 @@ local H = require("tests.daemon_helpers")
 local uv = vim.uv or vim.loop
 
 client.TIMEOUT_MS = 30000
+-- `lw status`'s running-task query (loomworks.daemon.running, 1 s) asks this
+-- process's in-process daemon, which shares the loop: a loaded machine can
+-- stall it past that bound ("running tasks: unavailable (timeout)").
+require("loomworks.daemon.running").TIMEOUT_MS = 30000
 
 local function read(path)
     local f = io.open(path, "rb"); if not f then return nil end

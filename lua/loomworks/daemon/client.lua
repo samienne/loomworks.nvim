@@ -547,6 +547,10 @@ function Relay:close()
     if self.code ~= nil then return end
     local t = uv.new_timer()
     self._kill_timer = t
+    -- A timer counts from the loop's cached time, which is stale by however
+    -- long this (main-thread) caller ran since the loop last polled: without
+    -- this update the kill could come that much before KILL_MS.
+    pcall(uv.update_time)
     t:start(self.kill_ms or RC.KILL_MS, 0, function()
         close_handle(t)
         if self.code == nil and self.proc and not self.proc:is_closing() then

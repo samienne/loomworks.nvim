@@ -855,7 +855,12 @@ describe("the observer (§19.16)", function()
         assert.is_not_nil(obs._episode)
         vim.wait(300)
         assert.is_nil(obs.conn)
-        assert.equals(0, s.srv:observer_count())
+        -- The server counts a connection until it reads its close (and the
+        -- waiting relay's look at the retiring daemon, closed on its
+        -- `retiring` welcome): both come, with no observer left.
+        assert.is_true(vim.wait(5000, function() return s.srv:observer_count() == 0 end, 10),
+            "observers: " .. tostring(s.srv:observer_count()))
+        assert.is_nil(obs.conn)
         assert.equals(0, fr.launched)
         cli:close()
         assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))

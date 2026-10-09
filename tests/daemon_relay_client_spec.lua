@@ -61,6 +61,11 @@ describe("the editor's relay client: the relay process (§19.16)", function()
             return child ~= nil
         end, 20), "the fake relay did not start its child")
         extra_pids[#extra_pids + 1] = child
+        -- Block the loop a while first (as a slow condition check or a loaded
+        -- machine does): KILL_MS still counts from the close, not from the
+        -- loop's last poll (its cached time, which a timer counts from).
+        local block = now_ms()
+        while now_ms() - block < 600 do end
         local t0 = now_ms()
         r:close()
         assert.is_true(r.ended)

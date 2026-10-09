@@ -318,7 +318,21 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(10 * REAL_RETIRE_CHECK_MS, function() return s.srv.retiring end, 10),
             obs:runtime_line())
         cli:close()
-        assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
+        -- Idle now: it exits once the queued writes drained (at most
+        -- RETIRE_DRAIN_MS); room for a stalled loop on a loaded machine.
+        local exited = vim.wait(15000, function() return s.exited ~= nil end, 10)
+        local why
+        if not exited then
+            local conns = {}
+            for c in pairs(s.srv.conns) do
+                conns[#conns + 1] = { authed = c.authed, closed = c.closed, observer = c.observer,
+                    in_flight = c.in_flight }
+            end
+            why = "the retiring daemon did not exit: " .. vim.inspect({ busy = s.srv.busy,
+                stopped = s.srv.stopped, timer = s.srv._retire_timer ~= nil, conns = conns,
+                runtime = obs:runtime_line() })
+        end
+        assert.is_true(exited, why)
     end)
 
     it("(a') an idle incompatible daemon is retired, the successor launched once and observed", function()

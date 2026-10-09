@@ -7988,6 +7988,12 @@ function M._delegate_build(root, args, ensured, opts)
   return M._delegate("build", root, args, ensured, opts)
 end
 
+--- The routed operation's connect + handshake bound (`M._delegate`).
+--- `LW_TEST_DAEMON_CONNECT_MS` lengthens it for the suite, which runs every
+--- spec file at once: a healthy daemon can miss 5 s there, and the command
+--- then runs without it (as `LW_TEST_DAEMON_STEP_MS` does an ensure step).
+M.DELEGATE_CONNECT_MS = tonumber(os.getenv("LW_TEST_DAEMON_CONNECT_MS") or "") or 5000
+
 --- Route `lw build`, the batch `lw test`, the preparation of `lw run` or `lw
 --- clean` to the workspace daemon (spec §19.15, §19.19 steps 3, 5 and 5c). A routed run's
 --- program then runs here, after the connection was closed
@@ -8093,7 +8099,8 @@ function M._delegate(op, root, args, ensured, opts)
     end
   end
   local session = opts.session or client.session
-  local conn, cerr = session(endpoint, { timeout_ms = opts.connect_ms or 5000, on_message = on_message })
+  local conn, cerr = session(endpoint, { timeout_ms = opts.connect_ms or M.DELEGATE_CONNECT_MS,
+    on_message = on_message })
   if not conn then
     -- Never an in-process fallback once an attached runtime lost its lock.
     if lost() then return lost_lock() end
