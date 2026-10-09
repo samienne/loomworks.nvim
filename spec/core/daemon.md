@@ -1128,8 +1128,8 @@ and the gated `--private` is implemented, `daemon/relay.lua`, and so is its
 the idle rule with its background-work cap (§19.11 "Idle exit"), and the
 CLI's two-stage Ctrl-C (§19.15 "Task ownership"), and the editor's use of it
 (§19.16 "Through the relay", `daemon/client.lua` `relay`) with the `--retiring`
-flag ("A named retiring daemon" below), step 5i PR G1; the editor's
-incompatible-daemon policy over it is PR G2, planned.)* Every client process is a
+flag ("A named retiring daemon" below), step 5i PR G1, and the editor's
+incompatible-daemon policy over it (`--skip-instance`), PR G2.)* Every client process is a
 **connection** to the one shared daemon of its workspace, never a daemon:
 
 - **Connect or start.** Every CLI command that uses the daemon — the
@@ -2175,7 +2175,7 @@ lifecycle ("Through the relay" except "Skipping an incompatible daemon",
 `--retiring`) PR G1, *done* (`daemon/client.lua` `relay`, `daemon/observer.lua`
 `_spawn` / `_on_relay`); the incompatible-daemon policy over the relay
 ("Skipping an incompatible daemon", retirement only over `via = "relay"`)
-PR G2, planned. From G1 the observer no longer watches the handle or
+PR G2, *done* (`daemon/observer.lua` `_skip`, `_weigh_retire`). From G1 the observer no longer watches the handle or
 launches a daemon itself ("Step 4" below marks what G1 superseded). The editor-owned child daemon of the
 earlier plan (step 5p) is dropped.*
 
@@ -2200,7 +2200,7 @@ process (the earlier design D8, superseded), nor a child daemon of its own
 (the earlier step 5p, dropped).
 
 **Through the relay.** *(Step 5i PR G1; "Skipping an incompatible
-daemon" PR G2, planned.)* The editor spawns the relay instead of reading the handle
+daemon" PR G2.)* The editor spawns the relay instead of reading the handle
 and the machine key itself; "Launch" and "Connect" below then happen inside
 the relay (§19.8 "Relay handshake", §19.10 "Connections"). Before each spawn
 it selects the host binary ("Host binary" below, with its pre-launch probe;
@@ -2358,10 +2358,8 @@ in-process ("End state").
     the successor — at most **one per retirement episode**. A further 16 in
     the same episode is a note and a wait. The episode, and its count, end
     at the next `welcome` and on `:LoomworksDaemon connect`.
-- **Skipping an incompatible daemon.** *(Planned, step 5i PR G2. Until then,
-  from PR G1, the editor closes the relay of an incompatible daemon it does
-  not observe and stays in-process until an explicit `:LoomworksDaemon
-  connect`.)* The editor learns that a daemon is
+- **Skipping an incompatible daemon.** *(Step 5i PR G2, `daemon/observer.lua`
+  `_skip`.)* The editor learns that a daemon is
   incompatible only from `welcome.daemon`, after the relay connected; a new
   relay of either form would connect straight back to it. So when the editor
   does not observe an incompatible daemon — "Incompatible daemon" below,
@@ -2756,8 +2754,7 @@ in-process path. In `in-process` mode nothing below happens.
     newer schemas, or, over transport 11, a missing root interface) the
     observer notes and does not observe, and does not connect to it again
     (from step 5i PR G2, through the relay it follows a successor with
-    `--no-launch --skip-instance`, "Skipping an incompatible daemon" above;
-    in PR G1 alone it stays in-process until an explicit connect).
+    `--no-launch --skip-instance`, "Skipping an incompatible daemon" above).
     It never restarts an incompatible daemon; it retires it only under
     "Retiring an incompatible daemon" above *(step 5h.5)*, which also says
     how long an older-schema daemon stays observed.
@@ -3054,7 +3051,7 @@ runtime is deferred until that module is actively developed.
      (§19.16 "Through the relay"): G0 its spec *(done)*, G1 the relay
      transport and lifecycle with the relay's `--retiring` flag (§19.10 "A
      named retiring daemon") *(done)*, G2 the incompatible-daemon policy over the
-     relay.
+     relay *(done)*.
    - **5r — Warm restarts** (§19.11), right after 5i (ids are not in order):
      the short idle grace (a named constant of about 30-60 s, overridable);
      background results written atomically to the cache with a timestamp and
