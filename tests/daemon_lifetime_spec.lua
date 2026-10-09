@@ -44,14 +44,29 @@ describe("runtime selection (§19.1)", function()
         assert.truthy(s.warning:find("LOOMWORKS_NO_DAEMON=yes", 1, true))
     end)
     it("parses the idle timeout", function()
-        assert.equals(3600, runtime.idle_seconds({}))
+        assert.equals(runtime.IDLE_GRACE_SECONDS, runtime.idle_seconds({}))
         assert.equals(90, runtime.parse_duration("90s"))
         assert.equals(1800, runtime.parse_duration("30m"))
         assert.equals(7200, runtime.parse_duration("2h"))
         assert.equals(45, runtime.parse_duration("45"))
         assert.is_nil(runtime.parse_duration("0"))
         assert.is_nil(runtime.parse_duration("soon"))
-        assert.equals(3600, runtime.idle_seconds({ ["daemon-idle-timeout"] = "nope" }))
+        assert.equals(runtime.IDLE_GRACE_SECONDS, runtime.idle_seconds({ ["daemon-idle-timeout"] = "nope" }))
+    end)
+    -- Step 5r (§19.11 "Warm restarts"): the idle grace is the default of the
+    -- idle timeout, defined once in the runtime module; the setting overrides it.
+    it("defaults the idle timeout to the idle grace, IDLE_GRACE_SECONDS = 45", function()
+        assert.equals(45, runtime.IDLE_GRACE_SECONDS)
+        assert.equals(45, runtime.idle_seconds({}))
+        assert.equals(45, runtime.idle_seconds(nil))
+        assert.equals(45, runtime.idle_seconds({ ["daemon-idle-timeout"] = "" }))
+        assert.equals(runtime.IDLE_GRACE_SECONDS, server_mod.IDLE_SECONDS)
+        assert.equals(45, server_mod.new(H.tmp(), {}).idle_seconds)
+    end)
+    it("an explicit daemon-idle-timeout overrides the idle grace", function()
+        assert.equals(3600, runtime.idle_seconds({ ["daemon-idle-timeout"] = "1h" }))
+        assert.equals(10, runtime.idle_seconds({ ["daemon-idle-timeout"] = "10s" }))
+        assert.equals(120, runtime.idle_seconds({ ["daemon-idle-timeout"] = 120 }))
     end)
 end)
 
@@ -104,6 +119,36 @@ describe("lifetime rules (§19.11, in-process server)", function()
     local function age_conns(ms)
         for conn in pairs(srv.conns) do conn.last_seen = uv.now() - ms end
     end
+
+    -- The idle grace by default: the lifetime check is called with the idle
+    -- clock set back (no 45 s wait); the tick never fires during the test.
+    it("with no idle setting, exits once idle for IDLE_GRACE_SECONDS, not before", function()
+        start({ tick_ms = NO_TICK })
+        assert.equals(runtime.IDLE_GRACE_SECONDS, srv.idle_seconds)
+        srv.idle_since = os.time() - (runtime.IDLE_GRACE_SECONDS - 15)
+        srv.last_request = srv.idle_since
+        srv:lifetime()
+        assert.is_nil(exited)
+        assert.is_false(srv.stopped and true or false)
+        srv.idle_since = os.time() - runtime.IDLE_GRACE_SECONDS
+        srv.last_request = srv.idle_since
+        srv:lifetime()
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+    end)
+
+    it("an explicit idle timeout overrides the grace in the lifetime check", function()
+        start({ tick_ms = NO_TICK, idle_seconds = runtime.idle_seconds({ ["daemon-idle-timeout"] = "1h" }) })
+        srv.idle_since = os.time() - runtime.IDLE_GRACE_SECONDS * 10
+        srv.last_request = srv.idle_since
+        srv:lifetime()
+        assert.is_nil(exited)
+        srv.idle_since = os.time() - 3600
+        srv.last_request = srv.idle_since
+        srv:lifetime()
+        assert.is_true(vim.wait(8000, function() return exited ~= nil end, 20))
+        assert.equals(0, exited)
+    end)
 
     it("drops a connection silent for three keepalive intervals", function()
         start({ keepalive_ms = 1000, tick_ms = NO_TICK })

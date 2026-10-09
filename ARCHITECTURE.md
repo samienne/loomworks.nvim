@@ -742,8 +742,8 @@ re-cut onto master step by step; this section is expanded as each step lands.
   `M._record_recovery`.
 - Lifetime (`Server:lifetime()`, every tick): connections silent for three
   keepalive intervals are dropped; with no authenticated client and no task
-  for `daemon-idle-timeout` (`runtime.idle_seconds`, default 1 h; from step
-  5r the idle grace `IDLE_GRACE_SECONDS` = 45 s, spec §19.11) the daemon
+  for `daemon-idle-timeout` (`runtime.idle_seconds`, default the idle grace
+  `runtime.IDLE_GRACE_SECONDS` = 45 s, spec §19.11; 1 h before step 5r) the daemon
   stops; a removed root stops it (checked before the lock, which went with
   the root; its own socket is then removed although R is gone).
 

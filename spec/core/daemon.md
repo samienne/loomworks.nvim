@@ -3103,7 +3103,8 @@ runtime is deferred until that module is actively developed.
    - **5r — Warm restarts** (§19.11 "Warm restarts", §16.43), right after 5i
      (ids are not in order), in parts: A — the spec *(done once merged)*;
      B — the idle grace (`IDLE_GRACE_SECONDS` = 45 s as the default of
-     `daemon-idle-timeout`, the setting still overriding it); C — the
+     `daemon-idle-timeout`, the setting still overriding it) *(done once
+     merged)*; C — the
      fingerprinted per-module-type tool cache in `tools.json` (fingerprint
      includes the `lw` identity with its `lw_version`, so results of a retired
      daemon of another version are not reused; each type written atomically
