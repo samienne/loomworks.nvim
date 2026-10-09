@@ -119,3 +119,73 @@ describe("build_lock release on interrupt (cli)", function()
         assert.equals(130, exit_code)
     end)
 end)
+
+-- A lockfile is created empty (exclusive create) and its record written right
+-- after: a reader between the two saw an empty body, which has no host and was
+-- classified as ANOTHER host's live lock — e.g. a `--no-launch` relay polling
+-- the runtime lock R while a daemon starts exited 13 ("the workspace daemon
+-- runs on another host (?, pid ?)") and the editor stopped following.
+describe("lock_record.read of a lockfile whose record is being written", function()
+    local lock_record = require("loomworks.lock_record")
+    local path, saved_sleep, saved_ms
+    before_each(function()
+        local d = vim.fn.tempname()
+        vim.fn.mkdir(d, "p")
+        path = d .. "/R.lock"
+        saved_sleep, saved_ms = lock_record._settle_sleep, lock_record.EMPTY_SETTLE_MS
+    end)
+    after_each(function()
+        lock_record._settle_sleep, lock_record.EMPTY_SETTLE_MS = saved_sleep, saved_ms
+    end)
+
+    local function write(body)
+        local f = assert(io.open(path, "wb")); f:write(body); f:close()
+    end
+
+    it("waits for the record of a fresh empty lockfile: this host's live holder, not a foreign one", function()
+        write("")
+        local rec = lock_record.new("daemon", { mode = "daemon" })
+        local waits = 0
+        -- The writer finishes while the reader waits.
+        lock_record._settle_sleep = function()
+            waits = waits + 1
+            if waits == 2 then write(vim.json.encode(rec)) end
+        end
+        local info = assert(lock_record.read(path, 30))
+        assert.is_true(waits >= 2)
+        assert.equals(rec.lock_nonce, info.lock_nonce)
+        assert.is_true(lock_record.same_host(info))
+        assert.equals("live", lock_record.classify(info))
+    end)
+
+    it("an empty lockfile that stays empty reads as {} after the bound", function()
+        write("")
+        lock_record.EMPTY_SETTLE_MS = 30
+        lock_record._settle_sleep = function() uv.sleep(1) end
+        local info = assert(lock_record.read(path, 30))
+        assert.is_nil(info.host)
+        assert.is_nil(info.pid)
+    end)
+
+    it("an old empty lockfile (its writer died) is not waited for", function()
+        write("")
+        uv.fs_utime(path, os.time() - 60, os.time() - 60)
+        lock_record._settle_sleep = function() error("waited for an old empty lockfile") end
+        local info = assert(lock_record.read(path, 30))
+        assert.is_nil(info.host)
+        assert.is_true(info.stale)
+    end)
+
+    it("a lockfile removed while it is waited for reads as absent", function()
+        write("")
+        lock_record._settle_sleep = function() os.remove(path) end
+        assert.is_nil(lock_record.read(path, 30))
+    end)
+
+    it("a legacy non-JSON body is not waited for", function()
+        write("pid 123")
+        lock_record._settle_sleep = function() error("waited for a non-empty body") end
+        local info = assert(lock_record.read(path, 30))
+        assert.is_nil(info.host)
+    end)
+end)

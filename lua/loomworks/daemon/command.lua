@@ -403,7 +403,7 @@ function M.start_attached(root, host, command)
 end
 
 --- Does `lw daemon run` name a standard-I/O form (`--stdio`, `--private`,
---- `--no-launch`, `--skip-instance`)? Like loomworks.daemon.relay.parse, only
+--- `--no-launch`, `--skip-instance`, `--retiring`)? Like loomworks.daemon.relay.parse, only
 --- the options before a `--` count. The predicate lives in
 --- loomworks.daemon.discover (stdio_form) so `lw daemon list` / `kill --all`
 --- classify a relay process exactly as this dispatch treats it.

@@ -85,7 +85,7 @@ function M.run_args(args)
 end
 
 --- Does `lw daemon run` name a standard-I/O form (`--stdio`, `--private`,
---- `--no-launch`, `--skip-instance`)? Like loomworks.daemon.relay.parse, only
+--- `--no-launch`, `--skip-instance`, `--retiring`)? Like loomworks.daemon.relay.parse, only
 --- the options before a `--` count, and the value of a value-taking option
 --- (`--root <dir>`, `--skip-instance <id>`) is skipped, never read as an
 --- option (a root named `--stdio` or `--` is a root). The one predicate both
@@ -99,7 +99,8 @@ function M.stdio_form(run_args)
         local a = run_args[i]
         if a == "--" then return false end
         if a == "--stdio" or a == "--private" or a == "--no-launch" or a == "--skip-instance"
-            or (type(a) == "string" and a:sub(1, 16) == "--skip-instance=") then
+            or a == "--retiring"
+            or (type(a) == "string" and (a:sub(1, 16) == "--skip-instance=" or a:sub(1, 11) == "--retiring=")) then
             return true
         end
         if a == "--root" then i = i + 1 end

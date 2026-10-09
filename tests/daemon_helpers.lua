@@ -54,6 +54,8 @@ function M.env(extra)
     -- whose 1 s budget a healthy daemon can miss there: the command then
     -- runs without it and prints a line the parity tests do not expect.
     vars.LW_TEST_DAEMON_STEP_MS = "30000"
+    -- ... and a routed operation's own connect + handshake (5 s).
+    vars.LW_TEST_DAEMON_CONNECT_MS = "30000"
     if M.is_win then vars.APPDATA = cfg else vars.XDG_CONFIG_HOME = cfg end
     for k, v in pairs(extra or {}) do vars[k] = v or nil end
     return { vars = vars, data = data, config = cfg }
@@ -149,14 +151,19 @@ end
 
 --- The step script of `shell_workspace` (run by nvim -l): prints
 --- `step <kind> FOO=<LW_TEST_FOO> ONLY=<LW_TEST_ONLY>` on stdout and a line
---- on stderr; writes its pid to $LW_TEST_PIDFILE; sleeps $LW_TEST_SLEEP ms;
+--- on stderr; writes its pid to $LW_TEST_PIDFILE.<kind> (atomically); sleeps $LW_TEST_SLEEP ms;
 --- exits 3 when $LW_TEST_FAIL names its kind; kills itself with a signal
 --- when $LW_TEST_KILL is `<kind>:<signal>` (e.g. `build:sigkill` — on
 --- Windows libuv emulates it with TerminateProcess, exit code 1).
 M.STEP = [[
 local kind = arg[1]
 local pf = os.getenv("LW_TEST_PIDFILE")
-if pf then local f = io.open(pf .. "." .. kind, "w"); f:write(tostring(vim.uv.os_getpid())); f:close() end
+-- Written aside and renamed into place: a reader polling for the file never
+-- sees it created but still empty (a loaded machine widens that window).
+if pf then
+    local f = io.open(pf .. "." .. kind .. ".tmp", "w"); f:write(tostring(vim.uv.os_getpid())); f:close()
+    vim.uv.fs_rename(pf .. "." .. kind .. ".tmp", pf .. "." .. kind)
+end
 io.write("step " .. kind .. " FOO=" .. tostring(os.getenv("LW_TEST_FOO")) .. " ONLY="
     .. tostring(os.getenv("LW_TEST_ONLY")) .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
 io.stderr:write("stderr of " .. kind .. string.char(10))

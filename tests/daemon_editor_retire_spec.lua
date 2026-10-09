@@ -14,9 +14,9 @@ local observer = require("loomworks.daemon.observer")
 local version = require("loomworks.daemon.version")
 local R = require("loomworks.daemon.editor_retire")
 local H = require("tests.daemon_helpers")
+local FR = require("tests.daemon_fake_relay")
 
 client.TIMEOUT_MS = 30000
-observer.CONNECT_MS = 30000
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -145,16 +145,27 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         R.reset()
     end)
 
+    -- The observer over a fake relay (tests/daemon_fake_relay): it connects
+    -- through `extra.connect` to what `extra.inspect` sees, waits out a
+    -- retiring daemon, and an ordinary relay that finds none calls
+    -- `extra.launch` (the successor's launch, the relay's own).
+    local fr
     local function attach(extra)
-        local o = { getenv = daemon_mode, watch_ms = 50, keepalive_ms = 100, retire_check_ms = 100,
-            resolve = function() return nil end, notify = function() end }
-        for k, v in pairs(extra or {}) do o[k] = v end
+        extra = extra or {}
+        fr = FR.new({ inspect = extra.inspect, connect = extra.connect, launch = extra.launch })
+        local o = { getenv = daemon_mode, keepalive_ms = 100, retire_check_ms = 100,
+            resolve = function() return nil end, notify = function() end, relay = fr.relay }
+        for k, v in pairs(extra) do
+            if k ~= "connect" and k ~= "launch" then o[k] = v end
+        end
         return observer.attach(ws, o)
     end
 
     --- A fake daemon world: `f.daemons` maps an endpoint to the challenge it
     --- presents, `f.st` is what inspect sees, `f.busy` its status; every
-    --- request is recorded in `f.sent`. Launching makes `f.next` live.
+    --- request is recorded in `f.sent`. A retired daemon's `welcome` says
+    --- `retiring` (the relay waits it out); the relay's launch (`f.spawned`)
+    --- makes it `starting` (the test then makes `f.next` live).
     local function fake(extra)
         local f = { sent = {}, spawned = 0, connects = 0, notes = {}, busy = false }
         f.daemons = { old = { protocol = 99, protocol_min = 99, lw_version = "0.0.1", schemas = version.schemas() } }
@@ -162,14 +173,16 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         f.next = { kind = "live", handle = { pid = 5151, start_time = "n", endpoint = "new" } }
         f.daemons.new = { protocol = version.PROTOCOL, lw_version = "9.9.9", schemas = version.schemas() }
         f.opts = vim.tbl_extend("force", managed_selection("9.9.9"), {
-            inspect = function() return f.st end, check = function() return true end,
+            inspect = function() return f.st end,
             notify = function(m) f.notes[#f.notes + 1] = m end,
-            spawn = function() f.spawned = f.spawned + 1; f.st = { kind = "starting" }; f.child = { pid = 99 }
-                return f.child end,
+            launch = function() f.spawned = f.spawned + 1; f.st = { kind = "starting" } end,
             connect = function(ep, copts, cb)
-                f.connects = f.connects + 1
-                local conn = { challenge = f.daemons[ep], welcome = { seq = 0 }, ep = ep }
-                f.conn, f.copts = conn, copts
+                local retiring = f.retired and f.retired[ep] or nil
+                local conn = { challenge = f.daemons[ep], welcome = { seq = 0, retiring = retiring }, ep = ep }
+                if not retiring then
+                    f.connects = f.connects + 1
+                    f.conn, f.copts = conn, copts
+                end
                 function conn.close(c)
                     if c.closed then return end
                     c.closed = true
@@ -182,6 +195,8 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
                         rcb({ busy = f.busy, busy_clients = 0, clients = 1, observers = 1 })
                     elseif msg.kind == "retire" then
                         f.st = { kind = "live", handle = f.st.handle } -- still exiting
+                        f.retired = f.retired or {}
+                        f.retired[c.ep] = true
                         rcb({ ok = true })
                     else
                         rcb({})
@@ -244,7 +259,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
                 if s.exited == nil then return inspect(r) end
                 return { kind = "none" }
             end,
-            spawn = function() spawned = spawned + 1; return { pid = 99 } end,
+            launch = function() spawned = spawned + 1 end,
             retire_check_ms = REAL_RETIRE_CHECK_MS,
         })
         obs = attach(opts)
@@ -287,7 +302,7 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
                 end)
             end,
             retire_check_ms = REAL_RETIRE_CHECK_MS,
-            spawn = function() return { pid = 99 } end }))
+            launch = function() end }))
         assert.is_true(vim.wait(10000, function()
             return obs:runtime_line():find("incompatible daemon is busy; retiring when idle", 1, true) ~= nil
         end, 10), obs:runtime_line())
@@ -303,7 +318,21 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(10 * REAL_RETIRE_CHECK_MS, function() return s.srv.retiring end, 10),
             obs:runtime_line())
         cli:close()
-        assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
+        -- Idle now: it exits once the queued writes drained (at most
+        -- RETIRE_DRAIN_MS); room for a stalled loop on a loaded machine.
+        local exited = vim.wait(15000, function() return s.exited ~= nil end, 10)
+        local why
+        if not exited then
+            local conns = {}
+            for c in pairs(s.srv.conns) do
+                conns[#conns + 1] = { authed = c.authed, closed = c.closed, observer = c.observer,
+                    in_flight = c.in_flight }
+            end
+            why = "the retiring daemon did not exit: " .. vim.inspect({ busy = s.srv.busy,
+                stopped = s.srv.stopped, timer = s.srv._retire_timer ~= nil, conns = conns,
+                runtime = obs:runtime_line() })
+        end
+        assert.is_true(exited, why)
     end)
 
     it("(a') an idle incompatible daemon is retired, the successor launched once and observed", function()
@@ -311,7 +340,11 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         obs = attach(f.opts)
         assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
         assert.is_true(sent(f, "old:status"))
-        assert.equals("waiting", obs.state)
+        -- Followed through one ordinary relay, which waits the retired
+        -- daemon out (its own wait) and then launches the successor.
+        assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), obs:runtime_line())
+        assert.same({ "ordinary", "ordinary" }, fr.spawns)
+        assert.equals("connecting", obs.state)
         assert.equals(0, f.spawned) -- not while the retired daemon is still live
         f.st = { kind = "none" } -- it exited
         assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
@@ -473,7 +506,9 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_true(vim.wait(2000, function() return #obs:tasks() == 1 end, 10))
         f.busy = false
         assert.is_true(vim.wait(5000, function() return sent(f, "old:retire") end, 10), obs:runtime_line())
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        assert.is_true(vim.wait(5000, function() return obs.conn == nil and #fr.spawns == 2 end, 10),
+            obs:runtime_line())
+        assert.equals("connecting", obs.state)
         assert.same({}, obs:tasks())
         assert.is_nil(obs._retire)
         assert.equals(1, #f.notes)

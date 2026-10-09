@@ -15,9 +15,9 @@ local remote_task = require("loomworks.daemon.remote_task")
 local version = require("loomworks.daemon.version")
 local events = require("loomworks.events")
 local H = require("tests.daemon_helpers")
+local FR = require("tests.daemon_fake_relay")
 
 client.TIMEOUT_MS = 30000
-observer.CONNECT_MS = 30000
 
 local function daemon_mode(name)
     if name == "LOOMWORKS_RUNTIME" then return "daemon" end
@@ -219,11 +219,25 @@ describe("the observer (§19.16)", function()
         pcall(function() core:shutdown() end)
     end)
 
+    -- The observer over a fake relay (tests/daemon_fake_relay: `fr`), whose
+    -- `inspect` / `connect` / `launch` / `manual` come from `extra`; a host
+    -- binary "lw" is selected unless `extra.resolve` says otherwise.
+    local fr
     local function attach(extra)
-        local o = { getenv = daemon_mode, watch_ms = 50, keepalive_ms = 100,
-            resolve = function() return nil end }
-        for k, v in pairs(extra or {}) do o[k] = v end
+        extra = extra or {}
+        fr = FR.new({ inspect = extra.inspect, connect = extra.connect, launch = extra.launch, manual = extra.manual })
+        local o = { getenv = daemon_mode, keepalive_ms = 100, resolve = function() return "lw" end, relay = fr.relay }
+        for k, v in pairs(extra) do
+            if k ~= "connect" and k ~= "launch" and k ~= "manual" then o[k] = v end
+        end
         return observer.attach(ws, o)
+    end
+    -- A relay seam that records what it is asked to spawn and does nothing.
+    local function stub_relay(t)
+        return function(ropts)
+            t[#t + 1] = ropts
+            return { close = function(r) r.closed = true end }
+        end
     end
 
     it("does nothing in in-process mode", function()
@@ -410,15 +424,36 @@ describe("the observer (§19.16)", function()
         assert.is_nil(obs:runtime_line():find("editor needs", 1, true))
     end)
 
-    it("with no daemon and no host binary: one note, nothing launched, then observes a daemon that appears", function()
-        local spawned = 0
-        obs = attach({ spawn = function() spawned = spawned + 1 end })
+    it("with no host binary: one note, no relay, and a daemon another client starts is not observed", function()
+        obs = attach({ resolve = function() return nil end })
         assert.equals("no-binary", obs.state)
         assert.equals(binary_select.NONE_NOTE, obs:runtime_line())
-        assert.equals(0, spawned)
+        assert.same({}, fr.spawns)
         s = new_server(root)
+        vim.wait(300)
+        assert.equals("no-binary", obs.state)
+        assert.same({}, fr.spawns)
+        assert.equals(0, s.srv:observer_count())
+    end)
+
+    it("connects through an ordinary relay on load, from the selected binary (§19.16 Through the relay)", function()
+        s = new_server(root)
+        obs = attach()
+        assert.same({ "ordinary" }, fr.spawns)
+        local ro = fr.relays[1].ropts
+        assert.same({ "lw" }, ro.argv)
+        -- The workspace's root (its canonical form: on a Windows runner the
+        -- temp dir may be an 8.3 short path such as RUNNER~1).
+        assert.equals(ws.root, ro.root)
+        assert.equals("editor", ro.client)
+        assert.equals("observer", ro.role)
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals(0, fr.launched)
+        assert.equals(s.srv.pid, obs.daemon.pid)
         assert.equals(1, s.srv:observer_count())
+        -- Connected: an explicit connect spawns nothing more.
+        obs:start(true)
+        assert.same({ "ordinary" }, fr.spawns)
     end)
 
     it("resolves observed tasks to the editor's domain objects; unresolved keys by name only", function()
@@ -653,7 +688,7 @@ describe("the observer (§19.16)", function()
         local unit = pp._config_unit
         local started = {}
         on("daemon_task_started", function(d) started[#started + 1] = d.task end)
-        obs = attach({ spawn = function() end })
+        obs = attach({ relay = stub_relay({}) })
         local meta = { name = "dev", kind = "build", profile = profile.key, origin = "cli",
             units = { { project = pp:project_key(), configuration = pp:config_key() } } }
         -- A connection whose status reply is held until the test releases it.
@@ -773,8 +808,7 @@ describe("the observer (§19.16)", function()
         -- missed the task started meanwhile.)
         s.srv.keepalive_ms = 1000
         local silent = assert(client.session(s.srv.address, { client = "editor", role = "observer" }))
-        local spawned = 0
-        obs = attach({ spawn = function() spawned = spawned + 1 end, resolve = function() return "lw" end })
+        obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         local conn = obs.conn
         -- The silent observer is dropped; the pinging one stays, on the same
@@ -797,13 +831,16 @@ describe("the observer (§19.16)", function()
         assert.equals("the workspace daemon disconnected", rt.end_reason)
         assert.same({}, ws:get_daemon_tasks())
         vim.wait(500)
-        assert.equals(0, spawned)
+        -- The drop is followed through one relay that never launches.
+        assert.same({ "ordinary", "no-launch" }, fr.spawns)
+        assert.equals(0, fr.launched)
+        assert.truthy(obs:runtime_line():find("none is launched", 1, true), obs:runtime_line())
         -- (Reconnecting to a new daemon is covered with real processes in
         -- tests/daemon_editor_observer_spec: an in-process server cannot bind
         -- the same Windows pipe name again within one process.)
     end)
 
-    it("disconnects from a retiring daemon and does not reconnect to it", function()
+    it("on `retiring` disconnects and follows through one ordinary relay, which launches the successor", function()
         s = new_server(root)
         obs = attach()
         assert.is_true(vim.wait(10000, function() return obs.state == "connected" end, 10), obs:runtime_line())
@@ -812,13 +849,24 @@ describe("the observer (§19.16)", function()
         -- the retirement for a while (§19.9 "Busy").
         server_conn(s.srv, function(c) return not c.observer end).in_flight = { [999] = true }
         assert(client.request(cli, { kind = "retire" }))
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
-        assert.truthy(obs:runtime_line():find("retiring", 1, true))
+        assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), obs:runtime_line())
+        assert.same({ "ordinary", "ordinary" }, fr.spawns)
+        assert.truthy(obs:runtime_line():find("retiring", 1, true), obs:runtime_line())
+        assert.is_not_nil(obs._episode)
         vim.wait(300)
-        assert.equals("waiting", obs.state)
-        assert.equals(0, s.srv:observer_count())
+        assert.is_nil(obs.conn)
+        -- The server counts a connection until it reads its close (and the
+        -- waiting relay's look at the retiring daemon, closed on its
+        -- `retiring` welcome): both come, with no observer left.
+        assert.is_true(vim.wait(5000, function() return s.srv:observer_count() == 0 end, 10),
+            "observers: " .. tostring(s.srv:observer_count()))
+        assert.is_nil(obs.conn)
+        assert.equals(0, fr.launched)
         cli:close()
         assert.is_true(vim.wait(5000, function() return s.exited ~= nil end, 10))
+        -- The retired daemon is gone: that relay launches its successor.
+        assert.is_true(vim.wait(5000, function() return fr.launched == 1 end, 10), obs:runtime_line())
+        assert.equals(2, #fr.spawns)
     end)
 
     it("does not observe an incompatible daemon (note, closed, skipped)", function()
@@ -839,50 +887,157 @@ describe("the observer (§19.16)", function()
         vim.wait(300)
         assert.equals(1, connects)
         assert.equals(1, closed)
+        -- Until step 5i PR G2: its relay is closed and the editor stays
+        -- in-process until an explicit connect.
+        assert.same({ "ordinary" }, fr.spawns)
+        obs:start(true)
+        assert.same({ "ordinary", "ordinary" }, fr.spawns)
     end)
 
-    it("connect and launch are single-flight; a superseded connection is closed", function()
-        local cbs = {}
-        local live = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } }
-        obs = attach({ inspect = function() return live end, check = function() return true end,
-            connect = function(_, _, cb) cbs[#cbs + 1] = cb end })
-        assert.equals(1, #cbs)
-        obs:start(true) -- `:LoomworksDaemon connect` while connecting
+    it("relays are single-flight; a late answer of a replaced relay is closed", function()
+        local asked = {}
+        obs = attach({ relay = stub_relay(asked) })
+        assert.equals(1, #asked)
+        assert.equals("connecting", obs.state)
+        -- `:LoomworksDaemon connect` while an ordinary relay is in flight.
         obs:start(true)
-        vim.wait(200)
-        assert.equals(1, #cbs)
-        -- A late answer to an attempt that is no longer in flight is closed.
-        local stale = { closed = 0 }
+        obs:start(false)
+        assert.equals(1, #asked)
+        -- A late answer to a relay that is no longer in flight is closed.
+        local stale = { closed = 0, welcome = {} }
         function stale.close() stale.closed = stale.closed + 1 end
-        obs:_on_connected({ pid = 1 }, stale)
+        obs:_on_relay({}, stale)
         assert.equals(1, stale.closed)
         assert.is_nil(obs.conn)
-        obs:stop(); obs = nil
-        -- Launching: a second connect does not start a second daemon.
-        local spawned = 0
-        obs = attach({ inspect = function() return { kind = "none" } end, resolve = function() return "lw" end,
-            spawn = function() spawned = spawned + 1; return { pid = 1 } end })
-        assert.equals("launching", obs.state)
-        obs:start(true)
-        assert.equals(1, spawned)
     end)
 
-    it("launches from the selected binary, names it and why, and passes binary.source's environment (§19.16)", function()
-        local got, seen_opts
-        obs = attach({ inspect = function() return { kind = "none" } end, binary = { prefer = "managed" },
+    it("spawns the relay from the selected binary, names it and passes binary.source's environment", function()
+        local asked, seen_opts = {}, nil
+        obs = attach({ binary = { prefer = "managed" },
             resolve = function(_, o)
                 seen_opts = o
                 return "/m/lw", "managed", { path = "/m/lw", source = "managed", label = "plugin-managed lw",
                     candidates = {}, env = { LOOMWORKS_LUA = "/src/lua" } }
             end,
-            spawn = function(_, o) got = o; return { pid = 1 } end })
-        assert.equals("launching", obs.state)
+            relay = stub_relay(asked) })
+        assert.equals("connecting", obs.state)
         assert.same({ prefer = "managed" }, seen_opts.setting)
-        assert.same({ "/m/lw" }, got.argv)
-        assert.same({ LOOMWORKS_LUA = "/src/lua" }, got.env)
-        assert.equals("starting the workspace daemon (/m/lw (plugin-managed lw) with the Lua source /src/lua)",
-            obs:runtime_line())
+        assert.same({ "/m/lw" }, asked[1].argv)
+        assert.equals("ordinary", asked[1].form)
+        assert.same({ LOOMWORKS_LUA = "/src/lua" }, asked[1].env)
+        assert.equals("connecting to or starting the workspace daemon (/m/lw (plugin-managed lw) with the Lua "
+            .. "source /src/lua)", obs:runtime_line())
         assert.equals("managed", obs.selection.source)
+    end)
+
+    describe("a relay that exits before welcome (§19.16 Exit before welcome)", function()
+        local function exit(code, info)
+            fr.last().exit(code, info)
+            vim.wait(50)
+        end
+
+        it("10 / 11: one no-launch relay, then wait", function()
+            obs = attach({ manual = true })
+            exit(10, { line = "lw: could not start the workspace daemon (boom)" })
+            assert.same({ "ordinary", "no-launch" }, fr.spawns)
+            assert.equals("waiting", obs.state)
+            assert.truthy(obs:runtime_line():find("could not start the workspace daemon; the editor runs degraded "
+                .. "(lw: could not start the workspace daemon (boom))", 1, true), obs:runtime_line())
+            assert.truthy(obs:runtime_line():find("none is launched", 1, true), obs:runtime_line())
+            -- The no-launch relay answering a 10 exits 11: no second one.
+            exit(11, { line = "lw: the workspace daemon (pid 9) is not responding" })
+            assert.same({ "ordinary", "no-launch" }, fr.spawns)
+            assert.equals("waiting", obs.state)
+            assert.truthy(obs:runtime_line():find("the workspace daemon is not responding", 1, true),
+                obs:runtime_line())
+            -- Only an explicit connect spawns again.
+            vim.wait(200)
+            assert.equals(2, #fr.spawns)
+            obs:start(true)
+            assert.same({ "ordinary", "no-launch", "ordinary" }, fr.spawns)
+        end)
+
+        it("14 -> a retiring relay naming the instance; 16 -> the episode's one ordinary relay; then wait", function()
+            obs = attach({ manual = true })
+            exit(14, { line = "lw: the retiring workspace daemon (pid 42) still holds the workspace after 60 s",
+                retiring = "42:win:7" })
+            assert.same({ "ordinary", "retiring 42:win:7" }, fr.spawns)
+            assert.truthy(obs:runtime_line():find("a retiring daemon is still busy", 1, true), obs:runtime_line())
+            assert.truthy(obs:runtime_line():find("waiting for the retiring daemon to exit", 1, true),
+                obs:runtime_line())
+            assert.falsy(obs:runtime_line():find("retiring 42:", 1, true), obs:runtime_line())
+            exit(16)
+            assert.same({ "ordinary", "retiring 42:win:7", "ordinary" }, fr.spawns)
+            -- The successor's relay meets a retiring daemon again, with no
+            -- retiring line (an older pin): a plain no-launch relay.
+            exit(14, { line = "lw: the retiring workspace daemon (pid 43) still holds the workspace after 60 s" })
+            assert.equals("no-launch", fr.spawns[4])
+            -- A second 16 in the same episode: a note and a wait.
+            exit(16, { line = "lw: the retiring workspace daemon (pid 43) has exited and no other daemon is live" })
+            assert.equals(4, #fr.spawns)
+            assert.equals("waiting", obs.state)
+            assert.truthy(obs:runtime_line():find("the retiring daemon has exited and no other is live", 1, true),
+                obs:runtime_line())
+            -- An explicit connect ends the episode and starts over.
+            obs:start(true)
+            assert.equals(5, #fr.spawns)
+            assert.equals("ordinary", fr.spawns[5])
+            assert.is_nil(obs._episode)
+        end)
+
+        it("12 / 13 / 15 / 0 / 1 / 3: a note and a wait", function()
+            for _, c in ipairs({
+                { 12, "another loomworks data dir" }, { 13, "runs on another host" },
+                { 15, "internal error (protocol)" }, { 0, "kept its standard input open" },
+                { 1, "internal error" }, { 3, "update the pin" }, { 99, "status 99" },
+            }) do
+                obs = attach({ manual = true })
+                exit(c[1], { line = "lw: detail " .. c[1] })
+                assert.same({ "ordinary" }, fr.spawns)
+                assert.equals("waiting", obs.state)
+                assert.truthy(obs:runtime_line():find(c[2], 1, true), obs:runtime_line())
+                assert.truthy(obs:runtime_line():find("(lw: detail " .. c[1] .. ")", 1, true), obs:runtime_line())
+                obs:stop(); obs = nil
+            end
+        end)
+
+        it("2 from a relay given the editor's flags names the pinned version", function()
+            local f = assert(io.open(root .. "/lw.pin", "w"))
+            f:write("version = 0.1.40\n")
+            f:close()
+            obs = attach({ manual = true })
+            -- An ordinary relay's 2: the plain internal-error note.
+            exit(2, { line = "lw: --stdio needs --root <dir>" })
+            assert.truthy(obs:runtime_line():find("internal error (usage)", 1, true), obs:runtime_line())
+            -- A no-launch relay's 2 (spawned after a drop).
+            obs:_spawn({ form = "no-launch" })
+            exit(2, { line = "lw: unknown option --no-launch" })
+            assert.truthy(obs:runtime_line():find("the pinned lw 0.1.40 does not support the editor relay flags", 1,
+                true), obs:runtime_line())
+            assert.truthy(obs:runtime_line():find("(lw: unknown option --no-launch)", 1, true), obs:runtime_line())
+            assert.equals(2, #fr.spawns)
+        end)
+
+        it("a relay the editor ended is not mapped; connect replaces a waiting relay, not an ordinary one", function()
+            obs = attach({ manual = true })
+            local first = fr.last()
+            obs:start(true)
+            assert.equals(1, #fr.spawns)
+            -- A waiting (no-launch) relay is replaced by an explicit connect.
+            obs:_end_relay()
+            assert.is_true(first.ended)
+            first.exit(0) -- (ended: never reported)
+            obs:_spawn({ form = "no-launch" })
+            local waiting = fr.last()
+            obs:start(true)
+            assert.is_true(waiting.ended)
+            assert.same({ "ordinary", "no-launch", "ordinary" }, fr.spawns)
+            -- The stop ends the relay in flight.
+            local last = fr.last()
+            obs:stop()
+            assert.is_true(last.ended)
+            assert.equals(0, fr.running())
+        end)
     end)
 
     describe("pre-launch probe (step 5h.5)", function()
@@ -893,8 +1048,7 @@ describe("the observer (§19.16)", function()
         --- (and LOOMWORKS_LW when `explicit`); probes complete on `finish()`.
         local function probing(verdict, explicit, backstop_ms)
             local cache, t = {}, { probes = {}, spawned = {} }
-            obs = attach({ inspect = function() return { kind = "none" } end,
-                probe_backstop_ms = backstop_ms,
+            obs = attach({ probe_backstop_ms = backstop_ms,
                 probe_cached = function(p) return cache[p] end,
                 run_probe = function(p, _, cb)
                     t.probes[#t.probes + 1] = p
@@ -907,11 +1061,11 @@ describe("the observer (§19.16)", function()
                         on_path = function() return "/p/lw" end,
                         managed = function() return "/m/lw" end }))
                 end,
-                spawn = function(_, so) t.spawned[#t.spawned + 1] = so.argv[1]; return { pid = 1 } end })
+                relay = function(ro) t.spawned[#t.spawned + 1] = ro.argv[1]; return { close = function() end } end })
             return t
         end
 
-        it("probes an lw on PATH before launching; an incompatible one falls through to the managed lw", function()
+        it("probes an lw on PATH before spawning a relay; an incompatible one falls through to the managed lw", function()
             local t = probing(bad)
             assert.equals("probing", obs.state)
             assert.same({ "/p/lw" }, t.probes)
@@ -925,7 +1079,7 @@ describe("the observer (§19.16)", function()
                 obs:runtime_line())
         end)
 
-        it("launches an lw on PATH whose verdict is unknown (the handshake decides)", function()
+        it("uses an lw on PATH whose verdict is unknown (the handshake decides)", function()
             local t = probing({ verdict = "unknown", problems = { "timeout" }, degraded = {} })
             t.finish()
             assert.same({ "/p/lw" }, t.spawned)
@@ -960,10 +1114,10 @@ describe("the observer (§19.16)", function()
         end)
     end)
 
-    it("downloads a wanted plugin-managed lw first, then launches from it (step 5h.3)", function()
+    it("downloads a wanted plugin-managed lw first, then spawns the relay from it (step 5h.3)", function()
         local want = { sha256 = string.rep("ab", 32), version = "0.1.50", asset = "lw-linux-x86_64" }
         local installed, fetches, pending, spawned, pruned = false, 0, nil, nil, nil
-        obs = attach({ inspect = function() return { kind = "none" } end, binary = { release_url = "/mirror" },
+        obs = attach({ binary = { release_url = "/mirror" },
             resolve = function()
                 if installed then
                     return "/m/lw", "managed", { path = "/m/lw", source = "managed", label = "plugin-managed lw",
@@ -978,17 +1132,17 @@ describe("the observer (§19.16)", function()
                 pending = cb
                 return { url = "/mirror/lw-linux-x86_64" }
             end,
-            prune = function(o) pruned = o end,
-            spawn = function(_, o) spawned = o; return { pid = 1 } end })
+            prune = function(o) pruned = o end, inspect = function() return { kind = "none" } end,
+            relay = function(o) spawned = o; return { close = function() end } end })
         assert.equals("downloading", obs.state)
         assert.truthy(obs:runtime_line():find("downloading the plugin-managed lw v0.1.50 (lw-linux-x86_64) from "
             .. "/mirror/lw-linux-x86_64", 1, true), obs:runtime_line())
-        -- A watch tick or plain start while downloading starts no second download.
+        -- A plain start while downloading starts no second download.
         obs:start(false)
         assert.equals(1, fetches)
         installed = true
         pending("/m/lw")
-        assert.equals("launching", obs.state)
+        assert.equals("connecting", obs.state)
         assert.same({ "/m/lw" }, spawned.argv)
         assert.equals(want.sha256, pruned.keep[1]) -- (and the pin's hash: both wanted ones are kept)
     end)
@@ -996,13 +1150,13 @@ describe("the observer (§19.16)", function()
     it("connect aborts a download in flight and starts over; a stop aborts it; a late callback is ignored", function()
         local want = { sha256 = string.rep("ef", 32), version = "0.1.50", asset = "lw-linux-x86_64" }
         local cbs, cancelled = {}, {}
-        obs = attach({ inspect = function() return { kind = "none" } end,
+        obs = attach({
             resolve = function()
                 return nil, nil, { source = "managed", label = "plugin-managed lw", download = want, candidates = {} }
             end,
             fetch = function(_, _, cb) cbs[#cbs + 1] = cb; return { url = "u" } end,
             cancel_fetch = function(sha, why) cancelled[#cancelled + 1] = { sha, why } end,
-            spawn = function() error("must not launch") end })
+            relay = function() error("must not spawn a relay") end })
         assert.equals("downloading", obs.state)
         obs:start(true)
         assert.equals(2, #cbs)
@@ -1019,7 +1173,7 @@ describe("the observer (§19.16)", function()
     it("a failed download is one note, leaves the editor in-process and is retried only on connect", function()
         local want = { sha256 = string.rep("cd", 32), version = "0.1.50", asset = "lw-linux-x86_64" }
         local fetches = 0
-        obs = attach({ inspect = function() return { kind = "none" } end,
+        obs = attach({
             resolve = function()
                 return nil, nil, { source = "managed", label = "plugin-managed lw", download = want, candidates = {} }
             end,
@@ -1028,11 +1182,11 @@ describe("the observer (§19.16)", function()
                 vim.schedule(function() cb(nil, "has SHA-256 00, expected " .. want.sha256) end)
                 return { url = "u" }
             end,
-            spawn = function() error("must not launch") end })
+            relay = function() error("must not spawn a relay") end })
         assert.is_true(vim.wait(2000, function() return obs.state == "no-binary" end, 10), obs:runtime_line())
         assert.truthy(obs:runtime_line():find("could not install the plugin-managed lw v0.1.50", 1, true))
         assert.truthy(obs:runtime_line():find("running in-process", 1, true))
-        vim.wait(200) -- watch ticks do not retry
+        vim.wait(200) -- nothing retries by itself
         assert.equals(1, fetches)
         obs:start(false)
         assert.equals(1, fetches)
@@ -1040,37 +1194,27 @@ describe("the observer (§19.16)", function()
         assert.equals(2, fetches)
     end)
 
-    it("a launched daemon that exits because an lw command holds the runtime is a note, not 'starting'", function()
-        local child = { pid = 1 }
-        local st = { kind = "none" }
-        obs = attach({ inspect = function() return st end, resolve = function() return "lw" end,
-            spawn = function() return child end })
-        assert.equals("launching", obs.state)
-        st = { kind = "attached", lock = { pid = 77 } }
-        child.code = server_mod.EXIT_HELD
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10))
-        assert.truthy(obs:runtime_line():find("held by an lw command (pid 77)", 1, true), obs:runtime_line())
-        assert.is_nil(obs._child)
-    end)
-
-    -- A fake daemon session for the relaunch tests: inspect says what is on
-    -- disk, connect hands back a conn whose close reports the drop.
+    -- A fake daemon world for the relay's follow-ups: inspect says what is on
+    -- disk, connect hands back a conn whose close reports the drop; its
+    -- `welcome` says `retiring` while `f.retiring`; an ordinary relay that
+    -- finds none launches `f.next`.
     local function fake_daemon()
         local f = { st = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } },
-            spawned = 0, connects = 0 }
-        f.opts = { inspect = function() return f.st end, check = function() return true end,
-            resolve = function() return "lw" end,
-            spawn = function() f.spawned = f.spawned + 1; f.child = { pid = 99 }; return f.child end,
+            connects = 0 }
+        f.opts = { inspect = function() return f.st end,
+            launch = function() f.st = f.next or { kind = "starting" } end,
             connect = function(_, copts, cb)
                 f.connects = f.connects + 1
                 local conn = { challenge = { protocol = version.PROTOCOL, schemas = version.schemas(),
-                    lw_version = "0.1.0" }, welcome = { seq = 0 } }
+                    lw_version = "0.1.0" }, welcome = { seq = 0, retiring = f.retiring } }
                 function conn.close(c)
                     if c.closed then return end
                     c.closed = true
-                    if copts.on_close then copts.on_close(c) end
+                    if c.on_close then c.on_close(c) end
                 end
-                f.conn = conn
+                function conn.request(_, _, rcb) rcb({}) end
+                conn.on_close = copts.on_close
+                if not f.retiring then f.conn = conn end
                 cb(conn)
             end }
         return f
@@ -1086,86 +1230,69 @@ describe("the observer (§19.16)", function()
         assert.equals("/d/loomworks/lw/x/lw", touched)
     end)
 
-    it("after a retired daemon exits, launches one successor (once) and connects to it", function()
+    it("after `retiring`, the ordinary relay waits the daemon out, launches its successor and connects", function()
         local f = fake_daemon()
         obs = attach(f.opts)
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        assert.equals(0, f.spawned)
-        -- Retiring (a version change): the observer disconnects and waits.
-        f.st = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } }
+        assert.equals(0, fr.launched)
+        -- Retiring (a version change): the observer disconnects; one
+        -- ordinary relay follows it.
+        f.retiring = true
         obs:_on_message({ kind = "retiring" })
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        assert.is_true(vim.wait(5000, function() return #fr.spawns == 2 end, 10), obs:runtime_line())
+        assert.same({ "ordinary", "ordinary" }, fr.spawns)
         vim.wait(200)
-        assert.equals(0, f.spawned)
-        -- The retired daemon exits: the editor launches one daemon itself.
+        assert.is_nil(obs.conn)
+        assert.equals(0, fr.launched)
+        -- The retired daemon exits: that relay launches the successor, and
+        -- the editor connects to it.
+        f.retiring = nil
+        f.next = { kind = "live", handle = { pid = 4343, start_time = "u", endpoint = "e" } }
         f.st = { kind = "none" }
-        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
-        assert.equals("launching", obs.state)
-        -- It comes up: the observer connects to it.
-        f.st = { kind = "live", handle = { pid = 4343, start_time = "u", endpoint = "e" } }
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         assert.equals(4343, obs.daemon.pid)
-        assert.equals(1, f.spawned)
+        assert.equals(1, fr.launched)
+        assert.equals(2, #fr.spawns)
+        assert.is_nil(obs._episode) -- the welcome ended the episode
     end)
 
-    it("after a retired daemon exits, a successor that fails is not launched again", function()
+    it("a daemon stopped by the user (no retirement) is followed by a no-launch relay, never relaunched", function()
         local f = fake_daemon()
         obs = attach(f.opts)
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        obs:_on_message({ kind = "retiring" })
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
         f.st = { kind = "none" }
-        assert.is_true(vim.wait(5000, function() return f.spawned == 1 end, 10), obs:runtime_line())
-        f.child.code = 1
-        assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
-        vim.wait(400)
-        assert.equals(1, f.spawned)
-    end)
-
-    it("a daemon stopped by the user (no retirement) is never relaunched", function()
-        local f = fake_daemon()
-        obs = attach(f.opts)
-        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
         f.conn:close() -- `lw daemon stop`: the connection just drops
-        f.st = { kind = "none" }
         assert.is_true(vim.wait(5000, function() return obs.state == "waiting" end, 10), obs:runtime_line())
+        assert.truthy(obs:runtime_line():find("disconnected", 1, true), obs:runtime_line())
         vim.wait(400)
-        assert.equals(0, f.spawned)
+        assert.same({ "ordinary", "no-launch" }, fr.spawns)
+        assert.equals(0, fr.launched)
+        -- A daemon another client starts later is connected to.
+        f.st = { kind = "live", handle = { pid = 4545, start_time = "v", endpoint = "e" } }
+        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.equals(4545, obs.daemon.pid)
+        assert.equals(0, fr.launched)
     end)
 
-    -- `lw daemon stop` closes the connections before it removes the handle:
-    -- a watch tick in between still sees the stopping daemon live and tries
-    -- it again. That attempt is quiet — the note stays "disconnected", the
-    -- state never shows `connecting` — and a failed one changes nothing.
-    it("a reconnect to the daemon that just dropped it, failing, keeps the disconnected note", function()
-        local f = fake_daemon()
-        obs = attach(f.opts)
+    it("a `welcome` without `via` (an older pin's attached --stdio) is observed without the check, never retired", function()
+        local asked = {}
+        obs = attach({ relay = function(ro, cb)
+            asked[#asked + 1] = ro
+            vim.schedule(function()
+                local conn = { challenge = {}, welcome = { seq = 0 }, closed = false }
+                function conn.close(c) c.closed = true end
+                function conn.request(_, _, rcb) rcb({}) end
+                cb(conn)
+            end)
+            return { close = function() end }
+        end })
         assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
-        local states = {}
-        on("daemon_runtime_changed", function(o) if o == obs then states[#states + 1] = o.state end end)
-        local real = f.opts.connect
-        obs.opts.connect = function(_, _, cb)
-            f.connects = f.connects + 1
-            cb(nil, "refused")
-        end
-        f.conn:close() -- the handle still names the stopping daemon
-        assert.is_true(vim.wait(5000, function() return f.connects >= 3 end, 10), obs:runtime_line())
-        assert.equals("waiting", obs.state)
-        assert.truthy(obs:runtime_line():find("disconnected", 1, true), obs:runtime_line())
-        assert.is_false(vim.tbl_contains(states, "connecting"), table.concat(states, ","))
-        -- The handle goes: still the disconnected note, nothing launched.
-        f.st = { kind = "none" }
-        vim.wait(300)
-        assert.truthy(obs:runtime_line():find("disconnected", 1, true), obs:runtime_line())
-        assert.equals(0, f.spawned)
-        -- The same daemon answering again (it was not stopping) is observed.
-        obs.opts.connect = real
-        f.st = { kind = "live", handle = { pid = 4242, start_time = "t", endpoint = "e" } }
-        assert.is_true(vim.wait(5000, function() return obs.state == "connected" end, 10), obs:runtime_line())
+        assert.is_nil(obs._retire)
+        assert.is_nil(obs.incompat_note)
     end)
 
     it("a `retiring` with no connection does not mark the next drop as a retirement", function()
-        obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end })
+        obs = attach({ inspect = function() return { kind = "hung", lock = { pid = 5 } } end, manual = true })
         obs:_on_message({ kind = "retiring" })
         assert.is_nil(obs._retired_note)
     end)
@@ -1178,6 +1305,8 @@ describe("the observer (§19.16)", function()
         core:shutdown()
         assert.equals("stopped", o.state)
         assert.is_true(vim.wait(5000, function() return s.srv:observer_count() == 0 end, 10))
+        -- Its relay ended with it (the connection closed through it).
+        assert.equals(0, fr.running())
         obs = nil
     end)
 end)

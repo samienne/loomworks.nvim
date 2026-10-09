@@ -24,11 +24,15 @@
 --- `--no-launch` never launches: it waits for a live daemon (POLL_MS
 --- cadence), waits out a retiring one and exits 16 when it is gone with no
 --- other live; `--skip-instance <pid>:<start_time>` (with `--no-launch`)
---- additionally treats that one daemon instance as not present.
+--- additionally treats that one daemon instance as not present, and
+--- `--retiring <pid>:<start_time>` (with `--no-launch`) as a retiring daemon
+--- it already saw (exit 16 once it no longer holds the runtime lock, also
+--- when already gone, with no other daemon live).
 ---
 --- Before `welcome` is forwarded a failure writes nothing to standard output
 --- and one `lw: …` line to standard error (`M.EXIT`, §19.10 "Relay exit
---- status"). Nothing secret — the machine key, nonces, proofs — is ever
+--- status"); status 14 adds the retiring-instance line `retiring
+--- <pid>:<start_time>` after it (`M.retiring_line`). Nothing secret — the machine key, nonces, proofs — is ever
 --- printed or logged; the client's `hello` is not echoed anywhere.
 ---
 --- `--private` (tests only, gated by LOOMWORKS_TEST_PRIVATE_STDIO=1) is the
@@ -97,6 +101,7 @@ M.FLUSH_MS = 5000
 --- @field private boolean
 --- @field no_launch boolean
 --- @field skip? loomworks.daemon.Instance the `--skip-instance` daemon
+--- @field retiring? loomworks.daemon.Instance the `--retiring` daemon (§19.10 "A named retiring daemon")
 --- @field root? string the `--root` value, as given (separators normalized)
 
 --- Parse and validate the options of `lw daemon run` that concern the
@@ -109,7 +114,7 @@ M.FLUSH_MS = 5000
 function M.parse(args, getenv)
     getenv = getenv or os.getenv
     local o = { stdio = false, private = false, no_launch = false }
-    local skips = {}
+    local skips, retirings = {}, {}
     local i = 3
     while i <= #args do
         local a = args[i]
@@ -119,8 +124,10 @@ function M.parse(args, getenv)
         elseif a == "--no-launch" then o.no_launch = true
         elseif a == "--root" then o.root = args[i + 1]; i = i + 1
         elseif a == "--skip-instance" then skips[#skips + 1] = args[i + 1] or ""; i = i + 1
+        elseif a == "--retiring" then retirings[#retirings + 1] = args[i + 1] or ""; i = i + 1
         elseif type(a) == "string" and a:sub(1, 7) == "--root=" then o.root = a:sub(8)
         elseif type(a) == "string" and a:sub(1, 16) == "--skip-instance=" then skips[#skips + 1] = a:sub(17)
+        elseif type(a) == "string" and a:sub(1, 11) == "--retiring=" then retirings[#retirings + 1] = a:sub(12)
         end
         i = i + 1
     end
@@ -134,6 +141,12 @@ function M.parse(args, getenv)
         if #skips > 1 then return nil, "--skip-instance names at most one daemon instance" end
         o.skip = connect.parse_instance(skips[1])
         if not o.skip then return nil, "--skip-instance takes <pid>:<start_time>" end
+    end
+    if #retirings > 0 then
+        if not o.no_launch then return nil, "--retiring needs --no-launch" end
+        if #retirings > 1 then return nil, "--retiring names at most one daemon instance" end
+        o.retiring = connect.parse_instance(retirings[1])
+        if not o.retiring then return nil, "--retiring takes <pid>:<start_time>" end
     end
     if o.stdio and (not o.root or o.root == "") then return nil, "--stdio needs --root <dir>" end
     return o
@@ -237,7 +250,7 @@ Relay.__index = Relay
 
 --- A relay over the streams `inp` / `out`.
 --- opts:
----   no_launch, skip     as parsed (M.parse)
+---   no_launch, skip, retiring  as parsed (M.parse)
 ---   note                fun(line): one standard-error line
 ---   step_ms             each connect step's bound (ensure.step_ms(true))
 ---   launch              (tests) the launcher, as for connect.connect_or_start
@@ -436,6 +449,18 @@ local function instance_of(st)
     return { pid = h.pid or lk.pid, start_time = h.start_time or lk.start_time }
 end
 
+--- The retiring-instance line a status-14 relay writes last (§19.10
+--- "Retiring-instance line"): `retiring <pid>:<start_time>`, the instance in
+--- the form `--retiring` takes (connect.instance_id) — or nil when the
+--- instance is not known in full (no start time), and then no line is
+--- written.
+--- @param inst table|nil
+--- @return string|nil
+function M.retiring_line(inst)
+    local id = connect.instance_id(inst or {})
+    return id and ("retiring " .. id) or nil
+end
+
 --- Connect or start (an ordinary relay). Returns nil once connected to a
 --- daemon that is not retiring, or the exit status.
 function Relay:_connect_or_start()
@@ -481,19 +506,29 @@ function Relay:_connect_or_start()
             local e = self:_ended()
             if e then return e end
             if not gone then
-                return self:_fail(M.EXIT.retire_timeout, string.format(
+                local code = self:_fail(M.EXIT.retire_timeout, string.format(
                     "the retiring workspace daemon (pid %s) still holds the workspace after %d s",
                     tostring(inst.pid), math.floor(M.RETIRE_WAIT_MS / 1000)))
+                -- The last standard-error line: the instance, for the
+                -- caller's `--retiring` (§19.10 "Retiring-instance line").
+                local line = M.retiring_line(inst)
+                if line and self.opts.note then self.opts.note(line) end
+                return code
             end
         end
     end
 end
 
 --- Wait for a live daemon (`--no-launch`, §19.10 "No launch", "Skip an
---- instance"). Returns nil once connected, or the exit status.
+--- instance", "A named retiring daemon"). Returns nil once connected, or
+--- the exit status.
 function Relay:_wait_for_daemon()
     local skip = self.opts.skip
-    local retiring -- the retiring daemon this relay connected to
+    -- The retiring daemon this relay waits out: one it connected to, or the
+    -- one `--retiring` names — treated as if it had connected to it and got
+    -- a `welcome` that says `retiring`, so it is never connected to, and its
+    -- absence at the first check with no other daemon live is status 16.
+    local retiring = self.opts.retiring
     while true do
         local e = self:_ended()
         if e then return e end
@@ -615,7 +650,7 @@ end
 
 M.Relay = Relay
 
---- `lw daemon run --root <root> --stdio [--no-launch [--skip-instance <id>]]`
+--- `lw daemon run --root <root> --stdio [--no-launch [--skip-instance <id> | --retiring <id>]]`
 --- on this process's standard input and output. Returns the exit status.
 --- @param root string
 --- @param o loomworks.daemon.RelayArgs
@@ -632,7 +667,7 @@ function M.serve(root, o, host)
         return 1
     end
     local r = M.new(root, inp, out, {
-        no_launch = o.no_launch, skip = o.skip, note = host.note,
+        no_launch = o.no_launch, skip = o.skip, retiring = o.retiring, note = host.note,
         step_ms = require("loomworks.daemon.ensure").step_ms(true),
     })
     if host.on_exit then host.on_exit(function() r:close() end) end

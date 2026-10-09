@@ -76,6 +76,14 @@ considered and not added: configuring stays a step of `lw build`
   Runtime line can say what is happening. (Naming the retiring instance on
   exit 14 is no longer open: spec section 19.10 "Retiring-instance line"
   specifies it, and the editor passes it to `--retiring`.)
+- Behind a pin-redirect wrapper (the global `lw` redirecting to the
+  repository's pinned release) the editor's relay is a wrapper process
+  whose child is the real relay. The KILL_MS backstop (spec section 19.16
+  "The relay process") plain-kills only the wrapper's own pid, so a hung
+  inner relay is left running. Still rule-safe (never a tree kill, the
+  shared daemon is untouched); fix by having the wrapper end its child when
+  its own standard input closes or it is killed (e.g. a job object on
+  Windows), or by exec-ing the pinned relay where the platform allows.
 
 ## Two meanings of "clean"
 
