@@ -3916,7 +3916,7 @@ except where the last column says so.
 |---|---|---|
 | `<config>/config.json` | one file | the user (`lw settings`) |
 | `<data>/trust.key` | one key (§17.2) | never |
-| `<cache>/tools.json` | one file | rewritten by a tool scan |
+| `<cache>/tools.json` | one file; one entry per module type (§16.43) | rewritten by a tool scan |
 | `<data>/release-notes-seen` | one line (§16.37) | never |
 | `<data>/lua-<ver>/` | the newest three releases (§16.13) | self-update |
 | `<data>/modules/<name>/` | the installed modules (§16.20) | module removal |
@@ -3945,6 +3945,7 @@ leftover is removed once it is older than the age given, by modification time
 | `<data>/modules/.dl-<name>.zip`, `<data>/modules/.stage-<name>/` | module installation (§16.20) | 24 hours |
 | `<data>/release-notes-seen.tmp`, `<data>/release-notes-seen.tmp<digits>` | recording the seen release (§16.37) | 24 hours |
 | `<data>/device-locks/<serial>.leftover.tmp.<pid>`, `<data>/device-locks/<serial>.lock.reclaim.<nonce>` | device-lock writes and reclaims (§18.7, §19.5) | 24 hours |
+| `<cache>/tools.json.<pid>.<nonce>.tmp` *(from step 5r)* | writing the tool cache (§16.43) | 24 hours |
 | `<tmp>/lw_vcvars_<arch>_<16 hex digits>.bat` (Windows) | the MSVC environment probe | 1 hour |
 | `<run>/<hash>.sock.reclaim.<nonce>` | removing a stale socket (below) | 1 hour |
 | `<exe>.new` | host self-update (§16.32) | 24 hours |
@@ -4218,3 +4219,76 @@ descriptor") and a version that is not a valid release version each exit
 non-zero with one line on standard error, and print nothing on standard
 output. Verification is never relaxed: the transport relaxation of §16.22 does
 not waive the signature or a hash.
+
+### 16.43 Machine-level tool cache
+
+*Status: planned, step 5r part C (§19.11 "Warm restarts"). Today an entry is
+served whenever the cache covers the needed module types, with no
+fingerprint; installing a new compiler needs `lw tools`.*
+
+Detecting toolchains (§3.3) probes compilers and installations and takes
+seconds, so `lw` keeps the last result per **module type** in the
+machine-level tool cache `<cache>/tools.json` (§16.40). Toolchains are a
+machine fact, not a workspace one: the file is shared by every workspace, by
+the in-process CLI and by every workspace daemon (§19), and by older `lw`
+releases on the same machine. It holds no build directories and is never a
+source of a deletion.
+
+**Entries.** Besides the fields every release reads (`version`, `timestamp`,
+the covered module types and their tools), the file holds one entry per
+module type: `{ tools, timestamp, fp }` — the detected tools, when that
+type's detection finished, and the **fingerprint** of its inputs. The cache
+`version` stays `1`: an older release ignores the extra fields and keeps
+reading and writing the fields it knows, and a writer of this release keeps
+those fields up to date as well, so releases sharing the file never treat
+each other's writes as a miss. (Bumping the version would make each release
+rewrite the file for itself on every run.) The implementation verifies that
+the oldest supported release reads a file written this way and that this
+release reads a file an older one rewrote (no per-type entry, or a stale
+one: a miss for that type).
+
+**Fingerprint.** A module type's fingerprint covers, and only covers:
+- the identity of the `lw` that detected it, including its `lw_version` (a
+  development build's identity includes its source hash);
+- the normalized executable search path (the entries, in order, as the
+  environment inventory normalizes them, §16.33), `PATHEXT` on Windows, and
+  the platform;
+- the module id and the module interface version (§8.0);
+- the modification time of each search-path directory (absent when it does
+  not exist), so a compiler newly installed into a directory already on the
+  search path changes it.
+
+There is no module hook: core computes the fingerprint without module
+knowledge. Project files are not an input — detection does not read them;
+what a workspace contributes is only the set of module types it needs.
+
+**Reuse.** A load that detects tools reuses each needed module type whose
+entry's fingerprint matches the current inputs and detects only the others
+(a mismatching, missing or unreadable entry is a miss for that type). There
+is no time-to-live. `lw tools` detects every type and rewrites every entry.
+The same check applies in both hosts — the in-process CLI and the workspace
+daemon read the file through one function — so a changed search path or an
+upgraded `lw` re-detects in either. A command that never detects (one that
+does not wait for tools, `lw tools --cached`) serves the cached entries as
+today, whatever their fingerprint.
+
+**Writing.** Each module type is written as soon as its detection finishes:
+the file is re-read, that type's entry (and the shared fields) replaced, and
+the result written to a uniquely named temporary file beside it
+(`tools.json.<pid>.<nonce>.tmp`) that is renamed over `tools.json` — no
+backup copy, and outside any workspace transaction (§19.4). A type whose
+detection had not finished when the process stopped or abandoned the work is
+not written. A process killed mid-write leaves at most the temporary file
+(a leftover, §16.40), never a torn `tools.json`; an unreadable file is
+treated as empty and rewritten.
+
+**Limits.** The file has no lock: two writers that read before either
+renames can lose one update (last writer wins), which costs only a later
+re-detection of that type. On Windows, a rename blocked by another process
+(a reader, an antivirus scan) is retried briefly and then given up, losing
+only that cache write. Not covered by the fingerprint — and so needing
+`lw tools` — is a toolchain change that touches no search-path directory
+(an installation found through a registry or installer query rather than
+the search path, or an upgrade in place that keeps the directory's
+modification time), and a module plugin upgraded without a change of its
+interface version.
