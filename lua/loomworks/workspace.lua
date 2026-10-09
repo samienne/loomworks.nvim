@@ -4816,7 +4816,11 @@ function Workspace:_scan_tools_async()
                 -- Scan targets for existing build dirs (async, runtime only)
                 self:_scan_targets_async()
             end)
-        end
+        end,
+        -- A detector that works per module type (the CLI's tool cache,
+        -- §16.43) starts no further type once this workspace is torn down;
+        -- merge.detect_tools_async ignores it.
+        { cancelled = function() return self._torn_down == true end }
     )
 end
 

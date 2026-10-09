@@ -554,20 +554,22 @@ local function write_config(cfg)
 end
 
 -- ---------------------------------------------------------------------------
--- Tool cache (machine-level tools.json: %LOCALAPPDATA%/loomworks/cache on
--- Windows, else $XDG_CACHE_HOME/loomworks or ~/.cache/loomworks). Detecting toolchains probes compilers, vswhere, and vcvarsall —
--- seconds of work redone in every fresh process. We persist the last scan so
--- the fast paths (profile create, profiles, later completion) reuse it.
+-- Tool cache (machine-level tools.json, spec §16.43: loomworks.tool_cache).
+-- Detecting toolchains probes compilers, vswhere, and vcvarsall — seconds of
+-- work redone in every fresh process — so each module type's last result is
+-- kept with the fingerprint of its inputs and reused while it matches, in
+-- both hosts (this wrapper is installed by every load, the daemon's too).
 -- `lw tools` always does a real scan and rewrites the cache (deliberate = real
 -- result); `lw tools --cached` reads it. Compilers are a machine fact, not a
 -- workspace one, so the cache is shared across workspaces, keyed by module type.
 -- ---------------------------------------------------------------------------
 
-local TOOL_CACHE_VERSION = 1
--- "auto"   serve the cache when it covers the needed modules, else scan+write
+local tool_cache = require("loomworks.tool_cache")
+-- "auto"   reuse each needed type whose fingerprint matches, detect the rest
 -- "force"  always scan + write (`lw tools`)
--- "cached" never scan; serve whatever is cached (`lw tools --cached`, and any
---          command that doesn't wait for tools — no point probing)
+-- "cached" never scan; serve whatever is cached, whatever its fingerprint
+--          (`lw tools --cached`, and any command that doesn't wait for tools
+--          — no point probing)
 local tool_cache_mode = "auto"
 
 -- Set while serving `lw __complete`: load_workspace returns nil instead of
@@ -585,96 +587,76 @@ function M._reset_modes()
   tool_cache_mode = "auto"
 end
 
-local function tool_cache_dir()
-  if is_windows() then
-    local lad = os.getenv("LOCALAPPDATA")
-    if lad and #lad > 0 then return (lad:gsub("\\", "/")) .. "/loomworks/cache" end
-  end
-  local xdg = os.getenv("XDG_CACHE_HOME")
-  if xdg and #xdg > 0 then return (xdg:gsub("\\", "/")) .. "/loomworks" end
-  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "."
-  return (home:gsub("\\", "/")) .. "/.cache/loomworks"
+--- @return table|nil { version, timestamp, scanned_types, tools_by_type, types? }
+local function read_tool_cache() return tool_cache.read() end
+
+--- Is `mod_type`'s module loaded with a detector? A missing or rejected
+--- module's type is never cached (spec §16.43): installing it later detects.
+local function tool_detectable(mod_type)
+  local mod = require("loomworks.modules").get(mod_type)
+  return mod ~= nil and mod.detect_tools_async ~= nil
 end
 
-local function tool_cache_path() return tool_cache_dir() .. "/tools.json" end
-
---- @return table|nil { version, timestamp, scanned_types, tools_by_type }
-local function read_tool_cache()
-  local f = io.open(tool_cache_path(), "r")
-  if not f then return nil end
-  local content = f:read("*a"); f:close()
-  if not content or content == "" then return nil end
-  local ok, data = pcall(vim.json.decode, content)
-  if not ok or type(data) ~= "table" or data.version ~= TOOL_CACHE_VERSION then return nil end
-  return data
-end
-
---- Merge a fresh scan of `scanned_types` into the on-disk cache. Per-type merge
---- keeps entries for module types this workspace didn't scan (machine cache),
---- while refreshing the ones it did — including clearing a type that now has no
---- tools (its tools_by_type entry becomes absent but it stays "scanned").
+--- Record a complete scan of `scanned_types` (a set) from `tools_by_type`
+--- (`lw tools` through the daemon's projection): each type's entry with its
+--- current fingerprint; entries of other module types are kept. A type whose
+--- module is not loaded here is skipped; fingerprints that cannot be computed
+--- write nothing.
 local function write_tool_cache(tools_by_type, scanned_types)
-  local existing = read_tool_cache() or {}
-  local tbt = existing.tools_by_type or {}
-  local scanned = existing.scanned_types or {}
+  local types = {}
   for mod_type in pairs(scanned_types) do
-    scanned[mod_type] = true
-    tbt[mod_type] = tools_by_type[mod_type] -- nil clears a now-empty type
+    if tools_by_type[mod_type] or tool_detectable(mod_type) then types[mod_type] = true end
   end
-  assert(require("loomworks.io").mkdir_p(tool_cache_dir()))
-  local f = io.open(tool_cache_path(), "w")
-  if not f then return end
-  f:write(vim.json.encode({
-    version = TOOL_CACHE_VERSION,
-    timestamp = os.time(),
-    scanned_types = scanned,
-    tools_by_type = tbt,
-  }))
-  f:close()
+  local ok, fps = pcall(tool_cache.fingerprints, types)
+  if not ok then return end
+  local entries = {}
+  for mod_type in pairs(types) do
+    entries[mod_type] = { tools = tools_by_type[mod_type], fp = fps[mod_type] }
+  end
+  tool_cache.write(entries)
 end
 
---- Module types the workspace needs tools for, from the reconstructed config.
-local function config_needed_types(config)
+--- Module types the workspace needs tools for: its projects' types and the
+--- types its build-state cache still records (as merge.detect_tools_async).
+local function config_needed_types(config, cfg_cache)
   local t = {}
   if config and config.projects then
     for _, p in pairs(config.projects) do
       if p.type then t[p.type] = true end
     end
   end
-  return t
-end
-
---- True when the cache has scanned every needed module type (an empty result
---- for a type still counts as covered — scanned_types records it).
-local function cache_covers(cache, needed)
-  local scanned = cache and cache.scanned_types or {}
-  for mod_type in pairs(needed) do
-    if not scanned[mod_type] then return false end
+  for _, c in pairs(cfg_cache and cfg_cache.build_dirs or {}) do
+    if type(c) == "table" and c.type then t[c.type] = true end
   end
-  return true
+  return t
 end
 
 --- The real detect_tools_async, captured before we wrap it.
 local orig_detect_tools_async = nil
 
---- Caching wrapper around core's detect_tools_async, honoring tool_cache_mode.
-local function cached_detect_tools_async(config, cfg_cache, callback)
-  local needed = config_needed_types(config)
-  if tool_cache_mode ~= "force" then
+--- Caching wrapper around core's detect_tools_async, honoring tool_cache_mode
+--- (spec §16.43 "Reuse"). `opts.cancelled` (Workspace:_scan_tools_async):
+--- true once the workspace was torn down — no further type is detected.
+local function cached_detect_tools_async(config, cfg_cache, callback, opts)
+  if tool_cache_mode == "cached" then
     local cache = read_tool_cache()
-    if cache and (tool_cache_mode == "cached" or cache_covers(cache, needed)) then
-      return callback(cache.tools_by_type or {})
-    end
-    if tool_cache_mode == "cached" then
-      return callback({}) -- told not to scan and nothing cached
-    end
+    return callback(cache and cache.tools_by_type or {}) -- nothing cached: {}
   end
-  -- Real scan; record which types we scanned so "scanned but empty" is cached.
-  orig_detect_tools_async(config, cfg_cache, function(tools_by_type)
-    write_tool_cache(tools_by_type, needed)
-    callback(tools_by_type)
-  end)
+  local detect = orig_detect_tools_async
+  tool_cache.detect({
+    needed = config_needed_types(config, cfg_cache),
+    force = tool_cache_mode == "force",
+    cancelled = opts and opts.cancelled,
+    detectable = tool_detectable,
+    -- One module type at a time, so each is written when it finishes.
+    detect_one = function(mod_type, cb)
+      detect({ projects = { [mod_type] = { type = mod_type } } }, nil, function(tbt)
+        cb(tbt and tbt[mod_type])
+      end)
+    end,
+  }, callback)
 end
+M._cached_detect_tools_async = cached_detect_tools_async
 
 --- Bootstrap a live, remerged Workspace headlessly. Waits for tool detection
 --- unless `wait_tools` is false (status only needs pinned info, not live tools).
@@ -10416,11 +10398,14 @@ function M.cmd_tools(root, args)
   -- cache as the in-process scan does.
   local ws = M._read_projection(root, { tools = cached and ((read_tool_cache() or {}).tools_by_type or {}) or "query" })
   if ws and not cached then
+    -- Every type the daemon detected (its projects' and its build-state
+    -- cache's, snapshot.lua `tools`), and the projects' types without tools.
     local needed = {}
     for _, p in ipairs(ws._projects or {}) do
       local t = p.type or (p._module and p._module.id)
       if t then needed[t] = true end
     end
+    for t in pairs(ws._tools_by_type or {}) do needed[t] = true end
     write_tool_cache(ws._tools_by_type or {}, needed)
   end
   ws = ws or load_workspace(root) -- served from cache or scanned per the mode
@@ -11062,9 +11047,10 @@ Probing compilers/vcvarsall is slow, so the result is cached in tools.json
 under the per-user cache dir: %LOCALAPPDATA%\loomworks\cache on Windows,
 $XDG_CACHE_HOME/loomworks (default ~/.cache/loomworks) elsewhere.
 `lw tools` always does a real scan and refreshes that cache; other commands
-(profile create, profiles) read it.
+reuse a module type's cached result while lw's version, PATH, PATHEXT and the
+PATH directories are unchanged, and re-detect that type otherwise.
   --cached   print the cached result instantly (with its age); don't scan.
-Installed a new compiler? run `lw tools` to refresh.]],
+Installed a compiler outside PATH, or upgraded one in place? run `lw tools`.]],
   build = [[lw build [profile | config-set] [--target <name>]... [--force] [--reconfigure] [-v] [--break-locks] [-- <build-tool args>]
 
 Args after `--` are forwarded to the BUILD tool (not to configure), e.g.

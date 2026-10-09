@@ -198,7 +198,8 @@ directory safety before merging:
    (`loomworks/housekeeping.lua`) remove only direct children of the fixed
    directories (`<data>`, `<data>/pinned[/<sha256>]`, `<data>/modules`, default
    `<data>/device-locks`, `<data>/daemon/logs`, `<tmp>`, the exe's directory,
-   the `<run>` socket dirs, `<root>/.nvim/tmp`) whose whole name matches an
+   the `<run>` socket dirs, `<root>/.nvim/tmp`, the tool cache dir `<cache>`
+   — only regular `tools.json.<pid>.<nonce>.tmp` files, unlinked by name) whose whole name matches an
    exact pattern (release version `<n>.<n>.<n>[tail]` / sha256 / module name /
    arch / hex nonce), past the pattern's age, and only when `<data>` carries an
    lw marker (`is_lw_data`: trust.key, stamp, pinned/, a lua-<ver> release). Parents are real directories (lstat) whose realpath

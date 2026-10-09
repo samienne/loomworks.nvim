@@ -4222,9 +4222,9 @@ not waive the signature or a hash.
 
 ### 16.43 Machine-level tool cache
 
-*Status: planned, step 5r part C (§19.11 "Warm restarts"). Today an entry is
-served whenever the cache covers the needed module types, with no
-fingerprint; installing a new compiler needs `lw tools`.*
+*Status: implemented, step 5r part C (§19.11 "Warm restarts";
+`loomworks.tool_cache`). Before it, an entry was served whenever the cache
+covered the needed module types, with no fingerprint.*
 
 Detecting toolchains (§3.3) probes compilers and installations and takes
 seconds, so `lw` keeps the last result per **module type** in the
@@ -4270,7 +4270,9 @@ The same check applies in both hosts — the in-process CLI and the workspace
 daemon read the file through one function — so a changed search path or an
 upgraded `lw` re-detects in either. A command that never detects (one that
 does not wait for tools, `lw tools --cached`) serves the cached entries as
-today, whatever their fingerprint.
+today, whatever their fingerprint. A module type whose module is not loaded
+(missing or rejected, §8.0) is neither reused nor written, so installing the
+module later detects it.
 
 **Writing.** Each module type is written as soon as its detection finishes:
 the file is re-read, that type's entry (and the shared fields) replaced, and

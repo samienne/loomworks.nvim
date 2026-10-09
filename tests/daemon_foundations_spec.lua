@@ -247,5 +247,8 @@ describe("test isolation", function()
         assert.equals(1, vim.fn.stridx(dpaths.state_dir(), base) + 1)
         local cfg = H.is_win and os.getenv("APPDATA") or os.getenv("XDG_CONFIG_HOME")
         assert.equals(base .. "/config", cfg)
+        -- The machine-level tool cache (spec §16.43) is the run's own too.
+        local tc_dir = require("loomworks.tool_cache").dir()
+        assert.equals(1, vim.fn.stridx(tc_dir, base .. "/cache/") + 1, tc_dir)
     end)
 end)
