@@ -843,6 +843,21 @@ re-cut onto master step by step; this section is expanded as each step lands.
   late: each connect sends `status` (`_join_late`) and adopts every listed
   task not yet seen (`remote_task.adopt`: start time from `started_at`,
   percent from `percent`); tasks are kept in start order.
+  *Planned, step 5i PR G1/G2 (spec §19.16 "Through the relay"):* the
+  observer drops the handle watch, `_inspect`, `launch.spawn` and its
+  `_child`, and the `skip` table. It connects only through a relay child,
+  `<selected binary> daemon run --root R --stdio [--no-launch]
+  [--retiring pid:start | --skip-instance pid:start]` (a relay client in
+  `daemon/`, spawned hidden, not detached, plain stdio pipes, cwd = state
+  dir, env = `launch.env(root, sel.env)`; `frame_reader` from state `auth`;
+  challenge and transport from `welcome.daemon`). It ends a relay by closing
+  its stdin and only after about 5 s plain-kills the relay pid, never
+  `kill_tree` (on Windows the daemon a relay launched is its child). The
+  relay's exit status is mapped only before `welcome` (note + follow-up per
+  the spec table); after `welcome` any exit is a drop -> one `--no-launch`
+  relay. `Observer:_weigh_retire` / `editor_retire.lua` retire only over
+  `welcome.via == "relay"` (G2). `:LoomworksDaemon status` and checkhealth
+  keep reading the handle / lock read-only for diagnostics.
 - `daemon/remote_task.lua` — RemoteTask: resolves `start` meta once at the
   wire boundary (profile by key among `ws:get_profiles()`, units through that
   profile's ProfileProjects to their ConfigUnit); unresolved keys stay names

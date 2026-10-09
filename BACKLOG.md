@@ -67,6 +67,15 @@ considered and not added: configuring stays a step of `lw build`
   that session (the daemon stays observed / editor runs in-process; nothing
   breaks). Changing it is a spec 19.16 change; consider measuring from the
   reply time or allowing one missed tick.
+- Relay progress line (step 5i PR G follow-up): a `daemon run --stdio`
+  relay reports nothing while it waits (attached run's lock, starting
+  daemon, retiring daemon, `--no-launch` wait), so the editor shows only a
+  generic note per relay form (spec/core/daemon.md section 19.16 "Waiting
+  notes"). Add a machine-readable progress line on the relay's stderr (what
+  it is waiting on, e.g. the retiring daemon's pid:start_time) so the
+  Runtime line can say what is happening. The same line could name the
+  retiring instance on exit 14, so the editor can pass `--retiring` even
+  when it had no connection to that daemon.
 
 ## Two meanings of "clean"
 
