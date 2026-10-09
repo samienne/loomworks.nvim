@@ -876,7 +876,10 @@ end
 --- @param target table the daemon { pid, start_time, exe } (`welcome.daemon`)
 --- @param note string the incompatible-daemon note
 function Observer:_skip(target, note)
-    if self.state == "stopped" then return end
+    -- Already observing a daemon (a successor connected meanwhile): a late
+    -- outcome of an earlier wait (a retire reply after its connection
+    -- closed) spawns nothing and leaves the state as it is.
+    if self.state == "stopped" or self.conn then return end
     if self._relay then self:_end_relay() end
     local id = M.instance_id(target)
     if not id then

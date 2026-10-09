@@ -832,4 +832,53 @@ describe("the observer retires an incompatible idle daemon (step 5h.5)", functio
         assert.is_false(sent(f, "old:retire"), vim.inspect(f.sent))
         assert.equals(0, f.spawned, "launches")
     end)
+    it("(G2) a late retire failure while a successor is observed spawns no skip relay", function()
+        local f = observable(fake())
+        f.opts.retire_check_ms = 3000 -- the observed close (below) ends the wait well before this
+        local late
+        f.on_request = function(_, msg, rcb)
+            if msg.kind == "retire" then late = rcb; return true end
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(10000, function() return late ~= nil end, 10), obs:runtime_line())
+        local old = f.conn
+        -- The observed daemon drops; a compatible successor is already live.
+        f.st = f.next
+        old:close()
+        assert.is_true(vim.wait(10000, function()
+            return obs.state == "connected" and obs.daemon and obs.daemon.pid == 5151
+        end, 10), obs:runtime_line())
+        assert.is_nil(obs._retire)
+        local n = #fr.spawns
+        late(nil, "retire refused: late") -- the old wait's outcome arrives now
+        vim.wait(300)
+        assert.equals("connected", obs.state, obs:runtime_line())
+        assert.equals(5151, obs.daemon.pid)
+        assert.equals(n, #fr.spawns, vim.inspect(fr.spawns))
+        for _, sp in ipairs(fr.spawns) do assert.is_nil(sp:find("^skip"), vim.inspect(fr.spawns)) end
+        assert.equals(0, f.spawned, "launches")
+    end)
+
+    it("(G2) a skip relay handing back the skipped daemon is an internal error: closed, nothing spawned", function()
+        local f = fake()
+        f.daemons.old.lw_version = "v9.9.9" -- declined: skipped
+        -- A broken relay: told to skip the daemon, it connects to it anyway
+        -- (the fake relay's no-launch form ignores the instance it names).
+        f.opts.relay = function(ropts, cb)
+            if ropts.form == "skip" then ropts = vim.tbl_extend("force", ropts, { form = "no-launch" }) end
+            return fr.relay(ropts, cb)
+        end
+        obs = attach(f.opts)
+        assert.is_true(vim.wait(10000, function()
+            return obs:runtime_line():find("internal error: the relay connected to the daemon it was told to skip",
+                1, true) ~= nil
+        end, 10), vim.inspect(fr.spawns) .. " " .. obs:runtime_line())
+        assert.same({ "ordinary", "no-launch 4242:win:t" }, fr.spawns, vim.inspect(fr.spawns))
+        assert.is_true(fr.relays[2].conn.closed, "the connection to the skipped daemon was closed")
+        assert.equals("waiting", obs.state, obs:runtime_line())
+        assert.is_nil(obs.conn)
+        vim.wait(300) -- no loop back to that daemon
+        assert.equals(2, #fr.spawns, vim.inspect(fr.spawns))
+        assert.equals(0, f.spawned, "launches")
+    end)
 end)
