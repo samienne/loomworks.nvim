@@ -195,19 +195,74 @@ describe("tool cache reuse and writing (§16.43)", function()
         assert.same(CMAKE, data.types.cmake.tools)
         assert.is_nil(data.types.meson)
         assert.is_nil(data.scanned_types.meson)
-        -- Abandoned after cmake finished: meson is never started or written.
+        -- Abandoned (cancelled) between types, while cmake was detecting:
+        -- cmake finished and is written; meson and qmake, after the
+        -- cancellation, are never started and never written (the detector
+        -- would answer them, so only the cancellation check keeps them out).
         local dir2 = sandbox()
         local env2 = fake_env(dir2)
         local abandoned = false
         local seen = {}
-        local r = run({ needed = { cmake = true, meson = true }, env = env2,
+        local r = run({ needed = { cmake = true, meson = true, qmake = true }, env = env2,
             cancelled = function() return abandoned end,
-            detect_one = function(t, cb) seen[#seen + 1] = t; abandoned = true; cb(CMAKE) end })
+            detect_one = function(t, cb)
+                seen[#seen + 1] = t
+                if t == "cmake" then abandoned = true end
+                cb(CMAKE)
+            end })
         assert.same({ "cmake" }, seen)
         assert.same({ cmake = CMAKE }, r)
         local d2 = tc.read(env2)
         assert.is_table(d2.types.cmake, "a type that finished after the abandonment is written")
-        assert.is_nil(d2.types.meson)
+        for _, t in ipairs({ "meson", "qmake" }) do
+            assert.is_nil(d2.types[t], t)
+            assert.is_nil(d2.scanned_types[t], t)
+            assert.is_nil(d2.tools_by_type[t], t)
+        end
+    end)
+
+    it("a type whose module is not loaded is neither reused, detected nor written", function()
+        local env = fake_env(dir)
+        -- An entry for it under the current fingerprint (written by another lw
+        -- that had the module): not served while the module is missing here.
+        local fps = tc.fingerprints({ ghost = true }, env)
+        assert.is_true((tc.write({ ghost = { tools = CMAKE, fp = fps.ghost } }, env)))
+        local seen, detect = counter({ cmake = CMAKE, ghost = {} })
+        local r = run({ needed = { cmake = true, ghost = true }, env = env, detect_one = detect,
+            detectable = function(t) return t ~= "ghost" end })
+        assert.same({ "cmake" }, seen)
+        assert.same({ cmake = CMAKE }, r)
+        -- Its entry is left as it was (never replaced by an empty result).
+        assert.same(CMAKE, tc.read(env).types.ghost.tools)
+        -- A fresh cache: the missing module's type gets no entry at all, so
+        -- installing the module later detects it.
+        local dir2 = sandbox()
+        local env2 = fake_env(dir2)
+        local seen2, detect2 = counter({ cmake = CMAKE })
+        run({ needed = { cmake = true, ghost = true }, env = env2, detect_one = detect2,
+            detectable = function(t) return t ~= "ghost" end })
+        assert.same({ "cmake" }, seen2)
+        local d2 = tc.read(env2)
+        assert.is_nil(d2.types.ghost)
+        assert.is_nil(d2.scanned_types.ghost)
+        -- Installed: now detected (and written).
+        local seen3, detect3 = counter({ cmake = CMAKE, ghost = CMAKE })
+        local r3 = run({ needed = { cmake = true, ghost = true }, env = env2, detect_one = detect3,
+            detectable = function() return true end })
+        assert.same({ "ghost" }, seen3)
+        assert.same({ cmake = CMAKE, ghost = CMAKE }, r3)
+    end)
+
+    it("fingerprints that cannot be computed: every type is detected, nothing is read or written", function()
+        local env = fake_env(dir)
+        run({ needed = { cmake = true }, env = env, detect_one = select(2, counter({ cmake = CMAKE })) })
+        local before = read(dir .. "/tools.json")
+        local broken = fake_env(dir, { identity = function() error("no identity") end })
+        local seen, detect = counter({ cmake = CMAKE, meson = CMAKE })
+        local r = run({ needed = { cmake = true, meson = true }, env = broken, detect_one = detect })
+        assert.same({ "cmake", "meson" }, seen, "the cached cmake entry is not trusted")
+        assert.same({ cmake = CMAKE, meson = CMAKE }, r)
+        assert.equals(before, read(dir .. "/tools.json"), "nothing written")
     end)
 
     it("writes through unique temporary files renamed over tools.json, leaving none", function()
@@ -317,6 +372,34 @@ describe("both hosts use the fingerprint check (§16.43 'Reuse')", function()
         ["in-process CLI"] = function() return (cli._load_workspace_soft(root, true)) end,
         ["workspace daemon"] = function() return (cli._daemon_build_host().load(root, {}, {})) end,
     }
+    it("a project type whose module is not loaded is never written (in-process wrapper)", function()
+        load_counting(hosts["in-process CLI"]) -- installs the wrapper over a counting detector
+        local got
+        cli._cached_detect_tools_async({ projects = { g = { type = "lwtest_no_such_module" } } }, nil,
+            function(r) got = r end)
+        assert.is_true(vim.wait(5000, function() return got ~= nil end, 5))
+        assert.same({}, got)
+        local data = tc.read()
+        assert.is_nil(data and data.types and data.types.lwtest_no_such_module)
+        assert.is_nil(data and data.scanned_types and data.scanned_types.lwtest_no_such_module)
+    end)
+
+    it("daemon-mode `lw tools` writes every type the daemon returned", function()
+        local orig = cli._read_projection
+        cli._read_projection = function()
+            -- shell: a project's type; cmake: only in the daemon's build-state
+            -- cache (snapshot.lua `tools` detects it too); no modules listed.
+            return { _projects = { { type = "shell" } }, _modules = {},
+                _tools_by_type = { cmake = CMAKE } }
+        end
+        local ok, err = pcall(cli.cmd_tools, root, {})
+        cli._read_projection = orig
+        assert.is_true(ok, tostring(err))
+        local data = tc.read()
+        assert.same(CMAKE, data.types.cmake.tools)
+        assert.same({}, data.types.shell.tools)
+    end)
+
     for name, load in pairs(hosts) do
         it(name .. ": detects on a cold cache, reuses a matching one, re-detects on a PATH change", function()
             assert.same({ "shell" }, load_counting(load))

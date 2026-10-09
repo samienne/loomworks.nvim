@@ -4270,7 +4270,9 @@ The same check applies in both hosts — the in-process CLI and the workspace
 daemon read the file through one function — so a changed search path or an
 upgraded `lw` re-detects in either. A command that never detects (one that
 does not wait for tools, `lw tools --cached`) serves the cached entries as
-today, whatever their fingerprint.
+today, whatever their fingerprint. A module type whose module is not loaded
+(missing or rejected, §8.0) is neither reused nor written, so installing the
+module later detects it.
 
 **Writing.** Each module type is written as soon as its detection finishes:
 the file is re-read, that type's entry (and the shared fields) replaced, and

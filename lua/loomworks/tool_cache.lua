@@ -253,20 +253,30 @@ end
 --- The tools of the module types `opts.needed`: each type whose cached entry
 --- matches its fingerprint is reused, the others are detected one at a time
 --- (`opts.detect_one`) and each is written as soon as its detection finishes.
---- With `opts.force` (`lw tools`) every type is detected. Once
+--- With `opts.force` (`lw tools`) every type is detected. A type for which
+--- `opts.detectable(type)` is false (its module is not loaded: missing or
+--- rejected) is neither reused, detected nor written. Once
 --- `opts.cancelled()` is true (the work was abandoned), no further type is
 --- started: an interrupted type is never written; a type that finished is a
---- complete result and is written. `callback` gets `tools_by_type` (a type
---- with no tools is absent, as from `merge.detect_tools_async`).
---- @param opts { needed: table<string, any>, detect_one: fun(mod_type: string, cb: fun(tools: table|nil)), force?: boolean, cancelled?: fun(): boolean, env?: table }
+--- complete result and is written. When the fingerprints cannot be computed
+--- (an input raised), every type is detected and nothing is read or written.
+--- `callback` gets `tools_by_type` (a type with no tools is absent, as from
+--- `merge.detect_tools_async`).
+--- @param opts { needed: table<string, any>, detect_one: fun(mod_type: string, cb: fun(tools: table|nil)), detectable?: fun(mod_type: string): boolean, force?: boolean, cancelled?: fun(): boolean, env?: table }
 --- @param callback fun(tools_by_type: table<string, table>)
 function M.detect(opts, callback)
     local env = M.env(opts.env)
-    local types = {}
-    for t in pairs(opts.needed or {}) do types[#types + 1] = t end
+    local types, needed = {}, {}
+    for t in pairs(opts.needed or {}) do
+        if not opts.detectable or opts.detectable(t) then
+            types[#types + 1] = t
+            needed[t] = true
+        end
+    end
     table.sort(types)
-    local fps = M.fingerprints(opts.needed, env)
-    local cache = not opts.force and M.read(env) or nil
+    local okf, fps = pcall(M.fingerprints, needed, env)
+    if not okf then fps = nil end
+    local cache = fps and not opts.force and M.read(env) or nil
     local result, misses = {}, {}
     for _, t in ipairs(types) do
         local tools = cache and M.lookup(cache, t, fps[t])
@@ -285,7 +295,7 @@ function M.detect(opts, callback)
         local t = misses[i]
         opts.detect_one(t, function(tools)
             tools = type(tools) == "table" and tools or {}
-            M.write({ [t] = { tools = tools, fp = fps[t] } }, env)
+            if fps then M.write({ [t] = { tools = tools, fp = fps[t] } }, env) end
             if #tools > 0 then result[t] = tools end
             step()
         end)

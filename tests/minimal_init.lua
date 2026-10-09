@@ -29,18 +29,24 @@ vim.env.LOOMWORKS_NO_HOUSEKEEPING = "1"
 -- trust key, the workspace runtime's state and runtime logs, spec §17.2,
 -- §19.10) and its own lw settings, so a test run never writes the real
 -- %LOCALAPPDATA%\loomworks / ~/.local/share/loomworks, and the developer's
--- own settings (runtime-mode, …) never change what a test does. Spawned
--- helper processes inherit both.
+-- own settings (runtime-mode, …) never change what a test does. Its own
+-- cache directory too: the machine-level tool cache `tools.json` (spec
+-- §16.43) lives under %LOCALAPPDATA% / $XDG_CACHE_HOME, and a test reading
+-- or writing the real one would depend on the developer's machine and on the
+-- order of the spec files. Spawned helper processes inherit all three.
 do
     local base = vim.fn.tempname():gsub("\\", "/")
     vim.fn.mkdir(base .. "/data", "p")
     vim.fn.mkdir(base .. "/config", "p")
+    vim.fn.mkdir(base .. "/cache", "p")
     vim.env.LOOMWORKS_DATA_DIR = base .. "/data"
     if vim.fn.has("win32") == 1 then
         vim.env.APPDATA = base .. "/config"
     else
         vim.env.XDG_CONFIG_HOME = base .. "/config"
     end
+    vim.env.LOCALAPPDATA = base .. "/cache"
+    vim.env.XDG_CACHE_HOME = base .. "/cache"
     vim.env.LOOMWORKS_RUNTIME = nil
     vim.env.LOOMWORKS_NO_DAEMON = nil
     vim.env.LOOMWORKS_TEST_STATE_ROOT = base

@@ -512,6 +512,7 @@ local function unlink_file(item)
     if ok then return true end
     return false, "unlink " .. item.path .. ": " .. tostring(err)
 end
+M._unlink_file = unlink_file
 
 --- `tools.json.<pid>.<nonce>.tmp` directly in the tool cache directory
 --- `<cache>` (spec §16.40, §16.43): a write of the tool cache interrupted
@@ -744,9 +745,12 @@ function M.collect(opts)
             guarded(scan_legacy_logs, items, ctx, logs)
         end
     end
-    local cache = opts.cache_dir
-    if cache == nil then cache = require("loomworks.tool_cache").default_dir() end
-    if cache and fixed(cache) then guarded(scan_tool_cache, items, ctx, norm(cache)) end
+    -- (Inside `guarded`: an error resolving <cache> must not abort collect.)
+    guarded(function()
+        local cache = opts.cache_dir
+        if cache == nil then cache = require("loomworks.tool_cache").default_dir() end
+        if cache and fixed(cache) then scan_tool_cache(items, ctx, norm(cache)) end
+    end)
     for _, t in ipairs(opts.tmp_dirs or default_tmp_dirs()) do
         if fixed(t) then guarded(scan_tmp, items, ctx, norm(t), ctx.is_windows) end
     end

@@ -590,13 +590,27 @@ end
 --- @return table|nil { version, timestamp, scanned_types, tools_by_type, types? }
 local function read_tool_cache() return tool_cache.read() end
 
+--- Is `mod_type`'s module loaded with a detector? A missing or rejected
+--- module's type is never cached (spec §16.43): installing it later detects.
+local function tool_detectable(mod_type)
+  local mod = require("loomworks.modules").get(mod_type)
+  return mod ~= nil and mod.detect_tools_async ~= nil
+end
+
 --- Record a complete scan of `scanned_types` (a set) from `tools_by_type`
 --- (`lw tools` through the daemon's projection): each type's entry with its
---- current fingerprint; entries of other module types are kept.
+--- current fingerprint; entries of other module types are kept. A type whose
+--- module is not loaded here is skipped; fingerprints that cannot be computed
+--- write nothing.
 local function write_tool_cache(tools_by_type, scanned_types)
-  local fps = tool_cache.fingerprints(scanned_types)
-  local entries = {}
+  local types = {}
   for mod_type in pairs(scanned_types) do
+    if tools_by_type[mod_type] or tool_detectable(mod_type) then types[mod_type] = true end
+  end
+  local ok, fps = pcall(tool_cache.fingerprints, types)
+  if not ok then return end
+  local entries = {}
+  for mod_type in pairs(types) do
     entries[mod_type] = { tools = tools_by_type[mod_type], fp = fps[mod_type] }
   end
   tool_cache.write(entries)
@@ -633,6 +647,7 @@ local function cached_detect_tools_async(config, cfg_cache, callback, opts)
     needed = config_needed_types(config, cfg_cache),
     force = tool_cache_mode == "force",
     cancelled = opts and opts.cancelled,
+    detectable = tool_detectable,
     -- One module type at a time, so each is written when it finishes.
     detect_one = function(mod_type, cb)
       detect({ projects = { [mod_type] = { type = mod_type } } }, nil, function(tbt)
@@ -10383,11 +10398,14 @@ function M.cmd_tools(root, args)
   -- cache as the in-process scan does.
   local ws = M._read_projection(root, { tools = cached and ((read_tool_cache() or {}).tools_by_type or {}) or "query" })
   if ws and not cached then
+    -- Every type the daemon detected (its projects' and its build-state
+    -- cache's, snapshot.lua `tools`), and the projects' types without tools.
     local needed = {}
     for _, p in ipairs(ws._projects or {}) do
       local t = p.type or (p._module and p._module.id)
       if t then needed[t] = true end
     end
+    for t in pairs(ws._tools_by_type or {}) do needed[t] = true end
     write_tool_cache(ws._tools_by_type or {}, needed)
   end
   ws = ws or load_workspace(root) -- served from cache or scanned per the mode

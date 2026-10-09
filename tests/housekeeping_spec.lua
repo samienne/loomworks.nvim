@@ -643,3 +643,50 @@ describe("lw cleanup wiring", function()
         assert.equals("--force", (opts_mod.find_unknown({ "cleanup", "--force" })))
     end)
 end)
+
+describe("tool cache temp files (spec §16.40, §16.43)", function()
+    it("an error resolving the default <cache> does not abort collect", function()
+        local sb = sandbox()
+        plant_leftovers(sb)
+        local o = opts(sb)
+        o.cache_dir = nil -- resolved by tool_cache.default_dir
+        local tc = require("loomworks.tool_cache")
+        local orig = tc.default_dir
+        tc.default_dir = function() error("no cache dir") end
+        local ok, items, info = pcall(hk.collect, o)
+        tc.default_dir = orig
+        assert.is_true(ok, tostring(items))
+        local got = paths_of(items)
+        -- Everything else is still collected (the temp dir's leftovers, …).
+        assert.is_not_nil(got[sb.tmp .. "/lw-test-" .. HEX24 .. ".xml"])
+        assert.is_not_nil(got[sb.data .. "/.dl-0.1.40.zip"])
+        assert.is_nil(got[sb.cache .. "/tools.json.4242." .. HEX24 .. ".tmp"], "the <cache> was not scanned")
+        assert.equals(1, info.errors)
+        require("loomworks.io").rm_rf(sb.base)
+    end)
+
+    it("unlink_file re-checks the path itself: a directory or a link is never unlinked", function()
+        local sb = sandbox()
+        local d = mkdir(sb.cache .. "/tools.json.1." .. HEX24 .. ".tmp")
+        local ok = hk._unlink_file({ path = d })
+        assert.is_false(ok)
+        assert.is_true(exists(d))
+        local link = sb.cache .. "/tools.json.2." .. HEX24 .. ".tmp"
+        if uv.fs_symlink(sb.outside .. "/precious.txt", link) then
+            assert.is_false((hk._unlink_file({ path = link })))
+            assert.is_true(exists(link), "the link itself is kept")
+            assert.equals("precious", read(sb.outside .. "/precious.txt"))
+        end
+        -- A directory link (a junction on Windows, which an unlink would remove).
+        local jl = sb.cache .. "/tools.json.4." .. HEX24 .. ".tmp"
+        if dirlink(sb.outside, jl) then
+            assert.is_false((hk._unlink_file({ path = jl })))
+            assert.is_not_nil(uv.fs_lstat(jl), "the directory link itself is kept")
+            assert.equals("precious", read(sb.outside .. "/precious.txt"))
+        end
+        local f = write(sb.cache .. "/tools.json.3." .. HEX24 .. ".tmp")
+        assert.is_true((hk._unlink_file({ path = f })))
+        assert.is_false(exists(f))
+        require("loomworks.io").rm_rf(sb.base)
+    end)
+end)
