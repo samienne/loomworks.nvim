@@ -1466,8 +1466,13 @@ Step 5g.2 part B adds the operations and the CLI's calls:
   (`views.status_of`: the record by `views.match`, the profile icon by
   `views.profile_state`), `init.buf_project` (separator-bounded longest
   prefix on normalized paths), `init.view_header` (the status page header).
-  A daemon change redraws the statusline and emits `daemon_view_changed`
-  (the status page re-renders).
+  A daemon change (set, or any clear: the observer's `_set_view` /
+  `_clear_views`) redraws the statusline and emits `daemon_view_changed`
+  (the status page re-renders). An in-process view has no change of its own:
+  init.lua calls `views.changed()` on the model events (task start/stop,
+  operations, deletions, active set, workspace), which redraws the statusline
+  (coalesced per event-loop turn), so a running state starts the lualine
+  spinner at once; lualine itself subscribes to no event.
 - `daemon/calls.lua` (binary side) — the CLI's requests as calls: on a
   connection whose `conn.transport >= 11`, `request` sends a protocol-10
   request kind as its interface method (entities as `{ key }`) and maps the

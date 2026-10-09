@@ -32,18 +32,32 @@ local builders = {}
 --- @type fun()[]
 local listeners = {}
 
-local function changed()
+local redraw_pending = false
+
+--- A view may have changed: tell the listeners and redraw the statusline
+--- (it reads the store; a running state it then shows starts the spinner).
+--- The store calls it when a daemon view is set or cleared; init.lua calls it
+--- when the in-process model may have changed (a task started or stopped, the
+--- active profile or a build state changed), since an in-process view is
+--- built on read and has no change of its own. Redraws coalesce: one per
+--- event-loop turn however many changes.
+function M.changed()
     for _, fn in ipairs(listeners) do pcall(fn) end
-    -- The statusline reads the store: redraw it with the daemon's news.
-    vim.schedule(function() pcall(vim.cmd, "redrawstatus") end)
+    if redraw_pending then return end
+    redraw_pending = true
+    vim.schedule(function()
+        redraw_pending = false
+        pcall(vim.cmd, "redrawstatus")
+    end)
 end
+local changed = M.changed
 
 --- Register the in-process builder of a view.
 --- @param name loomworks.ViewName
 --- @param fn fun(): table|nil
 function M.set_builder(name, fn) builders[name] = fn end
 
---- Call `fn()` whenever a daemon view changes (set or cleared).
+--- Call `fn()` whenever a view may have changed (see `M.changed`).
 --- @param fn fun()
 function M.on_change(fn) listeners[#listeners + 1] = fn end
 
@@ -61,6 +75,7 @@ end
 --- view is built in-process again.
 --- @param owner table
 --- @param name? loomworks.ViewName
+--- @return boolean cleared whether `owner` held any of them
 function M.clear(owner, name)
     local any = false
     for n, d in pairs(daemon) do
@@ -70,6 +85,7 @@ function M.clear(owner, name)
         end
     end
     if any then changed() end
+    return any
 end
 
 --- Where a view comes from now.

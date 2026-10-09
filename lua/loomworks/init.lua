@@ -17,6 +17,17 @@ local core = Core.new()
 local views = require("loomworks.views")
 views.set_builder("header", function() return core:view_header() end)
 views.set_builder("projects", function() return core:view_projects_index() end)
+-- An in-process view is built on read and has no change of its own: when the
+-- model it is built from may have changed, tell the store, which redraws the
+-- statusline (a running state then starts its spinner at once).
+for _, ev in ipairs({
+    "workspace_changed", "active_set_changed", "profile_renamed",
+    "task_started", "task_stopped", "task_result",
+    "operation_started", "operation_finished",
+    "deletion_started", "deletion_completed", "deletion_failed",
+}) do
+    events.on(ev, function() views.changed() end)
+end
 
 --- Auto-load mode. Default: "auto".
 --- @type string|false

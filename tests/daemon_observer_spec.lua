@@ -476,6 +476,40 @@ describe("the observer (§19.16)", function()
         assert.equals("loaded", lw.view_header().state)
     end)
 
+    it("a removed /views drops the daemon's views and re-renders the status page (daemon_view_changed)", function()
+        local store = require("loomworks.views")
+        s = new_server(root)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function()
+            return store.source("header") == "daemon" and store.source("projects") == "daemon"
+        end, 10), obs:runtime_line())
+        local seen = {}
+        on("daemon_view_changed", function(d) seen[#seen + 1] = d and d.view or "all" end)
+        s.srv:registry():unmount("/views")
+        assert.is_true(vim.wait(5000, function()
+            return store.source("header") == "in-process" and store.source("projects") == "in-process"
+        end, 10))
+        table.sort(seen)
+        assert.same({ "header", "projects" }, seen)
+        -- Stopping with nothing held notifies nothing more.
+        obs:stop()
+        assert.equals(2, #seen)
+    end)
+
+    it("stopping while the daemon's views are held notifies the status page once", function()
+        local store = require("loomworks.views")
+        s = new_server(root)
+        obs = attach()
+        assert.is_true(vim.wait(10000, function()
+            return store.source("header") == "daemon" and store.source("projects") == "daemon"
+        end, 10), obs:runtime_line())
+        local seen = 0
+        on("daemon_view_changed", function() seen = seen + 1 end)
+        obs:stop()
+        assert.equals("in-process", store.source("header"))
+        assert.equals(1, seen)
+    end)
+
     it("a transport-11 daemon offering neither view and sending v0 broadcasts (step 5g.1) gets no note", function()
         s = new_server(root, false)
         obs = attach({ connect = connect_with(function(conn)

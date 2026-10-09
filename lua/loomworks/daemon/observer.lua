@@ -275,6 +275,26 @@ function Observer:_emit(event, data)
     if events then pcall(events.emit, event, data) end
 end
 
+--- Adopt the daemon's full state of a view into the store; the status page
+--- re-renders (its header reads the store).
+--- @param name loomworks.ViewName
+--- @param state table
+function Observer:_set_view(name, state)
+    views.set(self, name, state)
+    self:_emit("daemon_view_changed", { view = name })
+end
+
+--- Drop this observer's daemon views (all, or `name`) from the store: they
+--- are built in-process again, and the status page re-renders the same way
+--- as on a set. Every clear (a removed `/views`, a resubscribe, a close, a
+--- stop) goes through here.
+--- @param name? loomworks.ViewName
+function Observer:_clear_views(name)
+    if views.clear(self, name) then
+        self:_emit("daemon_view_changed", { view = name })
+    end
+end
+
 --- Set the state and the note; the status page re-renders.
 function Observer:_set(state, note)
     if self.state == state and self.note == note then return end
@@ -1297,7 +1317,7 @@ end
 function Observer:_subscribe(conn, done)
     self._feat, self._why, self._sub_only = {}, {}, nil
     self._view_seq = nil
-    views.clear(self)
+    self:_clear_views()
     local welcome_objects = conn.welcome and conn.welcome.objects
     if not (type(conn.transport) == "number" and conn.transport >= 11) or type(welcome_objects) ~= "table"
         or type(conn.call) ~= "function" then
@@ -1379,7 +1399,7 @@ function Observer:_on_objects_changed(args)
         for _, want in ipairs(M.FEATURES) do
             if want.object == p then
                 self._feat[want.feature] = nil
-                if want.view then views.clear(self, want.view) end
+                if want.view then self:_clear_views(want.view) end
             end
         end
     end
@@ -1402,8 +1422,7 @@ function Observer:_view_subscribed(want, result)
     -- connection, §19.12): the baseline is the highest one seen.
     if seq and seq > (self._view_seq or 0) then self._view_seq = seq end
     if type(result.initial) == "table" then
-        views.set(self, want.view, result.initial)
-        self:_emit("daemon_view_changed", { view = want.view })
+        self:_set_view(want.view, result.initial)
     end
 end
 
@@ -1419,8 +1438,7 @@ function Observer:_view_update(want, msg)
     local gap = seq ~= nil and self._view_seq ~= nil and seq > self._view_seq + 1
     if seq and seq > (self._view_seq or 0) then self._view_seq = seq end
     if type(msg.args) == "table" then
-        views.set(self, want.view, msg.args)
-        self:_emit("daemon_view_changed", { view = want.view })
+        self:_set_view(want.view, msg.args)
     end
     if gap then self:_refetch_views() end
 end
@@ -1434,8 +1452,7 @@ function Observer:_refetch_views()
             conn:call(want.object, want.iface, want.v, "get", {}, function(state, err)
                 vim.schedule(function()
                     if self.state == "stopped" or self.conn ~= conn or err or type(state) ~= "table" then return end
-                    views.set(self, want.view, state)
-                    self:_emit("daemon_view_changed", { view = want.view })
+                    self:_set_view(want.view, state)
                 end)
             end)
         end
@@ -1514,7 +1531,7 @@ function Observer:_on_closed(c)
     self.incompat_note = nil
     self._feat, self._why, self._sub_only = nil, nil, nil
     self._view_seq = nil
-    views.clear(self)
+    self:_clear_views()
     self:_stop_timer("_keepalive")
     -- An observed incompatible daemon weighed for a retirement: forget it
     -- (a retirement in flight still reports through its reply).
@@ -1708,7 +1725,7 @@ function Observer:stop()
     self.conn = nil
     if c then c.on_close = nil; c:close() end
     self._view_seq = nil
-    views.clear(self)
+    self:_clear_views()
     self:_end_tasks("the workspace was unloaded", true)
     if self.ws and self.ws._daemon_observer == self then self.ws._daemon_observer = nil end
 end

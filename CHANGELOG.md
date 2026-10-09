@@ -321,6 +321,12 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   daemon loads the workspace, and the editor's own model otherwise. The
   Runtime line names `statusline` and `project index` when the daemon does
   not offer them. (#188)
+- `lw.buf_status()` (and so the statusline) now returns the buffer's project
+  when no profile is active: `project` is set, `profile_key`, `set_name`,
+  `configuration`, `tool_key` and `status` are nil, so the statusline shows
+  the bare project name instead of nothing. `tool_key` is now the tool of the
+  buffer's project in the active profile (the profile's per-project tool),
+  not the project's own tool. (#188)
 - The machine-level tool cache (`tools.json`) is now reused per module type
   only while what the detection depended on is unchanged: another `lw`
   version, a changed `PATH` or `PATHEXT`, or a compiler newly installed into a

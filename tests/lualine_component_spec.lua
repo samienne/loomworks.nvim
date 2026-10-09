@@ -77,3 +77,60 @@ describe("lualine component: workspace data is statusline-inert", function()
     assert.is_truthy(s:find("dev", 1, true))
   end)
 end)
+
+describe("lualine component: in-process view changes redraw at once", function()
+  -- An in-process view is built on read: init.lua tells the view store when
+  -- the model may have changed (here `task_started`), the store redraws the
+  -- statusline, and the render that then shows a running state starts the
+  -- spinner timer. The component itself subscribes to no loomworks event.
+  local lw = require("loomworks")
+  local events = require("loomworks.events")
+  local saved_status, saved_cmd
+
+  before_each(function()
+    saved_status = lw.buf_status
+    saved_cmd = vim.cmd
+    package.loaded["loomworks"] = lw
+  end)
+  after_each(function()
+    lw.buf_status = saved_status
+    vim.cmd = saved_cmd
+  end)
+
+  it("a task start redraws the statusline and the running state starts the spinner", function()
+    local state = "built"
+    lw.buf_status = function() return { project = "App", configuration = "Debug", status = state } end
+    local c = new_component({ show = { "project" }, icons = {} })
+    local redraws = 0
+    -- Stand in for lualine: each redrawstatus renders the component.
+    vim.cmd = function(cmd)
+      if cmd == "redrawstatus" then
+        redraws = redraws + 1
+        c:update_status()
+        return
+      end
+      return saved_cmd(cmd)
+    end
+    c:update_status() -- idle render: no timer
+    vim.wait(200)
+    assert.equals(0, redraws)
+
+    state = "building"
+    events.emit("task_started", { name = "build" })
+    -- The store's redraw comes on the next event-loop turn ...
+    assert.is_true(vim.wait(100, function() return redraws >= 1 end, 5))
+    -- ... and the spinner timer (80 ms) keeps redrawing after it.
+    assert.is_true(vim.wait(1000, function() return redraws >= 4 end, 5))
+
+    -- Idle again: the timer stops on its own (IDLE_STOP_MS after the last
+    -- running render).
+    state = "built"
+    events.emit("task_stopped", {})
+    local last = -1
+    assert.is_true(vim.wait(4000, function()
+      local stable = redraws == last
+      last = redraws
+      return stable
+    end, 300))
+  end)
+end)
