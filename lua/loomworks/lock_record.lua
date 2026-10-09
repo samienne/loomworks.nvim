@@ -308,9 +308,11 @@ end
 
 --- Replace the record of a lock file this process holds by `rec` (same
 --- nonce): written to a temp and renamed over the lock file, so a reader
---- sees the old record or the new one, never an empty file. Only while the
---- lock file still carries `rec`'s nonce (a lock file forced off or
---- reclaimed is never recreated or overwritten). Returns true; false + "lost"
+--- sees the old record or the new one, never an empty file. That the lock
+--- file still carries `rec`'s nonce is checked right before each rename, so
+--- a lock file forced off or reclaimed is normally left alone; a narrow
+--- window remains between that check and the rename (no wider than with the
+--- previous in-place rewrite). Returns true; false + "lost"
 --- when the lock is no longer ours; false + the error when no rename
 --- succeeded (the temp is removed on every failure).
 --- @param path string

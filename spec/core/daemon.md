@@ -432,7 +432,10 @@ given the lock file's name by a hard link, an atomic create-if-absent; the
 temporary name is then removed. Where the file system has no hard links, the
 lock file is created exclusively and its record written right after. A
 holder rewriting its record writes a temporary file and renames it over the
-lock file, only while the lock file still carries its nonce. A reader that
+lock file; that the lock file still carries its nonce is checked right
+before each rename, so a narrow window remains in which a lock file forced
+off or reclaimed between the check and the rename is overwritten (no wider
+than with the earlier in-place rewrite). A reader that
 finds a fresh empty lock file (modified within the last 2 s; one created
 without hard links, or by an older version) reads it again for up to 250 ms
 before judging it, so a record being written is never taken for another

@@ -141,7 +141,8 @@ end
 --- lockfile may belong to another process by now. The new record replaces
 --- the old by a rename (lock_record.replace), so a reader never sees an
 --- empty lockfile; when no rename succeeds the lockfile is rewritten in
---- place. Best-effort — a failed write leaves the previous record.
+--- place (M._rewrite_in_place), only while it still carries the handle's
+--- nonce. Best-effort — a failed write leaves the previous record.
 --- @param handle table|nil
 --- @param fields table
 function M.update_record(handle, fields)
@@ -151,6 +152,16 @@ function M.update_record(handle, fields)
     end
     local ok, err = lock_record.replace(handle.path, handle.record)
     if ok or err == "lost" then return end
+    M._rewrite_in_place(handle)
+end
+
+--- Fallback of update_record when no rename succeeded: rewrite the lockfile
+--- in place (a reader may briefly see it empty). Nothing is written to a
+--- lockfile that no longer carries the handle's nonce (forced off or
+--- reclaimed). A field so tests can count or disable it.
+--- @param handle table
+function M._rewrite_in_place(handle)
+    if not lock_record.still_ours(handle.path, handle.record) then return end
     local body = vim.json.encode(handle.record)
     -- "r+" (never "w"): a lockfile that vanished (forced off by `lw unlock`)
     -- is not recreated behind another process's back.

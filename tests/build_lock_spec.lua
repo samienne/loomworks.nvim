@@ -329,6 +329,31 @@ describe("lock files are written atomically", function()
         bl.release(h)
     end)
 
+    it("update_record: the in-place fallback leaves a lock that is no longer ours alone", function()
+        local h = assert(bl.try_acquire_path(path, "configure"))
+        local saved_ms = lock_record.REPLACE_RETRY_MS
+        lock_record.REPLACE_RETRY_MS = 1
+        local other = '{"pid":1,"lock_nonce":"someone-else"}'
+        local tries = 0
+        lock_record._rename = function()
+            tries = tries + 1
+            if tries == lock_record.REPLACE_RETRIES then
+                -- Taken over after the last check, before the fallback.
+                local f = assert(io.open(path, "wb"))
+                f:write(other)
+                f:close()
+            end
+            return nil, "EACCES: permission denied", "EACCES"
+        end
+        bl.update_record(h, { operation = "build" })
+        lock_record.REPLACE_RETRY_MS = saved_ms
+        assert.equals(lock_record.REPLACE_RETRIES, tries)
+        assert.equals(other, body(path))
+        assert.same({ "x.loomworks-lock" }, names())
+        pcall(uv.fs_unlink, path)
+        bl.release(h)
+    end)
+
     it("save_guard.lock creates its lock file with the record in place", function()
         local sg = require("loomworks.save_guard")
         local file = dir .. "/f.json"
@@ -357,6 +382,11 @@ describe("lock files are written atomically", function()
 package.path = %q .. "/lua/?.lua;" .. %q .. "/lua/?/init.lua;" .. package.path
 local bl = require("loomworks.build_lock")
 local path = %q
+-- The in-place fallback (taken only when every rename failed, e.g. on a
+-- loaded Windows runner) may expose an empty body by design; count it
+-- instead of running it, so the test checks only the rename path.
+local fallbacks = 0
+bl._rewrite_in_place = function() fallbacks = fallbacks + 1 end
 for i = 1, 150 do
     local h = bl.try_acquire_path(path, "configure")
     if h then
@@ -364,10 +394,11 @@ for i = 1, 150 do
         bl.release(h)
     end
 end
+io.stdout:write("fallbacks=", fallbacks)
 ]]):format(root, root, path))
         f:close()
         local done = false
-        local proc = vim.system({ vim.v.progpath, "--headless", "--clean", "-l", script }, {},
+        local proc = vim.system({ vim.v.progpath, "--headless", "--clean", "-l", script }, { text = true },
             function() done = true end)
         local reads, bad = 0, {}
         while not done do
@@ -383,6 +414,8 @@ end
         end
         local res = proc:wait()
         assert.equals(0, res.code, res.stderr)
+        -- The writer ran the rename path (its in-place fallback was stubbed).
+        assert.truthy((res.stdout or ""):match("fallbacks=%d+"), res.stdout)
         assert.same({}, bad)
         -- Only the writer script remains: no lock file, no temp.
         assert.same({ "writer.lua" }, names())
