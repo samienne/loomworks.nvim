@@ -315,7 +315,7 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   Each module type is written as soon as its detection finishes, never half
   written; older releases keep reading the file. Housekeeping and
   `lw cleanup` remove a leftover temporary file of an interrupted write after
-  24 hours. (#PRNUM)
+  24 hours. (#183)
 - Experimental daemon: with no `daemon-idle-timeout` set, an idle daemon now
   exits after 45 seconds without clients or background work instead of 1
   hour, so a script of several `lw` commands still shares one daemon but
