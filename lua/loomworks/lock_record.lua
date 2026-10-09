@@ -93,9 +93,32 @@ function M.operation_of(info)
     return type(op) == "string" and op or nil
 end
 
+--- How long `read` waits for the record of a fresh, empty lockfile (ms).
+M.EMPTY_SETTLE_MS = 250
+--- An empty lockfile at most this old (seconds, by its mtime) is waited for.
+M.EMPTY_FRESH_S = 2
+--- The wait between two reads of an empty lockfile (tests replace it).
+--- @param ms integer
+function M._settle_sleep(ms) uv().sleep(ms) end
+
+local function read_body(u, path)
+    local fd = u.fs_open(path, "r", 256)
+    if not fd then return nil end
+    local fst = u.fs_fstat(fd)
+    local data = u.fs_read(fd, (fst and fst.size and fst.size > 0 and fst.size) or 4096, 0)
+    u.fs_close(fd)
+    return data
+end
+
 --- Read a lockfile: its decoded record (an undecodable or legacy non-JSON body
 --- reads as `{}`) plus `age` (seconds since the heartbeat) and `stale`.
 --- nil when there is no lockfile.
+---
+--- A lockfile is created empty (the exclusive create) and its record written
+--- right after (build_lock): a reader between the two sees an empty body,
+--- which names no host and would be judged another host's live lock. A fresh
+--- empty body (EMPTY_FRESH_S) is read again for up to EMPTY_SETTLE_MS; one
+--- still empty then (its writer died in between) reads as `{}`.
 --- @param path string
 --- @param stale_seconds number heartbeat window
 --- @return table|nil
@@ -103,14 +126,19 @@ function M.read(path, stale_seconds)
     local u = uv()
     local st = u.fs_stat(path)
     if not st then return nil end
-    local info = {}
-    local fd = u.fs_open(path, "r", 256)
-    if fd then
-        local data = u.fs_read(fd, (st.size and st.size > 0 and st.size) or 4096, 0)
-        u.fs_close(fd)
-        local ok, decoded = pcall(vim.json.decode, data or "")
-        if ok and type(decoded) == "table" then info = decoded end
+    local data = read_body(u, path)
+    if data == "" and os.time() - ((st.mtime and st.mtime.sec) or 0) <= M.EMPTY_FRESH_S then
+        local deadline = u.hrtime() + M.EMPTY_SETTLE_MS * 1e6
+        while data == "" and u.hrtime() < deadline do
+            M._settle_sleep(5)
+            st = u.fs_stat(path)
+            if not st then return nil end -- released meanwhile
+            data = read_body(u, path)
+        end
     end
+    local info = {}
+    local ok, decoded = pcall(vim.json.decode, data or "")
+    if ok and type(decoded) == "table" then info = decoded end
     local mtime = (st.mtime and st.mtime.sec) or 0
     info.age = os.time() - mtime
     info.stale = info.age > stale_seconds

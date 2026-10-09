@@ -476,6 +476,11 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   runs it with a Lua source tree. (#154)
 
 ### Fixed
+- A lock file read in the instant between its creation and its record being
+  written is read again briefly instead of being judged another host's lock.
+  Before, e.g. an editor following the workspace daemon through a
+  `--no-launch` relay could stop with "the workspace daemon runs on another
+  host (?, pid ?)" while the CLI started a daemon. (#178)
 - The `unstable` update channel picks the highest release version instead of
   the most recently published one, so a full release published after a newer
   pre-release no longer moves `lw self-update` (and `lw release query

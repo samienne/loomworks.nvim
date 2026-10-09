@@ -151,14 +151,19 @@ end
 
 --- The step script of `shell_workspace` (run by nvim -l): prints
 --- `step <kind> FOO=<LW_TEST_FOO> ONLY=<LW_TEST_ONLY>` on stdout and a line
---- on stderr; writes its pid to $LW_TEST_PIDFILE; sleeps $LW_TEST_SLEEP ms;
+--- on stderr; writes its pid to $LW_TEST_PIDFILE.<kind> (atomically); sleeps $LW_TEST_SLEEP ms;
 --- exits 3 when $LW_TEST_FAIL names its kind; kills itself with a signal
 --- when $LW_TEST_KILL is `<kind>:<signal>` (e.g. `build:sigkill` — on
 --- Windows libuv emulates it with TerminateProcess, exit code 1).
 M.STEP = [[
 local kind = arg[1]
 local pf = os.getenv("LW_TEST_PIDFILE")
-if pf then local f = io.open(pf .. "." .. kind, "w"); f:write(tostring(vim.uv.os_getpid())); f:close() end
+-- Written aside and renamed into place: a reader polling for the file never
+-- sees it created but still empty (a loaded machine widens that window).
+if pf then
+    local f = io.open(pf .. "." .. kind .. ".tmp", "w"); f:write(tostring(vim.uv.os_getpid())); f:close()
+    vim.uv.fs_rename(pf .. "." .. kind .. ".tmp", pf .. "." .. kind)
+end
 io.write("step " .. kind .. " FOO=" .. tostring(os.getenv("LW_TEST_FOO")) .. " ONLY="
     .. tostring(os.getenv("LW_TEST_ONLY")) .. " ARGS=" .. table.concat(arg, ",", 2) .. string.char(10))
 io.stderr:write("stderr of " .. kind .. string.char(10))
