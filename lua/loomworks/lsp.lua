@@ -15,6 +15,7 @@
 ---   @field root_dir_factory? fun(fallback?): function           -- root_dir function (used by build_config + lspconfig users)
 ---   @field get_resolved_cmd? fun(root_dir: string): string[]|nil
 ---   @field status_extras? fun(entry: table): table              -- fields for status page
+---   @field withhold_reason? fun(entry: table): string|nil       -- §9.8: nil → may start; "unconfigured"/"no_db" → withhold (no client)
 ---   @field on_active_set_changed? fun()                         -- wired by lsp.lua
 ---   @field on_workspace_changed? fun()                          -- wired by lsp.lua
 ---   @field reconcile_on_attach? fun(client: vim.lsp.Client)     -- wired by lsp.lua (LspAttach); fix stale cmd from a startup race
@@ -264,6 +265,18 @@ local function configs_memo_key(project)
     parts[#parts + 1] = "tdc"
     parts[#parts + 1] = (project.tool_data and project.tool_data.clangd_path) or ""
 
+    -- "Configured on this machine" of every unit of the project (spec §9.1):
+    -- a module may redirect its database to a unit other than the active one,
+    -- so any unit's configure/reset/delete must invalidate the memo.
+    parts[#parts + 1] = "ch"
+    if project.config_units and ws._config_units then
+        for _, unit in ipairs(project:config_units()) do
+            if unit.configured_here then
+                parts[#parts + 1] = (unit.id or "?") .. "=" .. (unit:configured_here() and "1" or "0")
+            end
+        end
+    end
+
     -- Per-project lsp overrides (clangd/qmlls binaries, qml_import_paths,
     -- compile_commands_from, *_required). vim.inspect sorts keys, so the
     -- serialization is stable across calls.
@@ -284,8 +297,31 @@ local function bump_configs_generation()
     _configs_generation = _configs_generation + 1
 end
 
+--- Fill in `db_state` (spec §8.4) on entries whose module omitted it, derived
+--- from the project's active ConfigUnit: "ready" when it is configured on this
+--- machine, "unconfigured" otherwise (no active profile / no unit included).
+--- A project without a workspace (never the case at runtime) is left alone.
+--- @param project loomworks.Project
+--- @param entries table[]
+local function derive_db_state(project, entries)
+    local ws = project._workspace
+    if not ws then return end
+    local ready = nil
+    for _, e in ipairs(entries) do
+        if type(e) == "table" and e.db_state == nil then
+            if ready == nil then
+                local profile = ws.get_active_profile and ws:get_active_profile() or nil
+                local pp = profile and profile.project and profile:project(project.key) or nil
+                ready = pp ~= nil and pp.configured_here ~= nil and pp:configured_here() == true
+            end
+            e.db_state = ready and "ready" or "unconfigured"
+        end
+    end
+end
+
 --- Return all lsp_configs() entries emitted by a project's module.
 --- Content-memoized: a cache hit skips `module.lsp_configs` entirely.
+--- Entries always carry `db_state` when the project has a workspace.
 --- @param project loomworks.Project
 --- @return table[]
 local function entries_for(project)
@@ -302,6 +338,7 @@ local function entries_for(project)
 
     local ok, entries = pcall(mod.lsp_configs, project)
     if not ok or type(entries) ~= "table" then return {} end
+    derive_db_state(project, entries)
 
     if key then
         _configs_memo[project.key] = { key = key, entries = entries }
@@ -606,8 +643,14 @@ end
 -- starting against a default config and being restarted moments later.
 
 --- Held root_dir requests, queued while the workspace is initializing.
---- @type { bufnr: integer, on_dir: fun(root: string), resolve: fun(bufnr: integer, on_dir: fun(root: string)) }[]
+--- @type { bufnr: integer, on_dir: fun(root: string), resolve: fun(bufnr: integer, on_dir: fun(root: string)), server?: string }[]
 local _gate_queue = {}
+
+--- Per-buffer LSP status (spec §9.8), per managed server.
+--- @type table<integer, table<string, loomworks.LspBufState>>
+local _buf_state = {}
+--- Forward declaration — defined with the §9.8 machinery below.
+local set_buf_state
 --- Safety-timeout handle, armed when the first buffer is queued.
 --- @type uv.uv_timer_t|nil
 local _gate_timer = nil
@@ -646,6 +689,16 @@ local function workspace_loaded_and_ready()
     return type(lw.lsp_ready) == "function" and lw.lsp_ready() == true
 end
 
+--- Whether a workspace load is pending: a root is configured but no live
+--- workspace object exists yet and readiness is not reported (Core reports
+--- ready-to-resolve when nothing is pending, §9.7).
+--- @return boolean
+local function workspace_pending()
+    local ok, lw = pcall(require, "loomworks")
+    if not ok or type(lw.lsp_ready) ~= "function" then return false end
+    return lw.lsp_ready() ~= true
+end
+
 --- Detect the loomworks workspace root a buffer belongs to by walking up from
 --- its path for a workspace marker. Lets the gate hold a session-restored buffer
 --- whose clangd resolves BEFORE auto-load has told loomworks the root (§9.7).
@@ -657,9 +710,10 @@ local function detect_workspace_root(bufnr)
     if not name or name == "" then return nil end
     local uv = vim.uv
     for cur in vim.fs.parents(name) do
+        -- The §9.7 markers — the same two that make a directory a workspace
+        -- root for auto-load (root_finder). A cache file alone is not one.
         if uv.fs_stat(cur .. "/loomworks.json")
-            or uv.fs_stat(cur .. "/.nvim/loomworks.user.json")
-            or uv.fs_stat(cur .. "/.nvim/loomworks.cache.json") then
+            or uv.fs_stat(cur .. "/.nvim/loomworks.user.json") then
             return cur
         end
     end
@@ -675,9 +729,10 @@ local function gate_disarm_timer()
     end
 end
 
---- Release every queued buffer by running its resolver (routed config for a
---- project buffer, fallback otherwise). Drops entries whose buffer is gone.
---- Used both on the ready signal and on the terminal drains.
+--- Release every queued buffer by running its resolver. For a managed server
+--- (§9.8) the resolver decides start / withhold / fallback; for a plain gated
+--- resolver it is the integration's own routing. Drops entries whose buffer is
+--- gone. Used both on the ready signal and on the terminal drains.
 local function gate_release()
     gate_disarm_timer()
     local pending = _gate_queue
@@ -690,7 +745,9 @@ local function gate_release()
 end
 
 --- Arm the safety timeout (once). If no readiness/failure signal arrives, the
---- queue drains with fallback resolution so a buffer never hangs (§9.7).
+--- queue drains through each buffer's resolver so a buffer never stays in the
+--- hold (§9.7). A managed resolver never starts a database-less server for a
+--- buffer under the workspace root — it withholds instead (§9.8).
 local function gate_arm_timer()
     if _gate_timer then return end
     _gate_timer = vim.uv.new_timer()
@@ -717,7 +774,8 @@ end
 --- @param bufnr integer
 --- @param on_dir fun(root: string)
 --- @param resolve fun(bufnr: integer, on_dir: fun(root: string))
-function M.gated_root_dir(bufnr, on_dir, resolve)
+--- @param server? string managed server name — records the per-buffer `held` status (§9.8)
+function M.gated_root_dir(bufnr, on_dir, resolve, server)
     -- Ready: a workspace is loaded and its owned databases are in place.
     if workspace_loaded_and_ready() then
         return resolve(bufnr, on_dir)
@@ -729,7 +787,8 @@ function M.gated_root_dir(bufnr, on_dir, resolve)
     if not root or not buf_under_root(bufnr, root) then
         return resolve(bufnr, on_dir)
     end
-    _gate_queue[#_gate_queue + 1] = { bufnr = bufnr, on_dir = on_dir, resolve = resolve }
+    _gate_queue[#_gate_queue + 1] = { bufnr = bufnr, on_dir = on_dir, resolve = resolve, server = server }
+    if server then set_buf_state(bufnr, server, "held") end
     gate_arm_timer()
 end
 
@@ -739,6 +798,400 @@ function M._gate_queue_len() return #_gate_queue end
 
 --- Test seam: reset gate state (drain + clear timer).
 function M._reset_gate() gate_reset() end
+
+-- ---------------------------------------------------------------------------
+-- Withheld servers for buffers without a usable database (spec §9.8)
+-- ---------------------------------------------------------------------------
+--
+-- For an integration that implements `withhold_reason(entry)`, the root_dir
+-- resolution of every buffer under the workspace root goes through
+-- `managed_root_dir`: the buffer is routed to its project's entry (or, outside
+-- every project, to the workspace entry — the first usable entry in project-key
+-- order) and the server is started ONLY when the integration says the entry
+-- can back it. Otherwise the buffer joins the withheld set: `on_dir` is not
+-- called, no client exists. `reevaluate()` re-runs the decision on every change
+-- that can flip it (profile switch, configure/reset/delete, owned DB written,
+-- workspace swap): newly usable buffers get their attach re-run, clients whose
+-- buffers became withheld are stopped through the managed-stop path.
+
+--- Buffers currently withheld (or parked `held` after the gate), per server.
+--- @type table<integer, table<string, true>>
+local _withheld = {}
+--- Root of a workspace whose initialization failed (`workspace_changed` with no
+--- workspace). Buffers under it are withheld with `withheld_error` until a
+--- later load succeeds.
+--- @type string|nil
+local _ws_failed_root = nil
+
+--- Record (or clear) the root of a workspace whose initialization failed.
+--- @param root string|nil
+function M._set_failed_root(root)
+    _ws_failed_root = root
+end
+
+--- Severity order for aggregating a buffer's per-server statuses.
+local STATE_RANK = {
+    none = 0, ok = 1, held = 2,
+    withheld_no_db = 3, withheld_unconfigured = 4, withheld_error = 5,
+}
+
+--- Record a buffer's status for one server; redraws statuslines on change.
+--- @param bufnr integer
+--- @param server string
+--- @param status loomworks.LspBufState
+set_buf_state = function(bufnr, server, status)
+    local t = _buf_state[bufnr]
+    if not t then
+        t = {}
+        _buf_state[bufnr] = t
+    end
+    if t[server] == status then return end
+    t[server] = status
+    vim.schedule(function()
+        local ok_ev, events = pcall(require, "loomworks.events")
+        if ok_ev then
+            pcall(events.emit, "lsp_buf_state_changed",
+                { bufnr = bufnr, server = server, state = status })
+        end
+        pcall(vim.cmd, "redrawstatus")
+    end)
+end
+
+--- The buffer's per-buffer LSP status (spec §9.8): the most severe status over
+--- every managed server routed for it; `none` when loomworks has no opinion.
+--- @param bufnr? integer defaults to the current buffer
+--- @return loomworks.LspBufState
+function M.buf_state(bufnr)
+    if not bufnr or bufnr == 0 then bufnr = vim.api.nvim_get_current_buf() end
+    local t = _buf_state[bufnr]
+    if not t then return "none" end
+    local best, rank = "none", 0
+    for _, st in pairs(t) do
+        local r = STATE_RANK[st] or 0
+        if r > rank then best, rank = st, r end
+    end
+    return best
+end
+
+--- Ask an integration whether `entry` must be withheld. nil → may start.
+--- @param integration loomworks.LspIntegration|nil
+--- @param entry table
+--- @return string|nil reason
+--- Per-pass memo (entry table → reason) so one re-evaluation over many
+--- buffers stats each entry's database once. Only set during `reevaluate_now`.
+--- @type table<table, string|false>|nil
+local _reason_memo = nil
+
+local function withhold_reason(integration, entry)
+    if not integration or not integration.withhold_reason then return nil end
+    if _reason_memo and _reason_memo[entry] ~= nil then
+        return _reason_memo[entry] or nil
+    end
+    local ok, reason = pcall(integration.withhold_reason, entry)
+    if not ok then reason = nil end
+    if _reason_memo then _reason_memo[entry] = reason or false end
+    return reason
+end
+
+--- The workspace entry for a buffer under the root that belongs to no project
+--- (spec §9.8 *Decision*): the first usable entry over the projects in key
+--- order. Returns (entry) when one is usable, (nil, reason) when entries exist
+--- but none is usable, (nil, nil) when no project emits an entry.
+--- @param lw table loomworks facade
+--- @param server string
+--- @return table|nil entry, string|nil reason
+local function workspace_entry(lw, server)
+    local integration = _integrations[server]
+    local projects = {}
+    local all = type(lw.get_projects) == "function" and lw.get_projects() or {}
+    for _, p in pairs(all) do projects[#projects + 1] = p end
+    table.sort(projects, function(a, b) return (a.key or "") < (b.key or "") end)
+    local any, any_unconfigured = false, false
+    for _, project in ipairs(projects) do
+        local entry = M.entry_for_project(project, server)
+        if entry and entry.root_dir then
+            any = true
+            local reason = withhold_reason(integration, entry)
+            if not reason then return entry, nil end
+            if reason == "unconfigured" then any_unconfigured = true end
+        end
+    end
+    if not any then return nil, nil end
+    return nil, any_unconfigured and "unconfigured" or "no_db"
+end
+
+--- Decide what a managed server should do for a buffer right now (§9.8).
+--- Returns the status and, for `ok`, the entry whose root the client uses.
+--- `none` means "take the fallback path" (outside the workspace root, or no
+--- entry for the server).
+--- @param server string
+--- @param bufnr integer
+--- @return loomworks.LspBufState status, table|nil entry
+local function decide(server, bufnr)
+    local ok, lw = pcall(require, "loomworks")
+    if not ok then return "none", nil end
+    local ws = type(lw.get_workspace) == "function" and lw.get_workspace() or nil
+
+    if not ws then
+        if _ws_failed_root and buf_under_root(bufnr, _ws_failed_root) then
+            return "withheld_error", nil
+        end
+        -- A workspace is being loaded for this buffer's root (setup pending,
+        -- not yet ready): no live workspace object yet, never start (§9.7
+        -- safety timeout) — it is resolved when that load lands or fails.
+        -- Anything else — a workspace marker on disk that nobody is loading,
+        -- or a workspace that was shut down — takes the fallback: no loaded
+        -- workspace means the user's stock server (§9.8).
+        local root = workspace_root()
+        if root and buf_under_root(bufnr, root) and workspace_pending() then
+            return "held", nil
+        end
+        return "none", nil
+    end
+
+    local integration = _integrations[server]
+    local project = type(lw.project_for_buf) == "function" and lw.project_for_buf(bufnr) or nil
+    if project then
+        local entry = M.entry_for_project(project, server)
+        if not entry or not entry.root_dir then return "none", nil end
+        local reason = withhold_reason(integration, entry)
+        if reason then return "withheld_" .. reason, nil end
+        return "ok", entry
+    end
+
+    -- Not in any project: only buffers under the workspace root are routed.
+    local root = ws.root or workspace_root()
+    if not root or not buf_under_root(bufnr, root) then return "none", nil end
+
+    local entry, reason = workspace_entry(lw, server)
+    if entry then return "ok", entry end
+    if reason then return "withheld_" .. reason, nil end
+    return "none", nil
+end
+
+--- @param bufnr integer
+--- @param server string
+local function mark_withheld(bufnr, server)
+    local t = _withheld[bufnr]
+    if not t then
+        t = {}
+        _withheld[bufnr] = t
+    end
+    t[server] = true
+end
+
+--- @param bufnr integer
+--- @param server string
+local function clear_withheld(bufnr, server)
+    local t = _withheld[bufnr]
+    if not t then return end
+    t[server] = nil
+    if not next(t) then _withheld[bufnr] = nil end
+end
+
+--- Resolve a managed server's root for a buffer (after the gate): start on the
+--- routed entry, withhold, or take the fallback.
+--- @param server string
+--- @param bufnr integer
+--- @param on_dir fun(root: string)
+--- @param fallback? fun(bufnr: integer, on_dir: fun(root: string))
+local function resolve_managed(server, bufnr, on_dir, fallback)
+    local status, entry = decide(server, bufnr)
+    set_buf_state(bufnr, server, status)
+    if status == "ok" and entry then
+        clear_withheld(bufnr, server)
+        on_dir(normalize(entry.root_dir))
+    elseif status == "none" then
+        clear_withheld(bufnr, server)
+        if fallback then fallback(bufnr, on_dir) end
+    else
+        mark_withheld(bufnr, server)
+    end
+end
+
+--- root_dir resolution for a server whose integration implements
+--- `withhold_reason` (spec §9.7 hold + §9.8 decision). Excluded buffers never
+--- get the server and are never held.
+--- @param server string
+--- @param bufnr integer
+--- @param on_dir fun(root: string)
+--- @param fallback? fun(bufnr: integer, on_dir: fun(root: string)) stock resolution for buffers outside the workspace
+function M.managed_root_dir(server, bufnr, on_dir, fallback)
+    if M.excluded(bufnr) then return end
+    M.gated_root_dir(bufnr, on_dir, function(b, od)
+        resolve_managed(server, b, od, fallback)
+    end, server)
+end
+
+--- Start ONE managed server for one buffer the way Neovim's `vim.lsp.enable`
+--- auto-attach does (Neovim 0.11+): filetype check, `root_dir` (so the gate +
+--- §9.8 decision run again), then `vim.lsp.start` with the config's
+--- `reuse_client` — an existing client for the same root is reused, never
+--- duplicated. Only `server` is touched: re-running the `FileType` autocmd
+--- would also re-resolve (and possibly detach or start) every OTHER enabled
+--- config for the buffer.
+---
+--- Requires the server to be enabled through `vim.lsp.config` +
+--- `vim.lsp.enable` (the §9.4 default path, or a user config built on it).
+--- Anything else (a legacy lspconfig `setup{}`, a manual `vim.lsp.start`) is
+--- not re-attached: the buffer gets its server on its next attach (reopen).
+--- @param server string
+--- @param bufnr integer
+--- @return boolean started whether an attach was attempted
+local function start_enabled_server(server, bufnr)
+    if not (vim.lsp.config and vim.lsp.is_enabled) then return false end
+    if not vim.lsp.is_enabled(server) then return false end
+    local cfg = vim.lsp.config[server]
+    if not cfg then return false end
+    local bt = vim.bo[bufnr].buftype
+    if bt ~= "" and bt ~= "help" then return false end
+    if type(cfg.filetypes) == "table"
+        and not vim.tbl_contains(cfg.filetypes, vim.bo[bufnr].filetype) then
+        return false
+    end
+    cfg = vim.deepcopy(cfg)
+    cfg.name = cfg.name or server
+    local function start()
+        if not vim.api.nvim_buf_is_valid(bufnr) then return end
+        vim.lsp.start(cfg, {
+            bufnr = bufnr,
+            reuse_client = cfg.reuse_client,
+            _root_markers = cfg.root_markers,
+        })
+    end
+    if type(cfg.root_dir) == "function" then
+        cfg.root_dir(bufnr, function(root)
+            cfg.root_dir = root
+            vim.schedule(start)
+        end)
+    else
+        start()
+    end
+    return true
+end
+
+--- Re-run the attach of the given managed servers for one buffer, so a
+--- withheld buffer whose entry became usable gets its server started without
+--- being reopened. The attach goes through `root_dir` again (and so through
+--- the gate + decision). Replaceable in tests.
+--- @param bufnr integer
+--- @param servers table<string, true>
+function M._retrigger_attach(bufnr, servers)
+    if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then return end
+    for server in pairs(servers or {}) do
+        pcall(start_enabled_server, server, bufnr)
+    end
+end
+
+--- One re-evaluation pass over withheld buffers and running managed clients.
+--- Collects the (buffer → servers) attaches to re-run into `retrigger`.
+--- @param retrigger table<integer, table<string, true>>
+local function reevaluate_pass(retrigger)
+    -- 1. Withheld buffers whose entry became usable (or that left the
+    --    workspace): re-run their attach.
+    for bufnr, servers in pairs(_withheld) do
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+            _withheld[bufnr] = nil
+            _buf_state[bufnr] = nil
+        else
+            for server in pairs(servers) do
+                local status = decide(server, bufnr)
+                set_buf_state(bufnr, server, status)
+                if status == "ok" or status == "none" then
+                    servers[server] = nil
+                    retrigger[bufnr] = retrigger[bufnr] or {}
+                    retrigger[bufnr][server] = true
+                end
+            end
+            if not next(servers) then _withheld[bufnr] = nil end
+        end
+    end
+
+    -- 2. Running clients whose buffers became withheld or now route to another
+    --    entry: stop (managed — no auto-restart, no suppression) or detach.
+    for server, integration in pairs(_integrations) do
+        if integration.withhold_reason then
+            for _, client in ipairs(vim.lsp.get_clients({ name = server })) do
+                local croot = client.root_dir and norm_cmp(client.root_dir) or nil
+                local keep, moved = 0, {}
+                for bufnr in pairs(client.attached_buffers or {}) do
+                    if vim.api.nvim_buf_is_valid(bufnr) then
+                        local status, entry = decide(server, bufnr)
+                        if status == "none"
+                            or (status == "ok" and entry and croot
+                                and norm_cmp(entry.root_dir) == croot) then
+                            keep = keep + 1
+                        else
+                            moved[#moved + 1] = { bufnr = bufnr, status = status }
+                        end
+                    end
+                end
+                if #moved > 0 then
+                    if keep == 0 then
+                        M.mark_managed_stop(client.id)
+                        client:stop()
+                    else
+                        for _, m in ipairs(moved) do
+                            pcall(vim.lsp.buf_detach_client, m.bufnr, client.id)
+                        end
+                    end
+                    for _, m in ipairs(moved) do
+                        set_buf_state(m.bufnr, server, m.status)
+                        if m.status == "ok" then
+                            retrigger[m.bufnr] = retrigger[m.bufnr] or {}
+                            retrigger[m.bufnr][server] = true
+                        else
+                            mark_withheld(m.bufnr, server)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+--- Re-evaluate every withheld buffer and every running managed client now.
+local function reevaluate_now()
+    local retrigger = {}
+    _reason_memo = setmetatable({}, { __mode = "k" })
+    local ok, err = pcall(reevaluate_pass, retrigger)
+    _reason_memo = nil
+    if not ok then error(err) end
+    -- Outside the pass: the re-run attach resolves against live state.
+    for bufnr, servers in pairs(retrigger) do M._retrigger_attach(bufnr, servers) end
+end
+
+local _reeval_pending = false
+
+--- Schedule a re-evaluation of the withheld decision (§9.8). Coalesced: any
+--- number of calls within one tick run it once.
+function M.reevaluate()
+    if _reeval_pending then return end
+    _reeval_pending = true
+    vim.schedule(function()
+        _reeval_pending = false
+        reevaluate_now()
+    end)
+end
+
+--- Test seam: synchronous re-evaluation.
+function M._reevaluate_now() reevaluate_now() end
+
+--- Test seam: clear all §9.8 state.
+function M._reset_withheld()
+    _withheld = {}
+    _buf_state = {}
+    _ws_failed_root = nil
+end
+
+-- Drop per-buffer state when a buffer goes away.
+vim.api.nvim_create_autocmd("BufWipeout", {
+    group = vim.api.nvim_create_augroup("loomworks.lsp.bufstate", { clear = true }),
+    callback = function(args)
+        _withheld[args.buf] = nil
+        _buf_state[args.buf] = nil
+    end,
+})
 
 -- ---------------------------------------------------------------------------
 -- Completion nudge — targeted re-resolution when an owned DB appears (§9.7)
@@ -755,6 +1208,8 @@ function M._reset_gate() gate_reset() end
 --- @param build_dir string absolute build directory whose owned DB changed
 function M.on_owned_database_changed(build_dir)
     if type(build_dir) ~= "string" or build_dir == "" then return end
+    -- A database appearing can make withheld buffers startable (§9.8).
+    M.reevaluate()
     local ok, lw = pcall(require, "loomworks")
     if not ok then return end
     local ws = lw.get_workspace and lw.get_workspace()
@@ -1019,6 +1474,7 @@ local function wire_listeners()
     -- server starts once, correct, with no follow-up restart.
     lw.on("lsp_ready", function()
         gate_release()
+        M.reevaluate()
     end)
     lw.on("active_set_changed", function()
         for _, int in pairs(_integrations) do
@@ -1026,12 +1482,26 @@ local function wire_listeners()
                 vim.schedule(int.on_active_set_changed)
             end
         end
+        -- Profile switch, configure completed, reset/delete: the withheld
+        -- decision may flip either way (§9.8).
+        M.reevaluate()
+    end)
+    lw.on("task_stopped", function()
+        M.reevaluate()
     end)
     lw.on("workspace_changed", function(ws)
-        -- Deferred-start gate (§9.7): a nil payload means init FAILED — drain
-        -- held buffers with fallback resolution so none hang. A successful
-        -- load does NOT release here; the gate waits for lsp_ready.
-        if ws == nil then gate_release() end
+        -- Deferred-start gate (§9.7): a nil payload means init FAILED — end the
+        -- hold. Managed servers withhold buffers under the failed root
+        -- (`withheld_error`, §9.8) instead of starting on the fallback; plain
+        -- gated resolvers resolve as before. A successful load does NOT release
+        -- here; the gate waits for lsp_ready.
+        if ws == nil then
+            M._set_failed_root(workspace_root())
+            gate_release()
+        else
+            M._set_failed_root(nil)
+        end
+        M.reevaluate()
         -- Blow the lsp_configs memo first — the old workspace's projects (and
         -- any project.key reuse) must not survive into the new one. Runs before
         -- the integration callbacks below, which are deferred via vim.schedule.
@@ -1041,6 +1511,17 @@ local function wire_listeners()
                 vim.schedule(int.on_workspace_changed)
             end
         end
+    end)
+    lw.on("workspace_closed", function()
+        -- The workspace was shut down (cwd swap / reload) with no successor:
+        -- nothing is failed or pending any more. Drain the hold and
+        -- re-evaluate, so buffers parked `held` or withheld under the closed
+        -- workspace fall back to the stock server instead of staying withheld
+        -- (§9.7 / §9.8). Running clients are left to the re-evaluation.
+        M._set_failed_root(nil)
+        gate_release()
+        M.reevaluate()
+        clear_configs_memo()
     end)
     lw.on("lsp_options_changed", function(payload)
         -- lsp options can feed lsp_configs output; invalidate every memo key.

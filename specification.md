@@ -102,7 +102,12 @@ belongs in the matching `spec/` file.
 3. **Deletion safety**: All build directory deletions (config delete, clean,
    nuke) verify that the target path is under the workspace root before
    proceeding. Paths resolving outside the workspace are refused with an
-   error notification. The nuke operation (`<C-n>`, `lw nuke`) is further
+   error notification. A module-owned LSP database removed alongside its
+   build directory is restricted to that module's area under
+   `root/.nvim/cache/`, is derived from the BuildDir rather than read from
+   the cache, is removed only after the build directory's deletion
+   succeeded and only when no remaining build directory maps to it, and
+   never through a link or junction (§4.6 *Owned LSP database cleanup*). The nuke operation (`<C-n>`, `lw nuke`) is further
    restricted to `root/.nvim/` and requires that `loomworks.json` or the
    working copy (`.nvim/loomworks.user.json`) exists at the root.
 
@@ -264,6 +269,21 @@ belongs in the matching `spec/` file.
     workspace root, and the `lsp = false` opt-out path (where
     loomworks does not own the start), are exempt — the latter falls
     back to attach-time reconciliation.
+
+16a. **No server on a foreign database**: Inside a workspace, a
+    compilation database reaches a language server only from a unit
+    configured on this machine (§9.1, §17.8) — never from an
+    unconfigured unit's build directory, whatever is on disk there. A
+    buffer under the loaded workspace's root (in a project or not) whose server
+    needs a database it cannot have is
+    **withheld** — no client at all, not a database-less one — and
+    starts by itself once a database becomes available; the hold's
+    terminal conditions (no active profile, init failure, safety
+    timeout) never start a database-less server for a buffer under the
+    workspace root (§9.7, §9.8). Being withheld is shown, not silent
+    (`spec/ui.md` §3–§4). Buffers outside the loaded workspace —
+    including those of a workspace on disk that is not loaded — are
+    unaffected (stock server).
 
 17. **Nothing runs from the current directory by accident**: A bare
     program name is resolved to an absolute path from absolute search-path

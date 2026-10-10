@@ -1610,9 +1610,9 @@ outside a workspace.
 | `lw sdk <sub>` | Declare toolchain installations: `types` \| `detect` \| `list` \| `add` \| `remove`. `add <type> <path>` declares an installation detection can't find; `add <type>` (no path) declares the one the provider detects — several → a picker, or under `--no-input` an error listing each as the explicit command. `detect [<type>]` lists what each provider finds on this host (read-only, no workspace needed) |
 | `lw build [profile]` | Configure if needed, then build. `lw build <profile> -- <args>` forwards args to the build tool, and `--target <name>` (repeatable) builds just that target (cmake `--build --target`, meson `compile <name>`) — both work for every toolchain, including MSVC kits built inside vcvarsall. `--force` overrides an [output conflict](#output-conflicts-between-profiles); `--reconfigure` forces a full reconfigure (cmake `--fresh`, meson `setup --wipe`) first. Each configure prints why it runs, e.g. `full reconfigure (--fresh): options changed (FOO removed)`; `-v`/`--verbose` also prints each step's full command line and directory (for an MSVC kit, the cmake command run inside vcvarsall). Every configure/build command line is written to `.nvim/loomworks.log` (shared by the editor and every `lw` invocation: appended to, never truncated; rotated to `loomworks.log.1` past 1 MB, one old file kept) |
 | `lw clean [profile]` | Run each project's build-system clean on the profile's build dirs (removes artifacts, keeps the configuration) |
-| `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`) and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
+| `lw reset [profile \| --all] [-y]` | Hard reset: remove the build directories (`rm -rf`), with the compile databases loomworks generated from them under `.nvim/cache/`, and drop the configurations back to unconfigured, keeping the profile. `--all` resets every build dir (all profiles + orphaned). Destructive — confirms first; `-y` skips (required under `--no-input`) |
 | `lw trust [--yes] [--discard]` | Review the working copy (`.nvim/loomworks.user.json`) — its program settings first — and re-sign it for this machine; `--discard` deletes it instead. Needed after a hand edit or on the first run after upgrading (see [Opening a repository you don't trust](#opening-a-repository-you-dont-trust)) |
-| `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches); the remedy for a cache not written on this machine |
+| `lw nuke [-y]` | Delete all build state (`.nvim/build/`, the build and health caches, the generated compile databases in `.nvim/cache/cc/`); the remedy for a cache not written on this machine |
 | `lw test [profile]` | Build, then run tests; real exit code. `--junit <file>` writes a JUnit report. `--target <exe>` (repeatable) runs named test executables directly instead — on a device when they are cross-built (see [Running on a device](#running-on-a-device)) |
 | `lw run [target]` / `lw run <profile> <target>` | Build, then execute a launch target. Bare `lw run` runs the active/sole profile's default target; `lw run <target>` runs that target on the active/sole profile (a lone operand is always a target, never a profile); `lw run <profile> <target>` names both. `--prefix <cmd>` runs under a wrapper (valgrind/gdb; repeatable + quote-aware, resolved cwd/env); `--print` (`=json`) builds, then reports the resolved command without executing; `--dry-run` (`=json`) reports it without building, deploying or executing; `--no-build` skips build+deploy. A cross-built target runs on a device (`--device`, `--fresh`, `--timeout`, `--log key=value`, `--no-wait`; see [Running on a device](#running-on-a-device)) |
 | `lw device <sub>` | `list [--json] [--query-timeout <s>]` \| `select <serial> [profile]` (`--clear`) \| `clean [--device <serial>] [--query-timeout <s>] [--no-wait]` — devices for cross-built programs |
@@ -1868,7 +1868,38 @@ restarted a moment later. The database is generated asynchronously, so this
 is a brief wait, not a frozen UI; buffers outside any workspace attach
 immediately. Session-managed buffers restored at startup are held the same
 way — the workspace is detected from the buffer's own path even before
-auto-load runs.
+auto-load runs. If no workspace is actually loaded for that path (auto-load
+is cwd-based, so a file from another workspace opened from elsewhere is not
+one), the buffer gets your stock clangd once the hold times out (5 s).
+
+### No clangd without this machine's database
+
+Inside a workspace, clangd only ever gets a compile database from the
+active configuration **as configured on this machine**. A
+`compile_commands.json` left in a build directory that is not configured
+here — never configured, reset, deleted, or copied in from another machine
+or toolchain — is never used. When a buffer under the workspace root has no
+usable database (the active configuration is not configured here, there is
+no active profile, the database does not exist yet, or the workspace failed
+to load), loomworks starts **no clangd client at all** for it, instead of a
+clangd that guesses flags or finds a stale database on its own. clangd then
+starts by itself once the database appears (configure finishes, or you
+switch to a configured profile), and is stopped when you switch to a
+profile whose configuration is not configured here. Files under the
+workspace root but outside every project use the database of the first
+project (by key) that has one. Files outside the loaded workspace get your
+stock clangd, unchanged — including files of another workspace that is not
+loaded.
+
+Withholding and the automatic start afterwards need loomworks to own the
+server's start: the default setup (or your own `vim.lsp.config` +
+`vim.lsp.enable`, Neovim 0.11+). Only the withheld server is re-attached;
+other servers on the buffer are left alone.
+
+The withheld state is shown, not silent: the winbar marker of an
+unconfigured configuration is red, the status page says "clangd withheld",
+and the `loomworks_lsp` lualine component (below) explains the missing
+client next to `lsp_status`.
 
 ### Overriding the clangd config
 
@@ -1962,17 +1993,25 @@ Read the defaults programmatically with `require("loomworks.lsp").default_exclud
 
 ### lspconfig / legacy path
 
-If you already use `nvim-lspconfig` and want to keep that flow:
+If you want to register clangd yourself:
 
 ```lua
 require("loomworks").setup({ lsp = false })  -- don't let loomworks register clangd
 
 local lsp = require("loomworks.lsp")
-require("lspconfig").clangd.setup({
+vim.lsp.config("clangd", {
   cmd = lsp.clangd_cmd({ "clangd", "--background-index" }),
   root_dir = lsp.clangd_root_dir(),
 })
+vim.lsp.enable("clangd")
 ```
+
+`clangd_root_dir()` returns a Neovim 0.11 `root_dir(bufnr, on_dir)`
+function, which only `vim.lsp.config` honours (nvim-lspconfig 2.x configs
+build on it). The legacy `require("lspconfig").clangd.setup{}` framework
+calls `root_dir` synchronously and cannot use it; there, use
+`lsp.clangd_cmd(...)` alone — loomworks then cannot hold or withhold the
+start, and an attach-time reconciliation repairs the client instead.
 
 ### Adding a new LSP server
 
@@ -2039,6 +2078,31 @@ Customize which parts to show:
 
 Available fields: `set_name`, `project`, `configuration`, `tool_key`,
 `profile_key`, `status`.
+
+Status markers: built is green, configured is dim, a failed configure or
+build is red, and so is **unconfigured** (its language server is withheld,
+see "No clangd without this machine's database"); a profile whose
+configurations disagree (`mixed`) is amber.
+
+### Withheld-LSP component
+
+lualine's built-in `lsp_status` lists the clients attached to a buffer. When
+loomworks withholds clangd there is no client, so `lsp_status` shows nothing.
+Put `loomworks_lsp` right after it to say why:
+
+```lua
+require("lualine").setup({
+  sections = {
+    lualine_x = { "lsp_status", "loomworks_lsp" },
+  },
+})
+```
+
+It renders, in red (`DiagnosticError`): `(unconfigured)` when the active
+configuration is not configured on this machine (or no profile is active),
+`(no db)` when it is configured but has no compile database yet, and
+`(ws error)` when the workspace failed to load. Otherwise (clangd running or
+starting, or the buffer is outside any workspace) it renders nothing.
 
 ## Workspace File Layout
 
@@ -2178,7 +2242,9 @@ lw.get_projects()                           -- all Project objects
 lw.project_for_buf(bufnr)                   -- find project for buffer
 
 -- Buffer status (for statusline/winbar)
-lw.buf_status(bufnr)                        -- { project, configuration, status, ... }
+lw.buf_status(bufnr)                        -- { project, configuration, status, lsp, ... }
+lw.lsp_buf_state(bufnr)                     -- "none" | "held" | "ok" | "withheld_unconfigured"
+                                            --   | "withheld_no_db" | "withheld_error"
 
 -- Events
 lw.on("active_set_changed", function(active_set)

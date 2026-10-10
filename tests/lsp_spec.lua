@@ -11,8 +11,17 @@ local Core = require("loomworks.core")
 --- Create a Core with cmake projects and return lsp-testable state.
 --- @param opts table { projects, config_sets, cache, user, root }
 --- @return loomworks.Core core
+--- A directory holding an (empty) compile_commands.json, shared by the tests.
+local DB_DIR = vim.fs.normalize(vim.fn.tempname())
+vim.fn.mkdir(DB_DIR, "p")
+do
+    local f = assert(io.open(DB_DIR .. "/compile_commands.json", "w"))
+    f:write("[]"); f:close()
+end
+
 local function setup_core(opts)
     opts = opts or {}
+    if opts.db_dir == nil then opts.db_dir = DB_DIR end
     local root = opts.root or "/workspace"
 
     local config_projects = {}
@@ -51,11 +60,15 @@ local function setup_core(opts)
                     local ws = project._workspace
                     if not ws then return {} end
                     local root = ws.root .. "/" .. (project.path or project.key)
+                    -- A usable database (configured here + compile_commands.json
+                    -- on disk), so clangd is not withheld (spec §9.8) unless a
+                    -- test asks for it via `opts.db_state`.
                     return {
                         {
                             server = "clangd",
                             root_dir = root,
-                            compile_commands_dir = project.cached and project.cached.build_dir or nil,
+                            compile_commands_dir = opts.db_dir,
+                            db_state = opts.db_state or "ready",
                         },
                     }
                 end,

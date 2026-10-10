@@ -43,7 +43,11 @@ describe("cmake lsp_configs qmlls entry", function()
                 if not build_dir then return nil end
                 return {
                     project = function(_, _key)
-                        return { build_dir = function() return build_dir end }
+                        return {
+                            build_dir = function() return build_dir end,
+                            -- Configured on this machine (spec §9.1) unless asked.
+                            configured_here = function() return opts.unconfigured ~= true end,
+                        }
                     end,
                     tool_for = function() return nil end,
                 }
@@ -81,6 +85,30 @@ describe("cmake lsp_configs qmlls entry", function()
         -- qmlls build dir; qmlls still resolves against the real build dir.
         assert.are_not.equal(q.build_dir, cfgs[1].compile_commands_dir)
         assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
+    end)
+
+    it("qmlls keeps the project.cached.build_dir fallback without an active profile", function()
+        local cfgs = cmake.lsp_configs(fake_project({
+            cached = { build_dir = "/work/.nvim/build/myapp/Cached" },
+        }))
+        assert.equals("/work/.nvim/build/myapp/Cached", cfgs[2].build_dir)
+        -- clangd never gets a database without a unit configured here (§9.1).
+        assert.is_nil(cfgs[1].compile_commands_dir)
+        assert.equals("unconfigured", cfgs[1].db_state)
+    end)
+
+    it("qmlls follows a compile_commands_from redirect's first unit, as before", function()
+        local function unit(bd, here)
+            return { build_dir = function() return bd end, configured_here = function() return here end }
+        end
+        local p = fake_project({ type_config = { compile_commands_from = "Release" } })
+        p.get_configuration = function() return {} end
+        p.config_units_for_configuration = function()
+            return { unit("/work/out/A", false), unit("/work/out/B", true) }
+        end
+        local cfgs = cmake.lsp_configs(p)
+        assert.equals("/work/out/A", cfgs[2].build_dir)
+        assert.equals("/work/out/B", cfgs[1].compile_commands_dir)
     end)
 
     it("type_config.qmlls flows into entry.binary; absent ⇒ nil", function()

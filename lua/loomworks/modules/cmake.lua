@@ -4121,7 +4121,25 @@ local function generated_cc_dir(workspace_root, build_dir)
     end
     -- Keep '/' (directory separators); scrub only path-illegal characters.
     tail = tail:gsub('[:<>"|?*]', "_")
-    return root .. "/.nvim/cache/cc/" .. tail
+    return root .. "/.nvim/cache/" .. M.lsp_database_root .. "/" .. tail
+end
+
+--- The owned-database area under `<root>/.nvim/cache/` (core §8.4): core
+--- removes a build directory's mirror with it and the whole area on nuke
+--- (core §4.6 "Owned LSP database cleanup"). One plain path segment.
+M.lsp_database_root = "cc"
+
+--- The owned compile_commands.json directory for one build directory (core
+--- §8.4), used by core only for cleanup. nil when either input is missing.
+--- @param ctx { build_dir: string|nil, workspace_root: string|nil }
+--- @return string|nil
+function M.lsp_database_dir(ctx)
+    if type(ctx) ~= "table" then return nil end
+    local root, bd = ctx.workspace_root, ctx.build_dir
+    if type(root) ~= "string" or root == "" or type(bd) ~= "string" or bd == "" then
+        return nil
+    end
+    return generated_cc_dir(root, bd)
 end
 
 --- In-flight generation registry for single-flight per out_dir (§12.2). Keyed
@@ -4367,20 +4385,43 @@ function M.lsp_configs(project)
     -- Compile commands dir, in order:
     --   1. `compile_commands_from` redirect to a different configuration
     --   2. Active profile's ProfileProject for this project (→ ConfigUnit build_dir)
-    --   3. `project.cached.build_dir` fallback (legacy active-config summary)
+    -- Either way the database is offered only from a unit configured on this
+    -- machine (spec §9.1): `configured` tracks the unit actually supplying it,
+    -- and an unconfigured one yields `db_state = "unconfigured"`, no
+    -- compile_commands_dir and no generation.
     local tc = project.type_config or {}
     local build_dir = nil
+    local configured = false
     -- Whether build_dir came from a `compile_commands_from` redirect (a
     -- different configuration's build dir). Generation (§12) is skipped in
     -- that case — the redirect target owns its own database.
     local from_redirect = false
+    -- qmlls's build dir keeps its own, unchanged resolution (cmake spec
+    -- §11: redirect's first unit with a build dir, else the active unit's,
+    -- else `project.cached.build_dir`) — the configured-here rule is clangd's.
+    local qmlls_build_dir = nil
     if tc.compile_commands_from then
         local ref_cfg = project.get_configuration and project:get_configuration(tc.compile_commands_from)
         if ref_cfg and project.config_units_for_configuration then
             local ref_units = project:config_units_for_configuration(ref_cfg)
             for _, ref_unit in ipairs(ref_units) do
                 local bd = ref_unit:build_dir()
-                if bd then build_dir = bd; from_redirect = true; break end
+                if bd then qmlls_build_dir = bd; break end
+            end
+            -- Prefer a unit configured here; otherwise the redirect still
+            -- decides (and reports unconfigured) rather than silently
+            -- falling back to the active unit.
+            for _, ref_unit in ipairs(ref_units) do
+                local bd = ref_unit:build_dir()
+                if bd and ref_unit:configured_here() then
+                    build_dir = bd; from_redirect = true; configured = true; break
+                end
+            end
+            if not from_redirect then
+                for _, ref_unit in ipairs(ref_units) do
+                    local bd = ref_unit:build_dir()
+                    if bd then build_dir = bd; from_redirect = true; break end
+                end
             end
         end
     end
@@ -4393,9 +4434,13 @@ function M.lsp_configs(project)
     end
     if not build_dir and active_pp then
         build_dir = active_pp:build_dir()
+        configured = active_pp:configured_here()
     end
-    if not build_dir and project.cached then
-        build_dir = project.cached.build_dir
+    if not qmlls_build_dir and active_pp then
+        qmlls_build_dir = active_pp:build_dir()
+    end
+    if not qmlls_build_dir and project.cached then
+        qmlls_build_dir = project.cached.build_dir
     end
 
     -- Binary: type_config.clangd (env-expanded) wins, else active tool's
@@ -4447,8 +4492,8 @@ function M.lsp_configs(project)
     -- opts out with `compile_commands_generated = false` (the escape hatch),
     -- or a `compile_commands_from` redirect (from_redirect) already resolved
     -- build_dir to another configuration's database (which owns its own).
-    local clangd_cc_dir = build_dir
-    if build_dir and not from_redirect then
+    local clangd_cc_dir = configured and build_dir or nil
+    if build_dir and configured and not from_redirect then
         local active_cfg = active_pp and active_pp.configuration and active_pp:configuration()
         local cfg_mc = active_cfg and active_cfg.module_config or nil
 
@@ -4489,14 +4534,16 @@ function M.lsp_configs(project)
             binary = binary,
             binary_required = binary_required,
             compile_commands_dir = clangd_cc_dir,
+            db_state = configured and "ready" or "unconfigured",
             root_dir = root_dir,
         },
         {
             server = "qmlls",
             binary = qmlls_binary,          -- nil ⇒ integration uses "qmlls" on PATH
             binary_required = qmlls_required,
-            build_dir = build_dir,          -- same dir as clangd's compile_commands_dir
+            build_dir = qmlls_build_dir,    -- the real build dir (not clangd's owned DB dir)
             import_paths = import_paths,    -- optional list, may be nil
+            db_state = configured and "ready" or "unconfigured",
             root_dir = root_dir,
         },
     }

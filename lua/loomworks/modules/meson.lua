@@ -1464,25 +1464,25 @@ end
 
 --- Return LSP configs for this project.
 --- Emits a single clangd entry rooted at the project source path. Meson
---- generates compile_commands.json at the build dir root automatically.
+--- generates compile_commands.json at the build dir root automatically —
+--- the directory is offered only when the active ConfigUnit is configured on
+--- this machine (spec §9.1); otherwise the entry reports
+--- `db_state = "unconfigured"` and carries no `compile_commands_dir`, so a
+--- stale database left in that build dir is never used.
 --- @param project loomworks.Project
---- @return table[]
+--- @return loomworks.LspConfigEntry[]
 function M.lsp_configs(project)
     local ws = project._workspace
     if not ws then return {} end
     local root_dir = ws.root .. "/" .. (project.path or project.key)
 
-    -- Prefer the active profile's ProfileProject (robust in multi-tool profiles
-    -- where project.cached's variant+tool_key match can miss).
+    -- The active profile's ProfileProject decides both the build dir and
+    -- whether it may be read at all (configured here, spec §9.1).
     local build_dir = nil
     local active_profile = ws.get_active_profile and ws:get_active_profile()
-    if active_profile then
-        local pp = active_profile:project(project.key)
-        if pp then build_dir = pp:build_dir() end
-    end
-    if not build_dir and project.cached then
-        build_dir = project.cached.build_dir
-    end
+    local pp = active_profile and active_profile:project(project.key) or nil
+    local configured = pp ~= nil and pp:configured_here()
+    if configured then build_dir = pp:build_dir() end
 
     -- Binary override: type_config.clangd wins, else tool_data.clangd_path
     -- (set by the compilers detector when a matching clangd lives next to
@@ -1503,6 +1503,7 @@ function M.lsp_configs(project)
             binary = binary,
             binary_required = binary_required,
             compile_commands_dir = build_dir,
+            db_state = configured and "ready" or "unconfigured",
             root_dir = root_dir,
         },
     }

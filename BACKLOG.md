@@ -5,6 +5,26 @@ they don't get lost.
 
 ---
 
+## qmlls on an unconfigured build directory
+
+qmlls still gets `-b <unconfigured build dir>` when the active unit is not
+configured on this machine (the cmake qmlls entry carries
+`db_state = "unconfigured"` but the qmlls integration ignores it). Consider
+withholding qmlls like clangd (core §9.8, a `withhold_reason` hook on the
+qmlls integration).
+
+---
+
+## `_validate_build_dir`: trailing dot/space segments on Windows
+
+`_validate_build_dir` accepts segments with trailing dot/space on Windows
+(e.g. `'<root>/.nvim/build/.. '`). Win32 trims them, so such a path names a
+different (parent) directory than the one the boundary check approved. The
+owned-LSP-database check (`lsp_db_cleanup.check_mirror`) already refuses
+them; apply the same rule to build directories.
+
+---
+
 ## Variable rename: what should it cascade to?
 
 Found while fixing PR #75. Renaming a variable in the editor's variable editor

@@ -59,13 +59,18 @@ local STATUS_ICON = {
     failed_configure = "\u{2717}",  -- ✗ (profile_state alias)
     failed_build     = "\u{2717}",  -- ✗ (profile_state alias)
     unknown          = "?",
-    mixed            = "\u{25cb}",  -- ○ (neutral aggregate when configs disagree)
+    mixed            = "\u{25cb}",  -- ○ (aggregate when configs disagree; amber)
 }
 
 --- Highlight group per state. Maps to standard Diagnostic groups so
 --- the marker reads independently of any surrounding text colour.
 local STATUS_HL = {
     built            = "DiagnosticOk",
+    -- Red: an unconfigured active unit means its language server is withheld
+    -- (spec §9.8), not a neutral resting state. Mixed is amber — part of the
+    -- profile is usable, part is not (spec/ui.md §3).
+    unconfigured     = "DiagnosticError",
+    mixed            = "DiagnosticWarn",
     configure_failed = "DiagnosticError",
     build_failed     = "DiagnosticError",
     failed_configure = "DiagnosticError",
