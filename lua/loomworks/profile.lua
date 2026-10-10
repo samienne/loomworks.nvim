@@ -142,6 +142,14 @@ function ProfileProject:config_key()
     return nil
 end
 
+--- Whether this project-in-profile's ConfigUnit is configured on this machine
+--- (signed cache state, spec §17.8). False when no unit is mapped. Language
+--- servers get a compilation database only from such a unit (spec §9.1).
+--- @return boolean
+function ProfileProject:configured_here()
+    return self._config_unit ~= nil and self._config_unit:configured_here()
+end
+
 --- Get the project key for this project-in-profile.
 --- @return string
 function ProfileProject:project_key()

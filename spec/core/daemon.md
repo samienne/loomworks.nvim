@@ -1739,7 +1739,8 @@ the `loomworks.Project` and clangd and qmlls use it until step 5l moves LSP)
 and adds `lw.buf_project(bufnr)`, returning the buffer's ProjectsIndex record
 by the separator-bounded longest-prefix rule above (or `nil` when no record
 matches); `lw.buf_status(bufnr)` keeps its return shape and reads the two
-views.
+views, plus its `lsp` field (§9.8), which the editor adds from its own LSP
+layer in every mode (`lw.lsp_buf_state`).
 
 ### 19.14 Commands
 

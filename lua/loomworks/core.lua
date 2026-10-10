@@ -671,7 +671,9 @@ function Core:_retire_workspace()
 end
 
 --- The deletion half of `nuke_cache` (no reload): remove `.nvim/build/`, the
---- build cache (+ backup) and the health cache (+ backup), each checked to be
+--- build cache (+ backup), the health cache (+ backup) and the owned LSP
+--- database areas (`_nuke_lsp_db_areas`; a failed area check refuses the whole
+--- nuke in `_nuke_begin`), each checked to be
 --- under `root/.nvim/`. Shared by the editor's nuke and `lw nuke` (spec §17.4).
 --- Returns the normalized root when it ran (a failed rm is reported, and the
 --- reload shows what is left), nil when refused.
@@ -692,15 +694,16 @@ end
 --- refused nuke shows only its refusal). The editor passes
 --- `{ skip_own = true }`: its own builds are stopped by `nuke_cache` before
 --- the real acquisition. Returns true, or nil + the refusal message (no
---- `loomworks:` prefix).
+--- `loomworks:` prefix). When it would run, the third value lists the owned
+--- LSP database areas it would remove (spec §4.6), for the host's listing.
 --- @param root string
 --- @param opts? { skip_own?: boolean }
---- @return boolean|nil ok, string|nil message
+--- @return boolean|nil ok, string|nil message, string[]|nil areas
 function Core:nuke_check(root, opts)
     local st, msg = self:_nuke_begin(root, opts)
     if not st then return nil, msg end
     self:_nuke_release(st)
-    return true
+    return true, nil, st.areas
 end
 
 --- Release what `_nuke_begin` took, deleting nothing (a declined or
@@ -739,8 +742,14 @@ function Core:_nuke_begin(root, opts)
     local cache_path = self._deps.cache.filepath(norm_root)
     local health_path = norm_root .. "/.nvim/loomworks.health.json"
 
+    -- Owned LSP database areas (spec §4.6, ui §1.11 check 4). A failed area
+    -- check aborts the WHOLE nuke before anything is deleted.
+    local areas, area_err = self:_nuke_lsp_db_areas(norm_root)
+    if not areas then return nil, area_err .. ", aborting nuke" end
+
     -- Safety: verify all paths are under root/.nvim/
     local paths_to_delete = { build_dir, cache_path, cache_path .. ".bak", health_path, health_path .. ".bak" }
+    for _, a in ipairs(areas) do paths_to_delete[#paths_to_delete + 1] = a end
     for _, p in ipairs(paths_to_delete) do
         if not self:_safe_nvim_path(p, norm_root) then
             return nil, "refusing to delete path outside .nvim/: " .. p
@@ -760,7 +769,7 @@ function Core:_nuke_begin(root, opts)
         return nil, berr
     end
     return { root = norm_root, build_dir = build_dir, cache_path = cache_path, health_path = health_path,
-        locks = locks, tok = tok, held = held }
+        areas = areas, locks = locks, tok = tok, held = held }
 end
 
 --- The second half of a nuke, under the locks `_nuke_begin` took (released
@@ -770,6 +779,7 @@ end
 function Core:_nuke_run(st)
     local norm_root, build_dir, locks, held = st.root, st.build_dir, st.locks, st.held
     local cache_path, health_path = st.cache_path, st.health_path
+    local areas = st.areas or {}
     local cache_bak = cache_path .. ".bak"
 
     -- 1. The caches first (§15 invariant 1, deletion safety 4): once they are
@@ -779,6 +789,14 @@ function Core:_nuke_run(st)
     self._deps.io.rm_rf(cache_bak)
     self._deps.io.rm_rf(health_path)
     self._deps.io.rm_rf(health_path .. ".bak")
+    -- The owned LSP database areas (spec §4.6) go with the caches: derived
+    -- data, regenerated on the next configure.
+    for _, a in ipairs(areas) do
+        local aok, aerr = self._deps.io.rm_rf(a)
+        if not aok then
+            self._deps.notify("loomworks: failed to delete " .. a .. ": " .. tostring(aerr), vim.log.levels.ERROR)
+        end
+    end
 
     -- 2. Move the build tree aside in one atomic rename, so a build that
     --    starts as soon as the locks go creates a fresh `.nvim/build` instead
@@ -984,6 +1002,42 @@ function Core:_nuke_build_locks(root, build_dir, build_lock, opts)
     return held
 end
 
+--- The owned LSP database areas the nuke removes (spec §4.6 last paragraph,
+--- ui §1.11): `<root>/.nvim/cache/<lsp_database_root>` for every registered
+--- module declaring one, present on disk, and passing
+--- `lsp_db_cleanup.check_area` (exact direct child of `.nvim/cache`, no link or
+--- junction at `.nvim`, `.nvim/cache` or the area, realpath inside `.nvim`).
+--- Module-agnostic: only the optional `lsp_database_root` field is read.
+--- @param norm_root string normalized absolute workspace root
+--- @return string[]|nil areas, string|nil err nil + reason when any check fails
+function Core:_nuke_lsp_db_areas(norm_root)
+    local check = require("loomworks.lsp_db_cleanup")
+    local reg = self._deps.modules
+    if not (reg and type(reg.list) == "function" and type(reg.get) == "function") then
+        return {}
+    end
+    local ok_list, ids = pcall(reg.list)
+    if not ok_list or type(ids) ~= "table" then return {} end
+    local areas, seen = {}, {}
+    for _, id in ipairs(ids) do
+        local mod = reg.get(id)
+        local seg = type(mod) == "table" and mod.lsp_database_root or nil
+        if seg ~= nil and seg ~= "" then
+            local status, res = check.check_area(norm_root, seg, self._deps.normalize)
+            if status == nil then
+                return nil, "refusing to delete the owned LSP database area of module '"
+                    .. tostring(id) .. "': " .. tostring(res)
+            end
+            if status == "ok" and not seen[res] then
+                seen[res] = true
+                areas[#areas + 1] = res
+            end
+        end
+    end
+    table.sort(areas)
+    return areas
+end
+
 --- Delete user.json and reload the workspace.
 --- Called when user.json has a version mismatch and user confirms deletion.
 --- @param root string
@@ -1090,11 +1144,17 @@ end
 
 --- Detach the active workspace fully. Called on VimLeave-style shutdown.
 function Core:shutdown()
+    local had = self._workspace ~= nil or self._pending_root ~= nil
     self:_stop_refused_watch()
     if self._workspace then
         self._workspace:teardown()
         self._workspace = nil
     end
+    -- Nothing is loaded or pending any more: the deferred-LSP gate (§9.7)
+    -- must not keep holding buffers under the old root.
+    self._pending_root = nil
+    self._state = "uninitialized"
+    if had then self._deps.events.emit("workspace_closed") end
 end
 
 -- ===========================================================================

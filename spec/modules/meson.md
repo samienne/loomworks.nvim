@@ -223,8 +223,20 @@ from the test explorer.
 
 Emits `lsp_configs` entries for clangd.
 
-`compile_commands_dir` resolves to the ConfigUnit's build directory —
-meson auto-generates `compile_commands.json` there on setup.
+`compile_commands_dir` resolves to the active ConfigUnit's build
+directory — meson auto-generates `compile_commands.json` there on setup —
+**only when that unit is configured on this machine** (core §9.1); the
+entry then carries `db_state = "ready"`. Otherwise (unconfigured here, no
+active profile, or no active unit for the project) the entry carries
+`db_state = "unconfigured"` and no `compile_commands_dir`, and clangd is
+withheld for the project's buffers (core §9.8). A `compile_commands.json`
+that merely exists in an unconfigured unit's build directory — left from an
+earlier configure, possibly with another toolchain, or shipped with a copied
+tree — is never used.
+
+meson has no owned database (§12.5 of the cmake spec), so it declares
+neither `lsp_database_root` nor `lsp_database_dir`; its native database is
+removed with the build directory itself.
 
 `binary` / `binary_required` follow the generic rule: if the active
 profile's SDK provides a clangd, use it with `binary_required = true`;

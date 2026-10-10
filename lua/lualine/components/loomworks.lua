@@ -11,8 +11,16 @@
 ---     "configuration", "tool_key", "profile_key", "status".
 --- "diagnostics" prepends a `⚠` (or `✗` for error severity) when the
 --- workspace has active diagnostics — same warning surface as the
---- status-page Diagnostics section. Highlight uses DiagnosticWarn /
---- DiagnosticError. Drop "diagnostics" from `show` to disable.
+--- status-page Diagnostics section. Coloured with DiagnosticWarn's /
+--- DiagnosticError's foreground. Drop "diagnostics" from `show` to disable.
+---
+--- Marker colours: each marker takes only the FOREGROUND of its group
+--- (DiagnosticOk/Warn/Error, Comment) through lualine highlights made with
+--- `create_hl`; lualine fills the background from the section, and the text
+--- after a marker switches back to the section highlight
+--- (`get_default_hl`), so markers fit any section of a statusline or winbar
+--- (spec/ui.md §3). Raw `%#Group#…%*` escapes would reset to
+--- StatusLine/WinBar and carry the group's own (usually absent) background.
 ---
 --- Icons (nerd font glyphs) are prepended to each shown field. Set a
 --- field to `false` or `""` to drop just that icon; pass `icons = {}`
@@ -66,13 +74,19 @@ local STATUS_ICON = {
     failed_configure = "\u{2717}",  -- ✗ (profile_state alias)
     failed_build     = "\u{2717}",  -- ✗ (profile_state alias)
     unknown          = "?",
-    mixed            = "\u{25cb}",  -- ○ (neutral aggregate when configs disagree)
+    mixed            = "\u{25cb}",  -- ○ (aggregate when configs disagree; amber)
 }
 
 --- Highlight group per state. Maps to standard Diagnostic groups so
---- the marker reads independently of any surrounding text colour.
+--- the marker reads independently of any surrounding text colour. Only the
+--- group's foreground is used (see `_marker_hl`).
 local STATUS_HL = {
     built            = "DiagnosticOk",
+    -- Red: an unconfigured active unit means its language server is withheld
+    -- (spec §9.8), not a neutral resting state. Mixed is amber — part of the
+    -- profile is usable, part is not (spec/ui.md §3).
+    unconfigured     = "DiagnosticError",
+    mixed            = "DiagnosticWarn",
     configure_failed = "DiagnosticError",
     build_failed     = "DiagnosticError",
     failed_configure = "DiagnosticError",
@@ -147,6 +161,25 @@ local function note_running()
 end
 
 -- ---------------------------------------------------------------------------
+-- Marker highlights
+-- ---------------------------------------------------------------------------
+
+--- Every group a marker can use (STATUS_HL values, the `Comment` fallback,
+--- and the diagnostics indicator's groups).
+local MARKER_GROUPS = { "DiagnosticOk", "DiagnosticWarn", "DiagnosticError", "Comment" }
+M._MARKER_GROUPS = MARKER_GROUPS
+
+--- The foreground of `group` as "#rrggbb", or nil when it has none.
+--- @param group string
+--- @return string|nil
+local function group_fg(group)
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = group, link = false })
+    if not ok or type(hl) ~= "table" or not hl.fg then return nil end
+    return string.format("#%06x", hl.fg)
+end
+M._group_fg = group_fg
+
+-- ---------------------------------------------------------------------------
 -- Component implementation
 -- ---------------------------------------------------------------------------
 
@@ -169,13 +202,25 @@ function M:init(options)
             self._icons[field] = glyph .. " "
         end
     end
+
+    -- One lualine highlight per marker group, created up front (like
+    -- lualine's diagnostics component). `color` is a function so the
+    -- group's current fg is read on every redraw; lualine also re-creates
+    -- components on ColorScheme.
+    self._marker_hls = {}
+    for _, group in ipairs(MARKER_GROUPS) do
+        self._marker_hls[group] = self:create_hl(function()
+            local fg = group_fg(group)
+            return fg and { fg = fg } or {}
+        end, group)
+    end
 end
 
 --- Make workspace data inert in a statusline string: remove control
 --- characters and double every `%` so a name from a (possibly cloned)
 --- loomworks.json cannot inject statusline items, highlight groups or
 --- expressions (spec/ui.md §3). Applied to data only — never to the
---- component's own `%#hl#…%*` escapes, icons or join string.
+--- component's own highlight escapes, icons or join string.
 --- @param s any
 --- @return string
 local function inert(s)
@@ -194,10 +239,18 @@ function M:_with_icon(field, value)
     return icon .. value
 end
 
+--- Wrap `text` in the lualine highlight for `group`'s foreground, then
+--- return to the section's own highlight.
+--- @param group string one of MARKER_GROUPS
+--- @param text string
+--- @return string
+function M:_marker_hl(group, text)
+    return self:format_hl(self._marker_hls[group]) .. text .. self:get_default_hl()
+end
+
 --- Render a status icon (spinner frame for running states; mapped
---- glyph otherwise) wrapped in a statusline highlight escape. Returns
---- the empty string for unknown / nil states so callers can append
---- unconditionally.
+--- glyph otherwise) in its group's colour. Returns the empty string for
+--- unknown / nil states so callers can append unconditionally.
 --- @param state string|nil
 --- @return string
 function M:_status_marker(state)
@@ -211,7 +264,7 @@ function M:_status_marker(state)
     end
     if not glyph then return "" end
     if RUNNING_STATES[state] then note_running() end
-    return "%#" .. hl .. "#" .. glyph .. "%* "
+    return self:_marker_hl(hl, glyph) .. " "
 end
 
 function M:update_status()
@@ -227,15 +280,13 @@ function M:update_status()
 
     -- Diagnostics indicator: a single icon coloured by severity. Sits
     -- before everything else so it stays visible if the rest of the
-    -- segment overflows / scrolls. Statusline highlight escapes
-    -- (`%#hl#text%*`) are interpreted by vim, so we render coloured
-    -- without any lualine-specific machinery.
+    -- segment overflows / scrolls.
     if self._show.diagnostics and status.diagnostic_severity then
         local hl = status.diagnostic_severity == "error"
             and "DiagnosticError" or "DiagnosticWarn"
         local icon = status.diagnostic_severity == "error"
             and "\u{2717}" or "\u{26a0}"   -- ✗ or ⚠
-        parts[#parts + 1] = "%#" .. hl .. "#" .. icon .. "%*"
+        parts[#parts + 1] = self:_marker_hl(hl, icon)
     end
 
     -- Set name: "debug". Status marker (from profile_state) precedes

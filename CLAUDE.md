@@ -162,7 +162,9 @@ pruning by `lw bootstrap install` / `upgrade`), `loomworks/housekeeping.lua`
 (the startup housekeeping pass and `lw cleanup`), `boot.update.gc` (release
 pruning by self-update), the install-folder temp removals (`.dl-<ver>.zip`,
 `.stage-<ver>`) and the plugin-managed `lw` (`provision/cache.prune`, the
-`.dl` temp file of `provision/fetch.ensure`)) **must** be reviewed for
+`.dl` temp file of `provision/fetch.ensure`), owned LSP database cleanup
+(`Workspace:_remove_owned_lsp_dbs`, `Core:_nuke_lsp_db_areas`,
+`lsp_db_cleanup.lua`)) **must** be reviewed for
 directory safety before merging:
 
 1. **Boundary check**: path prefix comparisons must include a trailing `/`
@@ -245,6 +247,21 @@ directory safety before merging:
    `<sha256>.<pid>.<n>.dl` path (a file or link, never a directory; never
    written through) and renames over a slot binary whose hash mismatches;
    prune removes another pid's regular `.dl` file after 24 h.
+12. **Owned LSP databases** (spec §4.6 "Owned LSP database cleanup"): a
+   module's mirror (`lsp_database_dir(ctx)`, under
+   `<root>/.nvim/cache/<lsp_database_root>/`) is removed by
+   `Workspace:_remove_owned_lsp_dbs` only for a build dir whose deletion was
+   CONFIRMED (skipped/refused/failed dirs keep it), only when no remaining
+   build dir maps to it, and only after `lsp_db_cleanup.check_mirror`
+   approves it (strictly inside the area, separator-bounded, no `.`/`..`,
+   lstat every level from `.nvim` down — no link/junction — realpath
+   strictly under the area's realpath, and on Windows no segment ending in
+   `.` or a space). Nuke removes the whole area via `Core:_nuke_lsp_db_areas`
+   / `check_area` (exact direct child of `.nvim/cache`); a failed area check
+   aborts the entire nuke (checked before the nuke's locks; the area is
+   removed with the caches, under those locks, before the tree move-aside).
+   The mirror path is recomputed from the validated build dir, never read
+   from the cache; failure is a warning only.
 
 ## Implementation Notes
 

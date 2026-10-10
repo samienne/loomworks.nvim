@@ -747,6 +747,9 @@ Shown when `<C-n>` is pressed. Floating window centered in editor.
 2. List of paths that will be deleted:
    - `<root>/.nvim/build/`
    - `<root>/.nvim/loomworks.cache.json`
+   - each module's owned LSP database area,
+     `<root>/.nvim/cache/<lsp_database_root>/` (core §8.4, §4.6 *Owned LSP
+     database cleanup*) — listed only when present on disk
 3. Confirmation prompt
 
 **Root resolution**: Uses `ws.root` if a workspace is loaded, otherwise
@@ -764,6 +767,11 @@ workspace operation); a refusal shows only an error notification
 2. `loomworks.json` must exist at the root (confirms it is a real workspace)
 3. Every path to delete is verified to be under `root/.nvim/` using
    normalized path prefix checking (prevents directory traversal)
+4. An owned LSP database area is removed only when it is exactly the
+   direct child `<root>/.nvim/cache/<lsp_database_root>` and neither it,
+   `.nvim/cache` nor `.nvim` is a symbolic link or junction (core §4.6
+   *Owned LSP database cleanup*); nothing else under `.nvim/cache/` is
+   touched
 
 If any check fails, the operation aborts with an error notification and
 no files are deleted. These checks are specific to the nuke operation —
@@ -1138,3 +1146,82 @@ component never shows descriptions.
   subscription, also while the daemon has not loaded the workspace)
 - No active profile
 - Current buffer is not in any project
+
+**Status markers.** With status icons enabled (the default; `status_icons =
+false` disables them), the set name is prefixed with a marker for the active
+profile's aggregate state (`buf_status().profile_state`) and the
+project/configuration with one for the buffer's unit (`buf_status().status`).
+Running states animate the spinner. The glyphs are short single characters
+shared with the status page's meaning; each marker is coloured with the
+**foreground** of its highlight group so it reads independently of the
+surrounding text colour. The colour is applied through lualine's own
+component highlights (`create_hl` / `format_hl`), so the marker keeps the
+section's background, and the text after it returns to the section highlight
+(`get_default_hl`) — never raw `%#Group#…%*` escapes, which would reset to
+`StatusLine`/`WinBar` and carry the group's own background. This holds in
+statusline and winbar sections alike, and the group's colour is re-read on
+every redraw, so a colourscheme change is picked up. The diagnostics
+indicator (`⚠` / `✗`) is coloured the same way.
+
+| State | Glyph | Highlight |
+|-------|-------|-----------|
+| `built` | ✓ | `DiagnosticOk` |
+| `configured` | ◐ | `Comment` |
+| `unconfigured` | ○ | `DiagnosticError` |
+| `mixed` (aggregate: units disagree, none failed or running) | ○ | `DiagnosticWarn` |
+| `configure_failed` / `build_failed` / `failed_configure` / `failed_build` | ✗ | `DiagnosticError` |
+| `unknown` | ? | `Comment` |
+| `configuring` / `building` | spinner | `DiagnosticWarn` |
+| `deleting` / `cleaning` | spinner | `DiagnosticError` |
+
+`unconfigured` is red because an unconfigured active unit is not a neutral
+resting state any more: it means the language server for that project is
+withheld (core §9.8, §4 below). `mixed` is amber — part of the profile is
+usable, part is not.
+
+**`buf_status(bufnr)`** (public API, `loomworks.buf_status`) returns the table
+this component renders, or `nil` when there is no active configuration set or
+the buffer is in no project. Fields: `profile_key`, `set_name`, `tool_key`,
+`project`, `configuration`, `status`, `profile_state`, `diagnostic_severity`,
+and **`lsp`** — the buffer's per-buffer LSP status from core §9.8 (`none`,
+`held`, `ok`, `withheld_unconfigured`, `withheld_no_db`, `withheld_error`).
+Because `buf_status` is `nil` without an active profile, the same value is also
+available unconditionally from **`loomworks.lsp_buf_state(bufnr)`**, which
+returns `none` for buffers loomworks has no LSP opinion about. The status page
+LSP section may reuse it to explain a missing client (e.g. "clangd withheld —
+active configuration not configured on this machine").
+
+## 4. LSP Status Component
+
+`lualine/components/loomworks_lsp.lua` provides a small lualine component
+meant to sit **next to lualine's built-in `lsp_status`** component. `lsp_status`
+shows the clients that are attached; a withheld server (core §9.8) has no
+client, so `lsp_status` alone shows nothing and the absence is
+indistinguishable from "no server for this filetype". This component fills
+that gap:
+
+| `lsp_buf_state(bufnr)` | Renders |
+|------------------------|---------|
+| `withheld_unconfigured` | `(unconfigured)` in `DiagnosticError` |
+| `withheld_no_db` | `(no db)` in `DiagnosticError` |
+| `withheld_error` | `(ws error)` in `DiagnosticError` |
+| anything else (`none`, `held`, `ok`) | empty string |
+
+"In `DiagnosticError`" means that group's foreground on the section's own
+background, applied through lualine's component `color` option (so lualine
+restores the section highlight after the component — no raw `%#…#`/`%*`
+escapes); a user-supplied `color` option overrides it.
+
+It reads `loomworks.lsp_buf_state` (not `buf_status`) so it also renders when no
+profile is active — the no-active-profile case is `withheld_unconfigured`
+(core §9.1, §9.8). It renders empty for buffers outside any workspace and when
+loomworks is not loaded. The text is a fixed string (no workspace data), so the
+display-text rule of §3 does not come into play. It refreshes on the same events
+as §3 (active-set change, task completion, workspace change) plus a change of
+the buffer's LSP status, and costs nothing while idle.
+
+Example:
+
+```lua
+lualine_x = { "lsp_status", "loomworks_lsp" }
+```

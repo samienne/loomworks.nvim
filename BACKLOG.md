@@ -146,6 +146,42 @@ task list, and its output is not parsed into the quickfix list or diagnostics
 operations themselves run in the daemon: then the editor's own builds leave
 overseer too unless daemon tasks can appear there.
 
+---
+
+## Withheld clangd (§9.8) when LSP moves into the daemon (step 5l)
+
+Merged from master (#192) into staging/daemon: the per-buffer withheld states
+(`lsp_buf_state`, `lsp_buf_state_changed`, `workspace_closed`) and the
+`db_state` of `lsp_configs` entries are decided by the editor's LSP layer from
+its in-process model, in every mode, as all LSP wiring is until step 5l
+(spec/core/daemon.md §19.13). `buf_status().lsp` is added by the editor on top
+of the two views. When step 5l moves LSP to the daemon, `loomworks.LspConfig/1`
+(`/lsp`) must carry each entry's `db_state` (and the editor must re-evaluate
+withheld buffers on its `changed` updates) so a configure run in the daemon
+starts or withholds clangd exactly as in-process. Not designed yet.
+
+---
+
+## qmlls on an unconfigured build directory
+
+qmlls still gets `-b <unconfigured build dir>` when the active unit is not
+configured on this machine (the cmake qmlls entry carries
+`db_state = "unconfigured"` but the qmlls integration ignores it). Consider
+withholding qmlls like clangd (core §9.8, a `withhold_reason` hook on the
+qmlls integration).
+
+---
+
+## `_validate_build_dir`: trailing dot/space segments on Windows
+
+`_validate_build_dir` accepts segments with trailing dot/space on Windows
+(e.g. `'<root>/.nvim/build/.. '`). Win32 trims them, so such a path names a
+different (parent) directory than the one the boundary check approved. The
+owned-LSP-database check (`lsp_db_cleanup.check_mirror`) already refuses
+them; apply the same rule to build directories.
+
+---
+
 ## Variable rename: what should it cascade to?
 
 Found while fixing PR #75. Renaming a variable in the editor's variable editor

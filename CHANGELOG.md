@@ -313,6 +313,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   leaves at once while the daemon finishes stopping it. After a Ctrl-C `lw run`
   never starts the program, even when the preparation had just finished.
   Against an older daemon the first Ctrl-C leaves at once, as before. (#176)
+- New lualine component `loomworks_lsp`: placed next to `lsp_status`, it
+  shows `(unconfigured)`, `(no db)` or `(ws error)` in red when loomworks
+  withholds clangd for the buffer. `buf_status()` gains an `lsp` field and
+  `loomworks.lsp_buf_state(bufnr)` returns the same per-buffer status. (#191)
 
 ### Changed
 - Experimental daemon mode: the statusline component and the status page
@@ -521,6 +525,31 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   `:LoomworksDaemon status` and the new `:checkhealth loomworks` say which
   `lw` was chosen and why, or why none. `binary.source` (development only)
   runs it with a Lua source tree. (#154)
+- Inside a workspace, clangd only gets a compile database from the active
+  configuration as configured on this machine. A stale
+  `compile_commands.json` in a build directory that is not configured here
+  (never configured, reset, or copied from elsewhere) is no longer used, and
+  a buffer under the workspace root with no usable database gets no clangd
+  client at all instead of one that guesses flags. clangd starts by itself
+  once the database exists (configure finishes, or you switch to a
+  configured profile) and stops when you switch to an unconfigured one.
+  This needs loomworks' default clangd setup, or your own `vim.lsp.config`
+  + `vim.lsp.enable` (Neovim 0.11+). Files outside the loaded workspace,
+  including a file of another workspace that is not loaded, keep your
+  stock clangd. (#191)
+- Deleting or resetting a build directory (editor `D`, `lw reset`,
+  orphan delete) now also removes the compile database loomworks generated
+  from it under `.nvim/cache/cc/`, and nuke (`<C-n>`, `lw nuke`) removes the
+  whole `.nvim/cache/cc/` area. Nothing else under `.nvim/cache/` is touched;
+  a database still used by another build directory is kept, and nothing is
+  removed through a symbolic link or junction (nuke refuses entirely if the
+  area is one). (#191)
+- The winbar marker for an unconfigured configuration is now red, and a
+  profile whose configurations disagree (`mixed`) is amber. The status page
+  says "clangd withheld" with the reason. (#191)
+- The lualine/winbar status markers now take only the colour of their
+  highlight group and keep the lualine section's background; the text after
+  a marker no longer falls back to the plain statusline/winbar colours. (#191)
 
 ### Fixed
 - A lock file read in the instant between its creation and its record being

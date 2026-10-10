@@ -51,6 +51,11 @@ M.VERIFY_MS = 30000
 --- @field units loomworks.ConfigUnit[] the units the reset returns to
 ---   unconfigured (§19.15 `meta.units`; an orphan has no unit)
 --- @field orphans string[] build-dir keys of the orphaned dirs (scope "all")
+--- @field mirrors string[] the owned LSP database mirrors (spec §4.6) of the
+---   targeted build dirs the deletion may remove, present on disk: listed, and
+---   removed by the deletion once their dir's removal is confirmed (a mirror
+---   still used by another build dir is kept). One left behind is a warning
+---   after the reset, never a failure (§16.30). Not part of the token.
 --- @field token string the plan token (`M.token`)
 
 --- Plan a reset. Pure with respect to the workspace (nothing is changed); it
@@ -70,7 +75,11 @@ function M.plan(ws, scope)
     end
     -- A dir the deletion would refuse (Deletion Safety: the cache is never
     -- trusted) is never listed as removed: it is listed as left in place.
-    local function add_removal(bd)
+    -- Owned LSP database mirrors of the targeted dirs, present on disk (spec
+    -- §4.6): only of dirs the deletion may remove (a refused dir keeps its
+    -- mirror).
+    local mirrors, mirror_seen = {}, {}
+    local function add_removal(bd, unit, bd_obj)
         if bd and not removal_seen[bd] and uv.fs_stat(bd) ~= nil then
             removal_seen[bd] = true
             if ws:_validate_build_dir(norm(bd), norm(ws.root), { quiet = true }) then
@@ -78,6 +87,13 @@ function M.plan(ws, scope)
             else
                 outside_dirs[#outside_dirs + 1] = bd
                 state_to_clear = true
+            end
+        end
+        if bd and ws._lsp_db_mirror
+                and ws:_validate_build_dir(norm(bd), norm(ws.root), { quiet = true }) then
+            local m = ws:_lsp_db_mirror(ws:_lsp_db_module_for(unit, bd_obj), bd)
+            if m and not mirror_seen[m] and uv.fs_stat(m) ~= nil then
+                mirror_seen[m] = true; mirrors[#mirrors + 1] = m
             end
         end
     end
@@ -101,14 +117,14 @@ function M.plan(ws, scope)
         for _, unit in ipairs(all_units) do
             local bd = unit:build_dir()
             add_lock(bd)
-            add_removal(bd) -- reset_all batches every unit; none are "keep"
+            add_removal(bd, unit, unit._build_dir) -- reset_all batches every unit; none are "keep"
             if unit.state_value ~= nil then state_to_clear = true end
             if bd then units[#units + 1] = unit end
         end
         for _, o in ipairs(ws:get_orphaned_configs()) do
             local p = o.build_dir_obj and o.build_dir_obj.path or nil
             add_lock(p)
-            add_removal(p)
+            add_removal(p, nil, o.build_dir_obj)
             orphans[#orphans + 1] = o.build_dir_key
             state_to_clear = true -- get_orphaned_configs only returns dirs WITH state
         end
@@ -124,7 +140,7 @@ function M.plan(ws, scope)
         for _, item in ipairs(profile:plan_reset().items) do
             add_lock(item.build_dir)
             if item.disposition ~= "keep" then
-                add_removal(item.build_dir)
+                add_removal(item.build_dir, item.unit, item.unit and item.unit._build_dir)
                 if item.unit and item.unit.state_value ~= nil then state_to_clear = true end
                 if item.unit then units[#units + 1] = item.unit end
             end
@@ -133,6 +149,7 @@ function M.plan(ws, scope)
     plan.lock_dirs = lock_dirs
     plan.removal_dirs = removal_dirs
     plan.outside_dirs = outside_dirs
+    plan.mirrors = mirrors
     plan.state_to_clear = state_to_clear
     plan.units = units
     plan.orphans = orphans
@@ -220,6 +237,12 @@ function M.listing(plan)
         lines[1] = string.format("Will remove %d build director%s and reset %s to unconfigured:",
             n, (n == 1) and "y" or "ies", plan.label)
         for _, d in ipairs(plan.removal_dirs) do lines[#lines + 1] = "  " .. d end
+        local mirrors = plan.mirrors or {}
+        if #mirrors > 0 then
+            lines[#lines + 1] = "and the owned LSP database" .. (#mirrors == 1 and "" or "s")
+                .. " generated from them:"
+            for _, m in ipairs(mirrors) do lines[#lines + 1] = "  " .. m end
+        end
     elseif #(plan.outside_dirs or {}) > 0 then
         lines[1] = "Will reset " .. plan.label .. " to unconfigured "
             .. "(clearing cached state; no build directory is removed)."
@@ -263,6 +286,21 @@ M.CHANGED = "the build directories to reset changed since they were listed — r
 --- @return string
 function M.ok_line(plan)
     return "RESET OK: " .. plan.label
+end
+
+--- The warnings after a completed reset: each listed owned LSP database mirror
+--- still on disk (kept as shared, refused by a safety check, or failed to
+--- delete). A warning, never a reset failure (spec §16.30).
+--- @param plan loomworks.ResetPlan
+--- @return string[] lines
+function M.mirror_warnings(plan)
+    local lines = {}
+    for _, m in ipairs(plan.mirrors or {}) do
+        if uv.fs_stat(m) ~= nil then
+            lines[#lines + 1] = "warning: owned LSP database not removed: " .. m
+        end
+    end
+    return lines
 end
 
 --- The failure of a deletion that did not complete in time (exit 1).

@@ -265,7 +265,11 @@ or a file was viewed — run only what trusted state names:
 
 - **Language servers** start only with a binary and arguments from the signed
   working copy, from detection (§17.7), or the integration's default resolved
-  from the search path (§5.10).
+  from the search path (§5.10). A compilation database is handed to a server
+  only from a build directory recorded as configured in the signed cache — the
+  same "configured on this machine" test as target scans below — so a database
+  that came with the copy (or was left by an earlier, since-reset configure) is
+  never read passively (§9.1, §9.8).
 - **SDK validation** probes only installation paths from the signed working
   copy (§10.4).
 - **Target scans and test discovery** (§8.4 `parse_targets`, §8.9) run only

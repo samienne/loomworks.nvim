@@ -74,10 +74,14 @@ local function resolve_binary(entry)
 end
 
 --- Resolve compile_commands_dir from an entry (verifies the .json exists).
+--- An entry whose unit is not configured on this machine never yields a
+--- directory, even if a module set one (clangd spec §2, core §9.1): whatever
+--- database sits in such a build directory is stale or foreign.
 --- @param entry table|nil
 --- @return string|nil
 local function resolve_compile_commands_dir(entry)
     if not entry or not entry.compile_commands_dir then return nil end
+    if entry.db_state == "unconfigured" then return nil end
     local dir = entry.compile_commands_dir
     if not uv.fs_stat(dir .. "/compile_commands.json") then return nil end
     return dir
@@ -309,27 +313,33 @@ end
 --- @param fallback? fun(bufnr: number, on_dir: fun(root: string))
 --- @return fun(bufnr: number, on_dir: fun(root: string))
 function M.root_dir_factory(fallback)
-    --- The existing per-buffer resolution: routed project entry, else fallback.
-    local function resolve(bufnr, on_dir)
-        local ok, lw = pcall(require, "loomworks")
-        if ok then
-            local project = lw.project_for_buf(bufnr)
-            if project then
-                local entry = entry_for(project)
-                if entry and entry.root_dir then
-                    on_dir(normalize(entry.root_dir))
-                    return
-                end
-            end
-        end
-        if fallback then fallback(bufnr, on_dir) end
-    end
+    -- Routing (project entry / workspace entry / fallback), the §9.7 hold and
+    -- the §9.8 withheld decision all live in the core dispatch layer; this
+    -- integration only answers `withhold_reason`. Excluded buffers are
+    -- skipped there before anything else (never queued, never started).
     return function(bufnr, on_dir)
-        local lsp = require("loomworks.lsp")
-        if lsp.excluded(bufnr) then return end -- never queued
-        lsp.gated_root_dir(bufnr, on_dir, resolve)
+        require("loomworks.lsp").managed_root_dir("clangd", bufnr, on_dir, fallback)
     end
 end
+
+--- Whether a clangd entry can back a running server (core §9.3/§9.8, clangd
+--- spec §3.1). nil → start; "unconfigured" → the unit supplying the database
+--- is not configured on this machine (or no active profile); "no_db" →
+--- configured here, but no compile_commands.json exists (yet).
+--- @param entry table|nil
+--- @return string|nil reason
+function M.withhold_reason(entry)
+    if not entry then return nil end
+    if entry.db_state == "unconfigured" then return "unconfigured" end
+    if not resolve_compile_commands_dir(entry) then return "no_db" end
+    return nil
+end
+
+--- Status-page text per withhold reason.
+local WITHHELD_TEXT = {
+    unconfigured = "active configuration not configured on this machine",
+    no_db = "no compile_commands.json yet",
+}
 
 --- Get resolved cmd args for a root_dir (used by status display).
 --- @param root_dir string normalized root directory
@@ -412,10 +422,15 @@ M.default_enable = true
 --- @param entry table
 --- @return table
 function M.status_extras(entry)
+    local withheld = M.withhold_reason(entry)
     return {
-        compile_commands_dir = entry.compile_commands_dir,
+        compile_commands_dir = entry.db_state ~= "unconfigured"
+            and entry.compile_commands_dir or nil,
         clangd_bin = entry.binary,
         binary_required = entry.binary_required,
+        withheld = withheld,
+        withheld_label = withheld and ("clangd withheld \u{2014} "
+            .. (WITHHELD_TEXT[withheld] or withheld)) or nil,
     }
 end
 
@@ -466,8 +481,10 @@ function M.on_active_set_changed()
             }
             new_state[key] = new
 
+            -- A now-withheld entry is stopped by core's re-evaluation (§9.8),
+            -- never restarted into a database-less state here.
             local prev = _client_state[key]
-            if prev and (prev.binary ~= new.binary
+            if prev and not M.withhold_reason(entry) and (prev.binary ~= new.binary
                     or prev.compile_commands_dir ~= new.compile_commands_dir) then
                 local clients = find_clients(key)
                 if #clients > 0 then
@@ -490,7 +507,9 @@ function M.on_active_set_changed()
 end
 
 --- Restart all clangd clients when a workspace loads for the first time.
---- Pre-existing clients were started without loomworks awareness.
+--- Pre-existing clients were started without loomworks awareness. The restart
+--- re-resolves every attached buffer through `root_dir`, so a buffer whose
+--- entry is withheld (§3.1) gets no new client — its old one is just stopped.
 function M.on_workspace_changed()
     local clients = vim.lsp.get_clients({ name = "clangd" })
     if #clients == 0 then return end

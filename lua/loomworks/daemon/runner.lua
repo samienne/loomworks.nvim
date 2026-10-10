@@ -710,6 +710,7 @@ function M.reset(svc, ctx)
         svc:with_model(ctx, function()
             if was_stopped or run.cancelled then return finish(run.cancel_code or 1, stopped()) end
             if code ~= 0 then return finish(code or 1, msg) end
+            for _, line in ipairs(reset_plan.mirror_warnings(plan)) do task:line("out", line) end
             task:line("out", reset_plan.ok_line(plan))
             finish(0)
         end)

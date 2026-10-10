@@ -126,7 +126,9 @@ describe("editor views from a real daemon /views (§19.13, step 5j)", function()
         assert.equals(srv.pid, h.pid)
 
         -- The same answers as in-process, from the daemon's tables.
-        assert.same(want_status, lw.buf_status(buf))
+        -- buf_status adds the editor-local per-buffer LSP state (spec §9.8) on
+        -- top of the views, in both sources.
+        assert.same(vim.tbl_extend("force", want_status, { lsp = lw.lsp_buf_state(buf) }), lw.buf_status(buf))
         local rec = lw.buf_project(buf)
         assert.is_string(rec.id)
         assert.equals("app", rec.key)

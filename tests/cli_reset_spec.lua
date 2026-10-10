@@ -136,6 +136,36 @@ describe("lw reset (on-disk)", function()
     assert.is_falsy(profile._removed)
   end)
 
+  it("lists and removes the build dir's owned LSP database mirror (spec §4.6)", function()
+    local ws, profile = load(make_ws())
+    -- Derive paths from the loaded root: it is canonicalized (on a Windows
+    -- runner tempname() is an 8.3 short path, ws.root its long form), and the
+    -- module maps a build dir to its mirror relative to ws.root.
+    local root = ws.root
+    local dir = root .. "/.nvim/build/App/Debug"
+    fake_build_dir(ws, profile, dir)
+    local mirror = root .. "/.nvim/cache/cc/App/Debug"
+    vim.fn.mkdir(mirror, "p")
+    local mf = assert(io.open(mirror .. "/compile_commands.json", "w")); mf:write("[]"); mf:close()
+    -- The module (typescript here) owns no database: stand in a cmake-like one.
+    local fake = {
+      lsp_database_root = "cc",
+      lsp_database_dir = require("loomworks.modules.cmake").lsp_database_dir,
+    }
+    ws._lsp_db_module_for = function() return fake end
+
+    local r = capture(function()
+      return cli.cmd_reset(ws, { "reset", profile.key, "-y" })
+    end)
+
+    assert.is_nil(r.exit_code, "reset should succeed: " .. r.stderr)
+    assert.is_truthy(r.stdout:find("owned LSP database", 1, true), r.stdout)
+    assert.is_truthy(r.stdout:find(mirror, 1, true), r.stdout)
+    assert.is_true(vim.wait(5000, function() return uv.fs_stat(mirror) == nil end, 20),
+      "mirror must be removed with its build dir")
+    assert.is_not_nil(uv.fs_stat(root .. "/.nvim/cache/cc"), "the area itself stays")
+  end)
+
   it("--all removes every build dir including orphaned ones", function()
     local root = make_ws()
     local ws, profile = load(root)

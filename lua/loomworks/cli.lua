@@ -1452,6 +1452,9 @@ function M.cmd_reset(ws, args, opts)
   if not settled then die(reset_plan.TIMED_OUT) end
   if res.code ~= 0 then die(res.msg, res.code) end
 
+  -- A mirror left behind is a warning, not a reset failure (spec §16.30):
+  -- it was kept as shared, refused by a safety check, or failed to delete.
+  for _, line in ipairs(reset_plan.mirror_warnings(plan)) do out(line) end
   out(reset_plan.ok_line(plan))
   return 0
 end
@@ -1620,6 +1623,13 @@ function M.cmd_nuke(root, args)
     require("loomworks.cache").filepath(root),
     root .. "/.nvim/loomworks.health.json",
   }
+  -- Module-owned LSP database areas present on disk (spec §4.6, ui §1.11).
+  -- `_nuke_begin` / `nuke_check` above already refused a failed area check;
+  -- this lists them (with -y, the ones the held nuke state removes).
+  local areas, area_err
+  if st then areas = st.areas else areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root)) end
+  if not areas then die("nuke refused: " .. tostring(area_err)) end
+  for _, a in ipairs(areas) do targets[#targets + 1] = a .. "/" end
   out("Will delete (build state only; your configuration is kept):")
   for _, p in ipairs(targets) do out("  " .. p) end
   if not yes then

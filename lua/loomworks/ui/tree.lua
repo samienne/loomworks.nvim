@@ -356,7 +356,7 @@ function Tree:_confirm_nuke()
 
     -- Refuse before listing what would be deleted (a build of another
     -- process, or its workspace operation, is in the way): the refusal only.
-    local ok, why = lw.nuke_check(root)
+    local ok, why, areas = lw.nuke_check(root)
     if not ok then
         vim.notify("loomworks: " .. tostring(why), vim.log.levels.ERROR)
         return
@@ -368,19 +368,21 @@ function Tree:_confirm_nuke()
         "  This will permanently delete:",
         "    " .. root .. "/.nvim/build/",
         "    " .. root .. "/.nvim/loomworks.cache.json",
-        "",
-        "  Press y to confirm, q to cancel",
     }
+    -- Module-owned LSP database areas present on disk (spec ui §1.11), as
+    -- `nuke_check` found them; a failed area check already refused above.
+    for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
+    local last_path = #lines
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  Press y to confirm, q to cancel"
+
+    local highlights = { { line = 1, hl_group = "DiagnosticError" } }
+    for i = 3, last_path do highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn" } end
 
     dialog.show({
         title = "Confirm Reset",
         lines = lines,
-        highlights = {
-            { line = 1, hl_group = "DiagnosticError" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-            { line = 4, hl_group = "DiagnosticWarn" },
-            { line = 5, hl_group = "DiagnosticWarn" },
-        },
+        highlights = highlights,
         keys = {
             n = "close",
             y = function(self)

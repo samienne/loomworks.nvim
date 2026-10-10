@@ -150,7 +150,9 @@ return {
         ["lua/loomworks/integrations/lsp/clangd.lua"] = 1,
         ["lua/loomworks/integrations/lsp/qmlls.lua"] = 1,
         ["lua/loomworks/loomtest_adapter.lua"] = 2,
-        ["lua/loomworks/lsp.lua"] = 5,
+        -- 5 -> 7: master #192 (withheld clangd, spec §9.8) reads the in-process
+        -- model in `decide` and `derive_db_state`; LSP moves in step 5l (BACKLOG).
+        ["lua/loomworks/lsp.lua"] = 7,
         ["lua/loomworks/neotest/init.lua"] = 5,
         ["lua/loomworks/overseer.lua"] = 22,
         ["lua/loomworks/reload.lua"] = 1,

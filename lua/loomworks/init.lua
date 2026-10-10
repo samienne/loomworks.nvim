@@ -300,6 +300,13 @@ function M.on(event, fn)
     events.on(event, fn)
 end
 
+--- Emit `lsp_buf_state_changed` (spec §7) for the LSP layer, which reaches the
+--- event bus only through this facade.
+--- @param payload { bufnr: integer, server: string, state: loomworks.LspBufState }
+function M._emit_lsp_buf_state(payload)
+    events.emit("lsp_buf_state_changed", payload)
+end
+
 -- ---------------------------------------------------------------------------
 -- Object factories
 -- ---------------------------------------------------------------------------
@@ -616,6 +623,18 @@ function M.view_header()
     return views.header()
 end
 
+--- Per-buffer LSP status (spec §9.8): whether loomworks started, is holding,
+--- or withholds a managed language server for the buffer. Available without an
+--- active profile (unlike `buf_status`). "none" for buffers loomworks has no
+--- LSP opinion about, and when the LSP layer is not loaded.
+--- @param bufnr? integer defaults to the current buffer
+--- @return loomworks.LspBufState
+function M.lsp_buf_state(bufnr)
+    local lsp = package.loaded["loomworks.lsp"]
+    if type(lsp) ~= "table" or type(lsp.buf_state) ~= "function" then return "none" end
+    return lsp.buf_state(bufnr)
+end
+
 --- Get status info for the buffer's project, suitable for statusline/winbar.
 --- Read from the two views (spec §19.13 "Two sources, one shape"): nil unless
 --- the header is `loaded` and the buffer is in a project.
@@ -624,7 +643,11 @@ end
 function M.buf_status(bufnr)
     local header = views.header()
     if not header or header.state ~= "loaded" then return nil end
-    return views.status_of(header, views.projects_index(), vim.api.nvim_buf_get_name(bufnr or 0))
+    local status = views.status_of(header, views.projects_index(), vim.api.nvim_buf_get_name(bufnr or 0))
+    -- The per-buffer LSP state is editor-local in every mode (the LSP layer
+    -- always runs in the editor), so it is added here, not in the views.
+    if status then status.lsp = M.lsp_buf_state(bufnr) end
+    return status
 end
 
 -- ---------------------------------------------------------------------------
