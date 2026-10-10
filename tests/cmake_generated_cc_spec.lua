@@ -295,6 +295,8 @@ describe("cmake lsp_configs compile_commands_dir (generated vs build dir)", func
                         return {
                             build_dir = function() return build_dir end,
                             configuration = function() return cfg end,
+                            -- Configured on this machine (spec §9.1) unless asked.
+                            configured_here = function() return opts.unconfigured ~= true end,
                         }
                     end,
                     tool_for = function()
@@ -325,6 +327,39 @@ describe("cmake lsp_configs compile_commands_dir (generated vs build dir)", func
         assert.are_not.equal(build_dir, cfgs[1].compile_commands_dir)
         assert.is_truthy(cfgs[1].compile_commands_dir:find("/.nvim/cache/cc/", 1, true))
         assert.is_truthy(cfgs[1].compile_commands_dir:find("myapp/ninja/Debug", 1, true))
+    end)
+
+    it("offers no database and schedules no generation for a unit not configured here (§9.1)", function()
+        local build_dir = "/work/.nvim/build/myapp/ninja/Debug"
+        local orig = cmake.refresh_generated_cc
+        local scheduled = false
+        cmake.refresh_generated_cc = function() scheduled = true end
+        local ok, cfgs = pcall(cmake.lsp_configs, fake_project({
+            ws_root = "/work",
+            build_dir = build_dir,
+            unconfigured = true,
+            config = { base_name = "Debug", module_config = { variant = "Debug" } },
+            tool_data = { generator = "Ninja" },
+        }))
+        cmake.refresh_generated_cc = orig
+        assert.is_true(ok, tostring(cfgs))
+        assert.is_nil(cfgs[1].compile_commands_dir)
+        assert.equals("unconfigured", cfgs[1].db_state)
+        assert.equals("unconfigured", cfgs[2].db_state) -- qmlls entry carries it too
+        assert.is_false(scheduled)
+    end)
+
+    it("marks the clangd entry ready for a unit configured here", function()
+        local orig = cmake.refresh_generated_cc
+        cmake.refresh_generated_cc = function() end
+        local cfgs = cmake.lsp_configs(fake_project({
+            ws_root = "/work",
+            build_dir = "/work/.nvim/build/myapp/ninja/Debug",
+            config = { base_name = "Debug", module_config = { variant = "Debug" } },
+            tool_data = { generator = "Ninja" },
+        }))
+        cmake.refresh_generated_cc = orig
+        assert.equals("ready", cfgs[1].db_state)
     end)
 
     it("falls back to the build dir when compile_commands_generated = false", function()

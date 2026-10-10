@@ -26,6 +26,15 @@ internally (e.g., redirecting to another configuration's build dir for
 a `compile_commands_from` setting) — by the time the entry reaches
 this integration, all paths are fully resolved.
 
+Per core §9.1, `compile_commands_dir` is set **only** when the unit
+supplying the database is configured on this machine; otherwise the entry
+carries `db_state = "unconfigured"` and no `compile_commands_dir`. The
+integration additionally **ignores** any `compile_commands_dir` on an entry
+whose `db_state` is `"unconfigured"` (defence against a module that sets
+both), so clangd is never pointed at a database left in an unconfigured
+unit's build directory — e.g. a months-old native `compile_commands.json`
+from another toolchain.
+
 The `compile_commands_dir` a module supplies may be a loomworks-generated
 directory rather than the build directory. The cmake module **always**
 points clangd at its own generated `compile_commands.json` directory (under
@@ -53,8 +62,11 @@ resolves per buffer:
 1. Look up the buffer's project in the workspace.
 2. If the project matches a loomworks clangd entry:
    a. Override the base cmd with `entry.binary` when present.
-   b. Append `--compile-commands-dir=<dir>` when the referenced
-      `compile_commands.json` exists.
+   b. Append `--compile-commands-dir=<dir>` when `entry.db_state` is not
+      `"unconfigured"` and the referenced `compile_commands.json` exists.
+      In the default (gated) path a project buffer only reaches this step
+      when both hold (§3.1); the condition matters for the `lsp = false`
+      opt-out path, where the server starts regardless.
 3. If `entry.binary_required` is `true` and the binary is missing:
    refuse to start, surface an error notification. **Do not fall back
    to the base `clangd`** — a wrong binary could index successfully
@@ -66,14 +78,44 @@ This lets a single nvim session transparently use an SDK clangd for
 buffers inside a workspace project and the user's stock clangd for
 buffers outside any workspace.
 
-With deferred start (core §9.7), in the default path this resolution runs only after the workspace is ready, so step 2 normally finds the project and the resolved directory on the first start. When the generated `compile_commands.json` first appears *after* the client started (a project's first-ever configure), core re-resolves the client on the generation-completion signal (core §8.4, cmake §12.4) so the directory is applied without reopening the buffer.
+### 3.1 Withholding (`withhold_reason`)
+
+clangd needs a compilation database to produce meaningful results inside
+a workspace project, so the integration implements core §9.3
+`withhold_reason(entry)`:
+
+| Entry | Result |
+|-------|--------|
+| `db_state == "unconfigured"` | `"unconfigured"` — the active unit (or the unit the database is redirected to) is not configured on this machine, or there is no active profile |
+| `db_state` ready but no `compile_commands_dir`, or no `compile_commands.json` in it | `"no_db"` — configured here, but no database exists (yet). In the default path the §9.7 hold already waits for generation, so this is reached only when generation is impossible or failed |
+| otherwise | `nil` — start |
+
+A withheld buffer gets **no clangd client** (core §9.8): not a clangd
+started without `--compile-commands-dir`. It starts automatically once the
+database becomes available — the unit is configured, the owned database is
+generated (completion signal, core §8.4), or the user switches to a profile
+whose unit is configured here — and the workspace's clangd clients are
+stopped when the user switches to a profile whose unit for their project is
+not configured here. Buffers outside the workspace root are unaffected
+(§3 step 4). A buffer under the workspace root that belongs to no project
+uses the workspace entry (core §9.8 *Decision*): the database of the first
+project, in key order, whose entry is usable; when no project's entry is
+usable it is withheld too, so a stock clangd never discovers a stale
+`compile_commands.json` under the root (such as `<root>/build/`) on its own.
+
+With deferred start (core §9.7), in the default path this resolution runs only after the workspace is ready, so step 2 normally finds the project and the resolved directory on the first start. When the generated `compile_commands.json` first appears *after* the workspace became ready (a project's first-ever configure), the buffer was withheld (`"no_db"` or `"unconfigured"`, §3.1) rather than started without a database; core starts the client on the configure / generation-completion signal (core §8.4, §9.8, cmake §12.4) without the buffer being reopened.
 
 ## 4. Per-buffer root_dir resolution
 
 Same shape as cmd:
 
-1. If the buffer matches a project: use `entry.root_dir`.
-2. Otherwise: `vim.fs.root(bufnr, root_markers)` against the
+1. If the buffer matches a project: use `entry.root_dir` — unless the
+   entry is withheld (§3.1), in which case no root is reported and no
+   client starts (core §9.8).
+2. If the buffer is under the workspace root but in no project: use the
+   workspace entry's `root_dir` (core §9.8 *Decision*), or report no root
+   when it is withheld.
+3. Otherwise: `vim.fs.root(bufnr, root_markers)` against the
    integration's defaults.
 
 Excluded buffers (via core's `loomworks.lsp.excluded(bufnr)`) never
@@ -107,9 +149,15 @@ The user's explicit `capabilities` always wins.
 ## 7. Lifecycle hooks
 
 - `on_active_set_changed()` — restart clients whose resolved `binary`
-  or `compile_commands_dir` changed for the new active set.
+  or `compile_commands_dir` changed for the new active set and whose
+  entry is still usable. Starting clients for newly usable buffers and
+  stopping clients whose entry became withheld (§3.1) is done by core's
+  re-evaluation (core §9.8) through the managed-stop path; the hook does
+  not restart a client into a withheld state.
 - `on_workspace_changed()` — restart all pre-existing clangd clients
-  so they pick up loomworks-aware routing.
+  so they pick up loomworks-aware routing; a pre-existing client for a
+  buffer under the workspace root whose entry is withheld is stopped
+  instead (not restarted).
 - **Deferred start (core §9.7)** normally holds clangd until the workspace is ready, so in the default path it starts already-correct and no startup restart occurs. `reconcile_on_attach(client)` remains as the repair path for the `lsp = false` opt-out (where loomworks cannot hold the start) and as a safety net: on attach, if a client's recorded cmd lacks the resolved `--compile-commands-dir`, it is restarted once. In the gated default path it finds the directory already applied and does nothing.
 
 ## 8. Status fields
@@ -121,8 +169,9 @@ page:
 |-------|--------|
 | `binary` | Resolved from `entry.binary` or `"clangd"` |
 | `binary_required` | `entry.binary_required` |
-| `compile_commands_dir` | `entry.compile_commands_dir` (or `(not found)`) |
+| `compile_commands_dir` | `entry.compile_commands_dir` (or `(not found)`; `(unconfigured)` when `db_state` is `"unconfigured"`) |
 | `binary_resolved` | Whether the binary actually exists on disk |
+| `withheld` | `withhold_reason(entry)` (§3.1) — `nil` when clangd may run; shown on the status page as "clangd withheld — …" so the missing client is explained |
 
 ## 9. Flag injection
 

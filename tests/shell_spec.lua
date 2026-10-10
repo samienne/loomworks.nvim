@@ -360,9 +360,22 @@ describe("shell module", function()
     describe("lsp_configs", function()
         local function fake_project(opts)
             opts = opts or {}
+            -- Active profile whose unit is configured on this machine (spec
+            -- §9.1) unless `opts.unconfigured`; `opts.no_profile` → none.
+            local bd = opts.build_dir or "/work/out"
             local ws = {
                 root = opts.ws_root or "/work",
-                get_active_profile = function() return nil end,
+                get_active_profile = function()
+                    if opts.no_profile then return nil end
+                    return {
+                        project = function()
+                            return {
+                                build_dir = function() return bd end,
+                                configured_here = function() return opts.unconfigured ~= true end,
+                            }
+                        end,
+                    }
+                end,
             }
             return {
                 key = opts.key or "myproj",
@@ -446,6 +459,33 @@ describe("shell module", function()
             }))
             assert.equals("/sdk/clangd", cfgs[1].binary)
             assert.is_true(cfgs[1].binary_required)
+        end)
+
+        it("marks the entry ready when the active unit is configured here", function()
+            local cfgs = shell.lsp_configs(fake_project({
+                type_config = { compile_commands = "/abs/path/compile_commands.json" },
+            }))
+            assert.equals("ready", cfgs[1].db_state)
+        end)
+
+        it("offers no database before the unit is configured here, even in-source (spec §9.1)", function()
+            local cfgs = shell.lsp_configs(fake_project({
+                unconfigured = true,
+                type_config = { compile_commands = "${project_path}/compile_commands.json" },
+            }))
+            assert.equals(1, #cfgs)
+            assert.is_nil(cfgs[1].compile_commands_dir)
+            assert.equals("unconfigured", cfgs[1].db_state)
+            assert.equals("/work/myproj", cfgs[1].root_dir)
+        end)
+
+        it("reports unconfigured with no active profile", function()
+            local cfgs = shell.lsp_configs(fake_project({
+                no_profile = true,
+                type_config = { compile_commands = "/abs/path/compile_commands.json" },
+            }))
+            assert.is_nil(cfgs[1].compile_commands_dir)
+            assert.equals("unconfigured", cfgs[1].db_state)
         end)
     end)
 end)

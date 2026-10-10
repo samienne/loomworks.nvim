@@ -203,6 +203,7 @@
 --- @class loomworks.LspConfigEntry
 --- @field server string                server name (e.g. "clangd")
 --- @field root_dir? string             absolute project-root path for client scoping
+--- @field db_state? "ready"|"unconfigured" whether the unit supplying build-dir-derived inputs (the compile DB) is configured on this machine (spec §8.4, §9.1). Derived by core from the active ConfigUnit when a module omits it
 --- @field binary? string               override server executable (env expansion supported)
 --- @field binary_required? boolean     refuse to start when `binary` is missing — use when stock PATH server would be actively wrong
 --- @field compile_commands_dir? string (clangd) directory containing compile_commands.json
@@ -370,6 +371,9 @@
 -- ========================== UI Data ==========================
 
 --- Buffer status info for statusline/LSP integration.
+--- Per-buffer LSP status of a managed language server (spec §9.8).
+--- @alias loomworks.LspBufState "none"|"held"|"ok"|"withheld_unconfigured"|"withheld_no_db"|"withheld_error"
+
 --- @class loomworks.BufStatus
 --- @field profile_key? string full active profile key
 --- @field set_name? string configuration set name
@@ -384,6 +388,8 @@
 --- @field diagnostic_severity? "warn"|"error" highest severity active in
 ---     the workspace, nil when there are no diagnostics. Workspace-level
 ---     (not buffer-scoped) — same value for every buffer in the workspace.
+--- @field lsp loomworks.LspBufState per-buffer LSP status (spec §9.8):
+---     none, held, ok, withheld_unconfigured, withheld_no_db, withheld_error.
 
 --- Cached target info from module file-api parsing. Runtime-only.
 --- @class loomworks.CachedTarget

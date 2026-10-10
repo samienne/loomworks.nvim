@@ -436,16 +436,15 @@ function M.lsp_configs(project)
     end
 
     -- Resolve build_dir from active profile so ${build_dir} matches
-    -- what the build actually produces.
+    -- what the build actually produces. The declared database is offered only
+    -- when the active unit is configured on this machine (spec §9.1) — the
+    -- module cannot tell whether the configure command produces it, so every
+    -- declared database counts as build output.
     local build_dir = nil
     local active_profile = ws.get_active_profile and ws:get_active_profile()
-    if active_profile then
-        local pp = active_profile:project(project.key)
-        if pp then build_dir = pp:build_dir() end
-    end
-    if not build_dir and project.cached then
-        build_dir = project.cached.build_dir
-    end
+    local active_pp = active_profile and active_profile:project(project.key) or nil
+    if active_pp then build_dir = active_pp:build_dir() end
+    local configured = active_pp ~= nil and active_pp:configured_here()
 
     local ctx = {
         workspace_root = ws.root,
@@ -468,12 +467,17 @@ function M.lsp_configs(project)
     end
 
     local compile_commands = expand.expand_string(tc.compile_commands, ctx)
-    if not compile_commands or compile_commands == "" then return {} end
+    if configured and (not compile_commands or compile_commands == "") then return {} end
 
-    -- compile_commands_dir wants the containing directory.
-    local dir = compile_commands
-    if compile_commands:match("compile_commands%.json$") then
-        dir = compile_commands:gsub("[/\\]?compile_commands%.json$", "")
+    -- compile_commands_dir wants the containing directory. Not configured
+    -- here → no directory at all; the entry still routes the project's
+    -- buffers through loomworks, so clangd is withheld (spec §9.8).
+    local dir = nil
+    if configured then
+        dir = compile_commands
+        if compile_commands:match("compile_commands%.json$") then
+            dir = compile_commands:gsub("[/\\]?compile_commands%.json$", "")
+        end
     end
 
     local binary = nil
@@ -493,6 +497,7 @@ function M.lsp_configs(project)
             binary = binary,
             binary_required = binary_required,
             compile_commands_dir = dir,
+            db_state = configured and "ready" or "unconfigured",
             root_dir = root_dir,
         },
     }

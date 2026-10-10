@@ -82,6 +82,10 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   keeps this machine's own settings, publishes nothing, deletes no build
   directories, and saves the previous working copy as a timestamped `.bak`.
   (#93)
+- New lualine component `loomworks_lsp`: placed next to `lsp_status`, it
+  shows `(unconfigured)`, `(no db)` or `(ws error)` in red when loomworks
+  withholds clangd for the buffer. `buf_status()` gains an `lsp` field and
+  `loomworks.lsp_buf_state(bufnr)` returns the same per-buffer status. (#191)
 
 ### Changed
 - `lw import`: an item the working copy already has keeps its intent (local or
@@ -128,6 +132,31 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
   every accepted option (`run --working-dir`, `launch add --cwd`,
   `device clean --no-wait`, `profile create -a`, `-v`/`--version`, the
   `release-notes` setting, ...). (#90)
+- Inside a workspace, clangd only gets a compile database from the active
+  configuration as configured on this machine. A stale
+  `compile_commands.json` in a build directory that is not configured here
+  (never configured, reset, or copied from elsewhere) is no longer used, and
+  a buffer under the workspace root with no usable database gets no clangd
+  client at all instead of one that guesses flags. clangd starts by itself
+  once the database exists (configure finishes, or you switch to a
+  configured profile) and stops when you switch to an unconfigured one.
+  This needs loomworks' default clangd setup, or your own `vim.lsp.config`
+  + `vim.lsp.enable` (Neovim 0.11+). Files outside the loaded workspace,
+  including a file of another workspace that is not loaded, keep your
+  stock clangd. (#191)
+- Deleting or resetting a build directory (editor `D`, `lw reset`,
+  orphan delete) now also removes the compile database loomworks generated
+  from it under `.nvim/cache/cc/`, and nuke (`<C-n>`, `lw nuke`) removes the
+  whole `.nvim/cache/cc/` area. Nothing else under `.nvim/cache/` is touched;
+  a database still used by another build directory is kept, and nothing is
+  removed through a symbolic link or junction (nuke refuses entirely if the
+  area is one). (#191)
+- The winbar marker for an unconfigured configuration is now red, and a
+  profile whose configurations disagree (`mixed`) is amber. The status page
+  says "clangd withheld" with the reason. (#191)
+- The lualine/winbar status markers now take only the colour of their
+  highlight group and keep the lualine section's background; the text after
+  a marker no longer falls back to the plain statusline/winbar colours. (#191)
 
 ### Fixed
 - On macOS and Linux, a workspace daemon started from one environment (a

@@ -15,11 +15,26 @@ built-in ones.
 ### 9.1 Module interface (§8.4 `lsp_configs`)
 
 Modules produce entries shaped as `{ server = "...", root_dir = ...,
-<per-server fields>... }`. Core only inspects `server` to dispatch;
-integrations parse the remaining fields. Modules may traverse core
-domain objects (Project, ConfigUnit) to resolve cross-configuration
-references inside themselves, so paths emitted in the entry are
-fully resolved.
+db_state = ..., <per-server fields>... }`. Core inspects `server` to
+dispatch and `db_state` (§8.4) to decide whether the entry can back a
+server at all (§9.8); integrations parse the remaining fields. Modules
+may traverse core domain objects (Project, ConfigUnit) to resolve
+cross-configuration references inside themselves, so paths emitted in
+the entry are fully resolved.
+
+**Database only from a unit configured here.** Inside a workspace, a
+module supplies a compilation-database location (or any other
+build-directory-derived server input) only from a ConfigUnit that is
+**configured on this machine** — recorded as configured in the signed
+cache (§17.8). A unit that is not configured here (never configured,
+reset, deleted, or configured only on another machine whose build
+directory came with the copy) contributes no location: whatever database
+its computed build directory may hold on disk is stale or foreign and is
+never handed to a server. Instead the entry reports
+`db_state = "unconfigured"`. The same holds when there is no active
+profile, or the active profile maps no unit for the project. When the
+module redirects the database to another unit (a cross-configuration
+reference), the rule applies to the unit actually supplying the database.
 
 ### 9.2 Dispatch layer (`lsp.lua`)
 
@@ -62,6 +77,7 @@ Each `integrations/lsp/<server>.lua` returns a table with these fields
 | `root_dir_factory(fallback) → fn` | Builds a `root_dir` function — same pattern |
 | `get_resolved_cmd(root_dir) → string[]\|nil` | Last-resolved cmd args (status display) |
 | `status_extras(entry) → table` | Per-server fields merged into `extra` on the status page |
+| `withhold_reason(entry) → string\|nil` | Whether this entry can back a running server (§9.8). Returns `nil` when the server may start for buffers routed to the entry, or a reason string when it must be **withheld** — `"unconfigured"` (the entry's `db_state` is `"unconfigured"`) or `"no_db"` (the unit is configured here but the server's required database is absent). An integration without the hook never withholds; its server starts as before |
 | `on_active_set_changed()` | Called on profile/active-set change |
 | `on_workspace_changed()` | Called on workspace swap / first load |
 | `on_unexpected_exit(info) → decision` | Restart policy for an unexpected client death (see §9.6). `info` carries `{ server, root_dir, exit_code, signal, attempt, args }`. `decision` is `{ restart: boolean, args?: string[], reason?: string }` |
@@ -170,13 +186,55 @@ A language server loomworks installs (the default path — §9.4) is **held from
 
 The hold lives in the shared dispatch layer and works through the server's `root_dir` function, which loomworks owns. Neovim starts a client for a buffer only once `root_dir`'s asynchronous `on_dir` callback is invoked; loomworks withholds that callback for a buffer **under the workspace root** while the workspace is still initializing, queueing the buffer instead of resolving it. Buffers **outside** any workspace root resolve immediately via the fallback (`vim.fs.root`) — a C/C++ file unrelated to the workspace gets the user's stock server with no delay.
 
-Because that decision is made from the **buffer's own path**, the hold also covers buffers restored *before* loomworks knows the workspace root: a session manager can reopen files — and Neovim can resolve their `root_dir` — before auto-load has called `setup` with the root. When no workspace is loaded yet and no configured root is known, the gate walks up from the buffer's path for a workspace marker (`loomworks.json`, or `.nvim/loomworks.user.json`); a buffer inside a loomworks workspace is held, one outside any is resolved. Correspondingly a buffer counts as *ready to resolve* only once a **live workspace object** exists and its databases are ready — not merely because no workspace has loaded yet — and the start of a new initialization cycle never drains already-held buffers (they wait for that cycle's readiness signal or the safety timeout).
+Because that decision is made from the **buffer's own path**, the hold also covers buffers restored *before* loomworks knows the workspace root: a session manager can reopen files — and Neovim can resolve their `root_dir` — before auto-load has called `setup` with the root. When no workspace is loaded yet and no configured root is known, the gate walks up from the buffer's path for a workspace marker (`loomworks.json`, or `.nvim/loomworks.user.json`); a buffer inside a loomworks workspace is held, one outside any is resolved. (A directory holding only `.nvim/loomworks.cache.json` is not a workspace — the markers are the two auto-load uses, §13.) Detection only *holds*: it never makes the buffer withheld. If, when the hold ends, no workspace is loaded or being loaded for the buffer's root (auto-load is cwd-based, so a file of another workspace opened from elsewhere loads nothing), the buffer is resolved through the fallback — the user's stock server, as for any buffer outside a loaded workspace (§9.8). Correspondingly a buffer counts as *ready to resolve* only once a **live workspace object** exists and its databases are ready — not merely because no workspace has loaded yet — and the start of a new initialization cycle never drains already-held buffers (they wait for that cycle's readiness signal or the safety timeout).
 
-The queue is released when the **active profile's owned LSP databases are ready** — its configured build directories' compilation databases have been generated (or determined un-generatable because a build directory is not configured). At that point the resolved binary and the `compile_commands_dir` (with its `compile_commands.json` already on disk for configured units) are in place, so the server starts once, correct, with no follow-up restart. On release, each queued buffer is resolved normally (routed config for a project buffer, fallback otherwise) and its `on_dir` is invoked. Databases for non-active profiles are generated lazily and do not gate the start. Three terminal conditions drain the queue with fallback resolution so a buffer never hangs without a server: **no active profile / nothing to generate** (release immediately after the target scan), workspace **initialization failure** (`workspace_changed` with no workspace), and a bounded **safety timeout** if no readiness signal arrives.
+The queue is released when the **active profile's owned LSP databases are ready** — the compilation databases of its build directories that are configured here have been generated (a unit not configured here has nothing to generate and contributes no database, §9.1). At that point the resolved binary and the `compile_commands_dir` (with its `compile_commands.json` already on disk for configured units) are in place, so the server starts once, correct, with no follow-up restart. On release, each queued buffer is resolved normally (§9.8 *Decision*): it is routed to an entry — its project's, or for a buffer under the root outside every project the workspace entry — and, unless that entry is **withheld** (§9.8), its `on_dir` is invoked. A buffer whose entry is withheld is not started — it moves from the hold to the withheld set of §9.8. Databases for non-active profiles are generated lazily and do not gate the start.
+
+Three terminal conditions end the hold so a buffer never stays in it indefinitely; none of them starts a server without a database for a buffer inside a workspace project:
+
+- **No active profile / nothing to generate** — release immediately after the target scan. Project buffers resolve to entries reporting `db_state = "unconfigured"` and are withheld (§9.8); so are buffers under the root outside every project, since the workspace has no usable entry.
+- **Initialization failure** (`workspace_changed` with no workspace) — there is no project to route to. Buffers under the failed workspace's root are withheld with reason `"workspace_error"` rather than started on the fallback (a fallback server would discover databases on its own and could pick up exactly the stale database this rule exists to avoid). They are re-evaluated when a later initialization succeeds.
+- **Safety timeout** — if no readiness signal arrives within the bound, held buffers are resolved against whatever is known at that moment: a buffer whose entry is usable starts; one whose entry is withheld moves to the withheld set; a buffer under the root of a workspace that is still being loaded (setup pending, no live workspace object yet) is not started and keeps status `held` (§9.8) until that workspace arrives or fails, and is resolved then; a buffer for which no workspace is loaded or being loaded takes the fallback (stock server, status `none`). The timeout bounds the *gate*, never forces a database-less start inside a loaded workspace.
 
 The hold spans the workspace's initialization **and** the generation of the active profile's owned database, so §9.4 cmd resolution finds `compile_commands.json` already present and appends `--compile-commands-dir` on the first start. Generation runs asynchronously and yielding (cmake §12.2), so this is a responsive wait, not a frozen UI; the completion-nudge (§8.4) remains only as a safety net for a database that appears after a start (e.g. a manual reconfigure), not the normal path.
 
 **Scope.** The hold applies only to servers loomworks installs. In the `lsp = false` opt-out path (§9.4) the user's own config starts the server; loomworks does not own `root_dir` there and cannot hold the start, so a client that attaches before the workspace is ready is repaired by the integration's attach-time reconciliation instead (per-integration; see the clangd spec). Excluded buffers (§9.4) are never held — they take the fall-through path regardless of workspace state.
+
+### 9.8 Withheld servers for buffers without a usable database
+
+Inside a workspace, a language server that needs a compilation database is **not started at all** for a buffer under the workspace root whose entry cannot supply one — rather than started without a database (where it would guess flags, or discover a stale database on its own) and producing misleading diagnostics. Outside any workspace nothing changes: such buffers get the user's stock server as before.
+
+**Decision.** For each buffer under the workspace root, for a server whose integration implements `withhold_reason` (§9.3), the dispatch layer picks the buffer's entry and asks `withhold_reason(entry)`. `nil` → the server starts for that entry (via `on_dir` with the entry's `root_dir`, §9.7). A reason → the buffer joins the **withheld set** for that server; `on_dir` is not invoked and no client is created. Core never decides on its own which servers need a database — an integration without `withhold_reason` is never withheld and keeps its own routing. The entry is picked as follows:
+
+- **Project buffer** — the entry its project's module emits for the server (§9.1). A project whose module emits no entry for the server has "no opinion": the buffer takes the fallback path, unchanged.
+- **Buffer under the root outside every project** — the **workspace entry**: the first *usable* entry (one for which `withhold_reason` returns `nil`) among the entries the workspace's projects emit for the server, projects taken in ascending key order. The buffer joins that project's client and uses its database (clangd then infers flags for the file from the nearest database entries). If projects emit entries for the server but none is usable, the buffer is withheld — `"unconfigured"` when any of those entries reports it, `"no_db"` otherwise — so a server started from the fallback cannot discover a stale database under the root on its own (e.g. `<root>/build/compile_commands.json`). If no project emits an entry for the server, the fallback path is taken, unchanged.
+
+Buffers outside the loaded workspace's root are never withheld; they take the fallback path (the user's stock server). With no workspace loaded, only buffers under the root of a workspace being loaded wait (`held`, §9.7); every other buffer — including one inside a workspace on disk that is not loaded — takes the fallback.
+
+**Re-evaluation.** The withheld decision is re-evaluated, for every buffer the change can affect, on:
+
+- an active-set / active-profile change (`active_set_changed`);
+- a configure completing for a unit (its state changes to configured here) and the owned-database completion signal (§8.4 `refresh_lsp_database`'s `done`);
+- any change that makes a unit no longer configured here — deletion, reset (§4.6, §16.30), out-of-band build-directory removal self-healed on remerge (§4.6), a failed configure;
+- a workspace swap or a successful initialization following a failure (`workspace_changed`);
+- the workspace being shut down with no successor (`workspace_closed` — cwd swap teardown, reload): nothing is loaded, failed or pending any more, so held and withheld buffers under the old root take the fallback (stock server, status `none`); none stays withheld.
+
+When a withheld buffer's entry becomes usable, the server is started for it exactly as a released buffer would be (its `on_dir` is invoked, or — when the earlier attach attempt has already completed without a client — the server's attach is re-run for that buffer), with no reopening by the user. The re-run attaches **only that server** (Neovim's own enable attach, for that one config: filetype check, `root_dir`, start with the config's client reuse) — it never re-resolves other servers enabled for the buffer. It requires the server to be enabled through `vim.lsp.config` + `vim.lsp.enable` (Neovim 0.11+; the §9.4 default path, or the user's own config built on it); a server started any other way gets its client on the buffer's next attach. When a running client's entry becomes withheld — typically a switch to a profile whose unit for that project is not configured here — the client is stopped through the managed-stop path (§9.6, so it is neither suppressed nor counted against the restart throttle) and its buffers join the withheld set. A changed-but-still-usable entry (different database directory or binary) is handled by the integration's own `on_active_set_changed` restart, unchanged.
+
+**Per-buffer LSP status.** The dispatch layer records, per buffer, a generic status that UI consumers read (`spec/ui.md` §3–§4):
+
+| Status | Meaning |
+|--------|---------|
+| `none` | The buffer is not routed to a managed server by loomworks (outside any workspace, excluded, its project emits no entry for the server, no project emits one for a buffer outside every project, or no managed server for its filetype) |
+| `held` | Waiting in the §9.7 hold (workspace initializing, database generating) |
+| `ok` | A server was started (or is running) for the buffer with its entry |
+| `withheld_unconfigured` | Withheld: the entry reports `db_state = "unconfigured"` (no active profile, or the active unit is not configured here) |
+| `withheld_no_db` | Withheld: the unit is configured here but the server's database is absent (e.g. not yet generatable) |
+| `withheld_error` | Withheld: the workspace failed to initialize (§9.7) |
+
+When a buffer is routed to more than one managed server, the most severe status wins (`withheld_*` > `held` > `ok` > `none`). The status is exposed through the public API (`loomworks.lsp_buf_state(bufnr)`, and the `lsp` field of `buf_status()`).
+
+**Scope.** Withholding is possible only where loomworks owns the server's start (§9.4 default path). In the `lsp = false` opt-out path the user's config starts the server; loomworks cannot withhold it, but §9.1 still holds — the entry carries no database location for a unit not configured here, so the integration never injects one — and the per-buffer status reports `none`.
 
 ---
 
