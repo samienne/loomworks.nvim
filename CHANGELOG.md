@@ -57,6 +57,9 @@ How to write an entry (spec section 16.37; tests/release_notes_spec.lua checks i
 - The winbar marker for an unconfigured configuration is now red, and a
   profile whose configurations disagree (`mixed`) is amber. The status page
   says "clangd withheld" with the reason. (#TBD)
+- The lualine/winbar status markers now take only the colour of their
+  highlight group and keep the lualine section's background; the text after
+  a marker no longer falls back to the plain statusline/winbar colours. (#TBD)
 
 ## 0.1.43 - 2026-10-07
 

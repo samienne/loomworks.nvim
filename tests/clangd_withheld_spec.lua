@@ -503,6 +503,11 @@ package.preload["lualine.component"] = function()
         return cls
     end
     function Base:init(options) self.options = options end
+    function Base:create_hl(color, hint)
+        return { name = "lualine_c_loomworks_" .. hint, fn = color }
+    end
+    function Base:format_hl(token) return "%#" .. token.name .. "#" end
+    function Base:get_default_hl() return "%#lualine_c_normal#" end
     return Base
 end
 
@@ -562,8 +567,8 @@ end)
 describe("lualine loomworks component status markers", function()
     it("marks unconfigured red and mixed amber", function()
         local c = component("loomworks")
-        assert.is_truthy(c:_status_marker("unconfigured"):find("%#DiagnosticError#", 1, true))
-        assert.is_truthy(c:_status_marker("mixed"):find("%#DiagnosticWarn#", 1, true))
-        assert.is_truthy(c:_status_marker("configured"):find("%#Comment#", 1, true))
+        assert.is_truthy(c:_status_marker("unconfigured"):find("%#lualine_c_loomworks_DiagnosticError#", 1, true))
+        assert.is_truthy(c:_status_marker("mixed"):find("%#lualine_c_loomworks_DiagnosticWarn#", 1, true))
+        assert.is_truthy(c:_status_marker("configured"):find("%#lualine_c_loomworks_Comment#", 1, true))
     end)
 end)

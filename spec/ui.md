@@ -1095,8 +1095,16 @@ false` disables them), the set name is prefixed with a marker for the active
 profile's aggregate state (`buf_status().profile_state`) and the
 project/configuration with one for the buffer's unit (`buf_status().status`).
 Running states animate the spinner. The glyphs are short single characters
-shared with the status page's meaning; each static marker carries a
-highlight so it reads independently of the surrounding text colour:
+shared with the status page's meaning; each marker is coloured with the
+**foreground** of its highlight group so it reads independently of the
+surrounding text colour. The colour is applied through lualine's own
+component highlights (`create_hl` / `format_hl`), so the marker keeps the
+section's background, and the text after it returns to the section highlight
+(`get_default_hl`) — never raw `%#Group#…%*` escapes, which would reset to
+`StatusLine`/`WinBar` and carry the group's own background. This holds in
+statusline and winbar sections alike, and the group's colour is re-read on
+every redraw, so a colourscheme change is picked up. The diagnostics
+indicator (`⚠` / `✗`) is coloured the same way.
 
 | State | Glyph | Highlight |
 |-------|-------|-----------|
