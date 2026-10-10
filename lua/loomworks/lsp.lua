@@ -817,6 +817,22 @@ function M._reset_gate() gate_reset() end
 --- Buffers currently withheld (or parked `held` after the gate), per server.
 --- @type table<integer, table<string, true>>
 local _withheld = {}
+
+--- Drop per-buffer state when a buffer goes away. Registered lazily on the
+--- first per-buffer state write so requiring this module has no side effects
+--- (the standalone host has no autocmd API).
+local _bufstate_cleanup_registered = false
+local function ensure_bufstate_cleanup()
+    if _bufstate_cleanup_registered then return end
+    _bufstate_cleanup_registered = true
+    vim.api.nvim_create_autocmd("BufWipeout", {
+        group = vim.api.nvim_create_augroup("loomworks.lsp.bufstate", { clear = true }),
+        callback = function(args)
+            _withheld[args.buf] = nil
+            _buf_state[args.buf] = nil
+        end,
+    })
+end
 --- Root of a workspace whose initialization failed (`workspace_changed` with no
 --- workspace). Buffers under it are withheld with `withheld_error` until a
 --- later load succeeds.
@@ -842,6 +858,7 @@ local STATE_RANK = {
 set_buf_state = function(bufnr, server, status)
     local t = _buf_state[bufnr]
     if not t then
+        ensure_bufstate_cleanup()
         t = {}
         _buf_state[bufnr] = t
     end
@@ -974,6 +991,7 @@ end
 local function mark_withheld(bufnr, server)
     local t = _withheld[bufnr]
     if not t then
+        ensure_bufstate_cleanup()
         t = {}
         _withheld[bufnr] = t
     end
@@ -1184,14 +1202,6 @@ function M._reset_withheld()
     _ws_failed_root = nil
 end
 
--- Drop per-buffer state when a buffer goes away.
-vim.api.nvim_create_autocmd("BufWipeout", {
-    group = vim.api.nvim_create_augroup("loomworks.lsp.bufstate", { clear = true }),
-    callback = function(args)
-        _withheld[args.buf] = nil
-        _buf_state[args.buf] = nil
-    end,
-})
 
 -- ---------------------------------------------------------------------------
 -- Completion nudge — targeted re-resolution when an owned DB appears (§9.7)
