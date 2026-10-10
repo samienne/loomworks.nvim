@@ -1710,7 +1710,12 @@ build directory is removed only when it lies within the workspace root, and a
 directory still referenced by another unit not part of the reset is **retained**
 on disk (its state cleared for the reset units only) rather than deleted out
 from under the reference. Reset is exclusive, acquiring the per-build-directory
-lock (§16.6) for its directories so it cannot race a concurrent build.
+lock (§16.6) for its directories so it cannot race a concurrent build. A removed
+build directory's module-owned LSP database is removed with it, under the rules
+of §4.6 *Owned LSP database cleanup* (after the directory is confirmed gone; kept
+for a retained directory); its removal failing is a warning, not a reset
+failure. The nuke (`lw nuke`) likewise removes each module's whole owned-database
+area (§4.6).
 
 Because reset destroys build state that a build would otherwise reuse, it
 **requires confirmation**. An interactive host prints the directories that will

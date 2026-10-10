@@ -470,14 +470,31 @@ Entry shape (core-defined fields):
 |-------|---------|
 | `server` | Server name — selects the integration |
 | `root_dir` | Absolute path used for root_dir matching and client scoping |
+| `db_state` | *(optional)* `"ready"` or `"unconfigured"`. `"unconfigured"` when the unit that would supply this entry's build-directory-derived inputs (its compilation database in particular) is **not configured on this machine** (§17.8), or there is no active profile / no active unit for the project; the entry then carries **no** database location (§9.1). `"ready"` when that unit is configured here. Whether a configured unit's database actually exists yet is not part of this field — the integration checks that itself (§9.3 `withhold_reason`) |
 | _…per-server_ | Each integration documents its own additional fields. See [`spec/integrations/lsp/`](spec/integrations/lsp/). |
 
 Modules with no LSP needs return `{}` (or omit the method). The module
 may traverse core domain objects (Project, ConfigUnit) to resolve
-references.
+references. A module emits its entry even when the active unit is not
+configured here (with `db_state = "unconfigured"` and no database
+location), so the buffer is recognised as a project buffer and its
+server withheld (§9.8) rather than falling through to the stock server.
+A module that emits **no** entry for a project expresses "loomworks has
+no opinion" — such buffers take the fallback path, unchanged.
 
-Core never reads entry contents beyond `server` and `root_dir` — all
-other interpretation is delegated to the per-server integration.
+When `db_state` is omitted (a module predating the field), core derives
+it from the project's active ConfigUnit — `"ready"` if that unit is
+configured here, `"unconfigured"` otherwise — and sets the derived value
+on the entry before any integration sees it, so an `"unconfigured"`
+result is withheld (and its database location ignored, see the clangd
+spec) exactly as if the module had reported it. A module that redirects its database to another unit (a
+cross-configuration reference) must set the field itself, since only it
+knows which unit supplies the database. Adding the field is additive and
+optional, with a safe derived default: no `api_versions.module` bump
+(§8.0).
+
+Core reads entry contents only for `server`, `root_dir` and `db_state` —
+all other interpretation is delegated to the per-server integration.
 
 **`parse_targets(ctx) → targets?`** *(optional)*
 
@@ -539,6 +556,21 @@ Return an absolute directory (or file) whose changes should re-trigger
 returned path; when it changes, core re-invokes `refresh_lsp_database` for
 the same ConfigUnit. `ctx` carries `build_dir`. Used to catch database
 inputs regenerated outside loomworks (e.g. a manual `cmake` reconfigure).
+
+**`lsp_database_root`** *(optional static property)* and
+**`lsp_database_dir(ctx) → string?`** *(optional)*
+
+Where a module's owned database lives, so core can remove it with the
+build directory it was generated from. `lsp_database_root` is a single
+plain path segment (no separators, not `.` or `..`) naming the module's
+owned-database area `<root>/.nvim/cache/<lsp_database_root>/`.
+`lsp_database_dir(ctx)` returns the absolute owned-database directory for
+one build directory (`ctx` carries `build_dir` and `workspace_root`), or
+`nil` when the module owns none for it. A module that implements
+`refresh_lsp_database` should implement both; core uses them only for
+cleanup (§4.6 *Owned LSP database cleanup*), never to locate a database
+for a server (that remains the entry's job, §9.1). Additive and optional:
+no `api_versions.module` bump (§8.0).
 
 **`compile_command_for(ctx, file) → { directory, file, arguments, origin }?`** *(optional)*
 

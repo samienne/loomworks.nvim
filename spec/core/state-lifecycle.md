@@ -329,6 +329,72 @@ shares a build directory with other configurations:
 **Invariant**: a build directory is only deleted from the filesystem when no
 remaining cache entries reference it after the current deletion batch.
 
+**Owned LSP database cleanup**: a module that owns an LSP database (§8.4
+`refresh_lsp_database`) keeps it outside the build directory, under
+`<root>/.nvim/cache/<lsp_database_root>/` (§8.4). That mirror is derived
+from the build directory and must not outlive it — a stale mirror is
+exactly the kind of foreign database §9.1 forbids handing to a server. So
+whenever a build directory is **actually removed** from disk — profile or
+configuration delete/clean disposition (above), orphan deletion, headless
+reset (§16.30) — core also removes the build directory's owned-database
+directory. The rules, all mandatory:
+
+1. **Derived from the BuildDir, after success.** The mirror path is
+   obtained from the owning module's `lsp_database_dir(ctx)` for the
+   BuildDir object's build directory — the same validated path that was
+   just deleted — never from a raw cache string. It is removed only
+   **after** that build directory's deletion has been confirmed
+   successful. A build directory that was skipped (still referenced,
+   *Shared build directory protection* above), refused (*Build directory
+   safety*) or failed to delete keeps its mirror.
+2. **Shared mirrors.** If any BuildDir that remains after the batch maps
+   to the same mirror directory, or to a mirror nested inside it
+   (normalized, separator-bounded comparison — removing the outer one
+   would take the nested live one with it), the mirror is kept.
+3. **Nil / empty.** A `nil` or empty build directory, workspace root,
+   `lsp_database_root` or `lsp_database_dir` result means "nothing to
+   remove" — never a fallback path.
+4. **Location check (separator-bounded).** After normalization, the
+   mirror path must lie **strictly inside**
+   `<root>/.nvim/cache/<lsp_database_root>/` — compared as
+   `path:sub(1, #prefix + 1) == prefix .. "/"` with `prefix` the
+   normalized area directory — contain no `.` / `..` segment, and never
+   equal the area directory, `<root>/.nvim/cache` or `<root>/.nvim`. A
+   path failing the check is refused (logged), not removed. This is the
+   `<root>/.nvim/` safety scope (the nuke scope, §15 invariant 3), narrowed
+   to the module's area.
+5. **No links.** `<root>/.nvim`, `<root>/.nvim/cache`, the area directory
+   and the mirror itself must be real directories (checked without
+   following links — a symbolic link or junction at any of them refuses
+   the removal), and the realpath of the mirror must lie strictly under
+   the realpath of the area directory `<root>/.nvim/cache/<lsp_database_root>/`
+   (normalized, separator-bounded). On Windows a path segment ending in
+   `.` or a space is refused (Win32 trims them, so `App/.. ` would name the
+   area itself), and so is such an area name. The removal itself
+   never follows a link or junction inside the mirror (*Async build
+   directory deletion* above).
+6. **Best-effort, non-blocking.** The removal is asynchronous like the
+   build-directory deletion. Its failure never fails the deletion or
+   changes cache state (the mirror is not cache-tracked); it is reported
+   at warning level. A mirror left behind by a crash or failure is
+   harmless — no server is pointed at it for a unit that is not
+   configured here (§9.1) — and is swept by the next nuke.
+
+A module's whole owned-database area is also removed by nuke (§1.11 of the
+UI spec, `lw nuke`): for every registered module that declares
+`lsp_database_root`, `<root>/.nvim/cache/<lsp_database_root>/` is added to
+the nuke's path list and subjected to the nuke's own checks (absolute root,
+workspace marker present, every path under `root/.nvim/`) plus rules 3 and
+5 above; in place of rule 4 the target must be exactly the direct child
+`<root>/.nvim/cache/<lsp_database_root>` (a valid single segment). Nothing else under
+`<root>/.nvim/cache/` (e.g. pinned launcher binaries, §16.24) is touched.
+The area check runs before any lock is taken (a failed check aborts the
+nuke with nothing deleted); the area itself is removed together with the
+build caches, under the nuke's operation and build locks (§19.3) and before
+the build tree is moved aside. A nuke that then refuses because the tree
+cannot be moved aside has removed the area like the caches: harmless,
+derived data regenerated on the next configure.
+
 ### 4.7 Cleaning
 
 **Profile clean** (`C` key):
@@ -860,6 +926,7 @@ Events are the primary mechanism for cross-component communication.
 | Event                  | Data | Trigger |
 |------------------------|------|---------|
 | `workspace_changed`    | `Workspace` | Workspace loaded |
+| `workspace_closed`     | (none) | Workspace shut down with no successor (`Core:shutdown`: cwd-swap teardown, reload) — the deferred-LSP gate and withheld set re-evaluate (§9.7–§9.8) |
 | `active_set_changed`   | `ActiveSet` | Profile activated, remerge |
 | `operation_started`    | `{ profile_key, action, operation }` | Profile-level action begins |
 | `operation_finished`   | `{ profile_key, success, message, operation }` | Profile-level action ends |
@@ -872,6 +939,7 @@ Events are the primary mechanism for cross-component communication.
 | `deletion_failed`      | `{ items, errors }` | One or more build dir deletions failed |
 | `tools_detected`       | `tools_by_type` | Tool detection completed |
 | `lsp_ready`            | (none) | Active profile's owned LSP databases generated/settled — releases the deferred-LSP gate (§9.7) |
+| `lsp_buf_state_changed` | `{ bufnr, server, state }` | A buffer's per-server LSP status (§9.8: `none` / `held` / `ok` / `withheld_*`) changed; emitted scheduled, followed by a statusline redraw. `state` is the status for that one `server`, not the aggregated per-buffer status (`loomworks.lsp_buf_state(bufnr)`) |
 | `devices_changed`      | `Device[]` | Device scan completed |
 
 Events pass data directly to listeners — no need to re-query, no race

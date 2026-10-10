@@ -360,19 +360,26 @@ function Tree:_confirm_nuke()
         "  This will permanently delete:",
         "    " .. root .. "/.nvim/build/",
         "    " .. root .. "/.nvim/loomworks.cache.json",
-        "",
-        "  Press y to confirm, q to cancel",
     }
+    -- Module-owned LSP database areas present on disk (spec ui §1.11). A
+    -- failed area check is shown here; the nuke itself then aborts.
+    local core = lw._core and lw._core()
+    if core and core._nuke_lsp_db_areas then
+        local areas, area_err = core:_nuke_lsp_db_areas(core._deps.normalize(root))
+        for _, a in ipairs(areas or {}) do lines[#lines + 1] = "    " .. a .. "/" end
+        if not areas then lines[#lines + 1] = "    (refused: " .. tostring(area_err) .. ")" end
+    end
+    local last_path = #lines
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "  Press y to confirm, q to cancel"
+
+    local highlights = { { line = 1, hl_group = "DiagnosticError" } }
+    for i = 3, last_path do highlights[#highlights + 1] = { line = i, hl_group = "DiagnosticWarn" } end
 
     dialog.show({
         title = "Confirm Reset",
         lines = lines,
-        highlights = {
-            { line = 1, hl_group = "DiagnosticError" },
-            { line = 3, hl_group = "DiagnosticWarn" },
-            { line = 4, hl_group = "DiagnosticWarn" },
-            { line = 5, hl_group = "DiagnosticWarn" },
-        },
+        highlights = highlights,
         keys = {
             n = "close",
             y = function(self)

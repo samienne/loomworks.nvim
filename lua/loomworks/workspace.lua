@@ -3687,10 +3687,16 @@ function Workspace:_delete_orphaned_build_dir_unlocked(build_dir_key, on_done)
             local safe_prefix = self._core._deps.normalize(self.root)
             if self:_validate_build_dir(abs_dir, safe_prefix) then
                 local ws = self
-                local f = self:_delete_build_dirs_async({ abs_dir }):next(function()
+                local mod = self:_lsp_db_module_for(nil, bd)
+                local f = self:_delete_build_dirs_async({ abs_dir }):next(function(results)
                     ws:_save_cache()
                     ws._core._deps.events.emit("active_set_changed", ws._active_set)
-                    return true
+                    -- Owned LSP database mirror only after confirmed removal (§4.6).
+                    local deleted = {}
+                    for _, r in ipairs(results or {}) do
+                        if r.ok then deleted[#deleted + 1] = { dir = r.dir, mod = mod } end
+                    end
+                    return ws:_remove_owned_lsp_dbs(deleted):next(function() return true end)
                 end)
                 if on_done then
                     f:next(function() on_done() end)
@@ -4008,6 +4014,142 @@ function Workspace:_delete_build_dirs_async(dirs, callback)
     return f
 end
 
+-- ===========================================================================
+-- Owned LSP database cleanup (spec §4.6 "Owned LSP database cleanup")
+-- ===========================================================================
+
+--- The module implementation that owns a build directory, for owned-database
+--- cleanup: the unit's project module, else the BuildDir's recorded module
+--- type. Module-agnostic — the module is only asked through the optional
+--- `lsp_database_root` / `lsp_database_dir` interface (§8.4).
+--- @param unit loomworks.ConfigUnit|nil
+--- @param bd loomworks.BuildDir|nil
+--- @return table|nil impl
+function Workspace:_lsp_db_module_for(unit, bd)
+    local proj = unit and unit._project
+    if proj and proj._module and proj._module.impl then return proj._module.impl end
+    local mod_type = (proj and proj.type) or (bd and bd.mod_type)
+    if type(mod_type) ~= "string" or mod_type == "" or mod_type == "unknown" then return nil end
+    local m = self:find_module(mod_type)
+    if m and m.impl then return m.impl end
+    local reg = self._core._deps.modules
+    return reg and reg.get and reg.get(mod_type) or nil
+end
+
+--- A build directory's owned-database mirror per its module (§8.4
+--- `lsp_database_dir`), with the module's area segment. nil when the module
+--- declares none, or any input / result is nil or empty (rule 3: never a
+--- fallback path).
+--- @param mod table|nil module implementation
+--- @param build_dir string|nil
+--- @return string|nil mirror, string|nil area_segment
+function Workspace:_lsp_db_mirror(mod, build_dir)
+    if type(mod) ~= "table" or type(build_dir) ~= "string" or build_dir == "" then return nil end
+    local seg = mod.lsp_database_root
+    if type(mod.lsp_database_dir) ~= "function" or type(seg) ~= "string" or seg == "" then return nil end
+    if type(self.root) ~= "string" or self.root == "" then return nil end
+    local ok, dir = pcall(mod.lsp_database_dir, { build_dir = build_dir, workspace_root = self.root })
+    if not ok or type(dir) ~= "string" or dir == "" then return nil end
+    return dir, seg
+end
+
+--- Remove the owned LSP database mirrors of build directories whose deletion
+--- was CONFIRMED successful (spec §4.6 rules 1–6). `deleted` lists those
+--- directories (the validated, normalized paths just removed) with the owning
+--- module. A mirror still mapped from any build directory that remains (a
+--- unit's or a BuildDir's, other than the ones just deleted) is kept (rule 2),
+--- and so is one that CONTAINS such a live mirror (nested mirrors).
+--- Each mirror passes `lsp_db_cleanup.check_mirror` (area-bounded, no `.`/`..`,
+--- no links, realpath under the area's) before the link-safe async removal; empty
+--- ancestors are pruned up to (not including) the area dir. Best-effort: a
+--- refusal or failure is a warning, never a rejection — the Future always
+--- resolves (rule 6). Cache state is never touched (mirrors are not tracked).
+--- @param deleted { dir: string, mod: table|nil }[]
+--- @return loomworks.Future
+function Workspace:_remove_owned_lsp_dbs(deleted)
+    local future_mod = require("loomworks.future")
+    local check = require("loomworks.lsp_db_cleanup")
+    local deps = self._core._deps
+    local normalize = deps.normalize
+    if not deleted or #deleted == 0 then return future_mod.resolved(true) end
+
+    local gone = {}
+    for _, d in ipairs(deleted) do gone[normalize(d.dir)] = true end
+
+    -- Candidates: mirror per deleted dir (deduplicated, normalized).
+    local candidates, seen = {}, {}
+    for _, d in ipairs(deleted) do
+        local mirror, seg = self:_lsp_db_mirror(d.mod, d.dir)
+        if mirror then
+            local key = normalize((mirror:gsub("\\", "/")))
+            if not seen[key] then
+                seen[key] = true
+                candidates[#candidates + 1] = { mirror = mirror, seg = seg, key = key }
+            end
+        end
+    end
+    if #candidates == 0 then return future_mod.resolved(true) end
+
+    -- Rule 2: mirrors still mapped from a remaining build directory.
+    local kept = {}
+    local function keep_for(mod, dir)
+        if not dir or dir == "" or gone[normalize(dir)] then return end
+        local m = self:_lsp_db_mirror(mod, dir)
+        if m then kept[normalize((m:gsub("\\", "/")))] = true end
+    end
+    for _, unit in pairs(self._config_units or {}) do
+        keep_for(self:_lsp_db_module_for(unit, unit._build_dir), unit:build_dir())
+    end
+    for _, bd in pairs(self._build_dirs or {}) do
+        keep_for(self:_lsp_db_module_for(nil, bd), bd.path)
+    end
+
+    --- A candidate is still in use when a remaining mirror equals it OR lies
+    --- inside it (separator-bounded): removing an outer mirror would take a
+    --- nested live one with it (e.g. `cc/src/proj` vs `cc/src/proj/build`
+    --- for an out-of-tree build dir). A candidate nested inside a live mirror
+    --- may go — the outer mirror's own database is not inside the inner dir.
+    local function still_used(key)
+        if kept[key] then return true end
+        for k in pairs(kept) do
+            if k:sub(1, #key + 1) == key .. "/" then return true end
+        end
+        return false
+    end
+
+    local futures = {}
+    for _, c in ipairs(candidates) do
+        if still_used(c.key) then
+            deps.notify("loomworks: kept owned LSP database " .. c.mirror
+                .. " — still used by another build directory", vim.log.levels.INFO)
+            goto next_candidate
+        end
+        do
+            local status, path, area = check.check_mirror(self.root, c.seg, c.mirror, normalize)
+            if status == "ok" then
+                local captured, stop = path, normalize(area)
+                futures[#futures + 1] = future_mod.create(function(resolve)
+                    deps.io.rm_rf_async(captured, function(ok, err)
+                        if ok then
+                            self:_cleanup_empty_ancestors(normalize(captured), stop)
+                        else
+                            deps.notify("loomworks: could not remove owned LSP database "
+                                .. captured .. ": " .. tostring(err or "unknown"), vim.log.levels.WARN)
+                        end
+                        resolve(true)
+                    end)
+                end)
+            elseif status == nil then
+                deps.notify("loomworks: refusing to remove owned LSP database: "
+                    .. tostring(path), vim.log.levels.WARN)
+            end
+        end
+        ::next_candidate::
+    end
+    if #futures == 0 then return future_mod.resolved(true) end
+    return future_mod.when_all(futures):next(function() return true end)
+end
+
 --- Common async deletion workflow: cancel conflicting operations, mark items
 --- as deleting, stop running tasks, delete build dirs via async subprocess,
 --- then apply cache mutations.
@@ -4047,6 +4189,17 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
     end
 
     local ws = self
+    -- Normalized build dir → owning module, for the dirs handed to rm-rf (the
+    -- validated, non-shared ones). Their owned LSP database mirrors are removed
+    -- only once each dir's deletion is confirmed (spec §4.6 rule 1).
+    local dir_owner = {}
+    local function deleted_ok(results)
+        local out = {}
+        for _, r in ipairs(results) do
+            if r.ok then out[#out + 1] = { dir = r.dir, mod = dir_owner[r.dir] } end
+        end
+        return out
+    end
     local f = self:stop_tasks_then(task_ids):next(function()
         -- The `unknown` marks must reach the disk before any tree is removed
         -- (§5.7): never staged in an open transaction (spec §19.4).
@@ -4083,6 +4236,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
                         end
                     end
                     dirs[#dirs + 1] = normalized
+                    dir_owner[normalized] = ws:_lsp_db_module_for(item.unit, item.unit and item.unit._build_dir)
                     ::skip_dir::
                 end
             end
@@ -4105,7 +4259,9 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
             ws:_resolve_active_profile()
             ws._core._deps.events.emit("active_set_changed", ws._active_set)
             ws._core._deps.events.emit("deletion_failed", { items = items, errors = errors })
-            return true  -- don't reject — deletion "completed" with errors reported
+            -- Dirs that WERE removed lose their mirror; failed ones keep it.
+            return ws:_remove_owned_lsp_dbs(deleted_ok(results))
+                :next(function() return true end)  -- don't reject — deletion "completed" with errors reported
         end
 
         work_fn(items)
@@ -4115,7 +4271,7 @@ function Workspace:_run_deletion(items, work_fn, on_done, reason)
         ws._core._deps.events.emit("active_set_changed", ws._active_set)
         for _, unit in ipairs(units) do unit:mark_deleting(false) end
         ws._core._deps.events.emit("deletion_completed", items)
-        return true
+        return ws:_remove_owned_lsp_dbs(deleted_ok(results)):next(function() return true end)
     end)
 
     if on_done then
@@ -4640,8 +4796,9 @@ function Workspace:_scan_targets_async()
     for _, e in ipairs(units) do
         if e.gating then gate_pending = gate_pending + 1 end
     end
-    -- No active profile / nothing to generate → release immediately (§9.7);
-    -- clangd starts best-effort against whatever is on disk.
+    -- No active profile / nothing to generate → release immediately (§9.7).
+    -- Released buffers whose unit is not configured here are withheld, never
+    -- started against whatever database happens to be on disk (§9.8).
     if gate_pending == 0 then mark_lsp_ready() end
 
     local function on_gate_settled()

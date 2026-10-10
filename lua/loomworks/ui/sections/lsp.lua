@@ -140,11 +140,17 @@ return function(tree, ctx)
 
             if entry.extra and entry.extra.compile_commands_dir then
                 tree:leaf("compile_commands_dir: " .. entry.extra.compile_commands_dir, "Comment")
+            elseif entry.extra and entry.extra.withheld == "unconfigured" then
+                tree:leaf("compile_commands_dir: (unconfigured)", "DiagnosticError")
             elseif entry.project_type == "cmake" then
                 tree:leaf("compile_commands_dir: (not found)", "DiagnosticWarn")
             end
 
-            if #entry.clients == 0 then
+            -- A withheld server (spec §9.8) has no client; say why, so the
+            -- missing client is explained rather than silent.
+            if entry.extra and entry.extra.withheld_label then
+                tree:leaf(entry.extra.withheld_label, "DiagnosticError")
+            elseif #entry.clients == 0 then
                 tree:leaf("No active clients", "Comment")
             end
 

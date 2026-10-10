@@ -723,6 +723,30 @@ unsupervised CMake rebuild against the loomworks-managed tree (see
 `type_config.qmlls_required`, and optional extra QML import paths from
 the `type_config.qml_import_paths` list.
 
+**Only from a unit configured here (core §9.1).** Both entries set
+`db_state` (core §8.4). When the active ConfigUnit is configured on this
+machine — or, with `compile_commands_from`, when the unit the database is
+redirected to is — the clangd entry carries `db_state = "ready"` and its
+`compile_commands_dir` (the owned directory of §12, or the native build
+directory under `compile_commands_generated = false`). Otherwise —
+unconfigured here, no active profile, or no active unit for the project —
+the clangd entry carries `db_state = "unconfigured"` and **no**
+`compile_commands_dir`, and the module neither schedules nor reports
+owned-database generation for that build directory (§12.4 trigger 1 is
+skipped): an owned directory or native database that may still exist on
+disk for that build directory is never offered to clangd. The qmlls entry
+carries the same `db_state`; its `build_dir` is unchanged by this rule —
+the redirect's first unit with a build directory, else the active
+ConfigUnit's, else the project's last cached build directory
+(`project.cached.build_dir`) when there is no active profile — and its
+handling is defined by the qmlls integration.
+
+The module declares `lsp_database_root = "cc"` and implements
+`lsp_database_dir(ctx)` (core §8.4) returning the §12 owned directory for
+`ctx.build_dir`, so core removes it with the build directory (core §4.6
+*Owned LSP database cleanup*) and nuke removes the whole
+`.nvim/cache/cc/` area.
+
 ## 10. Debug integration
 
 Module language is `"c++"`. Default adapter is `codelldb`. See
@@ -910,7 +934,7 @@ Regeneration is gated on a cheap, **synchronous** mtime guard: the owned databas
 
 Regeneration is triggered from three idempotent paths, so the owned database refreshes whenever the native one would:
 
-1. **LSP wiring** — when `lsp_configs` resolves the clangd entry it **schedules** the mtime-gated regeneration (it does not generate inline) and returns the generated directory immediately.
+1. **LSP wiring** — when `lsp_configs` resolves the clangd entry for a unit configured on this machine it **schedules** the mtime-gated regeneration (it does not generate inline) and returns the generated directory immediately. For a unit not configured here nothing is scheduled and no directory is returned (§9, core §9.1).
 2. **Configure / build task completion** — after a task that (re)configured the build directory completes, loomworks schedules the mtime-gated regeneration for that build directory. This covers the case where the LSP-wiring result is memoized and `lsp_configs` is not re-invoked.
 3. **File-api reply watch** — loomworks watches the file-api reply directory (via the workspace file tracker's `fs_poll`) and regenerates on change, catching reconfigures loomworks did not drive (e.g. a manual `cmake`).
 
