@@ -137,8 +137,11 @@ describe("lw reset (on-disk)", function()
   end)
 
   it("lists and removes the build dir's owned LSP database mirror (spec §4.6)", function()
-    local root = make_ws()
-    local ws, profile = load(root)
+    local ws, profile = load(make_ws())
+    -- Derive paths from the loaded root: it is canonicalized (on a Windows
+    -- runner tempname() is an 8.3 short path, ws.root its long form), and the
+    -- module maps a build dir to its mirror relative to ws.root.
+    local root = ws.root
     local dir = root .. "/.nvim/build/App/Debug"
     fake_build_dir(ws, profile, dir)
     local mirror = root .. "/.nvim/cache/cc/App/Debug"
